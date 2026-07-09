@@ -1,0 +1,52 @@
+<!--
+  Planiprêt Mobile — Extrait Info.plist iOS
+  À fusionner dans ios/App/App/Info.plist après `npx cap add ios`
+-->
+
+<!-- Permissions microphone (requis pour les appels SIP) -->
+<key>NSMicrophoneUsageDescription</key>
+<string>Planiprêt utilise le microphone pour les appels téléphoniques VoIP.</string>
+
+<!-- Permissions contacts -->
+<key>NSContactsUsageDescription</key>
+<string>Planiprêt accède à vos contacts pour faciliter les appels et la gestion des clients.</string>
+
+<!-- Modes audio en arrière-plan (appels VoIP) -->
+<key>UIBackgroundModes</key>
+<array>
+    <string>audio</string>
+    <string>voip</string>
+    <string>remote-notification</string>
+    <string>fetch</string>
+</array>
+
+<!-- Deep link scheme : planipret:// -->
+<key>CFBundleURLTypes</key>
+<array>
+    <dict>
+        <key>CFBundleURLName</key>
+        <string>com.planipret.mobile</string>
+        <key>CFBundleURLSchemes</key>
+        <array>
+            <string>planipret</string>
+        </array>
+    </dict>
+</array>
+
+<!-- Identifiant Bundle -->
+<key>CFBundleIdentifier</key>
+<string>com.planipret.mobile</string>
+
+<!-- Nom d'affichage -->
+<key>CFBundleDisplayName</key>
+<string>Planiprêt</string>
+
+<!-- Notifications push (APNs) -->
+<key>aps-environment</key>
+<string>production</string>
+
+<!-- Désactiver le zoom de l'interface -->
+<key>UISupportedInterfaceOrientations</key>
+<array>
+    <string>UIInterfaceOrientationPortrait</string>
+</array>

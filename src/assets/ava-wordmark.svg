@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 200" fill="none">
+  <g stroke="#ffffff" stroke-width="34" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <!-- A 1 -->
+    <path d="M40 170 L110 40 L180 170" />
+    <!-- V -->
+    <path d="M210 40 L300 170 L390 40" />
+    <!-- A 2 -->
+    <path d="M420 170 L490 40 L560 170" />
+  </g>
+  <!-- accent triangles inside the A's -->
+  <polygon points="85,150 135,150 110,108" fill="#3b82f6" />
+  <polygon points="465,150 515,150 490,108" fill="#22d3ee" />
+</svg>
