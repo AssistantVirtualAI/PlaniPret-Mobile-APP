@@ -3,12 +3,7 @@ import IdentityCard from "@/components/planipret/mobile/IdentityCard";
 import { useOutletContext, useNavigate } from "react-router-dom";
 
 import { supabase } from "@/integrations/supabase/client";
-import {
-  Phone, PhoneMissed, MessageSquare, Voicemail,
-  ArrowDownLeft, ArrowUpRight, X, Calendar, Headphones, Bot,
-  BellOff, Flame, Sparkles, ChevronRight, Mail, Users as UsersIcon,
-  CheckSquare, RefreshCw, AlertCircle,
-} from "lucide-react";
+import { Phone, PhoneMissed, MessageSquare, Voicemail, ArrowDownLeft, ArrowUpRight, X, Calendar, Headphones, Bot, BellOff, Flame, Sparkles, ChevronRight, Mail, Users as UsersIcon, CheckSquare, RefreshCw, AlertCircle } from "lucide-react";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
 import { toast } from "sonner";
 import PWAInstallBanner from "@/components/planipret/PWAInstallBanner";

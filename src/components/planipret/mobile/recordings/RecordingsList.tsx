@@ -1,11 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
-import {
-  Play, Pause, Download, RotateCcw, RotateCw, Sparkles, FileText, Bot,
-  Loader2, Search, Copy, Check, ChevronDown, Link2, User, Flame, Snowflake, Thermometer, ListChecks,
-  CloudUpload, CloudOff, CheckCircle2,
-} from "lucide-react";
+import { Play, Pause, Download, RotateCcw, RotateCw, Sparkles, FileText, Bot, Loader2, Search, Copy, Check, ChevronDown, Link2, User, Flame, Snowflake, Thermometer, ListChecks, CloudUpload, CloudOff, CheckCircle2 } from "lucide-react";
 
 export type AudioStatus = "idle" | "uploading" | "uploaded" | "error";
 

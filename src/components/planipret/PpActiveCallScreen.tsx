@@ -6,10 +6,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { supabase } from "@/integrations/supabase/client";
-import {
-  Mic, MicOff, Pause, Play, PhoneForwarded, Grid3X3, PhoneOff, Phone,
-  User, Search, X, ChevronLeft, Activity, Volume2, VolumeX,
-} from "lucide-react";
+import { Mic, MicOff, Pause, Play, PhoneForwarded, Grid3X3, PhoneOff, Phone, User, Search, X, ChevronLeft, Activity, Volume2, VolumeX } from "lucide-react";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import type { useMplanipretSoftphone } from "@/hooks/useMplanipretSoftphone";
 import PpCallDiagnosticPanel from "./PpCallDiagnosticPanel";

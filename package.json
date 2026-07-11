@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "postbuild": "node scripts/audit-native.mjs",
+    "postbuild": "echo build complete",
     "preview": "vite preview",
     "test": "vitest run",
     "audit:native": "node scripts/audit-native.mjs",

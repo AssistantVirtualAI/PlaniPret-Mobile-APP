@@ -1,11 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
-import {
-  CheckCircle2, XCircle, AlertTriangle, Loader2, MinusCircle,
-  RefreshCw, FileDown, ChevronDown, ChevronRight, ShieldCheck,
-  Zap, Clock, Copy, ExternalLink, ArrowRight,
-} from "lucide-react";
+import { CheckCircle2, XCircle, AlertTriangle, Loader2, MinusCircle, RefreshCw, FileDown, ChevronDown, ChevronRight, ShieldCheck, Zap, Clock, Copy, ExternalLink, ArrowRight } from "lucide-react";
 import { toast } from "sonner";
 import { downloadPdfBlob } from "@/lib/pdf/downloadBlob";
 import { jsPDF } from "jspdf";

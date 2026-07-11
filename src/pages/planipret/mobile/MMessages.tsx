@@ -2,11 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useOutletContext } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
-import {
-  Plus, X, ArrowLeft, Phone, Send, Paperclip, MessageSquare, Zap,
-  Users, Bot, Mail, Sparkles, Loader2, RefreshCw, Mic, Reply, History, Circle, CheckCircle2, AlertTriangle, RotateCw,
-  UsersRound, Contact,
-} from "lucide-react";
+import { Plus, X, ArrowLeft, Phone, Send, Paperclip, MessageSquare, Zap, Users, Bot, Mail, Sparkles, Loader2, RefreshCw, Mic, Reply, History, Circle, CheckCircle2, AlertTriangle, RotateCw, UsersRound, Contact } from "lucide-react";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
 import SmsTemplatesSheet from "@/components/planipret/SmsTemplatesSheet";
 import AvaSummarizeSheet from "@/components/planipret/ava/AvaSummarizeSheet";

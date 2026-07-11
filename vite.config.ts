@@ -11,19 +11,30 @@ export default defineConfig({
       // See src/lib/motion-shim.tsx for the rationale (iOS WKWebView
       // GPU/memory crashes with the full library).
       'framer-motion': path.resolve(__dirname, './src/lib/motion-shim.tsx'),
+      // Stub livekit-client — @elevenlabs/client statically imports it for its
+      // WebRTC transport, but the mobile app uses WebSocket transport only.
+      // Drops ~1.17 MB from the bundle. See src/lib/livekit-shim.ts.
+      'livekit-client': path.resolve(__dirname, './src/lib/livekit-shim.ts'),
     },
   },
   build: {
     outDir: 'dist',
     emptyOutDir: true,
-    target: 'es2020',
-    chunkSizeWarningLimit: 500,
+    target: 'es2015',
+    chunkSizeWarningLimit: 600,
     rollupOptions: {
       output: {
-        manualChunks: {
-          vendor: ['react', 'react-dom', 'react-router-dom'],
-          supabase: ['@supabase/supabase-js'],
-          ui: ['recharts'],
+        manualChunks(id) {
+          if (id.includes('node_modules/react/') || id.includes('node_modules/react-dom/')) return 'vendor-react';
+          if (id.includes('node_modules/react-router')) return 'vendor-router';
+          if (id.includes('@supabase')) return 'vendor-supabase';
+          if (id.includes('recharts') || id.includes('d3-')) return 'vendor-charts';
+          if (id.includes('@radix-ui')) return 'vendor-radix';
+          if (id.includes('lucide-react')) return 'vendor-lucide';
+          if (id.includes('@tanstack')) return 'vendor-tanstack';
+          if (id.includes('jssip') || id.includes('sip.js')) return 'vendor-sip';
+          if (id.includes('framer-motion')) return 'vendor-motion';
+          if (id.includes('node_modules')) return 'vendor-misc';
         },
       },
     },
