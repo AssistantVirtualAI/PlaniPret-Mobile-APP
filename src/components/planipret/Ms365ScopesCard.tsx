@@ -4,13 +4,20 @@ type Profile = { ms365_access_token?: string | null; ms365_scopes?: string | nul
 
 const REQUIRED: { scope: string; label: string; purpose: string }[] = [
   { scope: "User.Read", label: "Profil", purpose: "Identité de base" },
+  { scope: "User.ReadBasic.All", label: "Annuaire — base", purpose: "Lire profils de base" },
   { scope: "Mail.ReadWrite", label: "Courriels — lecture", purpose: "Analyser la boîte de réception" },
   { scope: "Mail.Send", label: "Courriels — envoi", purpose: "Répondre depuis AVA" },
+  { scope: "MailboxSettings.Read", label: "Boîte courriel", purpose: "Fuseau horaire et préférences" },
   { scope: "Calendars.ReadWrite", label: "Calendrier", purpose: "Planifier des rendez-vous" },
+  { scope: "Chat.Read", label: "Teams — lecture", purpose: "Lire les chats" },
+  { scope: "Chat.ReadBasic", label: "Teams — base", purpose: "Lire noms de conversations" },
   { scope: "Chat.ReadWrite", label: "Teams — chats", purpose: "Lire/envoyer messages 1:1" },
+  { scope: "ChannelMessage.Read.All", label: "Teams — lecture canaux", purpose: "Lire messages de canaux" },
   { scope: "ChannelMessage.Send", label: "Teams — canaux", purpose: "Poster dans les canaux" },
   { scope: "Team.ReadBasic.All", label: "Teams — équipes", purpose: "Liste des équipes" },
   { scope: "Channel.ReadBasic.All", label: "Teams — canaux", purpose: "Liste des canaux" },
+  { scope: "Organization.Read.All", label: "Organisation", purpose: "Diagnostic organisation" },
+  { scope: "Application.Read.All", label: "App Azure", purpose: "Diagnostic App Registration" },
 ];
 
 export function Ms365ScopesCard({ profile, onReconnect }: { profile: Profile | null; onReconnect: () => void }) {

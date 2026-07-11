@@ -1,13 +1,37 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
 import { useOutletContext } from "react-router-dom";
-import { Search, Phone, MessageSquare, Mail, Users, UserCog, BookUser, X, Calendar, ListChecks, Loader2, ExternalLink, Sparkles, Plus } from "lucide-react";
+import { Search, Phone, MessageSquare, Mail, Users, UserCog, BookUser, X, Calendar, ListChecks, Loader2, ExternalLink, Sparkles, Plus, Star } from "lucide-react";
 import AvaSummarizeSheet from "@/components/planipret/ava/AvaSummarizeSheet";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 
-type Tab = "personal" | "shared" | "directory";
+type Tab = "personal" | "favorites" | "directory";
+
+// ---- Favorites (local, per-device) ----
+const FAV_KEY = "planipret.contacts.favorites.v1";
+type FavEntry = {
+  key: string;                 // unique id (source:id/ext/phone)
+  source: "personal" | "shared" | "directory" | "maestro";
+  name: string;
+  phone?: string;
+  extension?: string;
+  email?: string;
+  company?: string;
+  department?: string;
+};
+function loadFavs(): FavEntry[] {
+  try { return JSON.parse(localStorage.getItem(FAV_KEY) || "[]"); } catch { return []; }
+}
+function saveFavs(list: FavEntry[]) {
+  try { localStorage.setItem(FAV_KEY, JSON.stringify(list)); } catch {}
+  try { window.dispatchEvent(new Event("planipret:favorites-changed")); } catch {}
+}
+function favKeyFor(source: FavEntry["source"], c: any): string {
+  const id = c.id ?? c.contact_id ?? c.extension ?? c.phone ?? c.email ?? "";
+  return `${source}:${id}`;
+}
 
 function Avatar({ name }: { name: string }) {
   const initials = name.split(" ").map((s) => s[0]).slice(0, 2).join("").toUpperCase() || "?";
@@ -36,24 +60,55 @@ function normalizeContact(c: any) {
   };
 }
 
+function presenceMeta(raw: string | undefined | null, t: (k: string) => string): { color: string; label: string } {
+  const v = String(raw ?? "").toLowerCase();
+  if (["available", "online", "active", "ready", "registered"].includes(v)) return { color: "#22c55e", label: t("contacts.presence.available") || "Available" };
+  if (["busy", "dnd", "do-not-disturb", "oncall", "on-call", "in-call"].includes(v)) return { color: "#ef4444", label: t("contacts.presence.busy") || "Busy" };
+  if (["away", "idle"].includes(v)) return { color: "#f59e0b", label: t("contacts.presence.away") || "Away" };
+  if (["offline", "unavailable"].includes(v)) return { color: "#64748b", label: t("contacts.presence.offline") || "Unavailable" };
+  return { color: "#64748b", label: t("contacts.presence.unknown") || "Unavailable" };
+}
+
 export default function MContacts() {
   const { t } = useMplanipretLang();
   const { openDialer } = useOutletContext<PlanipretMobileContext>();
   const [tab, setTab] = useState<Tab>("personal");
   const [q, setQ] = useState("");
   const [personal, setPersonal] = useState<any[]>([]);
-  const [shared, setShared] = useState<any[]>([]);
   const [directory, setDirectory] = useState<any[]>([]);
+  const [favorites, setFavorites] = useState<FavEntry[]>(() => loadFavs());
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selected, setSelected] = useState<any | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
 
+  useEffect(() => {
+    const onChange = () => setFavorites(loadFavs());
+    window.addEventListener("planipret:favorites-changed", onChange);
+    window.addEventListener("storage", onChange);
+    return () => {
+      window.removeEventListener("planipret:favorites-changed", onChange);
+      window.removeEventListener("storage", onChange);
+    };
+  }, []);
+
+  const favKeys = useMemo(() => new Set(favorites.map((f) => f.key)), [favorites]);
+
+  const toggleFav = useCallback((entry: FavEntry) => {
+    const cur = loadFavs();
+    const exists = cur.some((f) => f.key === entry.key);
+    const next = exists ? cur.filter((f) => f.key !== entry.key) : [...cur, entry];
+    saveFavs(next);
+    setFavorites(next);
+    toast.success(exists ? (t("contacts.removeFavorite") || "Retiré des favoris") : (t("contacts.addFavorite") || "Ajouté aux favoris"));
+  }, [t]);
+
   const load = useCallback(async (which: Tab) => {
+    if (which === "favorites") return; // local only
     setLoading(true);
     setLoadError(null);
     try {
-      const action = which === "personal" ? "list" : which === "shared" ? "shared" : "directory";
+      const action = which === "personal" ? "list" : "directory";
       const { data, error } = await supabase.functions.invoke("pp-ns-contacts", { body: { action } });
       const payload: any = data ?? {};
       if (error) {
@@ -68,8 +123,7 @@ export default function MContacts() {
         setDirectory(payload?.directory ?? []);
       } else {
         const list = (payload?.contacts ?? []).map(normalizeContact);
-        if (which === "personal") setPersonal(list);
-        else setShared(list);
+        setPersonal(list);
       }
     } catch (e: any) {
       const msg = e?.message || "Erreur inconnue";
@@ -84,16 +138,18 @@ export default function MContacts() {
   useEffect(() => { load(tab); }, [tab, load]);
 
   const list = useMemo(() => {
-    const src = tab === "personal" ? personal : tab === "shared" ? shared : directory;
+    const src: any[] = tab === "personal" ? personal : tab === "favorites" ? favorites : directory;
     const ql = q.trim().toLowerCase();
     if (!ql) return src;
     return src.filter((c: any) => {
       const hay = tab === "directory"
         ? `${c.name ?? ""} ${c.extension ?? ""} ${c.email ?? ""} ${c.department ?? ""}`
+        : tab === "favorites"
+        ? `${c.name ?? ""} ${c.phone ?? ""} ${c.extension ?? ""} ${c.email ?? ""} ${c.company ?? ""}`
         : `${c.first_name ?? ""} ${c.last_name ?? ""} ${c.phone ?? ""} ${c.email ?? ""} ${c.company ?? ""}`;
       return hay.toLowerCase().includes(ql);
     });
-  }, [tab, personal, shared, directory, q]);
+  }, [tab, personal, favorites, directory, q]);
 
   return (
     <div className="p-4 pb-2">
@@ -127,7 +183,7 @@ export default function MContacts() {
       <div className="flex gap-1 p-1 mb-4" style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", borderRadius: 12 }}>
         {([
           { id: "personal", label: t("contacts.personal") || "Personnels", Icon: Users },
-          { id: "shared", label: t("contacts.shared") || "Partagés", Icon: UserCog },
+          { id: "favorites", label: t("contacts.favorites") || "Favoris", Icon: Star },
           { id: "directory", label: t("contacts.directory") || "Annuaire", Icon: BookUser },
         ] as const).map((p) => {
           const active = tab === p.id;
@@ -163,9 +219,15 @@ export default function MContacts() {
 
       {!loading && list.length === 0 && (
         <div className="text-center py-8 pp-card" style={{ padding: 32 }}>
-          <Users className="w-10 h-10 mx-auto mb-3" style={{ color: "var(--pp-text-faint)" }} />
+          {tab === "favorites"
+            ? <Star className="w-10 h-10 mx-auto mb-3" style={{ color: "var(--pp-text-faint)" }} />
+            : <Users className="w-10 h-10 mx-auto mb-3" style={{ color: "var(--pp-text-faint)" }} />}
           <div style={{ color: "var(--pp-text-secondary)", fontSize: 13 }}>
-            {tab === "directory" ? (t("contacts.noDirectory") || "Aucune extension") : (t("contacts.noContacts") || "Aucun contact")}
+            {tab === "favorites"
+              ? (t("contacts.noFavorites") || "Aucun favori")
+              : tab === "directory"
+              ? (t("contacts.noDirectory") || "Aucune extension")
+              : (t("contacts.noContacts") || "Aucun contact")}
           </div>
         </div>
       )}
@@ -174,44 +236,88 @@ export default function MContacts() {
         <div className="space-y-2">
           {list.map((c: any) => {
             const isDir = tab === "directory";
-            const name = isDir ? (c.name || c.extension) : (`${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || c.phone || c.email);
-            const sub = isDir ? `Ext. ${c.extension}${c.department ? " • " + c.department : ""}` : (c.phone || c.email || c.company);
-            const phone = isDir ? c.extension : c.phone;
+            const isFav = tab === "favorites";
+            const displayName = isDir
+              ? (c.name || [c.first_name, c.last_name].filter(Boolean).join(" ") || `Ext. ${c.extension}`)
+              : isFav
+              ? c.name
+              : (`${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || c.phone || c.email);
+            const sub = isDir
+              ? `${t("contacts.extension") || "Ext."} ${c.extension}${c.department ? " • " + c.department : ""}`
+              : isFav
+              ? (c.extension ? `${t("contacts.extension") || "Ext."} ${c.extension}` : (c.phone || c.email || c.company))
+              : (c.phone || c.email || c.company);
+            const phone = isDir ? c.extension : (c.phone || c.extension);
+            const pres = isDir ? presenceMeta(c.presence, t) : null;
+
+            const source: FavEntry["source"] = isDir ? "directory" : isFav ? c.source : "personal";
+            const favEntry: FavEntry = isFav ? c : {
+              key: favKeyFor(source, c),
+              source,
+              name: displayName || "?",
+              phone: c.phone,
+              extension: c.extension,
+              email: c.email,
+              company: c.company,
+              department: c.department,
+            };
+            const starred = favKeys.has(favEntry.key);
+
             return (
               <div
-                key={c.id ?? c.extension}
-                onClick={() => !isDir && setSelected(c)}
+                key={favEntry.key}
+                onClick={() => !isDir && !isFav && setSelected(c)}
                 className="pp-card flex items-center gap-3 cursor-pointer"
                 style={{ padding: 12 }}
               >
-                <Avatar name={name || "?"} />
+                <div className="relative">
+                  <Avatar name={displayName || "?"} />
+                  {pres && (
+                    <span
+                      aria-label={pres.label}
+                      style={{
+                        position: "absolute", right: -1, bottom: -1,
+                        width: 12, height: 12, borderRadius: "50%",
+                        background: pres.color, border: "2px solid var(--pp-bg-base)",
+                      }}
+                    />
+                  )}
+                </div>
                 <div className="flex-1 min-w-0">
                   <div style={{ fontFamily: "Inter,sans-serif", fontWeight: 600, fontSize: 14, color: "var(--pp-text-primary)" }}
-                    className="truncate">{name || t("contacts.noName")}</div>
+                    className="truncate">{displayName || t("contacts.noName")}</div>
                   <div style={{ fontFamily: "DM Sans,sans-serif", fontSize: 11, color: "var(--pp-text-muted)" }}
                     className="truncate">{sub}</div>
+                  {pres && (
+                    <div style={{ fontFamily: "DM Sans,sans-serif", fontSize: 10, color: pres.color, marginTop: 2, fontWeight: 600 }}>
+                      • {pres.label}
+                    </div>
+                  )}
                 </div>
+                <button
+                  onClick={(e) => { e.stopPropagation(); toggleFav(favEntry); }}
+                  className="flex items-center justify-center active:scale-95 transition"
+                  style={{
+                    width: 32, height: 32, borderRadius: "50%",
+                    background: starred ? "rgba(245,158,11,0.15)" : "var(--pp-bg-elevated)",
+                    border: `1px solid ${starred ? "rgba(245,158,11,0.4)" : "var(--pp-bg-border-2)"}`,
+                    color: starred ? "#f59e0b" : "var(--pp-text-secondary)",
+                  }}
+                  aria-label={starred ? (t("contacts.removeFavorite") || "Retirer") : (t("contacts.addFavorite") || "Ajouter")}>
+                  <Star className="w-3.5 h-3.5" fill={starred ? "#f59e0b" : "none"} />
+                </button>
                 <button onClick={(e) => { e.stopPropagation(); phone && openDialer(phone); }}
                   className="flex items-center justify-center active:scale-95 transition"
                   style={{ width: 32, height: 32, borderRadius: "50%", background: "rgba(46,155,220,0.12)", border: "1px solid rgba(46,155,220,0.3)", color: "var(--pp-brand-accent)" }}
                   aria-label={t("common.call")}>
                   <Phone className="w-3.5 h-3.5" />
                 </button>
-                {!isDir && (
-                  <>
-                    <button onClick={(e) => e.stopPropagation()} className="flex items-center justify-center" style={{ width: 32, height: 32, borderRadius: "50%", background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}>
-                      <MessageSquare className="w-3.5 h-3.5" />
-                    </button>
-                    <button onClick={(e) => e.stopPropagation()} className="flex items-center justify-center" style={{ width: 32, height: 32, borderRadius: "50%", background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}>
-                      <Mail className="w-3.5 h-3.5" />
-                    </button>
-                  </>
-                )}
               </div>
             );
           })}
         </div>
       )}
+
 
       {selected && (
         <ContactDetailSheet

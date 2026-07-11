@@ -3,7 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 export type AvaSuggestion = {
   id: string;
   label: string;
-  kind: "call" | "sms" | "email" | "reminder" | "maestro_action" | "open_voice" | "open_coach";
+  kind: "call" | "sms" | "email" | "reminder" | "maestro_action" | "ms365_action" | "open_voice" | "open_coach";
   payload?: Record<string, any>;
 };
 
@@ -90,6 +90,16 @@ export async function applyAvaSuggestion(s: AvaSuggestion, ctx: AvaActionContext
         });
         if (error) return { ok: false, message: error.message };
         return { ok: true, message: (data as any)?.message ?? "Action Maestro exécutée" };
+      }
+      case "ms365_action": {
+        const action = String(s.payload?.action ?? "");
+        const unsafe = ["send_email", "create_calendar_event", "send_teams_message", "reply_teams_message"].includes(action);
+        if (unsafe && !confirm(`Confirmer: ${s.label}`)) return { ok: false, message: "Action annulée" };
+        const { data, error } = await supabase.functions.invoke("pp-ava-chat", {
+          body: { mode: "chat", confirm_action: s, approved: true },
+        });
+        if (error) return { ok: false, message: error.message };
+        return { ok: !!(data as any)?.reply, message: (data as any)?.reply ?? "Action Microsoft exécutée" };
       }
       case "open_voice": {
         ctx.openAva();

@@ -1,7 +1,21 @@
 import { useCallback, useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
-import { AlertTriangle, Building2, CheckCircle2, ChevronDown, ChevronUp, Clock, ExternalLink, Loader2, RefreshCw, Send, Sparkles, User, XCircle } from "lucide-react";
+import {
+  AlertTriangle,
+  Building2,
+  CheckCircle2,
+  ChevronDown,
+  ChevronUp,
+  Clock,
+  ExternalLink,
+  Loader2,
+  RefreshCw,
+  Send,
+  Sparkles,
+  User,
+  XCircle,
+} from "lucide-react";
 import { Link } from "react-router-dom";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import {

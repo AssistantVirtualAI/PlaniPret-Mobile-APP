@@ -2,7 +2,10 @@ import { useEffect, useState } from "react";
 import { useNavigate, useOutletContext, useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
-import { User, Lock, Phone, Info, Mail, Bell, Moon, HelpCircle, MessageCircle, LogOut, ChevronRight, Bot, Sparkles, X, Download, Shield, BellOff, Settings as SettingsIcon, BarChart3, Voicemail, Edit3, Languages } from "lucide-react";
+import {
+  User, Lock, Phone, Info, Mail, Bell, Moon, HelpCircle, MessageCircle,
+  LogOut, ChevronRight, Bot, Sparkles, X, Download, Shield, BellOff, Settings as SettingsIcon, BarChart3, Voicemail, Edit3, Languages,
+} from "lucide-react";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
 import { usePlanipretPush } from "@/hooks/usePlanipretPush";
 import { CalendarSyncCard } from "@/components/planipret/CalendarSyncCard";
@@ -12,6 +15,7 @@ import { safeEdgeFunction } from "@/lib/safeEdgeFunction";
 import MNetworkSection from "@/components/planipret/mobile/MNetworkSection";
 import MCallAudioSettings from "@/components/planipret/mobile/MCallAudioSettings";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import Ms365StatusBadge from "@/components/planipret/Ms365StatusBadge";
 
 const initials = (name?: string) =>
   (name ?? "").split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0]?.toUpperCase()).join("") || "?";
@@ -30,9 +34,22 @@ export default function MMore() {
   const [darkMode, setDarkMode] = useState<boolean>(() => localStorage.getItem("planipret_dark") === "1");
   const [agentOn, setAgentOn] = useState<boolean>(() => localStorage.getItem("planipret_agent_on") !== "0");
   const [monthStats, setMonthStats] = useState<{ calls: number; leads: number; rate: number }>({ calls: 0, leads: 0, rate: 0 });
-  const [msSetupOpen, setMsSetupOpen] = useState(false);
-  const [msForm, setMsForm] = useState({ tenant_id: "", client_id: "", client_secret: "" });
-  const [msSaving, setMsSaving] = useState(false);
+  const [ms365Detection, setMs365Detection] = useState<{
+    tenant_id: string | null; client_id: string | null; loading: boolean;
+  }>({ tenant_id: null, client_id: null, loading: true });
+
+  const loadMs365Detection = async () => {
+    setMs365Detection((d) => ({ ...d, loading: true }));
+    const { data } = await supabase.functions.invoke("pp-integration-secrets");
+    const ms = ((data as any)?.items ?? []).find((i: any) => i.provider === "microsoft");
+    const pc = ms?.public_config ?? {};
+    setMs365Detection({
+      tenant_id: pc.tenant_id ?? null,
+      client_id: pc.client_id ?? pc.client_secret_id ?? null,
+      loading: false,
+    });
+  };
+  useEffect(() => { loadMs365Detection(); }, []);
 
   useEffect(() => { if (params.get("ms365") === "ok") toast.success(t("more.msConnected")); }, [params, t]);
 
@@ -85,7 +102,7 @@ export default function MMore() {
     const clientId = cfg.client_id;
     const tenant = cfg.tenant_id || "common";
     const redirect = `${window.location.origin}/auth/microsoft/callback`;
-    const scope = encodeURIComponent("openid profile email offline_access User.Read Mail.ReadWrite Mail.Send Calendars.ReadWrite Chat.ReadWrite ChannelMessage.Send Team.ReadBasic.All Channel.ReadBasic.All");
+    const scope = encodeURIComponent("openid profile email offline_access User.Read User.ReadBasic.All Mail.ReadWrite Mail.Send MailboxSettings.Read Calendars.ReadWrite Chat.Read Chat.ReadBasic Chat.ReadWrite Channel.ReadBasic.All ChannelMessage.Read.All ChannelMessage.Send Team.ReadBasic.All Organization.Read.All Application.Read.All");
     supabase.auth.getUser().then(({ data: { user } }) => {
       const state = user?.id ?? "";
       window.location.href = `https://login.microsoftonline.com/${tenant}/oauth2/v2.0/authorize?client_id=${clientId}&response_type=code&redirect_uri=${encodeURIComponent(redirect)}&response_mode=query&scope=${scope}&state=${state}`;
@@ -95,42 +112,14 @@ export default function MMore() {
   const connectMs365 = async () => {
     const { data, error } = await supabase.functions.invoke("pp-integration-secrets");
     if (error) { toast.error("Configuration Microsoft inaccessible", { description: error.message }); return; }
-    const microsoft = ((data as any)?.items ?? []).find((i: any) => i.provider === "microsoft");
+    const microsoftItems = ((data as any)?.items ?? []).filter((i: any) => i.provider === "microsoft");
+    const microsoft = microsoftItems.find((i: any) => i.public_config?.client_id || i.public_config?.client_secret_id) ?? microsoftItems[0];
     const cfg = (microsoft?.public_config ?? {}) as any;
     if (!cfg.client_id && !cfg.client_secret_id) {
-      setMsForm({ tenant_id: cfg.tenant_id ?? "", client_id: cfg.client_id ?? cfg.client_secret_id ?? "", client_secret: "" });
-      setMsSetupOpen(true);
+      toast.error("Microsoft 365 n'est pas configuré côté admin");
       return;
     }
     startMs365OAuth({ ...cfg, client_id: cfg.client_id ?? cfg.client_secret_id });
-  };
-
-  const saveMsCredentials = async () => {
-    if (!msForm.client_id.trim() || !msForm.tenant_id.trim() || !msForm.client_secret.trim()) {
-      toast.error("Tenant ID, Client ID et Client Secret requis");
-      return;
-    }
-    setMsSaving(true);
-    const { data, error } = await supabase.functions.invoke("pp-integration-secrets", {
-      body: {
-        provider: "microsoft",
-        config: {
-          tenant_id: msForm.tenant_id.trim(),
-          client_id: msForm.client_id.trim(),
-          client_secret: msForm.client_secret.trim(),
-          redirect_uri: `${window.location.origin}/auth/microsoft/callback`,
-        },
-      },
-    });
-    setMsSaving(false);
-    if (error || (data as any)?.error) {
-      const detail = (data as any)?.details ?? (data as any)?.message ?? error?.message;
-      toast.error((data as any)?.error ?? "Échec de l'enregistrement", { description: detail });
-      return;
-    }
-    toast.success("Credentials enregistrés");
-    setMsSetupOpen(false);
-    startMs365OAuth({ client_id: msForm.client_id.trim(), tenant_id: msForm.tenant_id.trim() });
   };
 
   const disconnectMs365 = async () => {
@@ -262,9 +251,36 @@ export default function MMore() {
       </Section>
 
       <Section title={t("more.sections.integrations")}>
+        <div className="px-3 pb-2 flex items-center justify-between">
+          <Ms365StatusBadge />
+          <button
+            onClick={() => navigate("/mplanipret/ms365-diagnostics")}
+            className="text-[11px] font-semibold"
+            style={{ color: "#2E9BDC" }}
+          >Diagnostics →</button>
+        </div>
         <Row icon={<Mail className="w-4 h-4" style={{ color: "#3FA3F0" }} />} label="Microsoft 365"
+          sub={
+            ms365Detection.loading
+              ? "Vérification de la configuration…"
+              : ms365Detection.tenant_id || ms365Detection.client_id
+                ? `Tenant ${ms365Detection.tenant_id ? "✓" : "✗"} · Client ${ms365Detection.client_id ? "✓" : "✗"}${ms365Connected ? " · Authentifié" : " · Non authentifié"}`
+                : "Configuration backend introuvable"
+          }
           onClick={ms365Connected ? disconnectMs365 : connectMs365}
           right={<StatusPill ok={ms365Connected} label={ms365Connected ? t("more.connected") : "—"} />} chevron />
+        <div style={{ padding: "0 12px 8px" }}>
+          <div className="rounded-lg" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", padding: 10 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: "var(--pp-text-muted)", letterSpacing: "0.06em", marginBottom: 6 }}>
+              🔎 CONFIG DÉTECTÉE
+            </div>
+            <div style={{ fontSize: 11, color: "var(--pp-text-secondary)", fontFamily: "monospace", lineHeight: 1.5 }}>
+              <div>Tenant: {ms365Detection.loading ? "…" : (ms365Detection.tenant_id ?? "—")}</div>
+              <div>Client: {ms365Detection.loading ? "…" : (ms365Detection.client_id ?? "—")}</div>
+              <div>Auth  : {ms365Connected ? "✅ token courtier actif" : "⚠️ compte non lié"}</div>
+            </div>
+          </div>
+        </div>
         {ms365Connected && (
           <div style={{ padding: 8 }}>
             <Ms365ScopesCard profile={profile} onReconnect={connectMs365} />
@@ -378,44 +394,6 @@ export default function MMore() {
       {helpOpen && <HelpSheet onClose={() => setHelpOpen(false)} />}
       {customizeOpen && <CustomizeSheet profile={profile} onClose={() => setCustomizeOpen(false)} onSaved={reloadProfile} />}
       {dndOpen && <DndSheet profile={profile} onClose={() => setDndOpen(false)} onSaved={reloadProfile} />}
-      {msSetupOpen && (
-        <div style={{ position: "fixed", inset: 0, zIndex: 9999, background: "rgba(0,0,0,0.58)", display: "flex", alignItems: "center", justifyContent: "center", padding: "max(16px, env(safe-area-inset-top)) 16px max(16px, env(safe-area-inset-bottom))" }} onClick={() => !msSaving && setMsSetupOpen(false)}>
-          <div onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxWidth: 520, maxHeight: "calc(100vh - 32px)", background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", borderRadius: 18, display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 24px 80px rgba(0,0,0,0.45)" }}>
-            <div style={{ padding: "18px 18px 10px", borderBottom: "1px solid var(--pp-bg-border)" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-              <div style={{ fontSize: 16, fontWeight: 600, color: "var(--pp-text-primary)" }}>Configurer Microsoft 365</div>
-              <button onClick={() => !msSaving && setMsSetupOpen(false)} style={{ width: 40, height: 40, borderRadius: 12, background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-muted)", display: "flex", alignItems: "center", justifyContent: "center" }}><X className="w-5 h-5" /></button>
-            </div>
-            <p style={{ fontSize: 12, lineHeight: 1.45, color: "var(--pp-text-muted)", margin: 0 }}>
-              Récupérez ces valeurs dans Azure Portal → App registrations → votre app.
-            </p>
-            </div>
-            <div style={{ padding: 18, overflowY: "auto", WebkitOverflowScrolling: "touch" }}>
-            {(["tenant_id", "client_id", "client_secret"] as const).map((k) => (
-              <div key={k} style={{ marginBottom: 12 }}>
-                <label style={{ display: "block", fontSize: 12, fontWeight: 500, color: "var(--pp-text-primary)", marginBottom: 4 }}>
-                  {k === "tenant_id" ? "Tenant ID" : k === "client_id" ? "Client ID / Secret ID" : "Client Secret (valeur)"}
-                </label>
-                <input
-                  type={k === "client_secret" ? "password" : "text"}
-                  value={msForm[k]}
-                  onChange={(e) => setMsForm((f) => ({ ...f, [k]: e.target.value }))}
-                  placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-                  autoComplete="off"
-                  style={{ width: "100%", minWidth: 0, padding: "12px 12px", borderRadius: 10, border: "1px solid var(--pp-bg-border-2)", background: "var(--pp-bg-elevated)", color: "var(--pp-text-primary)", fontSize: 14, fontFamily: "Fira Code, monospace", boxSizing: "border-box" }}
-                />
-              </div>
-            ))}
-            </div>
-            <div style={{ display: "flex", gap: 8, padding: "12px 18px max(18px, env(safe-area-inset-bottom))", borderTop: "1px solid var(--pp-bg-border)", background: "var(--pp-bg-surface)" }}>
-              <button onClick={() => setMsSetupOpen(false)} disabled={msSaving} style={{ flex: 1, padding: 12, borderRadius: 8, border: "1px solid var(--pp-bg-border-2)", background: "transparent", color: "var(--pp-text-primary)" }}>Annuler</button>
-              <button onClick={saveMsCredentials} disabled={msSaving} style={{ flex: 1, padding: 12, borderRadius: 8, border: "none", background: "var(--pp-brand-accent)", color: "var(--pp-on-accent, #fff)", fontWeight: 600 }}>
-                {msSaving ? "Enregistrement..." : "Enregistrer & connecter"}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

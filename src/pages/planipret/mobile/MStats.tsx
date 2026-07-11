@@ -7,6 +7,7 @@ import type { PlanipretMobileContext } from "../PlanipretMobile";
 import CoachOverlay from "@/components/planipret/ava/CoachOverlay";
 import { callAva, type AvaSuggestion } from "@/services/avaProactive";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import Ms365StatsCard from "@/components/planipret/Ms365StatsCard";
 
 
 type Period = "week" | "month" | "quarter";
@@ -142,6 +143,9 @@ export default function MStats() {
         <Kpi label={t("stats.avgDuration")} value={`${Math.floor(kpi.avgDur / 60)}m${kpi.avgDur % 60}s`} />
         <Kpi label={t("stats.avgScore")} value={String(kpi.avgScore)} />
       </div>
+
+      <Ms365StatsCard days={period === "week" ? 7 : period === "month" ? 30 : 90} />
+
 
       <div className="bg-white rounded-2xl p-3 mb-4 shadow-sm">
         <div className="text-xs font-semibold text-slate-500 mb-2">{t("stats.callsPerDay")}</div>

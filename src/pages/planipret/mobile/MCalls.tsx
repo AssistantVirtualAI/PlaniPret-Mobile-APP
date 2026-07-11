@@ -3,7 +3,11 @@ import { motion } from "framer-motion";
 import { useOutletContext, useSearchParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
-import { Search, X, Phone, PhoneIncoming, PhoneOutgoing, PhoneMissed, PhoneOff, Copy, Bot, ChevronDown, ChevronUp, Pause, Play, Mic, MicOff, ArrowRightLeft, Loader2, Check, Sparkles, RefreshCw, Voicemail as VmIcon, Save, Trash2, FileText, Download } from "lucide-react";
+import {
+  Search, X, Phone, PhoneIncoming, PhoneOutgoing, PhoneMissed, PhoneOff, Copy,
+  Bot, ChevronDown, ChevronUp, Pause, Play, Mic, MicOff, ArrowRightLeft, Loader2,
+  Check, Sparkles, RefreshCw, Voicemail as VmIcon, Save, Trash2, FileText, Download,
+} from "lucide-react";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
 import { TEMP_COLORS, TEMP_EMOJI, TEMP_LABEL, tempBorder, callbackDelayToDate, delayLabel, type LeadTemp } from "@/components/planipret/leadHelpers";
 import ContactTimeline from "@/components/planipret/ContactTimeline";
@@ -269,9 +273,14 @@ export default function MCalls() {
     }
   }, [userId, phoneCallScopeFilter]);
 
-  const loadRecordingsFromCache = useCallback(async () => {
+  const loadRecordingsFromCache = useCallback(async (silent = false) => {
     if (!userId) return;
-    setRecordingsLoading(true);
+    // Only show the spinner when we have nothing to display yet — otherwise
+    // refresh silently in the background so opening the tab feels instant.
+    setRecordings((prev) => {
+      if (!silent && prev.length === 0) setRecordingsLoading(true);
+      return prev;
+    });
     try {
       const end = new Date().toISOString();
       const start = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
@@ -308,7 +317,7 @@ export default function MCalls() {
       const end = new Date().toISOString();
       const start = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
       await supabase.functions.invoke("pp-ns-cdr", { body: { action: "sync", start, end, limit: 25 } });
-      await loadRecordingsFromCache();
+      await loadRecordingsFromCache(true);
     } catch (e) {
       console.warn("[MCalls] recordings sync failed", e);
     } finally {
@@ -316,18 +325,25 @@ export default function MCalls() {
     }
   }, [userId, loadRecordingsFromCache]);
 
-  const loadRecordings = useCallback(async () => {
-    await loadRecordingsFromCache();
+  const loadRecordings = useCallback(async (silent = false) => {
+    await loadRecordingsFromCache(silent);
     void syncRecordingsInBackground();
   }, [loadRecordingsFromCache, syncRecordingsInBackground]);
 
   useEffect(() => { load(); }, [load]);
 
-  // Fetch recordings when tab is opened and keep it actualized without hammering the API.
+  // Preload recordings on mount so the Recordings tab is already populated
+  // when the user taps it — no visible loader unless the cache is truly empty.
+  useEffect(() => {
+    if (!userId) return;
+    void loadRecordings(true);
+  }, [userId, loadRecordings]);
+
+  // While the Recordings tab is open, refresh silently in the background.
   useEffect(() => {
     if (tab !== "recordings" || !userId) return;
-    void loadRecordings();
-    const timer = window.setInterval(() => { void loadRecordings(); }, 30_000);
+    void loadRecordings(true);
+    const timer = window.setInterval(() => { void loadRecordings(true); }, 30_000);
     return () => window.clearInterval(timer);
   }, [tab, userId, loadRecordings]);
 

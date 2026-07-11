@@ -110,7 +110,11 @@ class PpSipProvider {
         contact_uri: `sip:${cleanCfg.sipUsername}@${cleanCfg.sipDomain};transport=wss`,
         register: true,
         session_timers: false,
-        register_expires: 120,
+        // Longer expiry keeps the registration alive between the JsSIP
+        // auto re-REGISTER (fires around expiry/2). 120s caused visible
+        // dropouts on the diagnostic page whenever the network hiccuped
+        // between two re-REGISTERs.
+        register_expires: 600,
         connection_recovery_min_interval: 2,
         connection_recovery_max_interval: 30,
         user_agent: "Planipret Softphone 1.0",
@@ -118,13 +122,26 @@ class PpSipProvider {
 
       ua.on("connecting", () => this.update({ status: "connecting" }));
       ua.on("connected", () => this.update({ status: "connected" }));
-      ua.on("disconnected", () => this.update({ status: "disconnected" }));
+      ua.on("disconnected", (e: any) => {
+        this.log("warn", "ws disconnected", e);
+        this.update({ status: "disconnected", errorCause: e?.reason || "ws_disconnected" });
+        // JsSIP retries the socket via connection_recovery_*; no manual work needed.
+      });
       ua.on("registered", () => this.update({ status: "registered", errorCause: undefined, lastRegistrationAt: Date.now() }));
-      ua.on("unregistered", () => this.log("warn", "unregistered"));
+      ua.on("unregistered", () => {
+        this.log("warn", "unregistered - forcing re-register");
+        this.update({ status: "connected", errorCause: "re_registering" });
+        // NetSapiens sometimes returns 401/403 mid-session on stale nonce;
+        // trigger an immediate re-REGISTER instead of leaving the UA idle.
+        setTimeout(() => { try { this.ua?.register(); } catch {} }, 1500);
+      });
       ua.on("registrationFailed", (e: any) => {
         const cause = e?.cause || e?.response?.reason_phrase || "registration_failed";
         this.log("error", `registration failed: ${cause}`);
         this.update({ status: "error", errorCause: cause });
+        // Retry once after a short backoff — most NS failures here are transient
+        // (429, 503, nonce reuse) and recover on a second attempt.
+        setTimeout(() => { try { this.ua?.register(); } catch {} }, 8000);
       });
       ua.on("newRTCSession", (e: any) => this.attachSession(e.session, e.originator));
 

@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
-import { Play, Pause, Download, RotateCcw, RotateCw, Sparkles, FileText, Bot, Loader2, Search, Copy, Check, ChevronDown, Link2, User, Flame, Snowflake, Thermometer, ListChecks, CloudUpload, CloudOff, CheckCircle2 } from "lucide-react";
+import {
+  Play, Pause, Download, RotateCcw, RotateCw, Sparkles, FileText, Bot,
+  Loader2, Search, Copy, Check, ChevronDown, Link2, User, Flame, Snowflake, Thermometer, ListChecks,
+  CloudUpload, CloudOff, CheckCircle2,
+} from "lucide-react";
 
 export type AudioStatus = "idle" | "uploading" | "uploaded" | "error";
 
@@ -71,7 +75,15 @@ const otherLabel = (c: RecordingCall) => {
 const hasResolvableAudio = (c: RecordingCall) => !!(
   c.recording_url || c.has_recording || c.stream_via_proxy || c.proxy_call_db_id || c.proxy_ns_callid || c.ns_callid || c.ns_orig_callid || c.ns_term_callid || c.ns_call_id
 );
+// Audio lookup peut suivre le proxy (autre ligne DB qui détient le fichier NS).
 const callDbId = (c: RecordingCall) => c.proxy_call_db_id ?? c.id;
+// Pipeline (transcript + IA) DOIT écrire sur la ligne exacte de la carte,
+// sinon transcript/analyse atterrissent sur un appel voisin.
+const pipelineId = (c: RecordingCall) => c.id;
+const isVoicemailCall = (c: RecordingCall) => {
+  const to = String(c.to_number ?? "").toLowerCase();
+  return to.includes("vmail") || to.includes("voicemail") || to.includes("vm@");
+};
 const recordingLookupBody = (c: RecordingCall) => ({
   call_db_id: callDbId(c),
   ns_callid: c.proxy_ns_callid ?? c.ns_callid ?? c.ns_orig_callid ?? c.ns_term_callid ?? c.ns_call_id,
@@ -96,43 +108,31 @@ async function fetchNsTranscript(call: RecordingCall) {
   return { text, segments: d.segments, language: d.language ?? null };
 }
 
-// Fetch the audio blob via the backend proxy. Retries with backoff when the
-// recording is not yet available on the PBX ("not ready" / 404 / 425).
-async function fetchAudioBlob(call: RecordingCall, opts: { retries?: number; signal?: AbortSignal } = {}): Promise<string> {
-  const retries = opts.retries ?? 3;
-  const projectId = (import.meta as any).env?.VITE_SUPABASE_PROJECT_ID;
-  const anonKey = (import.meta as any).env?.VITE_SUPABASE_PUBLISHABLE_KEY ?? (import.meta as any).env?.VITE_SUPABASE_ANON_KEY;
-  if (!projectId) throw new Error("Backend URL indisponible");
-  const { data: { session } } = await supabase.auth.getSession();
+// Fetch a directly-playable signed URL for the recording. Triggers server-side
+// caching to our own storage bucket on first hit; subsequent hits return
+// instantly from the cache. Retries with backoff while NS is still finalizing.
+async function fetchAudioUrl(call: RecordingCall, opts: { retries?: number; signal?: AbortSignal } = {}): Promise<string> {
+  const retries = opts.retries ?? 6;
   let lastErr: any = null;
   for (let attempt = 0; attempt <= retries; attempt++) {
     if (opts.signal?.aborted) throw new Error("aborted");
     try {
-      const resp = await fetch(`https://${projectId}.supabase.co/functions/v1/ns-get-recording`, {
-        method: "POST",
-        signal: opts.signal,
-        headers: {
-          "Content-Type": "application/json",
-          apikey: anonKey ?? "",
-          Authorization: `Bearer ${session?.access_token ?? anonKey ?? ""}`,
-        },
-        body: JSON.stringify(recordingLookupBody(call)),
+      const { data, error } = await supabase.functions.invoke("ns-get-recording", {
+        body: { ...recordingLookupBody(call), prefer_url: true },
       });
-      const ct = resp.headers.get("Content-Type") ?? "";
-      if (resp.ok && ct.includes("audio")) {
-        const blob = await resp.blob();
-        return URL.createObjectURL(blob);
-      }
-      const j = await resp.json().catch(() => ({}));
-      const msg: string = j?.message ?? j?.error ?? `HTTP ${resp.status}`;
-      const retriable = resp.status === 404 || resp.status === 425 || resp.status === 503 || /not ready|processing|pending|indisponible/i.test(msg);
+      if (error) throw error;
+      const d = (data as any) ?? {};
+      if ((d?.success || d?.available) && (d?.url || d?.recording_url)) return (d.url ?? d.recording_url) as string;
+      const reason: string = d?.reason ?? d?.error ?? "recording_unavailable";
+      const msg: string = d?.message ?? d?.detail ?? d?.error ?? "Enregistrement en préparation";
+      const retriable = /not.ready|processing|pending|not_found|no_file|finaliz|missing_callid|no_file_access_url|recording_not_found/i.test(`${reason} ${msg}`);
       lastErr = new Error(msg);
       if (!retriable || attempt === retries) throw lastErr;
     } catch (e: any) {
       lastErr = e;
       if (e?.name === "AbortError" || attempt === retries) throw e;
     }
-    await new Promise((r) => window.setTimeout(r, 1500 * (attempt + 1)));
+    await new Promise((r) => window.setTimeout(r, Math.min(2000 * Math.pow(1.7, attempt), 15000)));
   }
   throw lastErr ?? new Error("Audio indisponible");
 }
@@ -167,91 +167,114 @@ export default function RecordingsList({
   const setStatus = (id: string, s: AudioStatus) =>
     setAudioStatus((prev) => (prev[id] === s ? prev : { ...prev, [id]: s }));
 
-  // Background preload: transcript + AI + audio blob for the 5 most recent recordings.
+  // Background preload: audio URL + transcript + AI for the 5 most recent recordings.
   // Runs one-by-one so the recordings screen stays responsive.
   useEffect(() => {
     if (!withRec.length) return;
     const controller = new AbortController();
     let cancelled = false;
-    const queue = withRec.slice(0, 5).filter((c) => hasResolvableAudio(c));
+    const queue = withRec.slice(0, 15).filter((c) => hasResolvableAudio(c) && !isVoicemailCall(c));
+
+    // Backoff planifié pour transcript pending (aligné sur PARecordings admin).
+    const sleep = (ms: number) => new Promise((r) => window.setTimeout(r, ms));
+
+    const runTranscriptWithRetries = async (start: RecordingCall): Promise<RecordingCall> => {
+      let working = start;
+      let attempts = 0;
+      while (!cancelled && !working.transcript && attempts < 5) {
+        const { data, error } = await supabase.functions.invoke("pp-admin-transcribe", {
+          body: { call_id: pipelineId(working) },
+        });
+        if (error) throw error;
+        const tx = (data as any) ?? {};
+        if (tx?.ok && tx?.transcript) {
+          working = {
+            ...working,
+            transcript: tx.transcript,
+            transcript_segments: Array.isArray(tx.segments) ? tx.segments : working.transcript_segments,
+            transcript_language: tx.language ?? working.transcript_language,
+          };
+          if (!cancelled) onUpdated(working);
+          return working;
+        }
+        if (tx?.pending) {
+          const delay = Math.min(15_000 * Math.pow(2, Math.min(attempts, 3)), 240_000);
+          attempts++;
+          await sleep(delay);
+          continue;
+        }
+        // Erreur non-récupérable : sort silencieusement.
+        return working;
+      }
+      return working;
+    };
+
+    const runCoachingWithRetries = async (start: RecordingCall): Promise<void> => {
+      let attempts = 0;
+      while (!cancelled && attempts < 4) {
+        const localTranscript = start.transcript
+          || (Array.isArray(start.transcript_segments) ? start.transcript_segments.map((s: any) => s?.text).filter(Boolean).join("\n") : "");
+        const { data, error } = await supabase.functions.invoke("pp-coach-call", {
+          body: { call_id: pipelineId(start), transcript: localTranscript },
+        });
+        if (error) throw error;
+        const d = (data as any) ?? {};
+        if (d?.error === "TRANSCRIPT_MISSING") {
+          attempts++;
+          await sleep(3000);
+          continue;
+        }
+        if (d?.success || d?.summary || d?.coaching) {
+          if (!cancelled) onUpdated(applyCoachPayload(start, d));
+        }
+        return;
+      }
+    };
 
     (async () => {
       for (const call of queue) {
         if (cancelled) break;
         const who = otherLabel(call);
 
-        // Auto-upload / cache audio blob (skip if already cached or blob-backed).
+        // 1) Audio : cache signé côté serveur, silencieux.
         const alreadyBlob = !!call.recording_url && /^blob:/i.test(String(call.recording_url));
         if (!audioBlobCacheRef.current.has(call.id) && !alreadyBlob) {
           setStatus(call.id, "uploading");
-          const tId = toast.loading(`Upload audio — ${who}`);
           try {
-            const url = await fetchAudioBlob(call, { retries: 3, signal: controller.signal });
-            if (cancelled) { URL.revokeObjectURL(url); toast.dismiss(tId); break; }
+            const url = await fetchAudioUrl(call, { signal: controller.signal });
+            if (cancelled) break;
             audioBlobCacheRef.current.set(call.id, url);
             setStatus(call.id, "uploaded");
-            onUpdated({ ...call, recording_url: url, has_recording: true, stream_via_proxy: true });
-            toast.success(`Audio uploadé — ${who}`, { id: tId });
+            onUpdated({ ...call, recording_url: url, has_recording: true, stream_via_proxy: false });
           } catch (e: any) {
             if (!cancelled) {
               setStatus(call.id, "error");
-              toast.error(`Audio indisponible — ${who}`, { id: tId, description: e?.message });
-            } else {
-              toast.dismiss(tId);
+              console.warn("[RecordingsList] auto-upload failed", who, e?.message);
             }
           }
         } else if (alreadyBlob || audioBlobCacheRef.current.has(call.id)) {
           setStatus(call.id, "uploaded");
         }
 
-        // Transcript + coaching pipeline.
+        // 2) Transcript + 3) IA — pipeline complet, indépendant de l'audio.
         if (!autoPipelineDoneRef.current.has(call.id) && (!call.transcript || !call.ai_summary)) {
           autoPipelineDoneRef.current.add(call.id);
           try {
             let working = call;
             if (!working.transcript) {
-              const tId = toast.loading(`Transcription — ${who}`);
-              try {
-                const { data, error } = await supabase.functions.invoke("pp-admin-transcribe", { body: { call_id: callDbId(working) } });
-                if (error) throw error;
-                const tx = (data as any) ?? {};
-                if (tx.transcript) {
-                  working = {
-                    ...working,
-                    transcript: tx.transcript,
-                    transcript_segments: tx.segments ?? working.transcript_segments,
-                    transcript_language: tx.language ?? working.transcript_language,
-                  };
-                  if (!cancelled) onUpdated(working);
-                  toast.success(`Transcription prête — ${who}`, { id: tId });
-                } else {
-                  toast.dismiss(tId);
-                }
-              } catch (e: any) {
-                toast.error(`Transcription échouée — ${who}`, { id: tId, description: e?.message });
-                throw e;
-              }
+              working = await runTranscriptWithRetries(working);
             }
             if (!cancelled && working.transcript && !working.ai_summary) {
-              const tId = toast.loading(`Analyse IA — ${who}`);
-              try {
-                const { data, error } = await supabase.functions.invoke("pp-coach-call", {
-                  body: { call_id: callDbId(working), transcript: working.transcript, force: true },
-                });
-                if (error) throw error;
-                if (!cancelled) onUpdated(applyCoachPayload(working, data));
-                toast.success(`Coaching prêt — ${who}`, { id: tId });
-              } catch (e: any) {
-                toast.error(`Analyse échouée — ${who}`, { id: tId, description: e?.message });
-                throw e;
-              }
+              await runCoachingWithRetries(working);
             }
-          } catch (e) {
-            console.warn("[RecordingsList] background pipeline failed", e);
+          } catch (e: any) {
+            // Autorise un futur retry si erreur transitoire.
+            autoPipelineDoneRef.current.delete(call.id);
+            console.warn("[RecordingsList] background pipeline failed", who, e?.message);
           }
         }
 
-        await new Promise((resolve) => window.setTimeout(resolve, 400));
+        await sleep(400);
       }
 
     })();
@@ -262,7 +285,7 @@ export default function RecordingsList({
   // Cleanup blob URLs on unmount
   useEffect(() => () => {
     for (const url of audioBlobCacheRef.current.values()) {
-      try { URL.revokeObjectURL(url); } catch {}
+      if (url.startsWith("blob:")) try { URL.revokeObjectURL(url); } catch {}
     }
     audioBlobCacheRef.current.clear();
   }, []);
@@ -314,46 +337,21 @@ export default function RecordingsList({
   const retryAudio = async (call: RecordingCall) => {
     setStatus(call.id, "uploading");
     try {
-      const url = await fetchAudioBlob(call, { retries: 3 });
+      const url = await fetchAudioUrl(call, { retries: 3 });
       const prev = audioBlobCacheRef.current.get(call.id);
-      if (prev) { try { URL.revokeObjectURL(prev); } catch {} }
+      if (prev?.startsWith("blob:")) { try { URL.revokeObjectURL(prev); } catch {} }
       audioBlobCacheRef.current.set(call.id, url);
       setStatus(call.id, "uploaded");
-      onUpdated({ ...call, recording_url: url, has_recording: true, stream_via_proxy: true });
+      onUpdated({ ...call, recording_url: url, has_recording: true, stream_via_proxy: false });
     } catch (e: any) {
       setStatus(call.id, "error");
       toast.error("Enregistrement indisponible", { description: e?.message });
     }
   };
 
-  const top = withRec.slice(0, 5);
-  const audioReady = top.filter((c) => audioStatus[c.id] === "uploaded" || /^blob:/i.test(String(c.recording_url ?? ""))).length;
-  const txReady = top.filter((c) => !!c.transcript).length;
-  const aiReady = top.filter((c) => !!c.ai_summary).length;
-  const pct = top.length ? Math.round(((audioReady + txReady + aiReady) / (top.length * 3)) * 100) : 100;
-  const showProgress = top.length > 0 && pct < 100;
-
   return (
     <>
-      {showProgress && (
-        <div className="px-3 pt-3">
-          <div className="rounded-xl p-2.5" style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)" }}>
-            <div className="flex items-center justify-between text-[11px] mb-1.5" style={{ color: "var(--pp-text-secondary)" }}>
-              <span className="font-semibold">Traitement des {top.length} derniers appels</span>
-              <span style={{ color: "var(--pp-text-muted)" }}>{pct}%</span>
-            </div>
-            <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "var(--pp-bg-border-2)" }}>
-              <div className="h-full transition-all"
-                   style={{ width: `${pct}%`, background: "linear-gradient(90deg, var(--pp-brand-accent), var(--pp-brand-accent-2))" }} />
-            </div>
-            <div className="flex items-center justify-between mt-1.5 text-[10px]" style={{ color: "var(--pp-text-muted)" }}>
-              <span>Audio {audioReady}/{top.length}</span>
-              <span>Transcript {txReady}/{top.length}</span>
-              <span>IA {aiReady}/{top.length}</span>
-            </div>
-          </div>
-        </div>
-      )}
+
       <ul className="px-3 pt-3 pb-4 space-y-2">
 
       {withRec.map((c) => (
@@ -384,6 +382,42 @@ function RecordingCard({
 }) {
   const [open, setOpen] = useState<"rec" | "txt" | "ai" | "crm" | null>(null);
   const temp = tempIcon(call.lead_temperature);
+
+  // Realtime: reflect any DB write (pp-admin-transcribe, pp-coach-call, etc.)
+  // sur la MÊME ligne que la carte, comme le portail admin (`pa-call-${id}`).
+  useEffect(() => {
+    const ch = supabase
+      .channel(`pp-mobile-call-${call.id}`)
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "planipret_phone_calls", filter: `id=eq.${call.id}` },
+        (payload: any) => {
+          const n = payload?.new;
+          if (!n) return;
+          onUpdated({
+            ...call,
+            transcript: n.transcript ?? call.transcript,
+            transcript_segments: n.transcript_segments ?? call.transcript_segments,
+            transcript_language: n.transcript_language ?? call.transcript_language,
+            ai_summary: n.ai_summary ?? call.ai_summary,
+            ai_coaching: n.ai_coaching ?? call.ai_coaching,
+            ai_key_points: n.ai_key_points ?? call.ai_key_points,
+            ai_client_insights: n.ai_client_insights ?? call.ai_client_insights,
+            ai_tasks: n.ai_tasks ?? call.ai_tasks,
+            lead_score: n.lead_score ?? call.lead_score,
+            coaching_score: n.coaching_score ?? call.coaching_score,
+            lead_temperature: n.lead_temperature ?? call.lead_temperature,
+            maestro_synced: n.maestro_synced ?? call.maestro_synced,
+            maestro_client_id: n.maestro_client_id ?? call.maestro_client_id,
+          });
+        }
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [call.id]);
+
+
 
 
   return (
@@ -539,17 +573,19 @@ function RecordingSection({ call, onUpdated }: { call: RecordingCall; onUpdated:
   const [dur, setDur] = useState(0);
   const [localUrl, setLocalUrl] = useState<string | null>(null);
   const localObjectUrlRef = useRef<string | null>(null);
+  const audioErrorRetryRef = useRef(false);
   const playableUrl = localUrl ?? (!!call.recording_url && (/^(blob:|data:)/i.test(String(call.recording_url)) || call.stream_via_proxy === false) ? call.recording_url : null);
 
   const fetchRec = async (opts: { play?: boolean } = {}) => {
     setLoading(true);
     try {
-      const url = await fetchAudioBlob(call, { retries: 3 });
+      const url = await fetchAudioUrl(call);
       if (localObjectUrlRef.current?.startsWith("blob:")) URL.revokeObjectURL(localObjectUrlRef.current);
       localObjectUrlRef.current = url;
+      audioErrorRetryRef.current = false;
       playAfterLoadRef.current = !!opts.play;
       setLocalUrl(url);
-      onUpdated({ ...call, recording_url: url, has_recording: true, stream_via_proxy: true });
+      onUpdated({ ...call, recording_url: url, has_recording: true, stream_via_proxy: false });
       toast.success("Enregistrement chargé");
     } catch (e: any) {
       // Fallback : maestro-recording
@@ -557,7 +593,7 @@ function RecordingSection({ call, onUpdated }: { call: RecordingCall; onUpdated:
         const { data } = await supabase.functions.invoke("maestro-recording", {
           body: { call_id: callDbId(call), ns_call_id: call.ns_call_id },
         });
-        const url = (data as any)?.recording_url;
+        const url = (data as any)?.recording_url ?? (data as any)?.url;
         if (!url) throw new Error("nope");
         if (localObjectUrlRef.current?.startsWith("blob:")) URL.revokeObjectURL(localObjectUrlRef.current);
         localObjectUrlRef.current = null;
@@ -618,7 +654,15 @@ function RecordingSection({ call, onUpdated }: { call: RecordingCall; onUpdated:
             ref={audioRef}
             src={playableUrl}
             preload="metadata"
-            onError={() => { setPlaying(false); toast.error("Audio non disponible"); }}
+            onError={() => {
+              setPlaying(false);
+              if (!audioErrorRetryRef.current) {
+                audioErrorRetryRef.current = true;
+                void fetchRec({ play: true });
+              } else {
+                toast.error("Audio non disponible");
+              }
+            }}
             onPlay={() => setPlaying(true)}
             onPause={() => setPlaying(false)}
             onTimeUpdate={(e) => setCur((e.target as HTMLAudioElement).currentTime)}
@@ -707,7 +751,7 @@ function TranscriptSection({ call, onUpdated }: { call: RecordingCall; onUpdated
         languageNext = nsTranscript.language;
       } else {
         const { data, error } = await supabase.functions.invoke("pp-admin-transcribe", {
-          body: { call_id: callDbId(call) },
+          body: { call_id: pipelineId(call) },
         });
         if (error) throw error;
         const next = (data as any) ?? {};
@@ -720,7 +764,7 @@ function TranscriptSection({ call, onUpdated }: { call: RecordingCall; onUpdated
       onUpdated(updated);
       if (text) {
         const { data: coached } = await supabase.functions.invoke("pp-coach-call", {
-          body: { call_id: callDbId(call), transcript: text, force: true },
+          body: { call_id: pipelineId(call), transcript: text },
         });
         onUpdated(applyCoachPayload(updated, coached));
       }
@@ -819,7 +863,7 @@ function AISection({ call, onUpdated }: { call: RecordingCall; onUpdated: (c: Re
           baseCall = { ...call, transcript: nsTranscript.text, transcript_segments: nsTranscript.segments, transcript_language: nsTranscript.language };
           onUpdated(baseCall);
         } else {
-          const { data: tx, error: txErr } = await supabase.functions.invoke("pp-admin-transcribe", { body: { call_id: callDbId(call) } });
+          const { data: tx, error: txErr } = await supabase.functions.invoke("pp-admin-transcribe", { body: { call_id: pipelineId(call) } });
           if (txErr) throw txErr;
           const t = (tx as any)?.transcript;
           if (t) {
@@ -831,7 +875,7 @@ function AISection({ call, onUpdated }: { call: RecordingCall; onUpdated: (c: Re
       }
       if (!transcriptForAi) throw new Error("Transcription indisponible côté système téléphonique");
       const { data, error } = await supabase.functions.invoke("pp-coach-call", {
-        body: { call_id: callDbId(call), transcript: transcriptForAi, force: true },
+        body: { call_id: pipelineId(call), transcript: transcriptForAi },
       });
       if (error) throw error;
       if ((data as any)?.error) throw new Error((data as any)?.message ?? (data as any)?.error);

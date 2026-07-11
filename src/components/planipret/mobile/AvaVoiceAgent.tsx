@@ -2,10 +2,13 @@
 // Replaces the legacy VoiceAgent.tsx with rich state visualization, live
 // transcript, tool execution notifications and confirmation modal.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { Conversation } from "@elevenlabs/client";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { X, Mic, Send, Settings, AlertTriangle, Sparkles, PhoneOutgoing, MessageSquare, Search, Calendar, Mail, Bot, Map } from "lucide-react";
+import avaLogo from "@/assets/ava-statistics-logo.png.asset.json";
+import AvaOrb, { useAnalyserLevel } from "@/components/planipret/mobile/AvaOrb";
 
 type AgentState = "idle" | "connecting" | "listening" | "speaking" | "processing" | "tool_running" | "error";
 type AutonomyMode = "confirm" | "semi_auto" | "full_auto";
@@ -47,6 +50,7 @@ const CONFIRM_REQUIRED = new Set([
 ]);
 
 export default function AvaVoiceAgent({ onClose, userId }: Props) {
+  const navigate = useNavigate();
   const [state, setState] = useState<AgentState>("idle");
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [toolNotif, setToolNotif] = useState<string | null>(null);
@@ -99,17 +103,63 @@ export default function AvaVoiceAgent({ onClose, userId }: Props) {
     return d;
   }, [sessionId]);
 
+  // Client-only tools execute in the browser (no server round-trip).
+  const CLIENT_ONLY: Record<string, (p: any) => any> = useMemo(() => ({
+    navigate_to: ({ path }: { path?: string }) => {
+      if (!path) return { success: false, error: "no_path" };
+      const p = path.startsWith("/") ? path : `/mplanipret/${path.replace(/^\/+/, "")}`;
+      appendTranscript({ role: "nav", text: `🗺️ ${p}` });
+      navigate(p);
+      return { success: true, path: p };
+    },
+    show_toast: ({ message, level }: { message?: string; level?: "info" | "success" | "error" }) => {
+      const m = String(message ?? "");
+      if (level === "success") toast.success(m);
+      else if (level === "error") toast.error(m);
+      else toast(m);
+      return { success: true };
+    },
+    open_dialer: ({ number }: { number?: string }) => {
+      if (!number) return { success: false, error: "no_number" };
+      navigate(`/mplanipret/calls?dial=${encodeURIComponent(number)}`);
+      return { success: true };
+    },
+    open_sms_composer: ({ number, body }: { number?: string; body?: string }) => {
+      const q = new URLSearchParams();
+      if (number) q.set("to", number);
+      if (body) q.set("body", body);
+      navigate(`/mplanipret/messages?${q.toString()}`);
+      return { success: true };
+    },
+    show_client_in_app: ({ client_id }: { client_id?: string }) => {
+      if (!client_id) return { success: false, error: "no_client_id" };
+      navigate(`/mplanipret/contacts?id=${encodeURIComponent(client_id)}`);
+      return { success: true };
+    },
+    open_call_detail: ({ call_id }: { call_id?: string }) => {
+      if (!call_id) return { success: false, error: "no_call_id" };
+      navigate(`/mplanipret/calls?id=${encodeURIComponent(call_id)}`);
+      return { success: true };
+    },
+    close_ava: () => { onClose(); return { success: true }; },
+  }), [navigate, onClose]);
+
   const handleTool = useCallback(async (toolName: string, params: any) => {
-    // Confirmation gate
+    // Route client-only tools locally (no confirm gate, no server call).
+    if (CLIENT_ONLY[toolName]) {
+      showToolNotif(TOOL_LABELS[toolName] ?? toolName);
+      return CLIENT_ONLY[toolName](params ?? {});
+    }
+    // Confirmation gate for mutating server tools.
     if (autonomy === "confirm" && CONFIRM_REQUIRED.has(toolName)) {
       return new Promise((resolve, reject) => {
         setPending({ tool: toolName, params, resolve, reject });
       }).then((r: any) => r ?? { success: false, error: "user_cancelled" });
     }
     return callServerTool(toolName, params);
-  }, [autonomy, callServerTool]);
+  }, [autonomy, callServerTool, CLIENT_ONLY]);
 
-  // Build clientTools map dynamically (all tools delegate to server)
+  // Build clientTools map dynamically (server + client-side tools)
   const clientTools = useMemo(() => {
     const TOOL_NAMES = [
       "make_call", "get_active_calls", "hangup_call", "get_call_history",
@@ -121,11 +171,12 @@ export default function AvaVoiceAgent({ onClose, userId }: Props) {
       "get_upcoming_appointments", "update_client", "create_client",
       "read_emails", "send_email", "get_calendar_today", "get_calendar_week",
       "navigate_to", "show_client_in_app", "open_call_detail",
+      "show_toast", "open_dialer", "open_sms_composer", "close_ava",
       "get_daily_briefing", "get_my_stats",
       "explain_feature", "get_integration_status",
     ];
     const map: Record<string, (p: any) => Promise<any>> = {};
-    for (const t of TOOL_NAMES) map[t] = (p: any) => handleTool(t, p);
+    for (const t of TOOL_NAMES) map[t] = (p: any) => Promise.resolve(handleTool(t, p));
     return map;
   }, [handleTool]);
 
@@ -169,16 +220,30 @@ export default function AvaVoiceAgent({ onClose, userId }: Props) {
           return;
         }
 
+        // Mint a scoped WebSocket signed URL server-side so the API key stays private.
+        // WebSocket transport (not WebRTC) avoids pulling livekit-client into the mobile bundle.
+        const { data: tok, error: tokErr } = await supabase.functions.invoke("pp-ava-webrtc-token", { body: {} });
+        if (tokErr || !(tok as any)?.signed_url) {
+          toast.error((tok as any)?.error ?? "Session vocale indisponible");
+          setState("error");
+          return;
+        }
+
         const conv = await Conversation.startSession({
-          agentId: c.agent_id,
-          connectionType: "webrtc",
+          signedUrl: (tok as any).signed_url,
+          connectionType: "websocket",
+
+
           overrides: {
             agent: {
               prompt: { prompt: c.system_prompt },
               firstMessage: c.first_message,
               language: c.language ?? "fr",
             },
-            tts: { voiceId: c.voice_id },
+            tts: {
+              voiceId: c.voice_id,
+              ...(c.voice_settings ? { stability: c.voice_settings.stability, similarityBoost: c.voice_settings.similarity_boost, style: c.voice_settings.style } : {}),
+            },
           } as any,
           clientTools,
           onConnect: () => setState("listening"),
@@ -208,9 +273,25 @@ export default function AvaVoiceAgent({ onClose, userId }: Props) {
         if (cancelled) { try { await conv.endSession(); } catch (_) { /* */ } return; }
         convRef.current = conv;
 
+        // Phase 9 — push live broker context so AVA knows what's pending.
+        try {
+          const [missedRes, vmRes, todayCallsRes] = await Promise.all([
+            supabase.from("planipret_phone_calls").select("id", { count: "exact", head: true })
+              .eq("user_id", userId).eq("status", "missed")
+              .gte("started_at", new Date(Date.now() - 24 * 3600e3).toISOString()),
+            supabase.from("planipret_voicemails").select("id", { count: "exact", head: true })
+              .eq("user_id", userId).eq("is_read", false),
+            supabase.from("planipret_phone_calls").select("id", { count: "exact", head: true })
+              .eq("user_id", userId)
+              .gte("started_at", new Date(new Date().setHours(0, 0, 0, 0)).toISOString()),
+          ]);
+          const ctx = `Contexte courant du courtier: ${missedRes.count ?? 0} appel(s) manqué(s) dans les dernières 24h, ${vmRes.count ?? 0} message(s) vocal(aux) non lu(s), ${todayCallsRes.count ?? 0} appel(s) aujourd'hui.`;
+          conv.sendContextualUpdate?.(ctx);
+        } catch (ctxErr) { console.warn("contextual_update failed", ctxErr); }
+
         // Bump session counter
         supabase.from("planipret_profiles").update({
-          ava_sessions_count: 1, // RLS-safe via increment trigger or fallback
+          ava_sessions_count: 1,
           ava_last_session_at: new Date().toISOString(),
         }).eq("user_id", userId).then(() => null);
       } catch (e) {
@@ -296,8 +377,8 @@ export default function AvaVoiceAgent({ onClose, userId }: Props) {
       {/* Top bar */}
       <div className="flex items-center justify-between px-4 pt-4">
         <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: "linear-gradient(135deg,#2D1A5A,#9B7FE8)" }}>
-            <Bot className="w-4 h-4 text-white" />
+          <div className="w-9 h-9 rounded-xl flex items-center justify-center overflow-hidden" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)" }}>
+            <img src={avaLogo.url} alt="AVA" className="w-full h-full object-contain" />
           </div>
           <span className="text-[14px] font-bold text-white">AVA</span>
         </div>
@@ -321,8 +402,8 @@ export default function AvaVoiceAgent({ onClose, userId }: Props) {
         </div>
       )}
 
-      {/* Center visualization */}
-      <div className="flex-1 flex flex-col items-center justify-center px-6">
+      {/* Center visualization — AVA orb */}
+      <div className="flex-1 min-h-0 flex flex-col items-center px-4 pt-6 pb-3">
         {micError ? (
           <div className="bg-white rounded-2xl p-5 text-center max-w-xs">
             <AlertTriangle className="w-8 h-8 mx-auto text-amber-500 mb-2" />
@@ -330,59 +411,24 @@ export default function AvaVoiceAgent({ onClose, userId }: Props) {
             <p className="text-xs text-slate-600 mt-1">Autorisez le microphone dans les paramètres du navigateur.</p>
           </div>
         ) : (
-          <div className="relative" style={{ width: 180, height: 180 }}>
-            {state === "listening" && (
-              <>
-                <div className="absolute inset-0 rounded-full animate-pulse" style={{ background: "rgba(46,155,220,0.1)" }} />
-                <div className="absolute inset-3 rounded-full animate-pulse" style={{ background: "rgba(46,155,220,0.2)", animationDelay: "0.3s" }} />
-                <div className="absolute inset-6 rounded-full animate-pulse" style={{ background: "rgba(46,155,220,0.4)", animationDelay: "0.6s" }} />
-                <div className="absolute inset-0 flex items-end justify-center gap-1 px-10 pb-12 pointer-events-none">
-                  {micLevels.map((h, i) => (
-                    <div key={i} className="w-1.5 rounded-full transition-all duration-75"
-                      style={{ background: "linear-gradient(180deg,#7FD8FF,#2E9BDC)", height: `${h}%` }} />
-                  ))}
-                </div>
-              </>
-            )}
-            {state === "speaking" && (
-              <div className="absolute inset-0 rounded-full flex items-center justify-center gap-1" style={{ border: "2px solid #00D4AA" }}>
-                {Array.from({ length: 7 }).map((_, i) => (
-                  <div key={i} className="w-1.5 rounded-full animate-pulse"
-                    style={{ background: "linear-gradient(180deg,#00D4AA,#00A88A)", height: `${20 + Math.random() * 60}%`, animationDelay: `${i * 80}ms` }} />
-                ))}
-              </div>
-            )}
-            {state === "processing" && (
-              <div className="absolute inset-0 rounded-full animate-spin" style={{ borderTop: "3px solid #9B7FE8", borderRight: "3px solid transparent", borderBottom: "3px solid transparent", borderLeft: "3px solid transparent" }} />
-            )}
-            {state === "tool_running" && ToolIcon && (
-              <div className="absolute inset-0 rounded-full flex items-center justify-center" style={{ border: "2px solid #9B7FE8" }}>
-                <ToolIcon className="w-12 h-12" style={{ color: "#9B7FE8" }} />
-              </div>
-            )}
-            {state === "error" && (
-              <div className="absolute inset-0 rounded-full flex items-center justify-center" style={{ border: "2px solid #EF4444" }}>
-                <AlertTriangle className="w-12 h-12 text-red-500" />
-              </div>
-            )}
-            {(state === "idle" || state === "connecting") && (
-              <div className="absolute inset-0 rounded-full flex items-center justify-center" style={{ border: "2px solid #1A2A3A" }}>
-                <Bot className="w-12 h-12" style={{ color: "#4A7FA5" }} />
-              </div>
-            )}
-            {state === "listening" && (
-              <div className="absolute inset-0 flex items-center justify-center">
-                <Mic className="w-12 h-12 text-white" />
-              </div>
-            )}
-          </div>
+          <VoiceOrb state={state} analyser={analyserRef.current} />
         )}
 
+
         {/* Live transcript */}
-        <div ref={scrollRef} className="w-full max-h-[200px] overflow-y-auto mt-6 space-y-1.5 px-2">
+        <div
+          ref={scrollRef}
+          className="mt-5 w-full flex-1 min-h-[160px] overflow-y-auto rounded-2xl p-3 space-y-2"
+          style={{ background: "rgba(10,22,40,0.72)", border: "1px solid var(--pp-bg-border-2)", boxShadow: "inset 0 1px 0 rgba(255,255,255,0.03)" }}
+        >
+          {transcript.length === 0 && (
+            <div className="h-full min-h-[132px] flex items-center justify-center text-center text-[12px] leading-relaxed px-6" style={{ color: "var(--pp-text-muted)" }}>
+              La conversation texte avec AVA apparaîtra ici.
+            </div>
+          )}
           {transcript.slice(-12).map((t) => {
             if (t.role === "tool") return (
-              <div key={t.id} className="text-center text-[11px] px-3 py-1.5 rounded-lg mx-auto inline-block"
+              <div key={t.id} className="text-center text-[11px] px-3 py-1.5 rounded-lg mx-auto w-fit"
                 style={{ background: "rgba(0,212,170,0.08)", border: "1px solid rgba(0,212,170,0.2)", color: "#00D4AA" }}>
                 ⚡ {t.text}
               </div>
@@ -392,10 +438,10 @@ export default function AvaVoiceAgent({ onClose, userId }: Props) {
             );
             return (
               <div key={t.id} className={t.role === "user" ? "flex justify-end" : "flex justify-start"}>
-                <div className="max-w-[80%] px-3 py-2 text-[13px]"
+                <div className="max-w-[86%] px-3.5 py-2.5 text-[13px] leading-relaxed whitespace-pre-wrap break-words shadow-sm"
                   style={t.role === "user"
-                    ? { background: "rgba(46,155,220,0.15)", borderRadius: "12px 12px 2px 12px", color: "#E8EDF5" }
-                    : { background: "rgba(155,127,232,0.15)", borderRadius: "12px 12px 12px 2px", color: "#E8EDF5" }}>
+                    ? { background: "linear-gradient(135deg, var(--pp-brand-accent), var(--pp-success))", borderRadius: "14px 14px 4px 14px", color: "var(--pp-bg-deep)", fontWeight: 650 }
+                    : { background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", borderRadius: "14px 14px 14px 4px", color: "var(--pp-text-primary)" }}>
                   {t.text}
                 </div>
               </div>
@@ -481,3 +527,18 @@ export default function AvaVoiceAgent({ onClose, userId }: Props) {
     </div>
   );
 }
+
+function VoiceOrb({ state, analyser }: { state: AgentState; analyser: AnalyserNode | null }) {
+  const level = useAnalyserLevel(analyser, state === "listening");
+  const orbState: "idle" | "connecting" | "listening" | "speaking" | "processing" | "error" =
+    state === "tool_running" ? "processing" : state;
+  return (
+    <div className="flex flex-col items-center gap-4">
+      <AvaOrb state={orbState} level={level} size={260} />
+      <div className="text-[15px] font-semibold tracking-wide" style={{ color: "#E8EDF5", fontFamily: "Urbanist,sans-serif" }}>
+        {state === "speaking" ? "AVA parle…" : state === "listening" ? "Je vous écoute…" : state === "processing" ? "Réflexion…" : state === "tool_running" ? "Exécution…" : state === "connecting" ? "Connexion…" : state === "error" ? "Erreur" : "Prête"}
+      </div>
+    </div>
+  );
+}
+

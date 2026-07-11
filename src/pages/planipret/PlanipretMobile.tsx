@@ -1,12 +1,9 @@
-import { FormEvent, useEffect, useRef, useState, useCallback } from "react";
+import { FormEvent, useEffect, useRef, useState, useCallback, lazy, Suspense } from "react";
 import { useNavigate, NavLink, Outlet, useLocation } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { supabase } from "@/integrations/supabase/client";
-import { Home, Phone, MessageSquare, Users, Phone as PhoneIcon, X, Delete, Plus, Lock, PhoneOff, Settings as SettingsIcon, Search as SearchIcon, MessageCircle } from "lucide-react";
+import { Home, Phone, MessageSquare, Users, Bot, Phone as PhoneIcon, X, Delete, Plus, Lock, PhoneOff, Settings as SettingsIcon, Search as SearchIcon, MessageCircle } from "lucide-react";
 import { toast } from "sonner";
-import planipretLogo from "@/assets/planipret-logo.png.asset.json";
-import avaWordmark from "@/assets/ava-wordmark.svg";
-import avaLogo from "@/assets/ava-statistics-logo.png.asset.json";
 import { usePullToRefresh, PullIndicator } from "@/hooks/usePullToRefresh";
 import { useRealtimeManager } from "@/hooks/useRealtimeManager";
 import InboundCallOverlay, { type InboundCall } from "@/components/InboundCallOverlay";
@@ -17,7 +14,7 @@ import UniversalSearchBar from "@/components/planipret/UniversalSearchBar";
 import { OnboardingTutorial } from "@/components/planipret/OnboardingTutorial";
 
 import { useAvaNavigation } from "@/hooks/useAvaNavigation";
-import AvaVoiceAgent from "@/components/planipret/mobile/AvaVoiceAgent";
+const AvaVoiceAgent = lazy(() => import("@/components/planipret/mobile/AvaVoiceAgent"));
 import AvaChatSheet from "@/components/planipret/mobile/AvaChatSheet";
 import MobileAuthScreen from "@/components/planipret/mobile/MobileAuthScreen";
 import MobileHeaderControls from "@/components/planipret/mobile/MobileHeaderControls";
@@ -35,12 +32,58 @@ import { bootstrapPushIfNative } from "@/lib/native/pushBootstrap";
 
 const ACCENT = "#2E9BDC";
 
+const AvaBadge = ({ compact = false, circle = false }: { compact?: boolean; circle?: boolean }) => (
+  <div
+    aria-label="AVA"
+    style={{
+      width: circle ? "100%" : undefined,
+      height: circle ? "100%" : undefined,
+      minWidth: compact ? 14 : 34,
+      minHeight: compact ? 14 : 28,
+      background: "#7C3AED",
+      borderRadius: circle ? "50%" : compact ? 4 : 12,
+      padding: circle ? 0 : compact ? "1px 4px" : "8px 12px",
+      color: "white",
+      fontWeight: 800,
+      fontSize: circle ? 15 : compact ? 8 : 14,
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "center",
+      boxShadow: compact ? undefined : "0 0 12px rgba(124,58,237,0.45)",
+      lineHeight: 1,
+    }}
+  >
+    AVA
+  </div>
+);
+
+const PlanipretBadge = () => (
+  <div
+    aria-label="Planiprêt"
+    style={{
+      width: 28,
+      height: 28,
+      background: "#1A4A8A",
+      borderRadius: 12,
+      color: "white",
+      fontWeight: 800,
+      fontSize: 14,
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "center",
+      lineHeight: 1,
+    }}
+  >
+    P
+  </div>
+);
+
 export type PlanipretMobileContext = { profile: any; reloadProfile: () => Promise<void>; openDialer: (number?: string) => void; openAva: () => void; registerRefresh: (fn: (() => Promise<void> | void) | null) => void; softphone: ReturnType<typeof useMplanipretSoftphone> };
 
 const TABS = [
   { to: "/mplanipret/home", labelKey: "tabs.home", Icon: Home },
   { to: "/mplanipret/calls", labelKey: "tabs.calls", Icon: Phone },
-  { to: "_fab", label: "", Icon: Home },
+  { to: "/mplanipret/ava", labelKey: "tabs.ava", Icon: Bot },
   { to: "/mplanipret/messages", labelKey: "tabs.messages", Icon: MessageSquare },
   { to: "/mplanipret/contacts", labelKey: "tabs.contacts", Icon: Users },
 ];
@@ -150,6 +193,7 @@ function Dialer({ open, onClose, initial, openMessages, softphone }: { open: boo
   }, [open, mode, contacts.length, loadingContacts]);
 
   const normalized = query.trim().toLowerCase();
+  const directoryOnly = contacts.filter((c) => c.source === "directory");
   const filtered = normalized
     ? contacts.filter((c) => {
         const hay = [
@@ -164,7 +208,7 @@ function Dialer({ open, onClose, initial, openMessages, softphone }: { open: boo
         ].filter(Boolean).join(" ").toLowerCase();
         return hay.includes(normalized);
       }).slice(0, 30)
-    : [];
+    : directoryOnly.slice(0, 50);
 
   return (
     <AnimatePresence>
@@ -273,24 +317,37 @@ function Dialer({ open, onClose, initial, openMessages, softphone }: { open: boo
                 <div className="flex-1 overflow-y-auto mt-3 -mx-2 px-2 pb-4">
                   {loadingContacts && contacts.length === 0 ? (
                     <div className="text-center text-sm py-8" style={{ color: "var(--pp-text-muted)" }}>{t("dialer.searching")}</div>
-                  ) : !normalized ? (
-                    <div className="text-center text-sm py-8" style={{ color: "var(--pp-text-muted)" }}>{t("dialer.typeToSearch")}</div>
                   ) : filtered.length === 0 ? (
-                    <div className="text-center text-sm py-8" style={{ color: "var(--pp-text-muted)" }}>{t("dialer.noResults")}</div>
+                    <div className="text-center text-sm py-8" style={{ color: "var(--pp-text-muted)" }}>{normalized ? t("dialer.noResults") : t("contacts.noDirectory")}</div>
                   ) : (
+                    <>
+                      {!normalized && (
+                        <div className="px-1 pb-2 text-[10px] uppercase tracking-wider font-semibold" style={{ color: "var(--pp-text-muted)" }}>
+                          {t("contacts.directorySection") || t("contacts.directory")}
+                        </div>
+                      )}
                     <ul className="flex flex-col gap-1.5">
                       {filtered.map((c, i) => {
                         const dest = contactPrimaryPhone(c);
                         const label = contactDisplayName(c);
                         return (
                           <li key={(c.id ?? "") + i} className="flex items-center gap-3 p-2.5 rounded-xl" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)" }}>
-                            <div className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-semibold" style={{ background: "linear-gradient(135deg, #1A4A8A, #2E9BDC)", color: "white" }}>
-                              {label.slice(0, 1).toUpperCase()}
+                            <div className="relative w-9 h-9">
+                              <div className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-semibold" style={{ background: "linear-gradient(135deg, #1A4A8A, #2E9BDC)", color: "white" }}>
+                                {label.slice(0, 1).toUpperCase()}
+                              </div>
+                              {c.source === "directory" && (() => {
+                                const p = String((c as any).presence ?? "").toLowerCase();
+                                const color = ["available","online","active","ready","registered"].includes(p) ? "#22c55e"
+                                  : ["busy","dnd","oncall","on-call","in-call"].includes(p) ? "#ef4444"
+                                  : ["away","idle"].includes(p) ? "#f59e0b" : "#64748b";
+                                return <span style={{ position: "absolute", right: -1, bottom: -1, width: 11, height: 11, borderRadius: "50%", background: color, border: "2px solid var(--pp-bg-surface)" }} />;
+                              })()}
                             </div>
                             <div className="flex-1 min-w-0">
                               <div className="text-sm font-medium truncate" style={{ color: "var(--pp-text-primary)" }}>{label}</div>
                               <div className="text-xs truncate" style={{ color: "var(--pp-text-muted)" }}>
-                                {c.extension ? `#${c.extension}` : dest || c.email || ""}
+                                {c.extension ? `${t("contacts.extension") || "Ext."} ${c.extension}` : dest || c.email || ""}
                                 {c.source === "directory" && ` · ${t("dialer.internal")}`}
                               </div>
                             </div>
@@ -316,6 +373,7 @@ function Dialer({ open, onClose, initial, openMessages, softphone }: { open: boo
                         );
                       })}
                     </ul>
+                    </>
                   )}
                 </div>
               </div>
@@ -534,11 +592,11 @@ export default function PlanipretMobile() {
     void hasSeenPrimer().then((seen) => { if (!seen) setShowPrimer(true); });
   }, [profile?.user_id, profile?.ns_extension, profile?.extension]);
 
-  if (loading) return <div className="min-h-screen flex items-center justify-center" style={{ background: "#F7F9FC", color: "#5A6B85", fontFamily: "Urbanist,sans-serif" }}>{t("common.loading")}</div>;
+  if (loading) return <div className="min-h-screen flex items-center justify-center" style={{ background: "#0A1425", color: "#2E9BDC", fontFamily: "Urbanist,sans-serif" }}>{t("common.loading")}</div>;
 
   if (accessError === "unauthenticated") {
     return (
-      <Frame>
+      <Frame forceDark>
         <MobileAuthScreen onLoggedIn={loadProfile} />
       </Frame>
     );
@@ -603,8 +661,7 @@ export default function PlanipretMobile() {
 
           {/* AVA icon — left */}
           <div className="flex items-center gap-1.5">
-            <img src={avaLogo.url} alt="AVA" className="w-7 h-7 rounded-lg object-cover"
-              style={{ boxShadow: "0 0 12px rgba(155,127,232,0.45)" }} />
+            <AvaBadge />
             <span className="flex items-center gap-1.5">
               <span className="pp-live-dot" />
               <span style={{ fontSize: 9, color: "var(--pp-success)", fontWeight: 700, letterSpacing: "0.05em" }}>REST</span>
@@ -629,7 +686,7 @@ export default function PlanipretMobile() {
 
           {/* Planiprêt centered logo */}
           <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2 pointer-events-none">
-            <img src={planipretLogo.url} alt="Planiprêt" className="w-7 h-7 rounded-lg object-cover" />
+            <PlanipretBadge />
             <span style={{ fontFamily: "Inter,sans-serif", fontWeight: 700, fontSize: 14, color: "var(--pp-text-primary)", letterSpacing: "-0.01em" }}>Planiprêt</span>
           </div>
 
@@ -651,24 +708,6 @@ export default function PlanipretMobile() {
           <OnboardingTutorial profile={profile} onDone={loadProfile} />
         )}
 
-        {/* Center FAB — AVA (voice if enabled, chat otherwise) */}
-        <button onClick={openAva}
-          className="absolute left-1/2 -translate-x-1/2 z-20 rounded-full flex items-center justify-center active:scale-95 transition overflow-hidden"
-          style={{
-            background: profile?.voice_agent_enabled
-              ? "linear-gradient(135deg, #2D1A5A, #9B7FE8, #E84CC9)"
-              : "linear-gradient(135deg, #1E3A8A, #6366F1, #9B7FE8)",
-            boxShadow: profile?.voice_agent_enabled
-              ? "0 6px 28px rgba(232,76,201,0.55), 0 0 0 2px rgba(155,127,232,0.25)"
-              : "0 6px 24px rgba(99,102,241,0.5), 0 0 0 2px rgba(99,102,241,0.2)",
-            animation: profile?.voice_agent_enabled ? "pp-glow-purple 2s ease-in-out infinite" : undefined,
-            width: 62, height: 62, bottom: 74, padding: 3,
-          }}
-          aria-label={profile?.voice_agent_enabled ? t("dialer.talkToAva") : t("dialer.chatWithAva")}>
-          <img src={avaLogo.url} alt="AVA" className="w-full h-full rounded-full object-cover"
-            style={{ background: "#060D1A" }} />
-        </button>
-
         {/* Right FAB — Keypad (bleu) ou raccrocher (rouge) si appel actif */}
         <button onClick={activeCallId ? hangupActive : () => setDialerOpen(true)}
           className="absolute z-20 rounded-full flex items-center justify-center text-white active:scale-95 transition"
@@ -688,24 +727,42 @@ export default function PlanipretMobile() {
         </button>
 
 
-        {/* Tab bar (5 tabs + center FAB placeholder = 5 grid columns) */}
+        {/* Tab bar (5 tabs) */}
         <nav className="absolute bottom-[22px] inset-x-0 grid grid-cols-5 z-10 pp-mobile-tabbar"
           style={{ height: 70 }}>
 
           {TABS.map((tabItem) => {
-            if (tabItem.to === "_fab") return <div key="fab-slot" />;
             const badge = tabItem.to.endsWith("/messages") ? unreadMsg : 0;
+            const isAva = tabItem.to.endsWith("/ava");
             return (
               <NavLink key={tabItem.to} to={tabItem.to}
-                className="relative flex flex-col items-center justify-center gap-1 text-[9px] font-semibold pt-1.5"
+                className={`relative flex flex-col items-center justify-center gap-1 text-[9px] font-semibold pt-1.5 ${isAva ? "ava-tab-center" : ""}`}
                 style={({ isActive }) => ({ color: isActive ? "var(--pp-brand-accent)" : "var(--pp-text-faint)" })}>
                 {({ isActive }) => (
                   <>
-                    {isActive && (
+                    {isActive && !isAva && (
                       <span className="absolute top-1 w-1 h-1 rounded-full" style={{ background: "var(--pp-brand-accent)" }} />
                     )}
-                    <div className="relative">
-                      <tabItem.Icon className="w-[22px] h-[22px]" strokeWidth={isActive ? 2.4 : 1.8} />
+                    <div
+                      className="relative flex items-center justify-center transition-all duration-200"
+                      style={isAva ? {
+                        width: isActive ? 50 : 46,
+                        height: isActive ? 50 : 46,
+                        borderRadius: "50%",
+                        background: isActive
+                          ? "linear-gradient(135deg, #7C3AED, #2E9BDC)"
+                          : "var(--pp-bg-elevated)",
+                        border: isActive ? "2px solid rgba(255,255,255,0.15)" : "1px solid var(--pp-bg-border-2)",
+                        boxShadow: isActive
+                          ? "0 6px 20px rgba(124,58,237,0.5)"
+                          : "0 2px 8px rgba(0,0,0,0.12)",
+                        marginTop: -10,
+                      } : {}}>
+                      <tabItem.Icon
+                        className={isAva ? "w-[26px] h-[26px]" : "w-[22px] h-[22px]"}
+                        strokeWidth={isActive ? 2.4 : 1.8}
+                        style={{ color: isAva ? (isActive ? "#fff" : "var(--pp-brand-accent)") : undefined }}
+                      />
                       {badge > 0 && (
                         <span className="absolute -top-1.5 -right-2 min-w-[16px] h-4 px-1 rounded-full text-white text-[9px] font-bold flex items-center justify-center"
                           style={{ background: "var(--pp-danger)" }}>
@@ -713,7 +770,7 @@ export default function PlanipretMobile() {
                         </span>
                       )}
                     </div>
-                    <span style={{ letterSpacing: "0.02em" }}>{"labelKey" in tabItem ? t(tabItem.labelKey) : ""}</span>
+                    {!isAva && <span style={{ letterSpacing: "0.02em" }}>{"labelKey" in tabItem ? t(tabItem.labelKey) : ""}</span>}
                   </>
                 )}
               </NavLink>
@@ -722,13 +779,25 @@ export default function PlanipretMobile() {
         </nav>
 
 
-        {/* Powered by AVA footer */}
-        <div className="absolute bottom-0 inset-x-0 h-[24px] flex items-center justify-center gap-2 z-10 pp-mobile-footer">
-          <span style={{ fontFamily: "Urbanist,sans-serif", fontSize: 9, color: "var(--pp-text-muted)", letterSpacing: "0.14em", fontWeight: 600 }}>{t("footer.poweredBy")}</span>
-          <img src={avaLogo.url} alt="AVA" className="w-3.5 h-3.5 rounded object-cover" />
-          <span style={{ fontFamily: "Urbanist,sans-serif", fontSize: 9, color: "var(--pp-brand-accent-2)", letterSpacing: "0.10em", fontWeight: 700 }}>AVA</span>
-          <span style={{ fontSize: 8.5, color: "var(--pp-text-faint)", letterSpacing: "0.1em" }}>· {t("footer.developedBy")}</span>
+        {/* Powered by AVA footer — discret */}
+        <div className="absolute bottom-0 inset-x-0 h-[40px] flex flex-col items-center justify-center z-10 pp-mobile-footer" style={{ gap: 1 }}>
+          <div className="flex items-center gap-2">
+            <span style={{ fontFamily: "Urbanist,sans-serif", fontSize: 7, color: "var(--pp-text-muted)", letterSpacing: "0.14em", fontWeight: 600 }}>{t("footer.poweredBy")}</span>
+            <div className="relative flex items-center justify-center" style={{ width: 24, height: 24 }}>
+              <div className="absolute inset-0 rounded-full" style={{ background: "radial-gradient(circle, rgba(124,58,237,0.45) 0%, rgba(46,155,220,0.18) 50%, transparent 75%)", filter: "blur(5px)", animation: "ava-footer-pulse 3s ease-in-out infinite" }} />
+              <div className="absolute inset-0 rounded-full flex items-center justify-center overflow-hidden" style={{ background: "conic-gradient(from 0deg, #7C3AED, #2E9BDC, #00D4AA, #7C3AED)", padding: 1.5, animation: "ava-footer-spin 6s linear infinite" }}>
+                <div className="w-full h-full rounded-full flex items-center justify-center" style={{ background: "var(--pp-bg-surface, #0A1628)", color: "#fff", fontWeight: 800, fontSize: 8, fontFamily: "Urbanist,sans-serif", letterSpacing: "0.02em" }}>AVA</div>
+              </div>
+            </div>
+            <span style={{ fontFamily: "Urbanist,sans-serif", fontSize: 12, letterSpacing: "0.06em", fontWeight: 800, background: "linear-gradient(90deg,#7C3AED,#2E9BDC)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", backgroundClip: "text" }}>AVA</span>
+          </div>
+          <span style={{ fontSize: 6, color: "var(--pp-text-faint)", letterSpacing: "0.08em" }}>· {t("footer.developedBy")}</span>
+          <style>{`
+            @keyframes ava-footer-pulse { 0%,100% { opacity: 0.5; transform: scale(1); } 50% { opacity: 0.9; transform: scale(1.08); } }
+            @keyframes ava-footer-spin { to { transform: rotate(360deg); } }
+          `}</style>
         </div>
+
 
 
         <Dialer open={dialerOpen} onClose={() => setDialerOpen(false)} initial={dialerInit} openMessages={(n) => { setDialerOpen(false); navigate(`/mplanipret/messages${n ? `?to=${encodeURIComponent(n)}` : ""}`); }} softphone={softphone} />
@@ -736,7 +805,11 @@ export default function PlanipretMobile() {
         <InboundCallOverlay call={inbound} onClose={() => setInbound(null)} />
         {avaOpen && profile?.user_id && (
           profile.voice_agent_enabled
-            ? <AvaVoiceAgent userId={profile.user_id} onClose={() => setAvaOpen(false)} />
+            ? (
+              <Suspense fallback={null}>
+                <AvaVoiceAgent userId={profile.user_id} onClose={() => setAvaOpen(false)} />
+              </Suspense>
+            )
             : <AvaChatSheet userId={profile.user_id} onClose={() => setAvaOpen(false)} />
         )}
         <OfflineBanner />
@@ -745,19 +818,20 @@ export default function PlanipretMobile() {
   );
 }
 
-function Frame({ children }: { children: React.ReactNode }) {
+function Frame({ children, forceDark = false }: { children: React.ReactNode; forceDark?: boolean }) {
   const { theme } = useMplanipretTheme();
+  const frameTheme = forceDark ? "dark" : theme;
   return (
     <div className="planipret-scope planipret-mobile-scope planipret-mobile-frame-bg min-h-screen w-full flex items-center justify-center md:p-6"
-      data-pp-theme={theme}
-      style={{ background: theme === "dark"
+      data-pp-theme={frameTheme}
+      style={{ background: frameTheme === "dark"
         ? "linear-gradient(160deg, #060D1A 0%, #0A1425 100%)"
         : "linear-gradient(160deg, #EEF2F8 0%, #DCE3EC 100%)" }}>
       <div id="pp-mobile-frame" className="planipret-mobile-phone overflow-hidden w-full md:w-[390px] md:h-[844px] h-screen md:rounded-[44px] relative"
         style={{
           background: "var(--pp-bg-base)",
           border: "1px solid var(--pp-bg-border-2)",
-          boxShadow: theme === "dark"
+          boxShadow: frameTheme === "dark"
             ? "0 0 0 6px #08111F, 0 40px 120px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.04)"
             : "0 0 0 6px #FFFFFF, 0 40px 120px rgba(15,27,61,0.18), inset 0 1px 0 rgba(255,255,255,0.6)",
         }}>

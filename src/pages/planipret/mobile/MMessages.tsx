@@ -2,19 +2,20 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useOutletContext } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
-import { Plus, X, ArrowLeft, Phone, Send, Paperclip, MessageSquare, Zap, Users, Bot, Mail, Sparkles, Loader2, RefreshCw, Mic, Reply, History, Circle, CheckCircle2, AlertTriangle, RotateCw, UsersRound, Contact } from "lucide-react";
+import {
+  Plus, X, ArrowLeft, Phone, Send, Paperclip, MessageSquare, Zap,
+  Users, Mail, Sparkles, Loader2, RefreshCw, Reply, Circle, CheckCircle2, AlertTriangle, RotateCw,
+  UsersRound, Contact,
+} from "lucide-react";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
 import SmsTemplatesSheet from "@/components/planipret/SmsTemplatesSheet";
 import AvaSummarizeSheet from "@/components/planipret/ava/AvaSummarizeSheet";
 import AvaProposedActionsCard from "@/components/planipret/mobile/AvaProposedActionsCard";
-import AvaHistorySheet from "@/components/planipret/ava/AvaHistorySheet";
-import CoachOverlay from "@/components/planipret/ava/CoachOverlay";
 import { callAva, type AvaSuggestion } from "@/services/avaProactive";
-import { useAvaDraft } from "@/hooks/useAvaDraft";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { useCallerNames } from "@/lib/planipret/callerLookup";
 
-type SubTab = "sms" | "team" | "teams365" | "ava" | "emails" | "roster";
+type SubTab = "sms" | "team" | "teams365" | "emails" | "roster";
 
 
 type Msg = {
@@ -50,7 +51,7 @@ const fmtTime = (iso: string, lang: "fr" | "en" = "fr", t?: (key: string) => str
 
 export default function MMessages() {
   const { t } = useMplanipretLang();
-  const { profile, openDialer, openAva, registerRefresh } = useOutletContext<PlanipretMobileContext>();
+  const { profile, openDialer, registerRefresh } = useOutletContext<PlanipretMobileContext>();
   const [sub, setSub] = useState<SubTab>("sms");
 
   return (
@@ -68,8 +69,6 @@ export default function MMessages() {
             { k: "sms" as SubTab, label: t("messages.tabs.sms"), Icon: MessageSquare },
             { k: "team" as SubTab, label: t("messages.tabs.team"), Icon: UsersRound },
             { k: "teams365" as SubTab, label: "Teams", Icon: Users },
-            { k: "roster" as SubTab, label: t("messages.tabs.roster"), Icon: Contact },
-            { k: "ava" as SubTab, label: t("messages.tabs.ava"), Icon: Bot },
             { k: "emails" as SubTab, label: t("messages.tabs.emails"), Icon: Mail },
           ].map((item) => {
             const active = sub === item.k;
@@ -104,9 +103,7 @@ export default function MMessages() {
         {sub === "sms" && <SmsList profile={profile} openDialer={openDialer} registerRefresh={registerRefresh} />}
         {sub === "team" && <TeamChat profile={profile} />}
         {sub === "teams365" && <Teams365Panel profile={profile} />}
-        {sub === "roster" && <TeamRoster profile={profile} openDialer={openDialer} onSwitchTab={setSub} />}
-        {sub === "ava" && <AvaChat profile={profile} openAva={openAva} openDialer={openDialer} />}
-        {sub === "emails" && <EmailsList profile={profile} openAva={openAva} />}
+        {sub === "emails" && <EmailsList profile={profile} />}
       </div>
     </div>
   );
@@ -148,17 +145,35 @@ type NsMessage = {
   read_at?: string | null;
 };
 
-const threadId = (t: NsThread) => t.id ?? t.messagesession_id ?? t.session_id ?? t.destination ?? "";
-const threadPeer = (t: NsThread) => t.destination ?? t.remote_party ?? t.contact ?? threadId(t);
-const threadTime = (t: NsThread) => t.last_message_at ?? t.updated_at ?? t.timestamp ?? new Date().toISOString();
-const msgId = (m: NsMessage, i: number) => m.id ?? m.message_id ?? `${m.timestamp ?? m.created_at ?? i}-${i}`;
-const msgBody = (m: NsMessage) => m.body ?? m.message ?? m.text ?? "";
-const msgTime = (m: NsMessage) => m.timestamp ?? m.created_at ?? m.sent_at ?? new Date().toISOString();
-const msgIsOut = (m: NsMessage, myExt: string) => {
+const threadId = (t: any) =>
+  t.id ?? t.messagesession_id ?? t["messagesession-id"] ?? t.session_id ?? t.destination ?? t.phonenumber ?? t.remote_party ?? "";
+const threadPeer = (t: any) => {
+  const raw = t.destination ?? t.remote_party ?? t.contact ?? t.phonenumber ?? t.phone_number ?? t.caller_id ?? t.from ?? t.to ?? t.participant ??
+    t["messagesession-remote"] ?? t["messagesession-remote-party"] ??
+    (Array.isArray(t.participants) && t.participants[0]?.destination) ??
+    (Array.isArray(t.session_participants) && t.session_participants[0]?.destination) ??
+    "";
+  return raw ? String(raw) : "";
+};
+const threadTime = (t: any) =>
+  t.last_message_at ?? t.updated_at ?? t.timestamp ?? t["messagesession-last-datetime"] ?? t["messagesession-start-datetime"] ?? new Date().toISOString();
+const msgId = (m: any, i: number) => m.id ?? m.message_id ?? m["message-id"] ?? `${m.timestamp ?? m.created_at ?? i}-${i}`;
+const msgBody = (m: any) => m.body ?? m.message ?? m.text ?? m["message-text"] ?? "";
+const msgTime = (m: any) => {
+  const raw = m.timestamp ?? m.created_at ?? m.sent_at ?? m["message-datetime"];
+  if (!raw) return new Date().toISOString();
+  // NS-API returns "YYYY-MM-DD HH:MM:SS" (UTC) — normalize to ISO
+  if (typeof raw === "string" && !raw.includes("T")) return raw.replace(" ", "T") + "Z";
+  return raw;
+};
+const msgIsOut = (m: any, myExt: string) => {
   const dir = (m.direction ?? "").toLowerCase();
-  if (dir === "outbound" || dir === "out" || dir === "sent") return true;
-  if (dir === "inbound" || dir === "in" || dir === "received") return false;
-  return (m.from ?? m.source ?? "") === myExt;
+  // NS-API: "orig" = originating (outbound from user), "term" = terminating (inbound to user)
+  if (dir === "outbound" || dir === "out" || dir === "sent" || dir === "orig") return true;
+  if (dir === "inbound" || dir === "in" || dir === "received" || dir === "term") return false;
+  const from = m.from ?? m.source ?? m["from-user-id"] ?? m["from-number"] ?? "";
+  const fromStr = String(from);
+  return fromStr === myExt || fromStr.startsWith(`${myExt}@`);
 };
 
 function SmsList({ profile, openDialer, registerRefresh }: any) {
@@ -255,7 +270,7 @@ function SmsList({ profile, openDialer, registerRefresh }: any) {
             const id = threadId(th);
             const peer = threadPeer(th);
             const unread = th.unread ?? th.unread_count ?? 0;
-            const preview = th.last_message ?? th.preview ?? "";
+            const preview = (th as any).last_message ?? (th as any).preview ?? (th as any)["messagesession-last-message"] ?? (th as any).last_message_text ?? (th as any).body ?? (th as any).message ?? (th as any).snippet ?? "";
             return (
               <ThreadRow
                 key={`${id || "noid"}-${peer || "nopeer"}-${index}`}
@@ -654,235 +669,9 @@ function TeamChat({ profile }: { profile: any }) {
 }
 
 // ============================================================
-// AVA CHAT TAB
-// ============================================================
-type AvaMsg = {
-  id: string;
-  user_id: string;
-  role: "user" | "assistant";
-  message: string;
-  created_at: string;
-};
-
-function AvaChat({ profile, openAva, openDialer }: { profile: any; openAva: () => void; openDialer: (n?: string) => void }) {
-  const { t, lang } = useMplanipretLang();
-  const [msgs, setMsgs] = useState<AvaMsg[]>([]);
-  const [text, setText] = useAvaDraft(profile?.user_id, "ava-chat");
-  const [sending, setSending] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [historyOpen, setHistoryOpen] = useState(false);
-  const [coach, setCoach] = useState<{ open: boolean; suggestions: AvaSuggestion[]; title?: string }>({ open: false, suggestions: [] });
-  const bottomRef = useRef<HTMLDivElement>(null);
-  // setText is the debounced draft updater
-  const inputRef = useRef<(v: string) => void>(setText);
-  inputRef.current = setText;
-
-  const load = async () => {
-    if (!profile?.user_id) return;
-    setLoading(true);
-    const { data } = await supabase
-      .from("planipret_ava_conversations")
-      .select("*")
-      .eq("user_id", profile.user_id)
-      .order("created_at", { ascending: true })
-      .limit(100);
-    setMsgs((data ?? []) as AvaMsg[]);
-    setLoading(false);
-  };
-
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [profile?.user_id]);
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs.length]);
-
-  const send = async () => {
-    const body = text.trim();
-    if (!body || !profile?.user_id) return;
-    setSending(true);
-    const userMsg = { user_id: profile.user_id, role: "user" as const, message: body };
-    const { data: ins } = await supabase.from("planipret_ava_conversations").insert(userMsg).select().single();
-    if (ins) setMsgs((p) => [...p, ins as AvaMsg]);
-    setText("");
-
-    const r = await callAva({
-      mode: "chat",
-      message: body,
-      history: msgs.slice(-10).map((m) => ({ role: m.role, content: m.message })),
-    });
-
-    const { data: ins2 } = await supabase.from("planipret_ava_conversations")
-      .insert({ user_id: profile.user_id, role: "assistant", message: r.reply }).select().single();
-    if (ins2) setMsgs((p) => [...p, ins2 as AvaMsg]);
-
-    if (r.openVoice) openAva();
-    if (r.openCoach || r.suggestions.length) {
-      setCoach({ open: true, suggestions: r.suggestions, title: "Coach AVA" });
-    }
-    setSending(false);
-  };
-
-  const clear = async () => {
-    if (!profile?.user_id) return;
-    await supabase.from("planipret_ava_conversations").delete().eq("user_id", profile.user_id);
-    setMsgs([]);
-  };
-
-  return (
-    <div className="absolute inset-x-0 top-[120px] bottom-0 flex flex-col">
-      <div
-        className="px-4 py-2 flex items-center justify-between"
-        style={{ borderBottom: "1px solid var(--pp-bg-border)" }}
-      >
-        <div className="flex items-center gap-2 text-[11px] uppercase tracking-wider" style={{ color: "var(--pp-agent)" }}>
-          <Sparkles className="w-3 h-3" /> {t("messages.avaAssistant")}
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            onClick={() => setHistoryOpen(true)}
-            className="text-[11px] flex items-center gap-1"
-            style={{ color: "var(--pp-text-muted)" }}
-            title={t("messages.avaHistory")}
-          >
-            <History className="w-3.5 h-3.5" /> {t("messages.avaHistory")}
-          </button>
-          {msgs.length > 0 && (
-            <button onClick={clear} className="text-[11px]" style={{ color: "var(--pp-text-muted)" }}>
-              {t("messages.clear")}
-            </button>
-          )}
-        </div>
-      </div>
-      <div className="flex-1 overflow-y-auto px-3 py-3 space-y-2">
-        {loading ? (
-          <div className="text-center py-8" style={{ color: "var(--pp-text-muted)" }}>
-            <Loader2 className="w-5 h-5 animate-spin mx-auto" />
-          </div>
-        ) : msgs.length === 0 ? (
-          <div className="text-center py-10 px-6">
-            <div
-              className="w-14 h-14 mx-auto rounded-2xl flex items-center justify-center mb-3"
-              style={{
-                background: "linear-gradient(135deg, var(--pp-agent), #6C3CE1)",
-                boxShadow: "0 8px 24px rgba(155,127,232,0.4)",
-              }}
-            >
-              <Bot className="w-7 h-7 text-white" />
-            </div>
-            <p className="font-semibold" style={{ color: "var(--pp-text-primary)" }}>{t("messages.avaHello")}</p>
-            <p className="text-xs mt-1" style={{ color: "var(--pp-text-muted)" }}>
-              {t("messages.avaHelp")}
-            </p>
-            <div className="flex flex-wrap justify-center gap-1.5 mt-4">
-              {[
-                "📊 Brief du jour",
-                "🔥 Mes hot leads",
-                "📅 Mes RDV",
-                "💡 Conseils du jour",
-              ].map((chip) => (
-                <button
-                  key={chip}
-                  onClick={() => setText(chip.replace(/^\S+\s/, ""))}
-                  className="text-[11px] px-3 py-1.5 rounded-full"
-                  style={{
-                    background: "rgba(155,127,232,0.10)",
-                    border: "1px solid rgba(155,127,232,0.30)",
-                    color: "var(--pp-agent)",
-                  }}
-                >
-                  {chip}
-                </button>
-              ))}
-            </div>
-          </div>
-        ) : (
-          msgs.map((m) => {
-            const mine = m.role === "user";
-            return (
-              <div key={m.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
-                <div className="max-w-[80%] flex items-end gap-2">
-                  {!mine && (
-                    <div
-                      className="w-6 h-6 rounded-full flex items-center justify-center shrink-0"
-                      style={{ background: "linear-gradient(135deg, var(--pp-agent), #6C3CE1)" }}
-                    >
-                      <Bot className="w-3 h-3 text-white" />
-                    </div>
-                  )}
-                  <div>
-                    <div
-                      className={mine ? "pp-bubble-out" : ""}
-                      style={
-                        mine
-                          ? { padding: "8px 12px", fontSize: 14 }
-                          : {
-                              padding: "8px 12px",
-                              fontSize: 14,
-                              background: "rgba(155,127,232,0.10)",
-                              border: "1px solid rgba(155,127,232,0.25)",
-                              color: "var(--pp-text-primary)",
-                              borderRadius: "16px 16px 16px 4px",
-                            }
-                      }
-                    >
-                      <p className="whitespace-pre-wrap break-words">{m.message}</p>
-                    </div>
-                    <p className={`text-[10px] mt-1 ${mine ? "text-right" : "text-left"}`} style={{ color: "var(--pp-text-faint)" }}>
-                      {fmtTime(m.created_at, lang, t)}
-                    </p>
-                  </div>
-                </div>
-              </div>
-            );
-          })
-        )}
-        {sending && (
-          <div className="flex justify-start">
-            <div
-              className="px-3 py-2 rounded-2xl text-sm flex items-center gap-2"
-              style={{
-                background: "rgba(155,127,232,0.10)",
-                border: "1px solid rgba(155,127,232,0.25)",
-                color: "var(--pp-agent)",
-              }}
-            >
-              <Loader2 className="w-3 h-3 animate-spin" /> {t("messages.avaThinking")}
-            </div>
-          </div>
-        )}
-        <div ref={bottomRef} />
-      </div>
-      <Composer
-        text={text} setText={setText} onSend={send} sending={sending}
-        placeholder={t("messages.avaPlaceholder")} accent="agent"
-        leftAction={
-          profile?.voice_agent_enabled ? (
-            <button
-              onClick={openAva}
-              className="p-2 rounded-full"
-              style={{ color: "var(--pp-agent)" }}
-              title={t("messages.voiceMode")}
-            >
-              <Mic className="w-5 h-5" />
-            </button>
-          ) : null
-        }
-      />
-
-      <AvaHistorySheet open={historyOpen} userId={profile?.user_id} onClose={() => setHistoryOpen(false)} />
-      <CoachOverlay
-        open={coach.open}
-        title={coach.title}
-        suggestions={coach.suggestions}
-        ctx={{ openDialer, openAva, userId: profile?.user_id, profileId: profile?.id }}
-        onClose={() => setCoach({ open: false, suggestions: [] })}
-      />
-    </div>
-  );
-}
-
-
-// ============================================================
 // EMAILS TAB (M365)
 // ============================================================
-function EmailsList({ profile, openAva: _openAva }: { profile: any; openAva: () => void }) {
+function EmailsList({ profile }: { profile: any }) {
   const { t, lang } = useMplanipretLang();
   const [emails, setEmails] = useState<any[] | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "no_m365" | "error">("loading");
@@ -1447,11 +1236,43 @@ function ActionPill({ Icon, label, onClick, disabled }: { Icon: any; label: stri
 // ============================================================================
 // TEAMS 365 PANEL — Microsoft Teams chats + channels via MS Graph
 // ============================================================================
+type Teams365SubTab = "active" | "new" | "teams";
+
+const TEAMS_READS_KEY = "planipret.teams365.lastReads.v1";
+function loadTeamsReads(): Record<string, string> {
+  try { return JSON.parse(localStorage.getItem(TEAMS_READS_KEY) || "{}") || {}; } catch { return {}; }
+}
+function saveTeamsReads(map: Record<string, string>) {
+  try { localStorage.setItem(TEAMS_READS_KEY, JSON.stringify(map)); } catch { /* ignore */ }
+}
+function markChatRead(chatId: string) {
+  const map = loadTeamsReads();
+  map[chatId] = new Date().toISOString();
+  saveTeamsReads(map);
+}
+function isChatUnread(chat: any, reads: Record<string, string>): boolean {
+  if (!chat?.lastUpdated) return false;
+  const last = reads[chat.id];
+  if (!last) return true;
+  return new Date(chat.lastUpdated).getTime() > new Date(last).getTime();
+}
+
 function Teams365Panel({ profile }: { profile: any }) {
+  const [innerTab, setInnerTab] = useState<Teams365SubTab>("active");
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  const [diag, setDiag] = useState<any>({});
   const [chats, setChats] = useState<any[]>([]);
   const [teams, setTeams] = useState<any[]>([]);
+  const [people, setPeople] = useState<any[]>([]);
+  const [reads, setReads] = useState<Record<string, string>>(() => loadTeamsReads());
+  const [search, setSearch] = useState("");
+  const [chatSearch, setChatSearch] = useState("");
+  const [groupMode, setGroupMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [groupTopic, setGroupTopic] = useState("");
+  const [creating, setCreating] = useState(false);
+  const prevUnreadIds = useRef<Set<string>>(new Set());
   const [active, setActive] = useState<
     | { kind: "chat"; id: string; title: string }
     | { kind: "channel"; teamId: string; channelId: string; title: string }
@@ -1462,37 +1283,87 @@ function Teams365Panel({ profile }: { profile: any }) {
 
   const load = async () => {
     if (!connected) { setLoading(false); setErr("ms365_not_connected"); return; }
-    setLoading(true);
-    setErr(null);
+    setLoading(true); setErr(null);
     const { data, error } = await supabase.functions.invoke("ms365-teams-list", { body: {} });
     setLoading(false);
     const payload = (data as any) ?? {};
-    if (error && !payload.chats) {
-      setErr(error.message || "Erreur");
-      return;
+    if (error && !payload.chats) { setErr(error.message || "Erreur"); return; }
+    if (payload.connected === false || payload.error === "ms365_not_connected") { setErr("ms365_not_connected"); return; }
+    if (payload.error) { setErr(payload.error); return; }
+    const nextChats = payload.chats || [];
+    // Notify on new unread chats appearing since last load
+    const currentReads = loadTeamsReads();
+    const nowUnread = new Set<string>(nextChats.filter((c: any) => isChatUnread(c, currentReads)).map((c: any) => c.id));
+    const newly: any[] = [];
+    for (const c of nextChats) {
+      if (nowUnread.has(c.id) && !prevUnreadIds.current.has(c.id)) newly.push(c);
     }
-    if (payload.connected === false || payload.error === "ms365_not_connected") {
-      setErr("ms365_not_connected");
-      return;
+    if (prevUnreadIds.current.size > 0 && newly.length > 0) {
+      const first = newly[0];
+      toast.message(`Nouveau message · ${first.topic}`, {
+        description: first.previewFrom ? `${first.previewFrom}: ${(first.preview || "").replace(/<[^>]*>/g, "").slice(0, 80)}` : undefined,
+      });
     }
-    if (payload.error) {
-      setErr(payload.error);
-      return;
-    }
-    setChats(payload.chats || []);
+    prevUnreadIds.current = nowUnread;
+    setChats(nextChats);
     setTeams(payload.teams || []);
+    setPeople(payload.people || []);
+    setDiag(payload.diagnostics || {});
+    setReads(currentReads);
   };
   useEffect(() => {
     load(); /* eslint-disable-next-line */
     if (!connected) return;
-    const id = window.setInterval(() => { load(); }, 60_000);
+    const id = window.setInterval(() => { load(); }, 30_000);
     return () => window.clearInterval(id);
   }, [connected]);
 
-  if (active) return <TeamsThreadView target={active} onClose={() => setActive(null)} />;
+  const startChatWith = async (userIds: string[], title: string, topicText?: string) => {
+    setCreating(true);
+    const { data, error } = await supabase.functions.invoke("ms365-teams-messages", {
+      body: { action: "create_chat", user_ids: userIds, ...(topicText ? { topic: topicText } : {}) },
+    });
+    setCreating(false);
+    const p: any = data ?? {};
+    if (error || p?.error) { toast.error(p?.error || error?.message || "Impossible de créer le chat"); return; }
+    openThread({ kind: "chat", id: p.chat_id, title });
+    setGroupMode(false); setSelectedIds(new Set()); setGroupTopic("");
+    load();
+  };
+
+  const openThread = (t: NonNullable<typeof active>) => {
+    if (t.kind === "chat") { markChatRead(t.id); setReads(loadTeamsReads()); }
+    setActive(t);
+  };
+
+  const presenceColor = (a?: string) =>
+    a === "Available" ? "#22c55e" :
+    a === "Busy" || a === "DoNotDisturb" ? "#ef4444" :
+    a === "Away" || a === "BeRightBack" ? "#f59e0b" :
+    "#6b7280";
+
+  if (active) return <TeamsThreadView target={active} onClose={() => { setActive(null); load(); }} />;
+
+  const filteredPeople = people.filter((p) => {
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    return (p.name || "").toLowerCase().includes(q) || (p.email || "").toLowerCase().includes(q);
+  });
+  const filteredChats = chats.filter((c) => {
+    const q = chatSearch.trim().toLowerCase();
+    if (!q) return true;
+    return (c.topic || "").toLowerCase().includes(q);
+  });
+  const unreadCount = chats.filter((c) => isChatUnread(c, reads)).length;
+
+  const tabs: { k: Teams365SubTab; label: string; badge?: number }[] = [
+    { k: "active", label: "Discussions actives", badge: unreadCount },
+    { k: "new", label: "Nouveau", badge: 0 },
+    { k: "teams", label: "Équipes", badge: 0 },
+  ];
 
   return (
-    <div className="h-full overflow-y-auto px-4 py-3 space-y-4">
+    <div className="h-full overflow-y-auto px-4 py-3 space-y-3">
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold" style={{ color: "var(--pp-text-primary)" }}>Microsoft Teams</h2>
         <button onClick={load} className="text-xs px-2 py-1 rounded-full flex items-center gap-1"
@@ -1506,13 +1377,10 @@ function Teams365Panel({ profile }: { profile: any }) {
           <Users className="w-10 h-10 mx-auto mb-3" style={{ color: "var(--pp-brand-accent)" }} />
           <p className="font-semibold" style={{ color: "var(--pp-text-primary)" }}>Microsoft 365 non connecté</p>
           <p className="text-xs mt-1 mb-3" style={{ color: "var(--pp-text-muted)" }}>
-            Connectez votre compte Microsoft pour voir vos chats Teams, canaux et coéquipiers.
+            Connectez votre compte Microsoft pour voir vos discussions Teams et coéquipiers.
           </p>
-          <a
-            href="/mplanipret/more"
-            className="inline-block text-xs px-4 py-2 rounded-full text-white font-semibold"
-            style={{ background: "linear-gradient(135deg, var(--pp-brand-accent), var(--pp-brand-accent-2))" }}
-          >
+          <a href="/mplanipret/more" className="inline-block text-xs px-4 py-2 rounded-full text-white font-semibold"
+            style={{ background: "linear-gradient(135deg, var(--pp-brand-accent), var(--pp-brand-accent-2))" }}>
             Connecter Microsoft 365
           </a>
         </div>
@@ -1523,53 +1391,187 @@ function Teams365Panel({ profile }: { profile: any }) {
 
       {!err && (
         <>
-          <div>
-            <div className="text-[10px] uppercase tracking-wider mb-2" style={{ color: "var(--pp-text-muted)" }}>Chats récents</div>
-            {loading && !chats.length ? (
-              <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>Chargement…</div>
-            ) : chats.length === 0 ? (
-              <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>Aucun chat récent.</div>
-            ) : (
-              <div className="space-y-1">
-                {chats.map((c) => (
-                  <button
-                    key={c.id}
-                    onClick={() => setActive({ kind: "chat", id: c.id, title: c.topic })}
-                    className="w-full text-left px-3 py-2 rounded-lg flex flex-col"
-                    style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border)" }}
-                  >
-                    <div className="text-sm font-medium truncate" style={{ color: "var(--pp-text-primary)" }}>{c.topic}</div>
-                    {c.preview && (
-                      <div className="text-[11px] truncate" style={{ color: "var(--pp-text-muted)" }} dangerouslySetInnerHTML={{ __html: c.preview }} />
-                    )}
-                  </button>
-                ))}
-              </div>
-            )}
+          {/* Inner tabs */}
+          <div className="flex gap-1.5 overflow-x-auto no-scrollbar" style={{ scrollbarWidth: "none" }}>
+            {tabs.map((t) => {
+              const isActive = innerTab === t.k;
+              return (
+                <button key={t.k} onClick={() => setInnerTab(t.k)}
+                  className="shrink-0 px-3 py-1.5 text-xs font-semibold rounded-full flex items-center gap-1.5"
+                  style={isActive
+                    ? { background: "linear-gradient(135deg, var(--pp-brand-accent), var(--pp-brand-accent-2))", color: "white" }
+                    : { background: "var(--pp-bg-elevated)", color: "var(--pp-text-secondary)", border: "1px solid var(--pp-bg-border-2)" }}>
+                  {t.label}
+                  {!!t.badge && (
+                    <span className="min-w-[16px] h-4 px-1 rounded-full text-[10px] font-bold flex items-center justify-center"
+                      style={{ background: isActive ? "rgba(255,255,255,0.25)" : "#ef4444", color: "white" }}>
+                      {t.badge}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </div>
 
-          {teams.length > 0 && (
-            <div>
-              <div className="text-[10px] uppercase tracking-wider mb-2" style={{ color: "var(--pp-text-muted)" }}>Équipes & canaux</div>
-              <div className="space-y-2">
-                {teams.map((tm) => (
-                  <div key={tm.id} className="rounded-lg p-2" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border)" }}>
-                    <div className="text-xs font-semibold mb-1" style={{ color: "var(--pp-text-primary)" }}>{tm.displayName}</div>
-                    <div className="flex flex-wrap gap-1">
-                      {tm.channels.map((ch: any) => (
-                        <button
-                          key={ch.id}
-                          onClick={() => setActive({ kind: "channel", teamId: tm.id, channelId: ch.id, title: `${tm.displayName} · ${ch.displayName}` })}
-                          className="text-[11px] px-2 py-1 rounded-full"
-                          style={{ background: "var(--pp-bg-deep)", color: "var(--pp-text-primary)" }}
-                        >
-                          #{ch.displayName}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ))}
+          {/* Active discussions tab */}
+          {innerTab === "active" && (
+            <div className="space-y-2">
+              <input value={chatSearch} onChange={(e) => setChatSearch(e.target.value)} placeholder="Rechercher une discussion…"
+                className="w-full text-xs px-3 py-2 rounded-lg outline-none"
+                style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-primary)", border: "1px solid var(--pp-bg-border-2)" }} />
+              {loading && !chats.length ? (
+                <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>Chargement…</div>
+              ) : filteredChats.length === 0 ? (
+                <div className="rounded-xl p-6 text-center" style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)" }}>
+                  <MessageSquare className="w-8 h-8 mx-auto mb-2" style={{ color: "var(--pp-text-muted)" }} />
+                  <p className="text-xs" style={{ color: "var(--pp-text-muted)" }}>Aucune discussion active. Ouvrez l'onglet « Nouveau » pour démarrer.</p>
+                </div>
+              ) : (
+                <div className="space-y-1">
+                  {filteredChats.map((c) => {
+                    const unread = isChatUnread(c, reads);
+                    return (
+                      <button key={c.id} onClick={() => openThread({ kind: "chat", id: c.id, title: c.topic })}
+                        className="w-full text-left px-3 py-2.5 rounded-lg flex items-center gap-3"
+                        style={{ background: "var(--pp-bg-elevated)", border: `1px solid ${unread ? "var(--pp-brand-accent)" : "var(--pp-bg-border)"}` }}>
+                        <div className="w-10 h-10 rounded-full flex items-center justify-center text-white text-xs font-semibold shrink-0"
+                          style={{ background: "linear-gradient(135deg, var(--pp-brand-accent), var(--pp-brand-accent-2))" }}>
+                          {initials(c.topic || "?")}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="text-sm truncate" style={{ color: "var(--pp-text-primary)", fontWeight: unread ? 700 : 500 }}>{c.topic}</div>
+                            {c.lastUpdated && (
+                              <div className="text-[10px] shrink-0" style={{ color: "var(--pp-text-muted)" }}>{fmtTime(c.lastUpdated)}</div>
+                            )}
+                          </div>
+                          {c.preview && (
+                            <div className="text-[11px] truncate" style={{ color: unread ? "var(--pp-text-primary)" : "var(--pp-text-muted)" }}>
+                              {c.previewFrom ? `${c.previewFrom}: ` : ""}{String(c.preview).replace(/<[^>]*>/g, "").slice(0, 100)}
+                            </div>
+                          )}
+                        </div>
+                        {unread && <span className="w-2 h-2 rounded-full shrink-0" style={{ background: "#ef4444" }} />}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* New chat tab */}
+          {innerTab === "new" && (
+            <div className="space-y-2">
+              <div className="flex justify-end">
+                <button onClick={() => { setGroupMode((v) => !v); setSelectedIds(new Set()); }}
+                  className="text-xs px-2.5 py-1 rounded-full flex items-center gap-1 text-white"
+                  style={{ background: groupMode ? "var(--pp-danger)" : "linear-gradient(135deg, var(--pp-brand-accent), var(--pp-brand-accent-2))" }}>
+                  {groupMode ? <><X className="w-3 h-3" /> Annuler groupe</> : <><Plus className="w-3 h-3" /> Chat de groupe</>}
+                </button>
               </div>
+              {groupMode && (
+                <div className="rounded-lg p-3 space-y-2" style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-brand-accent)" }}>
+                  <div className="text-xs font-semibold" style={{ color: "var(--pp-text-primary)" }}>
+                    Nouveau chat de groupe · {selectedIds.size} sélectionné(s)
+                  </div>
+                  <input value={groupTopic} onChange={(e) => setGroupTopic(e.target.value)}
+                    placeholder="Nom du groupe (optionnel si 1:1)"
+                    className="w-full text-xs px-3 py-2 rounded-lg outline-none"
+                    style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-primary)", border: "1px solid var(--pp-bg-border-2)" }} />
+                  <button
+                    disabled={selectedIds.size === 0 || creating}
+                    onClick={() => {
+                      const ids = Array.from(selectedIds);
+                      const title = groupTopic || people.filter((p) => selectedIds.has(p.id)).map((p) => p.name).join(", ");
+                      startChatWith(ids, title, ids.length > 1 ? (groupTopic || undefined) : undefined);
+                    }}
+                    className="w-full text-xs py-2 rounded-lg text-white font-semibold disabled:opacity-50"
+                    style={{ background: "linear-gradient(135deg, var(--pp-brand-accent), var(--pp-brand-accent-2))" }}>
+                    {creating ? "Création…" : "Créer le chat"}
+                  </button>
+                </div>
+              )}
+              <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Rechercher un coéquipier…"
+                className="w-full text-xs px-3 py-2 rounded-lg outline-none"
+                style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-primary)", border: "1px solid var(--pp-bg-border-2)" }} />
+              {loading && !people.length ? (
+                <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>Chargement…</div>
+              ) : filteredPeople.length === 0 ? (
+                <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>Aucun coéquipier trouvé.</div>
+              ) : (
+                <div className="space-y-1">
+                  {filteredPeople.map((p) => {
+                    const selected = selectedIds.has(p.id);
+                    return (
+                      <button key={p.id}
+                        onClick={() => {
+                          if (groupMode) {
+                            setSelectedIds((prev) => { const n = new Set(prev); n.has(p.id) ? n.delete(p.id) : n.add(p.id); return n; });
+                          } else {
+                            startChatWith([p.id], p.name);
+                          }
+                        }}
+                        className="w-full text-left px-3 py-2 rounded-lg flex items-center gap-2"
+                        style={{ background: selected ? "rgba(46,155,220,0.12)" : "var(--pp-bg-elevated)", border: `1px solid ${selected ? "var(--pp-brand-accent)" : "var(--pp-bg-border)"}` }}>
+                        <div className="relative">
+                          <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-semibold"
+                            style={{ background: "linear-gradient(135deg, var(--pp-brand-accent), var(--pp-brand-accent-2))" }}>
+                            {initials(p.name || p.email || "?")}
+                          </div>
+                          <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2"
+                            style={{ background: presenceColor(p.presence?.availability), borderColor: "var(--pp-bg-elevated)" }} />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm font-medium truncate" style={{ color: "var(--pp-text-primary)" }}>{p.name}</div>
+                          <div className="text-[10px] truncate" style={{ color: "var(--pp-text-muted)" }}>
+                            {p.presence?.availability || "—"} {p.title ? `· ${p.title}` : ""}
+                          </div>
+                        </div>
+                        {groupMode ? (
+                          <div className="w-4 h-4 rounded border flex items-center justify-center"
+                            style={{ borderColor: "var(--pp-brand-accent)", background: selected ? "var(--pp-brand-accent)" : "transparent" }}>
+                            {selected && <CheckCircle2 className="w-3 h-3 text-white" />}
+                          </div>
+                        ) : (
+                          <MessageSquare className="w-4 h-4" style={{ color: "var(--pp-text-muted)" }} />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Teams & channels */}
+          {innerTab === "teams" && (
+            <div>
+              <div className="text-[10px] uppercase tracking-wider mb-2 flex items-center justify-between" style={{ color: "var(--pp-text-muted)" }}>
+                <span>Équipes & canaux ({teams.length})</span>
+                {diag.teams_error && <span style={{ color: "#dc2626" }}>Err: {String(diag.teams_error).slice(0, 40)}</span>}
+              </div>
+              {teams.length === 0 ? (
+                <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>Aucune équipe.</div>
+              ) : (
+                <div className="space-y-2">
+                  {teams.map((tm) => (
+                    <div key={tm.id} className="rounded-lg p-2" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border)" }}>
+                      <div className="text-xs font-semibold mb-1" style={{ color: "var(--pp-text-primary)" }}>{tm.displayName}</div>
+                      <div className="flex flex-wrap gap-1">
+                        {tm.channels.map((ch: any) => (
+                          <button key={ch.id}
+                            onClick={() => openThread({ kind: "channel", teamId: tm.id, channelId: ch.id, title: `${tm.displayName} · ${ch.displayName}` })}
+                            className="text-[11px] px-2 py-1 rounded-full"
+                            style={{ background: "var(--pp-bg-deep)", color: "var(--pp-text-primary)" }}>
+                            #{ch.displayName}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </>
@@ -1583,10 +1585,15 @@ function TeamsThreadView({ target, onClose }: {
   onClose: () => void;
 }) {
   const [messages, setMessages] = useState<any[]>([]);
+  const [meId, setMeId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [pendingAtts, setPendingAtts] = useState<any[]>([]);
   const [sendStatus, setSendStatus] = useState<null | { kind: "ok" | "err"; message: string; lastText?: string }>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
 
   const invokeBody = target.kind === "chat"
     ? { chat_id: target.id }
@@ -1595,7 +1602,7 @@ function TeamsThreadView({ target, onClose }: {
   const load = async () => {
     setLoading(true);
     const { data, error } = await supabase.functions.invoke("ms365-teams-messages", {
-      body: { action: "list", ...invokeBody, top: 40 },
+      body: { action: "list", ...invokeBody, top: 50 },
     });
     setLoading(false);
     let payload: any = data ?? {};
@@ -1611,15 +1618,46 @@ function TeamsThreadView({ target, onClose }: {
       return;
     }
     if (error) { toast.error(error.message || "Erreur"); return; }
+    setMeId(payload.me_id ?? null);
     setMessages(((payload.messages) || []).slice().reverse());
+    setTimeout(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" }); }, 50);
   };
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+  useEffect(() => {
+    load();
+    if (target.kind === "chat") markChatRead(target.id);
+    const id = window.setInterval(() => load(), 15_000);
+    return () => window.clearInterval(id);
+    /* eslint-disable-next-line */
+  }, []);
 
-  const doSend = async (content: string) => {
+  const onPickFiles = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    setUploading(true);
+    try {
+      for (const file of Array.from(files)) {
+        if (file.size > 15 * 1024 * 1024) { toast.error(`${file.name}: trop volumineux (max 15 Mo)`); continue; }
+        const buf = await file.arrayBuffer();
+        const bytes = new Uint8Array(buf);
+        let binary = ""; for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+        const b64 = btoa(binary);
+        const { data, error } = await supabase.functions.invoke("ms365-teams-messages", {
+          body: { action: "upload_attachment", filename: file.name, mimeType: file.type, contentBase64: b64 },
+        });
+        const payload: any = data ?? {};
+        if (error || payload?.error) { toast.error(`${file.name}: ${payload?.error || error?.message || "échec"}`); continue; }
+        if (payload.attachment) setPendingAtts((prev) => [...prev, payload.attachment]);
+      }
+    } finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
+
+  const doSend = async (content: string, atts: any[]) => {
     setSending(true);
     setSendStatus(null);
     const { data, error } = await supabase.functions.invoke("ms365-teams-messages", {
-      body: { action: "send", ...invokeBody, content, contentType: "text" },
+      body: { action: "send", ...invokeBody, content, contentType: "text", attachments: atts },
     });
     setSending(false);
     let payload: any = data ?? {};
@@ -1635,38 +1673,77 @@ function TeamsThreadView({ target, onClose }: {
     }
     setSendStatus({ kind: "ok", message: "Message envoyé" });
     setText("");
+    setPendingAtts([]);
     load();
-    setTimeout(() => setSendStatus((s) => (s?.kind === "ok" ? null : s)), 2500);
+    setTimeout(() => setSendStatus((s) => (s?.kind === "ok" ? null : s)), 2000);
   };
 
   const send = () => {
-    if (!text.trim() || sending) return;
-    doSend(text.trim());
+    if ((!text.trim() && pendingAtts.length === 0) || sending) return;
+    doSend(text.trim(), pendingAtts);
   };
 
   const retry = () => {
     if (!sendStatus?.lastText || sending) return;
-    doSend(sendStatus.lastText);
+    doSend(sendStatus.lastText, []);
   };
+
+  const removePending = (id: string) => setPendingAtts((prev) => prev.filter((a) => a.id !== id));
 
   return (
     <div className="h-full flex flex-col" style={{ background: "var(--pp-bg-base)" }}>
-      <div className="px-4 py-3 flex items-center gap-2" style={{ borderBottom: "1px solid var(--pp-bg-border)" }}>
+      <div className="px-4 py-3 flex items-center gap-2" style={{ borderBottom: "1px solid var(--pp-bg-border)", background: "var(--pp-bg-deep)" }}>
         <button onClick={onClose} className="p-1"><ArrowLeft className="w-4 h-4" style={{ color: "var(--pp-text-primary)" }} /></button>
+        <div className="w-8 h-8 rounded-full flex items-center justify-center text-white text-xs font-semibold"
+          style={{ background: "linear-gradient(135deg, var(--pp-brand-accent), var(--pp-brand-accent-2))" }}>
+          {initials(target.title || "?")}
+        </div>
         <div className="flex-1 text-sm font-semibold truncate" style={{ color: "var(--pp-text-primary)" }}>{target.title}</div>
         <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-muted)" }}>
           {target.kind === "chat" ? "Chat" : "Canal"}
         </span>
       </div>
-      <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
-        {loading ? <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>Chargement…</div> :
-          messages.length === 0 ? <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>Aucun message.</div> :
-          messages.map((m) => (
-            <div key={m.id} className="rounded-lg px-3 py-2" style={{ background: "var(--pp-bg-elevated)" }}>
-              <div className="text-[10px] mb-0.5" style={{ color: "var(--pp-text-muted)" }}>{m.from} · {fmtTime(m.createdAt)}</div>
-              <div className="text-sm" style={{ color: "var(--pp-text-primary)" }} dangerouslySetInnerHTML={{ __html: m.content }} />
-            </div>
-          ))
+      <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-2">
+        {loading && messages.length === 0 ? <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>Chargement…</div> :
+          messages.length === 0 ? <div className="text-xs text-center py-8" style={{ color: "var(--pp-text-muted)" }}>Aucun message. Envoyez le premier !</div> :
+          messages.map((m) => {
+            const own = !!m.isMe || (meId && m.fromId === meId);
+            return (
+              <div key={m.id} className={`flex items-end gap-2 ${own ? "flex-row-reverse" : ""}`}>
+                {!own && (
+                  <div className="w-7 h-7 rounded-full flex items-center justify-center text-white text-[10px] font-semibold shrink-0"
+                    style={{ background: "linear-gradient(135deg, #6366f1, #8b5cf6)" }}>
+                    {initials(m.from || "?")}
+                  </div>
+                )}
+                <div className={`max-w-[78%] rounded-2xl px-3 py-2 ${own ? "rounded-br-sm" : "rounded-bl-sm"}`}
+                  style={{
+                    background: own ? "linear-gradient(135deg, var(--pp-brand-accent), var(--pp-brand-accent-2))" : "var(--pp-bg-elevated)",
+                    color: own ? "white" : "var(--pp-text-primary)",
+                  }}>
+                  {!own && (
+                    <div className="text-[10px] mb-0.5 font-semibold" style={{ color: "var(--pp-brand-accent)" }}>{m.from}</div>
+                  )}
+                  {m.content && (
+                    <div className="text-sm break-words" dangerouslySetInnerHTML={{ __html: m.content }} />
+                  )}
+                  {(m.attachments || []).length > 0 && (
+                    <div className="mt-1.5 space-y-1">
+                      {m.attachments.map((a: any) => (
+                        <a key={a.id} href={a.contentUrl} target="_blank" rel="noopener noreferrer"
+                          className="flex items-center gap-1.5 text-[11px] px-2 py-1 rounded-lg"
+                          style={{ background: own ? "rgba(255,255,255,0.2)" : "var(--pp-bg-deep)", color: own ? "white" : "var(--pp-text-primary)" }}>
+                          <Paperclip className="w-3 h-3" />
+                          <span className="truncate">{a.name || "Fichier"}</span>
+                        </a>
+                      ))}
+                    </div>
+                  )}
+                  <div className="text-[9px] mt-1 opacity-70">{fmtTime(m.createdAt)}</div>
+                </div>
+              </div>
+            );
+          })
         }
       </div>
       {sendStatus && (
@@ -1685,7 +1762,24 @@ function TeamsThreadView({ target, onClose }: {
           )}
         </div>
       )}
+      {pendingAtts.length > 0 && (
+        <div className="px-3 py-2 flex flex-wrap gap-1.5" style={{ borderTop: "1px solid var(--pp-bg-border)", background: "var(--pp-bg-deep)" }}>
+          {pendingAtts.map((a) => (
+            <span key={a.id} className="inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-full"
+              style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-primary)" }}>
+              <Paperclip className="w-3 h-3" />
+              <span className="max-w-[140px] truncate">{a.name}</span>
+              <button onClick={() => removePending(a.id)}><X className="w-3 h-3" /></button>
+            </span>
+          ))}
+        </div>
+      )}
       <div className="px-3 py-2 flex items-center gap-2" style={{ borderTop: "1px solid var(--pp-bg-border)", background: "var(--pp-bg-deep)" }}>
+        <input ref={fileRef} type="file" multiple className="hidden" onChange={(e) => onPickFiles(e.target.files)} />
+        <button onClick={() => fileRef.current?.click()} disabled={uploading} className="p-2 rounded-full"
+          style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-muted)", opacity: uploading ? 0.5 : 1 }}>
+          {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Paperclip className="w-4 h-4" />}
+        </button>
         <input
           value={text}
           onChange={(e) => setText(e.target.value)}
@@ -1696,9 +1790,9 @@ function TeamsThreadView({ target, onClose }: {
         />
         <button
           onClick={send}
-          disabled={sending || !text.trim()}
+          disabled={sending || (!text.trim() && pendingAtts.length === 0)}
           className="p-2 rounded-full"
-          style={{ background: "linear-gradient(135deg, var(--pp-brand-accent), var(--pp-brand-accent-2))", color: "white", opacity: sending || !text.trim() ? 0.5 : 1 }}
+          style={{ background: "linear-gradient(135deg, var(--pp-brand-accent), var(--pp-brand-accent-2))", color: "white", opacity: sending || (!text.trim() && pendingAtts.length === 0) ? 0.5 : 1 }}
         >
           {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
         </button>
@@ -1706,3 +1800,4 @@ function TeamsThreadView({ target, onClose }: {
     </div>
   );
 }
+

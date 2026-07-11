@@ -10,6 +10,7 @@ const ICONS: Record<AvaSuggestion["kind"], any> = {
   email: Mail,
   reminder: BellRing,
   maestro_action: Workflow,
+  ms365_action: Workflow,
   open_voice: Mic,
   open_coach: Sparkles,
 };
