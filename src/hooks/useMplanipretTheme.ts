@@ -8,17 +8,21 @@ function detect(): MpTheme {
     const v = localStorage.getItem(KEY);
     if (v === "light" || v === "dark") return v;
   } catch {}
-  // Default light to match Planiprêt admin polished finance look.
-  return "light";
+  // Default dark for the native iOS app (Aurora dark theme).
+  // The user can still toggle to light via the moon/sun button.
+  return "dark";
 }
 
 const listeners = new Set<(t: MpTheme) => void>();
 
 function applyToDom(t: MpTheme) {
   if (typeof document === "undefined") return;
+  // Apply to all planipret-mobile-scope elements
   document.querySelectorAll<HTMLElement>(".planipret-mobile-scope").forEach((el) => {
     el.setAttribute("data-pp-theme", t);
   });
+  // Also apply to root html element so global variables resolve correctly
+  document.documentElement.setAttribute("data-pp-theme", t);
 }
 
 export function useMplanipretTheme() {
