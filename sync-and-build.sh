@@ -80,6 +80,7 @@ curl -sf "$GITHUB_RAW/tsconfig.json"                           -o "$STANDALONE_D
 curl -sf "$GITHUB_RAW/src/integrations/supabase/client.ts"     -o "$STANDALONE_DIR/src/integrations/supabase/client.ts"     && echo "  ✅ supabase/client.ts" || echo "  ⚠️  supabase/client.ts: échec"
 curl -sf "$GITHUB_RAW/src/components/auth/MplanipretGuard.tsx" -o "$STANDALONE_DIR/src/components/auth/MplanipretGuard.tsx" && echo "  ✅ MplanipretGuard.tsx"|| echo "  ⚠️  MplanipretGuard.tsx: échec"
 curl -sf "$GITHUB_RAW/src/index.tsx"                           -o "$STANDALONE_DIR/src/index.tsx"                           && echo "  ✅ index.tsx"          || echo "  ⚠️  index.tsx: échec"
+curl -sf "$GITHUB_RAW/package.json"                            -o "$STANDALONE_DIR/package.json"                            && echo "  ✅ package.json"       || echo "  ⚠️  package.json: échec"
 
 # ─── Étape 6 : Build ─────────────────────────────────────────────────────────
 echo "🔨 Build..."
