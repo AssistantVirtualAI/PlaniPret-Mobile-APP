@@ -45,5 +45,36 @@
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
+
+	<!-- ===== Permissions requises par les plugins Capacitor ===== -->
+
+	<!-- Contacts — requis par @capacitor-community/contacts -->
+	<key>NSContactsUsageDescription</key>
+	<string>Planiprêt utilise vos contacts pour faciliter les appels et la recherche de clients depuis l'annuaire.</string>
+
+	<!-- Microphone — requis pour les appels VoIP -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Planiprêt utilise le microphone pour les appels téléphoniques VoIP.</string>
+
+	<!-- Notifications push -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+		<string>voip</string>
+		<string>fetch</string>
+	</array>
+
+	<!-- Caméra (optionnel — pour les photos de profil) -->
+	<key>NSCameraUsageDescription</key>
+	<string>Planiprêt peut utiliser la caméra pour mettre à jour votre photo de profil.</string>
+
+	<!-- Bibliothèque photos (optionnel) -->
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Planiprêt peut accéder à votre bibliothèque de photos pour mettre à jour votre photo de profil.</string>
+
+	<!-- Face ID / Touch ID (optionnel) -->
+	<key>NSFaceIDUsageDescription</key>
+	<string>Planiprêt peut utiliser Face ID pour sécuriser l'accès à votre compte.</string>
+
 </dict>
 </plist>
