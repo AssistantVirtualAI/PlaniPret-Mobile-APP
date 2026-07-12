@@ -1,5 +1,6 @@
 #!/bin/bash
 # sync-and-build.sh — Synchronise depuis Lovable et build pour iOS
+# Usage : ./sync-and-build.sh
 set -e
 
 LOVABLE_DIR="$HOME/Documents/lovable-planipret"
@@ -8,19 +9,37 @@ LOVABLE_REPO="https://github.com/AssistantVirtualAI/attach-app-creator-8134a2fa.
 LOVABLE_BRANCH="Planipret"
 GITHUB_RAW="https://raw.githubusercontent.com/AssistantVirtualAI/PlaniPret-Mobile-APP/main"
 
+cd "$STANDALONE_DIR"
+
 # ─── Étape 1 : Mettre à jour le standalone depuis GitHub ─────────────────────
 echo "⬇️  Mise à jour standalone depuis GitHub..."
-cd "$STANDALONE_DIR"
 git fetch origin
 git reset --hard origin/main
 echo "  ✅ Standalone à jour"
 
-# ─── Étape 2 : Installer les dépendances si nécessaire ───────────────────────
+# ─── Étape 2 : Vérifier et installer les dépendances critiques ───────────────
+echo "🔧 Vérification des dépendances..."
+
+# Installer @vitejs/plugin-react-swc si absent
 if ! node -e "require('@vitejs/plugin-react-swc')" 2>/dev/null; then
-  echo "📦 Installation de @vitejs/plugin-react-swc..."
-  npm install --save-dev @vitejs/plugin-react-swc
-  echo "  ✅ Installé"
+  echo "  📦 Installation de @vitejs/plugin-react-swc..."
+  npm install --save-dev @vitejs/plugin-react-swc --silent
 fi
+
+# Installer le binaire natif Rollup pour Mac ARM64 si absent
+# Sans ce binaire, Rollup utilise JS pur → build 15-18 minutes au lieu de ~1 min
+ROLLUP_VERSION=$(node -e "console.log(require('./node_modules/rollup/package.json').version)" 2>/dev/null || echo "")
+ROLLUP_ARM64_DIR="$STANDALONE_DIR/node_modules/@rollup/rollup-darwin-arm64"
+
+if [ "$(uname -m)" = "arm64" ] && [ ! -d "$ROLLUP_ARM64_DIR" ] && [ -n "$ROLLUP_VERSION" ]; then
+  echo "  📦 Installation du binaire Rollup natif ARM64 (Mac M-series)..."
+  npm install --save-optional "@rollup/rollup-darwin-arm64@$ROLLUP_VERSION" --silent
+  echo "  ✅ Rollup ARM64 installé — build sera ~15x plus rapide"
+elif [ "$(uname -m)" = "arm64" ] && [ -d "$ROLLUP_ARM64_DIR" ]; then
+  echo "  ✅ Rollup ARM64 natif présent"
+fi
+
+echo "  ✅ Dépendances OK"
 
 # ─── Étape 3 : S'assurer que le repo Lovable est sain ────────────────────────
 echo "🔄 Vérification du repo Lovable..."
@@ -66,4 +85,8 @@ curl -sf "$GITHUB_RAW/src/index.tsx"                           -o "$STANDALONE_D
 echo "🔨 Build..."
 cd "$STANDALONE_DIR"
 npm run build
-echo "✅ Terminé ! Lancez : npx cap sync ios && npx cap open ios"
+
+echo ""
+echo "✅ Build terminé !"
+echo "👉 Prochaine étape :"
+echo "   ./node_modules/.bin/cap sync ios && ./node_modules/.bin/cap open ios"
