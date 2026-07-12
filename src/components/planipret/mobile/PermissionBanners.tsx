@@ -1,70 +1,58 @@
-// Inline denial banners for mic / notifications / contacts.
+// Inline denial banner — compact, microphone only (le plus critique pour VoIP).
+// N'affiche qu'une seule bannière pour ne pas surcharger l'écran.
 import { useEffect, useState } from "react";
-import { Bell, Mic, Users } from "lucide-react";
+import { Mic } from "lucide-react";
 import { getPermissionStatuses } from "@/lib/native/permissions/orchestrator";
 import { openAppSettings, isNative } from "@/lib/native/permissions/platform";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 
-type Kind = "notifications" | "microphone" | "contacts";
-const iconFor: Record<Kind, any> = { notifications: Bell, microphone: Mic, contacts: Users };
-
-const label: Record<"fr" | "en", Record<Kind, string>> = {
-  fr: {
-    notifications: "Notifications désactivées. Activez-les pour recevoir vos appels en arrière-plan.",
-    microphone: "Microphone désactivé. Activez-le pour passer et recevoir des appels.",
-    contacts: "Contacts désactivés. Activez-les pour identifier vos appelants.",
-  },
-  en: {
-    notifications: "Notifications disabled. Enable them to receive calls in the background.",
-    microphone: "Microphone disabled. Enable it to place and receive calls.",
-    contacts: "Contacts disabled. Enable them to identify your callers.",
-  },
-};
-
 export default function PermissionBanners() {
   const { lang } = useMplanipretLang();
-  const [denied, setDenied] = useState<Kind[]>([]);
+  const [micDenied, setMicDenied] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
 
   useEffect(() => {
     (async () => {
       if (!(await isNative())) return;
       const s = await getPermissionStatuses();
-      const list: Kind[] = [];
-      if (s.notifications === "denied") list.push("notifications");
-      if (s.microphone === "denied") list.push("microphone");
-      if (s.contacts === "denied") list.push("contacts");
-      setDenied(list);
+      if (s.microphone === "denied") setMicDenied(true);
     })();
   }, []);
 
-  if (!denied.length) return null;
-  const key = lang === "en" ? "en" : "fr";
+  if (!micDenied || dismissed) return null;
+
+  const isFr = lang !== "en";
 
   return (
-    <div className="flex flex-col gap-2 px-3 pt-2">
-      {denied.map((k) => {
-        const Icon = iconFor[k];
-        return (
-          <div
-            key={k}
-            role="alert"
-            className="flex items-start gap-3 rounded-xl p-3"
-            style={{ background: "rgba(232,76,76,0.10)", border: "1px solid rgba(232,76,76,0.35)" }}
+    <div className="px-4 pt-1">
+      <div
+        role="alert"
+        className="flex items-center gap-2.5 rounded-xl px-3 py-2.5"
+        style={{
+          background: "rgba(232,76,76,0.08)",
+          border: "1px solid rgba(232,76,76,0.25)",
+        }}
+      >
+        <Mic className="w-3.5 h-3.5 flex-shrink-0" style={{ color: "#E84C4C" }} />
+        <div className="flex-1 text-[11.5px] leading-snug" style={{ color: "var(--pp-text-secondary)" }}>
+          {isFr ? "Microphone désactivé." : "Microphone disabled."}
+          <button
+            onClick={openAppSettings}
+            className="ml-1.5 underline font-semibold"
+            style={{ color: "var(--pp-brand-accent)" }}
           >
-            <Icon className="w-4 h-4 mt-0.5 flex-shrink-0" style={{ color: "#E84C4C" }} />
-            <div className="flex-1 text-[12.5px] leading-snug" style={{ color: "var(--pp-text-primary)" }}>
-              {label[key][k]}
-              <button
-                onClick={openAppSettings}
-                className="ml-2 underline font-semibold"
-                style={{ color: "var(--pp-brand-accent)" }}
-              >
-                {lang === "fr" ? "Ouvrir les réglages" : "Open Settings"}
-              </button>
-            </div>
-          </div>
-        );
-      })}
+            {isFr ? "Réglages" : "Settings"}
+          </button>
+        </div>
+        <button
+          onClick={() => setDismissed(true)}
+          className="text-[11px] px-1.5 py-0.5 rounded"
+          style={{ color: "var(--pp-text-faint)" }}
+          aria-label="Fermer"
+        >
+          ✕
+        </button>
+      </div>
     </div>
   );
 }
