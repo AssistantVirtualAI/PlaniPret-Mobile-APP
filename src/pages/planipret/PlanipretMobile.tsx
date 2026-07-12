@@ -506,9 +506,23 @@ export default function PlanipretMobile() {
   }, [profile?.user_id, location.pathname]);
 
   const loadProfile = async () => {
+    // iOS WKWebView: hard timeout — if the profile fetch hangs on cold start
+    // (network not ready yet in WKWebView), fail open to the login screen
+    // instead of staying stuck on "Chargement..." indefinitely.
+    let timedOut = false;
+    const loadTimeout = setTimeout(() => {
+      timedOut = true;
+      console.warn('[PlanipretMobile] loadProfile timed out — showing login screen');
+      setAccessError('unauthenticated');
+      setLoading(false);
+    }, 8000);
+
+    try {
     const { data: { session } } = await supabase.auth.getSession();
+    if (timedOut) return;
     const user = session?.user ?? null;
     if (!user) {
+      clearTimeout(loadTimeout);
       recordRedirect(location.pathname, ROUTES.MPLANIPRET, "PlanipretMobile.loadProfile", "no auth session — stay inside mobile app");
       setProfile(null);
       setAccessError("unauthenticated");
@@ -531,19 +545,24 @@ export default function PlanipretMobile() {
         sessionStorage.setItem("pp_ms_captured", session.access_token);
       }
     } catch (_) { /* non-blocking */ }
+    if (timedOut) return;
     const { data, error } = await supabase.from("planipret_profiles").select("*").eq("user_id", user.id).maybeSingle();
+    if (timedOut) return;
     if (error) {
+      clearTimeout(loadTimeout);
       recordRedirect(location.pathname, ROUTES.MPLANIPRET, "PlanipretMobile.loadProfile", "profile load failed");
       setAccessError("load_failed");
       setLoading(false);
       return;
     }
     if (!data) {
+      clearTimeout(loadTimeout);
       recordRedirect(location.pathname, ROUTES.MPLANIPRET, "PlanipretMobile.loadProfile", "missing planipret_profiles row");
       setAccessError("missing_profile");
       setLoading(false);
       return;
     }
+    clearTimeout(loadTimeout);
     setAccessError(null);
     setProfile(data);
     setLoading(false);
@@ -557,6 +576,14 @@ export default function PlanipretMobile() {
       try {
         await supabase.from("planipret_profiles").update({ language: fallback }).eq("user_id", user.id);
       } catch { /* non-blocking */ }
+    }
+    } catch (e) {
+      clearTimeout(loadTimeout);
+      console.error('[PlanipretMobile] loadProfile crashed:', e);
+      if (!timedOut) {
+        setAccessError('unauthenticated');
+        setLoading(false);
+      }
     }
   };
 
