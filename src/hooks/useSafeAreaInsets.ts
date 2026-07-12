@@ -1,0 +1,46 @@
+import { useEffect, useState } from "react";
+
+/**
+ * Reads the device's safe-area insets from CSS env() values.
+ * Works in Capacitor (iOS/Android) and in any browser that supports
+ * viewport-fit=cover + env(safe-area-inset-*).
+ *
+ * Returns 0 for insets on devices without a notch / when the WebView
+ * does not expose them, so it is safe to use on Android.
+ */
+export function useSafeAreaInsets() {
+  const [insets, setInsets] = useState({ top: 0, bottom: 0, left: 0, right: 0 });
+
+  useEffect(() => {
+    const el = document.createElement("div");
+    el.style.cssText = `
+      position: fixed;
+      top: env(safe-area-inset-top);
+      left: env(safe-area-inset-left);
+      right: env(safe-area-inset-right);
+      bottom: env(safe-area-inset-bottom);
+      pointer-events: none;
+      visibility: hidden;
+    `;
+    document.body.appendChild(el);
+
+    const read = () => {
+      const rect = el.getBoundingClientRect();
+      setInsets({
+        top: Math.round(rect.top),
+        bottom: Math.round(window.innerHeight - rect.bottom),
+        left: Math.round(rect.left),
+        right: Math.round(window.innerWidth - rect.right),
+      });
+    };
+
+    read();
+    window.addEventListener("resize", read);
+    return () => {
+      window.removeEventListener("resize", read);
+      el.remove();
+    };
+  }, []);
+
+  return insets;
+}

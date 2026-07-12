@@ -20,4 +20,17 @@ end
 
 post_install do |installer|
   assertDeploymentTarget(installer)
+  # Accélère la compilation des Pods en mode Debug
+  installer.pods_project.targets.each do |target|
+    target.build_configurations.each do |config|
+      # Désactiver le bitcode (déprécié depuis Xcode 14, ralentit le build)
+      config.build_settings['ENABLE_BITCODE'] = 'NO'
+      # Compilation incrémentale pour les Pods en Debug
+      if config.name == 'Debug'
+        config.build_settings['SWIFT_COMPILATION_MODE'] = 'singlefile'
+        config.build_settings['GCC_OPTIMIZATION_LEVEL'] = '0'
+        config.build_settings['SWIFT_OPTIMIZATION_LEVEL'] = '-Onone'
+      end
+    end
+  end
 end
