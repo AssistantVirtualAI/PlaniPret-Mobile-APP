@@ -17,26 +17,39 @@ git fetch origin
 git reset --hard origin/main
 echo "  ✅ Standalone à jour"
 
-# ─── Étape 2 : Vérifier et installer les dépendances critiques ───────────────
-echo "🔧 Vérification des dépendances..."
+# ─── Étape 2 : Corriger node_modules/rollup (retirer wasm-node si présent) ───
+echo "🔧 Vérification Rollup natif ARM64..."
+
+if [ "$(uname -m)" = "arm64" ]; then
+  ROLLUP_NM="$STANDALONE_DIR/node_modules/rollup"
+  WASM_NM="$STANDALONE_DIR/node_modules/@rollup/wasm-node"
+
+  # Détecter si node_modules/rollup est en fait wasm-node (fichier wasm présent)
+  if [ -f "$ROLLUP_NM/dist/rollup.wasm.node" ] || grep -q "wasm" "$ROLLUP_NM/package.json" 2>/dev/null; then
+    echo "  ⚠️  node_modules/rollup contient wasm-node — correction en cours..."
+    rm -rf "$ROLLUP_NM"
+    rm -rf "$WASM_NM"
+    npm install --ignore-scripts --prefer-offline --silent 2>/dev/null || npm install --ignore-scripts --silent
+    echo "  ✅ Rollup réinstallé proprement"
+  fi
+
+  # Installer le binaire natif ARM64 si absent
+  ROLLUP_VERSION=$(node -e "console.log(require('./node_modules/rollup/package.json').version)" 2>/dev/null || echo "")
+  ROLLUP_ARM64_DIR="$STANDALONE_DIR/node_modules/@rollup/rollup-darwin-arm64"
+
+  if [ ! -d "$ROLLUP_ARM64_DIR" ] && [ -n "$ROLLUP_VERSION" ]; then
+    echo "  📦 Installation du binaire Rollup natif ARM64..."
+    npm install --save-optional "@rollup/rollup-darwin-arm64@$ROLLUP_VERSION" --silent
+    echo "  ✅ Rollup ARM64 installé — build sera ~10x plus rapide"
+  elif [ -d "$ROLLUP_ARM64_DIR" ]; then
+    echo "  ✅ Rollup ARM64 natif présent"
+  fi
+fi
 
 # Installer @vitejs/plugin-react-swc si absent
 if ! node -e "require('@vitejs/plugin-react-swc')" 2>/dev/null; then
   echo "  📦 Installation de @vitejs/plugin-react-swc..."
   npm install --save-dev @vitejs/plugin-react-swc --silent
-fi
-
-# Installer le binaire natif Rollup pour Mac ARM64 si absent
-# Sans ce binaire, Rollup utilise JS pur → build 15-18 minutes au lieu de ~1 min
-ROLLUP_VERSION=$(node -e "console.log(require('./node_modules/rollup/package.json').version)" 2>/dev/null || echo "")
-ROLLUP_ARM64_DIR="$STANDALONE_DIR/node_modules/@rollup/rollup-darwin-arm64"
-
-if [ "$(uname -m)" = "arm64" ] && [ ! -d "$ROLLUP_ARM64_DIR" ] && [ -n "$ROLLUP_VERSION" ]; then
-  echo "  📦 Installation du binaire Rollup natif ARM64 (Mac M-series)..."
-  npm install --save-optional "@rollup/rollup-darwin-arm64@$ROLLUP_VERSION" --silent
-  echo "  ✅ Rollup ARM64 installé — build sera ~15x plus rapide"
-elif [ "$(uname -m)" = "arm64" ] && [ -d "$ROLLUP_ARM64_DIR" ]; then
-  echo "  ✅ Rollup ARM64 natif présent"
 fi
 
 echo "  ✅ Dépendances OK"
