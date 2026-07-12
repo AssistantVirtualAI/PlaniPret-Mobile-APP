@@ -15,6 +15,13 @@ import { useMplanipretLang } from "@/hooks/useMplanipretLang";
  *    is a completely separate surface. If the user has no Planiprêt profile
  *    we still let `PlanipretMobile` render its own "no profile" state so
  *    `/mplanipret` never collapses into the admin portal by accident.
+ *
+ * iOS WKWebView fix:
+ *  - Uses getSession() instead of getUser() — getSession() reads from the
+ *    local storage cache first (fast on iOS). getUser() always makes a
+ *    network round-trip which can hang on cold start in WKWebView.
+ *  - Hard timeout of 4 s: if auth check doesn't complete, fail open
+ *    (show the app / login screen) rather than staying stuck on loading.
  */
 export function MplanipretGuard({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
@@ -24,32 +31,59 @@ export function MplanipretGuard({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (cancelled) return;
 
-      if (!user) {
-        recordRedirect(location.pathname, ROUTES.MPLANIPRET, "MplanipretGuard", "no auth session — render inline mobile login");
+    // Hard timeout — if auth check hangs (iOS WKWebView cold start), fail open.
+    const failOpenTimer = setTimeout(() => {
+      if (!cancelled) {
+        console.warn("[MplanipretGuard] Auth check timed out — failing open");
         setState("allow");
-        return;
       }
+    }, 4000);
 
-      // Block Lemtel-only users — they have no business in the Planiprêt mobile app.
+    (async () => {
       try {
-        const { data: lemtelOnly } = await supabase.rpc("is_lemtel_only", { _user_id: user.id });
+        // Use getSession() — reads local storage cache first (fast on iOS),
+        // then validates in background. Much more reliable than getUser() on
+        // native WKWebView where the network call can block indefinitely.
+        const { data: { session } } = await supabase.auth.getSession();
         if (cancelled) return;
-        if (lemtelOnly === true) {
-          recordRedirect(location.pathname, "/portal", "MplanipretGuard", "lemtel-only user");
-          navigate("/portal", { replace: true });
+
+        if (!session) {
+          recordRedirect(location.pathname, ROUTES.MPLANIPRET, "MplanipretGuard", "no auth session — render inline mobile login");
+          clearTimeout(failOpenTimer);
+          setState("allow");
           return;
         }
-      } catch {
-        // RPC failure should not push the user into the admin portal — fail open here.
-      }
 
-      setState("allow");
+        // Block Lemtel-only users — they have no business in the Planiprêt mobile app.
+        try {
+          const { data: lemtelOnly } = await supabase.rpc("is_lemtel_only", { _user_id: session.user.id });
+          if (cancelled) return;
+          if (lemtelOnly === true) {
+            recordRedirect(location.pathname, "/portal", "MplanipretGuard", "lemtel-only user");
+            clearTimeout(failOpenTimer);
+            navigate("/portal", { replace: true });
+            return;
+          }
+        } catch {
+          // RPC failure should not push the user into the admin portal — fail open here.
+        }
+
+        clearTimeout(failOpenTimer);
+        setState("allow");
+      } catch (e) {
+        console.error("[MplanipretGuard] Auth check failed:", e);
+        if (!cancelled) {
+          clearTimeout(failOpenTimer);
+          setState("allow");
+        }
+      }
     })();
-    return () => { cancelled = true; };
+
+    return () => {
+      cancelled = true;
+      clearTimeout(failOpenTimer);
+    };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
