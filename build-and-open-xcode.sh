@@ -1,6 +1,8 @@
 #!/bin/bash
-# build-and-open-xcode.sh — Corrige Rollup + Build Vite + sync Capacitor + ouvrir Xcode
-# Usage : ./build-and-open-xcode.sh
+# build-and-open-xcode.sh — Build rapide + sync Capacitor + ouvrir Xcode
+# Usage :
+#   ./build-and-open-xcode.sh          → build rapide (sans minification, ~2-3 min)
+#   ./build-and-open-xcode.sh prod     → build production (avec minification, ~8 min)
 set -e
 
 STANDALONE_DIR="$HOME/Documents/planipret-standalone"
@@ -30,8 +32,13 @@ if [ "$(uname -m)" = "arm64" ]; then
 fi
 
 # ─── Build Vite ───────────────────────────────────────────────────────────────
-echo "🔨 Build Vite..."
-npm run build
+if [ "$1" = "prod" ]; then
+  echo "🔨 Build production (avec minification)..."
+  npm run build
+else
+  echo "🔨 Build rapide (sans minification — pour test iOS)..."
+  npm run build:fast
+fi
 
 echo ""
 echo "📱 Sync Capacitor iOS..."
