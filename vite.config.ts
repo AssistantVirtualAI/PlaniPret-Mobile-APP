@@ -49,7 +49,7 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
-    target: 'es2015',
+    target: 'es2020',
     chunkSizeWarningLimit: 600,
     // Use esbuild for minification (faster than terser, default in Vite 5).
     minify: 'esbuild',
