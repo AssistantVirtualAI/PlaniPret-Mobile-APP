@@ -23,12 +23,9 @@ export default defineConfig({
     alias: {
       '@': path.resolve(__dirname, './src'),
       // Replace framer-motion with a lightweight shim on mobile.
-      // See src/lib/motion-shim.tsx for the rationale (iOS WKWebView
-      // GPU/memory crashes with the full library).
+      // iOS WKWebView GPU/memory crashes with the full library.
       'framer-motion': path.resolve(__dirname, './src/lib/motion-shim.tsx'),
-      // Stub livekit-client — @elevenlabs/client statically imports it for its
-      // WebRTC transport, but the mobile app uses WebSocket transport only.
-      // Drops ~1.17 MB from the bundle. See src/lib/livekit-shim.ts.
+      // Stub livekit-client — drops ~1.17 MB from the bundle.
       'livekit-client': path.resolve(__dirname, './src/lib/livekit-shim.ts'),
     },
   },
@@ -41,8 +38,11 @@ export default defineConfig({
     reportCompressedSize: false,
     rollupOptions: {
       output: {
+        // NOTE: vendor-misc is intentionally removed — it caused a circular
+        // dependency (vendor-misc -> vendor-react -> vendor-misc) that crashed
+        // the app on iOS. Rollup will handle remaining node_modules automatically.
         manualChunks(id) {
-          if (id.includes('node_modules/react/') || id.includes('node_modules/react-dom/')) return 'vendor-react';
+          if (id.includes('node_modules/react/') || id.includes('node_modules/react-dom/') || id.includes('node_modules/scheduler/')) return 'vendor-react';
           if (id.includes('node_modules/react-router')) return 'vendor-router';
           if (id.includes('@supabase')) return 'vendor-supabase';
           if (id.includes('recharts') || id.includes('d3-')) return 'vendor-charts';
@@ -51,7 +51,7 @@ export default defineConfig({
           if (id.includes('@tanstack')) return 'vendor-tanstack';
           if (id.includes('jssip') || id.includes('sip.js')) return 'vendor-sip';
           if (id.includes('framer-motion')) return 'vendor-motion';
-          if (id.includes('node_modules')) return 'vendor-misc';
+          // vendor-misc intentionally omitted — causes circular deps with vendor-react
         },
       },
     },
