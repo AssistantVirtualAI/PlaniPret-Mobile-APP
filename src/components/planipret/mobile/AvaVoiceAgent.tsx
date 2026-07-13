@@ -212,31 +212,67 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
   }, [handleTool]);
 
   // Initialization
+  const [initAttempt, setInitAttempt] = useState(0);
+  const sessionRowIdRef = useRef<string | null>(null);
+  const connectedAtRef = useRef<number>(0);
+
+  const logSession = useCallback(async (patch: {
+    connection_type?: string; agent_id?: string;
+    disconnect_reason?: string; error_code?: string; error_message?: string;
+    ended?: boolean;
+  }) => {
+    try {
+      if (!sessionRowIdRef.current) {
+        const { data } = await supabase.from("planipret_ava_sessions").insert({
+          user_id: userId,
+          session_id: sessionId,
+          connection_type: patch.connection_type ?? "websocket",
+          agent_id: patch.agent_id ?? null,
+        }).select("id").single();
+        if (data?.id) sessionRowIdRef.current = data.id;
+      }
+      if (patch.ended || patch.disconnect_reason || patch.error_code) {
+        const durationMs = connectedAtRef.current ? Date.now() - connectedAtRef.current : null;
+        await supabase.from("planipret_ava_sessions").update({
+          ended_at: new Date().toISOString(),
+          duration_ms: durationMs,
+          disconnect_reason: patch.disconnect_reason ?? null,
+          error_code: patch.error_code ?? null,
+          error_message: patch.error_message ?? null,
+        }).eq("id", sessionRowIdRef.current!);
+      }
+    } catch (e) { console.warn("logSession failed", e); }
+  }, [sessionId, userId]);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         setState("connecting");
-        try {
-          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          micStreamRef.current = stream;
-          const Ctx = (window.AudioContext || (window as any).webkitAudioContext);
-          if (Ctx) {
-            const ac = new Ctx();
-            audioCtxRef.current = ac;
-            const src = ac.createMediaStreamSource(stream);
-            const analyser = ac.createAnalyser();
-            analyser.fftSize = 64;
-            src.connect(analyser);
-            analyserRef.current = analyser;
+        if (!micStreamRef.current) {
+          try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            micStreamRef.current = stream;
+            const Ctx = (window.AudioContext || (window as any).webkitAudioContext);
+            if (Ctx) {
+              const ac = new Ctx();
+              audioCtxRef.current = ac;
+              const src = ac.createMediaStreamSource(stream);
+              const analyser = ac.createAnalyser();
+              analyser.fftSize = 64;
+              src.connect(analyser);
+              analyserRef.current = analyser;
+            }
           }
+          catch { setMicError(true); setState("error"); return; }
         }
-        catch { setMicError(true); setState("error"); return; }
 
-
-        // Helper: switch to text chat cleanly (no lingering broken layer).
-        const fallback = (msg: string) => {
-          if (onFallbackToChat) {
+        // Fallback: only after 2 failed attempts do we switch to text chat
+        // automatically. First failure surfaces the error + Retry button.
+        const isRetry = initAttempt > 0;
+        const fallback = (msg: string, code?: string) => {
+          logSession({ error_code: code ?? "init_failed", error_message: msg, ended: true });
+          if (isRetry && onFallbackToChat) {
             toast.message(msg);
             onFallbackToChat();
           } else {
@@ -254,7 +290,7 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
             return data;
           }, 3, 400);
         } catch (e: any) {
-          fallback("AVA vocal indisponible — passage au chat texte");
+          fallback("AVA vocal indisponible", "config_failed");
           return;
         }
         if (cancelled) return;
@@ -263,72 +299,115 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
         setAutonomy(c.autonomy_mode ?? "confirm");
 
         if (!c.agent_id) {
-          fallback("Agent vocal non provisionné — passage au chat texte");
+          fallback("Agent vocal non provisionné", "no_agent");
           return;
         }
 
-        // 2) Mint a scoped WebSocket signed URL with retry/backoff.
-        let tok: any;
-        try {
-          tok = await withBackoff(async () => {
-            const { data, error } = await supabase.functions.invoke("pp-ava-webrtc-token", { body: {} });
-            if (error || !(data as any)?.signed_url) throw new Error((data as any)?.error ?? error?.message ?? "no signed_url");
-            return data;
-          }, 3, 500);
-        } catch (e: any) {
-          fallback("Session vocale indisponible — passage au chat texte");
-          return;
-        }
-        if (cancelled) return;
+        // 2) Try WebRTC first, then WebSocket. Signed URLs are single-use so
+        //    we mint each transport lazily and never reuse an old one.
+        const mintToken = async (kind: "webrtc" | "websocket") => {
+          const { data, error } = await supabase.functions.invoke("pp-ava-webrtc-token", { body: { type: kind } });
+          if (error) throw new Error(error.message ?? "mint_failed");
+          const d = data as any;
+          if (kind === "webrtc" && !d?.token) throw new Error(d?.error ?? "no_token");
+          if (kind === "websocket" && !d?.signed_url) throw new Error(d?.error ?? "no_signed_url");
+          return d;
+        };
 
-        // 3) Start ElevenLabs session with retry/backoff (transient WS failures).
-        let conv: any;
+        // Build overrides only for the fields the agent actually allows.
+        const oa = c.overrides_allowed ?? { prompt: false, first_message: false, language: false, voice: false };
+        const overrides: any = { agent: {}, tts: {} };
+        if (oa.prompt) overrides.agent.prompt = { prompt: c.system_prompt };
+        if (oa.first_message) overrides.agent.firstMessage = c.first_message;
+        if (oa.language) overrides.agent.language = c.language ?? "fr";
+        if (oa.voice) {
+          overrides.tts.voiceId = c.voice_id;
+          if (c.voice_settings) {
+            overrides.tts.stability = c.voice_settings.stability;
+            overrides.tts.similarityBoost = c.voice_settings.similarity_boost;
+            overrides.tts.style = c.voice_settings.style;
+          }
+        }
+        const hasOverrides = Object.keys(overrides.agent).length > 0 || Object.keys(overrides.tts).length > 0;
+
+        const commonOptions: any = {
+          clientTools,
+          onConnect: () => {
+            connectedAtRef.current = Date.now();
+            setState("listening");
+          },
+          onDisconnect: (info: any) => {
+            const dur = connectedAtRef.current ? Date.now() - connectedAtRef.current : 0;
+            const reason = info?.reason ?? info?.code ?? "closed";
+            // Premature disconnect (< 2s after connect) = likely overrides
+            // or agent config problem. Log and let user retry.
+            if (connectedAtRef.current && dur < 2000) {
+              logSession({ disconnect_reason: `premature_${reason}`, ended: true });
+              setState("error");
+              return;
+            }
+            logSession({ disconnect_reason: reason, ended: true });
+            setState("idle");
+          },
+          onError: (err: any) => {
+            console.error("AVA error", err);
+            logSession({ error_code: "runtime", error_message: String(err?.message ?? err ?? "unknown") });
+            setState("error");
+          },
+          onModeChange: (m: any) => {
+            const mode = m?.mode ?? m;
+            if (mode === "speaking") setState("speaking");
+            else if (mode === "listening") setState("listening");
+            else if (mode === "thinking" || mode === "processing") setState("processing");
+          },
+          onMessage: (msg: any) => {
+            const source = msg?.source ?? msg?.role;
+            const text = msg?.message ?? msg?.text;
+            if (!text) return;
+            appendTranscript({ role: source === "user" ? "user" : "agent", text });
+            supabase.from("planipret_ava_conversations").insert({
+              user_id: userId,
+              role: source === "user" ? "user" : "assistant",
+              message: text,
+              session_id: sessionId,
+            }).then(() => null);
+          },
+        };
+        if (hasOverrides) commonOptions.overrides = overrides;
+
+        let conv: any = null;
+        let usedTransport: "webrtc" | "websocket" = "webrtc";
+
+        // Try WebRTC first
         try {
-          conv = await withBackoff(() => Conversation.startSession({
-            signedUrl: (tok as any).signed_url,
-            connectionType: "websocket",
-            overrides: {
-              agent: {
-                prompt: { prompt: c.system_prompt },
-                firstMessage: c.first_message,
-                language: c.language ?? "fr",
-              },
-              tts: {
-                voiceId: c.voice_id,
-                ...(c.voice_settings ? { stability: c.voice_settings.stability, similarityBoost: c.voice_settings.similarity_boost, style: c.voice_settings.style } : {}),
-              },
-            } as any,
-            clientTools,
-            onConnect: () => setState("listening"),
-            onDisconnect: () => setState("idle"),
-            onError: (err: any) => { console.error("AVA error", err); setState("error"); },
-            onModeChange: (m: any) => {
-              const mode = m?.mode ?? m;
-              if (mode === "speaking") setState("speaking");
-              else if (mode === "listening") setState("listening");
-              else if (mode === "thinking" || mode === "processing") setState("processing");
-            },
-            onMessage: (msg: any) => {
-              const source = msg?.source ?? msg?.role;
-              const text = msg?.message ?? msg?.text;
-              if (!text) return;
-              appendTranscript({ role: source === "user" ? "user" : "agent", text });
-              supabase.from("planipret_ava_conversations").insert({
-                user_id: userId,
-                role: source === "user" ? "user" : "assistant",
-                message: text,
-                session_id: sessionId,
-              }).then(() => null);
-            },
-          } as any), 2, 600);
-        } catch (e: any) {
-          console.error("AVA startSession failed", e);
-          fallback("Connexion vocale échouée — passage au chat texte");
-          return;
+          const tok = await mintToken("webrtc");
+          await logSession({ connection_type: "webrtc", agent_id: c.agent_id });
+          conv = await Conversation.startSession({
+            conversationToken: tok.token,
+            connectionType: "webrtc",
+            ...commonOptions,
+          } as any);
+        } catch (webrtcErr: any) {
+          console.warn("AVA WebRTC failed, falling back to WebSocket", webrtcErr);
+          usedTransport = "websocket";
+          try {
+            const tok = await mintToken("websocket");
+            await logSession({ connection_type: "websocket", agent_id: c.agent_id });
+            conv = await Conversation.startSession({
+              signedUrl: tok.signed_url,
+              connectionType: "websocket",
+              ...commonOptions,
+            } as any);
+          } catch (wsErr: any) {
+            console.error("AVA startSession failed on both transports", wsErr);
+            fallback("Connexion vocale échouée", "start_failed");
+            return;
+          }
         }
 
         if (cancelled) { try { await conv.endSession(); } catch (_) { /* */ } return; }
         convRef.current = conv;
+        console.info(`AVA connected via ${usedTransport}`);
 
         // Phase 9 — push live broker context so AVA knows what's pending.
         try {
@@ -360,10 +439,20 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
     return () => {
       cancelled = true;
       try { convRef.current?.endSession(); } catch (_) { /* */ }
-      try { micStreamRef.current?.getTracks().forEach((t) => t.stop()); } catch (_) { /* */ }
-      try { audioCtxRef.current?.close(); } catch (_) { /* */ }
+      if (initAttempt === 0) {
+        // On unmount (not on retry), release mic.
+        try { micStreamRef.current?.getTracks().forEach((t) => t.stop()); micStreamRef.current = null; } catch (_) { /* */ }
+        try { audioCtxRef.current?.close(); audioCtxRef.current = null; } catch (_) { /* */ }
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initAttempt]);
+
+  const retryConnection = useCallback(() => {
+    sessionRowIdRef.current = null;
+    connectedAtRef.current = 0;
+    sessionIdRef.current = `s_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    setInitAttempt((n) => n + 1);
   }, []);
 
   useEffect(() => { scrollRef.current?.scrollTo({ top: 999999, behavior: "smooth" }); }, [transcript.length]);
@@ -466,6 +555,18 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
             <AlertTriangle className="w-8 h-8 mx-auto text-amber-500 mb-2" />
             <p className="font-semibold text-slate-900">🎙️ Microphone requis</p>
             <p className="text-xs text-slate-600 mt-1">Autorisez le microphone dans les paramètres du navigateur.</p>
+          </div>
+        ) : state === "error" ? (
+          <div className="bg-white rounded-2xl p-5 text-center max-w-xs">
+            <AlertTriangle className="w-8 h-8 mx-auto text-amber-500 mb-2" />
+            <p className="font-semibold text-slate-900">Connexion vocale interrompue</p>
+            <p className="text-xs text-slate-600 mt-1">Réessaie la connexion ou continue en chat texte.</p>
+            <div className="flex gap-2 mt-3">
+              <button onClick={retryConnection} className="flex-1 h-10 rounded-lg text-white text-sm font-medium" style={{ background: "linear-gradient(135deg,#2E9BDC,#6C3CE1)" }}>Réessayer</button>
+              {onFallbackToChat && (
+                <button onClick={onFallbackToChat} className="flex-1 h-10 rounded-lg text-sm font-medium border border-slate-300 text-slate-700">Chat texte</button>
+              )}
+            </div>
           </div>
         ) : (
           <VoiceOrb state={state} analyser={analyserRef.current} />

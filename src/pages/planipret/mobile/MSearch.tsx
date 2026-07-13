@@ -46,11 +46,10 @@ async function callSearch(q: string, scope: Scope, offset: number, limit: number
   }
 }
 
+import { getPpContacts } from "@/lib/ppContactsCache";
+
 async function fetchDirectory(q: string): Promise<DirEntry[]> {
-  const { data, error } = await supabase.functions.invoke("pp-ns-contacts", { body: { action: "directory", limit: 500 } });
-  if (error) throw new Error(error.message);
-  if ((data as any)?.error) throw new Error((data as any).error);
-  const dir: DirEntry[] = (data as any)?.directory ?? [];
+  const dir = (await getPpContacts("directory")) as DirEntry[];
   const ql = q.toLowerCase();
   return dir.filter((d) => {
     const hay = `${d.first_name ?? ""} ${d.last_name ?? ""} ${d.name ?? ""} ${d.extension ?? ""} ${d.email ?? ""} ${d.department ?? ""} ${d.position ?? ""}`.toLowerCase();

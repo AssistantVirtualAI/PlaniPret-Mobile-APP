@@ -118,34 +118,20 @@ export default function MContacts() {
     if (!opts.background) setLoadingTab(which);
     setLoadError(null);
     try {
+      const { getPpContacts } = await import("@/lib/ppContactsCache");
       if (which === "directory") {
-        const { data, error } = await supabase.functions.invoke("pp-ns-contacts", { body: { action: "directory", limit: opts.limit ?? 500 } });
-        const payload: any = data ?? {};
-        if (error) {
-          const detail = payload?.error || payload?.body || error.message;
-          throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
-        }
-        if (payload?.error) {
-          const extra = payload?.status ? ` (HTTP ${payload.status})` : "";
-          throw new Error(`${payload.error}${extra}`);
-        }
-        setDirectory(payload?.directory ?? []);
+        const rows = await getPpContacts("directory", { limit: opts.limit ?? 500, force: opts.force });
+        setDirectory(rows as any[]);
       } else {
         const [backend, device] = await Promise.allSettled([
-          supabase.functions.invoke("pp-ns-contacts", { body: { action: "list", limit: opts.limit ?? 500 } }),
+          getPpContacts("list", { limit: opts.limit ?? 500, force: opts.force }),
           listDeviceContacts(),
         ]);
         const nativeContacts = device.status === "fulfilled" ? device.value : [];
         let backendError: string | null = null;
         let nsContacts: any[] = [];
         if (backend.status === "fulfilled") {
-          const payload: any = backend.value.data ?? {};
-          if (backend.value.error || payload?.error) {
-            const detail = payload?.error || payload?.body || backend.value.error?.message;
-            backendError = typeof detail === "string" ? detail : JSON.stringify(detail);
-          } else {
-            nsContacts = (payload?.contacts ?? []).map(normalizeContact);
-          }
+          nsContacts = (backend.value ?? []).map(normalizeContact);
         } else {
           backendError = backend.reason?.message || "Erreur inconnue";
         }

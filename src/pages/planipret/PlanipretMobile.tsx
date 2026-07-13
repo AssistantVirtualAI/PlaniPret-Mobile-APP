@@ -179,10 +179,8 @@ function Dialer({ open, onClose, initial, openMessages, softphone }: { open: boo
   };
 
   const loadNsContacts = async (action: "list" | "shared" | "directory") => {
-    const { data, error } = await supabase.functions.invoke("pp-ns-contacts", { body: { action, limit: 500 } });
-    const payload: any = data ?? {};
-    if (error || payload?.error) throw new Error(payload?.error || error?.message || action);
-    return action === "directory" ? (payload.directory ?? []) : (payload.contacts ?? []);
+    const { getPpContacts } = await import("@/lib/ppContactsCache");
+    return getPpContacts(action, { limit: 500 });
   };
 
   useEffect(() => {
@@ -749,7 +747,7 @@ export default function PlanipretMobile() {
         <button onClick={activeCallId ? hangupActive : () => setDialerOpen(true)}
           className="absolute z-20 rounded-full flex items-center justify-center text-white active:scale-95 transition"
           style={{
-            right: 18, bottom: 84,
+            right: 18, bottom: 118,
             background: activeCallId
               ? "linear-gradient(135deg, #5A1010, #E84C4C)"
               : "linear-gradient(135deg, #1A4A8A, #2E9BDC)",
