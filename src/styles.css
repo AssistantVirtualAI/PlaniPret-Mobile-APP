@@ -8,7 +8,7 @@
    layout before its parent has a measured width. */
 svg { max-width: 100%; max-height: 100%; }
 
-html, body, #root { min-height: 100vh; background: #0A1425; color: #E8EDF5; }
+html, body, #root { height: 100%; min-height: var(--pp-app-height, 100dvh); background: #0A1425; color: #E8EDF5; overflow: hidden; }
 
 
 

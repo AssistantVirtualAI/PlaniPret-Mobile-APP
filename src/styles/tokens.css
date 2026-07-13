@@ -300,6 +300,7 @@
   background-color: var(--pp-bg-deep);
   color: var(--pp-text-primary);
   border-color: var(--pp-bg-border-2);
+  font-size: 16px !important;
 }
 .planipret-scope input::placeholder,
 .planipret-scope textarea::placeholder {
@@ -900,10 +901,12 @@
   box-shadow: 0 0 0 3px rgba(13,122,95,0.18);
 }
 .planipret-mobile-scope input,
-.planipret-mobile-scope textarea {
+.planipret-mobile-scope textarea,
+.planipret-mobile-scope select {
   background: #fff;
   border-color: var(--pp-bg-border);
   color: var(--pp-text-primary);
+  font-size: 16px !important;
 }
 .planipret-mobile-scope input:focus,
 .planipret-mobile-scope textarea:focus {
@@ -916,10 +919,10 @@
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
   border-bottom: 1px solid var(--pp-bg-border);
-  /* Header intentionally raised by 3cm while keeping the same open/close margin. */
-  margin-top: calc(env(safe-area-inset-top, 0px) + 56px - 3cm) !important;
-  padding-top: 18px !important;
-  padding-bottom: 12px !important;
+  /* Respect iOS safe area — sit just below the status bar. */
+  margin-top: env(safe-area-inset-top, 0px) !important;
+  padding-top: 10px !important;
+  padding-bottom: 10px !important;
 }
 .planipret-mobile-scope .pp-mobile-tabbar {
   background: rgba(255,255,255,0.95);

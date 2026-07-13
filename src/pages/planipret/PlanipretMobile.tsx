@@ -211,7 +211,7 @@ function Dialer({ open, onClose, initial, openMessages, softphone }: { open: boo
         ].filter(Boolean).join(" ").toLowerCase();
         return hay.includes(normalized);
       }).slice(0, 50)
-    : directoryOnly.slice(0, 50);
+    : contacts.slice(0, 50);
 
   return (
     <AnimatePresence>
@@ -304,12 +304,11 @@ function Dialer({ open, onClose, initial, openMessages, softphone }: { open: boo
                 <div className="flex items-center gap-2 px-3 py-2 rounded-xl" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)" }}>
                   <SearchIcon className="w-4 h-4" style={{ color: "var(--pp-text-muted)" }} />
                   <input
-                    autoFocus
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
                     placeholder={t("dialer.searchPh")}
                     className="flex-1 bg-transparent outline-none text-sm"
-                    style={{ color: "var(--pp-text-primary)" }}
+                    style={{ color: "var(--pp-text-primary)", fontSize: 16 }}
                   />
                   {query && (
                     <button onClick={() => setQuery("")} aria-label={t("dialer.clear")} style={{ color: "var(--pp-text-muted)" }}>
@@ -830,13 +829,41 @@ export default function PlanipretMobile() {
 function Frame({ children, forceDark = false }: { children: React.ReactNode; forceDark?: boolean }) {
   const { theme } = useMplanipretTheme();
   const frameTheme = forceDark ? "dark" : theme;
+  const lockedHeightRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    const readHeight = () => Math.round(window.innerHeight || root.clientHeight || 844);
+    const isTyping = () => ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName ?? "");
+    const lockHeight = (force = false) => {
+      const next = readHeight();
+      if (force || !lockedHeightRef.current || !isTyping()) {
+        lockedHeightRef.current = next;
+        root.style.setProperty("--pp-app-height", `${next}px`);
+      }
+    };
+    lockHeight(true);
+    const onResize = () => lockHeight(false);
+    const onOrientation = () => window.setTimeout(() => lockHeight(true), 350);
+    window.addEventListener("resize", onResize);
+    window.addEventListener("orientationchange", onOrientation);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      window.removeEventListener("orientationchange", onOrientation);
+    };
+  }, []);
+
   return (
     <div className="planipret-scope planipret-mobile-scope planipret-mobile-frame-bg min-h-screen w-full flex items-center justify-center md:p-6"
       data-pp-theme={frameTheme}
-      style={{ background: frameTheme === "dark"
-        ? "linear-gradient(160deg, #060D1A 0%, #0A1425 100%)"
-        : "linear-gradient(160deg, #EEF2F8 0%, #DCE3EC 100%)" }}>
-      <div id="pp-mobile-frame" className="planipret-mobile-phone overflow-hidden w-full md:w-[390px] md:h-[844px] h-[100svh] md:rounded-[44px] relative"
+      style={{
+        height: "var(--pp-app-height, 100dvh)",
+        minHeight: "var(--pp-app-height, 100dvh)",
+        background: frameTheme === "dark"
+          ? "linear-gradient(160deg, #060D1A 0%, #0A1425 100%)"
+          : "linear-gradient(160deg, #EEF2F8 0%, #DCE3EC 100%)",
+      }}>
+      <div id="pp-mobile-frame" className="planipret-mobile-phone overflow-hidden w-full h-full md:w-[390px] md:h-[844px] md:rounded-[44px] relative"
         style={{
           background: "var(--pp-bg-base)",
           border: "1px solid var(--pp-bg-border-2)",

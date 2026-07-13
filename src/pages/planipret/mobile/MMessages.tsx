@@ -560,20 +560,24 @@ function TeamChat({ profile }: { profile: any }) {
       .from("planipret_team_messages")
       .select("id, sender_id, channel, message, created_at")
       .eq("channel", channel)
-      .order("created_at", { ascending: true })
-      .limit(200);
-    setMsgs((data ?? []) as TeamMsg[]);
+      .order("created_at", { ascending: false })
+      .limit(50);
+    const rows = ((data ?? []) as TeamMsg[]).reverse();
+    setMsgs(rows);
     setLoading(false);
 
-    const ids = Array.from(new Set((data ?? []).map((m: any) => m.sender_id)));
+    // Fire-and-forget sender name lookup so chat renders immediately.
+    const ids = Array.from(new Set(rows.map((m) => m.sender_id)));
     if (ids.length) {
-      const { data: profs } = await supabase
+      supabase
         .from("planipret_profiles")
         .select("id, full_name")
-        .in("id", ids);
-      const map: Record<string, string> = {};
-      (profs ?? []).forEach((p: any) => { map[p.id] = p.full_name ?? t("messages.broker"); });
-      setSenderNames(map);
+        .in("id", ids)
+        .then(({ data: profs }) => {
+          const map: Record<string, string> = {};
+          (profs ?? []).forEach((p: any) => { map[p.id] = p.full_name ?? t("messages.broker"); });
+          setSenderNames(map);
+        });
     }
   };
 

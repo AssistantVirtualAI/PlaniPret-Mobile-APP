@@ -332,12 +332,14 @@ export default function MContacts() {
               ? (c.position || c.job_title || c.jobTitle || c.title || c.role_title || c.department || "Poste non disponible")
               : "";
             const displayName = isDir
-              ? (c.extension ? `${t("contacts.extension") || "Ext."} ${c.extension}` : "Extension non disponible")
+              ? ([c.first_name, c.last_name].filter(Boolean).join(" ").trim()
+                  || c.name || c.display_name
+                  || (c.extension ? `${t("contacts.extension") || "Ext."} ${c.extension}` : "Nom non disponible"))
               : isFav
               ? c.name
               : (`${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || c.phone || c.email);
             const sub = isDir
-              ? brokerName
+              ? (c.extension ? `${t("contacts.extension") || "Ext."} ${c.extension}` : (c.email || "—"))
               : isFav
               ? (c.extension ? `${t("contacts.extension") || "Ext."} ${c.extension}` : (c.phone || c.email || c.company))
               : (c.phone || c.email || c.company);
