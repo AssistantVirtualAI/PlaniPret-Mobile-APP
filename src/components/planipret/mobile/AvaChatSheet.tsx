@@ -54,6 +54,8 @@ export default function AvaChatSheet({ userId, onClose }: { userId: string; onCl
         style={{
           background: "linear-gradient(180deg, rgba(6,13,26,0.98) 0%, rgba(10,22,40,0.99) 100%)",
           backdropFilter: "blur(24px)",
+          paddingTop: "env(safe-area-inset-top, 0px)",
+          paddingBottom: "env(safe-area-inset-bottom, 0px)",
         }}
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}

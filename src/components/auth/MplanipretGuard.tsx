@@ -11,15 +11,10 @@ import { useMplanipretLang } from "@/hooks/useMplanipretLang";
  * Rules:
  *  - Unauthenticated users stay on /mplanipret and see the mobile login.
  *  - Lemtel-only users are blocked (sent to /portal).
- *  - This guard will NEVER redirect to /planipret/admin.
- *
- * iOS WKWebView fixes:
- *  - Uses getSession() — reads local storage cache first (fast on iOS).
- *  - Hard timeout of 4 s: fail open rather than staying stuck on loading.
- *  - Listens to Capacitor App.appStateChange to re-check auth on foreground
- *    resume — prevents the black screen when returning to the app.
- *  - Listens to supabase.auth.onAuthStateChange so sign-in/sign-out events
- *    immediately update the guard state without a full reload.
+ *  - This guard will NEVER redirect to /planipret/admin — the admin portal
+ *    is a completely separate surface. If the user has no Planiprêt profile
+ *    we still let `PlanipretMobile` render its own "no profile" state so
+ *    `/mplanipret` never collapses into the admin portal by accident.
  */
 export function MplanipretGuard({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
@@ -27,115 +22,42 @@ export function MplanipretGuard({ children }: { children: ReactNode }) {
   const { t } = useMplanipretLang();
   const [state, setState] = useState<"checking" | "allow">("checking");
 
-  const checkAuth = async (source = "init") => {
-    let timedOut = false;
-    const failOpenTimer = setTimeout(() => {
-      timedOut = true;
-      console.warn(`[MplanipretGuard] Auth check timed out (${source}) — failing open`);
-      setState("allow");
-    }, 4000);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (cancelled) return;
 
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (timedOut) return;
-
-      if (!session) {
-        recordRedirect(location.pathname, ROUTES.MPLANIPRET, "MplanipretGuard", `no auth session (${source}) — render inline mobile login`);
-        clearTimeout(failOpenTimer);
+      if (!user) {
+        recordRedirect(location.pathname, ROUTES.MPLANIPRET, "MplanipretGuard", "no auth session — render inline mobile login");
         setState("allow");
         return;
       }
 
-      // Block Lemtel-only users
+      // Block Lemtel-only users — they have no business in the Planiprêt mobile app.
       try {
-        const { data: lemtelOnly } = await supabase.rpc("is_lemtel_only", { _user_id: session.user.id });
-        if (timedOut) return;
+        const { data: lemtelOnly } = await supabase.rpc("is_lemtel_only", { _user_id: user.id });
+        if (cancelled) return;
         if (lemtelOnly === true) {
           recordRedirect(location.pathname, "/portal", "MplanipretGuard", "lemtel-only user");
-          clearTimeout(failOpenTimer);
           navigate("/portal", { replace: true });
           return;
         }
       } catch {
-        // RPC failure → fail open
+        // RPC failure should not push the user into the admin portal — fail open here.
       }
 
-      clearTimeout(failOpenTimer);
       setState("allow");
-    } catch (e) {
-      console.error(`[MplanipretGuard] Auth check failed (${source}):`, e);
-      if (!timedOut) {
-        clearTimeout(failOpenTimer);
-        setState("allow");
-      }
-    }
-  };
-
-  useEffect(() => {
-    // Initial check
-    checkAuth("init");
-
-    // Listen to Supabase auth state changes (sign-in / sign-out / token refresh)
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
-      if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED") {
-        setState("allow");
-      } else if (event === "SIGNED_OUT") {
-        // Stay in /mplanipret — PlanipretMobile will show the login screen
-        setState("allow");
-      }
-    });
-
-    // Listen to Capacitor App foreground resume to re-check auth
-    // (prevents black screen when returning to the app from background)
-    let removeAppListener: (() => void) | null = null;
-    (async () => {
-      try {
-        const { App } = await import("@capacitor/app");
-        const handle = await App.addListener("appStateChange", ({ isActive }) => {
-          if (isActive) {
-            // App came back to foreground — rehydrate session silently
-            supabase.auth.getSession().catch(() => {});
-            setState("allow");
-          }
-        });
-        removeAppListener = () => handle.remove();
-      } catch {
-        // Not running in Capacitor (web) — no-op
-      }
     })();
-
-    // Also handle visibilitychange for web/PWA
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") {
-        supabase.auth.getSession().catch(() => {});
-        setState("allow");
-      }
-    };
-    document.addEventListener("visibilitychange", onVisibilityChange);
-
-    return () => {
-      subscription.unsubscribe();
-      removeAppListener?.();
-      document.removeEventListener("visibilitychange", onVisibilityChange);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   if (state === "checking") {
     return (
       <div
         data-testid="mplanipret-guard-loading"
-        style={{
-          position: "fixed",
-          inset: 0,
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          background: "#030810",
-          color: "#4A7FA5",
-          fontFamily: "Urbanist, sans-serif",
-          fontSize: 14,
-        }}
+        style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#030810", color: "#4A7FA5" }}
       >
         {t("common.loading")}
       </div>

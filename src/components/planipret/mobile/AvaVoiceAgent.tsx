@@ -387,9 +387,9 @@ export default function AvaVoiceAgent({ onClose, userId }: Props) {
   const ToolIcon = currentTool ? TOOL_ICONS[currentTool] ?? Sparkles : null;
 
   return (
-    <div className="absolute inset-0 z-[60] flex flex-col" style={{ background: "rgba(4,11,22,0.97)", backdropFilter: "blur(20px)" }}>
+    <div className="absolute inset-0 z-[60] flex flex-col" style={{ background: "rgba(4,11,22,0.97)", backdropFilter: "blur(20px)", paddingTop: "env(safe-area-inset-top, 0px)", paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
       {/* Top bar */}
-      <div className="flex items-center justify-between px-4 pt-4">
+      <div className="flex items-center justify-between px-4 pt-3 pb-2" style={{ marginTop: 8 }}>
         <div className="flex items-center gap-2">
           <div className="w-9 h-9 rounded-xl flex items-center justify-center overflow-hidden" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)" }}>
             <img src={avaLogo.url} alt="AVA" className="w-full h-full object-contain" />
@@ -398,11 +398,11 @@ export default function AvaVoiceAgent({ onClose, userId }: Props) {
         </div>
         <span className="text-[12px]" style={{ color: "#4A7FA5" }}>{STATE_LABEL[state]}</span>
         <div className="flex gap-1">
-          <button onClick={() => setSettingsOpen(true)} className="w-9 h-9 rounded-full bg-white/5 text-white/70 flex items-center justify-center">
+          <button onClick={() => setSettingsOpen(true)} aria-label="Paramètres" className="w-10 h-10 rounded-full flex items-center justify-center" style={{ background: "rgba(255,255,255,0.08)", color: "#fff" }}>
             <Settings className="w-4 h-4" />
           </button>
-          <button onClick={endSession} className="w-9 h-9 rounded-full bg-white/5 text-white/70 flex items-center justify-center">
-            <X className="w-4 h-4" />
+          <button onClick={endSession} aria-label="Fermer" className="w-10 h-10 rounded-full flex items-center justify-center" style={{ background: "rgba(232,76,76,0.85)", color: "#fff", boxShadow: "0 2px 10px rgba(232,76,76,0.5)" }}>
+            <X className="w-5 h-5" />
           </button>
         </div>
       </div>

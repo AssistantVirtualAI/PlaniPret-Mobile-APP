@@ -16,6 +16,8 @@ import { OnboardingTutorial } from "@/components/planipret/OnboardingTutorial";
 import { useAvaNavigation } from "@/hooks/useAvaNavigation";
 const AvaVoiceAgent = lazy(() => import("@/components/planipret/mobile/AvaVoiceAgent"));
 import AvaChatSheet from "@/components/planipret/mobile/AvaChatSheet";
+import avaLogoAsset from "@/assets/ava-statistics-logo.png.asset.json";
+import planipretLogoAsset from "@/assets/planipret-logo.png.asset.json";
 import MobileAuthScreen from "@/components/planipret/mobile/MobileAuthScreen";
 import MobileHeaderControls from "@/components/planipret/mobile/MobileHeaderControls";
 import PpActiveCallScreen from "@/components/planipret/PpActiveCallScreen";
@@ -32,30 +34,27 @@ import { bootstrapPushIfNative } from "@/lib/native/pushBootstrap";
 
 const ACCENT = "#2E9BDC";
 
-const AvaBadge = ({ compact = false, circle = false }: { compact?: boolean; circle?: boolean }) => (
-  <div
-    aria-label="AVA"
-    style={{
-      width: circle ? "100%" : undefined,
-      height: circle ? "100%" : undefined,
-      minWidth: compact ? 14 : 34,
-      minHeight: compact ? 14 : 28,
-      background: "#7C3AED",
-      borderRadius: circle ? "50%" : compact ? 4 : 12,
-      padding: circle ? 0 : compact ? "1px 4px" : "8px 12px",
-      color: "white",
-      fontWeight: 800,
-      fontSize: circle ? 15 : compact ? 8 : 14,
-      display: "inline-flex",
-      alignItems: "center",
-      justifyContent: "center",
-      boxShadow: compact ? undefined : "0 0 12px rgba(124,58,237,0.45)",
-      lineHeight: 1,
-    }}
-  >
-    AVA
-  </div>
-);
+const AvaBadge = ({ compact = false, circle = false }: { compact?: boolean; circle?: boolean }) => {
+  const size = circle ? "100%" : compact ? 18 : 34;
+  return (
+    <div
+      aria-label="AVA"
+      style={{
+        width: size,
+        height: size,
+        borderRadius: "50%",
+        overflow: "hidden",
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "#0A1628",
+        boxShadow: compact ? undefined : "0 0 12px rgba(124,58,237,0.35)",
+      }}
+    >
+      <img src={avaLogoAsset.url} alt="AVA" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+    </div>
+  );
+};
 
 const PlanipretBadge = () => (
   <div
@@ -63,18 +62,15 @@ const PlanipretBadge = () => (
     style={{
       width: 28,
       height: 28,
-      background: "#1A4A8A",
-      borderRadius: 12,
-      color: "white",
-      fontWeight: 800,
-      fontSize: 14,
+      borderRadius: 8,
+      overflow: "hidden",
       display: "inline-flex",
       alignItems: "center",
       justifyContent: "center",
-      lineHeight: 1,
+      background: "#fff",
     }}
   >
-    P
+    <img src={planipretLogoAsset.url} alt="Planiprêt" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
   </div>
 );
 
@@ -506,23 +502,9 @@ export default function PlanipretMobile() {
   }, [profile?.user_id, location.pathname]);
 
   const loadProfile = async () => {
-    // iOS WKWebView: hard timeout — if the profile fetch hangs on cold start
-    // (network not ready yet in WKWebView), fail open to the login screen
-    // instead of staying stuck on "Chargement..." indefinitely.
-    let timedOut = false;
-    const loadTimeout = setTimeout(() => {
-      timedOut = true;
-      console.warn('[PlanipretMobile] loadProfile timed out — showing login screen');
-      setAccessError('unauthenticated');
-      setLoading(false);
-    }, 8000);
-
-    try {
     const { data: { session } } = await supabase.auth.getSession();
-    if (timedOut) return;
     const user = session?.user ?? null;
     if (!user) {
-      clearTimeout(loadTimeout);
       recordRedirect(location.pathname, ROUTES.MPLANIPRET, "PlanipretMobile.loadProfile", "no auth session — stay inside mobile app");
       setProfile(null);
       setAccessError("unauthenticated");
@@ -545,24 +527,19 @@ export default function PlanipretMobile() {
         sessionStorage.setItem("pp_ms_captured", session.access_token);
       }
     } catch (_) { /* non-blocking */ }
-    if (timedOut) return;
     const { data, error } = await supabase.from("planipret_profiles").select("*").eq("user_id", user.id).maybeSingle();
-    if (timedOut) return;
     if (error) {
-      clearTimeout(loadTimeout);
       recordRedirect(location.pathname, ROUTES.MPLANIPRET, "PlanipretMobile.loadProfile", "profile load failed");
       setAccessError("load_failed");
       setLoading(false);
       return;
     }
     if (!data) {
-      clearTimeout(loadTimeout);
       recordRedirect(location.pathname, ROUTES.MPLANIPRET, "PlanipretMobile.loadProfile", "missing planipret_profiles row");
       setAccessError("missing_profile");
       setLoading(false);
       return;
     }
-    clearTimeout(loadTimeout);
     setAccessError(null);
     setProfile(data);
     setLoading(false);
@@ -576,14 +553,6 @@ export default function PlanipretMobile() {
       try {
         await supabase.from("planipret_profiles").update({ language: fallback }).eq("user_id", user.id);
       } catch { /* non-blocking */ }
-    }
-    } catch (e) {
-      clearTimeout(loadTimeout);
-      console.error('[PlanipretMobile] loadProfile crashed:', e);
-      if (!timedOut) {
-        setAccessError('unauthenticated');
-        setLoading(false);
-      }
     }
   };
 
@@ -683,7 +652,7 @@ export default function PlanipretMobile() {
         {/* Top brand header — AVA (left) · Planiprêt (center) · Settings (right) */}
         <header
           className="relative flex items-center px-4 pp-mobile-header"
-          style={{ marginTop: "env(safe-area-inset-top, 44px)", paddingTop: 12, paddingBottom: 10 }}
+          style={{ marginTop: "calc(env(safe-area-inset-top, 0px) + 20px)", paddingTop: 10, paddingBottom: 10 }}
         >
 
           {/* AVA icon — left */}
@@ -723,7 +692,7 @@ export default function PlanipretMobile() {
         </header>
 
         <UniversalSearchBar />
-        <div ref={scrollRef} className="flex-1 overflow-y-auto pb-[110px]">
+        <div ref={scrollRef} className="flex-1 overflow-y-auto pb-[130px]">
           <PullIndicator pullDist={pullDist} refreshing={refreshing} threshold={threshold} color={ACCENT} />
           <PlanipretErrorBoundary key={location.pathname}>
             <Outlet context={{ profile, reloadProfile: loadProfile, openDialer, openAva, registerRefresh, softphone } satisfies PlanipretMobileContext} />
@@ -756,14 +725,14 @@ export default function PlanipretMobile() {
 
         {/* Tab bar (5 tabs) */}
         <nav className="absolute bottom-[22px] inset-x-0 grid grid-cols-5 z-10 pp-mobile-tabbar"
-          style={{ height: 70 }}>
+          style={{ height: 84 }}>
 
           {TABS.map((tabItem) => {
             const badge = tabItem.to.endsWith("/messages") ? unreadMsg : 0;
             const isAva = tabItem.to.endsWith("/ava");
             return (
               <NavLink key={tabItem.to} to={tabItem.to}
-                className={`relative flex flex-col items-center justify-center gap-1 text-[9px] font-semibold pt-1.5 ${isAva ? "ava-tab-center" : ""}`}
+                className={`relative flex flex-col items-center justify-center gap-1 text-[11px] font-semibold pt-2 ${isAva ? "ava-tab-center" : ""}`}
                 style={({ isActive }) => ({ color: isActive ? "var(--pp-brand-accent)" : "var(--pp-text-faint)" })}>
                 {({ isActive }) => (
                   <>
@@ -773,8 +742,8 @@ export default function PlanipretMobile() {
                     <div
                       className="relative flex items-center justify-center transition-all duration-200"
                       style={isAva ? {
-                        width: isActive ? 50 : 46,
-                        height: isActive ? 50 : 46,
+                        width: isActive ? 58 : 54,
+                        height: isActive ? 58 : 54,
                         borderRadius: "50%",
                         background: isActive
                           ? "linear-gradient(135deg, #7C3AED, #2E9BDC)"
@@ -783,10 +752,10 @@ export default function PlanipretMobile() {
                         boxShadow: isActive
                           ? "0 6px 20px rgba(124,58,237,0.5)"
                           : "0 2px 8px rgba(0,0,0,0.12)",
-                        marginTop: -10,
+                        marginTop: -12,
                       } : {}}>
                       <tabItem.Icon
-                        className={isAva ? "w-[26px] h-[26px]" : "w-[22px] h-[22px]"}
+                        className={isAva ? "w-[30px] h-[30px]" : "w-[26px] h-[26px]"}
                         strokeWidth={isActive ? 2.4 : 1.8}
                         style={{ color: isAva ? (isActive ? "#fff" : "var(--pp-brand-accent)") : undefined }}
                       />

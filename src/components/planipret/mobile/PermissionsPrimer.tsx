@@ -60,7 +60,7 @@ export default function PermissionsPrimer({ extension, onDone }: Props) {
     >
       <div
         className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0"
-        style={{ background: "rgba(46,155,220,0.12)", color: "var(--pp-brand-accent, #2E9BDC)" }}
+        style={{ background: "rgba(0,35,230,0.10)", color: "var(--pp-brand-accent, #0023e6)" }}
       >
         <Icon className="w-5 h-5" />
       </div>
@@ -74,57 +74,38 @@ export default function PermissionsPrimer({ extension, onDone }: Props) {
   );
 
   return (
-    /* Overlay semi-transparent — ne bloque pas tout l'écran visuellement */
     <div
-      className="fixed inset-0 z-[1000] flex items-end justify-center"
-      style={{ background: "rgba(3,8,16,0.75)", backdropFilter: "blur(4px)" }}
+      className="fixed inset-0 z-[1000] flex flex-col"
+      style={{ background: "var(--pp-bg-base)" }}
       role="dialog"
       aria-modal="true"
     >
-      {/* Modale en bas de l'écran (style sheet iOS) */}
-      <div
-        className="w-full rounded-t-3xl px-6 pt-5 pb-8"
-        style={{
-          background: "var(--pp-bg-surface, #0A1628)",
-          border: "1px solid var(--pp-bg-border-2)",
-          borderBottom: "none",
-          maxWidth: 480,
-          boxShadow: "0 -8px 40px rgba(0,0,0,0.6)",
-        }}
-      >
-        {/* Drag handle */}
-        <div className="w-10 h-1 rounded-full mx-auto mb-4" style={{ background: "var(--pp-bg-border-2)" }} />
-
-        <h2 className="text-xl font-bold mb-1" style={{ color: "var(--pp-text-primary)", fontFamily: "Urbanist,sans-serif" }}>
-          {c.title}
-        </h2>
-        <p className="text-sm mb-5" style={{ color: "var(--pp-text-secondary)" }}>{c.subtitle}</p>
-
-        <div className="flex flex-col gap-2.5 mb-5">
+      <div className="flex-1 overflow-y-auto px-6 pt-12 pb-6">
+        <h1 className="text-2xl font-bold mb-1" style={{ color: "var(--pp-text-primary)" }}>{c.title}</h1>
+        <p className="text-sm mb-6" style={{ color: "var(--pp-text-secondary)" }}>{c.subtitle}</p>
+        <div className="flex flex-col gap-3">
           <Row icon={Bell} title={c.notif.t} desc={c.notif.d} status={result?.notifications} />
           <Row icon={Mic} title={c.mic.t} desc={c.mic.d} status={result?.microphone} />
           <Row icon={Users} title={c.contacts.t} desc={c.contacts.d} status={result?.contacts} />
         </div>
-
+      </div>
+      <div
+        className="px-6 pb-8 pt-4 flex flex-col gap-2"
+        style={{ borderTop: "1px solid var(--pp-bg-border)" }}
+      >
         <button
           onClick={handleContinue}
           disabled={busy}
-          className="w-full h-12 rounded-full font-semibold flex items-center justify-center gap-2 mb-2"
-          style={{
-            background: "linear-gradient(135deg, #1A4A8A, #2E9BDC)",
-            color: "#fff",
-            opacity: busy ? 0.7 : 1,
-            fontFamily: "Urbanist,sans-serif",
-            fontSize: 15,
-          }}
+          className="w-full h-12 rounded-full font-semibold flex items-center justify-center gap-2"
+          style={{ background: "var(--pp-brand-accent, #0023e6)", color: "#fff", opacity: busy ? 0.7 : 1 }}
         >
           {busy ? <><Loader2 className="w-4 h-4 animate-spin" /> {c.working}</> : c.continue}
         </button>
         <button
           onClick={handleSkip}
           disabled={busy}
-          className="w-full h-10 rounded-full text-sm"
-          style={{ color: "var(--pp-text-muted)" }}
+          className="w-full h-11 rounded-full text-sm"
+          style={{ color: "var(--pp-text-secondary)" }}
         >
           {c.skip}
         </button>

@@ -1257,14 +1257,24 @@ function isChatUnread(chat: any, reads: Record<string, string>): boolean {
   return new Date(chat.lastUpdated).getTime() > new Date(last).getTime();
 }
 
+const TEAMS_CACHE_KEY = "planipret.teams365.cache.v1";
+function loadTeamsCache(): any | null {
+  try { const raw = sessionStorage.getItem(TEAMS_CACHE_KEY); return raw ? JSON.parse(raw) : null; } catch { return null; }
+}
+function saveTeamsCache(payload: any) {
+  try { sessionStorage.setItem(TEAMS_CACHE_KEY, JSON.stringify({ ...payload, cachedAt: Date.now() })); } catch { /* */ }
+}
+
 function Teams365Panel({ profile }: { profile: any }) {
   const [innerTab, setInnerTab] = useState<Teams365SubTab>("active");
-  const [loading, setLoading] = useState(true);
+  const cached = loadTeamsCache();
+  const [loading, setLoading] = useState(!cached);
+  const [refreshing, setRefreshing] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [diag, setDiag] = useState<any>({});
-  const [chats, setChats] = useState<any[]>([]);
-  const [teams, setTeams] = useState<any[]>([]);
-  const [people, setPeople] = useState<any[]>([]);
+  const [diag, setDiag] = useState<any>(cached?.diagnostics ?? {});
+  const [chats, setChats] = useState<any[]>(cached?.chats ?? []);
+  const [teams, setTeams] = useState<any[]>(cached?.teams ?? []);
+  const [people, setPeople] = useState<any[]>(cached?.people ?? []);
   const [reads, setReads] = useState<Record<string, string>>(() => loadTeamsReads());
   const [search, setSearch] = useState("");
   const [chatSearch, setChatSearch] = useState("");
@@ -1282,16 +1292,17 @@ function Teams365Panel({ profile }: { profile: any }) {
   const connected = !!profile?.ms365_access_token;
 
   const load = async () => {
-    if (!connected) { setLoading(false); setErr("ms365_not_connected"); return; }
-    setLoading(true); setErr(null);
+    if (!connected) { setLoading(false); setRefreshing(false); setErr("ms365_not_connected"); return; }
+    const hasData = chats.length > 0 || people.length > 0 || teams.length > 0;
+    if (hasData) setRefreshing(true); else setLoading(true);
+    setErr(null);
     const { data, error } = await supabase.functions.invoke("ms365-teams-list", { body: {} });
-    setLoading(false);
+    setLoading(false); setRefreshing(false);
     const payload = (data as any) ?? {};
     if (error && !payload.chats) { setErr(error.message || "Erreur"); return; }
     if (payload.connected === false || payload.error === "ms365_not_connected") { setErr("ms365_not_connected"); return; }
     if (payload.error) { setErr(payload.error); return; }
     const nextChats = payload.chats || [];
-    // Notify on new unread chats appearing since last load
     const currentReads = loadTeamsReads();
     const nowUnread = new Set<string>(nextChats.filter((c: any) => isChatUnread(c, currentReads)).map((c: any) => c.id));
     const newly: any[] = [];
@@ -1310,6 +1321,7 @@ function Teams365Panel({ profile }: { profile: any }) {
     setPeople(payload.people || []);
     setDiag(payload.diagnostics || {});
     setReads(currentReads);
+    saveTeamsCache({ chats: nextChats, teams: payload.teams || [], people: payload.people || [], diagnostics: payload.diagnostics || {} });
   };
   useEffect(() => {
     load(); /* eslint-disable-next-line */
