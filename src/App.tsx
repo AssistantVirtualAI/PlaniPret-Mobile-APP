@@ -28,6 +28,7 @@ const MAvaNotifications = lazy(() => import('@/pages/planipret/mobile/MAvaNotifi
 const MExtensionSync = lazy(() => import('@/pages/planipret/mobile/MExtensionSync'));
 const Ms365Callback = lazy(() => import('@/pages/planipret/Ms365Callback'));
 const MMs365Diagnostics = lazy(() => import('@/pages/planipret/mobile/MMs365Diagnostics'));
+const MStyleDiagnostics = lazy(() => import('@/pages/planipret/mobile/MStyleDiagnostics'));
 
 const queryClient = new QueryClient();
 
@@ -75,6 +76,7 @@ export default function App() {
                     <Route path="notifications" element={<MAvaNotifications />} />
                     <Route path="extension-sync" element={<MExtensionSync />} />
                     <Route path="ms365-diagnostics" element={<MMs365Diagnostics />} />
+                    <Route path="style-diagnostics" element={<MStyleDiagnostics />} />
                   </Route>
                   <Route path="*" element={<Navigate to="/mplanipret" replace />} />
                 </Routes>

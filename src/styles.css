@@ -792,3 +792,49 @@ All colors MUST be HSL.
 .animate-mascot-mouth { animation: mascot-mouth 280ms ease-in-out infinite; transform-origin: center; }
 
 
+
+/* -----------------------------------------------------------------
+ * Native iPhone safe-area / height / scroll fixes
+ * Applies only when running inside Capacitor (html.pp-native).
+ * Prevents header from being pushed 56px below the notch (that offset
+ * was for the desktop phone-frame simulation) and reserves space for
+ * the iOS home-indicator at the bottom.
+ * ----------------------------------------------------------------- */
+html.pp-native, html.pp-native body, html.pp-native #root { height: 100%; overflow: hidden; }
+
+html.pp-native .planipret-mobile-frame-bg {
+  padding: 0 !important;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+html.pp-native .planipret-mobile-phone {
+  width: 100% !important;
+  height: 100vh !important;
+  height: 100dvh !important;
+  border-radius: 0 !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+/* Header: drop the +56px desktop notch offset on native, keep only real safe-area. */
+html.pp-native .planipret-mobile-scope .pp-mobile-header,
+html.pp-native .pp-mobile-header {
+  margin-top: env(safe-area-inset-top, 0px) !important;
+  padding-top: 12px !important;
+  padding-bottom: 10px !important;
+}
+
+/* Scroll area: reserve room for tab bar (70) + footer (40) + safe-area-bottom. */
+html.pp-native .planipret-mobile-scope [class*="overflow-y-auto"] {
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 130px) !important;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+}
+
+/* Bottom tab bar + footer: nudge above the home-indicator. */
+html.pp-native .pp-mobile-tabbar {
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 22px) !important;
+}
+html.pp-native .pp-mobile-footer {
+  bottom: env(safe-area-inset-bottom, 0px) !important;
+}
