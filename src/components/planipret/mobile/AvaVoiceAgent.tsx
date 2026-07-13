@@ -307,10 +307,20 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
         //    we mint each transport lazily and never reuse an old one.
         const mintToken = async (kind: "webrtc" | "websocket") => {
           const { data, error } = await supabase.functions.invoke("pp-ava-webrtc-token", { body: { type: kind } });
-          if (error) throw new Error(error.message ?? "mint_failed");
-          const d = data as any;
-          if (kind === "webrtc" && !d?.token) throw new Error(d?.error ?? "no_token");
-          if (kind === "websocket" && !d?.signed_url) throw new Error(d?.error ?? "no_signed_url");
+          let d: any = data;
+          if (error) {
+            try {
+              const ctx = (error as any)?.context;
+              if (ctx && typeof ctx.text === "function") {
+                const txt = await ctx.text();
+                try { d = JSON.parse(txt); } catch { d = { error: txt }; }
+              }
+            } catch { /* ignore */ }
+            const code = d?.error ?? error.message ?? "mint_failed";
+            const err: any = new Error(code); err.code = code; throw err;
+          }
+          if (kind === "webrtc" && !d?.token) { const err: any = new Error(d?.error ?? "no_token"); err.code = d?.error ?? "no_token"; throw err; }
+          if (kind === "websocket" && !d?.signed_url) { const err: any = new Error(d?.error ?? "no_signed_url"); err.code = d?.error ?? "no_signed_url"; throw err; }
           return d;
         };
 
@@ -391,16 +401,25 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
           console.warn("AVA WebRTC failed, falling back to WebSocket", webrtcErr);
           usedTransport = "websocket";
           try {
+            await new Promise((resolve) => setTimeout(resolve, 350));
             const tok = await mintToken("websocket");
             await logSession({ connection_type: "websocket", agent_id: c.agent_id });
             conv = await Conversation.startSession({
               signedUrl: tok.signed_url,
-              connectionType: "websocket",
               ...commonOptions,
             } as any);
           } catch (wsErr: any) {
             console.error("AVA startSession failed on both transports", wsErr);
-            fallback("Connexion vocale échouée", "start_failed");
+            const code = wsErr?.code ?? webrtcErr?.code;
+            if (code === "voice_agent_disabled") {
+              fallback("Agent vocal AVA désactivé — contactez votre administrateur pour l'activer.", "voice_agent_disabled");
+            } else if (code === "agent_not_provisioned") {
+              fallback("Agent vocal non provisionné — contactez votre administrateur.", "agent_not_provisioned");
+            } else if (code === "profile_not_found") {
+              fallback("Profil courtier introuvable — contactez le support.", "profile_not_found");
+            } else {
+              fallback("Connexion vocale échouée", "start_failed");
+            }
             return;
           }
         }
