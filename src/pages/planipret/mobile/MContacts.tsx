@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { useOutletContext } from "react-router-dom";
 import { Search, Phone, MessageSquare, Mail, Users, UserCog, BookUser, X, Calendar, ListChecks, Loader2, ExternalLink, Sparkles, Plus, Star } from "lucide-react";
 import AvaSummarizeSheet from "@/components/planipret/ava/AvaSummarizeSheet";
@@ -6,7 +6,8 @@ import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
-import { ensureContacts } from "@/lib/native/permissions/contacts";
+import { ensureContacts, getContactsPermissionStatus } from "@/lib/native/permissions/contacts";
+import { openAppSettings, type PermStatus } from "@/lib/native/permissions/platform";
 
 
 type Tab = "personal" | "favorites" | "directory";
@@ -79,10 +80,15 @@ export default function MContacts() {
   const [personal, setPersonal] = useState<any[]>([]);
   const [directory, setDirectory] = useState<any[]>([]);
   const [favorites, setFavorites] = useState<FavEntry[]>(() => loadFavs());
-  const [loading, setLoading] = useState(false);
+  const [loadingTab, setLoadingTab] = useState<Tab | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selected, setSelected] = useState<any | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [contactsPerm, setContactsPerm] = useState<PermStatus>("unavailable");
+  const [contactsPermBusy, setContactsPermBusy] = useState(false);
+  const [showPermPrompt, setShowPermPrompt] = useState(true);
+  const [visibleCount, setVisibleCount] = useState(40);
+  const loadedTabsRef = useRef<Set<Tab>>(new Set(["favorites"]));
 
   useEffect(() => {
     const onChange = () => setFavorites(loadFavs());
@@ -105,13 +111,14 @@ export default function MContacts() {
     toast.success(exists ? (t("contacts.removeFavorite") || "Retiré des favoris") : (t("contacts.addFavorite") || "Ajouté aux favoris"));
   }, [t]);
 
-  const load = useCallback(async (which: Tab) => {
+  const load = useCallback(async (which: Tab, opts: { force?: boolean; limit?: number; background?: boolean } = {}) => {
     if (which === "favorites") return; // local only
-    setLoading(true);
+    if (!opts.force && loadedTabsRef.current.has(which)) return;
+    if (!opts.background) setLoadingTab(which);
     setLoadError(null);
     try {
       const action = which === "personal" ? "list" : "directory";
-      const { data, error } = await supabase.functions.invoke("pp-ns-contacts", { body: { action } });
+      const { data, error } = await supabase.functions.invoke("pp-ns-contacts", { body: { action, limit: opts.limit ?? 500 } });
       const payload: any = data ?? {};
       if (error) {
         const detail = payload?.error || payload?.body || error.message;
@@ -127,20 +134,54 @@ export default function MContacts() {
         const list = (payload?.contacts ?? []).map(normalizeContact);
         setPersonal(list);
       }
+      loadedTabsRef.current.add(which);
     } catch (e: any) {
       const msg = e?.message || "Erreur inconnue";
       console.error("[pp-ns-contacts]", which, e);
-      setLoadError(msg);
-      toast.error(t("contacts.loadFailed") || "Échec chargement contacts", { description: msg });
+      if (!opts.background) setLoadError(msg);
+      if (!opts.background) toast.error(t("contacts.loadFailed") || "Échec chargement contacts", { description: msg });
     } finally {
-      setLoading(false);
+      if (!opts.background) setLoadingTab((cur) => (cur === which ? null : cur));
     }
   }, [t]);
 
-  useEffect(() => { load(tab); }, [tab, load]);
+  useEffect(() => {
+    if (tab === "favorites") return;
+    void load(tab, { limit: 120 });
+    const id = window.setTimeout(() => { void load(tab, { force: true, limit: 500, background: true }); }, 700);
+    return () => window.clearTimeout(id);
+  }, [tab, load]);
 
-  // Request native contacts permission the first time this page opens.
-  useEffect(() => { void ensureContacts(); }, []);
+  // Prefetch the directory after the first paint so the annuaire opens faster.
+  useEffect(() => {
+    const quick = window.setTimeout(() => { void load("directory", { limit: 120, background: true }); }, 350);
+    const full = window.setTimeout(() => { void load("directory", { force: true, limit: 500, background: true }); }, 1200);
+    return () => { window.clearTimeout(quick); window.clearTimeout(full); };
+  }, [load]);
+
+  // Contacts permission: show the request on the Contacts page, then trigger the
+  // native prompt from an explicit tap. If denied, keep a clear recovery path.
+  useEffect(() => {
+    let cancelled = false;
+    void getContactsPermissionStatus().then((status) => { if (!cancelled) setContactsPerm(status); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const requestContactsAccess = useCallback(async () => {
+    setContactsPermBusy(true);
+    try {
+      const status = await ensureContacts();
+      setContactsPerm(status);
+      if (status === "granted") {
+        setShowPermPrompt(false);
+        toast.success("Contacts autorisés");
+      } else if (status === "denied") {
+        toast.error("Accès aux contacts refusé", { description: "Activez Contacts dans les réglages pour afficher les contacts de votre cellulaire." });
+      }
+    } finally {
+      setContactsPermBusy(false);
+    }
+  }, []);
 
 
   const list = useMemo(() => {
@@ -149,13 +190,26 @@ export default function MContacts() {
     if (!ql) return src;
     return src.filter((c: any) => {
       const hay = tab === "directory"
-        ? `${c.name ?? ""} ${c.extension ?? ""} ${c.email ?? ""} ${c.department ?? ""}`
+        ? `${c.name ?? ""} ${c.extension ?? ""} ${c.email ?? ""} ${c.department ?? ""} ${c.position ?? ""} ${c.job_title ?? ""}`
         : tab === "favorites"
         ? `${c.name ?? ""} ${c.phone ?? ""} ${c.extension ?? ""} ${c.email ?? ""} ${c.company ?? ""}`
         : `${c.first_name ?? ""} ${c.last_name ?? ""} ${c.phone ?? ""} ${c.email ?? ""} ${c.company ?? ""}`;
       return hay.toLowerCase().includes(ql);
     });
   }, [tab, personal, favorites, directory, q]);
+
+  useEffect(() => {
+    setVisibleCount(40);
+  }, [tab, q, list.length]);
+
+  useEffect(() => {
+    if (visibleCount >= list.length) return;
+    const id = window.setTimeout(() => setVisibleCount((n) => Math.min(n + 60, list.length)), 40);
+    return () => window.clearTimeout(id);
+  }, [visibleCount, list.length]);
+
+  const visibleList = useMemo(() => list.slice(0, visibleCount), [list, visibleCount]);
+  const loading = loadingTab === tab;
 
   return (
     <div className="p-4 pb-2">
@@ -171,6 +225,34 @@ export default function MContacts() {
           </button>
         )}
       </div>
+
+      {tab === "personal" && showPermPrompt && contactsPerm !== "unavailable" && contactsPerm !== "granted" && (
+        <div className="rounded-2xl p-3 mb-3 flex gap-3 items-start" style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)" }}>
+          <div className="flex items-center justify-center shrink-0" style={{ width: 34, height: 34, borderRadius: "50%", background: "rgba(46,155,220,0.12)", color: "var(--pp-brand-accent)" }}>
+            <BookUser className="w-4 h-4" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <div style={{ fontSize: 13, fontWeight: 700, color: "var(--pp-text-primary)" }}>
+              {contactsPerm === "denied" ? "Accès aux contacts refusé" : "Autoriser les contacts du cellulaire"}
+            </div>
+            <div style={{ fontSize: 11, color: "var(--pp-text-secondary)", marginTop: 2 }}>
+              {contactsPerm === "denied"
+                ? "Activez Contacts dans les réglages pour identifier les appels et composer plus vite."
+                : "Touchez Autoriser pour afficher et utiliser les contacts de votre cellulaire."}
+            </div>
+            <div className="flex gap-2 mt-2">
+              {contactsPerm === "denied" ? (
+                <button onClick={openAppSettings} className="px-3 py-1.5 rounded-full text-xs font-semibold" style={{ background: "var(--pp-brand-accent)", color: "#fff" }}>Ouvrir les réglages</button>
+              ) : (
+                <button onClick={requestContactsAccess} disabled={contactsPermBusy} className="px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1" style={{ background: "var(--pp-brand-accent)", color: "#fff", opacity: contactsPermBusy ? 0.7 : 1 }}>
+                  {contactsPermBusy && <Loader2 className="w-3 h-3 animate-spin" />} Autoriser
+                </button>
+              )}
+              <button onClick={() => setShowPermPrompt(false)} className="px-3 py-1.5 rounded-full text-xs font-semibold" style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-secondary)", border: "1px solid var(--pp-bg-border-2)" }}>Plus tard</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Search */}
       <div className="flex items-center gap-2 px-3 mb-4"
@@ -214,7 +296,7 @@ export default function MContacts() {
         <div className="rounded-2xl p-4 mb-3 text-sm" style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.3)", color: "#dc2626" }}>
           <div className="font-semibold mb-1">Impossible de charger les contacts</div>
           <div className="text-xs opacity-80 break-all">{loadError}</div>
-          <button onClick={() => load(tab)} className="mt-2 text-xs px-3 py-1.5 rounded-full font-semibold"
+          <button onClick={() => load(tab, { force: true })} className="mt-2 text-xs px-3 py-1.5 rounded-full font-semibold"
             style={{ background: "rgba(239,68,68,0.15)", color: "#dc2626" }}>
             Réessayer
           </button>
@@ -240,19 +322,22 @@ export default function MContacts() {
 
       {!loading && list.length > 0 && (
         <div className="space-y-2">
-          {list.map((c: any) => {
+          {visibleList.map((c: any) => {
             const isDir = tab === "directory";
             const isFav = tab === "favorites";
             const brokerName = isDir
-              ? ([c.first_name, c.last_name].filter(Boolean).join(" ").trim() || c.name || "")
+              ? ([c.first_name, c.last_name].filter(Boolean).join(" ").trim() || c.name || c.display_name || c.email || "Nom non disponible")
+              : "";
+            const brokerPosition = isDir
+              ? (c.position || c.job_title || c.jobTitle || c.title || c.role_title || c.department || "Poste non disponible")
               : "";
             const displayName = isDir
-              ? (`${t("contacts.extension") || "Ext."} ${c.extension}`)
+              ? (c.extension ? `${t("contacts.extension") || "Ext."} ${c.extension}` : "Extension non disponible")
               : isFav
               ? c.name
               : (`${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || c.phone || c.email);
             const sub = isDir
-              ? (brokerName || (c.department ? c.department : ""))
+              ? brokerName
               : isFav
               ? (c.extension ? `${t("contacts.extension") || "Ext."} ${c.extension}` : (c.phone || c.email || c.company))
               : (c.phone || c.email || c.company);
@@ -298,6 +383,11 @@ export default function MContacts() {
                     className="truncate">{displayName || t("contacts.noName")}</div>
                   <div style={{ fontFamily: "DM Sans,sans-serif", fontSize: 11, color: "var(--pp-text-muted)" }}
                     className="truncate">{sub}</div>
+                  {isDir && (
+                    <div style={{ fontFamily: "DM Sans,sans-serif", fontSize: 10.5, color: "var(--pp-text-faint)", marginTop: 1 }} className="truncate">
+                      {brokerPosition}
+                    </div>
+                  )}
                   {pres && (
                     <div style={{ fontFamily: "DM Sans,sans-serif", fontSize: 10, color: pres.color, marginTop: 2, fontWeight: 600 }}>
                       • {pres.label}
@@ -325,6 +415,11 @@ export default function MContacts() {
               </div>
             );
           })}
+          {visibleCount < list.length && (
+            <div className="py-3 text-center text-xs" style={{ color: "var(--pp-text-muted)" }}>
+              <Loader2 className="w-3.5 h-3.5 animate-spin inline-block mr-1" /> Chargement progressif…
+            </div>
+          )}
         </div>
       )}
 
@@ -340,7 +435,7 @@ export default function MContacts() {
       {createOpen && (
         <CreateContactSheet
           onClose={() => setCreateOpen(false)}
-          onCreated={() => { setCreateOpen(false); load("personal"); }}
+          onCreated={() => { setCreateOpen(false); load("personal", { force: true }); }}
         />
       )}
     </div>

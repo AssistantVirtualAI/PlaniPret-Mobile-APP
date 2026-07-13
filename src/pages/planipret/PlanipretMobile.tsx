@@ -194,6 +194,10 @@ function Dialer({ open, onClose, initial, openMessages, softphone }: { open: boo
     ? contacts.filter((c) => {
         const hay = [
           contactDisplayName(c),
+          c.first_name,
+          c.last_name,
+          c.name,
+          c.display_name,
           c.email,
           c.company,
           c.extension,
@@ -201,9 +205,12 @@ function Dialer({ open, onClose, initial, openMessages, softphone }: { open: boo
           c.cell_phone,
           c.work_phone,
           c.home_phone,
+          (c as any).job_title,
+          (c as any).position,
+          (c as any).department,
         ].filter(Boolean).join(" ").toLowerCase();
         return hay.includes(normalized);
-      }).slice(0, 30)
+      }).slice(0, 50)
     : directoryOnly.slice(0, 50);
 
   return (
@@ -829,7 +836,7 @@ function Frame({ children, forceDark = false }: { children: React.ReactNode; for
       style={{ background: frameTheme === "dark"
         ? "linear-gradient(160deg, #060D1A 0%, #0A1425 100%)"
         : "linear-gradient(160deg, #EEF2F8 0%, #DCE3EC 100%)" }}>
-      <div id="pp-mobile-frame" className="planipret-mobile-phone overflow-hidden w-full md:w-[390px] md:h-[844px] h-screen md:rounded-[44px] relative"
+      <div id="pp-mobile-frame" className="planipret-mobile-phone overflow-hidden w-full md:w-[390px] md:h-[844px] h-[100svh] md:rounded-[44px] relative"
         style={{
           background: "var(--pp-bg-base)",
           border: "1px solid var(--pp-bg-border-2)",

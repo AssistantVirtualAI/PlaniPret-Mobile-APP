@@ -220,7 +220,7 @@ export default function MAvaChat() {
   }
 
   return (
-    <div className="flex flex-col h-full overflow-hidden" style={{ background: "var(--pp-bg-base)", marginTop: -8, paddingBottom: 130 }}>
+    <div className="flex flex-col h-full overflow-hidden" style={{ background: "var(--pp-bg-base)", marginTop: "-3cm", paddingBottom: 130, contain: "layout paint" }}>
       <div className="sticky top-0 z-10 flex items-center gap-2 px-3 py-1 backdrop-blur-xl" style={{ background: "color-mix(in srgb, var(--pp-bg-surface) 78%, transparent)", borderBottom: "1px solid var(--pp-bg-border)" }}>
 
         <Sheet>
@@ -362,7 +362,7 @@ export default function MAvaChat() {
         </div>
       </div>
 
-      <div className="sticky bottom-0 z-10 backdrop-blur-xl px-3 pb-3 pt-2" style={{ background: "color-mix(in srgb, var(--pp-bg-surface) 70%, transparent)", borderTop: "1px solid var(--pp-bg-border)" }}>
+      <div className="sticky bottom-0 z-10 backdrop-blur-xl px-3 pb-3 pt-2" style={{ background: "color-mix(in srgb, var(--pp-bg-surface) 70%, transparent)", borderTop: "1px solid var(--pp-bg-border)", transform: "translateZ(0)" }}>
        <div className="flex items-end gap-2 max-w-3xl w-full mx-auto rounded-full pl-2 pr-1.5 py-1.5" style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", boxShadow: "0 10px 30px -10px rgba(124,58,237,0.25)" }}>
         <button
           onClick={recording ? stopRec : startRec}

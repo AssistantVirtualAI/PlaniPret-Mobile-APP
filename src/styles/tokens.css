@@ -916,8 +916,8 @@
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
   border-bottom: 1px solid var(--pp-bg-border);
-  /* Leave a real empty tappable-safe gap above the header on /mplanipret. */
-  margin-top: calc(env(safe-area-inset-top, 0px) + 56px) !important;
+  /* Header intentionally raised by 3cm while keeping the same open/close margin. */
+  margin-top: calc(env(safe-area-inset-top, 0px) + 56px - 3cm) !important;
   padding-top: 18px !important;
   padding-bottom: 12px !important;
 }
