@@ -188,33 +188,31 @@ function Dialer({ open, onClose, initial, openMessages, softphone }: { open: boo
   useEffect(() => {
     if (!open || mode !== "search" || contacts.length > 0 || loadingContacts) return;
     let cancelled = false;
-    (async () => {
-      setLoadingContacts(true);
-      setContactsError(null);
-      try {
-        const results: DialerContact[] = [];
-        const [device, personal, shared, directory] = await Promise.allSettled([
-          listDeviceContacts(),
-          withTimeout(loadNsContacts("list"), 12000, "contacts"),
-          withTimeout(loadNsContacts("shared"), 12000, "shared"),
-          withTimeout(loadNsContacts("directory"), 12000, "directory"),
-        ]);
-        if (device.status === "fulfilled") for (const c of device.value) results.push({ ...c, source: "native" });
-        if (personal.status === "fulfilled") for (const c of personal.value) results.push({ ...c, source: "personal" });
-        if (shared.status === "fulfilled") for (const c of shared.value) results.push({ ...c, source: "shared" });
-        if (directory.status === "fulfilled") for (const c of directory.value) results.push({ ...c, source: "directory" });
-        const failed = [device, personal, shared, directory].filter((r) => r.status === "rejected") as PromiseRejectedResult[];
-        if (failed.length && !results.length) setContactsError(failed[0].reason?.message || "Chargement impossible");
-        if (!cancelled) setContacts(results);
-      } catch (e) {
-        console.error("[Dialer] load contacts failed", e);
-        if (!cancelled) setContactsError((e as Error)?.message || "Chargement impossible");
-      } finally {
-        if (!cancelled) setLoadingContacts(false);
-      }
-    })();
+    setLoadingContacts(true);
+    setContactsError(null);
+    const appendBatch = (rows: any[], source: DialerContact["source"]) => {
+      if (cancelled || !rows?.length) return;
+      setContacts((cur) => [...cur, ...rows.map((c) => ({ ...c, source }))]);
+      setLoadingContacts(false); // render as soon as any batch is in
+    };
+    const errors: string[] = [];
+    const jobs: Array<Promise<void>> = [
+      withTimeout(listDeviceContacts(), 6000, "device").then((v) => appendBatch(v, "native")).catch((e) => { errors.push(`device: ${e?.message ?? e}`); }),
+      withTimeout(loadNsContacts("list"), 12000, "personal").then((v) => appendBatch(v, "personal")).catch((e) => { errors.push(`personal: ${e?.message ?? e}`); }),
+      withTimeout(loadNsContacts("shared"), 12000, "shared").then((v) => appendBatch(v, "shared")).catch((e) => { errors.push(`shared: ${e?.message ?? e}`); }),
+      withTimeout(loadNsContacts("directory"), 12000, "directory").then((v) => appendBatch(v, "directory")).catch((e) => { errors.push(`directory: ${e?.message ?? e}`); }),
+    ];
+    Promise.allSettled(jobs).then(() => {
+      if (cancelled) return;
+      setLoadingContacts(false);
+      setContacts((cur) => {
+        if (cur.length === 0 && errors.length) setContactsError(errors[0]);
+        return cur;
+      });
+    });
     return () => { cancelled = true; };
   }, [open, mode, contacts.length, loadingContacts, contactsLoadKey]);
+
 
   const tokens = tokenize(query);
   const filtered = tokens.length
