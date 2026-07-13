@@ -81,9 +81,9 @@ export default function MAvaChat() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, busy]);
 
-  useEffect(() => {
-    if (!recording) inputRef.current?.focus();
-  }, [busy, recording, sessionId]);
+  // Do NOT auto-focus the textarea — it triggers the mobile keyboard + iOS
+  // viewport zoom which visually breaks the layout.
+
 
   const startNew = () => { setSessionId(null); setMessages([]); };
 
@@ -220,8 +220,9 @@ export default function MAvaChat() {
   }
 
   return (
-    <div className="flex flex-col min-h-full" style={{ background: "var(--pp-bg-base)" }}>
-      <div className="sticky top-0 z-10 flex items-center gap-2 px-3 py-2.5 backdrop-blur-xl" style={{ background: "color-mix(in srgb, var(--pp-bg-surface) 78%, transparent)", borderBottom: "1px solid var(--pp-bg-border)" }}>
+    <div className="flex flex-col h-full overflow-hidden" style={{ background: "var(--pp-bg-base)", marginTop: -8, paddingBottom: 130 }}>
+      <div className="sticky top-0 z-10 flex items-center gap-2 px-3 py-1 backdrop-blur-xl" style={{ background: "color-mix(in srgb, var(--pp-bg-surface) 78%, transparent)", borderBottom: "1px solid var(--pp-bg-border)" }}>
+
         <Sheet>
           <SheetTrigger asChild>
             <Button variant="ghost" size="icon" className="rounded-full"><Menu className="w-5 h-5" /></Button>
@@ -381,8 +382,9 @@ export default function MAvaChat() {
           onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
           disabled={busy || !userId || recording}
           rows={1}
-          className="flex-1 min-h-[36px] max-h-28 resize-none bg-transparent px-2 py-2 text-[14px] outline-none disabled:opacity-60 placeholder:opacity-60"
-          style={{ color: "var(--pp-text-primary)", caretColor: "var(--pp-agent)" }}
+          className="flex-1 min-h-[36px] max-h-28 resize-none bg-transparent px-2 py-2 outline-none disabled:opacity-60 placeholder:opacity-60"
+          style={{ color: "var(--pp-text-primary)", caretColor: "var(--pp-agent)", fontSize: 16 }}
+
         />
         <button
           onClick={send}

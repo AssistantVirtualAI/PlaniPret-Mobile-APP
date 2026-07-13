@@ -6,6 +6,8 @@ import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import { ensureContacts } from "@/lib/native/permissions/contacts";
+
 
 type Tab = "personal" | "favorites" | "directory";
 
@@ -137,6 +139,10 @@ export default function MContacts() {
 
   useEffect(() => { load(tab); }, [tab, load]);
 
+  // Request native contacts permission the first time this page opens.
+  useEffect(() => { void ensureContacts(); }, []);
+
+
   const list = useMemo(() => {
     const src: any[] = tab === "personal" ? personal : tab === "favorites" ? favorites : directory;
     const ql = q.trim().toLowerCase();
@@ -237,18 +243,22 @@ export default function MContacts() {
           {list.map((c: any) => {
             const isDir = tab === "directory";
             const isFav = tab === "favorites";
+            const brokerName = isDir
+              ? ([c.first_name, c.last_name].filter(Boolean).join(" ").trim() || c.name || "")
+              : "";
             const displayName = isDir
-              ? (c.name || [c.first_name, c.last_name].filter(Boolean).join(" ") || `Ext. ${c.extension}`)
+              ? (`${t("contacts.extension") || "Ext."} ${c.extension}`)
               : isFav
               ? c.name
               : (`${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || c.phone || c.email);
             const sub = isDir
-              ? `${t("contacts.extension") || "Ext."} ${c.extension}${c.department ? " • " + c.department : ""}`
+              ? (brokerName || (c.department ? c.department : ""))
               : isFav
               ? (c.extension ? `${t("contacts.extension") || "Ext."} ${c.extension}` : (c.phone || c.email || c.company))
               : (c.phone || c.email || c.company);
             const phone = isDir ? c.extension : (c.phone || c.extension);
             const pres = isDir ? presenceMeta(c.presence, t) : null;
+
 
             const source: FavEntry["source"] = isDir ? "directory" : isFav ? c.source : "personal";
             const favEntry: FavEntry = isFav ? c : {
