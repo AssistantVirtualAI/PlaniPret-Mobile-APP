@@ -2,15 +2,16 @@
 <html lang="fr">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=overlays-content" />
     <meta name="theme-color" content="#1A4A8A" />
     <title>Planiprêt Mobile</title>
     <meta name="description" content="Planiprêt — application mobile courtier (appels, messages, pipeline, AVA)." />
     <style>
       * { box-sizing: border-box; margin: 0; padding: 0; }
-      html { background: #0A1425; height: 100%; }
-      body { background: #0A1425; min-height: 100vh; min-height: -webkit-fill-available; }
-      #root { background: #0A1425; min-height: 100vh; min-height: -webkit-fill-available; }
+      html { background: #0A1425; height: 100%; overflow: hidden; -webkit-text-size-adjust: 100%; touch-action: manipulation; }
+      body { background: #0A1425; height: 100%; min-height: -webkit-fill-available; overflow: hidden; overscroll-behavior: none; }
+      #root { background: #0A1425; height: 100%; min-height: -webkit-fill-available; overflow: hidden; }
+      input, textarea, select { font-size: 16px !important; }
     </style>
   </head>
   <body>
