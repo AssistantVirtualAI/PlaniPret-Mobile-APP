@@ -31,6 +31,8 @@ import PermissionsPrimer from "@/components/planipret/mobile/PermissionsPrimer";
 import { hasSeenPrimer } from "@/lib/native/permissions/orchestrator";
 import { bootstrapPushIfNative } from "@/lib/native/pushBootstrap";
 import { listDeviceContacts } from "@/lib/native/permissions/contacts";
+import { tokenize, matchAllTokens } from "@/lib/textNormalize";
+import { prefetchPpContacts } from "@/lib/ppContactsCache";
 
 
 const ACCENT = "#2E9BDC";
@@ -214,9 +216,9 @@ function Dialer({ open, onClose, initial, openMessages, softphone }: { open: boo
     return () => { cancelled = true; };
   }, [open, mode, contacts.length, loadingContacts, contactsLoadKey]);
 
-  const normalized = query.trim().toLowerCase();
-  const directoryOnly = contacts.filter((c) => c.source === "directory");
-  const filtered = normalized
+  const tokens = tokenize(query);
+  const filtered = tokens.length
+
     ? contacts.filter((c) => {
         const hay = [
           contactDisplayName(c),
@@ -234,10 +236,12 @@ function Dialer({ open, onClose, initial, openMessages, softphone }: { open: boo
           (c as any).job_title,
           (c as any).position,
           (c as any).department,
-        ].filter(Boolean).join(" ").toLowerCase();
-        return hay.includes(normalized);
+        ].filter(Boolean).join(" ");
+        return matchAllTokens(hay, tokens);
       }).slice(0, 50)
     : contacts.slice(0, 50);
+  
+
 
   return (
     <AnimatePresence>
@@ -351,10 +355,10 @@ function Dialer({ open, onClose, initial, openMessages, softphone }: { open: boo
                       <button onClick={() => { setContacts([]); setContactsError(null); setContactsLoadKey((n) => n + 1); }} className="px-3 py-1.5 rounded-full text-xs font-semibold" style={{ background: "var(--pp-brand-accent)", color: "#fff" }}>Réessayer</button>
                     </div>
                   ) : filtered.length === 0 ? (
-                    <div className="text-center text-sm py-8" style={{ color: "var(--pp-text-muted)" }}>{normalized ? t("dialer.noResults") : t("contacts.noDirectory")}</div>
+                    <div className="text-center text-sm py-8" style={{ color: "var(--pp-text-muted)" }}>{tokens.length ? t("dialer.noResults") : t("contacts.noDirectory")}</div>
                   ) : (
                     <>
-                      {!normalized && (
+                      {!tokens.length && (
                         <div className="px-1 pb-2 text-[10px] uppercase tracking-wider font-semibold" style={{ color: "var(--pp-text-muted)" }}>
                           {t("contacts.directorySection") || t("contacts.directory")}
                         </div>
@@ -624,7 +628,11 @@ export default function PlanipretMobile() {
     const ext = profile?.ns_extension || profile?.extension || "";
     void bootstrapPushIfNative(ext);
     void hasSeenPrimer().then((seen) => { if (!seen) setShowPrimer(true); });
+    // Warm the directory/personal/shared caches in parallel so Directory,
+    // Teams and the dialer render from memory instead of blocking on network.
+    prefetchPpContacts(["list", "shared", "directory"]);
   }, [profile?.user_id, profile?.ns_extension, profile?.extension]);
+
 
   if (loading) return <div className="min-h-screen flex items-center justify-center" style={{ background: "#0A1425", color: "#2E9BDC", fontFamily: "Urbanist,sans-serif" }}>{t("common.loading")}</div>;
 
@@ -747,7 +755,7 @@ export default function PlanipretMobile() {
         <button onClick={activeCallId ? hangupActive : () => setDialerOpen(true)}
           className="absolute z-20 rounded-full flex items-center justify-center text-white active:scale-95 transition"
           style={{
-            right: 18, bottom: 118,
+            right: 18, bottom: "calc(env(safe-area-inset-bottom, 0px) + 116px)",
             background: activeCallId
               ? "linear-gradient(135deg, #5A1010, #E84C4C)"
               : "linear-gradient(135deg, #1A4A8A, #2E9BDC)",

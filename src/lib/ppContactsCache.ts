@@ -49,3 +49,23 @@ export function invalidatePpContacts(action?: Action) {
   if (action) cache.delete(action);
   else cache.clear();
 }
+
+export function peekPpContacts(action: Action): any[] | null {
+  const hit = cache.get(action);
+  if (!hit) return null;
+  if (Date.now() - hit.at >= TTL_MS) return null;
+  return hit.value;
+}
+
+/**
+ * Fire-and-forget prefetch. Warms the cache in parallel so subsequent pages
+ * (Directory, Teams, Home) can render from memory instead of blocking on the
+ * network. Safe to call repeatedly — dedup + TTL are handled by getPpContacts.
+ */
+export function prefetchPpContacts(actions: Action[] = ["list", "shared", "directory"], limit = 500): void {
+  for (const action of actions) {
+    if (peekPpContacts(action)) continue;
+    void getPpContacts(action, { limit }).catch(() => {});
+  }
+}
+

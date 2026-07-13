@@ -519,7 +519,7 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
   const ToolIcon = currentTool ? TOOL_ICONS[currentTool] ?? Sparkles : null;
 
   return (
-    <div className="absolute inset-0 z-[60] flex flex-col" style={{ background: "rgba(4,11,22,0.97)", backdropFilter: "blur(20px)", paddingTop: "env(safe-area-inset-top, 0px)", paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
+    <div className="absolute inset-0 z-[60] flex flex-col" style={{ background: "rgba(4,11,22,0.97)", backdropFilter: "blur(20px)", paddingTop: "calc(env(safe-area-inset-top, 0px) + 20px)", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 8px)" }}>
       {/* Top bar */}
       <div className="flex items-center justify-between px-4 pt-3 pb-2" style={{ marginTop: 8 }}>
         <div className="flex items-center gap-2">

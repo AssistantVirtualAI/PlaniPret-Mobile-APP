@@ -8,6 +8,8 @@ import type { PlanipretMobileContext } from "../PlanipretMobile";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { ensureContacts, getContactsPermissionStatus, listDeviceContacts } from "@/lib/native/permissions/contacts";
 import { openAppSettings, type PermStatus } from "@/lib/native/permissions/platform";
+import { tokenize, matchAllTokens } from "@/lib/textNormalize";
+import { peekPpContacts } from "@/lib/ppContactsCache";
 
 
 type Tab = "personal" | "favorites" | "directory";
@@ -115,7 +117,11 @@ export default function MContacts() {
   const load = useCallback(async (which: Tab, opts: { force?: boolean; limit?: number; background?: boolean } = {}) => {
     if (which === "favorites") return; // local only
     if (!opts.force && loadedTabsRef.current.has(which)) return;
-    if (!opts.background) setLoadingTab(which);
+    // If the shared cache already has data for this action, skip the spinner
+    // and refresh in the background so the page renders instantly.
+    const cachedHint = which === "directory" ? peekPpContacts("directory") : peekPpContacts("list");
+    const runBackground = opts.background || (!opts.force && !!cachedHint);
+    if (!runBackground) setLoadingTab(which);
     setLoadError(null);
     try {
       const { getPpContacts } = await import("@/lib/ppContactsCache");
@@ -142,10 +148,10 @@ export default function MContacts() {
     } catch (e: any) {
       const msg = e?.message || "Erreur inconnue";
       console.error("[pp-ns-contacts]", which, e);
-      if (!opts.background) setLoadError(msg);
-      if (!opts.background) toast.error(t("contacts.loadFailed") || "Échec chargement contacts", { description: msg });
+      if (!runBackground) setLoadError(msg);
+      if (!runBackground) toast.error(t("contacts.loadFailed") || "Échec chargement contacts", { description: msg });
     } finally {
-      if (!opts.background) setLoadingTab((cur) => (cur === which ? null : cur));
+      if (!runBackground) setLoadingTab((cur) => (cur === which ? null : cur));
     }
   }, [t]);
 
@@ -201,17 +207,18 @@ export default function MContacts() {
 
   const list = useMemo(() => {
     const src: any[] = tab === "personal" ? personal : tab === "favorites" ? favorites : directory;
-    const ql = q.trim().toLowerCase();
-    if (!ql) return src;
+    const tokens = tokenize(q);
+    if (!tokens.length) return src;
     return src.filter((c: any) => {
       const hay = tab === "directory"
         ? `${c.first_name ?? ""} ${c.last_name ?? ""} ${c.name ?? ""} ${c.display_name ?? ""} ${c.extension ?? ""} ${c.email ?? ""} ${c.department ?? ""} ${c.position ?? ""} ${c.job_title ?? ""}`
         : tab === "favorites"
         ? `${c.name ?? ""} ${c.phone ?? ""} ${c.extension ?? ""} ${c.email ?? ""} ${c.company ?? ""}`
         : `${c.first_name ?? ""} ${c.last_name ?? ""} ${c.display_name ?? ""} ${c.phone ?? ""} ${c.email ?? ""} ${c.company ?? ""}`;
-      return hay.toLowerCase().includes(ql);
+      return matchAllTokens(hay, tokens);
     });
   }, [tab, personal, favorites, directory, q]);
+
 
   useEffect(() => {
     setVisibleCount(40);

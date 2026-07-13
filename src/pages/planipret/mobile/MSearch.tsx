@@ -47,15 +47,18 @@ async function callSearch(q: string, scope: Scope, offset: number, limit: number
 }
 
 import { getPpContacts } from "@/lib/ppContactsCache";
+import { tokenize, matchAllTokens } from "@/lib/textNormalize";
 
 async function fetchDirectory(q: string): Promise<DirEntry[]> {
   const dir = (await getPpContacts("directory")) as DirEntry[];
-  const ql = q.toLowerCase();
+  const tokens = tokenize(q);
+  if (!tokens.length) return dir;
   return dir.filter((d) => {
-    const hay = `${d.first_name ?? ""} ${d.last_name ?? ""} ${d.name ?? ""} ${d.extension ?? ""} ${d.email ?? ""} ${d.department ?? ""} ${d.position ?? ""}`.toLowerCase();
-    return hay.includes(ql);
+    const hay = `${d.first_name ?? ""} ${d.last_name ?? ""} ${d.name ?? ""} ${d.extension ?? ""} ${d.email ?? ""} ${d.department ?? ""} ${d.position ?? ""}`;
+    return matchAllTokens(hay, tokens);
   });
 }
+
 
 export default function MSearch() {
   const { t, lang } = useMplanipretLang();
