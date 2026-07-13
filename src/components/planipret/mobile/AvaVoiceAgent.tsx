@@ -395,6 +395,7 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
           conv = await Conversation.startSession({
             conversationToken: tok.token,
             connectionType: "webrtc",
+            dynamicVariables: tok.ava_session_token ? { ava_session_token: tok.ava_session_token } : undefined,
             ...commonOptions,
           } as any);
         } catch (webrtcErr: any) {
@@ -406,6 +407,7 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
             await logSession({ connection_type: "websocket", agent_id: c.agent_id });
             conv = await Conversation.startSession({
               signedUrl: tok.signed_url,
+              dynamicVariables: tok.ava_session_token ? { ava_session_token: tok.ava_session_token } : undefined,
               ...commonOptions,
             } as any);
           } catch (wsErr: any) {
