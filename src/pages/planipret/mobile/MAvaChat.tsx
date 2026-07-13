@@ -206,7 +206,7 @@ export default function MAvaChat() {
   if (mode === "voice" && voiceAgentAllowed && userId) {
     return (
       <div className="relative min-h-full">
-        <AvaVoiceAgent userId={userId} onClose={() => switchMode("chat")} />
+        <AvaVoiceAgent userId={userId} onClose={() => switchMode("chat")} onFallbackToChat={() => switchMode("chat")} />
         <button
           onClick={() => setVoiceSettingsOpen(true)}
           className="absolute top-4 right-16 z-[70] w-9 h-9 rounded-full bg-white/5 text-white/80 flex items-center justify-center"

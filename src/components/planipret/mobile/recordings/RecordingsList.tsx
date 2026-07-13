@@ -51,6 +51,8 @@ export type RecordingCall = {
   stream_via_proxy?: boolean | null;
   proxy_call_db_id?: string | null;
   proxy_ns_callid?: string | null;
+  analyzed_at?: string | null;
+  transcript_source?: string | null;
 };
 
 const fmtDate = (iso: string) => {
@@ -847,6 +849,28 @@ function Highlight({ text, q }: { text: string; q: string }) {
 }
 
 // ===================== AI =====================
+function AnalysisStatusBar({ call }: { call: RecordingCall }) {
+  const nsId = call.ns_callid ?? call.ns_orig_callid ?? call.ns_term_callid ?? call.ns_call_id ?? null;
+  const src = call.transcript_source ?? (call.transcript ? "ns-api" : null);
+  const analyzed = !!call.analyzed_at;
+  const synced = !!call.maestro_synced;
+  const status = synced ? "synced" : analyzed ? "analyzed" : "pending";
+  const label = status === "synced" ? "Synchronisé" : status === "analyzed" ? "Analysé" : "En attente";
+  const color = status === "synced" ? "#10b981" : status === "analyzed" ? "#2E9BDC" : "#f59e0b";
+  const ts = call.analyzed_at ? new Date(call.analyzed_at).toLocaleString("fr-CA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : null;
+  return (
+    <div className="p-2.5 rounded-lg mb-2 flex flex-wrap items-center gap-2" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)" }}>
+      <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 999, background: `${color}22`, color, border: `1px solid ${color}55`, fontWeight: 700, letterSpacing: 0.4, textTransform: "uppercase" }}>● {label}</span>
+      {ts && <span style={{ fontSize: 10, color: "var(--pp-text-muted)" }}>{ts}</span>}
+      {nsId && (
+        <span style={{ fontSize: 10, color: "var(--pp-text-faint)", fontFamily: "monospace", marginLeft: "auto" }}>
+          src: {src ?? "—"} · NS {String(nsId).slice(0, 10)}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function AISection({ call, onUpdated }: { call: RecordingCall; onUpdated: (c: RecordingCall) => void }) {
   const [loading, setLoading] = useState(false);
   const hasAI = !!call.ai_summary;
@@ -891,6 +915,7 @@ function AISection({ call, onUpdated }: { call: RecordingCall; onUpdated: (c: Re
   if (!hasAI) {
     return (
       <div className="mt-3 p-3 rounded-xl" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)" }}>
+        <AnalysisStatusBar call={call} />
         <button onClick={run} disabled={loading}
                 className="w-full py-2.5 rounded-lg text-sm font-semibold flex items-center justify-center gap-2"
                 style={{ background: "linear-gradient(135deg, var(--pp-agent), var(--pp-brand-accent-2))", color: "white" }}>
@@ -911,6 +936,7 @@ function AISection({ call, onUpdated }: { call: RecordingCall; onUpdated: (c: Re
 
   return (
     <div className="mt-3 space-y-2">
+      <AnalysisStatusBar call={call} />
       {/* Résumé */}
       <Block title="Résumé" icon={<Bot className="w-3.5 h-3.5" />}>
         <p className="text-xs leading-relaxed" style={{ color: "var(--pp-text-secondary)" }}>{call.ai_summary}</p>

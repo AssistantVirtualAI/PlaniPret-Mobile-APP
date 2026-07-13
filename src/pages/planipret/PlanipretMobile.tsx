@@ -405,10 +405,11 @@ export default function PlanipretMobile() {
   const [unreadVm, setUnreadVm] = useState(0);
   const [inbound, setInbound] = useState<InboundCall>(null);
   const [avaOpen, setAvaOpen] = useState(false);
+  const [avaMode, setAvaMode] = useState<"voice" | "chat">("voice");
   const [activeCallId, setActiveCallId] = useState<string | null>(null);
   const [showPrimer, setShowPrimer] = useState(false);
   const openDialer = (n?: string) => { setDialerInit(n); setDialerOpen(true); };
-  const openAva = () => setAvaOpen(true);
+  const openAva = () => { setAvaMode(profile?.voice_agent_enabled ? "voice" : "chat"); setAvaOpen(true); };
   const refreshFn = useRef<(() => Promise<void> | void) | null>(null);
   const registerRefresh = (fn: (() => Promise<void> | void) | null) => { refreshFn.current = fn; };
   const handlePull = async () => { if (refreshFn.current) await refreshFn.current(); };
@@ -652,7 +653,7 @@ export default function PlanipretMobile() {
         {/* Top brand header — AVA (left) · Planiprêt (center) · Settings (right) */}
         <header
           className="relative flex items-center px-4 pp-mobile-header"
-          style={{ marginTop: "calc(env(safe-area-inset-top, 0px) + 20px)", paddingTop: 10, paddingBottom: 10 }}
+          style={{ marginTop: "env(safe-area-inset-top, 0px)", paddingTop: 4, paddingBottom: 6 }}
         >
 
           {/* AVA icon — left */}
@@ -800,10 +801,14 @@ export default function PlanipretMobile() {
         <PpActiveCallScreen softphone={softphone} />
         <InboundCallOverlay call={inbound} onClose={() => setInbound(null)} />
         {avaOpen && profile?.user_id && (
-          profile.voice_agent_enabled
+          profile.voice_agent_enabled && avaMode === "voice"
             ? (
               <Suspense fallback={null}>
-                <AvaVoiceAgent userId={profile.user_id} onClose={() => setAvaOpen(false)} />
+                <AvaVoiceAgent
+                  userId={profile.user_id}
+                  onClose={() => setAvaOpen(false)}
+                  onFallbackToChat={() => setAvaMode("chat")}
+                />
               </Suspense>
             )
             : <AvaChatSheet userId={profile.user_id} onClose={() => setAvaOpen(false)} />
