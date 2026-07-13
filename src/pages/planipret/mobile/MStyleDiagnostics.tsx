@@ -1,130 +1,230 @@
 /**
- * /mplanipret/style-diagnostics
- * Vérifie visuellement que Tailwind est bien actif et liste les classes
- * clés détectées sur la page. À ouvrir depuis Xcode pour valider la CSS.
+ * Style / build diagnostics — confirms Tailwind is compiled and shows
+ * native build info so the Xcode-rendered bundle can be matched to the
+ * last web build.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { ArrowLeft, RefreshCw, CheckCircle2, XCircle, AlertTriangle, Hammer, Info } from "lucide-react";
+import { App } from "@capacitor/app";
+import { Device } from "@capacitor/device";
 import { Capacitor } from "@capacitor/core";
 
-type Probe = { cls: string; prop: keyof CSSStyleDeclaration; expect: (v: string) => boolean; label: string };
-
-const PROBES: Probe[] = [
-  { cls: "flex",              prop: "display",       expect: (v) => v === "flex",                      label: "flex → display:flex" },
-  { cls: "hidden",            prop: "display",       expect: (v) => v === "none",                      label: "hidden → display:none" },
-  { cls: "items-center",      prop: "alignItems",    expect: (v) => v === "center",                    label: "items-center → align-items:center" },
-  { cls: "justify-between",   prop: "justifyContent",expect: (v) => v === "space-between",             label: "justify-between" },
-  { cls: "grid",              prop: "display",       expect: (v) => v === "grid",                      label: "grid → display:grid" },
-  { cls: "grid-cols-3",       prop: "gridTemplateColumns", expect: (v) => v.split(" ").length === 3,  label: "grid-cols-3 → 3 tracks" },
-  { cls: "absolute",          prop: "position",      expect: (v) => v === "absolute",                  label: "absolute → position:absolute" },
-  { cls: "rounded-full",      prop: "borderRadius",  expect: (v) => v.includes("9999") || v.includes("50%"), label: "rounded-full" },
-  { cls: "text-xs",           prop: "fontSize",      expect: (v) => v === "12px" || v === "0.75rem" || v.startsWith("12"), label: "text-xs → 12px" },
-  { cls: "px-4",              prop: "paddingLeft",   expect: (v) => v === "16px",                      label: "px-4 → padding-x 16px" },
-  { cls: "min-h-screen",      prop: "minHeight",     expect: (v) => v === "100vh" || v.endsWith("px"), label: "min-h-screen" },
+const TAILWIND_PROBE_CLASSES = [
+  { cls: "flex", prop: "display", expect: "flex" },
+  { cls: "grid", prop: "display", expect: "grid" },
+  { cls: "absolute", prop: "position", expect: "absolute" },
+  { cls: "rounded-full", prop: "borderRadius", expect: /^(9999px|50%)$/ },
+  { cls: "text-xs", prop: "fontSize", expect: /^12px$/ },
+  { cls: "px-4", prop: "paddingLeft", expect: /^16px$/ },
+  { cls: "min-h-screen", prop: "minHeight", expect: /^(100vh|100dvh|100svh|100lvh|100cqh|100%)$/ },
+  { cls: "bg-primary", prop: "backgroundColor", expect: /rgb\(/ },
+  { cls: "text-foreground", prop: "color", expect: /rgb\(/ },
+  { cls: "border-border", prop: "borderTopColor", expect: /rgb\(/ },
+  { cls: "shadow-md", prop: "boxShadow", expect: /rgb\(/ },
+  { cls: "backdrop-blur-xl", prop: "backdropFilter", expect: /blur/ },
 ];
 
-function probe(cls: string, prop: keyof CSSStyleDeclaration): string {
-  const el = document.createElement("div");
-  el.className = cls;
-  el.style.position = "absolute";
-  el.style.left = "-9999px";
-  el.style.visibility = "hidden";
-  document.body.appendChild(el);
-  const value = String(getComputedStyle(el)[prop] ?? "");
-  el.remove();
-  return value;
+interface BuildInfo {
+  appVersion: string;
+  appBuild: string;
+  appId: string;
+  platform: string;
+  isNative: boolean;
+  osVersion: string;
+  model: string;
+  webBuildId: string;
+  webBuildTime: string;
+  capacitorPkgVersion: string;
 }
 
 export default function MStyleDiagnostics() {
-  const [rows, setRows] = useState<Array<Probe & { got: string; ok: boolean }>>([]);
-  const [insets, setInsets] = useState({ top: 0, right: 0, bottom: 0, left: 0 });
+  const nav = useNavigate();
+  const [checks, setChecks] = useState<{ cls: string; ok: boolean; actual: string }[]>([]);
+  const [tailwindActive, setTailwindActive] = useState<boolean | null>(null);
+  const [insets, setInsets] = useState<{ top: number; bottom: number; left: number; right: number }>({ top: 0, bottom: 0, left: 0, right: 0 });
+  const [build, setBuild] = useState<BuildInfo | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  function probeTailwind() {
+    const host = document.createElement("div");
+    host.style.position = "absolute";
+    host.style.visibility = "hidden";
+    document.body.appendChild(host);
+
+    const results = TAILWIND_PROBE_CLASSES.map(({ cls, prop, expect }) => {
+      const el = document.createElement("div");
+      el.className = cls;
+      host.appendChild(el);
+      const style = window.getComputedStyle(el);
+      const actual = style[prop as any] ?? "";
+      const ok = expect instanceof RegExp ? expect.test(actual) : actual === expect;
+      return { cls, ok, actual };
+    });
+
+    host.remove();
+    setChecks(results);
+    setTailwindActive(results.length > 0 && results.every((r) => r.ok));
+  }
+
+  function probeInsets() {
+    const s = window.getComputedStyle(document.documentElement);
+    const parse = (v: string) => parseFloat(v) || 0;
+    setInsets({
+      top: parse(s.paddingTop) || parse(s.getPropertyValue("env(safe-area-inset-top)")),
+      bottom: parse(s.paddingBottom) || parse(s.getPropertyValue("env(safe-area-inset-bottom)")),
+      left: parse(s.getPropertyValue("env(safe-area-inset-left)")),
+      right: parse(s.getPropertyValue("env(safe-area-inset-right)")),
+    });
+  }
+
+  async function loadBuildInfo() {
+    setLoading(true);
+    try {
+      const [appInfo, deviceInfo] = await Promise.all([
+        App.getInfo().catch(() => ({ versionName: "—", build: "—", id: "—" })),
+        Device.getInfo().catch(() => ({ osVersion: "—", model: "—" })),
+      ]);
+      setBuild({
+        appVersion: appInfo.versionName ?? "—",
+        appBuild: (appInfo as any).build ?? "—",
+        appId: appInfo.id ?? "—",
+        platform: Capacitor.getPlatform(),
+        isNative: Capacitor.isNativePlatform(),
+        osVersion: (deviceInfo as any).osVersion ?? "—",
+        model: (deviceInfo as any).model ?? "—",
+        webBuildId: import.meta.env.VITE_BUILD_ID ?? "—",
+        webBuildTime: import.meta.env.VITE_BUILD_TIME ?? "—",
+        capacitorPkgVersion: import.meta.env.VITE_CAPACITOR_VERSION ?? "—",
+      });
+    } finally {
+      setLoading(false);
+    }
+  }
 
   useEffect(() => {
-    setRows(PROBES.map((p) => {
-      const got = probe(p.cls, p.prop);
-      return { ...p, got, ok: p.expect(got) };
-    }));
-
-    // Read env(safe-area-inset-*) live
-    const probeEl = document.createElement("div");
-    probeEl.style.cssText = "position:fixed;top:env(safe-area-inset-top);left:env(safe-area-inset-left);right:env(safe-area-inset-right);bottom:env(safe-area-inset-bottom);visibility:hidden;pointer-events:none";
-    document.body.appendChild(probeEl);
-    const r = probeEl.getBoundingClientRect();
-    setInsets({
-      top: Math.round(r.top),
-      left: Math.round(r.left),
-      right: Math.round(window.innerWidth - r.right),
-      bottom: Math.round(window.innerHeight - r.bottom),
-    });
-    probeEl.remove();
+    probeTailwind();
+    probeInsets();
+    loadBuildInfo();
   }, []);
 
-  const okCount = rows.filter((r) => r.ok).length;
-  const tailwindActive = okCount >= Math.ceil(PROBES.length * 0.75);
-  const info = useMemo(() => ({
-    platform: Capacitor.getPlatform(),
-    isNative: Capacitor.isNativePlatform(),
-    ua: navigator.userAgent,
-    viewport: `${window.innerWidth} × ${window.innerHeight}`,
-    dpr: window.devicePixelRatio,
-    htmlClass: document.documentElement.className,
-  }), []);
+  const statusColor = tailwindActive === null ? "#F5A623" : tailwindActive ? "#2EDC78" : "#E84C4C";
+  const StatusIcon = tailwindActive === null ? AlertTriangle : tailwindActive ? CheckCircle2 : XCircle;
 
   return (
-    <div className="px-4 py-4 space-y-4" style={{ color: "var(--pp-text-primary,#E8EDF5)", fontFamily: "Inter,sans-serif" }}>
-      <header className="flex items-center gap-3">
-        <div
-          className="w-10 h-10 rounded-full flex items-center justify-center font-bold text-white"
-          style={{ background: tailwindActive ? "#10B981" : "#EF4444" }}
-        >
-          {tailwindActive ? "OK" : "!"}
+    <div className="min-h-screen p-4" style={{ background: "#060D1A", color: "#E8EDF5" }}>
+      <div className="max-w-4xl mx-auto">
+        <div className="flex items-center gap-3 mb-4">
+          <button onClick={() => nav(-1)} className="p-2 rounded-lg" style={{ background: "#0A1628", border: "1px solid #0E2A45" }}>
+            <ArrowLeft className="w-4 h-4" />
+          </button>
+          <div className="flex-1">
+            <h1 className="text-lg font-bold">Diagnostic styles</h1>
+            <p className="text-xs" style={{ color: "#8FA8C0" }}>Tailwind, safe-area et build info</p>
+          </div>
+          <button
+            onClick={() => { probeTailwind(); probeInsets(); loadBuildInfo(); }}
+            className="p-2 rounded-lg"
+            style={{ background: "#0A1628", border: "1px solid #0E2A45" }}
+          >
+            <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+          </button>
         </div>
-        <div>
-          <div className="text-lg font-bold">Diagnostic styles</div>
-          <div className="text-xs opacity-70">
-            Tailwind {tailwindActive ? "actif" : "INACTIF"} — {okCount}/{PROBES.length} classes correctes
+
+        {/* Tailwind status */}
+        <div className="rounded-xl p-4 mb-3" style={{ background: "#0A1628", border: `1px solid ${statusColor}44` }}>
+          <div className="flex items-center gap-3">
+            <StatusIcon className="w-8 h-8" style={{ color: statusColor }} />
+            <div className="flex-1">
+              <div className="text-base font-bold" style={{ color: statusColor }}>
+                {tailwindActive === null ? "Analyse…" : tailwindActive ? "Tailwind actif" : "Tailwind non détecté"}
+              </div>
+              <div className="text-xs" style={{ color: "#8FA8C0" }}>
+                {tailwindActive
+                  ? `${checks.length} classes clés détectées`
+                  : "Vérifiez que le build a compilé les styles (postcss + tailwind)."}
+              </div>
+            </div>
           </div>
         </div>
-      </header>
 
-      <section className="rounded-xl p-3" style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}>
-        <div className="text-[11px] uppercase tracking-wider opacity-60 mb-2">Environnement</div>
-        <ul className="text-xs space-y-1 font-mono">
-          <li>platform: <b>{info.platform}</b> {info.isNative ? "(native)" : "(web)"}</li>
-          <li>viewport: {info.viewport} · dpr {info.dpr}</li>
-          <li>safe-area top/right/bottom/left: {insets.top} / {insets.right} / {insets.bottom} / {insets.left}</li>
-          <li className="break-all opacity-70">html.class: {info.htmlClass || "—"}</li>
-          <li className="break-all opacity-60">UA: {info.ua}</li>
-        </ul>
-      </section>
+        {/* Class probes */}
+        <Card title="Classes Tailwind détectées">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {checks.map((c) => (
+              <div key={c.cls} className="flex items-center gap-2 text-xs p-2 rounded-lg" style={{ background: "#040B16", border: "1px solid #0E2A45" }}>
+                {c.ok
+                  ? <CheckCircle2 className="w-3.5 h-3.5" style={{ color: "#2EDC78" }} />
+                  : <XCircle className="w-3.5 h-3.5" style={{ color: "#E84C4C" }} />}
+                <div className="flex-1 min-w-0">
+                  <div className="font-mono truncate" style={{ color: "#E8EDF5" }}>.{c.cls}</div>
+                  <div className="truncate text-[10px]" style={{ color: "#4A7FA5" }} title={c.actual}>{c.actual || "non défini"}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
 
-      <section className="rounded-xl overflow-hidden" style={{ border: "1px solid rgba(255,255,255,0.08)" }}>
-        <div className="px-3 py-2 text-[11px] uppercase tracking-wider opacity-60" style={{ background: "rgba(255,255,255,0.04)" }}>
-          Sondes de classes Tailwind
-        </div>
-        <ul>
-          {rows.map((r) => (
-            <li key={r.cls} className="flex items-center justify-between gap-2 px-3 py-2 text-xs" style={{ borderTop: "1px solid rgba(255,255,255,0.05)" }}>
-              <span className="flex items-center gap-2">
-                <span
-                  className="inline-block w-2 h-2 rounded-full"
-                  style={{ background: r.ok ? "#10B981" : "#EF4444" }}
-                />
-                <span className="font-mono">{r.cls}</span>
-              </span>
-              <span className="text-right font-mono opacity-80 truncate max-w-[55%]" title={r.got}>
-                {r.ok ? "✓" : "✗"} {r.got || "(vide)"}
-              </span>
-            </li>
-          ))}
-        </ul>
-      </section>
+        {/* Safe-area */}
+        <Card title="Safe-area insets (CSS env)">
+          <div className="grid grid-cols-4 gap-2 text-center text-xs">
+            {[
+              { label: "Top", v: insets.top },
+              { label: "Bottom", v: insets.bottom },
+              { label: "Left", v: insets.left },
+              { label: "Right", v: insets.right },
+            ].map((i) => (
+              <div key={i.label} className="p-2 rounded-lg" style={{ background: "#040B16", border: "1px solid #0E2A45" }}>
+                <div style={{ color: "#8FA8C0" }}>{i.label}</div>
+                <div className="font-mono" style={{ color: "#E8EDF5" }}>{i.v.toFixed(1)}px</div>
+              </div>
+            ))}
+          </div>
+        </Card>
 
-      {!tailwindActive && (
-        <div className="rounded-xl p-3 text-xs" style={{ background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.35)" }}>
-          Tailwind n'est pas compilé. Vérifiez <code>apps/planipret-mobile/postcss.config.js</code> puis relancez
-          <code> npm run build &amp;&amp; npx cap sync ios</code>.
-        </div>
-      )}
+        {/* Build info */}
+        <Card title="Build info" icon={<Hammer className="w-3.5 h-3.5" />}>
+          {build ? (
+            <div className="space-y-1.5 text-xs">
+              <BuildRow label="Version app" value={build.appVersion} />
+              <BuildRow label="Build natif" value={build.appBuild} />
+              <BuildRow label="Bundle ID" value={build.appId} />
+              <BuildRow label="Plateforme" value={`${build.platform}${build.isNative ? " (native)" : " (web)"}`} />
+              <BuildRow label="OS / modèle" value={`${build.osVersion} · ${build.model}`} />
+              <BuildRow label="Capacitor (pkg)" value={build.capacitorPkgVersion} />
+              <BuildRow label="Build web ID" value={build.webBuildId} mono />
+              <BuildRow label="Build web time" value={build.webBuildTime} />
+            </div>
+          ) : (
+            <div className="text-xs" style={{ color: "#8FA8C0" }}>Chargement…</div>
+          )}
+          <div className="mt-3 p-2 rounded-lg text-[11px]" style={{ background: "#0D1F35", border: "1px solid #0E2A45", color: "#8FA8C0" }}>
+            <Info className="w-3 h-3 inline mr-1" style={{ color: "#2E9BDC" }} />
+            Comparez le <strong>Build web ID</strong> affiché ici avec celui de la dernière compilation. S’ils diffèrent, le bundle Xcode n’est pas synchronisé.
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+function Card({ title, children, icon }: { title: string; children: React.ReactNode; icon?: React.ReactNode }) {
+  return (
+    <div className="rounded-xl p-3 mb-3" style={{ background: "#0A1628", border: "1px solid #0E2A45" }}>
+      <div className="text-[11px] font-bold uppercase tracking-wider mb-2 flex items-center gap-1" style={{ color: "#8FA8C0" }}>
+        {icon}
+        {title}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function BuildRow({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div className="flex items-start gap-2">
+      <div className="min-w-[110px]" style={{ fontSize: 10, color: "#4A7FA5", textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</div>
+      <div className="flex-1 break-all" style={{ fontFamily: mono ? "monospace" : "inherit", color: "#E8EDF5" }}>{value}</div>
     </div>
   );
 }

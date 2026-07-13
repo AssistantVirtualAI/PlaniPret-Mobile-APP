@@ -10,15 +10,6 @@ import { Capacitor } from '@capacitor/core';
 import App from './App';
 import './styles.css';
 
-// Tag <html> so CSS can target native builds for safe-area fixes.
-try {
-  const platform = Capacitor.getPlatform();
-  document.documentElement.dataset.ppPlatform = platform;
-  if (Capacitor.isNativePlatform()) document.documentElement.classList.add('pp-native');
-  if (platform === 'ios') document.documentElement.classList.add('pp-ios');
-  if (platform === 'android') document.documentElement.classList.add('pp-android');
-} catch {}
-
 async function bootstrap() {
   try {
     if (Capacitor.isNativePlatform()) {

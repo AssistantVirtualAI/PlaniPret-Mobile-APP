@@ -8,26 +8,11 @@ const SUPABASE_PUBLISHABLE_KEY = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY;
 // Import the supabase client like this:
 // import { supabase } from "@/integrations/supabase/client";
 
-// iOS WKWebView: wrap localStorage in try/catch to avoid crashes on cold start
-// where the webview storage may not be fully initialized yet.
-const safeStorage = {
-  getItem: (key: string): string | null => {
-    try { return localStorage.getItem(key); } catch { return null; }
-  },
-  setItem: (key: string, value: string): void => {
-    try { localStorage.setItem(key, value); } catch { /* ignore */ }
-  },
-  removeItem: (key: string): void => {
-    try { localStorage.removeItem(key); } catch { /* ignore */ }
-  },
-};
-
 export const supabase = createClient<Database>(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth: {
-    storage: safeStorage,
+    storage: localStorage,
     persistSession: true,
     autoRefreshToken: true,
-    detectSessionInUrl: false, // Disabled for Capacitor native — no URL-based OAuth flow
   }
 });
 
