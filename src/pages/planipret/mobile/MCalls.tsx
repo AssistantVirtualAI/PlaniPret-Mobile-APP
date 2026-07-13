@@ -14,6 +14,8 @@ import ContactTimeline from "@/components/planipret/ContactTimeline";
 import RecordingsList from "@/components/planipret/mobile/recordings/RecordingsList";
 import { CallRecordingPlayer } from "@/components/planipret/mobile/call/CallRecordingPlayer";
 import MaestroTab from "@/components/planipret/mobile/call/MaestroTab";
+import GreetingStudio from "@/components/planipret/mobile/voicemail/GreetingStudio";
+
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { useCallerNames } from "@/lib/planipret/callerLookup";
 
@@ -166,8 +168,9 @@ export default function MCalls() {
   const { profile, openDialer, registerRefresh } = useOutletContext<PlanipretMobileContext>();
   const [params, setParams] = useSearchParams();
   const initialTab = (params.get("tab") as any) || "recents";
-  const [tab, setTab] = useState<"recents" | "active" | "missed" | "recordings" | "voicemails">(
-    ["recents", "active", "missed", "recordings", "voicemails"].includes(initialTab) ? initialTab : "recents"
+  const [tab, setTab] = useState<"recents" | "missed" | "recordings" | "voicemails">(
+    ["recents", "missed", "recordings", "voicemails"].includes(initialTab) ? initialTab : "recents"
+
   );
   const [calls, setCalls] = useState<Call[]>([]);
   const [recordings, setRecordings] = useState<Call[]>([]);
@@ -339,13 +342,28 @@ export default function MCalls() {
     void loadRecordings(true);
   }, [userId, loadRecordings]);
 
-  // While the Recordings tab is open, refresh silently in the background.
+  // While the Recordings tab is open, refresh in the background with adaptive
+  // backoff: poll fast (5s → 10s → 20s → 40s, cap 60s) as long as some items
+  // are still missing audio or transcript, then relax to 60s once everything
+  // is settled.
   useEffect(() => {
     if (tab !== "recordings" || !userId) return;
-    void loadRecordings(true);
-    const timer = window.setInterval(() => { void loadRecordings(true); }, 30_000);
-    return () => window.clearInterval(timer);
-  }, [tab, userId, loadRecordings]);
+    let cancelled = false;
+    let timer: number | null = null;
+    let delay = 5_000;
+    const tick = async () => {
+      await loadRecordings(true);
+      if (cancelled) return;
+      const pending = recordings.some((r: any) =>
+        !r.recording_url || !r.has_recording || (!r.transcript && !r.ai_summary)
+      );
+      delay = pending ? Math.min(delay * 2, 60_000) : 60_000;
+      timer = window.setTimeout(tick, delay);
+    };
+    timer = window.setTimeout(tick, delay);
+    return () => { cancelled = true; if (timer) window.clearTimeout(timer); };
+  }, [tab, userId, loadRecordings, recordings]);
+
 
   // Reset pagination when tab or search changes
   useEffect(() => { setVisibleCount(25); }, [tab, search]);
@@ -468,11 +486,11 @@ export default function MCalls() {
         >
           {[
             { k: "recents", label: t("calls.tabs.recents") },
-            { k: "active", label: t("calls.tabs.active") },
             { k: "missed", label: t("calls.tabs.missed") },
             { k: "recordings", label: t("calls.tabs.recordings") },
             { k: "voicemails", label: t("calls.tabs.voicemails") },
           ].map((tabDef) => {
+
             const active = tab === (tabDef.k as any);
             const isMissedTab = tabDef.k === "missed";
             return (
@@ -508,9 +526,8 @@ export default function MCalls() {
 
       {/* Body */}
       <div className="flex-1 overflow-y-auto">
-        {tab === "active" ? (
-          <ActiveCallsTab userId={userId} openDialer={openDialer} />
-        ) : tab === "recordings" ? (
+        {tab === "recordings" ? (
+
           <>
             <div className="px-4 pt-2 flex items-center justify-end">
               <button
@@ -529,7 +546,7 @@ export default function MCalls() {
             />
           </>
         ) : tab === "voicemails" ? (
-          <VoicemailsTab userId={userId} openDialer={openDialer} registerRefresh={registerRefresh} />
+          <VoicemailsTab userId={userId} openDialer={openDialer} registerRefresh={registerRefresh} profile={profile} reloadProfile={async () => { /* noop */ }} />
         ) : (
           <>
             {/* Pull-to-refresh proxy */}
@@ -1081,7 +1098,7 @@ function CallDetailSheet({
         if ((freshCall.transcript || segs) && !hasInsight) {
           setAiLoading(true);
           await supabase.functions.invoke("pp-coach-call", {
-            body: { call_id: call.id, transcript: freshCall.transcript ?? null, force: true },
+            body: { call_id: call.id, transcript: freshCall.transcript ?? null },
           });
           setAiLoading(false);
           const { data: ins } = await supabase.from("planipret_ai_insights").select("*").eq("call_id", call.id).maybeSingle();
@@ -1120,10 +1137,11 @@ function CallDetailSheet({
 
   const fetchRecording = async () => {
     setRecLoading(true);
-    const { data, error } = await supabase.functions.invoke("pp-ns-recordings", { body: { action: "get", call_id: call.ns_call_id ?? call.id } });
+    const { data, error } = await supabase.functions.invoke("ns-get-recording", { body: { call_db_id: call.id, ns_callid: call.ns_callid ?? call.ns_call_id, prefer_url: true } });
     setRecLoading(false);
-    if (error || !(data as any)?.recording_url) { toast.error(t("calls.recordingUnavailable")); return; }
-    await supabase.from("planipret_phone_calls").update({ recording_url: (data as any).recording_url }).eq("id", call.id);
+    const recUrl = (data as any)?.recording_url ?? (data as any)?.url;
+    if (error || !(data as any)?.available || !recUrl) { toast.error((data as any)?.message ?? t("calls.recordingUnavailable")); return; }
+    await supabase.from("planipret_phone_calls").update({ recording_url: recUrl, has_recording: true }).eq("id", call.id);
     await refreshCall();
     toast.success(t("calls.recordingFetched"));
   };
@@ -1165,7 +1183,7 @@ function CallDetailSheet({
       await refreshCall();
       if (transcript && !call.ai_summary) {
         setAiLoading(true);
-        await supabase.functions.invoke("pp-coach-call", { body: { call_id: call.id, transcript, force: true } });
+        await supabase.functions.invoke("pp-coach-call", { body: { call_id: call.id, transcript } });
         setAiLoading(false);
         await refreshCall();
       }
@@ -1196,7 +1214,7 @@ function CallDetailSheet({
     if (!call.transcript && !segments) return;
     setAiLoading(true);
     const { data, error } = await supabase.functions.invoke("pp-coach-call", {
-      body: { call_id: call.id, transcript: call.transcript ?? null, force: true },
+      body: { call_id: call.id, transcript: call.transcript ?? null },
     });
     setAiLoading(false);
     if (error) { toast.error(error.message ?? t("common.failed")); return; }
@@ -1842,8 +1860,10 @@ function fmtVmDur(s: number | null) {
 }
 
 function VoicemailsTab({
-  userId, openDialer, registerRefresh,
-}: { userId?: string; openDialer: (n: string) => void; registerRefresh: (fn: (() => void) | null) => void }) {
+  userId, openDialer, registerRefresh, profile, reloadProfile,
+}: { userId?: string; openDialer: (n: string) => void; registerRefresh: (fn: (() => void) | null) => void; profile?: any; reloadProfile?: () => Promise<void> | void }) {
+  const [studioOpen, setStudioOpen] = useState(false);
+
   const [items, setItems] = useState<VM[]>([]);
   const [loading, setLoading] = useState(true);
   const [folder, setFolder] = useState<"inbox" | "saved">("inbox");
@@ -1919,6 +1939,37 @@ function VoicemailsTab({
 
   return (
     <div className="px-3 pt-3 pb-4">
+      {/* ElevenLabs Greeting Studio — text → voice → push to voicemail box */}
+      {profile && (
+        <div className="mb-3 rounded-2xl overflow-hidden"
+          style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)" }}>
+          <button
+            onClick={() => setStudioOpen((v) => !v)}
+            className="w-full flex items-center gap-3 px-4 py-3 active:opacity-80"
+          >
+            <div className="w-9 h-9 rounded-xl flex items-center justify-center text-white"
+              style={{ background: "linear-gradient(135deg, #2D1A5A, #9B7FE8, #E84CC9)" }}>
+              <Sparkles className="w-4 h-4" />
+            </div>
+            <div className="flex-1 text-left">
+              <div className="text-sm font-semibold" style={{ color: "var(--pp-text-primary)" }}>
+                Personnaliser ma boîte vocale
+              </div>
+              <div className="text-[11px]" style={{ color: "var(--pp-text-muted)" }}>
+                Écrivez, choisissez une voix ElevenLabs, écoutez et publiez.
+              </div>
+            </div>
+            <div style={{ color: "var(--pp-text-muted)", fontSize: 18 }}>{studioOpen ? "−" : "+"}</div>
+          </button>
+          {studioOpen && (
+            <div style={{ borderTop: "1px solid var(--pp-bg-border-2)" }}>
+              <GreetingStudio profile={profile} onProfileChange={reloadProfile as any} />
+            </div>
+          )}
+        </div>
+      )}
+
+
       {/* Folder switch */}
       <div className="flex gap-1 mb-3 p-1 rounded-full"
         style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)" }}>

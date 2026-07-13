@@ -16,10 +16,15 @@ export default function AvaChatSheet({ userId, onClose }: { userId: string; onCl
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, loading]);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, [loading]);
 
   const send = async () => {
     const text = input.trim();
@@ -45,7 +50,7 @@ export default function AvaChatSheet({ userId, onClose }: { userId: string; onCl
   return (
     <AnimatePresence>
       <motion.div
-        className="absolute inset-0 z-40 flex flex-col"
+        className="absolute inset-0 z-40 flex min-h-0 flex-col"
         style={{
           background: "linear-gradient(180deg, rgba(6,13,26,0.98) 0%, rgba(10,22,40,0.99) 100%)",
           backdropFilter: "blur(24px)",
@@ -80,24 +85,25 @@ export default function AvaChatSheet({ userId, onClose }: { userId: string; onCl
         </div>
 
         {/* Messages */}
-        <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4 space-y-3">
+        <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto px-4 py-4 space-y-3">
           {messages.map((m, i) => (
             <motion.div key={i}
               initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.2 }}
               className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
               <div
-                className="max-w-[82%] px-3.5 py-2.5 rounded-2xl"
+                className="max-w-[86%] px-3.5 py-2.5 rounded-2xl break-words"
                 style={
                   m.role === "user"
                     ? {
                         background: "linear-gradient(135deg, #1A4A8A, #2E9BDC)",
-                        color: "#fff",
+                        color: "#03131A",
+                        fontWeight: 650,
                         borderBottomRightRadius: 6,
                         boxShadow: "0 4px 16px rgba(46,155,220,0.3)",
                       }
                     : {
-                        background: "rgba(255,255,255,0.05)",
-                        border: "1px solid rgba(155,127,232,0.18)",
+                        background: "rgba(13,31,53,0.92)",
+                        border: "1px solid rgba(46,155,220,0.22)",
                         color: "rgba(255,255,255,0.92)",
                         borderBottomLeftRadius: 6,
                         backdropFilter: "blur(12px)",
@@ -124,15 +130,17 @@ export default function AvaChatSheet({ userId, onClose }: { userId: string; onCl
         {/* Composer */}
         <div className="px-3 pb-4 pt-2"
           style={{ borderTop: "1px solid rgba(255,255,255,0.06)" }}>
-          <div className="flex items-center gap-2 px-3 py-2 rounded-2xl"
+          <div className="flex items-end gap-2 px-3 py-2 rounded-2xl"
             style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(155,127,232,0.22)" }}>
-            <input
+            <textarea
+              ref={inputRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
               placeholder="Demandez à AVA…"
-              className="flex-1 bg-transparent outline-none"
-              style={{ fontSize: 14, color: "#fff", fontFamily: "Inter,sans-serif" }}
+              rows={1}
+              className="flex-1 min-h-[40px] max-h-28 resize-none bg-transparent py-2 outline-none"
+              style={{ fontSize: 14, color: "#fff", caretColor: "#2E9BDC", fontFamily: "Inter,sans-serif" }}
             />
             <button
               onClick={send}

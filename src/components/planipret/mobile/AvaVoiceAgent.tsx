@@ -31,15 +31,26 @@ const STATE_LABEL: Record<AgentState, string> = {
 const TOOL_ICONS: Record<string, any> = {
   make_call: PhoneOutgoing, send_sms: MessageSquare, send_email: Mail,
   search_client: Search, create_task: Sparkles, create_appointment: Calendar,
-  navigate_to: Map, read_emails: Mail, analyze_call: Bot,
+  navigate_to: Map, read_emails: Mail, get_unread_emails: Mail, get_recent_emails: Mail,
+  summarize_email: Mail, analyze_call: Bot,
+  create_calendar_event: Calendar, move_calendar_event: Calendar, cancel_calendar_event: Calendar,
+  get_upcoming_meetings: Calendar,
 };
 
 const TOOL_LABELS: Record<string, string> = {
   make_call: "Lancement d'un appel",
   send_sms: "Envoi d'un SMS",
   send_email: "Envoi d'un courriel",
+  summarize_email: "Résumé du courriel",
+  read_emails: "Lecture des courriels",
+  get_unread_emails: "Courriels non lus",
+  get_recent_emails: "Derniers courriels",
   create_task: "Création d'une tâche Maestro",
   create_appointment: "Création d'un RDV",
+  create_calendar_event: "Création d'un meeting",
+  move_calendar_event: "Déplacement du meeting",
+  cancel_calendar_event: "Annulation du meeting",
+  get_upcoming_meetings: "Meetings à venir",
   generate_voicemail_greeting: "Génération de boîte vocale",
 };
 
@@ -47,6 +58,7 @@ const CONFIRM_REQUIRED = new Set([
   "make_call", "send_sms", "send_email",
   "create_task", "create_appointment", "generate_voicemail_greeting",
   "update_client",
+  "create_calendar_event", "move_calendar_event", "cancel_calendar_event",
 ]);
 
 export default function AvaVoiceAgent({ onClose, userId }: Props) {
@@ -169,7 +181,9 @@ export default function AvaVoiceAgent({ onClose, userId }: Props) {
       "search_client", "get_client_profile", "get_client_history",
       "create_task", "create_appointment", "get_pending_tasks",
       "get_upcoming_appointments", "update_client", "create_client",
-      "read_emails", "send_email", "get_calendar_today", "get_calendar_week",
+      "read_emails", "summarize_email", "send_email",
+      "get_calendar_today", "get_calendar_week",
+      "create_calendar_event", "move_calendar_event", "cancel_calendar_event",
       "navigate_to", "show_client_in_app", "open_call_detail",
       "show_toast", "open_dialer", "open_sms_composer", "close_ava",
       "get_daily_briefing", "get_my_stats",
@@ -481,22 +495,16 @@ export default function AvaVoiceAgent({ onClose, userId }: Props) {
 
       {/* Confirmation modal */}
       {pending && (
-        <div className="absolute inset-0 z-10 flex items-center justify-center px-6 bg-black/40">
-          <div className="w-full max-w-sm rounded-2xl p-6" style={{ background: "#0A1628", border: "1px solid rgba(155,127,232,0.3)" }}>
-            <div className="flex items-center gap-2 mb-3">
-              <Bot className="w-5 h-5" style={{ color: "#9B7FE8" }} />
-              <span className="text-[13px] font-semibold text-white">AVA demande confirmation</span>
-            </div>
-            <div className="rounded-xl p-3 mb-4 text-[13px]" style={{ background: "rgba(155,127,232,0.08)", color: "#E8EDF5" }}>
-              {TOOL_LABELS[pending.tool] ?? pending.tool}
-              <pre className="text-[10px] mt-2 opacity-70 whitespace-pre-wrap">{JSON.stringify(pending.params, null, 2).slice(0, 300)}</pre>
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              <button onClick={() => confirmAction(false)} className="h-11 rounded-xl text-[13px] font-medium" style={{ background: "rgba(255,255,255,0.05)", color: "#E8EDF5" }}>❌ Annuler</button>
-              <button onClick={() => confirmAction(true)} className="h-11 rounded-xl text-[13px] font-semibold text-white" style={{ background: "linear-gradient(135deg,#10B981,#00A88A)" }}>✅ Confirmer</button>
-            </div>
-          </div>
-        </div>
+        <CalendarAwareConfirm
+          pending={pending}
+          onCancel={() => confirmAction(false)}
+          onConfirm={(patchedParams) => {
+            // Overwrite params with patched (tz + confirmed) then execute
+            const p = pending;
+            setPending(null);
+            callServerTool(p.tool, { ...p.params, ...patchedParams }).then(p.resolve);
+          }}
+        />
       )}
 
       {/* Settings bottom sheet */}
@@ -541,4 +549,134 @@ function VoiceOrb({ state, analyser }: { state: AgentState; analyser: AnalyserNo
     </div>
   );
 }
+
+// ─── Timezone validation & calendar-aware confirmation ────────────────
+const CALENDAR_TOOLS = new Set(["move_calendar_event", "cancel_calendar_event", "create_calendar_event"]);
+const COMMON_TZ = [
+  "America/Toronto", "America/Montreal", "America/New_York", "America/Vancouver",
+  "America/Chicago", "America/Los_Angeles", "America/Halifax", "America/St_Johns",
+  "Europe/Paris", "Europe/London", "UTC",
+];
+
+function isValidIANATimezone(tz: string): boolean {
+  if (!tz || typeof tz !== "string") return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz }).format(new Date());
+    return true;
+  } catch { return false; }
+}
+
+function CalendarAwareConfirm({
+  pending, onCancel, onConfirm,
+}: {
+  pending: PendingTool;
+  onCancel: () => void;
+  onConfirm: (patched: Record<string, any>) => void;
+}) {
+  const isCalendar = CALENDAR_TOOLS.has(pending.tool);
+  const initialTz = pending.params?.timezone
+    ?? Intl.DateTimeFormat().resolvedOptions().timeZone
+    ?? "America/Toronto";
+  const [tz, setTz] = useState<string>(initialTz);
+  const [customTz, setCustomTz] = useState<string>("");
+  const [step, setStep] = useState<"tz" | "reformulate">(isCalendar && pending.tool !== "cancel_calendar_event" ? "tz" : "reformulate");
+
+  const effectiveTz = customTz.trim() || tz;
+  const tzValid = isValidIANATimezone(effectiveTz);
+
+  const reformulation = useMemo(() => {
+    if (!isCalendar) return null;
+    const p = pending.params ?? {};
+    const startRaw = p.new_start ?? p.start;
+    const subj = p.subject ?? p.event_id ?? "meeting";
+    if (pending.tool === "cancel_calendar_event") {
+      return `Annuler le meeting « ${subj} » (event_id: ${p.event_id ?? "?"}). Confirmer ?`;
+    }
+    if (!startRaw) return `Action calendrier: ${pending.tool}. Confirmer ?`;
+    try {
+      const startAt = new Date(startRaw);
+      const fmt = new Intl.DateTimeFormat("fr-CA", {
+        timeZone: effectiveTz, weekday: "long", day: "numeric", month: "long",
+        hour: "numeric", minute: "2-digit", timeZoneName: "short",
+      });
+      const label = pending.tool === "move_calendar_event" ? "Déplacer" : "Créer";
+      return `${label} le meeting « ${subj} » au ${fmt.format(startAt)} (${effectiveTz}). Je confirme ?`;
+    } catch { return `Action calendrier: ${pending.tool}.`; }
+  }, [pending, effectiveTz, isCalendar]);
+
+  return (
+    <div className="absolute inset-0 z-10 flex items-center justify-center px-6 bg-black/40">
+      <div className="w-full max-w-sm rounded-2xl p-6" style={{ background: "#0A1628", border: "1px solid rgba(155,127,232,0.3)" }}>
+        <div className="flex items-center gap-2 mb-3">
+          <Bot className="w-5 h-5" style={{ color: "#9B7FE8" }} />
+          <span className="text-[13px] font-semibold text-white">
+            {isCalendar && step === "tz" ? "Fuseau horaire requis" : "AVA demande confirmation"}
+          </span>
+        </div>
+
+        {isCalendar && step === "tz" ? (
+          <>
+            <div className="text-[12px] mb-2" style={{ color: "#B4C6D8" }}>
+              Sélectionne un fuseau horaire IANA valide avant de continuer.
+            </div>
+            <select value={tz} onChange={(e) => { setTz(e.target.value); setCustomTz(""); }}
+              className="w-full mb-2 h-10 px-3 rounded-lg text-[13px]"
+              style={{ background: "#0A1E35", border: "1px solid #0E2A45", color: "#E8EDF5" }}>
+              {COMMON_TZ.map((z) => <option key={z} value={z}>{z}</option>)}
+            </select>
+            <input value={customTz} onChange={(e) => setCustomTz(e.target.value)}
+              placeholder="ou saisir un fuseau IANA (ex: Europe/Zurich)"
+              className="w-full mb-2 h-10 px-3 rounded-lg text-[13px]"
+              style={{ background: "#0A1E35", border: `1px solid ${customTz && !tzValid ? "#DC2626" : "#0E2A45"}`, color: "#E8EDF5" }} />
+            {!tzValid && (
+              <div className="text-[11px] mb-3 flex items-center gap-1.5" style={{ color: "#F87171" }}>
+                <AlertTriangle className="w-3.5 h-3.5" />
+                Fuseau horaire IANA invalide (ex: America/Toronto, Europe/Paris, UTC).
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-2 mt-2">
+              <button onClick={onCancel} className="h-11 rounded-xl text-[13px] font-medium" style={{ background: "rgba(255,255,255,0.05)", color: "#E8EDF5" }}>❌ Annuler</button>
+              <button disabled={!tzValid} onClick={() => setStep("reformulate")}
+                className="h-11 rounded-xl text-[13px] font-semibold text-white disabled:opacity-40"
+                style={{ background: "linear-gradient(135deg,#1A4A8A,#2E9BDC)" }}>
+                Suivant →
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="rounded-xl p-3 mb-3 text-[13px]" style={{ background: "rgba(155,127,232,0.08)", color: "#E8EDF5" }}>
+              <div className="font-semibold mb-1">{TOOL_LABELS[pending.tool] ?? pending.tool}</div>
+              {reformulation && <div className="text-[12px]" style={{ color: "#B4C6D8" }}>{reformulation}</div>}
+              <pre className="text-[10px] mt-2 opacity-60 whitespace-pre-wrap">
+                {JSON.stringify({ ...pending.params, timezone: isCalendar ? effectiveTz : pending.params?.timezone }, null, 2).slice(0, 300)}
+              </pre>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {isCalendar && pending.tool !== "cancel_calendar_event" ? (
+                <button onClick={() => setStep("tz")} className="h-11 rounded-xl text-[13px] font-medium" style={{ background: "rgba(255,255,255,0.05)", color: "#E8EDF5" }}>← Fuseau</button>
+              ) : (
+                <button onClick={onCancel} className="h-11 rounded-xl text-[13px] font-medium" style={{ background: "rgba(255,255,255,0.05)", color: "#E8EDF5" }}>❌ Annuler</button>
+              )}
+              <button onClick={() => {
+                if (isCalendar && !tzValid) return;
+                const patched: Record<string, any> = { confirmed: true };
+                if (isCalendar) patched.timezone = effectiveTz;
+                onConfirm(patched);
+              }}
+                className="h-11 rounded-xl text-[13px] font-semibold text-white"
+                style={{ background: "linear-gradient(135deg,#10B981,#00A88A)" }}>
+                ✅ Confirmer
+              </button>
+            </div>
+            {isCalendar && pending.tool !== "cancel_calendar_event" && (
+              <button onClick={onCancel} className="w-full mt-2 h-9 rounded-lg text-[11px]" style={{ color: "#8FA8C0" }}>Annuler</button>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 

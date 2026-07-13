@@ -28,8 +28,22 @@ export function CallRecordingPlayer({ callId, duration = 0 }: Props) {
     setLoading(true);
     setError(null);
     try {
-      const url = await recordingsApi.fetchAudioUrl(callId);
-      setAudioUrl(url);
+      let lastError: any = null;
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        try {
+          const url = await recordingsApi.fetchAudioUrl(callId);
+          setAudioUrl(url);
+          setLoading(false);
+          return;
+        } catch (e: any) {
+          lastError = e;
+          const msg = String(e?.message ?? e);
+          const retriable = /préparation|preparation|processing|pending|not found|introuvable|indisponible|no_file|recording/i.test(msg);
+          if (!retriable || attempt === 5) break;
+          await new Promise((resolve) => window.setTimeout(resolve, Math.min(2000 * Math.pow(1.7, attempt), 15000)));
+        }
+      }
+      throw lastError ?? new Error("load_error");
     } catch (e: any) {
       setError(e?.message ?? "load_error");
     } finally {
