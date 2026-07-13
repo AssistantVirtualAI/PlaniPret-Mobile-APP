@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
-import { useOutletContext } from "react-router-dom";
+import { useOutletContext, useNavigate } from "react-router-dom";
 import { Search, Phone, MessageSquare, Mail, Users, UserCog, BookUser, X, Calendar, ListChecks, Loader2, ExternalLink, Sparkles, Plus, Star } from "lucide-react";
 import AvaSummarizeSheet from "@/components/planipret/ava/AvaSummarizeSheet";
 import { supabase } from "@/integrations/supabase/client";
@@ -75,6 +75,7 @@ function presenceMeta(raw: string | undefined | null, t: (k: string) => string):
 export default function MContacts() {
   const { t } = useMplanipretLang();
   const { openDialer } = useOutletContext<PlanipretMobileContext>();
+  const navigate = useNavigate();
   const [tab, setTab] = useState<Tab>("personal");
   const [q, setQ] = useState("");
   const [personal, setPersonal] = useState<any[]>([]);
@@ -255,17 +256,36 @@ export default function MContacts() {
       )}
 
       {/* Search */}
-      <div className="flex items-center gap-2 px-3 mb-4"
+      <div className="flex items-center gap-2 px-3 mb-2"
         style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", borderRadius: 14, height: 44 }}>
         <Search className="w-4 h-4" style={{ color: "var(--pp-text-faint)" }} />
         <input
           value={q}
           onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && q.trim()) {
+              const scope = tab === "directory" ? "directory" : "all";
+              navigate(`/mplanipret/search?q=${encodeURIComponent(q.trim())}&scope=${scope}`);
+            }
+          }}
           placeholder={t("contacts.search")}
           className="flex-1 bg-transparent outline-none text-sm"
           style={{ color: "var(--pp-text-primary)", fontFamily: "DM Sans, sans-serif" }}
         />
+        {q.trim() && (
+          <button
+            onClick={() => {
+              const scope = tab === "directory" ? "directory" : "all";
+              navigate(`/mplanipret/search?q=${encodeURIComponent(q.trim())}&scope=${scope}`);
+            }}
+            className="text-[11px] font-semibold px-2 py-1 rounded-full"
+            style={{ background: "var(--pp-brand-accent-2)", color: "#fff", border: "1px solid var(--pp-brand-accent)" }}
+            aria-label="Rechercher partout">
+            Tout
+          </button>
+        )}
       </div>
+      <div className="mb-3" />
 
       {/* Pill tabs */}
       <div className="flex gap-1 p-1 mb-4" style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", borderRadius: 12 }}>
