@@ -6,7 +6,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
-import { ensureContacts, getContactsPermissionStatus } from "@/lib/native/permissions/contacts";
+import { ensureContacts, getContactsPermissionStatus, listDeviceContacts } from "@/lib/native/permissions/contacts";
 import { openAppSettings, type PermStatus } from "@/lib/native/permissions/platform";
 
 
@@ -16,7 +16,7 @@ type Tab = "personal" | "favorites" | "directory";
 const FAV_KEY = "planipret.contacts.favorites.v1";
 type FavEntry = {
   key: string;                 // unique id (source:id/ext/phone)
-  source: "personal" | "shared" | "directory" | "maestro";
+  source: "personal" | "shared" | "directory" | "maestro" | "native";
   name: string;
   phone?: string;
   extension?: string;
@@ -56,6 +56,7 @@ function normalizeContact(c: any) {
     id: c.id ?? c.contact_id ?? c.uid ?? crypto.randomUUID(),
     first_name: c.first_name ?? c.firstname ?? "",
     last_name: c.last_name ?? c.lastname ?? "",
+    display_name: c.display_name ?? c.name ?? "",
     phone: c.phone ?? c.cell_phone ?? c.work_phone ?? c.home_phone ?? "",
     email: c.email ?? "",
     company: c.company ?? c.organization ?? "",
@@ -87,7 +88,6 @@ export default function MContacts() {
   const [createOpen, setCreateOpen] = useState(false);
   const [contactsPerm, setContactsPerm] = useState<PermStatus>("unavailable");
   const [contactsPermBusy, setContactsPermBusy] = useState(false);
-  const [showPermPrompt, setShowPermPrompt] = useState(true);
   const [visibleCount, setVisibleCount] = useState(40);
   const loadedTabsRef = useRef<Set<Tab>>(new Set(["favorites"]));
 
@@ -118,22 +118,39 @@ export default function MContacts() {
     if (!opts.background) setLoadingTab(which);
     setLoadError(null);
     try {
-      const action = which === "personal" ? "list" : "directory";
-      const { data, error } = await supabase.functions.invoke("pp-ns-contacts", { body: { action, limit: opts.limit ?? 500 } });
-      const payload: any = data ?? {};
-      if (error) {
-        const detail = payload?.error || payload?.body || error.message;
-        throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
-      }
-      if (payload?.error) {
-        const extra = payload?.status ? ` (HTTP ${payload.status})` : "";
-        throw new Error(`${payload.error}${extra}`);
-      }
       if (which === "directory") {
+        const { data, error } = await supabase.functions.invoke("pp-ns-contacts", { body: { action: "directory", limit: opts.limit ?? 500 } });
+        const payload: any = data ?? {};
+        if (error) {
+          const detail = payload?.error || payload?.body || error.message;
+          throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+        }
+        if (payload?.error) {
+          const extra = payload?.status ? ` (HTTP ${payload.status})` : "";
+          throw new Error(`${payload.error}${extra}`);
+        }
         setDirectory(payload?.directory ?? []);
       } else {
-        const list = (payload?.contacts ?? []).map(normalizeContact);
-        setPersonal(list);
+        const [backend, device] = await Promise.allSettled([
+          supabase.functions.invoke("pp-ns-contacts", { body: { action: "list", limit: opts.limit ?? 500 } }),
+          listDeviceContacts(),
+        ]);
+        const nativeContacts = device.status === "fulfilled" ? device.value : [];
+        let backendError: string | null = null;
+        let nsContacts: any[] = [];
+        if (backend.status === "fulfilled") {
+          const payload: any = backend.value.data ?? {};
+          if (backend.value.error || payload?.error) {
+            const detail = payload?.error || payload?.body || backend.value.error?.message;
+            backendError = typeof detail === "string" ? detail : JSON.stringify(detail);
+          } else {
+            nsContacts = (payload?.contacts ?? []).map(normalizeContact);
+          }
+        } else {
+          backendError = backend.reason?.message || "Erreur inconnue";
+        }
+        setPersonal([...nativeContacts, ...nsContacts]);
+        if (backendError && nativeContacts.length === 0) throw new Error(backendError);
       }
       loadedTabsRef.current.add(which);
     } catch (e: any) {
@@ -164,9 +181,19 @@ export default function MContacts() {
   // native prompt from an explicit tap. If denied, keep a clear recovery path.
   useEffect(() => {
     let cancelled = false;
-    void getContactsPermissionStatus().then((status) => { if (!cancelled) setContactsPerm(status); });
-    return () => { cancelled = true; };
-  }, []);
+    const refresh = () => void getContactsPermissionStatus().then((status) => {
+      if (cancelled) return;
+      setContactsPerm(status);
+      if (status === "granted") {
+        loadedTabsRef.current.delete("personal");
+        void load("personal", { force: true });
+      }
+    });
+    refresh();
+    const onVisible = () => { if (document.visibilityState === "visible") refresh(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => { cancelled = true; document.removeEventListener("visibilitychange", onVisible); };
+  }, [load]);
 
   const requestContactsAccess = useCallback(async () => {
     setContactsPermBusy(true);
@@ -174,7 +201,8 @@ export default function MContacts() {
       const status = await ensureContacts();
       setContactsPerm(status);
       if (status === "granted") {
-        setShowPermPrompt(false);
+        loadedTabsRef.current.delete("personal");
+        await load("personal", { force: true });
         toast.success("Contacts autorisés");
       } else if (status === "denied") {
         toast.error("Accès aux contacts refusé", { description: "Activez Contacts dans les réglages pour afficher les contacts de votre cellulaire." });
@@ -182,7 +210,7 @@ export default function MContacts() {
     } finally {
       setContactsPermBusy(false);
     }
-  }, []);
+  }, [load]);
 
 
   const list = useMemo(() => {
@@ -191,10 +219,10 @@ export default function MContacts() {
     if (!ql) return src;
     return src.filter((c: any) => {
       const hay = tab === "directory"
-        ? `${c.name ?? ""} ${c.extension ?? ""} ${c.email ?? ""} ${c.department ?? ""} ${c.position ?? ""} ${c.job_title ?? ""}`
+        ? `${c.first_name ?? ""} ${c.last_name ?? ""} ${c.name ?? ""} ${c.display_name ?? ""} ${c.extension ?? ""} ${c.email ?? ""} ${c.department ?? ""} ${c.position ?? ""} ${c.job_title ?? ""}`
         : tab === "favorites"
         ? `${c.name ?? ""} ${c.phone ?? ""} ${c.extension ?? ""} ${c.email ?? ""} ${c.company ?? ""}`
-        : `${c.first_name ?? ""} ${c.last_name ?? ""} ${c.phone ?? ""} ${c.email ?? ""} ${c.company ?? ""}`;
+        : `${c.first_name ?? ""} ${c.last_name ?? ""} ${c.display_name ?? ""} ${c.phone ?? ""} ${c.email ?? ""} ${c.company ?? ""}`;
       return hay.toLowerCase().includes(ql);
     });
   }, [tab, personal, favorites, directory, q]);
@@ -227,29 +255,34 @@ export default function MContacts() {
         )}
       </div>
 
-      {tab === "personal" && showPermPrompt && contactsPerm !== "unavailable" && contactsPerm !== "granted" && (
+      {tab === "personal" && contactsPerm !== "unavailable" && (
         <div className="rounded-2xl p-3 mb-3 flex gap-3 items-start" style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)" }}>
           <div className="flex items-center justify-center shrink-0" style={{ width: 34, height: 34, borderRadius: "50%", background: "rgba(46,155,220,0.12)", color: "var(--pp-brand-accent)" }}>
             <BookUser className="w-4 h-4" />
           </div>
           <div className="flex-1 min-w-0">
             <div style={{ fontSize: 13, fontWeight: 700, color: "var(--pp-text-primary)" }}>
-              {contactsPerm === "denied" ? "Accès aux contacts refusé" : "Autoriser les contacts du cellulaire"}
+              Contacts du cellulaire · {contactsPerm === "granted" ? "autorisés" : contactsPerm === "denied" ? "refusés" : "à autoriser"}
             </div>
             <div style={{ fontSize: 11, color: "var(--pp-text-secondary)", marginTop: 2 }}>
-              {contactsPerm === "denied"
-                ? "Activez Contacts dans les réglages pour identifier les appels et composer plus vite."
-                : "Touchez Autoriser pour afficher et utiliser les contacts de votre cellulaire."}
+              {contactsPerm === "granted"
+                ? "Vos contacts du téléphone sont inclus dans cette liste."
+                : contactsPerm === "denied"
+                ? "Activez Contacts dans les réglages pour afficher les contacts de votre cellulaire."
+                : "Touchez Activer pour afficher les contacts de votre cellulaire."}
             </div>
             <div className="flex gap-2 mt-2">
               {contactsPerm === "denied" ? (
-                <button onClick={openAppSettings} className="px-3 py-1.5 rounded-full text-xs font-semibold" style={{ background: "var(--pp-brand-accent)", color: "#fff" }}>Ouvrir les réglages</button>
+                <button onClick={openAppSettings} className="px-3 py-1.5 rounded-full text-xs font-semibold" style={{ background: "var(--pp-brand-accent)", color: "#fff" }}>Activer dans réglages</button>
+              ) : contactsPerm === "granted" ? (
+                <button onClick={() => void load("personal", { force: true })} disabled={contactsPermBusy || loading} className="px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1" style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-secondary)", border: "1px solid var(--pp-bg-border-2)", opacity: contactsPermBusy || loading ? 0.7 : 1 }}>
+                  {loading && <Loader2 className="w-3 h-3 animate-spin" />} Actualiser
+                </button>
               ) : (
                 <button onClick={requestContactsAccess} disabled={contactsPermBusy} className="px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1" style={{ background: "var(--pp-brand-accent)", color: "#fff", opacity: contactsPermBusy ? 0.7 : 1 }}>
-                  {contactsPermBusy && <Loader2 className="w-3 h-3 animate-spin" />} Autoriser
+                  {contactsPermBusy && <Loader2 className="w-3 h-3 animate-spin" />} Activer
                 </button>
               )}
-              <button onClick={() => setShowPermPrompt(false)} className="px-3 py-1.5 rounded-full text-xs font-semibold" style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-secondary)", border: "1px solid var(--pp-bg-border-2)" }}>Plus tard</button>
             </div>
           </div>
         </div>
@@ -357,7 +390,7 @@ export default function MContacts() {
                   || (c.extension ? `${t("contacts.extension") || "Ext."} ${c.extension}` : "Nom non disponible"))
               : isFav
               ? c.name
-              : (`${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || c.phone || c.email);
+              : (`${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || c.display_name || c.phone || c.email);
             const sub = isDir
               ? (c.extension ? `${t("contacts.extension") || "Ext."} ${c.extension}` : (c.email || "—"))
               : isFav

@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useRef, useState, useCallback, lazy, Suspense } f
 import { useNavigate, NavLink, Outlet, useLocation } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { supabase } from "@/integrations/supabase/client";
-import { Home, Phone, MessageSquare, Users, Bot, Phone as PhoneIcon, X, Delete, Plus, Lock, PhoneOff, Settings as SettingsIcon, Search as SearchIcon, MessageCircle } from "lucide-react";
+import { Home, Phone, MessageSquare, Users, Bot, Phone as PhoneIcon, X, Delete, Plus, Lock, PhoneOff, Settings as SettingsIcon, Search as SearchIcon, MessageCircle, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { usePullToRefresh, PullIndicator } from "@/hooks/usePullToRefresh";
 import { useRealtimeManager } from "@/hooks/useRealtimeManager";
@@ -30,6 +30,7 @@ import MicDeniedBanner from "@/components/planipret/mobile/MicDeniedBanner";
 import PermissionsPrimer from "@/components/planipret/mobile/PermissionsPrimer";
 import { hasSeenPrimer } from "@/lib/native/permissions/orchestrator";
 import { bootstrapPushIfNative } from "@/lib/native/pushBootstrap";
+import { listDeviceContacts } from "@/lib/native/permissions/contacts";
 
 
 const ACCENT = "#2E9BDC";
@@ -105,7 +106,7 @@ type DialerContact = {
   extension?: string;
   email?: string;
   company?: string;
-  source?: "personal" | "shared" | "directory";
+  source?: "personal" | "shared" | "directory" | "native";
 };
 
 function contactDisplayName(c: DialerContact): string {
@@ -131,6 +132,8 @@ function Dialer({ open, onClose, initial, openMessages, softphone }: { open: boo
   const [query, setQuery] = useState("");
   const [contacts, setContacts] = useState<DialerContact[]>([]);
   const [loadingContacts, setLoadingContacts] = useState(false);
+  const [contactsError, setContactsError] = useState<string | null>(null);
+  const [contactsLoadKey, setContactsLoadKey] = useState(0);
   const holdTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => { if (open) { setNumber(initial ?? ""); setMode("keypad"); setQuery(""); } }, [open, initial]);
   const append = (c: string) => setNumber((n) => (n + c).slice(0, 20));
@@ -162,31 +165,56 @@ function Dialer({ open, onClose, initial, openMessages, softphone }: { open: boo
 
 
 
-  // Load contacts (personal + shared + directory) once when opening Search mode
+  // Load contacts (phone + personal + shared + directory) once when opening Search mode.
+  const withTimeout = async <T,>(promise: Promise<T>, ms: number, label: string): Promise<T> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<T>((_, reject) => { timer = setTimeout(() => reject(new Error(`${label} timeout`)), ms); }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+
+  const loadNsContacts = async (action: "list" | "shared" | "directory") => {
+    const { data, error } = await supabase.functions.invoke("pp-ns-contacts", { body: { action, limit: 500 } });
+    const payload: any = data ?? {};
+    if (error || payload?.error) throw new Error(payload?.error || error?.message || action);
+    return action === "directory" ? (payload.directory ?? []) : (payload.contacts ?? []);
+  };
+
   useEffect(() => {
     if (!open || mode !== "search" || contacts.length > 0 || loadingContacts) return;
     let cancelled = false;
     (async () => {
       setLoadingContacts(true);
+      setContactsError(null);
       try {
         const results: DialerContact[] = [];
-        const [personal, shared, directory] = await Promise.all([
-          supabase.functions.invoke("pp-ns-contacts", { body: { action: "list" } }),
-          supabase.functions.invoke("pp-ns-contacts", { body: { action: "shared" } }),
-          supabase.functions.invoke("pp-ns-contacts", { body: { action: "directory" } }),
+        const [device, personal, shared, directory] = await Promise.allSettled([
+          listDeviceContacts(),
+          withTimeout(loadNsContacts("list"), 12000, "contacts"),
+          withTimeout(loadNsContacts("shared"), 12000, "shared"),
+          withTimeout(loadNsContacts("directory"), 12000, "directory"),
         ]);
-        for (const c of ((personal.data as any)?.contacts ?? [])) results.push({ ...c, source: "personal" });
-        for (const c of ((shared.data as any)?.contacts ?? [])) results.push({ ...c, source: "shared" });
-        for (const c of ((directory.data as any)?.directory ?? [])) results.push({ ...c, source: "directory" });
+        if (device.status === "fulfilled") for (const c of device.value) results.push({ ...c, source: "native" });
+        if (personal.status === "fulfilled") for (const c of personal.value) results.push({ ...c, source: "personal" });
+        if (shared.status === "fulfilled") for (const c of shared.value) results.push({ ...c, source: "shared" });
+        if (directory.status === "fulfilled") for (const c of directory.value) results.push({ ...c, source: "directory" });
+        const failed = [device, personal, shared, directory].filter((r) => r.status === "rejected") as PromiseRejectedResult[];
+        if (failed.length && !results.length) setContactsError(failed[0].reason?.message || "Chargement impossible");
         if (!cancelled) setContacts(results);
       } catch (e) {
         console.error("[Dialer] load contacts failed", e);
+        if (!cancelled) setContactsError((e as Error)?.message || "Chargement impossible");
       } finally {
         if (!cancelled) setLoadingContacts(false);
       }
     })();
     return () => { cancelled = true; };
-  }, [open, mode, contacts.length, loadingContacts]);
+  }, [open, mode, contacts.length, loadingContacts, contactsLoadKey]);
 
   const normalized = query.trim().toLowerCase();
   const directoryOnly = contacts.filter((c) => c.source === "directory");
@@ -318,7 +346,12 @@ function Dialer({ open, onClose, initial, openMessages, softphone }: { open: boo
                 </div>
                 <div className="flex-1 overflow-y-auto mt-3 -mx-2 px-2 pb-4">
                   {loadingContacts && contacts.length === 0 ? (
-                    <div className="text-center text-sm py-8" style={{ color: "var(--pp-text-muted)" }}>{t("dialer.searching")}</div>
+                    <div className="text-center text-sm py-8" style={{ color: "var(--pp-text-muted)" }}><Loader2 className="w-4 h-4 animate-spin mx-auto mb-2" />{t("dialer.searching")}</div>
+                  ) : contactsError ? (
+                    <div className="text-center text-sm py-8" style={{ color: "var(--pp-text-muted)" }}>
+                      <div className="mb-2">{contactsError}</div>
+                      <button onClick={() => { setContacts([]); setContactsError(null); setContactsLoadKey((n) => n + 1); }} className="px-3 py-1.5 rounded-full text-xs font-semibold" style={{ background: "var(--pp-brand-accent)", color: "#fff" }}>Réessayer</button>
+                    </div>
                   ) : filtered.length === 0 ? (
                     <div className="text-center text-sm py-8" style={{ color: "var(--pp-text-muted)" }}>{normalized ? t("dialer.noResults") : t("contacts.noDirectory")}</div>
                   ) : (

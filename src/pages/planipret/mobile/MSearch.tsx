@@ -17,6 +17,8 @@ type Result = {
 
 const PAGE_SIZE = 20;
 const DIR_PAGE = 20;
+const emptyHasMore = (): HasMore => ({ calls: false, messages: false, voicemails: false, insights: false, contacts: false, emails: false });
+const emptySearch = () => ({ calls: [], messages: [], voicemails: [], insights: [], contacts: [], emails: [], has_more: emptyHasMore() });
 
 function highlight(text: string, q: string) {
   if (!text || !q) return text;
@@ -29,12 +31,19 @@ async function callSearch(q: string, scope: Scope, offset: number, limit: number
   const sess = (await supabase.auth.getSession()).data.session;
   const backendScope = scope === "directory" ? "all" : scope; // directory is client-side
   const url = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/pp-search?q=${encodeURIComponent(q)}&scope=${backendScope}&offset=${offset}&limit=${limit}`;
-  const r = await fetch(url, {
-    headers: { Authorization: `Bearer ${sess?.access_token}`, apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ?? "" },
-  });
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j?.error || `HTTP ${r.status}`);
-  return j;
+  const ctrl = new AbortController();
+  const timer = window.setTimeout(() => ctrl.abort(), 12000);
+  try {
+    const r = await fetch(url, {
+      signal: ctrl.signal,
+      headers: { Authorization: `Bearer ${sess?.access_token}`, apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ?? "" },
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j?.error || `HTTP ${r.status}`);
+    return j;
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
 async function fetchDirectory(q: string): Promise<DirEntry[]> {
@@ -77,11 +86,16 @@ export default function MSearch() {
     setLoading(true);
     setError(null);
     try {
+      let searchError: any = null;
+      let directoryError: any = null;
+      const includeDirectory = scope === "all" || scope === "directory";
       const [searchRes, directory] = await Promise.all([
-        callSearch(q, scope, 0, PAGE_SIZE),
-        fetchDirectory(q).catch((e) => { console.warn("[search] directory:", e?.message); return [] as DirEntry[]; }),
+        scope === "directory" ? Promise.resolve(emptySearch()) : callSearch(q, scope, 0, PAGE_SIZE).catch((e) => { searchError = e; return emptySearch(); }),
+        includeDirectory ? fetchDirectory(q).catch((e) => { directoryError = e; console.warn("[search] directory:", e?.message); return [] as DirEntry[]; }) : Promise.resolve([] as DirEntry[]),
       ]);
       if (id !== reqIdRef.current) return;
+      if (scope === "directory" && directoryError) throw directoryError;
+      if (scope !== "directory" && searchError && (!includeDirectory || directory.length === 0)) throw searchError;
       setData({
         calls: searchRes.calls ?? [],
         messages: searchRes.messages ?? [],
