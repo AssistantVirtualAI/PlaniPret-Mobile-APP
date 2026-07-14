@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { Capacitor } from "@capacitor/core";
 import { supabase } from "@/integrations/supabase/client";
 import { CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
 
@@ -18,7 +19,11 @@ export default function Ms365Callback() {
       const { data: { session } } = await supabase.auth.getSession();
       if (!session) { setStatus("error"); setError("Session expirée — reconnectez-vous"); return; }
       // Must match the redirect URI registered in Azure App Registration.
-      const redirect_uri = `${window.location.origin}/auth/microsoft/callback`;
+      // Sur iOS natif : capacitor://localhost/auth/microsoft/callback
+      // Sur web : https://avastatistic.ca/auth/microsoft/callback (ou localhost en dev)
+      const redirect_uri = Capacitor.isNativePlatform()
+        ? "capacitor://localhost/auth/microsoft/callback"
+        : `${window.location.origin}/auth/microsoft/callback`;
       const { data, error: e } = await supabase.functions.invoke("ms365-oauth-exchange", { body: { code, redirect_uri } });
       if (e || !(data as any)?.success) {
         setStatus("error"); setError((data as any)?.error ?? e?.message ?? "Échec OAuth");

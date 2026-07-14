@@ -46,6 +46,20 @@
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
 
+	<!-- ===== URL Schemes — requis pour le callback OAuth Microsoft 365 sur iOS natif ===== -->
+	<!-- Azure App Registration → Mobile and desktop applications → capacitor://localhost/auth/microsoft/callback -->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.planipret.mobile</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>capacitor</string>
+			</array>
+		</dict>
+	</array>
+
 	<!-- ===== Permissions requises par les plugins Capacitor ===== -->
 
 	<!-- Contacts — requis par @capacitor-community/contacts -->
