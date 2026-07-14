@@ -8,6 +8,7 @@ import { usePullToRefresh, PullIndicator } from "@/hooks/usePullToRefresh";
 import { useRealtimeManager } from "@/hooks/useRealtimeManager";
 import InboundCallOverlay, { type InboundCall } from "@/components/InboundCallOverlay";
 import { OfflineBanner, PlanipretErrorBoundary } from "@/components/PlanipretErrorBoundary";
+import { LazyRouteBoundary } from "@/components/LazyRouteBoundary";
 import SessionTimeoutModal from "@/components/planipret/SessionTimeoutModal";
 import PrivacyConsentGate from "@/components/planipret/PrivacyConsentGate";
 import UniversalSearchBar from "@/components/planipret/UniversalSearchBar";
@@ -15,6 +16,9 @@ import { OnboardingTutorial } from "@/components/planipret/OnboardingTutorial";
 
 import { useAvaNavigation } from "@/hooks/useAvaNavigation";
 const AvaVoiceAgent = lazy(() => import("@/components/planipret/mobile/AvaVoiceAgent"));
+import MobileScreenSkeleton from "@/components/planipret/mobile/MobileScreenSkeleton";
+import { prefetchRoute, scheduleIdlePrefetch } from "@/lib/routePrefetch";
+import { useQueryClient } from "@tanstack/react-query";
 import AvaChatSheet from "@/components/planipret/mobile/AvaChatSheet";
 import avaLogoAsset from "@/assets/ava-statistics-logo.png.asset.json";
 import planipretLogoAsset from "@/assets/planipret-logo.png.asset.json";
@@ -54,7 +58,7 @@ const AvaBadge = ({ compact = false, circle = false }: { compact?: boolean; circ
         boxShadow: compact ? undefined : "0 0 12px rgba(124,58,237,0.35)",
       }}
     >
-      <img src={avaLogoAsset.url} alt="AVA" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+      <img src={avaLogoAsset.url} alt="AVA" decoding="async" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
     </div>
   );
 };
@@ -73,7 +77,7 @@ const PlanipretBadge = () => (
       background: "#fff",
     }}
   >
-    <img src={planipretLogoAsset.url} alt="Planiprêt" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
+    <img src={planipretLogoAsset.url} alt="Planiprêt" decoding="async" fetchPriority="high" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
   </div>
 );
 
@@ -474,6 +478,58 @@ export default function PlanipretMobile() {
   useRealtimeManager(profile?.user_id, { onInboundRinging, onAiInsight });
   useAvaNavigation(profile?.user_id);
 
+  // Warm up sibling tab chunks during idle time so tab switches feel instant.
+  useEffect(() => {
+    scheduleIdlePrefetch([
+      "/mplanipret/home",
+      "/mplanipret/calls",
+      "/mplanipret/ava",
+      "/mplanipret/messages",
+      "/mplanipret/contacts",
+      "/mplanipret/more",
+      "/mplanipret/voicemail",
+    ]);
+  }, []);
+
+  // When the app returns to the foreground (Capacitor resume or tab visibility),
+  // revalidate active queries and re-warm the sibling tab chunks so the next
+  // interaction after a background pause feels instant instead of stale.
+  const qc = useQueryClient();
+  useEffect(() => {
+    const onResume = () => {
+      // 1) Prefetch current + neighboring route chunks (idempotent, cheap).
+      prefetchRoute(location.pathname);
+      scheduleIdlePrefetch([
+        "/mplanipret/home",
+        "/mplanipret/calls",
+        "/mplanipret/messages",
+        "/mplanipret/voicemail",
+        "/mplanipret/contacts",
+      ]);
+      // 2) Revalidate active queries so on-screen data refreshes in background.
+      qc.invalidateQueries({ refetchType: "active" });
+    };
+    const onVisibility = () => { if (document.visibilityState === "visible") onResume(); };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", onResume);
+    let capUnsub: null | (() => void) = null;
+    (async () => {
+      try {
+        const { App } = await import("@capacitor/app");
+        const h = await App.addListener("appStateChange", (s: { isActive: boolean }) => {
+          if (s.isActive) onResume();
+        });
+        capUnsub = () => { try { h.remove(); } catch {} };
+      } catch { /* not native — visibilitychange is enough */ }
+    })();
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", onResume);
+      capUnsub?.();
+    };
+  }, [qc, location.pathname]);
+
+
   // Detect active outbound/in-progress call → FAB pulses red & hangs up on tap
   useEffect(() => {
     if (!profile?.user_id) return;
@@ -740,7 +796,9 @@ export default function PlanipretMobile() {
         <div ref={scrollRef} className="flex-1 overflow-y-auto pb-[130px]">
           <PullIndicator pullDist={pullDist} refreshing={refreshing} threshold={threshold} color={ACCENT} />
           <PlanipretErrorBoundary key={location.pathname}>
-            <Outlet context={{ profile, reloadProfile: loadProfile, openDialer, openAva, registerRefresh, softphone } satisfies PlanipretMobileContext} />
+            <LazyRouteBoundary>
+              <Outlet context={{ profile, reloadProfile: loadProfile, openDialer, openAva, registerRefresh, softphone } satisfies PlanipretMobileContext} />
+            </LazyRouteBoundary>
           </PlanipretErrorBoundary>
         </div>
         <SessionTimeoutModal />
@@ -777,6 +835,8 @@ export default function PlanipretMobile() {
             const isAva = tabItem.to.endsWith("/ava");
             return (
               <NavLink key={tabItem.to} to={tabItem.to}
+                onTouchStart={() => prefetchRoute(tabItem.to)}
+                onMouseEnter={() => prefetchRoute(tabItem.to)}
                 className={`relative flex flex-col items-center justify-center gap-1 text-[11px] font-semibold pt-2 ${isAva ? "ava-tab-center" : ""}`}
                 style={({ isActive }) => ({ color: isActive ? "var(--pp-brand-accent)" : "var(--pp-text-faint)" })}>
                 {({ isActive }) => (

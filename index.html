@@ -6,6 +6,13 @@
     <meta name="theme-color" content="#1A4A8A" />
     <title>Planiprêt Mobile</title>
     <meta name="description" content="Planiprêt — application mobile courtier (appels, messages, pipeline, AVA)." />
+    <!-- Warm up the asset host early so logos + preloaded chunks resolve fast on cold start. -->
+    <link rel="preconnect" href="https://avastatistic.ca" crossorigin />
+    <link rel="dns-prefetch" href="https://avastatistic.ca" />
+    <link rel="preconnect" href="https://gejxisrqtvxavbrfcoxz.supabase.co" crossorigin />
+    <link rel="dns-prefetch" href="https://gejxisrqtvxavbrfcoxz.supabase.co" />
+    <!-- Preload the LCP logo used in the header. -->
+    <link rel="preload" as="image" href="https://avastatistic.ca/__l5e/assets-v1/e3dd3a86-14ac-4585-8736-b102e9737302/planipret-logo.png" fetchpriority="high" />
     <style>
       * { box-sizing: border-box; margin: 0; padding: 0; }
       html { background: #0A1425; height: 100%; overflow: hidden; -webkit-text-size-adjust: 100%; touch-action: manipulation; }
