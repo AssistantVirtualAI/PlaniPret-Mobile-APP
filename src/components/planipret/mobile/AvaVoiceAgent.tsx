@@ -392,9 +392,11 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
         try {
           const tok = await mintToken("webrtc");
           await logSession({ connection_type: "webrtc", agent_id: c.agent_id });
-          const dynamicVariables = tok.ava_session_token
-            ? { ava_session_token: tok.ava_session_token, secret__ava_session_token: tok.ava_session_token }
-            : undefined;
+          const dynamicVariables = {
+            ...(tok.ava_session_token ? { ava_session_token: tok.ava_session_token, secret__ava_session_token: tok.ava_session_token } : {}),
+            ...(tok.broker?.name ? { ava_broker_name: tok.broker.name } : {}),
+            ...(tok.broker?.extension ? { ava_broker_extension: String(tok.broker.extension) } : {}),
+          };
           conv = await Conversation.startSession({
             conversationToken: tok.token,
             connectionType: "webrtc",
@@ -408,9 +410,11 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
             await new Promise((resolve) => setTimeout(resolve, 350));
             const tok = await mintToken("websocket");
             await logSession({ connection_type: "websocket", agent_id: c.agent_id });
-            const dynamicVariables = tok.ava_session_token
-              ? { ava_session_token: tok.ava_session_token, secret__ava_session_token: tok.ava_session_token }
-              : undefined;
+            const dynamicVariables = {
+              ...(tok.ava_session_token ? { ava_session_token: tok.ava_session_token, secret__ava_session_token: tok.ava_session_token } : {}),
+              ...(tok.broker?.name ? { ava_broker_name: tok.broker.name } : {}),
+              ...(tok.broker?.extension ? { ava_broker_extension: String(tok.broker.extension) } : {}),
+            };
             conv = await Conversation.startSession({
               signedUrl: tok.signed_url,
               dynamicVariables,
