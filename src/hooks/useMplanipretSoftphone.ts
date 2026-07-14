@@ -13,11 +13,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
+import { Capacitor } from "@capacitor/core";
 import { ppSipProvider, type PpSipSnapshot } from "@/lib/planipret/sip/ppSipProvider";
 import { networkMonitor, type NetSample } from "@/lib/planipret/network/networkMonitor";
 import { handoverController } from "@/lib/planipret/net/handoverController";
 import { callQualitySampler, type CallQualitySnapshot } from "@/lib/planipret/audio/callQualitySampler";
 import { getAudioConstraints, type NCMode } from "@/lib/planipret/audio/audioConstraints";
+
 import { ensureMicPermission, type MicPermissionState } from "@/lib/planipret/audio/micPermission";
 import {
   upsertRingingSession,
@@ -28,7 +30,9 @@ import {
   type AnsweredBy,
 } from "@/lib/planipret/calls/callSessionSync";
 
-
+// On iOS/Android Capacitor, the WebSocket SIP port (9002) is blocked by the OS.
+// The native softphone (113_mobile) handles calls instead — skip JS SIP init.
+const IS_NATIVE = Capacitor.isNativePlatform();
 
 let gumProxyInstalled = false;
 let gumOriginal: typeof navigator.mediaDevices.getUserMedia | null = null;
@@ -123,8 +127,10 @@ export function useMplanipretSoftphone() {
   // Re-runs whenever the ExtensionSync page dispatches `pp:sip-ready`, so a
   // freshly-created `{ext}_mobile` device actually REGISTERs and shows up in
   // NetSapiens with IP/User-Agent instead of empty columns.
+  // NOTE: Skipped on native iOS/Android — the native softphone handles registration.
   useEffect(() => {
     if (!user) return;
+    if (IS_NATIVE) return; // Native platform: skip JS SIP, use REST fallback only
     let cancelled = false;
     const doInit = async (opts?: { force?: boolean }) => {
       setLoading(true);
