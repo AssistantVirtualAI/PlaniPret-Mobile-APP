@@ -42,12 +42,11 @@ export default function MMore() {
 
   const loadMs365Detection = async () => {
     setMs365Detection((d) => ({ ...d, loading: true }));
-    const { data } = await supabase.functions.invoke("pp-integration-secrets");
-    const ms = ((data as any)?.items ?? []).find((i: any) => i.provider === "microsoft");
-    const pc = ms?.public_config ?? {};
+    const { data } = await supabase.functions.invoke("ms365-status", { body: {} });
+    const pc = (data as any)?.detection ?? {};
     setMs365Detection({
       tenant_id: pc.tenant_id ?? null,
-      client_id: pc.client_id ?? pc.client_secret_id ?? null,
+      client_id: pc.client_id ?? null,
       loading: false,
     });
   };
@@ -116,16 +115,14 @@ export default function MMore() {
   };
 
   const connectMs365 = async () => {
-    const { data, error } = await supabase.functions.invoke("pp-integration-secrets");
+    const { data, error } = await supabase.functions.invoke("ms365-status", { body: {} });
     if (error) { toast.error("Configuration Microsoft inaccessible", { description: error.message }); return; }
-    const microsoftItems = ((data as any)?.items ?? []).filter((i: any) => i.provider === "microsoft");
-    const microsoft = microsoftItems.find((i: any) => i.public_config?.client_id || i.public_config?.client_secret_id) ?? microsoftItems[0];
-    const cfg = (microsoft?.public_config ?? {}) as any;
-    if (!cfg.client_id && !cfg.client_secret_id) {
+    const cfg = ((data as any)?.detection ?? {}) as any;
+    if (!cfg.client_id) {
       toast.error("Microsoft 365 n'est pas configuré côté admin");
       return;
     }
-    startMs365OAuth({ ...cfg, client_id: cfg.client_id ?? cfg.client_secret_id });
+    startMs365OAuth({ ...cfg, client_id: cfg.client_id });
   };
 
   const disconnectMs365 = async () => {

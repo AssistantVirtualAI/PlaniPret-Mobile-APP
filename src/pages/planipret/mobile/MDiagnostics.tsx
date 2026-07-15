@@ -128,15 +128,36 @@ const PROBES: Probe[] = [
     },
   },
   {
-    key: "maestro-telecom",
+    key: "maestro-telecom-status",
     group: "Maestro / Agenda",
-    label: "pp-maestro-telecom · API Télécom",
+    label: "Maestro Télécom · config + auth + dernier miroir",
     run: async () => {
-      const d = await callEdge<any>("pp-maestro-telecom", { action: "recent-comms" });
-      const n = (d?.communications?.length ?? d?.data?.length ?? 0) as number;
-      return { ok: !!d?.ok, detail: `${n} communication(s) récente(s)` };
+      // Try admin-scoped status first (rich payload). Fallback to broker ping.
+      let d: any = null;
+      try { d = await callEdge<any>("pp-maestro-admin", { action: "status" }); } catch { /* ignore */ }
+      if (d && typeof d.configured === "boolean") {
+        const cfgOk = !!d.configured;
+        const pingOk = !!d?.ping?.ok;
+        const lastCall = d?.last_call_mirror;
+        const lastSms = d?.last_sms_mirror;
+        const lastAna = d?.last_analysis_mirror;
+        const parts = [
+          `config ${cfgOk ? "OK" : "manquante"}`,
+          `auth ${pingOk ? `OK (${d?.ping?.status})` : `KO (${d?.ping?.status ?? 0})`}`,
+          `24h ${d?.stats24h?.total ?? 0}× · ${d?.stats24h?.success_rate ?? "—"}%`,
+          `dernier call ${lastCall ? (lastCall.success ? "✓" : "✗") : "—"}`,
+          `dernier sms ${lastSms ? (lastSms.success ? "✓" : "✗") : "—"}`,
+          `dernière analyse IA ${lastAna ? (lastAna.success ? "✓" : "✗") : "—"}`,
+        ];
+        return { ok: cfgOk && pingOk, degraded: cfgOk && !pingOk, detail: parts.join(" · ") };
+      }
+      // Broker fallback: call recent-comms
+      const r = await callEdge<any>("pp-maestro-telecom", { action: "recent-comms" });
+      const n = (r?.communications?.length ?? r?.data?.length ?? 0) as number;
+      return { ok: !!r?.ok, detail: `${n} communication(s) récente(s)` };
     },
   },
+
 ];
 
 

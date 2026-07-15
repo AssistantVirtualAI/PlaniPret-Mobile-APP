@@ -8,15 +8,13 @@ import { openMs365Authorize } from "@/lib/ms365OAuth";
  */
 export async function connectMs365(): Promise<void> {
   try {
-    const { data, error } = await supabase.functions.invoke("pp-integration-secrets");
+    const { data, error } = await supabase.functions.invoke("ms365-status", { body: {} });
     if (error) {
       toast.error("Configuration Microsoft inaccessible", { description: error.message });
       return;
     }
-    const items = ((data as any)?.items ?? []).filter((i: any) => i.provider === "microsoft");
-    const ms = items.find((i: any) => i.public_config?.client_id || i.public_config?.client_secret_id) ?? items[0];
-    const cfg = (ms?.public_config ?? {}) as any;
-    const clientId = cfg.client_id ?? cfg.client_secret_id;
+    const cfg = (data as any)?.detection ?? {};
+    const clientId = cfg.client_id;
     if (!clientId) {
       toast.error("Microsoft 365 n'est pas configuré côté admin");
       return;

@@ -609,10 +609,7 @@ function ThreadView({ threadId: thId, number, myExt, userId, onBack, onCall }: {
       const result = (data as any)?.result ?? {};
       const newThreadId = result?.messagesession_id ?? result?.["messagesession-id"] ?? result?.session_id ?? result?.id;
       if (newThreadId && !currentThreadId) setCurrentThreadId(newThreadId);
-      // Mirror to Maestro Telecom (best-effort, non-blocking).
-      supabase.functions.invoke("maestro-telecom", {
-        body: { path: "/users/{me}/messages", method: "POST", body: { to_user_number: number, message: body } },
-      }).catch((e) => console.warn("[maestro-telecom] send", e?.message));
+      // Maestro mirror is handled server-side inside pp-ns-sms.
       // Refresh from server to reconcile optimistic message
       setTimeout(() => loadMessages(), 600);
 
