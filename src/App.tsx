@@ -14,6 +14,13 @@ import { MplanipretGuard } from '@/components/auth/MplanipretGuard';
 import { PlanipretErrorBoundary } from '@/components/PlanipretErrorBoundary';
 import { LazyRouteBoundary } from '@/components/LazyRouteBoundary';
 import { lazyWithRetry } from '@/lib/lazyWithRetry';
+import { prefetchAllMobileTabs } from '@/lib/routePrefetch';
+
+// Kick off tab-chunk warm-up as soon as the app module loads, so switching
+// tabs the first time is instant instead of showing a loading skeleton.
+if (typeof window !== 'undefined') {
+  prefetchAllMobileTabs();
+}
 
 const PlanipretMobile = lazyWithRetry(() => import('@/pages/planipret/PlanipretMobile'), 'PlanipretMobile');
 const MHome = lazyWithRetry(() => import('@/pages/planipret/mobile/MHome'), 'MHome');

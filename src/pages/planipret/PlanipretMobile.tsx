@@ -17,7 +17,7 @@ import { OnboardingTutorial } from "@/components/planipret/OnboardingTutorial";
 import { useAvaNavigation } from "@/hooks/useAvaNavigation";
 const AvaVoiceAgent = lazy(() => import("@/components/planipret/mobile/AvaVoiceAgent"));
 import MobileScreenSkeleton from "@/components/planipret/mobile/MobileScreenSkeleton";
-import { prefetchRoute, scheduleIdlePrefetch } from "@/lib/routePrefetch";
+import { prefetchRoute, scheduleIdlePrefetch, ALL_MOBILE_TAB_PATHS } from "@/lib/routePrefetch";
 import { useQueryClient } from "@tanstack/react-query";
 import AvaChatSheet from "@/components/planipret/mobile/AvaChatSheet";
 import avaLogoAsset from "@/assets/ava-statistics-logo.png.asset.json";
@@ -480,15 +480,7 @@ export default function PlanipretMobile() {
 
   // Warm up sibling tab chunks during idle time so tab switches feel instant.
   useEffect(() => {
-    scheduleIdlePrefetch([
-      "/mplanipret/home",
-      "/mplanipret/calls",
-      "/mplanipret/ava",
-      "/mplanipret/messages",
-      "/mplanipret/contacts",
-      "/mplanipret/more",
-      "/mplanipret/voicemail",
-    ]);
+    scheduleIdlePrefetch(ALL_MOBILE_TAB_PATHS);
   }, []);
 
   // When the app returns to the foreground (Capacitor resume or tab visibility),
@@ -499,13 +491,7 @@ export default function PlanipretMobile() {
     const onResume = () => {
       // 1) Prefetch current + neighboring route chunks (idempotent, cheap).
       prefetchRoute(location.pathname);
-      scheduleIdlePrefetch([
-        "/mplanipret/home",
-        "/mplanipret/calls",
-        "/mplanipret/messages",
-        "/mplanipret/voicemail",
-        "/mplanipret/contacts",
-      ]);
+      scheduleIdlePrefetch(ALL_MOBILE_TAB_PATHS);
       // 2) Revalidate active queries so on-screen data refreshes in background.
       qc.invalidateQueries({ refetchType: "active" });
     };

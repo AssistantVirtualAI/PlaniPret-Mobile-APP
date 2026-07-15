@@ -43,3 +43,22 @@ export function scheduleIdlePrefetch(paths: string[]): void {
   if (typeof ric === "function") ric(run, { timeout: 4000 });
   else setTimeout(run, 1200);
 }
+
+/** All bottom-tab / accessible mobile routes — used to warm every chunk. */
+export const ALL_MOBILE_TAB_PATHS = [
+  "/mplanipret/home",
+  "/mplanipret/calls",
+  "/mplanipret/messages",
+  "/mplanipret/voicemail",
+  "/mplanipret/contacts",
+  "/mplanipret/more",
+  "/mplanipret/pipeline",
+  "/mplanipret/stats",
+  "/mplanipret/ava",
+  "/mplanipret/notifications",
+  "/mplanipret/search",
+];
+
+export function prefetchAllMobileTabs(): void {
+  scheduleIdlePrefetch(ALL_MOBILE_TAB_PATHS);
+}

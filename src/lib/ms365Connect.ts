@@ -44,7 +44,7 @@ export async function connectMs365(): Promise<void> {
       `&redirect_uri=${encodeURIComponent(redirect)}` +
       `&response_mode=query` +
       `&scope=${scope}` +
-      `&prompt=consent` +
+      `&prompt=select_account` +
       `&state=${state}`;
     if (IS_NATIVE) {
       // Ouvrir Safari externe — iOS intercepte le retour capacitor:// et le renvoie à la WebView

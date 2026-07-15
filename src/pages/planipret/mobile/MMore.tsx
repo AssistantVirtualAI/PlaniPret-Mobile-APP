@@ -112,7 +112,7 @@ export default function MMore() {
     const scope = encodeURIComponent("openid profile email offline_access User.Read User.ReadBasic.All Mail.ReadWrite Mail.Send MailboxSettings.Read Calendars.ReadWrite Chat.Read Chat.ReadBasic Chat.ReadWrite Channel.ReadBasic.All ChannelMessage.Read.All ChannelMessage.Send Team.ReadBasic.All Organization.Read.All Application.Read.All");
     supabase.auth.getUser().then(({ data: { user } }) => {
       const state = user?.id ?? "";
-      const authUrl = `https://login.microsoftonline.com/${tenant}/oauth2/v2.0/authorize?client_id=${clientId}&response_type=code&redirect_uri=${encodeURIComponent(redirect)}&response_mode=query&scope=${scope}&state=${state}`;
+      const authUrl = `https://login.microsoftonline.com/${tenant}/oauth2/v2.0/authorize?client_id=${clientId}&response_type=code&redirect_uri=${encodeURIComponent(redirect)}&response_mode=query&scope=${scope}&prompt=select_account&state=${state}`;
       if (IS_NATIVE) {
         // Sur iOS : ouvrir dans Safari externe via _system
         // Le scheme capacitor:// sera intercepté par l'App Delegate et renvoyé à la WebView
