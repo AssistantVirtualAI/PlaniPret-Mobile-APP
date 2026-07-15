@@ -11,7 +11,6 @@
 //     ("both, with fallback" policy).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Capacitor } from "@capacitor/core";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { ppSipProvider, type PpSipSnapshot } from "@/lib/planipret/sip/ppSipProvider";
@@ -131,10 +130,8 @@ export function useMplanipretSoftphone() {
   // Re-runs whenever the ExtensionSync page dispatches `pp:sip-ready`, so a
   // freshly-created `{ext}_mobile` device actually REGISTERs and shows up in
   // NetSapiens with IP/User-Agent instead of empty columns.
-  // NOTE: Skipped on native iOS/Android — the native softphone handles registration.
   useEffect(() => {
     if (!user) return;
-    if (Capacitor.isNativePlatform()) return; // Native platform: skip JS SIP, use REST fallback only
     let cancelled = false;
     const doInit = async (opts?: { force?: boolean }) => {
       setLoading(true);
@@ -233,6 +230,29 @@ export function useMplanipretSoftphone() {
     document.addEventListener("visibilitychange", onVis);
     window.addEventListener("focus", onResume);
     window.addEventListener("online", onResume);
+    // Native app foreground → immediately re-REGISTER before the 10s watchdog.
+    let appStateHandle: { remove: () => void } | null = null;
+    const cap: any = (typeof window !== "undefined") ? (window as any).Capacitor : null;
+    const isNative = !!cap?.isNativePlatform?.();
+    if (isNative) {
+      try {
+        const AppPlugin = cap?.Plugins?.App;
+        if (AppPlugin?.addListener) {
+          const p = AppPlugin.addListener("appStateChange", (state: { isActive: boolean }) => {
+            if (state?.isActive) {
+              try { ppSipProvider.forceReregister(); } catch {}
+              evaluate();
+            }
+          });
+          // addListener may return a Promise<PluginListenerHandle> or the handle directly.
+          if (p && typeof p.then === "function") {
+            p.then((h: any) => { appStateHandle = h; }).catch(() => {});
+          } else {
+            appStateHandle = p;
+          }
+        }
+      } catch { /* ignore */ }
+    }
     // Heartbeat: SIP transport can go silent without emitting a status event
     // (background tab, radio switch, NS keepalive drop). Poll every 15s so the
     // watchdog escalates to forceReregister even without a subscribe callback.
@@ -246,6 +266,7 @@ export function useMplanipretSoftphone() {
       document.removeEventListener("visibilitychange", onVis);
       window.removeEventListener("focus", onResume);
       window.removeEventListener("online", onResume);
+      try { appStateHandle?.remove?.(); } catch {}
     };
 
   }, [user?.id]);
