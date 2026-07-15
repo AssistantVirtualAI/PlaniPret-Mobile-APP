@@ -39,6 +39,7 @@ const MExtensionSync = lazyWithRetry(() => import('@/pages/planipret/mobile/MExt
 const Ms365Callback = lazyWithRetry(() => import('@/pages/planipret/Ms365Callback'), 'Ms365Callback');
 const MMs365Diagnostics = lazyWithRetry(() => import('@/pages/planipret/mobile/MMs365Diagnostics'), 'MMs365Diagnostics');
 const MStyleDiagnostics = lazyWithRetry(() => import('@/pages/planipret/mobile/MStyleDiagnostics'), 'MStyleDiagnostics');
+const MDiagnostics = lazyWithRetry(() => import('@/pages/planipret/mobile/MDiagnostics'), 'MDiagnostics');
 
 
 
@@ -63,15 +64,11 @@ function NativeDeepLinkBridge() {
       try {
         const url = new URL(rawUrl);
         const pathWithHost = `/${[url.hostname, url.pathname].filter(Boolean).join('/')}`.replace(/\/+/g, '/');
-        // Intercepte capacitor://localhost/auth/microsoft/callback (scheme déclaré dans Info.plist)
-        // ainsi que les URLs web normales
         const isMs365Callback =
           url.pathname === '/auth/microsoft/callback' ||
           url.pathname === '/auth/ms365/callback' ||
           pathWithHost === '/auth/microsoft/callback' ||
-          pathWithHost === '/auth/ms365/callback' ||
-          // capacitor://localhost/auth/microsoft/callback
-          (url.protocol === 'capacitor:' && url.pathname === '/auth/microsoft/callback');
+          pathWithHost === '/auth/ms365/callback';
 
         if (isMs365Callback) {
           localStorage.setItem('pp_ms365_callback_url', rawUrl);
@@ -139,6 +136,7 @@ export default function App() {
                       <Route path="extension-sync" element={<MExtensionSync />} />
                       <Route path="ms365-diagnostics" element={<MMs365Diagnostics />} />
                       <Route path="style-diagnostics" element={<MStyleDiagnostics />} />
+                      <Route path="diagnostics" element={<MDiagnostics />} />
                     </Route>
                     <Route path="*" element={<Navigate to="/mplanipret" replace />} />
                   </Routes>

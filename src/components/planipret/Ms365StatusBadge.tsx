@@ -10,7 +10,7 @@ import { useNavigate } from "react-router-dom";
 
 export type Ms365StatusPayload = {
   status: "ok" | "limited" | "down";
-  detection: { tenant_id: string | null; client_id: string | null; has_secret: boolean };
+  detection: { tenant_id: string | null; client_id: string | null; has_secret: boolean; auth_mode?: string; redirect_uris?: { web: string[]; native: string[] } };
   user: { connected: boolean; email: string | null; expired: boolean; has_refresh: boolean; expires_in_sec: number | null; scopes: string[] };
   last: { tested_at: string; success: boolean; message: string } | null;
   admin_cfg_ok: boolean;

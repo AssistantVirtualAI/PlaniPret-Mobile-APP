@@ -1,14 +1,30 @@
 import { Capacitor } from "@capacitor/core";
 
 export const MS365_DELEGATED_SCOPES =
-  "openid profile email offline_access User.Read User.ReadBasic.All Mail.ReadWrite Mail.Send MailboxSettings.Read Calendars.ReadWrite Chat.Read Chat.ReadBasic Chat.ReadWrite Channel.ReadBasic.All ChannelMessage.Read.All ChannelMessage.Send Team.ReadBasic.All Organization.Read.All Application.Read.All";
+  "openid profile email offline_access User.Read User.ReadBasic.All User.Read.All Contacts.Read Contacts.ReadWrite People.Read Mail.ReadWrite Mail.Send MailboxSettings.Read Calendars.ReadWrite Chat.Read Chat.ReadBasic Chat.ReadWrite ChatMessage.Send Channel.ReadBasic.All ChannelMessage.Read.All ChannelMessage.Send Team.ReadBasic.All Presence.Read.All Files.ReadWrite Files.ReadWrite.All Sites.ReadWrite.All Organization.Read.All Application.Read.All";
 
 export const MS365_WEB_CALLBACK_PATH = "/auth/microsoft/callback";
-// Scheme déclaré dans ios/App/App/Info.plist → CFBundleURLSchemes → "capacitor"
-// Azure App Registration → Mobile and desktop applications → capacitor://localhost/auth/microsoft/callback
 export const MS365_NATIVE_REDIRECT_URI = "capacitor://localhost/auth/microsoft/callback";
 
 const REDIRECT_STORAGE_KEY = "pp_ms365_redirect_uri";
+const VERIFIER_STORAGE_KEY = "pp_ms365_code_verifier";
+
+function base64Url(bytes: Uint8Array): string {
+  let binary = "";
+  bytes.forEach((b) => (binary += String.fromCharCode(b)));
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+async function sha256Base64Url(value: string): Promise<string> {
+  const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return base64Url(new Uint8Array(hash));
+}
+
+function createCodeVerifier(): string {
+  const bytes = new Uint8Array(64);
+  crypto.getRandomValues(bytes);
+  return base64Url(bytes);
+}
 
 export function getMs365RedirectUri(): string {
   if (Capacitor.isNativePlatform()) return MS365_NATIVE_REDIRECT_URI;
@@ -31,39 +47,51 @@ export function getRememberedMs365RedirectUri(): string {
 export function clearRememberedMs365RedirectUri(): void {
   try { sessionStorage.removeItem(REDIRECT_STORAGE_KEY); } catch {}
   try { localStorage.removeItem(REDIRECT_STORAGE_KEY); } catch {}
+  try { sessionStorage.removeItem(VERIFIER_STORAGE_KEY); } catch {}
+  try { localStorage.removeItem(VERIFIER_STORAGE_KEY); } catch {}
 }
 
-export function buildMs365AuthorizeUrl(cfg: {
+export function getRememberedMs365CodeVerifier(): string | null {
+  try {
+    return sessionStorage.getItem(VERIFIER_STORAGE_KEY) || localStorage.getItem(VERIFIER_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export async function buildMs365AuthorizeUrl(cfg: {
   clientId: string;
   tenant?: string | null;
   state?: string | null;
   prompt?: "select_account" | "consent" | "none";
-}): string {
+  scopes?: string;
+}): Promise<string> {
   const redirectUri = getMs365RedirectUri();
   rememberMs365RedirectUri(redirectUri);
+  const verifier = createCodeVerifier();
+  const challenge = await sha256Base64Url(verifier);
+  try { sessionStorage.setItem(VERIFIER_STORAGE_KEY, verifier); } catch {}
+  try { localStorage.setItem(VERIFIER_STORAGE_KEY, verifier); } catch {}
   const params = new URLSearchParams({
     client_id: cfg.clientId,
     response_type: "code",
     redirect_uri: redirectUri,
     response_mode: "query",
-    scope: MS365_DELEGATED_SCOPES,
+    scope: cfg.scopes ?? MS365_DELEGATED_SCOPES,
     prompt: cfg.prompt ?? "select_account",
+    code_challenge: challenge,
+    code_challenge_method: "S256",
   });
   if (cfg.state) params.set("state", cfg.state);
   return `https://login.microsoftonline.com/${cfg.tenant || "common"}/oauth2/v2.0/authorize?${params.toString()}`;
 }
 
-export function openMs365Authorize(cfg: {
+export async function openMs365Authorize(cfg: {
   clientId: string;
   tenant?: string | null;
   state?: string | null;
   prompt?: "select_account" | "consent" | "none";
-}): void {
-  const url = buildMs365AuthorizeUrl(cfg);
-  if (Capacitor.isNativePlatform()) {
-    // Ouvrir Safari externe — iOS intercepte le retour capacitor:// et le renvoie à la WebView
-    window.open(url, "_system");
-  } else {
-    window.location.href = url;
-  }
+  scopes?: string;
+}): Promise<void> {
+  window.location.href = await buildMs365AuthorizeUrl(cfg);
 }

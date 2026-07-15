@@ -429,6 +429,69 @@ function Dialer({ open, onClose, initial, openMessages, softphone }: { open: boo
   );
 }
 
+// Floating dial FAB — hidden when composer input is focused, and on message/AVA routes.
+function FabDialer({
+  activeCallId,
+  hangupActive,
+  onOpen,
+  pathname,
+  label,
+}: {
+  activeCallId: string | null;
+  hangupActive: () => void;
+  onOpen: () => void;
+  pathname: string;
+  label: string;
+}) {
+  const [inputFocused, setInputFocused] = useState(false);
+  useEffect(() => {
+    const isEditable = (el: EventTarget | null) => {
+      if (!(el instanceof HTMLElement)) return false;
+      const tag = el.tagName;
+      return tag === "INPUT" || tag === "TEXTAREA" || el.isContentEditable;
+    };
+    const onIn = (e: FocusEvent) => { if (isEditable(e.target)) setInputFocused(true); };
+    const onOut = () => setTimeout(() => {
+      const ae = document.activeElement;
+      setInputFocused(!!ae && isEditable(ae));
+    }, 0);
+    document.addEventListener("focusin", onIn);
+    document.addEventListener("focusout", onOut);
+    return () => {
+      document.removeEventListener("focusin", onIn);
+      document.removeEventListener("focusout", onOut);
+    };
+  }, []);
+
+  // Hide on chat surfaces where the send button sits in the same corner.
+  const isChatSurface = /\/mplanipret\/(messages|ava)(\/|$)/.test(pathname);
+  // Active call FAB (hang-up) must always remain reachable.
+  if (!activeCallId && (isChatSurface || inputFocused)) return null;
+
+  return (
+    <button
+      onClick={activeCallId ? hangupActive : onOpen}
+      className="absolute z-20 rounded-full flex items-center justify-center text-white active:scale-95 transition"
+      style={{
+        right: 18,
+        bottom: "calc(env(safe-area-inset-bottom, 0px) + 116px)",
+        background: activeCallId
+          ? "linear-gradient(135deg, #5A1010, #E84C4C)"
+          : "linear-gradient(135deg, #1A4A8A, #2E9BDC)",
+        boxShadow: activeCallId
+          ? "0 4px 20px rgba(232,76,76,0.6)"
+          : "0 4px 20px rgba(46,155,220,0.55)",
+        animation: activeCallId ? "pp-pulse-red 1.5s infinite" : undefined,
+        width: 50,
+        height: 50,
+      }}
+      aria-label={label}
+    >
+      {activeCallId ? <PhoneOff className="w-5 h-5" /> : <PhoneIcon className="w-5 h-5" />}
+    </button>
+  );
+}
+
 export default function PlanipretMobile() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -793,23 +856,15 @@ export default function PlanipretMobile() {
           <OnboardingTutorial profile={profile} onDone={loadProfile} />
         )}
 
-        {/* Right FAB — Keypad (bleu) ou raccrocher (rouge) si appel actif */}
-        <button onClick={activeCallId ? hangupActive : () => setDialerOpen(true)}
-          className="absolute z-20 rounded-full flex items-center justify-center text-white active:scale-95 transition"
-          style={{
-            right: 18, bottom: "calc(env(safe-area-inset-bottom, 0px) + 116px)",
-            background: activeCallId
-              ? "linear-gradient(135deg, #5A1010, #E84C4C)"
-              : "linear-gradient(135deg, #1A4A8A, #2E9BDC)",
-            boxShadow: activeCallId
-              ? "0 4px 20px rgba(232,76,76,0.6)"
-              : "0 4px 20px rgba(46,155,220,0.55)",
-            animation: activeCallId ? "pp-pulse-red 1.5s infinite" : undefined,
-            width: 50, height: 50,
-          }}
-          aria-label={activeCallId ? t("dialer.hangup") : t("dialer.dialNumber")}>
-          {activeCallId ? <PhoneOff className="w-5 h-5" /> : <PhoneIcon className="w-5 h-5" />}
-        </button>
+        {/* Right FAB — hidden on Messages/AVA and while any composer input is focused */}
+        <FabDialer
+          activeCallId={activeCallId}
+          hangupActive={hangupActive}
+          onOpen={() => setDialerOpen(true)}
+          pathname={location.pathname}
+          label={activeCallId ? t("dialer.hangup") : t("dialer.dialNumber")}
+        />
+
 
 
         {/* Tab bar (5 tabs) */}

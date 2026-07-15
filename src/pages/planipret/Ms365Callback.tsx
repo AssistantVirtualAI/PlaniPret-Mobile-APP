@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
-import { clearRememberedMs365RedirectUri, getRememberedMs365RedirectUri } from "@/lib/ms365OAuth";
+import { clearRememberedMs365RedirectUri, getRememberedMs365CodeVerifier, getRememberedMs365RedirectUri } from "@/lib/ms365OAuth";
 
 async function getSessionWithRetry() {
   for (let i = 0; i < 8; i += 1) {
@@ -29,7 +29,8 @@ export default function Ms365Callback() {
       if (!session) { setStatus("error"); setError("Session expirée — reconnectez-vous"); return; }
       // Must match the redirect URI registered in Azure App Registration.
       const redirect_uri = getRememberedMs365RedirectUri();
-      const { data, error: e } = await supabase.functions.invoke("ms365-oauth-exchange", { body: { code, redirect_uri } });
+      const code_verifier = getRememberedMs365CodeVerifier();
+      const { data, error: e } = await supabase.functions.invoke("ms365-oauth-exchange", { body: { code, redirect_uri, code_verifier } });
       if (e || !(data as any)?.success) {
         const details = (data as any)?.details;
         const msg = (data as any)?.error ?? e?.message ?? "Échec OAuth";

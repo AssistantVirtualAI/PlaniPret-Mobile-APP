@@ -102,9 +102,9 @@ export default function MMore() {
   const startMs365OAuth = (cfg: { client_id: string; tenant_id?: string }) => {
     const clientId = cfg.client_id;
     const tenant = cfg.tenant_id || "common";
-    supabase.auth.getUser().then(({ data: { user } }) => {
+    supabase.auth.getUser().then(async ({ data: { user } }) => {
       const state = user?.id ?? "";
-      openMs365Authorize({ clientId, tenant, state });
+      await openMs365Authorize({ clientId, tenant, state });
     });
   };
 
@@ -250,13 +250,20 @@ export default function MMore() {
       </Section>
 
       <Section title={t("more.sections.integrations")}>
-        <div className="px-3 pb-2 flex items-center justify-between">
+        <div className="px-3 pb-2 flex items-center justify-between gap-2">
           <Ms365StatusBadge />
-          <button
-            onClick={() => navigate("/mplanipret/ms365-diagnostics")}
-            className="text-[11px] font-semibold"
-            style={{ color: "#2E9BDC" }}
-          >Diagnostics →</button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => navigate("/mplanipret/diagnostics")}
+              className="text-[11px] font-semibold"
+              style={{ color: "#22c55e" }}
+            >Endpoints →</button>
+            <button
+              onClick={() => navigate("/mplanipret/ms365-diagnostics")}
+              className="text-[11px] font-semibold"
+              style={{ color: "#2E9BDC" }}
+            >MS365 →</button>
+          </div>
         </div>
         <Row icon={<Mail className="w-4 h-4" style={{ color: "#3FA3F0" }} />} label="Microsoft 365"
           sub={

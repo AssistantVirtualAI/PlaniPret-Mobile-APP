@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { useOutletContext, useNavigate } from "react-router-dom";
-import { Search, Phone, MessageSquare, Mail, Users, UserCog, BookUser, X, Calendar, ListChecks, Loader2, ExternalLink, Sparkles, Plus, Star, Copy, Send, Filter } from "lucide-react";
+import { Search, Phone, MessageSquare, Mail, Users, UserCog, BookUser, X, Calendar, ListChecks, Loader2, ExternalLink, Sparkles, Plus, Star, Copy, Send, Filter, Check, AlertTriangle, History } from "lucide-react";
+import { saveAppointment, loadAppointments, subscribeAppointments, type ApptHistoryEntry } from "@/lib/appointmentHistory";
 import AvaSummarizeSheet from "@/components/planipret/ava/AvaSummarizeSheet";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
@@ -10,6 +11,20 @@ import { ensureContacts, getContactsPermissionStatus, listDeviceContacts } from 
 import { openAppSettings, type PermStatus } from "@/lib/native/permissions/platform";
 import { tokenize, matchAllTokens } from "@/lib/textNormalize";
 import { peekPpContacts, prefetchPpContacts } from "@/lib/ppContactsCache";
+import { callEdge, toE164 } from "@/lib/callEdge";
+
+// One-shot cache of the broker's assigned SMS numbers.
+let __ppSmsNumbersCache: { ts: number; numbers: any[] } | null = null;
+async function fetchSmsNumbers(force = false): Promise<any[]> {
+  const now = Date.now();
+  if (!force && __ppSmsNumbersCache && now - __ppSmsNumbersCache.ts < 5 * 60_000) {
+    return __ppSmsNumbersCache.numbers;
+  }
+  const data = await callEdge<{ numbers: any[] }>("pp-ns-sms", { action: "sms-numbers" });
+  const nums = Array.isArray(data?.numbers) ? data.numbers : [];
+  __ppSmsNumbersCache = { ts: now, numbers: nums };
+  return nums;
+}
 
 async function copyToClipboard(value: string, label: string) {
   try {
@@ -908,7 +923,11 @@ function ContactField({ label, value, onCall }: { label: string; value: string; 
 function SmsComposerSheet({ to, contactName, onClose }: { to: string; contactName: string; onClose: () => void }) {
   const [recipient, setRecipient] = useState(to);
   const [body, setBody] = useState("");
-  const [sending, setSending] = useState(false);
+  const [status, setStatus] = useState<"idle" | "sending" | "sent" | "error">("idle");
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [preflight, setPreflight] = useState<"loading" | "ok" | "no-number" | "error">("loading");
+  const [preflightErr, setPreflightErr] = useState<string | null>(null);
+  const [smsFrom, setSmsFrom] = useState<string | null>(null);
   const taRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
@@ -916,25 +935,65 @@ function SmsComposerSheet({ to, contactName, onClose }: { to: string; contactNam
     return () => window.clearTimeout(id);
   }, []);
 
-  const send = async () => {
-    const number = recipient.trim();
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const nums = await fetchSmsNumbers();
+        if (!alive) return;
+        if (!nums.length) {
+          setPreflight("no-number");
+        } else {
+          const first = nums[0];
+          const num =
+            (typeof first === "string" && first) ||
+            first?.number || first?.phonenumber || first?.smsnumber || first?.did || null;
+          setSmsFrom(num);
+          setPreflight("ok");
+        }
+      } catch (e: any) {
+        if (!alive) return;
+        setPreflight("error");
+        setPreflightErr(e?.message || "Impossible de vérifier les numéros SMS");
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  const doSend = async (retry = false): Promise<void> => {
+    const number = toE164(recipient);
     const msg = body.trim();
     if (!number || !msg) { toast.error("Numéro et message requis"); return; }
-    setSending(true);
+    setStatus("sending");
+    setErrorMsg(null);
     try {
-      const { data, error } = await supabase.functions.invoke("pp-ns-sms", {
-        body: { action: "send", to: number, message: msg },
-      });
-      if (error) throw error;
-      if ((data as any)?.error) throw new Error((data as any).error);
-      toast.success("SMS envoyé");
-      onClose();
+      await callEdge("pp-ns-sms", { action: "send", to: number, message: msg, from: smsFrom || undefined });
+      setStatus("sent");
+      toast.success("SMS envoyé", { description: `À ${contactName} · ${number}` });
+      window.setTimeout(() => onClose(), 1200);
     } catch (e: any) {
-      toast.error("Échec envoi SMS", { description: e?.message });
-    } finally {
-      setSending(false);
+      const status = e?.status ?? 0;
+      // Retry once on transient NS 502
+      if (!retry && status === 502) {
+        setTimeout(() => { void doSend(true); }, 400);
+        return;
+      }
+      const detail =
+        (e?.body && typeof e.body === "object" && (e.body.body || e.body.error)) ||
+        e?.message || "Erreur inconnue";
+      const m = typeof detail === "string" ? detail : JSON.stringify(detail);
+      setStatus("error");
+      setErrorMsg(m);
+      toast.error("Échec envoi SMS", { description: m });
     }
   };
+  const send = () => { void doSend(false); };
+
+  const sending = status === "sending";
+  const sent = status === "sent";
+  const errored = status === "error";
+  const noNumber = preflight === "no-number";
+  const disabled = sending || sent || preflight === "loading" || noNumber || !recipient.trim() || !body.trim();
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
@@ -946,17 +1005,69 @@ function SmsComposerSheet({ to, contactName, onClose }: { to: string; contactNam
         <div className="flex items-center justify-between mb-3">
           <div>
             <div className="text-base font-bold" style={{ color: "var(--pp-text-primary)" }}>Nouveau SMS</div>
-            <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>À {contactName}</div>
+            <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>
+              À {contactName}{smsFrom ? ` · De ${smsFrom}` : ""}
+            </div>
           </div>
           <button onClick={onClose} style={{ color: "var(--pp-text-muted)" }}><X className="w-5 h-5" /></button>
         </div>
+
+        {preflight === "loading" && (
+          <div className="mb-3 p-2 rounded-lg text-xs flex items-center gap-2"
+            style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-muted)" }}>
+            <Loader2 className="w-3.5 h-3.5 animate-spin" /> Vérification des numéros SMS…
+          </div>
+        )}
+        {noNumber && (
+          <div className="mb-3 p-3 rounded-lg flex items-start gap-2"
+            style={{ background: "rgba(251,191,36,0.10)", border: "1px solid rgba(251,191,36,0.35)" }}>
+            <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" style={{ color: "#f59e0b" }} />
+            <div className="text-xs" style={{ color: "var(--pp-text-primary)" }}>
+              <div className="font-semibold">Aucun numéro SMS assigné</div>
+              <div style={{ color: "var(--pp-text-muted)" }}>Contactez l'administrateur pour activer l'envoi SMS.</div>
+            </div>
+          </div>
+        )}
+        {preflight === "error" && (
+          <div className="mb-3 p-3 rounded-lg flex items-start gap-2"
+            style={{ background: "rgba(239,68,68,0.10)", border: "1px solid rgba(239,68,68,0.35)" }}>
+            <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" style={{ color: "#ef4444" }} />
+            <div className="text-xs flex-1" style={{ color: "var(--pp-text-primary)" }}>
+              <div className="font-semibold">Vérification impossible</div>
+              <div style={{ color: "var(--pp-text-muted)" }}>{preflightErr}</div>
+            </div>
+          </div>
+        )}
+        {sent && (
+          <div className="mb-3 p-3 rounded-lg flex items-start gap-2"
+            style={{ background: "rgba(34,197,94,0.12)", border: "1px solid rgba(34,197,94,0.35)" }}>
+            <Check className="w-4 h-4 mt-0.5 shrink-0" style={{ color: "#22c55e" }} />
+            <div className="text-xs" style={{ color: "var(--pp-text-primary)" }}>
+              <div className="font-semibold">SMS envoyé</div>
+              <div style={{ color: "var(--pp-text-muted)" }}>Livraison au {toE164(recipient)}</div>
+            </div>
+          </div>
+        )}
+        {errored && (
+          <div className="mb-3 p-3 rounded-lg flex items-start gap-2"
+            style={{ background: "rgba(239,68,68,0.10)", border: "1px solid rgba(239,68,68,0.35)" }}>
+            <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" style={{ color: "#ef4444" }} />
+            <div className="text-xs flex-1" style={{ color: "var(--pp-text-primary)" }}>
+              <div className="font-semibold">Échec envoi SMS</div>
+              <div style={{ color: "var(--pp-text-muted)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                {errorMsg || "Erreur inconnue"}
+              </div>
+            </div>
+          </div>
+        )}
 
         <label className="text-[10px] font-semibold uppercase" style={{ color: "var(--pp-text-muted)" }}>Destinataire</label>
         <input
           value={recipient}
           onChange={(e) => setRecipient(e.target.value)}
           inputMode="tel"
-          className="w-full mt-1 mb-3 px-3 py-2 rounded-lg text-sm outline-none"
+          disabled={sending || sent}
+          className="w-full mt-1 mb-3 px-3 py-2 rounded-lg text-sm outline-none disabled:opacity-60"
           style={{ fontSize: 16, background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
         />
 
@@ -967,18 +1078,19 @@ function SmsComposerSheet({ to, contactName, onClose }: { to: string; contactNam
           onChange={(e) => setBody(e.target.value)}
           rows={4}
           placeholder="Écrire un message…"
-          className="w-full mt-1 mb-3 px-3 py-2 rounded-lg outline-none resize-none"
+          disabled={sending || sent}
+          className="w-full mt-1 mb-3 px-3 py-2 rounded-lg outline-none resize-none disabled:opacity-60"
           style={{ fontSize: 16, background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
         />
 
         <button
           onClick={send}
-          disabled={sending || !recipient.trim() || !body.trim()}
+          disabled={disabled}
           className="w-full py-2.5 rounded-lg text-white font-semibold text-sm disabled:opacity-50 flex items-center justify-center gap-2"
-          style={{ background: "var(--pp-brand-accent)" }}
+          style={{ background: sent ? "#22c55e" : "var(--pp-brand-accent)" }}
         >
-          {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-          {sending ? "Envoi…" : "Envoyer"}
+          {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : sent ? <Check className="w-4 h-4" /> : <Send className="w-4 h-4" />}
+          {sending ? "Envoi…" : sent ? "Envoyé" : errored ? "Réessayer" : "Envoyer"}
         </button>
       </div>
     </div>
@@ -1099,14 +1211,17 @@ function AppointmentSheet({ maestroClientId, contactName, onClose }: { maestroCl
   const [startAt, setStartAt] = useState(toLocal(in1h));
   const [duration, setDuration] = useState(30);
   const [notes, setNotes] = useState("");
-  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   const save = async () => {
     if (!title.trim() || !startAt) { toast.error("Titre et date requis"); return; }
-    setSaving(true);
+    setStatus("saving");
+    setErrorMsg(null);
+    const start = new Date(startAt);
+    const end = new Date(start.getTime() + duration * 60 * 1000);
     try {
-      const start = new Date(startAt);
-      const end = new Date(start.getTime() + duration * 60 * 1000);
       const { data, error } = await supabase.functions.invoke("maestro-appointment", {
         body: {
           maestro_client_id: maestroClientId,
@@ -1119,14 +1234,44 @@ function AppointmentSheet({ maestroClientId, contactName, onClose }: { maestroCl
       });
       if (error) throw error;
       if ((data as any)?.success === false) throw new Error((data as any)?.error || "appointment_failed");
-      toast.success("RDV créé");
-      onClose();
+      const remoteId = (data as any)?.id ?? (data as any)?.appointment?.id;
+      saveAppointment({
+        status: "created",
+        title: title.trim(),
+        start_at: start.toISOString(),
+        end_at: end.toISOString(),
+        duration_min: duration,
+        contact_name: contactName,
+        maestro_client_id: maestroClientId,
+        notes: notes.trim() || undefined,
+        type: "phone",
+        remote_id: remoteId,
+      });
+      setStatus("saved");
+      toast.success("RDV créé", { description: `${contactName} · ${start.toLocaleString("fr-CA")}` });
     } catch (e: any) {
-      toast.error("Échec création RDV", { description: e?.message });
-    } finally {
-      setSaving(false);
+      const m = e?.message || "Erreur inconnue";
+      saveAppointment({
+        status: "error",
+        title: title.trim(),
+        start_at: start.toISOString(),
+        end_at: end.toISOString(),
+        duration_min: duration,
+        contact_name: contactName,
+        maestro_client_id: maestroClientId,
+        notes: notes.trim() || undefined,
+        type: "phone",
+        error: m,
+      });
+      setStatus("error");
+      setErrorMsg(m);
+      toast.error("Échec création RDV", { description: m });
     }
   };
+
+  const saving = status === "saving";
+  const saved = status === "saved";
+  const errored = status === "error";
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
@@ -1140,37 +1285,145 @@ function AppointmentSheet({ maestroClientId, contactName, onClose }: { maestroCl
             <div className="text-base font-bold" style={{ color: "var(--pp-text-primary)" }}>Nouveau RDV</div>
             <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>Avec {contactName} · via Maestro</div>
           </div>
-          <button onClick={onClose} style={{ color: "var(--pp-text-muted)" }}><X className="w-5 h-5" /></button>
+          <div className="flex items-center gap-1">
+            <button onClick={() => setHistoryOpen(true)} title="Historique des RDV"
+              className="p-1.5 rounded-lg" style={{ color: "var(--pp-text-muted)", border: "1px solid var(--pp-bg-border-2)" }}>
+              <History className="w-4 h-4" />
+            </button>
+            <button onClick={onClose} style={{ color: "var(--pp-text-muted)" }} className="p-1"><X className="w-5 h-5" /></button>
+          </div>
         </div>
 
+        {saved && (
+          <div className="mb-3 p-3 rounded-lg flex items-start gap-2"
+            style={{ background: "rgba(34,197,94,0.12)", border: "1px solid rgba(34,197,94,0.35)" }}>
+            <Check className="w-4 h-4 mt-0.5 shrink-0" style={{ color: "#22c55e" }} />
+            <div className="text-xs flex-1" style={{ color: "var(--pp-text-primary)" }}>
+              <div className="font-semibold">RDV créé</div>
+              <div style={{ color: "var(--pp-text-muted)" }}>{new Date(startAt).toLocaleString("fr-CA")} · {duration} min</div>
+              <div className="flex gap-2 mt-2">
+                <button onClick={() => setHistoryOpen(true)}
+                  className="px-2.5 py-1 rounded-full text-[11px] font-semibold flex items-center gap-1"
+                  style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-primary)", border: "1px solid var(--pp-bg-border-2)" }}>
+                  <History className="w-3 h-3" /> Voir l'historique
+                </button>
+                <button onClick={onClose}
+                  className="px-2.5 py-1 rounded-full text-[11px] font-semibold"
+                  style={{ background: "var(--pp-brand-accent)", color: "#fff" }}>
+                  Fermer
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+        {errored && (
+          <div className="mb-3 p-3 rounded-lg flex items-start gap-2"
+            style={{ background: "rgba(239,68,68,0.10)", border: "1px solid rgba(239,68,68,0.35)" }}>
+            <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" style={{ color: "#ef4444" }} />
+            <div className="text-xs flex-1" style={{ color: "var(--pp-text-primary)" }}>
+              <div className="font-semibold">Échec création RDV</div>
+              <div style={{ color: "var(--pp-text-muted)" }}>{errorMsg}</div>
+            </div>
+          </div>
+        )}
+
         <label className="text-[10px] font-semibold uppercase" style={{ color: "var(--pp-text-muted)" }}>Titre</label>
-        <input value={title} onChange={(e) => setTitle(e.target.value)}
-          className="w-full mt-1 mb-3 px-3 py-2 rounded-lg text-sm outline-none"
+        <input value={title} onChange={(e) => setTitle(e.target.value)} disabled={saving || saved}
+          className="w-full mt-1 mb-3 px-3 py-2 rounded-lg text-sm outline-none disabled:opacity-60"
           style={{ fontSize: 16, background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }} />
 
         <label className="text-[10px] font-semibold uppercase" style={{ color: "var(--pp-text-muted)" }}>Début</label>
-        <input type="datetime-local" value={startAt} onChange={(e) => setStartAt(e.target.value)}
-          className="w-full mt-1 mb-3 px-3 py-2 rounded-lg text-sm outline-none"
+        <input type="datetime-local" value={startAt} onChange={(e) => setStartAt(e.target.value)} disabled={saving || saved}
+          className="w-full mt-1 mb-3 px-3 py-2 rounded-lg text-sm outline-none disabled:opacity-60"
           style={{ fontSize: 16, background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }} />
 
         <label className="text-[10px] font-semibold uppercase" style={{ color: "var(--pp-text-muted)" }}>Durée (min)</label>
-        <select value={duration} onChange={(e) => setDuration(Number(e.target.value))}
-          className="w-full mt-1 mb-3 px-3 py-2 rounded-lg text-sm outline-none"
+        <select value={duration} onChange={(e) => setDuration(Number(e.target.value))} disabled={saving || saved}
+          className="w-full mt-1 mb-3 px-3 py-2 rounded-lg text-sm outline-none disabled:opacity-60"
           style={{ fontSize: 16, background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}>
           {[15, 30, 45, 60, 90].map((n) => <option key={n} value={n}>{n} min</option>)}
         </select>
 
         <label className="text-[10px] font-semibold uppercase" style={{ color: "var(--pp-text-muted)" }}>Notes</label>
-        <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3}
-          className="w-full mt-1 mb-3 px-3 py-2 rounded-lg outline-none resize-none"
+        <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3} disabled={saving || saved}
+          className="w-full mt-1 mb-3 px-3 py-2 rounded-lg outline-none resize-none disabled:opacity-60"
           style={{ fontSize: 16, background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }} />
 
-        <button onClick={save} disabled={saving}
+        <button onClick={save} disabled={saving || saved}
           className="w-full py-2.5 rounded-lg text-white font-semibold text-sm disabled:opacity-50 flex items-center justify-center gap-2"
-          style={{ background: "var(--pp-brand-accent)" }}>
-          {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Calendar className="w-4 h-4" />}
-          {saving ? "Création…" : "Créer le RDV"}
+          style={{ background: saved ? "#22c55e" : "var(--pp-brand-accent)" }}>
+          {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : saved ? <Check className="w-4 h-4" /> : <Calendar className="w-4 h-4" />}
+          {saving ? "Création…" : saved ? "Créé" : errored ? "Réessayer" : "Créer le RDV"}
         </button>
+
+        {historyOpen && <AppointmentHistorySheet onClose={() => setHistoryOpen(false)} />}
+      </div>
+    </div>
+  );
+}
+
+function AppointmentHistorySheet({ onClose }: { onClose: () => void }) {
+  const [items, setItems] = useState<ApptHistoryEntry[]>(() => loadAppointments());
+  useEffect(() => subscribeAppointments(() => setItems(loadAppointments())), []);
+  const fmt = (iso: string) => { try { return new Date(iso).toLocaleString("fr-CA"); } catch { return iso; } };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-end justify-center bg-black/70 backdrop-blur-sm" onClick={onClose}>
+      <div
+        className="w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl p-4"
+        style={{ background: "var(--pp-bg-base)", border: "1px solid var(--pp-bg-border-2)", paddingBottom: "max(1rem, env(safe-area-inset-bottom))", maxHeight: "80vh", display: "flex", flexDirection: "column" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-3 shrink-0">
+          <div>
+            <div className="text-base font-bold" style={{ color: "var(--pp-text-primary)" }}>Historique des RDV</div>
+            <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>{items.length} enregistrement{items.length > 1 ? "s" : ""}</div>
+          </div>
+          <button onClick={onClose} style={{ color: "var(--pp-text-muted)" }}><X className="w-5 h-5" /></button>
+        </div>
+
+        {items.length === 0 ? (
+          <div className="py-10 text-center text-xs" style={{ color: "var(--pp-text-muted)" }}>
+            Aucun RDV créé pour l'instant.
+          </div>
+        ) : (
+          <ul className="space-y-2 overflow-y-auto pr-1" style={{ WebkitOverflowScrolling: "touch" }}>
+            {items.map((it) => {
+              const ok = it.status === "created";
+              const badge = ok
+                ? { bg: "rgba(34,197,94,0.15)", border: "rgba(34,197,94,0.4)", color: "#22c55e", label: "Créé" }
+                : it.status === "canceled"
+                ? { bg: "rgba(148,163,184,0.15)", border: "rgba(148,163,184,0.4)", color: "#94a3b8", label: "Annulé" }
+                : { bg: "rgba(239,68,68,0.12)", border: "rgba(239,68,68,0.4)", color: "#ef4444", label: "Erreur" };
+              return (
+                <li key={it.id} className="p-3 rounded-xl"
+                  style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)" }}>
+                  <div className="flex items-start gap-2">
+                    <Calendar className="w-4 h-4 mt-0.5 shrink-0" style={{ color: "var(--pp-brand-accent)" }} />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <div className="text-sm font-semibold truncate" style={{ color: "var(--pp-text-primary)" }}>{it.title}</div>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold shrink-0"
+                          style={{ background: badge.bg, border: `1px solid ${badge.border}`, color: badge.color }}>{badge.label}</span>
+                      </div>
+                      <div className="text-[11px] mt-0.5" style={{ color: "var(--pp-text-secondary)" }}>{it.contact_name}</div>
+                      <div className="text-[11px]" style={{ color: "var(--pp-text-muted)" }}>
+                        {fmt(it.start_at)} · {it.duration_min} min
+                      </div>
+                      {it.notes && (
+                        <div className="text-[11px] mt-1 line-clamp-2" style={{ color: "var(--pp-text-secondary)" }}>{it.notes}</div>
+                      )}
+                      {it.error && (
+                        <div className="text-[11px] mt-1" style={{ color: "#ef4444" }}>{it.error}</div>
+                      )}
+                      <div className="text-[10px] mt-1" style={{ color: "var(--pp-text-faint)" }}>Créé le {fmt(it.created_at)}</div>
+                    </div>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </div>
     </div>
   );

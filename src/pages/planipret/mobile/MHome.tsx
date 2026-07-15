@@ -16,6 +16,7 @@ import PermissionBanners from "@/components/planipret/mobile/PermissionBanners";
 import { TEMP_EMOJI } from "@/components/planipret/leadHelpers";
 import { useMaestroPipelineToasts } from "@/hooks/useMaestroPipelineToasts";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import Ms365TestNowButton from "@/components/planipret/Ms365TestNowButton";
 
 type Period = "day" | "week" | "month" | "shift";
 const DEFAULT_PERIOD: Period = "month";
@@ -192,7 +193,12 @@ export default function MHome() {
           body: { action: "list_calendar_events", payload: { start: calStart.toISOString(), end: calEnd.toISOString(), top: 200 } },
         });
         if (msError || (msData as any)?.success === false) {
-          setMsCalendarError((msData as any)?.error ?? msError?.message ?? "Calendrier Microsoft indisponible");
+          const errMsg = (msData as any)?.error ?? msError?.message ?? "Calendrier Microsoft indisponible";
+          setMsCalendarError(errMsg);
+          if (/token|expir|unauthor|401|invalid_grant/i.test(errMsg)) {
+            const { startMs365Reconnect } = await import("@/lib/ms365E2E");
+            startMs365Reconnect("Erreur d'authentification sur le calendrier");
+          }
         } else {
           microsoftEvents = (msData as any)?.events ?? [];
         }
@@ -635,7 +641,10 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
           <Calendar className="w-4 h-4" style={{ color: "var(--pp-brand-accent)" }} />
           Calendrier Microsoft
         </h2>
-        <span className="pp-eyebrow">{events.length}</span>
+        <div className="flex items-center gap-2">
+          <Ms365TestNowButton feature="calendar" compact />
+          <span className="pp-eyebrow">{events.length}</span>
+        </div>
       </div>
 
       {!profile?.ms365_access_token ? (

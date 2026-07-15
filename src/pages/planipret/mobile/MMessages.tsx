@@ -17,6 +17,7 @@ import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { useCallerNames } from "@/lib/planipret/callerLookup";
 import { connectMs365 } from "@/lib/ms365Connect";
 import { getPpContacts } from "@/lib/ppContactsCache";
+import Ms365TestNowButton from "@/components/planipret/Ms365TestNowButton";
 
 type SubTab = "sms" | "team" | "teams365" | "emails" | "roster";
 
@@ -888,13 +889,16 @@ function EmailsList({ profile }: { profile: any }) {
         >
           <Plus className="w-3.5 h-3.5" /> {t("messages.emailCompose")}
         </button>
-        <button
-          onClick={load}
-          className="text-xs flex items-center gap-1 px-2 py-1"
-          style={{ color: "var(--pp-text-muted)" }}
-        >
-          <RefreshCw className={`w-3 h-3 ${state === "loading" ? "animate-spin" : ""}`} /> {t("common.refresh")}
-        </button>
+        <div className="flex items-center gap-2">
+          <Ms365TestNowButton feature="mail" compact />
+          <button
+            onClick={load}
+            className="text-xs flex items-center gap-1 px-2 py-1"
+            style={{ color: "var(--pp-text-muted)" }}
+          >
+            <RefreshCw className={`w-3 h-3 ${state === "loading" ? "animate-spin" : ""}`} /> {t("common.refresh")}
+          </button>
+        </div>
       </div>
 
       {state === "loading" && (
@@ -1585,25 +1589,28 @@ function Teams365Panel({ profile }: { profile: any }) {
       {!err && (
         <>
           {/* Inner tabs */}
-          <div className="flex gap-1.5 overflow-x-auto no-scrollbar" style={{ scrollbarWidth: "none" }}>
-            {tabs.map((t) => {
-              const isActive = innerTab === t.k;
-              return (
-                <button key={t.k} onClick={() => setInnerTab(t.k)}
-                  className="shrink-0 px-3 py-1.5 text-xs font-semibold rounded-full flex items-center gap-1.5"
-                  style={isActive
-                    ? { background: "linear-gradient(135deg, var(--pp-brand-accent), var(--pp-brand-accent-2))", color: "white" }
-                    : { background: "var(--pp-bg-elevated)", color: "var(--pp-text-secondary)", border: "1px solid var(--pp-bg-border-2)" }}>
-                  {t.label}
-                  {!!t.badge && (
-                    <span className="min-w-[16px] h-4 px-1 rounded-full text-[10px] font-bold flex items-center justify-center"
-                      style={{ background: isActive ? "rgba(255,255,255,0.25)" : "#ef4444", color: "white" }}>
-                      {t.badge}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
+          <div className="flex items-center gap-2">
+            <div className="flex gap-1.5 overflow-x-auto no-scrollbar flex-1" style={{ scrollbarWidth: "none" }}>
+              {tabs.map((t) => {
+                const isActive = innerTab === t.k;
+                return (
+                  <button key={t.k} onClick={() => setInnerTab(t.k)}
+                    className="shrink-0 px-3 py-1.5 text-xs font-semibold rounded-full flex items-center gap-1.5"
+                    style={isActive
+                      ? { background: "linear-gradient(135deg, var(--pp-brand-accent), var(--pp-brand-accent-2))", color: "white" }
+                      : { background: "var(--pp-bg-elevated)", color: "var(--pp-text-secondary)", border: "1px solid var(--pp-bg-border-2)" }}>
+                    {t.label}
+                    {!!t.badge && (
+                      <span className="min-w-[16px] h-4 px-1 rounded-full text-[10px] font-bold flex items-center justify-center"
+                        style={{ background: isActive ? "rgba(255,255,255,0.25)" : "#ef4444", color: "white" }}>
+                        {t.badge}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+            <Ms365TestNowButton feature="teams" compact />
           </div>
 
           {/* Active discussions tab */}

@@ -24,7 +24,7 @@ export async function connectMs365(): Promise<void> {
     const tenant = cfg.tenant_id || "common";
     const { data: userData } = await supabase.auth.getUser();
     const state = userData?.user?.id ?? "";
-    openMs365Authorize({ clientId, tenant, state });
+    await openMs365Authorize({ clientId, tenant, state });
   } catch (e: any) {
     toast.error("Connexion Microsoft impossible", { description: e?.message });
   }
