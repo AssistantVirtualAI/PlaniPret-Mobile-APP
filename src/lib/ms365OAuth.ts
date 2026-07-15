@@ -9,6 +9,10 @@ export const MS365_NATIVE_REDIRECT_URI = "capacitor://localhost/auth/microsoft/c
 const REDIRECT_STORAGE_KEY = "pp_ms365_redirect_uri";
 const VERIFIER_STORAGE_KEY = "pp_ms365_code_verifier";
 
+function verifierKey(state?: string | null): string {
+  return state ? `${VERIFIER_STORAGE_KEY}:${state}` : VERIFIER_STORAGE_KEY;
+}
+
 function base64Url(bytes: Uint8Array): string {
   let binary = "";
   bytes.forEach((b) => (binary += String.fromCharCode(b)));
@@ -49,11 +53,17 @@ export function clearRememberedMs365RedirectUri(): void {
   try { localStorage.removeItem(REDIRECT_STORAGE_KEY); } catch {}
   try { sessionStorage.removeItem(VERIFIER_STORAGE_KEY); } catch {}
   try { localStorage.removeItem(VERIFIER_STORAGE_KEY); } catch {}
+  try {
+    Object.keys(sessionStorage).filter((k) => k.startsWith(`${VERIFIER_STORAGE_KEY}:`)).forEach((k) => sessionStorage.removeItem(k));
+  } catch {}
+  try {
+    Object.keys(localStorage).filter((k) => k.startsWith(`${VERIFIER_STORAGE_KEY}:`)).forEach((k) => localStorage.removeItem(k));
+  } catch {}
 }
 
-export function getRememberedMs365CodeVerifier(): string | null {
+export function getRememberedMs365CodeVerifier(state?: string | null): string | null {
   try {
-    return sessionStorage.getItem(VERIFIER_STORAGE_KEY) || localStorage.getItem(VERIFIER_STORAGE_KEY);
+    return sessionStorage.getItem(verifierKey(state)) || localStorage.getItem(verifierKey(state)) || sessionStorage.getItem(VERIFIER_STORAGE_KEY) || localStorage.getItem(VERIFIER_STORAGE_KEY);
   } catch {
     return null;
   }
@@ -68,10 +78,11 @@ export async function buildMs365AuthorizeUrl(cfg: {
 }): Promise<string> {
   const redirectUri = getMs365RedirectUri();
   rememberMs365RedirectUri(redirectUri);
+  const oauthState = `${cfg.state ? `${cfg.state}:` : ""}${createCodeVerifier().slice(0, 18)}`;
   const verifier = createCodeVerifier();
   const challenge = await sha256Base64Url(verifier);
-  try { sessionStorage.setItem(VERIFIER_STORAGE_KEY, verifier); } catch {}
-  try { localStorage.setItem(VERIFIER_STORAGE_KEY, verifier); } catch {}
+  try { sessionStorage.setItem(verifierKey(oauthState), verifier); sessionStorage.setItem(VERIFIER_STORAGE_KEY, verifier); } catch {}
+  try { localStorage.setItem(verifierKey(oauthState), verifier); localStorage.setItem(VERIFIER_STORAGE_KEY, verifier); } catch {}
   const params = new URLSearchParams({
     client_id: cfg.clientId,
     response_type: "code",
@@ -82,7 +93,7 @@ export async function buildMs365AuthorizeUrl(cfg: {
     code_challenge: challenge,
     code_challenge_method: "S256",
   });
-  if (cfg.state) params.set("state", cfg.state);
+  params.set("state", oauthState);
   return `https://login.microsoftonline.com/${cfg.tenant || "common"}/oauth2/v2.0/authorize?${params.toString()}`;
 }
 

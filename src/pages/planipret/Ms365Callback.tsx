@@ -29,12 +29,13 @@ export default function Ms365Callback() {
       if (!session) { setStatus("error"); setError("Session expirée — reconnectez-vous"); return; }
       // Must match the redirect URI registered in Azure App Registration.
       const redirect_uri = getRememberedMs365RedirectUri();
-      const code_verifier = getRememberedMs365CodeVerifier();
+      const state = params.get("state");
+      const code_verifier = getRememberedMs365CodeVerifier(state);
       const { data, error: e } = await supabase.functions.invoke("ms365-oauth-exchange", { body: { code, redirect_uri, code_verifier } });
       if (e || !(data as any)?.success) {
         const details = (data as any)?.details;
         const msg = (data as any)?.error ?? e?.message ?? "Échec OAuth";
-        const full = details ? `${msg} — ${details.error ?? ""} ${details.error_description ?? ""}`.trim() : msg;
+        const full = details ? `${msg} — ${details.error_description ?? details.error ?? ""}`.trim() : msg;
         console.error("ms365 exchange failed", { data, e });
         setStatus("error"); setError(full);
         return;
@@ -42,7 +43,9 @@ export default function Ms365Callback() {
       clearRememberedMs365RedirectUri();
       try { localStorage.removeItem("pp_ms365_callback_url"); } catch {}
       // Active automatiquement l'abonnement AVA aux nouveaux courriels (non-bloquant)
-      supabase.functions.invoke("ms365-mail-webhook-setup", { body: {} }).catch(() => {});
+      supabase.functions.invoke("ms365-mail-webhook-setup", { body: {} }).then(({ error }) => {
+        if (error) console.warn("ms365 webhook setup skipped", error.message);
+      }).catch((err) => console.warn("ms365 webhook setup skipped", err?.message ?? err));
       setStatus("ok");
       setTimeout(() => navigate("/mplanipret/more?ms365=ok", { replace: true }), 1200);
     })();

@@ -28,6 +28,13 @@ import {
   type CallSessionRow,
   type AnsweredBy,
 } from "@/lib/planipret/calls/callSessionSync";
+import { maestroTelecom } from "@/lib/planipret/maestroTelecom";
+
+// Fire-and-forget Maestro logging — never blocks the call flow.
+const maestroLog = (fn: () => Promise<unknown>) => {
+  fn().catch((e) => console.warn("[maestro-telecom]", (e as Error)?.message ?? e));
+};
+
 
 
 
@@ -69,7 +76,7 @@ function ensureGumProxy() {
 
 export type OutboundResult =
   | { via: "webrtc"; ok: true }
-  | { via: "pbx"; ok: true }
+  | { via: "pbx"; ok: true; callId?: string }
   | { via: "none"; ok: false; error: string; micState?: MicPermissionState };
 
 type RestCallAttachment = {
@@ -226,13 +233,21 @@ export function useMplanipretSoftphone() {
     document.addEventListener("visibilitychange", onVis);
     window.addEventListener("focus", onResume);
     window.addEventListener("online", onResume);
+    // Heartbeat: SIP transport can go silent without emitting a status event
+    // (background tab, radio switch, NS keepalive drop). Poll every 15s so the
+    // watchdog escalates to forceReregister even without a subscribe callback.
+    const heartbeat = window.setInterval(evaluate, 15_000);
+    // Initial evaluation — don't wait for the first SIP event.
+    evaluate();
     return () => {
       un();
       clearTimers();
+      window.clearInterval(heartbeat);
       document.removeEventListener("visibilitychange", onVis);
       window.removeEventListener("focus", onResume);
       window.removeEventListener("online", onResume);
     };
+
   }, [user?.id]);
 
 
@@ -325,8 +340,26 @@ export function useMplanipretSoftphone() {
       const msg = (data as any)?.message ?? (data as any)?.error ?? error?.message ?? "PBX call failed";
       return { via: "none", ok: false, error: msg };
     }
-    return { via: "pbx", ok: true };
+    const callId = String((data as any)?.call_id ?? "");
+    if (callId) {
+      setRestCall({
+        id: callId,
+        direction: "out",
+        other: destination,
+        number: destination,
+        status: "ringing-out",
+        startedAt: Date.now(),
+      });
+      maestroLog(() => maestroTelecom.createCall({
+        provider_call_id: callId,
+        to_user_number: destination,
+        status: "dialing",
+        direction: "outbound",
+      }));
+    }
+    return { via: "pbx", ok: true, callId };
   }, []);
+
 
   const placeCall = useCallback(async (destination: string): Promise<OutboundResult> => {
     if (!destination) return { via: "none", ok: false, error: "empty destination" };
@@ -336,7 +369,14 @@ export function useMplanipretSoftphone() {
       return { via: "none", ok: false, error: mic.error ?? "microphone unavailable", micState: mic.state };
     }
     try { mic.stream?.getTracks().forEach((tr) => tr.stop()); } catch {}
-    if (registered) {
+    let canUseSip = registered;
+    if (!canUseSip) {
+      try { ppSipProvider.forceReregister(); } catch {}
+      await new Promise((resolve) => window.setTimeout(resolve, 1200));
+      const st = ppSipProvider.getSnapshot().status;
+      canUseSip = st === "registered" || st === "connected";
+    }
+    if (canUseSip) {
       try {
         await ppSipProvider.call(destination);
         return { via: "webrtc", ok: true };
@@ -363,11 +403,20 @@ export function useMplanipretSoftphone() {
   }, [restCall?.id, restControl]);
 
   const hangup = useCallback(() => {
-    if (restCall?.id) { void restControl("disconnect"); return; }
+    if (restCall?.id) {
+      const id = restCall.id;
+      void restControl("disconnect");
+      maestroLog(() => maestroTelecom.updateCall(id, { status: "ended", ended_reason: "completed" }));
+      return;
+    }
     const callId = ppSipProvider.getSnapshot().callId;
     ppSipProvider.hangup();
-    if (callId) void endSession(callId, "hangup");
+    if (callId) {
+      void endSession(callId, "hangup");
+      maestroLog(() => maestroTelecom.updateCall(callId, { status: "ended", ended_reason: "completed" }));
+    }
   }, [restCall?.id, restControl]);
+
 
   const attachRestCall = useCallback((attachment: RestCallAttachment | null) => {
     if (!attachment?.id) { setRestCall(null); return; }

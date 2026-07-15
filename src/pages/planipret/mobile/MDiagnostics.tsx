@@ -127,7 +127,18 @@ const PROBES: Probe[] = [
       return { ok: true, detail: d?.status || "ok" };
     },
   },
+  {
+    key: "maestro-telecom",
+    group: "Maestro / Agenda",
+    label: "pp-maestro-telecom · API Télécom",
+    run: async () => {
+      const d = await callEdge<any>("pp-maestro-telecom", { action: "recent-comms" });
+      const n = (d?.communications?.length ?? d?.data?.length ?? 0) as number;
+      return { ok: !!d?.ok, detail: `${n} communication(s) récente(s)` };
+    },
+  },
 ];
+
 
 export default function MDiagnostics() {
   const navigate = useNavigate();
