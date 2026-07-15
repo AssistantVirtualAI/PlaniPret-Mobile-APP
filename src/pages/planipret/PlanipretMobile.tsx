@@ -579,13 +579,24 @@ export default function PlanipretMobile() {
   }, [qc, location.pathname]);
 
 
+  // Track IDs the user just hung up locally so realtime echoes of a still-
+  // stale "ringing" row cannot re-open the overlay.
+  const endedCallIds = useRef<Map<string, number>>(new Map());
+  const isDismissed = (id: string | null | undefined) => {
+    if (!id) return false;
+    const ts = endedCallIds.current.get(id);
+    if (!ts) return false;
+    if (Date.now() - ts > 30_000) { endedCallIds.current.delete(id); return false; }
+    return true;
+  };
+
   // Detect active outbound/in-progress call → FAB pulses red & hangs up on tap
   useEffect(() => {
     if (!profile?.user_id) return;
     const refreshActive = async () => {
       let q: any = supabase
         .from("planipret_phone_calls")
-        .select("id,ns_call_id,ns_callid,status,direction,from_number,to_number,from_name,to_name,started_at,answered_at")
+        .select("id,ns_call_id,ns_callid,status,direction,from_number,to_number,from_name,to_name,started_at,answered_at,created_at")
         .in("status", ["active", "in_progress", "answered", "ringing", "outbound_ringing"])
         .order("created_at", { ascending: false })
         .limit(1);
@@ -599,6 +610,22 @@ export default function PlanipretMobile() {
       const { data } = await q.maybeSingle();
       const row = data as any;
       const controlId = row?.ns_callid ?? row?.ns_call_id ?? row?.id ?? null;
+
+      // Ignore locally-dismissed calls (user just tapped End Call).
+      if (isDismissed(controlId) || isDismissed(row?.id)) {
+        setActiveCallId(null);
+        attachRestCall?.(null);
+        return;
+      }
+      // Ignore stale "ringing" rows older than 2 minutes.
+      const createdAt = row?.created_at ? new Date(row.created_at).getTime() : 0;
+      const isRinging = String(row?.status ?? "").includes("ring");
+      if (row && isRinging && createdAt && Date.now() - createdAt > 120_000) {
+        setActiveCallId(null);
+        attachRestCall?.(null);
+        return;
+      }
+
       setActiveCallId(controlId);
       if (!row?.id) attachRestCall?.(null);
       if (row?.id) {
@@ -608,7 +635,7 @@ export default function PlanipretMobile() {
           direction: out ? "out" : "in",
           other: (out ? row.to_name || row.to_number : row.from_name || row.from_number) || "—",
           number: (out ? row.to_number : row.from_number) || "",
-          status: String(row.status).includes("ring") ? (out ? "ringing-out" : "ringing-in") : "active",
+          status: isRinging ? (out ? "ringing-out" : "ringing-in") : "active",
           startedAt: row.answered_at ? new Date(row.answered_at).getTime() : row.started_at ? new Date(row.started_at).getTime() : Date.now(),
         });
       }
@@ -623,9 +650,24 @@ export default function PlanipretMobile() {
 
   const hangupActive = async () => {
     if (!activeCallId) return;
-    softphone.hangup();
-    const { error } = await supabase.functions.invoke("pp-ns-calls", { body: { action: "disconnect", call_id: activeCallId } });
+    const id = activeCallId;
+    // 1) Local optimistic dismiss — the overlay & FAB switch off immediately.
+    endedCallIds.current.set(id, Date.now());
+    setActiveCallId(null);
+    attachRestCall?.(null);
+    // 2) Tear down SIP session locally.
+    try { softphone.hangup(); } catch {}
+    // 3) Ask NS to terminate + mark the DB row ended (best-effort).
+    const { error } = await supabase.functions.invoke("pp-ns-calls", { body: { action: "disconnect", call_id: id } });
     if (error) toast.error(t("dialer.hangupFailed")); else toast.success(t("dialer.hungUp"));
+    // 4) Force-update DB row (bypass any webhook lag).
+    try {
+      const nowIso = new Date().toISOString();
+      await supabase
+        .from("planipret_phone_calls")
+        .update({ status: "ended", ended_at: nowIso } as any)
+        .or(`id.eq.${id},ns_callid.eq.${id},ns_call_id.eq.${id}`);
+    } catch {}
   };
 
   useEffect(() => {

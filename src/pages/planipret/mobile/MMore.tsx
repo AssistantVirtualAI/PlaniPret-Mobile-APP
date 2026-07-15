@@ -17,6 +17,7 @@ import MCallAudioSettings from "@/components/planipret/mobile/MCallAudioSettings
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import Ms365StatusBadge from "@/components/planipret/Ms365StatusBadge";
 import { openMs365Authorize } from "@/lib/ms365OAuth";
+import { useMplanipretSoftphone } from "@/hooks/useMplanipretSoftphone";
 
 const initials = (name?: string) =>
   (name ?? "").split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0]?.toUpperCase()).join("") || "?";
@@ -84,19 +85,25 @@ export default function MMore() {
     })();
   }, [profile?.id]);
 
-  const nsConnected = !!profile?.ns_jwt && (!profile?.ns_jwt_expires_at || new Date(profile.ns_jwt_expires_at) > new Date());
+  const { sipConnected, reregister } = useMplanipretSoftphone();
+  const jwtOk = !!profile?.ns_jwt && (!profile?.ns_jwt_expires_at || new Date(profile.ns_jwt_expires_at) > new Date());
+  const nsConnected = jwtOk && sipConnected;
   const ms365Connected = !!profile?.ms365_access_token;
 
   const reconnectNs = async () => {
     setReconnecting(true);
     const { data, error, status } = await safeEdgeFunction("ns-auth", { body: { action: "refresh" } });
-    setReconnecting(false);
     if (error || (data as any)?.success === false) {
+      setReconnecting(false);
       toast.error(status === 403 ? t("more.phoneUnauthorized") : ((data as any)?.error ?? error ?? t("more.connectionFailed")));
       return;
     }
-    toast.success(t("more.phoneConnected"));
+    // Refresh profile then force the softphone to re-init SIP credentials.
     await reloadProfile();
+    try { window.dispatchEvent(new CustomEvent("pp:sip-force-reregister", { detail: { force: true } })); } catch {}
+    try { reregister?.(); } catch {}
+    setReconnecting(false);
+    toast.success(t("more.phoneConnected"));
   };
 
   const startMs365OAuth = (cfg: { client_id: string; tenant_id?: string }) => {

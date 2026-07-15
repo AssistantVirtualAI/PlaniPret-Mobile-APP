@@ -11,15 +11,14 @@
 //     ("both, with fallback" policy).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Capacitor } from "@capacitor/core";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
-import { Capacitor } from "@capacitor/core";
 import { ppSipProvider, type PpSipSnapshot } from "@/lib/planipret/sip/ppSipProvider";
 import { networkMonitor, type NetSample } from "@/lib/planipret/network/networkMonitor";
 import { handoverController } from "@/lib/planipret/net/handoverController";
 import { callQualitySampler, type CallQualitySnapshot } from "@/lib/planipret/audio/callQualitySampler";
 import { getAudioConstraints, type NCMode } from "@/lib/planipret/audio/audioConstraints";
-
 import { ensureMicPermission, type MicPermissionState } from "@/lib/planipret/audio/micPermission";
 import {
   upsertRingingSession,
@@ -30,9 +29,7 @@ import {
   type AnsweredBy,
 } from "@/lib/planipret/calls/callSessionSync";
 
-// On iOS/Android Capacitor, the WebSocket SIP port (9002) is blocked by the OS.
-// The native softphone (113_mobile) handles calls instead — skip JS SIP init.
-const IS_NATIVE = Capacitor.isNativePlatform();
+
 
 let gumProxyInstalled = false;
 let gumOriginal: typeof navigator.mediaDevices.getUserMedia | null = null;
@@ -130,7 +127,7 @@ export function useMplanipretSoftphone() {
   // NOTE: Skipped on native iOS/Android — the native softphone handles registration.
   useEffect(() => {
     if (!user) return;
-    if (IS_NATIVE) return; // Native platform: skip JS SIP, use REST fallback only
+    if (Capacitor.isNativePlatform()) return; // Native platform: skip JS SIP, use REST fallback only
     let cancelled = false;
     const doInit = async (opts?: { force?: boolean }) => {
       setLoading(true);
@@ -181,6 +178,60 @@ export function useMplanipretSoftphone() {
       cancelled = true;
       window.removeEventListener("pp:sip-ready", onReady as any);
       window.removeEventListener("pp:sip-force-reregister", onForce as any);
+    };
+  }, [user?.id]);
+
+  // Watchdog: keep the SIP registration alive. If we drift into
+  // `disconnected` / `error` for more than 10s, force a re-REGISTER. If still
+  // KO after 20s, ask the boot flow to re-init credentials from scratch. Also
+  // trigger an immediate re-register on visibility/online/focus resume so the
+  // user never sees "Offline" while a call is ringing.
+  useEffect(() => {
+    if (!user) return;
+    let disconnectedSince = 0;
+    let softTimer: ReturnType<typeof setTimeout> | null = null;
+    let hardTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearTimers = () => {
+      if (softTimer) { clearTimeout(softTimer); softTimer = null; }
+      if (hardTimer) { clearTimeout(hardTimer); hardTimer = null; }
+    };
+    const evaluate = () => {
+      const st = ppSipProvider.getSnapshot().status;
+      if (st === "registered" || st === "connected") {
+        disconnectedSince = 0;
+        clearTimers();
+        return;
+      }
+      if (!disconnectedSince) disconnectedSince = Date.now();
+      clearTimers();
+      softTimer = setTimeout(() => {
+        const s = ppSipProvider.getSnapshot().status;
+        if (s !== "registered" && s !== "connected") {
+          try { ppSipProvider.forceReregister(); } catch {}
+        }
+      }, 10_000);
+      hardTimer = setTimeout(() => {
+        const s = ppSipProvider.getSnapshot().status;
+        if (s !== "registered" && s !== "connected") {
+          try { window.dispatchEvent(new CustomEvent("pp:sip-force-reregister")); } catch {}
+        }
+      }, 20_000);
+    };
+    const un = ppSipProvider.subscribe(() => evaluate());
+    const onResume = () => {
+      try { ppSipProvider.forceReregister(); } catch {}
+      evaluate();
+    };
+    const onVis = () => { if (document.visibilityState === "visible") onResume(); };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", onResume);
+    window.addEventListener("online", onResume);
+    return () => {
+      un();
+      clearTimers();
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", onResume);
+      window.removeEventListener("online", onResume);
     };
   }, [user?.id]);
 
@@ -328,11 +379,14 @@ export function useMplanipretSoftphone() {
     });
   }, []);
 
+  const sipConnected = snap.status === "registered" || snap.status === "connected";
+
   return useMemo(() => ({
     snap: effectiveSnap,
     loading,
     net,
     quality,
+    sipConnected,
     placeCall,
     answeredElsewhere,
     dismissAnsweredElsewhere: () => setAnsweredElsewhere(null),
@@ -340,6 +394,7 @@ export function useMplanipretSoftphone() {
     call: (n: string) => ppSipProvider.call(n),
     answer,
     hangup,
+    reregister: () => { try { ppSipProvider.forceReregister(); } catch {} },
     mute: () => restCall?.id ? void restControl("mute", { muted: true }) : ppSipProvider.mute(),
     unmute: () => restCall?.id ? void restControl("mute", { muted: false }) : ppSipProvider.unmute(),
     hold: () => restCall?.id ? void restControl("hold") : ppSipProvider.hold(),
@@ -348,6 +403,6 @@ export function useMplanipretSoftphone() {
     transfer: (t: string) => restCall?.id ? void restControl("transfer", { destination: t, target: t }) : ppSipProvider.transfer(t),
     setAudioEl: (el: HTMLAudioElement | null) => { ppSipProvider.audioEl = el; },
     forceHandover: () => handoverController.forceHandover(),
-  }), [effectiveSnap, loading, net, quality, placeCall, answer, hangup, answeredElsewhere, attachRestCall, restCall?.id, restControl]);
+  }), [effectiveSnap, loading, net, quality, sipConnected, placeCall, answer, hangup, answeredElsewhere, attachRestCall, restCall?.id, restControl]);
 
 }
