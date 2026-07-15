@@ -792,3 +792,11 @@ All colors MUST be HSL.
 .animate-mascot-mouth { animation: mascot-mouth 280ms ease-in-out infinite; transform-origin: center; }
 
 
+
+/* Prevent iOS zoom-on-focus for form controls (requires font-size >= 16px). */
+input, textarea, select {
+  font-size: 16px;
+}
+@media (min-width: 768px) {
+  input, textarea, select { font-size: inherit; }
+}

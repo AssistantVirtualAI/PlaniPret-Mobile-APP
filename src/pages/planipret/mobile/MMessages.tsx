@@ -14,6 +14,7 @@ import AvaProposedActionsCard from "@/components/planipret/mobile/AvaProposedAct
 import { callAva, type AvaSuggestion } from "@/services/avaProactive";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { useCallerNames } from "@/lib/planipret/callerLookup";
+import { connectMs365 } from "@/lib/ms365Connect";
 
 type SubTab = "sms" | "team" | "teams365" | "emails" | "roster";
 
@@ -1395,10 +1396,12 @@ function Teams365Panel({ profile }: { profile: any }) {
           <p className="text-xs mt-1 mb-3" style={{ color: "var(--pp-text-muted)" }}>
             Connectez votre compte Microsoft pour voir vos discussions Teams et coéquipiers.
           </p>
-          <a href="/mplanipret/more" className="inline-block text-xs px-4 py-2 rounded-full text-white font-semibold"
+          <button
+            onClick={() => { void connectMs365(); }}
+            className="inline-block text-xs px-4 py-2 rounded-full text-white font-semibold"
             style={{ background: "linear-gradient(135deg, var(--pp-brand-accent), var(--pp-brand-accent-2))" }}>
             Connecter Microsoft 365
-          </a>
+          </button>
         </div>
       )}
       {err && err !== "ms365_not_connected" && (

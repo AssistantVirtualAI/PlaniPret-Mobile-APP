@@ -409,7 +409,7 @@ export default function MContacts() {
             return (
               <div
                 key={favEntry.key}
-                onClick={() => !isDir && !isFav && setSelected(c)}
+                onClick={() => setSelected(c)}
                 className="pp-card flex items-center gap-3 cursor-pointer"
                 style={{ padding: 12 }}
               >
@@ -563,8 +563,10 @@ function ContactDetailSheet({
   const [creatingTask, setCreatingTask] = useState(false);
   const [summarizeOpen, setSummarizeOpen] = useState(false);
 
-  const name = `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim() || contact.phone || "Contact";
-  const phone: string | undefined = contact.phone;
+  const name = `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim()
+    || contact.name || contact.display_name || contact.phone || contact.email || "Contact";
+  const phone: string | undefined = contact.phone || contact.extension;
+  const email: string | undefined = contact.email;
   const maestroId: string | undefined = contact.maestro_client_id || contact.external_id || contact.id;
 
   useEffect(() => {
@@ -600,6 +602,15 @@ function ContactDetailSheet({
     }
   };
 
+  const openSms = () => {
+    if (!phone) return;
+    window.location.href = `sms:${phone}`;
+  };
+  const openEmail = () => {
+    if (!email) return;
+    window.location.href = `mailto:${email}`;
+  };
+
   const iconFor = (kind: string) => {
     const k = (kind || "").toLowerCase();
     if (k.includes("call") || k.includes("appel")) return "📞";
@@ -621,7 +632,7 @@ function ContactDetailSheet({
           <div className="min-w-0">
             <div className="text-lg font-bold truncate" style={{ color: "var(--pp-text-primary)" }}>{name}</div>
             {phone && <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>{phone}</div>}
-            {contact.email && <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>{contact.email}</div>}
+            {email && <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>{email}</div>}
           </div>
           <button onClick={onClose} className="p-1" style={{ color: "var(--pp-text-muted)" }} aria-label={t("common.close")}><X className="w-5 h-5" /></button>
         </div>
@@ -629,8 +640,8 @@ function ContactDetailSheet({
         {/* Quick actions */}
         <div className="grid grid-cols-5 gap-2 mb-4">
           <QuickAction icon={<Phone className="w-4 h-4" />} label={t("common.call")} onClick={() => phone && onCall(phone)} disabled={!phone} />
-          <QuickAction icon={<MessageSquare className="w-4 h-4" />} label="SMS" onClick={() => phone && onCall(phone)} disabled={!phone} />
-          <QuickAction icon={<Mail className="w-4 h-4" />} label="Email" onClick={() => contact.email && window.open(`mailto:${contact.email}`)} disabled={!contact.email} />
+          <QuickAction icon={<MessageSquare className="w-4 h-4" />} label="SMS" onClick={openSms} disabled={!phone} />
+          <QuickAction icon={<Mail className="w-4 h-4" />} label="Email" onClick={openEmail} disabled={!email} />
           <QuickAction icon={creatingTask ? <Loader2 className="w-4 h-4 animate-spin" /> : <ListChecks className="w-4 h-4" />} label="Tâche" onClick={createTask} disabled={creatingTask} />
           <QuickAction icon={<Calendar className="w-4 h-4" />} label="RDV" onClick={() => toast.info("Bientôt disponible")} />
         </div>
