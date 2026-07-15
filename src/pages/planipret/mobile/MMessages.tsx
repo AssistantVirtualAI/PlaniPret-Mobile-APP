@@ -271,14 +271,16 @@ function SmsList({ profile, openDialer, registerRefresh }: any) {
 
   if (activeThread) {
     return (
-      <ThreadView
-        threadId={activeThread.id}
-        number={activeThread.number}
-        myExt={myExt}
-        userId={profile.user_id}
-        onBack={() => { setActiveThread(null); load(); }}
-        onCall={(n) => openDialer(n)}
-      />
+      <div className="relative h-full w-full">
+        <ThreadView
+          threadId={activeThread.id}
+          number={activeThread.number}
+          myExt={myExt}
+          userId={profile.user_id}
+          onBack={() => { setActiveThread(null); load(); }}
+          onCall={(n) => openDialer(n)}
+        />
+      </div>
     );
   }
 
@@ -613,7 +615,7 @@ function ThreadView({ threadId: thId, number, myExt, userId, onBack, onCall }: {
   };
 
   return (
-    <div className="fixed inset-0 z-[999] min-h-0 flex flex-col md:absolute" style={{ background: "var(--pp-bg-base)" }}>
+    <div className="absolute inset-0 flex flex-col min-h-0" style={{ background: "var(--pp-bg-base)" }}>
       <header
         className="flex items-center gap-2 px-3 py-3"
         style={{ background: "var(--pp-bg-deep)", borderBottom: "1px solid var(--pp-bg-border)" }}

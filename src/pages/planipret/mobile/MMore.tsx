@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useOutletContext, useSearchParams } from "react-router-dom";
-import { Capacitor } from "@capacitor/core";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import {
@@ -17,6 +16,7 @@ import MNetworkSection from "@/components/planipret/mobile/MNetworkSection";
 import MCallAudioSettings from "@/components/planipret/mobile/MCallAudioSettings";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import Ms365StatusBadge from "@/components/planipret/Ms365StatusBadge";
+import { openMs365Authorize } from "@/lib/ms365OAuth";
 
 const initials = (name?: string) =>
   (name ?? "").split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0]?.toUpperCase()).join("") || "?";
@@ -102,24 +102,9 @@ export default function MMore() {
   const startMs365OAuth = (cfg: { client_id: string; tenant_id?: string }) => {
     const clientId = cfg.client_id;
     const tenant = cfg.tenant_id || "common";
-    const IS_NATIVE = Capacitor.isNativePlatform();
-    // Sur iOS natif, la WebView tourne sous capacitor://localhost
-    // → la redirect doit être capacitor://localhost/auth/microsoft/callback
-    // Sur web, utiliser l'origine normale (https://avastatistic.ca ou localhost)
-    const redirect = IS_NATIVE
-      ? "capacitor://localhost/auth/microsoft/callback"
-      : `${window.location.origin}/auth/microsoft/callback`;
-    const scope = encodeURIComponent("openid profile email offline_access User.Read User.ReadBasic.All Mail.ReadWrite Mail.Send MailboxSettings.Read Calendars.ReadWrite Chat.Read Chat.ReadBasic Chat.ReadWrite Channel.ReadBasic.All ChannelMessage.Read.All ChannelMessage.Send Team.ReadBasic.All Organization.Read.All Application.Read.All");
     supabase.auth.getUser().then(({ data: { user } }) => {
       const state = user?.id ?? "";
-      const authUrl = `https://login.microsoftonline.com/${tenant}/oauth2/v2.0/authorize?client_id=${clientId}&response_type=code&redirect_uri=${encodeURIComponent(redirect)}&response_mode=query&scope=${scope}&prompt=select_account&state=${state}`;
-      if (IS_NATIVE) {
-        // Sur iOS : ouvrir dans Safari externe via _system
-        // Le scheme capacitor:// sera intercepté par l'App Delegate et renvoyé à la WebView
-        window.open(authUrl, "_system");
-      } else {
-        window.location.href = authUrl;
-      }
+      openMs365Authorize({ clientId, tenant, state });
     });
   };
 

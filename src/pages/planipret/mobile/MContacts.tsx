@@ -9,7 +9,7 @@ import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { ensureContacts, getContactsPermissionStatus, listDeviceContacts } from "@/lib/native/permissions/contacts";
 import { openAppSettings, type PermStatus } from "@/lib/native/permissions/platform";
 import { tokenize, matchAllTokens } from "@/lib/textNormalize";
-import { peekPpContacts } from "@/lib/ppContactsCache";
+import { peekPpContacts, prefetchPpContacts } from "@/lib/ppContactsCache";
 
 async function copyToClipboard(value: string, label: string) {
   try {
@@ -93,8 +93,11 @@ export default function MContacts() {
   const navigate = useNavigate();
   const [tab, setTab] = useState<Tab>("personal");
   const [q, setQ] = useState("");
-  const [personal, setPersonal] = useState<any[]>([]);
-  const [directory, setDirectory] = useState<any[]>([]);
+  const [personal, setPersonal] = useState<any[]>(() => {
+    const cached = peekPpContacts("list");
+    return cached ? (cached as any[]).map(normalizeContact) : [];
+  });
+  const [directory, setDirectory] = useState<any[]>(() => peekPpContacts("directory") ?? []);
   const [favorites, setFavorites] = useState<FavEntry[]>(() => loadFavs());
   const [loadingTab, setLoadingTab] = useState<Tab | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -106,7 +109,11 @@ export default function MContacts() {
   const [filterDept, setFilterDept] = useState<string>("");
   const [filterTeam, setFilterTeam] = useState<string>("");
   const [sortBy, setSortBy] = useState<"relevance" | "name" | "team" | "department">("relevance");
-  const loadedTabsRef = useRef<Set<Tab>>(new Set(["favorites"]));
+  const loadedTabsRef = useRef<Set<Tab>>(new Set<Tab>([
+    "favorites",
+    ...(peekPpContacts("directory") ? (["directory"] as Tab[]) : []),
+    ...(peekPpContacts("list") ? (["personal"] as Tab[]) : []),
+  ]));
 
   useEffect(() => {
     const onChange = () => setFavorites(loadFavs());
@@ -177,10 +184,12 @@ export default function MContacts() {
     return () => window.clearTimeout(id);
   }, [tab, load]);
 
-  // Prefetch the directory after the first paint so the annuaire opens faster.
+  // Prefetch personal + directory in parallel after first paint so subsequent
+  // tab switches render from memory. Dedup + TTL handled by ppContactsCache.
   useEffect(() => {
-    const quick = window.setTimeout(() => { void load("directory", { limit: 120, background: true }); }, 350);
-    const full = window.setTimeout(() => { void load("directory", { force: true, limit: 500, background: true }); }, 1200);
+    prefetchPpContacts(["list", "directory"], 500);
+    const quick = window.setTimeout(() => { void load("directory", { limit: 120, background: true }); }, 250);
+    const full = window.setTimeout(() => { void load("directory", { force: true, limit: 500, background: true }); }, 1000);
     return () => { window.clearTimeout(quick); window.clearTimeout(full); };
   }, [load]);
 
@@ -669,13 +678,20 @@ function ContactDetailSheet({
   const [summarizeOpen, setSummarizeOpen] = useState(false);
   const [smsOpen, setSmsOpen] = useState(false);
   const [emailOpen, setEmailOpen] = useState(false);
+  const [apptOpen, setApptOpen] = useState(false);
 
   const name = `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim()
     || contact.name || contact.display_name || contact.phone || contact.email || "Contact";
-  const rawPhone: string | undefined = contact.phone || contact.cell_phone || contact.work_phone;
-  const extension: string | undefined = contact.extension;
+  const rawPhone: string | undefined =
+    contact.phone || contact.mobile || contact.cell_phone || contact.cellphone ||
+    contact.cell || contact.mobile_phone || contact.mobilePhone || contact.phoneNumber ||
+    contact.phone_number || contact.work_phone || contact.workPhone || contact.telephone ||
+    contact.home_phone || contact.homePhone || undefined;
+  const extension: string | undefined = contact.extension || contact.ext;
+  // Best number for SMS: real phone preferred; extension fallback (for internal chat).
+  const smsTarget: string | undefined = rawPhone || extension;
   const phone: string | undefined = rawPhone || extension;
-  const email: string | undefined = contact.email;
+  const email: string | undefined = contact.email || contact.mail || contact.email_address;
   const maestroId: string | undefined = contact.maestro_client_id || contact.external_id || contact.id;
 
   useEffect(() => {
@@ -697,27 +713,38 @@ function ContactDetailSheet({
   }, [maestroId, phone]);
 
   const createTask = async () => {
+    if (!maestroId) { toast.error("Client Maestro requis pour créer une tâche"); return; }
     setCreatingTask(true);
     try {
-      const { error } = await supabase.functions.invoke("maestro-task", {
-        body: { client_id: maestroId, title: `${t("contacts.followUp")} ${name}`, priority: "medium" },
+      const { data, error } = await supabase.functions.invoke("maestro-task", {
+        body: {
+          maestro_client_id: maestroId,
+          title: `${t("contacts.followUp") || "Suivi"} — ${name}`,
+          priority: "medium",
+          source: "mobile_contact",
+        },
       });
       if (error) throw error;
-      toast.success(t("contacts.taskCreated"));
+      if ((data as any)?.success === false) throw new Error((data as any)?.error || "task_failed");
+      toast.success(t("contacts.taskCreated") || "Tâche créée");
     } catch (e: any) {
-      toast.error(t("contacts.taskCreateFailed"), { description: e?.message });
+      toast.error(t("contacts.taskCreateFailed") || "Échec création tâche", { description: e?.message });
     } finally {
       setCreatingTask(false);
     }
   };
 
   const openSms = () => {
-    if (!rawPhone) { toast.error("Aucun numéro mobile"); return; }
+    if (!smsTarget) { toast.error("Aucun numéro disponible"); return; }
     setSmsOpen(true);
   };
   const openEmail = () => {
-    if (!email) return;
+    if (!email) { toast.error("Aucun email disponible"); return; }
     setEmailOpen(true);
+  };
+  const openAppt = () => {
+    if (!maestroId) { toast.error("Client Maestro requis pour un RDV"); return; }
+    setApptOpen(true);
   };
 
 
@@ -754,13 +781,16 @@ function ContactDetailSheet({
           <button onClick={onClose} className="p-1" style={{ color: "var(--pp-text-muted)" }} aria-label={t("common.close")}><X className="w-5 h-5" /></button>
         </div>
 
-        {/* Quick actions */}
+        {/* Quick actions — endpoints:
+              call → openDialer (softphone) · SMS → pp-ns-sms(send) ·
+              Email → ms365-actions(send_email) · Tâche → maestro-task ·
+              RDV → maestro-appointment */}
         <div className="grid grid-cols-5 gap-2 mb-4">
           <QuickAction icon={<Phone className="w-4 h-4" />} label={t("common.call")} onClick={() => phone && onCall(phone)} disabled={!phone} />
-          <QuickAction icon={<MessageSquare className="w-4 h-4" />} label="SMS" onClick={openSms} disabled={!rawPhone} />
+          <QuickAction icon={<MessageSquare className="w-4 h-4" />} label="SMS" onClick={openSms} disabled={!smsTarget} />
           <QuickAction icon={<Mail className="w-4 h-4" />} label="Email" onClick={openEmail} disabled={!email} />
-          <QuickAction icon={creatingTask ? <Loader2 className="w-4 h-4 animate-spin" /> : <ListChecks className="w-4 h-4" />} label="Tâche" onClick={createTask} disabled={creatingTask} />
-          <QuickAction icon={<Calendar className="w-4 h-4" />} label="RDV" onClick={() => toast.info("Bientôt disponible")} />
+          <QuickAction icon={creatingTask ? <Loader2 className="w-4 h-4 animate-spin" /> : <ListChecks className="w-4 h-4" />} label="Tâche" onClick={createTask} disabled={creatingTask || !maestroId} />
+          <QuickAction icon={<Calendar className="w-4 h-4" />} label="RDV" onClick={openAppt} disabled={!maestroId} />
         </div>
 
 
@@ -829,12 +859,20 @@ function ContactDetailSheet({
         onClose={() => setSummarizeOpen(false)}
       />
 
-      {smsOpen && rawPhone && (
-        <SmsComposerSheet to={rawPhone} contactName={name} onClose={() => setSmsOpen(false)} />
+      {smsOpen && smsTarget && (
+        <SmsComposerSheet to={smsTarget} contactName={name} onClose={() => setSmsOpen(false)} />
       )}
 
       {emailOpen && email && (
         <EmailComposerSheet to={email} contactName={name} onClose={() => setEmailOpen(false)} />
+      )}
+
+      {apptOpen && maestroId && (
+        <AppointmentSheet
+          maestroClientId={maestroId}
+          contactName={name}
+          onClose={() => setApptOpen(false)}
+        />
       )}
     </div>
   );
@@ -1045,6 +1083,93 @@ function EmailComposerSheet({ to, contactName, onClose }: { to: string; contactN
         >
           {(sending || connecting) ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
           {connecting ? "Connexion Microsoft…" : sending ? "Envoi…" : "Envoyer"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+
+function AppointmentSheet({ maestroClientId, contactName, onClose }: { maestroClientId: string; contactName: string; onClose: () => void }) {
+  const now = new Date();
+  const in1h = new Date(now.getTime() + 60 * 60 * 1000);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const toLocal = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const [title, setTitle] = useState(`RDV — ${contactName}`);
+  const [startAt, setStartAt] = useState(toLocal(in1h));
+  const [duration, setDuration] = useState(30);
+  const [notes, setNotes] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    if (!title.trim() || !startAt) { toast.error("Titre et date requis"); return; }
+    setSaving(true);
+    try {
+      const start = new Date(startAt);
+      const end = new Date(start.getTime() + duration * 60 * 1000);
+      const { data, error } = await supabase.functions.invoke("maestro-appointment", {
+        body: {
+          maestro_client_id: maestroClientId,
+          title: title.trim(),
+          start_at: start.toISOString(),
+          end_at: end.toISOString(),
+          notes: notes.trim() || null,
+          type: "phone",
+        },
+      });
+      if (error) throw error;
+      if ((data as any)?.success === false) throw new Error((data as any)?.error || "appointment_failed");
+      toast.success("RDV créé");
+      onClose();
+    } catch (e: any) {
+      toast.error("Échec création RDV", { description: e?.message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+      <div
+        className="w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl p-4"
+        style={{ background: "var(--pp-bg-base)", border: "1px solid var(--pp-bg-border-2)", paddingBottom: "max(1rem, env(safe-area-inset-bottom))" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <div className="text-base font-bold" style={{ color: "var(--pp-text-primary)" }}>Nouveau RDV</div>
+            <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>Avec {contactName} · via Maestro</div>
+          </div>
+          <button onClick={onClose} style={{ color: "var(--pp-text-muted)" }}><X className="w-5 h-5" /></button>
+        </div>
+
+        <label className="text-[10px] font-semibold uppercase" style={{ color: "var(--pp-text-muted)" }}>Titre</label>
+        <input value={title} onChange={(e) => setTitle(e.target.value)}
+          className="w-full mt-1 mb-3 px-3 py-2 rounded-lg text-sm outline-none"
+          style={{ fontSize: 16, background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }} />
+
+        <label className="text-[10px] font-semibold uppercase" style={{ color: "var(--pp-text-muted)" }}>Début</label>
+        <input type="datetime-local" value={startAt} onChange={(e) => setStartAt(e.target.value)}
+          className="w-full mt-1 mb-3 px-3 py-2 rounded-lg text-sm outline-none"
+          style={{ fontSize: 16, background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }} />
+
+        <label className="text-[10px] font-semibold uppercase" style={{ color: "var(--pp-text-muted)" }}>Durée (min)</label>
+        <select value={duration} onChange={(e) => setDuration(Number(e.target.value))}
+          className="w-full mt-1 mb-3 px-3 py-2 rounded-lg text-sm outline-none"
+          style={{ fontSize: 16, background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}>
+          {[15, 30, 45, 60, 90].map((n) => <option key={n} value={n}>{n} min</option>)}
+        </select>
+
+        <label className="text-[10px] font-semibold uppercase" style={{ color: "var(--pp-text-muted)" }}>Notes</label>
+        <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3}
+          className="w-full mt-1 mb-3 px-3 py-2 rounded-lg outline-none resize-none"
+          style={{ fontSize: 16, background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }} />
+
+        <button onClick={save} disabled={saving}
+          className="w-full py-2.5 rounded-lg text-white font-semibold text-sm disabled:opacity-50 flex items-center justify-center gap-2"
+          style={{ background: "var(--pp-brand-accent)" }}>
+          {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Calendar className="w-4 h-4" />}
+          {saving ? "Création…" : "Créer le RDV"}
         </button>
       </div>
     </div>
