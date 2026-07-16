@@ -75,7 +75,8 @@ export const useScroll = () => ({
   scrollXProgress: useMotionValue(0),
   scrollYProgress: useMotionValue(0),
 });
-export const useInView = () => true;
+export const useSpring = <T,>(v: T, _opts?: unknown) => ({ get: () => v, set: () => {}, onChange: (_cb: unknown) => () => {} });
+export const useInView = (_ref?: unknown, _opts?: unknown) => true;
 export const LayoutGroup = ({ children }: { children?: React.ReactNode }) =>
   React.createElement(React.Fragment, null, children);
 export const MotionConfig = ({ children }: { children?: React.ReactNode }) =>
