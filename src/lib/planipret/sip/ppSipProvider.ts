@@ -8,6 +8,18 @@
 
 import JsSIP from "jssip";
 
+// JsSIP uses `multi_header.length` internally during SDP parsing. On Capacitor
+// iOS the WebKit WKWebView ships a WebRTC stub that does not fully implement
+// the SDP/SIP stack, causing a hard crash: "undefined is not an object
+// (evaluating 'T.multi_header.length')". SIP.js / JsSIP must never be
+// initialised on a native Capacitor shell — NS-API REST fallback handles calls.
+const IS_NATIVE: boolean = (() => {
+  try {
+    const cap: any = (typeof window !== "undefined") ? (window as any).Capacitor : null;
+    return !!cap?.isNativePlatform?.();
+  } catch { return false; }
+})();
+
 export type PpSipStatus = "idle" | "connecting" | "connected" | "registered" | "disconnected" | "error";
 export type PpCallState = "idle" | "ringing-out" | "ringing-in" | "active" | "held" | "ended";
 
@@ -80,6 +92,12 @@ class PpSipProvider {
   }
 
   async init(cfg: PpSipConfig) {
+    // Hard guard: never start JsSIP on Capacitor iOS — it crashes with
+    // "undefined is not an object (evaluating 'T.multi_header.length')".
+    if (IS_NATIVE) {
+      this.update({ status: "idle", errorCause: "native_platform" });
+      return;
+    }
     const wssUrl = String(cfg.wssUrl ?? "").trim();
     if (!cfg.extension || !cfg.sipDomain || !wssUrl || wssUrl === "undefined" || !/^wss?:\/\//i.test(wssUrl) || !cfg.password) {
       this.update({ status: "error", errorCause: "invalid_config" });
@@ -281,6 +299,7 @@ class PpSipProvider {
     return false;
   }
   async forceReregister() {
+    if (IS_NATIVE) return; // No-op on native Capacitor shell.
     try {
       if (!this.ua) return;
       try { this.ua.unregister({ all: true }); } catch {}
