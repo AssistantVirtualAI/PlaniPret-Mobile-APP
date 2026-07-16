@@ -875,11 +875,6 @@ export default function PlanipretMobile() {
             )}
           </button>
 
-          {/* Planiprêt centered logo */}
-          <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2 pointer-events-none" style={{ top: "calc(env(safe-area-inset-top, 0px) + 8px)" }}>
-            <PlanipretBadge />
-            <span style={{ fontFamily: "Inter,sans-serif", fontWeight: 700, fontSize: 14, color: "var(--pp-text-primary)", letterSpacing: "-0.01em" }}>Planiprêt</span>
-          </div>
 
           {/* Lang + theme + profile — right */}
           <MobileHeaderControls profile={profile} reloadProfile={loadProfile} />
