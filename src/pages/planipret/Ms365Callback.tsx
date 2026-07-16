@@ -46,6 +46,13 @@ export default function Ms365Callback() {
       supabase.functions.invoke("ms365-mail-webhook-setup", { body: {} }).then(({ error }) => {
         if (error) console.warn("ms365 webhook setup skipped", error.message);
       }).catch((err) => console.warn("ms365 webhook setup skipped", err?.message ?? err));
+      // Fire-and-forget: link Maestro Telecom ID from Microsoft profile
+      const msAccessToken = (data as any)?.ms_access_token ?? null;
+      try {
+        void supabase.functions.invoke("maestro-telecom-link", {
+          body: { action: "link", ms_access_token: msAccessToken },
+        }).catch(() => {});
+      } catch {}
       setStatus("ok");
       setTimeout(() => navigate("/mplanipret/more?ms365=ok", { replace: true }), 1200);
     })();

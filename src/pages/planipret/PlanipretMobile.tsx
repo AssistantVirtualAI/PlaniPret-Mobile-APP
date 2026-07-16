@@ -8,17 +8,15 @@ import { usePullToRefresh, PullIndicator } from "@/hooks/usePullToRefresh";
 import { useRealtimeManager } from "@/hooks/useRealtimeManager";
 import InboundCallOverlay, { type InboundCall } from "@/components/InboundCallOverlay";
 import { OfflineBanner, PlanipretErrorBoundary } from "@/components/PlanipretErrorBoundary";
-import { LazyRouteBoundary } from "@/components/LazyRouteBoundary";
 import SessionTimeoutModal from "@/components/planipret/SessionTimeoutModal";
 import PrivacyConsentGate from "@/components/planipret/PrivacyConsentGate";
 import UniversalSearchBar from "@/components/planipret/UniversalSearchBar";
 import { OnboardingTutorial } from "@/components/planipret/OnboardingTutorial";
+import MobileScreenSkeleton from "@/components/planipret/mobile/MobileScreenSkeleton";
+import { prefetchRoute, scheduleIdlePrefetch, prefetchAllMplanipret } from "@/lib/routePrefetch";
 
 import { useAvaNavigation } from "@/hooks/useAvaNavigation";
 const AvaVoiceAgent = lazy(() => import("@/components/planipret/mobile/AvaVoiceAgent"));
-import MobileScreenSkeleton from "@/components/planipret/mobile/MobileScreenSkeleton";
-import { prefetchRoute, scheduleIdlePrefetch, ALL_MOBILE_TAB_PATHS } from "@/lib/routePrefetch";
-import { useQueryClient } from "@tanstack/react-query";
 import AvaChatSheet from "@/components/planipret/mobile/AvaChatSheet";
 import avaLogoAsset from "@/assets/ava-statistics-logo.png.asset.json";
 import planipretLogoAsset from "@/assets/planipret-logo.png.asset.json";
@@ -58,7 +56,7 @@ const AvaBadge = ({ compact = false, circle = false }: { compact?: boolean; circ
         boxShadow: compact ? undefined : "0 0 12px rgba(124,58,237,0.35)",
       }}
     >
-      <img src={avaLogoAsset.url} alt="AVA" decoding="async" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+      <img src={avaLogoAsset.url} alt="AVA" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
     </div>
   );
 };
@@ -77,7 +75,7 @@ const PlanipretBadge = () => (
       background: "#fff",
     }}
   >
-    <img src={planipretLogoAsset.url} alt="Planiprêt" decoding="async" fetchPriority="high" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
+    <img src={planipretLogoAsset.url} alt="Planiprêt" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
   </div>
 );
 
@@ -112,7 +110,7 @@ type DialerContact = {
   extension?: string;
   email?: string;
   company?: string;
-  source?: "personal" | "shared" | "directory" | "native" | "maestro";
+  source?: "personal" | "shared" | "directory" | "native";
 };
 
 function contactDisplayName(c: DialerContact): string {
@@ -189,33 +187,6 @@ function Dialer({ open, onClose, initial, openMessages, softphone }: { open: boo
     return getPpContacts(action, { limit: 500 });
   };
 
-  // Load Maestro CRM clients via `maestro-actions list_contacts`. Same source
-  // as the widget search page ("contacts" group), so the dialpad Search button
-  // returns the same Maestro results as MSearch.
-  const loadMaestroContacts = async (): Promise<DialerContact[]> => {
-    const { data, error } = await supabase.functions.invoke("maestro-actions", {
-      body: { action: "list_contacts", payload: { query: "" } },
-    });
-    if (error) throw new Error(error.message || "maestro list_contacts failed");
-    if (data && (data as any).success === false) {
-      throw new Error((data as any).error || "maestro list_contacts failed");
-    }
-    const rows = Array.isArray((data as any)?.contacts) ? (data as any).contacts : Array.isArray(data) ? data : [];
-    return rows.map((c: any): DialerContact => ({
-      id: c.id ?? c.contact_id ?? c.uuid,
-      first_name: c.first_name ?? c.firstname,
-      last_name: c.last_name ?? c.lastname,
-      name: c.name ?? c.full_name ?? c.display_name,
-      display_name: c.display_name ?? c.full_name ?? c.name,
-      phone: c.phone ?? c.mobile ?? c.cell ?? c.cell_phone ?? c.primary_phone,
-      cell_phone: c.cell_phone ?? c.mobile ?? c.cell,
-      work_phone: c.work_phone ?? c.office_phone,
-      home_phone: c.home_phone,
-      email: c.email,
-      company: c.company ?? c.organization,
-    }));
-  };
-
   useEffect(() => {
     if (!open || mode !== "search" || contacts.length > 0 || loadingContacts) return;
     let cancelled = false;
@@ -232,7 +203,6 @@ function Dialer({ open, onClose, initial, openMessages, softphone }: { open: boo
       withTimeout(loadNsContacts("list"), 12000, "personal").then((v) => appendBatch(v, "personal")).catch((e) => { errors.push(`personal: ${e?.message ?? e}`); }),
       withTimeout(loadNsContacts("shared"), 12000, "shared").then((v) => appendBatch(v, "shared")).catch((e) => { errors.push(`shared: ${e?.message ?? e}`); }),
       withTimeout(loadNsContacts("directory"), 12000, "directory").then((v) => appendBatch(v, "directory")).catch((e) => { errors.push(`directory: ${e?.message ?? e}`); }),
-      withTimeout(loadMaestroContacts(), 12000, "maestro").then((v) => appendBatch(v, "maestro")).catch((e) => { errors.push(`maestro: ${e?.message ?? e}`); }),
     ];
     Promise.allSettled(jobs).then(() => {
       if (cancelled) return;
@@ -457,69 +427,6 @@ function Dialer({ open, onClose, initial, openMessages, softphone }: { open: boo
   );
 }
 
-// Floating dial FAB — hidden when composer input is focused, and on message/AVA routes.
-function FabDialer({
-  activeCallId,
-  hangupActive,
-  onOpen,
-  pathname,
-  label,
-}: {
-  activeCallId: string | null;
-  hangupActive: () => void;
-  onOpen: () => void;
-  pathname: string;
-  label: string;
-}) {
-  const [inputFocused, setInputFocused] = useState(false);
-  useEffect(() => {
-    const isEditable = (el: EventTarget | null) => {
-      if (!(el instanceof HTMLElement)) return false;
-      const tag = el.tagName;
-      return tag === "INPUT" || tag === "TEXTAREA" || el.isContentEditable;
-    };
-    const onIn = (e: FocusEvent) => { if (isEditable(e.target)) setInputFocused(true); };
-    const onOut = () => setTimeout(() => {
-      const ae = document.activeElement;
-      setInputFocused(!!ae && isEditable(ae));
-    }, 0);
-    document.addEventListener("focusin", onIn);
-    document.addEventListener("focusout", onOut);
-    return () => {
-      document.removeEventListener("focusin", onIn);
-      document.removeEventListener("focusout", onOut);
-    };
-  }, []);
-
-  // Hide on chat surfaces where the send button sits in the same corner.
-  const isChatSurface = /\/mplanipret\/(messages|ava)(\/|$)/.test(pathname);
-  // Active call FAB (hang-up) must always remain reachable.
-  if (!activeCallId && (isChatSurface || inputFocused)) return null;
-
-  return (
-    <button
-      onClick={activeCallId ? hangupActive : onOpen}
-      className="absolute z-20 rounded-full flex items-center justify-center text-white active:scale-95 transition"
-      style={{
-        right: 18,
-        bottom: "calc(env(safe-area-inset-bottom, 0px) + 116px)",
-        background: activeCallId
-          ? "linear-gradient(135deg, #5A1010, #E84C4C)"
-          : "linear-gradient(135deg, #1A4A8A, #2E9BDC)",
-        boxShadow: activeCallId
-          ? "0 4px 20px rgba(232,76,76,0.6)"
-          : "0 4px 20px rgba(46,155,220,0.55)",
-        animation: activeCallId ? "pp-pulse-red 1.5s infinite" : undefined,
-        width: 50,
-        height: 50,
-      }}
-      aria-label={label}
-    >
-      {activeCallId ? <PhoneOff className="w-5 h-5" /> : <PhoneIcon className="w-5 h-5" />}
-    </button>
-  );
-}
-
 export default function PlanipretMobile() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -541,6 +448,7 @@ export default function PlanipretMobile() {
   const [avaOpen, setAvaOpen] = useState(false);
   const [avaMode, setAvaMode] = useState<"voice" | "chat">("voice");
   const [activeCallId, setActiveCallId] = useState<string | null>(null);
+  const endedCallIds = useRef<Map<string, number>>(new Map());
   const [showPrimer, setShowPrimer] = useState(false);
   const openDialer = (n?: string) => { setDialerInit(n); setDialerOpen(true); };
   const openAva = () => { setAvaMode(profile?.voice_agent_enabled ? "voice" : "chat"); setAvaOpen(true); };
@@ -548,6 +456,14 @@ export default function PlanipretMobile() {
   const registerRefresh = (fn: (() => Promise<void> | void) | null) => { refreshFn.current = fn; };
   const handlePull = async () => { if (refreshFn.current) await refreshFn.current(); };
   const { ref: scrollRef, pullDist, refreshing, threshold } = usePullToRefresh(handlePull);
+
+  const isDismissed = (id?: string | null) => {
+    if (!id) return false;
+    const ts = endedCallIds.current.get(id);
+    if (!ts) return false;
+    if (Date.now() - ts > 30_000) { endedCallIds.current.delete(id); return false; }
+    return true;
+  };
 
   const onInboundRinging = useCallback((row: any) => {
     const controlId = row.ns_callid ?? row.ns_call_id ?? row.call_id ?? row.id;
@@ -569,54 +485,11 @@ export default function PlanipretMobile() {
   useRealtimeManager(profile?.user_id, { onInboundRinging, onAiInsight });
   useAvaNavigation(profile?.user_id);
 
-  // Warm up sibling tab chunks during idle time so tab switches feel instant.
-  useEffect(() => {
-    scheduleIdlePrefetch(ALL_MOBILE_TAB_PATHS);
-  }, []);
+  // Aggressive: prefetch every mobile chunk immediately on mount so tab
+  // switches feel instant — especially Microsoft integration screens which
+  // are heavy and used often.
+  useEffect(() => { prefetchAllMplanipret(); }, []);
 
-  // When the app returns to the foreground (Capacitor resume or tab visibility),
-  // revalidate active queries and re-warm the sibling tab chunks so the next
-  // interaction after a background pause feels instant instead of stale.
-  const qc = useQueryClient();
-  useEffect(() => {
-    const onResume = () => {
-      // 1) Prefetch current + neighboring route chunks (idempotent, cheap).
-      prefetchRoute(location.pathname);
-      scheduleIdlePrefetch(ALL_MOBILE_TAB_PATHS);
-      // 2) Revalidate active queries so on-screen data refreshes in background.
-      qc.invalidateQueries({ refetchType: "active" });
-    };
-    const onVisibility = () => { if (document.visibilityState === "visible") onResume(); };
-    document.addEventListener("visibilitychange", onVisibility);
-    window.addEventListener("focus", onResume);
-    let capUnsub: null | (() => void) = null;
-    (async () => {
-      try {
-        const { App } = await import("@capacitor/app");
-        const h = await App.addListener("appStateChange", (s: { isActive: boolean }) => {
-          if (s.isActive) onResume();
-        });
-        capUnsub = () => { try { h.remove(); } catch {} };
-      } catch { /* not native — visibilitychange is enough */ }
-    })();
-    return () => {
-      document.removeEventListener("visibilitychange", onVisibility);
-      window.removeEventListener("focus", onResume);
-      capUnsub?.();
-    };
-  }, [qc, location.pathname]);
-
-
-  // Track IDs the user just hung up locally so realtime echoes of a still-
-  // stale "ringing" row cannot re-open the overlay.
-  const endedCallIds = useRef<Map<string, number>>(new Map());
-  const isDismissed = (id: string | null | undefined) => {
-    if (!id) return false;
-    const ts = endedCallIds.current.get(id);
-    if (!ts) return false;
-    if (Date.now() - ts > 30_000) { endedCallIds.current.delete(id); return false; }
-    return true;
-  };
 
   // Detect active outbound/in-progress call → FAB pulses red & hangs up on tap
   useEffect(() => {
@@ -638,14 +511,11 @@ export default function PlanipretMobile() {
       const { data } = await q.maybeSingle();
       const row = data as any;
       const controlId = row?.ns_callid ?? row?.ns_call_id ?? row?.id ?? null;
-
-      // Ignore locally-dismissed calls (user just tapped End Call).
       if (isDismissed(controlId) || isDismissed(row?.id)) {
         setActiveCallId(null);
         attachRestCall?.(null);
         return;
       }
-      // Ignore stale "ringing" rows older than 2 minutes.
       const createdAt = row?.created_at ? new Date(row.created_at).getTime() : 0;
       const isRinging = String(row?.status ?? "").includes("ring");
       if (row && isRinging && createdAt && Date.now() - createdAt > 120_000) {
@@ -653,7 +523,6 @@ export default function PlanipretMobile() {
         attachRestCall?.(null);
         return;
       }
-
       setActiveCallId(controlId);
       if (!row?.id) attachRestCall?.(null);
       if (row?.id) {
@@ -679,16 +548,12 @@ export default function PlanipretMobile() {
   const hangupActive = async () => {
     if (!activeCallId) return;
     const id = activeCallId;
-    // 1) Local optimistic dismiss — the overlay & FAB switch off immediately.
     endedCallIds.current.set(id, Date.now());
     setActiveCallId(null);
     attachRestCall?.(null);
-    // 2) Tear down SIP session locally.
     try { softphone.hangup(); } catch {}
-    // 3) Ask NS to terminate + mark the DB row ended (best-effort).
     const { error } = await supabase.functions.invoke("pp-ns-calls", { body: { action: "disconnect", call_id: id } });
     if (error) toast.error(t("dialer.hangupFailed")); else toast.success(t("dialer.hungUp"));
-    // 4) Force-update DB row (bypass any webhook lag).
     try {
       const nowIso = new Date().toISOString();
       await supabase
@@ -915,9 +780,9 @@ export default function PlanipretMobile() {
         <div ref={scrollRef} className="flex-1 overflow-y-auto pb-[130px]">
           <PullIndicator pullDist={pullDist} refreshing={refreshing} threshold={threshold} color={ACCENT} />
           <PlanipretErrorBoundary key={location.pathname}>
-            <LazyRouteBoundary>
+            <Suspense fallback={<MobileScreenSkeleton />}>
               <Outlet context={{ profile, reloadProfile: loadProfile, openDialer, openAva, registerRefresh, softphone } satisfies PlanipretMobileContext} />
-            </LazyRouteBoundary>
+            </Suspense>
           </PlanipretErrorBoundary>
         </div>
         <SessionTimeoutModal />
@@ -926,15 +791,23 @@ export default function PlanipretMobile() {
           <OnboardingTutorial profile={profile} onDone={loadProfile} />
         )}
 
-        {/* Right FAB — hidden on Messages/AVA and while any composer input is focused */}
-        <FabDialer
-          activeCallId={activeCallId}
-          hangupActive={hangupActive}
-          onOpen={() => setDialerOpen(true)}
-          pathname={location.pathname}
-          label={activeCallId ? t("dialer.hangup") : t("dialer.dialNumber")}
-        />
-
+        {/* Right FAB — Keypad (bleu) ou raccrocher (rouge) si appel actif */}
+        <button onClick={activeCallId ? hangupActive : () => setDialerOpen(true)}
+          className="absolute z-20 rounded-full flex items-center justify-center text-white active:scale-95 transition"
+          style={{
+            right: 18, bottom: "calc(env(safe-area-inset-bottom, 0px) + 116px)",
+            background: activeCallId
+              ? "linear-gradient(135deg, #5A1010, #E84C4C)"
+              : "linear-gradient(135deg, #1A4A8A, #2E9BDC)",
+            boxShadow: activeCallId
+              ? "0 4px 20px rgba(232,76,76,0.6)"
+              : "0 4px 20px rgba(46,155,220,0.55)",
+            animation: activeCallId ? "pp-pulse-red 1.5s infinite" : undefined,
+            width: 50, height: 50,
+          }}
+          aria-label={activeCallId ? t("dialer.hangup") : t("dialer.dialNumber")}>
+          {activeCallId ? <PhoneOff className="w-5 h-5" /> : <PhoneIcon className="w-5 h-5" />}
+        </button>
 
 
         {/* Tab bar (5 tabs) */}

@@ -16,6 +16,7 @@ export type PlanipretBrokerRow = {
   ns_only?: boolean;
   status?: string | null;
   maestro_connected?: boolean | null;
+  maestro_broker_id?: string | null;
 };
 
 const extOf = (row: Partial<PlanipretBrokerRow>) => String(row.extension ?? row.ns_extension ?? "").trim();
@@ -95,10 +96,14 @@ export async function getPlanipretBrokerDirectory() {
           // Trust NS extension when we matched by identity, otherwise fall back to local.
           extension: prev?.extension ?? p.extension ?? p.ns_extension ?? nsKey,
           ns_extension: prev?.ns_extension ?? p.ns_extension ?? p.extension ?? nsKey,
+          // We now have a real local profile → this row is manageable
+          // (toggles + edit + activate menu items depend on !ns_only).
+          ns_only: false,
         });
         if (p.user_id) byUid.set(String(p.user_id), nsKey);
         if (em) byEmail.set(em, nsKey);
       });
+
       const merged = Array.from(byExt.values()).filter(isPlanipretActiveBroker)
         .sort((a, b) => String(a.full_name || "").localeCompare(String(b.full_name || "")));
       return { brokers: merged, count: merged.length, nsDomain, nsError, debug };
