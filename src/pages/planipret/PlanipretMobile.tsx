@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useRef, useState, useCallback, lazy, Suspense } f
 import { useNavigate, NavLink, Outlet, useLocation } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { supabase } from "@/integrations/supabase/client";
-import { Home, Phone, MessageSquare, Users, Bot, Phone as PhoneIcon, X, Delete, Plus, Lock, PhoneOff, Settings as SettingsIcon, Search as SearchIcon, MessageCircle, Loader2 } from "lucide-react";
+import { Home, Phone, MessageSquare, Users, Bot, Phone as PhoneIcon, X, Delete, Plus, Lock, PhoneOff, Settings as SettingsIcon, Search as SearchIcon, MessageCircle, Loader2, Bell } from "lucide-react";
 import { toast } from "sonner";
 import { usePullToRefresh, PullIndicator } from "@/hooks/usePullToRefresh";
 import { useRealtimeManager } from "@/hooks/useRealtimeManager";
@@ -34,7 +34,7 @@ import { hasSeenPrimer } from "@/lib/native/permissions/orchestrator";
 import { bootstrapPushIfNative } from "@/lib/native/pushBootstrap";
 import { listDeviceContacts } from "@/lib/native/permissions/contacts";
 import { tokenize, matchAllTokens } from "@/lib/textNormalize";
-import { prefetchPpContacts } from "@/lib/ppContactsCache";
+import { prefetchPpContacts, peekPpContacts } from "@/lib/ppContactsCache";
 
 
 const ACCENT = "#2E9BDC";
@@ -110,7 +110,8 @@ type DialerContact = {
   extension?: string;
   email?: string;
   company?: string;
-  source?: "personal" | "shared" | "directory" | "native";
+  source?: "personal" | "shared" | "directory" | "native" | "maestro";
+  maestro_client_id?: string;
 };
 
 function contactDisplayName(c: DialerContact): string {
@@ -127,15 +128,25 @@ function contactPrimaryPhone(c: DialerContact): string | undefined {
   return c.cell_phone || c.phone || c.work_phone || c.home_phone || c.extension;
 }
 
-function Dialer({ open, onClose, initial, openMessages, softphone }: { open: boolean; onClose: () => void; initial?: string; openMessages: (n?: string) => void; softphone: ReturnType<typeof useMplanipretSoftphone> }) {
+function Dialer({ open, onClose, initial, openMessages, softphone, maestroConfigured }: { open: boolean; onClose: () => void; initial?: string; openMessages: (n?: string) => void; softphone: ReturnType<typeof useMplanipretSoftphone>; maestroConfigured: boolean }) {
   const { t } = useMplanipretLang();
   const [mode, setMode] = useState<"keypad" | "search">("keypad");
   const [number, setNumber] = useState("");
   const [calling, setCalling] = useState(false);
   const [micDenied, setMicDenied] = useState(false);
   const [query, setQuery] = useState("");
-  const [contacts, setContacts] = useState<DialerContact[]>([]);
+  // Seed synchronously from persistent cache so the directory shows INSTANTLY
+  // instead of a spinner. Fresh data is fetched in the background.
+  const [contacts, setContacts] = useState<DialerContact[]>(() => {
+    const seed: DialerContact[] = [];
+    for (const [action, source] of [["directory", "directory"], ["list", "personal"], ["shared", "shared"], ["maestro", "maestro"]] as const) {
+      const rows = peekPpContacts(action);
+      if (rows?.length) seed.push(...rows.map((c: any) => ({ ...c, source })));
+    }
+    return seed;
+  });
   const [loadingContacts, setLoadingContacts] = useState(false);
+  const [refreshingContacts, setRefreshingContacts] = useState(false);
   const [contactsError, setContactsError] = useState<string | null>(null);
   const [contactsLoadKey, setContactsLoadKey] = useState(0);
   const holdTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -167,9 +178,7 @@ function Dialer({ open, onClose, initial, openMessages, softphone }: { open: boo
     onClose();
   };
 
-
-
-  // Load contacts (phone + personal + shared + directory) once when opening Search mode.
+  // Load contacts (phone + personal + shared + directory + maestro) once when opening Search mode.
   const withTimeout = async <T,>(promise: Promise<T>, ms: number, label: string): Promise<T> => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -182,38 +191,51 @@ function Dialer({ open, onClose, initial, openMessages, softphone }: { open: boo
     }
   };
 
-  const loadNsContacts = async (action: "list" | "shared" | "directory") => {
+  const loadNsContacts = async (action: "list" | "shared" | "directory" | "maestro") => {
     const { getPpContacts } = await import("@/lib/ppContactsCache");
     return getPpContacts(action, { limit: 500 });
   };
 
   useEffect(() => {
-    if (!open || mode !== "search" || contacts.length > 0 || loadingContacts) return;
+    if (!open || mode !== "search") return;
     let cancelled = false;
-    setLoadingContacts(true);
+    const hasSeed = contacts.length > 0;
+    if (hasSeed) setRefreshingContacts(true); else setLoadingContacts(true);
     setContactsError(null);
-    const appendBatch = (rows: any[], source: DialerContact["source"]) => {
-      if (cancelled || !rows?.length) return;
-      setContacts((cur) => [...cur, ...rows.map((c) => ({ ...c, source }))]);
-      setLoadingContacts(false); // render as soon as any batch is in
+    // Replace contacts of a given source with fresh rows (avoids duplicates on refresh).
+    const replaceBatch = (rows: any[], source: DialerContact["source"]) => {
+      if (cancelled) return;
+      setContacts((cur) => {
+        const kept = cur.filter((c) => c.source !== source);
+        return [...kept, ...rows.map((c) => ({ ...c, source }))];
+      });
+      setLoadingContacts(false);
     };
     const errors: string[] = [];
     const jobs: Array<Promise<void>> = [
-      withTimeout(listDeviceContacts(), 6000, "device").then((v) => appendBatch(v, "native")).catch((e) => { errors.push(`device: ${e?.message ?? e}`); }),
-      withTimeout(loadNsContacts("list"), 12000, "personal").then((v) => appendBatch(v, "personal")).catch((e) => { errors.push(`personal: ${e?.message ?? e}`); }),
-      withTimeout(loadNsContacts("shared"), 12000, "shared").then((v) => appendBatch(v, "shared")).catch((e) => { errors.push(`shared: ${e?.message ?? e}`); }),
-      withTimeout(loadNsContacts("directory"), 12000, "directory").then((v) => appendBatch(v, "directory")).catch((e) => { errors.push(`directory: ${e?.message ?? e}`); }),
+      withTimeout(listDeviceContacts(), 6000, "device").then((v) => replaceBatch(v, "native")).catch((e) => { errors.push(`device: ${e?.message ?? e}`); }),
+      withTimeout(loadNsContacts("list"), 12000, "personal").then((v) => replaceBatch(v, "personal")).catch((e) => { errors.push(`personal: ${e?.message ?? e}`); }),
+      withTimeout(loadNsContacts("shared"), 12000, "shared").then((v) => replaceBatch(v, "shared")).catch((e) => { errors.push(`shared: ${e?.message ?? e}`); }),
+      withTimeout(loadNsContacts("directory"), 12000, "directory").then((v) => replaceBatch(v, "directory")).catch((e) => { errors.push(`directory: ${e?.message ?? e}`); }),
     ];
+    if (maestroConfigured) {
+      jobs.push(
+        withTimeout(loadNsContacts("maestro"), 12000, "maestro").then((v) => replaceBatch(v, "maestro")).catch((e) => { errors.push(`maestro: ${e?.message ?? e}`); }),
+      );
+    }
     Promise.allSettled(jobs).then(() => {
       if (cancelled) return;
       setLoadingContacts(false);
+      setRefreshingContacts(false);
       setContacts((cur) => {
         if (cur.length === 0 && errors.length) setContactsError(errors[0]);
         return cur;
       });
     });
     return () => { cancelled = true; };
-  }, [open, mode, contacts.length, loadingContacts, contactsLoadKey]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, mode, contactsLoadKey, maestroConfigured]);
+
 
 
   const tokens = tokenize(query);
@@ -348,8 +370,11 @@ function Dialer({ open, onClose, initial, openMessages, softphone }: { open: boo
                 </div>
                 <div className="flex-1 overflow-y-auto mt-3 -mx-2 px-2 pb-4">
                   {loadingContacts && contacts.length === 0 ? (
-                    <div className="text-center text-sm py-8" style={{ color: "var(--pp-text-muted)" }}><Loader2 className="w-4 h-4 animate-spin mx-auto mb-2" />{t("dialer.searching")}</div>
-                  ) : contactsError ? (
+                    <div className="text-center text-sm py-8" style={{ color: "var(--pp-text-muted)" }}>
+                      <Loader2 className="w-4 h-4 animate-spin mx-auto mb-2" />
+                      {t("dialer.loadingDirectory") || "Chargement du répertoire…"}
+                    </div>
+                  ) : contactsError && contacts.length === 0 ? (
                     <div className="text-center text-sm py-8" style={{ color: "var(--pp-text-muted)" }}>
                       <div className="mb-2">{contactsError}</div>
                       <button onClick={() => { setContacts([]); setContactsError(null); setContactsLoadKey((n) => n + 1); }} className="px-3 py-1.5 rounded-full text-xs font-semibold" style={{ background: "var(--pp-brand-accent)", color: "#fff" }}>Réessayer</button>
@@ -359,10 +384,18 @@ function Dialer({ open, onClose, initial, openMessages, softphone }: { open: boo
                   ) : (
                     <>
                       {!tokens.length && (
-                        <div className="px-1 pb-2 text-[10px] uppercase tracking-wider font-semibold" style={{ color: "var(--pp-text-muted)" }}>
-                          {t("contacts.directorySection") || t("contacts.directory")}
+                        <div className="px-1 pb-2 flex items-center justify-between">
+                          <div className="text-[10px] uppercase tracking-wider font-semibold" style={{ color: "var(--pp-text-muted)" }}>
+                            {t("contacts.directorySection") || t("contacts.directory")} · {contacts.length}
+                          </div>
+                          {refreshingContacts && (
+                            <div className="flex items-center gap-1 text-[10px]" style={{ color: "var(--pp-text-muted)" }}>
+                              <Loader2 className="w-3 h-3 animate-spin" /> Mise à jour…
+                            </div>
+                          )}
                         </div>
                       )}
+
                     <ul className="flex flex-col gap-1.5">
                       {filtered.map((c, i) => {
                         const dest = contactPrimaryPhone(c);
@@ -386,6 +419,8 @@ function Dialer({ open, onClose, initial, openMessages, softphone }: { open: boo
                               <div className="text-xs truncate" style={{ color: "var(--pp-text-muted)" }}>
                                 {c.extension ? `${t("contacts.extension") || "Ext."} ${c.extension}` : dest || c.email || ""}
                                 {c.source === "directory" && ` · ${t("dialer.internal")}`}
+                                {c.source === "maestro" && ` · Maestro`}
+                                {c.source === "native" && ` · Téléphone`}
                               </div>
                             </div>
                             <button
@@ -444,6 +479,8 @@ export default function PlanipretMobile() {
   const [dialerInit, setDialerInit] = useState<string | undefined>(undefined);
   const [unreadMsg, setUnreadMsg] = useState(0);
   const [unreadVm, setUnreadVm] = useState(0);
+  const [unreadNotif, setUnreadNotif] = useState(0);
+  const totalUnread = unreadMsg + unreadVm + unreadNotif;
   const [inbound, setInbound] = useState<InboundCall>(null);
   const [avaOpen, setAvaOpen] = useState(false);
   const [avaMode, setAvaMode] = useState<"voice" | "chat">("voice");
@@ -565,21 +602,68 @@ export default function PlanipretMobile() {
 
   useEffect(() => {
     if (!profile?.user_id) return;
+    const sb: any = supabase;
     const refreshCounts = async () => {
-      const [{ count: mc }, { count: vc }] = await Promise.all([
+      const [{ count: mc }, { count: vc }, { count: nc }] = await Promise.all([
         supabase.from("planipret_phone_messages").select("id", { count: "exact", head: true }).eq("user_id", profile.user_id).eq("direction", "inbound").is("read_at", null),
         supabase.from("planipret_voicemails").select("id", { count: "exact", head: true }).eq("user_id", profile.user_id).eq("folder", "inbox").eq("is_read", false),
+        sb.from("planipret_ava_notifications").select("id", { count: "exact", head: true }).eq("user_id", profile.user_id).is("read_at", null),
       ]);
-      setUnreadMsg(mc ?? 0); setUnreadVm(vc ?? 0);
+      setUnreadMsg(mc ?? 0); setUnreadVm(vc ?? 0); setUnreadNotif(nc ?? 0);
     };
     refreshCounts();
+
+    // In-app toast alerts for new inbound events (message, voicemail, missed call).
+    // Deep-links straight to the relevant tab so the user can act immediately.
+    const onNewSms = (payload: any) => {
+      const row = payload.new || {};
+      if (row.direction !== "inbound") return;
+      const from = row.from_number || row.contact_number || row.sender || "";
+      toast(t("toasts.newSms") || "Nouveau SMS", {
+        description: `${from}${row.body ? " — " + String(row.body).slice(0, 60) : ""}`,
+        duration: 6000,
+        action: { label: t("common.view") || "Voir", onClick: () => navigate("/mplanipret/messages") },
+      });
+    };
+    const onNewVm = (payload: any) => {
+      const row = payload.new || {};
+      if (row.folder && row.folder !== "inbox") return;
+      const from = row.from_number || row.caller || "";
+      toast(t("toasts.newVoicemail") || "Nouvelle boîte vocale", {
+        description: from,
+        duration: 7000,
+        action: { label: t("common.listen") || "Écouter", onClick: () => navigate("/mplanipret/calls?tab=voicemail") },
+      });
+    };
+    const onNewMissed = (payload: any) => {
+      const row = payload.new || {};
+      const status = String(row.status || "").toLowerCase();
+      if (row.direction !== "inbound" || !(status.includes("miss") || status === "no-answer" || status === "abandoned")) return;
+      const from = row.from_name || row.from_number || "";
+      toast(t("toasts.missedCall") || "Appel manqué", {
+        description: from,
+        duration: 6000,
+        action: { label: t("common.view") || "Voir", onClick: () => navigate("/mplanipret/calls") },
+      });
+    };
+    const onNewNotif = (payload: any) => {
+      const row = payload.new || {};
+      toast(row.title || "Notification", {
+        description: row.body ? String(row.body).slice(0, 80) : undefined,
+        duration: 6000,
+        action: { label: t("common.view") || "Voir", onClick: () => navigate("/mplanipret/notifications") },
+      });
+    };
+
     const ch = supabase
       .channel("mplanipret-badges")
-      .on("postgres_changes", { event: "*", schema: "public", table: "planipret_phone_messages", filter: `user_id=eq.${profile.user_id}` }, refreshCounts)
-      .on("postgres_changes", { event: "*", schema: "public", table: "planipret_voicemails", filter: `user_id=eq.${profile.user_id}` }, refreshCounts)
+      .on("postgres_changes", { event: "*", schema: "public", table: "planipret_phone_messages", filter: `user_id=eq.${profile.user_id}` }, (p: any) => { if (p.eventType === "INSERT") onNewSms(p); refreshCounts(); })
+      .on("postgres_changes", { event: "*", schema: "public", table: "planipret_voicemails", filter: `user_id=eq.${profile.user_id}` }, (p: any) => { if (p.eventType === "INSERT") onNewVm(p); refreshCounts(); })
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "planipret_phone_calls", filter: `user_id=eq.${profile.user_id}` }, onNewMissed)
+      .on("postgres_changes", { event: "*", schema: "public", table: "planipret_ava_notifications", filter: `user_id=eq.${profile.user_id}` }, (p: any) => { if (p.eventType === "INSERT") onNewNotif(p); refreshCounts(); })
       .subscribe();
     return () => { supabase.removeChannel(ch); };
-  }, [profile?.user_id, location.pathname]);
+  }, [profile?.user_id, location.pathname, navigate, t]);
 
   const loadProfile = async () => {
     const { data: { session } } = await supabase.auth.getSession();
@@ -666,10 +750,12 @@ export default function PlanipretMobile() {
     const ext = profile?.ns_extension || profile?.extension || "";
     void bootstrapPushIfNative(ext);
     void hasSeenPrimer().then((seen) => { if (!seen) setShowPrimer(true); });
-    // Warm the directory/personal/shared caches in parallel so Directory,
-    // Teams and the dialer render from memory instead of blocking on network.
-    prefetchPpContacts(["list", "shared", "directory"]);
-  }, [profile?.user_id, profile?.ns_extension, profile?.extension]);
+    // Warm the directory/personal/shared/Maestro caches in parallel so the
+    // dialer's Search tab and Contacts render from memory instantly.
+    const actions: Array<"list" | "shared" | "directory" | "maestro"> = ["list", "shared", "directory"];
+    if (profile?.maestro_broker_id) actions.push("maestro");
+    prefetchPpContacts(actions);
+  }, [profile?.user_id, profile?.ns_extension, profile?.extension, profile?.maestro_broker_id]);
 
 
   if (loading) return <div className="min-h-screen flex items-center justify-center" style={{ background: "#0A1425", color: "#2E9BDC", fontFamily: "Urbanist,sans-serif" }}>{t("common.loading")}</div>;
@@ -736,7 +822,7 @@ export default function PlanipretMobile() {
         {/* Top brand header — AVA (left) · Planiprêt (center) · Settings (right) */}
         <header
           className="relative flex items-center px-4 pp-mobile-header"
-          style={{ marginTop: "calc(env(safe-area-inset-top, 0px) * 0.35)", paddingTop: 2, paddingBottom: 4 }}
+          style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 6px)", paddingBottom: 6 }}
         >
 
 
@@ -765,8 +851,32 @@ export default function PlanipretMobile() {
             <SettingsIcon className="w-4 h-4" />
           </button>
 
+          {/* Notifications bell — aggregate SMS + voicemail + AVA notifs */}
+          <button
+            type="button"
+            onClick={() => navigate("/mplanipret/notifications")}
+            aria-label={t("nav.notifications") || "Notifications"}
+            className="ml-2 relative flex items-center justify-center active:scale-95 transition"
+            style={{
+              width: 32, height: 32, borderRadius: 10,
+              background: "var(--pp-bg-elevated)",
+              border: "1px solid var(--pp-bg-border-2)",
+              color: totalUnread > 0 ? "var(--pp-brand-accent)" : "var(--pp-text-secondary)",
+            }}
+          >
+            <Bell className="w-4 h-4" />
+            {totalUnread > 0 && (
+              <span
+                className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full text-white text-[9px] font-bold flex items-center justify-center"
+                style={{ background: "var(--pp-danger, #E84C4C)" }}
+              >
+                {totalUnread > 9 ? "9+" : totalUnread}
+              </span>
+            )}
+          </button>
+
           {/* Planiprêt centered logo */}
-          <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2 pointer-events-none">
+          <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2 pointer-events-none" style={{ top: "calc(env(safe-area-inset-top, 0px) + 8px)" }}>
             <PlanipretBadge />
             <span style={{ fontFamily: "Inter,sans-serif", fontWeight: 700, fontSize: 14, color: "var(--pp-text-primary)", letterSpacing: "-0.01em" }}>Planiprêt</span>
           </div>
@@ -885,7 +995,7 @@ export default function PlanipretMobile() {
 
 
 
-        <Dialer open={dialerOpen} onClose={() => setDialerOpen(false)} initial={dialerInit} openMessages={(n) => { setDialerOpen(false); navigate(`/mplanipret/messages${n ? `?to=${encodeURIComponent(n)}` : ""}`); }} softphone={softphone} />
+        <Dialer open={dialerOpen} onClose={() => setDialerOpen(false)} initial={dialerInit} openMessages={(n) => { setDialerOpen(false); navigate(`/mplanipret/messages${n ? `?to=${encodeURIComponent(n)}` : ""}`); }} softphone={softphone} maestroConfigured={Boolean(profile?.maestro_broker_id)} />
         <PpActiveCallScreen softphone={softphone} />
         <InboundCallOverlay call={inbound} onClose={() => setInbound(null)} />
         {avaOpen && profile?.user_id && (

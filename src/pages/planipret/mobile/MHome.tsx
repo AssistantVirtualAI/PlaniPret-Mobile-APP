@@ -6,7 +6,7 @@ import {
   Phone, PhoneMissed, MessageSquare, Voicemail,
   ArrowDownLeft, ArrowUpRight, X, Calendar, Headphones, Bot,
   BellOff, Flame, Sparkles, ChevronRight, ChevronLeft, Mail, Users as UsersIcon,
-  CheckSquare, RefreshCw, AlertCircle, Video, ExternalLink,
+  CheckSquare, RefreshCw, AlertCircle, Video, ExternalLink, Plus, Pencil, Trash2, MapPin, Loader2,
 } from "lucide-react";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
 import { toast } from "sonner";
@@ -16,7 +16,6 @@ import PermissionBanners from "@/components/planipret/mobile/PermissionBanners";
 import { TEMP_EMOJI } from "@/components/planipret/leadHelpers";
 import { useMaestroPipelineToasts } from "@/hooks/useMaestroPipelineToasts";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
-import Ms365TestNowButton from "@/components/planipret/Ms365TestNowButton";
 
 type Period = "day" | "week" | "month" | "shift";
 const DEFAULT_PERIOD: Period = "month";
@@ -193,12 +192,7 @@ export default function MHome() {
           body: { action: "list_calendar_events", payload: { start: calStart.toISOString(), end: calEnd.toISOString(), top: 200 } },
         });
         if (msError || (msData as any)?.success === false) {
-          const errMsg = (msData as any)?.error ?? msError?.message ?? "Calendrier Microsoft indisponible";
-          setMsCalendarError(errMsg);
-          if (/token|expir|unauthor|401|invalid_grant/i.test(errMsg)) {
-            const { startMs365Reconnect } = await import("@/lib/ms365E2E");
-            startMs365Reconnect("Erreur d'authentification sur le calendrier");
-          }
+          setMsCalendarError((msData as any)?.error ?? msError?.message ?? "Calendrier Microsoft indisponible");
         } else {
           microsoftEvents = (msData as any)?.events ?? [];
         }
@@ -463,6 +457,7 @@ export default function MHome() {
         loading={msCalendarLoading}
         error={msCalendarError}
         lang={lang}
+        onRefresh={loadStats}
       />
 
 
@@ -595,12 +590,16 @@ function Kpi({ icon, value, label, accent, pulse, onClick }: {
   );
 }
 
-function MsCalendarSection({ profile, events, loading, error, lang }: {
-  profile: any; events: any[]; loading: boolean; error: string | null; lang: string;
+function MsCalendarSection({ profile, events, loading, error, lang, onRefresh }: {
+  profile: any; events: any[]; loading: boolean; error: string | null; lang: string; onRefresh: () => void | Promise<void>;
 }) {
   const today = new Date(); today.setHours(0,0,0,0);
   const [cursor, setCursor] = useState(() => { const d=new Date(); d.setDate(1); d.setHours(0,0,0,0); return d; });
   const [selected, setSelected] = useState<Date>(today);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editorMode, setEditorMode] = useState<"create" | "edit">("create");
+  const [editingEvent, setEditingEvent] = useState<any | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const locale = lang === "en" ? "en-CA" : "fr-CA";
 
@@ -621,7 +620,6 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
   const dayKey = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
   const selectedEvents = eventsByDay[dayKey(selected)] ?? [];
 
-  // Build 6-week grid starting from Sunday
   const gridStart = new Date(cursor);
   gridStart.setDate(1 - cursor.getDay());
   const days: Date[] = Array.from({ length: 42 }, (_, i) => {
@@ -634,6 +632,32 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
 
   const monthLabel = cursor.toLocaleDateString(locale, { month: "long", year: "numeric" });
 
+  const openCreate = () => {
+    setEditorMode("create");
+    setEditingEvent(null);
+    setEditorOpen(true);
+  };
+  const openEdit = (ev: any) => {
+    setEditorMode("edit");
+    setEditingEvent(ev);
+    setEditorOpen(true);
+  };
+  const doDelete = async (ev: any) => {
+    if (!ev?.id) return;
+    if (!confirm(`Supprimer « ${ev.subject ?? "Sans titre"} » ?`)) return;
+    setDeletingId(ev.id);
+    const { data, error: e } = await supabase.functions.invoke("ms365-actions", {
+      body: { action: "delete_calendar_event", payload: { event_id: ev.id } },
+    });
+    setDeletingId(null);
+    if (e || (data as any)?.success === false) {
+      toast.error((data as any)?.error ?? e?.message ?? "Suppression impossible");
+      return;
+    }
+    toast.success("Rendez-vous supprimé");
+    await onRefresh();
+  };
+
   return (
     <section className="pp-card p-4">
       <div className="flex items-center justify-between mb-3">
@@ -642,8 +666,18 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
           Calendrier Microsoft
         </h2>
         <div className="flex items-center gap-2">
-          <Ms365TestNowButton feature="calendar" compact />
           <span className="pp-eyebrow">{events.length}</span>
+          {profile?.ms365_access_token && (
+            <button
+              onClick={openCreate}
+              className="w-7 h-7 rounded-lg flex items-center justify-center text-white active:scale-95"
+              style={{ background: "var(--pp-brand-accent)" }}
+              aria-label="Créer un rendez-vous"
+              title="Créer un rendez-vous"
+            >
+              <Plus className="w-4 h-4" />
+            </button>
+          )}
         </div>
       </div>
 
@@ -653,7 +687,6 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
         </p>
       ) : (
         <>
-          {/* Month header */}
           <div className="flex items-center justify-between mb-2">
             <button onClick={() => { const d=new Date(cursor); d.setMonth(d.getMonth()-1); setCursor(d); }}
               className="w-8 h-8 rounded-lg flex items-center justify-center active:scale-95"
@@ -670,7 +703,6 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
             </button>
           </div>
 
-          {/* Weekday headers */}
           <div className="grid grid-cols-7 gap-1 mb-1">
             {weekdays.map((w, i) => (
               <div key={i} className="text-center text-[10px] font-semibold uppercase tracking-wider"
@@ -680,7 +712,6 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
             ))}
           </div>
 
-          {/* Day grid */}
           <div className="grid grid-cols-7 gap-1">
             {days.map((d, i) => {
               const inMonth = d.getMonth() === cursor.getMonth();
@@ -692,12 +723,8 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
                 <button key={i} onClick={() => setSelected(new Date(d))}
                   className="aspect-square rounded-lg flex flex-col items-center justify-center gap-0.5 active:scale-95 relative"
                   style={{
-                    background: isSelected
-                      ? "var(--pp-brand-accent)"
-                      : isToday ? "rgba(46,155,220,0.10)" : "transparent",
-                    color: isSelected
-                      ? "#fff"
-                      : inMonth ? "var(--pp-text-primary)" : "var(--pp-text-muted)",
+                    background: isSelected ? "var(--pp-brand-accent)" : isToday ? "rgba(46,155,220,0.10)" : "transparent",
+                    color: isSelected ? "#fff" : inMonth ? "var(--pp-text-primary)" : "var(--pp-text-muted)",
                     opacity: inMonth ? 1 : 0.35,
                     border: isToday && !isSelected ? "1px solid rgba(46,155,220,0.35)" : "none",
                   }}>
@@ -715,12 +742,20 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
             })}
           </div>
 
-          {/* Selected day agenda */}
           <div className="mt-4 pt-3" style={{ borderTop: "1px solid var(--pp-bg-border)" }}>
-            <p className="text-[11px] font-semibold uppercase tracking-wider mb-2"
-              style={{ color: "var(--pp-text-muted)", fontFamily: "Urbanist,sans-serif" }}>
-              {selected.toLocaleDateString(locale, { weekday: "long", day: "numeric", month: "long" })}
-            </p>
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-[11px] font-semibold uppercase tracking-wider"
+                style={{ color: "var(--pp-text-muted)", fontFamily: "Urbanist,sans-serif" }}>
+                {selected.toLocaleDateString(locale, { weekday: "long", day: "numeric", month: "long" })}
+              </p>
+              <button
+                onClick={openCreate}
+                className="text-[11px] px-2 py-1 rounded-full flex items-center gap-1 font-semibold"
+                style={{ background: "rgba(46,155,220,0.12)", color: "var(--pp-brand-accent)", border: "1px solid rgba(46,155,220,0.25)" }}
+              >
+                <Plus className="w-3 h-3" /> Nouveau
+              </button>
+            </div>
 
             {loading ? (
               <div className="space-y-2"><Shimmer className="h-12" /><Shimmer className="h-12" /></div>
@@ -736,7 +771,7 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
                   const join = m.onlineMeeting?.joinUrl ?? m.webLink;
                   const isTeams = !!m.onlineMeeting?.joinUrl;
                   return (
-                    <li key={m.id} className="flex items-center gap-3 py-2 px-2 rounded-lg"
+                    <li key={m.id} className="flex items-center gap-2 py-2 px-2 rounded-lg"
                       style={{ background: "rgba(46,155,220,0.06)", border: "1px solid rgba(46,155,220,0.15)" }}>
                       <div className="w-14 flex-shrink-0 text-center px-1.5 py-1 rounded-md"
                         style={{ background: "rgba(46,155,220,0.12)", color: "var(--pp-brand-accent)", fontFamily: "Urbanist,sans-serif" }}>
@@ -762,11 +797,27 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
                       </div>
                       {join && (
                         <button onClick={() => window.open(join, "_blank", "noopener,noreferrer")}
-                          className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
-                          style={{ color: "var(--pp-brand-accent)", background: "rgba(46,155,220,0.10)" }}>
+                          className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0"
+                          style={{ color: "var(--pp-brand-accent)", background: "rgba(46,155,220,0.10)" }}
+                          aria-label="Ouvrir"
+                          title="Ouvrir">
                           <ExternalLink className="w-3.5 h-3.5" />
                         </button>
                       )}
+                      <button onClick={() => openEdit(m)}
+                        className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0"
+                        style={{ color: "var(--pp-text-secondary)", background: "var(--pp-bg-elevated)" }}
+                        aria-label="Modifier"
+                        title="Modifier">
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                      <button onClick={() => doDelete(m)} disabled={deletingId === m.id}
+                        className="w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 disabled:opacity-50"
+                        style={{ color: "var(--pp-danger)", background: "rgba(232,76,76,0.08)" }}
+                        aria-label="Supprimer"
+                        title="Supprimer">
+                        {deletingId === m.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                      </button>
                     </li>
                   );
                 })}
@@ -779,7 +830,186 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
       {error && (
         <p className="text-[11px] mt-2" style={{ color: "var(--pp-danger)" }}>{error}</p>
       )}
+
+      {editorOpen && (
+        <EventEditor
+          mode={editorMode}
+          event={editingEvent}
+          defaultDate={selected}
+          onClose={() => setEditorOpen(false)}
+          onSaved={async () => { setEditorOpen(false); await onRefresh(); }}
+        />
+      )}
     </section>
+  );
+}
+
+function toLocalInput(iso: string | Date) {
+  const d = typeof iso === "string" ? new Date(iso) : iso;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function EventEditor({ mode, event, defaultDate, onClose, onSaved }: {
+  mode: "create" | "edit";
+  event: any | null;
+  defaultDate: Date;
+  onClose: () => void;
+  onSaved: () => void | Promise<void>;
+}) {
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Toronto";
+  const initialStart = event?.start?.dateTime
+    ? new Date(event.start.dateTime)
+    : (() => { const d = new Date(defaultDate); d.setHours(9, 0, 0, 0); return d; })();
+  const initialEnd = event?.end?.dateTime
+    ? new Date(event.end.dateTime)
+    : (() => { const d = new Date(initialStart); d.setMinutes(d.getMinutes() + 30); return d; })();
+
+  const [subject, setSubject] = useState<string>(event?.subject ?? "");
+  const [start, setStart] = useState<string>(toLocalInput(initialStart));
+  const [end, setEnd] = useState<string>(toLocalInput(initialEnd));
+  const [location, setLocation] = useState<string>(event?.location?.displayName ?? "");
+  const [attendees, setAttendees] = useState<string>((event?.attendees ?? []).map((a: any) => a?.emailAddress?.address).filter(Boolean).join(", "));
+  const [isOnlineMeeting, setIsOnlineMeeting] = useState<boolean>(event?.onlineMeeting ? true : mode === "create");
+  const [body, setBody] = useState<string>(event?.bodyPreview ?? "");
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    if (!subject.trim()) { toast.error("Sujet requis"); return; }
+    if (!start || !end) { toast.error("Dates requises"); return; }
+    if (new Date(end) <= new Date(start)) { toast.error("La fin doit être après le début"); return; }
+    setSaving(true);
+    const emails = attendees.split(/[,;\s]+/).map((s) => s.trim()).filter(Boolean);
+    const payload: any = {
+      subject: subject.trim(),
+      start: { dateTime: new Date(start).toISOString(), timeZone: tz },
+      end: { dateTime: new Date(end).toISOString(), timeZone: tz },
+      body,
+      attendees: emails,
+    };
+    if (location.trim()) payload.location = location.trim();
+    if (mode === "create") {
+      payload.isOnlineMeeting = isOnlineMeeting;
+      payload.onlineMeetingProvider = "teamsForBusiness";
+    } else if (event?.id) {
+      payload.event_id = event.id;
+    }
+    const { data, error } = await supabase.functions.invoke("ms365-actions", {
+      body: { action: mode === "create" ? "create_calendar_event" : "update_calendar_event", payload },
+    });
+    setSaving(false);
+    if (error || (data as any)?.success === false) {
+      toast.error((data as any)?.error ?? error?.message ?? "Enregistrement impossible");
+      return;
+    }
+    toast.success(mode === "create" ? "Rendez-vous créé" : "Rendez-vous mis à jour");
+    await onSaved();
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center"
+      style={{
+        background: "rgba(0,0,0,0.65)",
+        backdropFilter: "blur(4px)",
+        paddingTop: "env(safe-area-inset-top)",
+        paddingBottom: "env(safe-area-inset-bottom)",
+      }}
+      onClick={onClose}
+    >
+      <div
+        className="w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl overflow-hidden"
+        style={{
+          background: "var(--pp-bg-surface)",
+          border: "1px solid var(--pp-bg-border-2)",
+          maxHeight: "90dvh",
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-4 py-3" style={{ borderBottom: "1px solid var(--pp-bg-border)" }}>
+          <div className="flex items-center gap-2">
+            <Calendar className="w-4 h-4" style={{ color: "var(--pp-brand-accent)" }} />
+            <h3 className="text-sm font-semibold" style={{ color: "var(--pp-text-primary)" }}>
+              {mode === "create" ? "Nouveau rendez-vous" : "Modifier le rendez-vous"}
+            </h3>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-full" style={{ color: "var(--pp-text-muted)" }} aria-label="Fermer">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="p-4 space-y-3 overflow-y-auto" style={{ maxHeight: "70dvh" }}>
+          <Field label="Sujet">
+            <input value={subject} onChange={(e) => setSubject(e.target.value)}
+              placeholder="Réunion client…"
+              className="pp-input" />
+          </Field>
+
+          <div className="grid grid-cols-2 gap-2">
+            <Field label="Début">
+              <input type="datetime-local" value={start} onChange={(e) => setStart(e.target.value)} className="pp-input" />
+            </Field>
+            <Field label="Fin">
+              <input type="datetime-local" value={end} onChange={(e) => setEnd(e.target.value)} className="pp-input" />
+            </Field>
+          </div>
+
+          <Field label="Lieu">
+            <div className="relative">
+              <MapPin className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5" style={{ color: "var(--pp-text-muted)" }} />
+              <input value={location} onChange={(e) => setLocation(e.target.value)}
+                placeholder="Bureau, Zoom, adresse…"
+                className="pp-input" style={{ paddingLeft: 28 }} />
+            </div>
+          </Field>
+
+          <Field label="Participants (emails séparés par virgule)">
+            <input value={attendees} onChange={(e) => setAttendees(e.target.value)}
+              placeholder="client@exemple.com, collegue@…"
+              className="pp-input" />
+          </Field>
+
+          {mode === "create" && (
+            <label className="flex items-center gap-2 text-xs cursor-pointer" style={{ color: "var(--pp-text-secondary)" }}>
+              <input type="checkbox" checked={isOnlineMeeting} onChange={(e) => setIsOnlineMeeting(e.target.checked)} />
+              <Video className="w-3.5 h-3.5" style={{ color: "var(--pp-brand-accent)" }} />
+              Réunion Teams en ligne
+            </label>
+          )}
+
+          <Field label="Notes">
+            <textarea value={body} onChange={(e) => setBody(e.target.value)} rows={3}
+              placeholder="Ordre du jour, contexte…"
+              className="pp-input" style={{ resize: "vertical", minHeight: 60 }} />
+          </Field>
+        </div>
+
+        <div className="p-3 flex items-center gap-2" style={{ borderTop: "1px solid var(--pp-bg-border)" }}>
+          <button onClick={onClose} disabled={saving}
+            className="flex-1 py-2.5 rounded-xl text-sm font-medium"
+            style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-secondary)", border: "1px solid var(--pp-bg-border-2)" }}>
+            Annuler
+          </button>
+          <button onClick={save} disabled={saving}
+            className="flex-1 py-2.5 rounded-xl text-sm font-semibold text-white flex items-center justify-center gap-1.5 disabled:opacity-60"
+            style={{ background: "var(--pp-brand-accent)" }}>
+            {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : mode === "create" ? "Créer" : "Enregistrer"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <label className="text-[10px] uppercase tracking-wider font-semibold block mb-1"
+        style={{ color: "var(--pp-text-muted)", fontFamily: "Urbanist,sans-serif" }}>
+        {label}
+      </label>
+      {children}
+    </div>
   );
 }
 

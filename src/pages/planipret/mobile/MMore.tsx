@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
 import { usePlanipretPush } from "@/hooks/usePlanipretPush";
-import { CalendarSyncCard } from "@/components/planipret/CalendarSyncCard";
+
 import { Ms365ScopesCard } from "@/components/planipret/Ms365ScopesCard";
 import { SiriShortcutsCard } from "@/components/planipret/SiriShortcutsCard";
 import { safeEdgeFunction } from "@/lib/safeEdgeFunction";
@@ -17,7 +17,6 @@ import MCallAudioSettings from "@/components/planipret/mobile/MCallAudioSettings
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import Ms365StatusBadge from "@/components/planipret/Ms365StatusBadge";
 import { openMs365Authorize } from "@/lib/ms365OAuth";
-import { useMplanipretSoftphone } from "@/hooks/useMplanipretSoftphone";
 
 const initials = (name?: string) =>
   (name ?? "").split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0]?.toUpperCase()).join("") || "?";
@@ -84,25 +83,19 @@ export default function MMore() {
     })();
   }, [profile?.id]);
 
-  const { sipConnected, reregister } = useMplanipretSoftphone();
-  const jwtOk = !!profile?.ns_jwt && (!profile?.ns_jwt_expires_at || new Date(profile.ns_jwt_expires_at) > new Date());
-  const nsConnected = jwtOk && sipConnected;
+  const nsConnected = !!profile?.ns_jwt && (!profile?.ns_jwt_expires_at || new Date(profile.ns_jwt_expires_at) > new Date());
   const ms365Connected = !!profile?.ms365_access_token;
 
   const reconnectNs = async () => {
     setReconnecting(true);
     const { data, error, status } = await safeEdgeFunction("ns-auth", { body: { action: "refresh" } });
+    setReconnecting(false);
     if (error || (data as any)?.success === false) {
-      setReconnecting(false);
       toast.error(status === 403 ? t("more.phoneUnauthorized") : ((data as any)?.error ?? error ?? t("more.connectionFailed")));
       return;
     }
-    // Refresh profile then force the softphone to re-init SIP credentials.
-    await reloadProfile();
-    try { window.dispatchEvent(new CustomEvent("pp:sip-force-reregister", { detail: { force: true } })); } catch {}
-    try { reregister?.(); } catch {}
-    setReconnecting(false);
     toast.success(t("more.phoneConnected"));
+    await reloadProfile();
   };
 
   const startMs365OAuth = (cfg: { client_id: string; tenant_id?: string }) => {
@@ -254,20 +247,13 @@ export default function MMore() {
       </Section>
 
       <Section title={t("more.sections.integrations")}>
-        <div className="px-3 pb-2 flex items-center justify-between gap-2">
+        <div className="px-3 pb-2 flex items-center justify-between">
           <Ms365StatusBadge />
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => navigate("/mplanipret/diagnostics")}
-              className="text-[11px] font-semibold"
-              style={{ color: "#22c55e" }}
-            >Endpoints →</button>
-            <button
-              onClick={() => navigate("/mplanipret/ms365-diagnostics")}
-              className="text-[11px] font-semibold"
-              style={{ color: "#2E9BDC" }}
-            >MS365 →</button>
-          </div>
+          <button
+            onClick={() => navigate("/mplanipret/ms365-diagnostics")}
+            className="text-[11px] font-semibold"
+            style={{ color: "#2E9BDC" }}
+          >Diagnostics →</button>
         </div>
         <Row icon={<Mail className="w-4 h-4" style={{ color: "#3FA3F0" }} />} label="Microsoft 365"
           sub={
@@ -294,7 +280,6 @@ export default function MMore() {
         {ms365Connected && (
           <div style={{ padding: 8 }}>
             <Ms365ScopesCard profile={profile} onReconnect={connectMs365} />
-            <CalendarSyncCard profile={profile} />
           </div>
         )}
       </Section>

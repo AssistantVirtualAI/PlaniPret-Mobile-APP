@@ -58,6 +58,18 @@ export default function MMessages() {
   const { profile, openDialer, registerRefresh } = useOutletContext<PlanipretMobileContext>();
   const [sub, setSub] = useState<SubTab>("sms");
 
+  // Warm the Teams cache on mount so switching to the Teams tab is instant.
+  useEffect(() => {
+    if (!profile?.ms365_access_token) return;
+    const cacheKey = "planipret.teams365.cache.v1";
+    const hasCache = (() => { try { return !!localStorage.getItem(cacheKey); } catch { return false; } })();
+    if (hasCache) return; // already warm
+    const run = () => { void supabase.functions.invoke("ms365-teams-list", { body: {} }).catch(() => {}); };
+    const ric: any = (globalThis as any).requestIdleCallback;
+    if (typeof ric === "function") ric(run, { timeout: 2000 }); else setTimeout(run, 300);
+  }, [profile?.ms365_access_token]);
+
+
   return (
     <div className="h-full flex flex-col" style={{ background: "var(--pp-bg-base)" }}>
       <div
@@ -1053,6 +1065,7 @@ export function EmailsList({ profile }: { profile: any }) {
           onClose={() => setActive(null)}
           onCompose={(init) => { setActive(null); setComposeInit(init); setComposeOpen(true); }}
           onChanged={() => load()}
+          onOptimisticRemove={(id) => setEmails((cur) => (cur ? cur.filter((e) => e.id !== id) : cur))}
         />
       )}
       {composeOpen && (
@@ -1076,11 +1089,12 @@ type ComposeInit = {
   body?: string;
 };
 
-function EmailDetailSheet({ email, onClose, onCompose, onChanged }: {
+function EmailDetailSheet({ email, onClose, onCompose, onChanged, onOptimisticRemove }: {
   email: any;
   onClose: () => void;
   onCompose: (init: ComposeInit) => void;
   onChanged: () => void;
+  onOptimisticRemove?: (id: string) => void;
 }) {
   const { t } = useMplanipretLang();
   const [detail, setDetail] = useState<any | null>(null);
@@ -1195,8 +1209,17 @@ function EmailDetailSheet({ email, onClose, onCompose, onChanged }: {
     return true;
   };
 
-  const onDelete = async () => { if (await act("delete_email", {}, "Supprimé")) { onChanged(); onClose(); } };
-  const onArchive = async () => { if (await act("archive_email", {}, "Archivé")) { onChanged(); onClose(); } };
+  const onDelete = async () => {
+    // Optimistic: remove from list & close immediately so the UI reflects the action.
+    if (email?.id) onOptimisticRemove?.(email.id);
+    onClose();
+    if (await act("delete_email", {}, "Supprimé")) { onChanged(); } else { onChanged(); }
+  };
+  const onArchive = async () => {
+    if (email?.id) onOptimisticRemove?.(email.id);
+    onClose();
+    if (await act("archive_email", {}, "Archivé")) { onChanged(); } else { onChanged(); }
+  };
   const onToggleFlag = async () => {
     if (await act("flag_email", { unflag: flagged }, flagged ? "Drapeau retiré" : "Drapeau ajouté")) {
       setFlagged(!flagged); onChanged();
@@ -1224,10 +1247,16 @@ function EmailDetailSheet({ email, onClose, onCompose, onChanged }: {
   });
 
   return (
-    <div className="absolute inset-0 z-40 bg-black/60 backdrop-blur-sm flex items-end" onClick={onClose}>
+    <div className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-sm flex items-end" onClick={onClose}>
       <div
-        className="w-full rounded-t-3xl flex flex-col"
-        style={{ background: "var(--pp-bg-base)", border: "1px solid var(--pp-bg-border-2)", height: "94%" }}
+        className="w-full rounded-t-3xl flex flex-col shadow-2xl"
+        style={{
+          background: "var(--pp-bg-base)",
+          border: "1px solid var(--pp-bg-border-2)",
+          height: "calc(100vh - env(safe-area-inset-top) - 24px)",
+          maxHeight: "calc(100dvh - 24px)",
+          paddingBottom: "env(safe-area-inset-bottom)",
+        }}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-4 pt-3 pb-2" style={{ borderBottom: "1px solid var(--pp-bg-border)" }}>
@@ -1450,10 +1479,16 @@ function EmailComposeSheet({ init, onClose, onSent }: { init: ComposeInit; onClo
   const title = mode === "reply" ? "Répondre" : mode === "reply_all" ? "Répondre à tous" : mode === "forward" ? "Transférer" : t("messages.newEmail");
 
   return (
-    <div className="absolute inset-0 z-40 bg-black/60 backdrop-blur-sm flex items-end" onClick={onClose}>
+    <div className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-sm flex items-end" onClick={onClose}>
       <div
-        className="w-full rounded-t-3xl flex flex-col"
-        style={{ background: "var(--pp-bg-base)", border: "1px solid var(--pp-bg-border-2)", height: "94%" }}
+        className="w-full rounded-t-3xl flex flex-col shadow-2xl"
+        style={{
+          background: "var(--pp-bg-base)",
+          border: "1px solid var(--pp-bg-border-2)",
+          height: "calc(100vh - env(safe-area-inset-top) - 24px)",
+          maxHeight: "calc(100dvh - 24px)",
+          paddingBottom: "env(safe-area-inset-bottom)",
+        }}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-4 pt-3 pb-2" style={{ borderBottom: "1px solid var(--pp-bg-border)" }}>
