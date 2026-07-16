@@ -1,0 +1,204 @@
+import { useState } from 'react';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { Copy, Check, ChevronDown, Code } from 'lucide-react';
+import { toast } from 'sonner';
+import { useLanguage } from '@/context/LanguageContext';
+import { 
+  type Platform, 
+  type PlatformEndpoint,
+  getEndpointsForPlatform, 
+  getEndpointUrl,
+  getPlatformDisplayName 
+} from '@/lib/connectors/endpoints-registry';
+
+interface PlatformEndpointsCardProps {
+  platform: Platform;
+  agentId?: string;
+  apiKey?: string;
+  organizationId?: string;
+  showAllEndpoints?: boolean;
+}
+
+export const PlatformEndpointsCard = ({ 
+  platform,
+  agentId, 
+  apiKey,
+  organizationId,
+  showAllEndpoints = false 
+}: PlatformEndpointsCardProps) => {
+  const { language } = useLanguage();
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [expandedEndpoints, setExpandedEndpoints] = useState<string[]>([]);
+
+  const handleCopy = (text: string, id: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedId(id);
+    toast.success(language === 'fr' ? 'Copié dans le presse-papier' : 'Copied to clipboard');
+    setTimeout(() => setCopiedId(null), 2000);
+  };
+
+  const toggleExpanded = (id: string) => {
+    setExpandedEndpoints(prev => 
+      prev.includes(id) ? prev.filter(e => e !== id) : [...prev, id]
+    );
+  };
+
+  const endpoints = getEndpointsForPlatform(platform);
+  const platformName = getPlatformDisplayName(platform);
+
+  // Filter endpoints based on what's relevant
+  const relevantEndpoints = showAllEndpoints 
+    ? endpoints 
+    : endpoints.filter(e => !e.requiresAgentId || agentId);
+
+  const generateExamplePayload = (endpoint: PlatformEndpoint): string => {
+    const payload: Record<string, any> = {};
+    
+    if (endpoint.requiresApiKey) {
+      payload.apiKey = apiKey || '<YOUR_API_KEY>';
+    }
+    
+    if (organizationId) {
+      payload.organizationId = organizationId;
+    }
+    
+    if (endpoint.requiresAgentId) {
+      payload.agentId = agentId || '<AGENT_ID>';
+    }
+    
+    if (endpoint.actions?.length) {
+      payload.action = endpoint.actions[0];
+    }
+    
+    return JSON.stringify(payload, null, 2);
+  };
+
+  const texts = {
+    title: language === 'fr' ? `Endpoints API ${platformName.fr}` : `${platformName.en} API Endpoints`,
+    description: language === 'fr' 
+      ? `URLs des fonctions backend pour intégrer les données ${platformName.fr}`
+      : `Backend function URLs to integrate ${platformName.en} data`,
+    actions: language === 'fr' ? 'actions' : 'actions',
+    availableActions: language === 'fr' ? 'Actions disponibles:' : 'Available actions:',
+    examplePayload: language === 'fr' ? 'Exemple de payload:' : 'Example payload:',
+    copyPayload: language === 'fr' ? 'Copier le payload' : 'Copy payload',
+    copied: language === 'fr' ? 'Copié' : 'Copied',
+    noEndpoints: language === 'fr' ? 'Aucun endpoint disponible' : 'No endpoints available',
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <Code className="h-5 w-5" />
+          {texts.title}
+        </CardTitle>
+        <CardDescription>{texts.description}</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {relevantEndpoints.map((endpoint) => {
+          const url = getEndpointUrl(endpoint.functionName);
+          const isExpanded = expandedEndpoints.includes(endpoint.id);
+          const name = endpoint.name[language] || endpoint.name.en;
+          const description = endpoint.description[language] || endpoint.description.en;
+          
+          return (
+            <Collapsible 
+              key={endpoint.id} 
+              open={isExpanded}
+              onOpenChange={() => toggleExpanded(endpoint.id)}
+            >
+              <div className="border rounded-lg p-3 space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="font-medium text-sm">{name}</span>
+                      {endpoint.actions?.length && (
+                        <Badge variant="outline" className="text-xs">
+                          {endpoint.actions.length} {texts.actions}
+                        </Badge>
+                      )}
+                      <Badge variant="secondary" className="text-xs">
+                        {endpoint.method}
+                      </Badge>
+                    </div>
+                    <p className="text-xs text-muted-foreground truncate">
+                      {description}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-8 w-8"
+                      onClick={() => handleCopy(url, endpoint.id)}
+                    >
+                      {copiedId === endpoint.id ? (
+                        <Check className="h-4 w-4 text-green-500" />
+                      ) : (
+                        <Copy className="h-4 w-4" />
+                      )}
+                    </Button>
+                    <CollapsibleTrigger asChild>
+                      <Button variant="ghost" size="icon" className="h-8 w-8">
+                        <ChevronDown className={`h-4 w-4 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                      </Button>
+                    </CollapsibleTrigger>
+                  </div>
+                </div>
+                
+                <code className="block text-xs bg-muted p-2 rounded truncate">
+                  {url}
+                </code>
+                
+                <CollapsibleContent className="space-y-3 pt-2">
+                  {endpoint.actions?.length && (
+                    <div>
+                      <p className="text-xs font-medium mb-1">{texts.availableActions}</p>
+                      <div className="flex flex-wrap gap-1">
+                        {endpoint.actions.map(action => (
+                          <Badge key={action} variant="secondary" className="text-xs">
+                            {action}
+                          </Badge>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  
+                  <div>
+                    <p className="text-xs font-medium mb-1">{texts.examplePayload}</p>
+                    <pre className="text-xs bg-muted p-2 rounded overflow-x-auto">
+                      {generateExamplePayload(endpoint)}
+                    </pre>
+                  </div>
+                  
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full text-xs"
+                    onClick={() => handleCopy(generateExamplePayload(endpoint), `${endpoint.id}-payload`)}
+                  >
+                    {copiedId === `${endpoint.id}-payload` ? (
+                      <><Check className="h-3 w-3 mr-1" /> {texts.copied}</>
+                    ) : (
+                      <><Copy className="h-3 w-3 mr-1" /> {texts.copyPayload}</>
+                    )}
+                  </Button>
+                </CollapsibleContent>
+              </div>
+            </Collapsible>
+          );
+        })}
+        
+        {relevantEndpoints.length === 0 && (
+          <p className="text-sm text-muted-foreground text-center py-4">
+            {texts.noEndpoints}
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+};
