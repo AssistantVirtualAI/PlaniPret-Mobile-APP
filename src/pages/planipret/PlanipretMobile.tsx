@@ -112,7 +112,7 @@ type DialerContact = {
   extension?: string;
   email?: string;
   company?: string;
-  source?: "personal" | "shared" | "directory" | "native";
+  source?: "personal" | "shared" | "directory" | "native" | "maestro";
 };
 
 function contactDisplayName(c: DialerContact): string {
@@ -189,6 +189,33 @@ function Dialer({ open, onClose, initial, openMessages, softphone }: { open: boo
     return getPpContacts(action, { limit: 500 });
   };
 
+  // Load Maestro CRM clients via `maestro-actions list_contacts`. Same source
+  // as the widget search page ("contacts" group), so the dialpad Search button
+  // returns the same Maestro results as MSearch.
+  const loadMaestroContacts = async (): Promise<DialerContact[]> => {
+    const { data, error } = await supabase.functions.invoke("maestro-actions", {
+      body: { action: "list_contacts", payload: { query: "" } },
+    });
+    if (error) throw new Error(error.message || "maestro list_contacts failed");
+    if (data && (data as any).success === false) {
+      throw new Error((data as any).error || "maestro list_contacts failed");
+    }
+    const rows = Array.isArray((data as any)?.contacts) ? (data as any).contacts : Array.isArray(data) ? data : [];
+    return rows.map((c: any): DialerContact => ({
+      id: c.id ?? c.contact_id ?? c.uuid,
+      first_name: c.first_name ?? c.firstname,
+      last_name: c.last_name ?? c.lastname,
+      name: c.name ?? c.full_name ?? c.display_name,
+      display_name: c.display_name ?? c.full_name ?? c.name,
+      phone: c.phone ?? c.mobile ?? c.cell ?? c.cell_phone ?? c.primary_phone,
+      cell_phone: c.cell_phone ?? c.mobile ?? c.cell,
+      work_phone: c.work_phone ?? c.office_phone,
+      home_phone: c.home_phone,
+      email: c.email,
+      company: c.company ?? c.organization,
+    }));
+  };
+
   useEffect(() => {
     if (!open || mode !== "search" || contacts.length > 0 || loadingContacts) return;
     let cancelled = false;
@@ -205,6 +232,7 @@ function Dialer({ open, onClose, initial, openMessages, softphone }: { open: boo
       withTimeout(loadNsContacts("list"), 12000, "personal").then((v) => appendBatch(v, "personal")).catch((e) => { errors.push(`personal: ${e?.message ?? e}`); }),
       withTimeout(loadNsContacts("shared"), 12000, "shared").then((v) => appendBatch(v, "shared")).catch((e) => { errors.push(`shared: ${e?.message ?? e}`); }),
       withTimeout(loadNsContacts("directory"), 12000, "directory").then((v) => appendBatch(v, "directory")).catch((e) => { errors.push(`directory: ${e?.message ?? e}`); }),
+      withTimeout(loadMaestroContacts(), 12000, "maestro").then((v) => appendBatch(v, "maestro")).catch((e) => { errors.push(`maestro: ${e?.message ?? e}`); }),
     ];
     Promise.allSettled(jobs).then(() => {
       if (cancelled) return;
