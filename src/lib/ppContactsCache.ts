@@ -58,8 +58,8 @@ async function fetchMaestro(): Promise<any[]> {
     body: { action: "list_contacts", payload: { query: "" } },
   });
   const payload: any = data ?? {};
-  if (error || payload?.success === false) throw new Error(payload?.error || error?.message || "maestro");
-  const list = payload.contacts ?? [];
+  if (error && !payload) throw new Error(error.message || "maestro");
+  const list = Array.isArray(payload.contacts) ? payload.contacts : [];
   // Normalize Maestro contact shape to the dialer's expected fields.
   return list.map((c: any) => ({
     id: c.id ?? c.client_id ?? c.uuid,

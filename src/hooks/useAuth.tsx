@@ -3,6 +3,36 @@ import { User, Session } from '@supabase/supabase-js';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
 
+// Structured client-side auth logging so failures can be diagnosed from the console.
+function logAuthError(op: string, error: any, extra?: Record<string, any>) {
+  try {
+    const details = {
+      op,
+      message: error?.message ?? String(error),
+      name: error?.name,
+      status: error?.status ?? error?.statusCode,
+      code: error?.code ?? error?.error_code,
+      details: error?.details ?? error?.error_description,
+      ...extra,
+    };
+    // eslint-disable-next-line no-console
+    console.error(`[auth:${op}]`, details, error);
+  } catch { /* noop */ }
+}
+
+function friendlyAuthError(error: any): string {
+  const msg = String(error?.message || "");
+  const code = String(error?.code || error?.error_code || "");
+  if (/invalid.login.credentials/i.test(msg) || code === "invalid_credentials") return "Email ou mot de passe invalide.";
+  if (/email.not.confirmed/i.test(msg) || code === "email_not_confirmed") return "Email non confirmé. Vérifiez votre boîte de réception.";
+  if (/user.already.registered/i.test(msg) || code === "user_already_exists") return "Ce compte existe déjà. Connectez-vous.";
+  if (/rate.limit|over_email_send_rate_limit|too many/i.test(msg)) return "Trop de tentatives. Réessayez dans quelques minutes.";
+  if (/network|failed to fetch/i.test(msg)) return "Problème réseau. Vérifiez votre connexion et réessayez.";
+  if (/provider is not enabled|validation_failed/i.test(msg)) return "Ce fournisseur SSO n'est pas activé.";
+  return msg || "Une erreur inattendue est survenue.";
+}
+
+
 export const useAuth = () => {
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
@@ -16,6 +46,32 @@ export const useAuth = () => {
         setSession(session);
         setUser(session?.user ?? null);
         setLoading(false);
+
+        // Auto-link Microsoft 365 tokens when the user signed in via Azure SSO.
+        // We defer to avoid blocking the auth callback, and only fire on
+        // SIGNED_IN with a provider_token present.
+        if (
+          event === "SIGNED_IN" &&
+          (session as any)?.provider_token &&
+          (session?.user?.app_metadata?.provider === "azure" ||
+            session?.user?.app_metadata?.provider === "microsoft")
+        ) {
+          setTimeout(() => {
+            supabase.functions
+              .invoke("ms365-store-session", {
+                body: {
+                  provider_token: (session as any).provider_token,
+                  provider_refresh_token: (session as any).provider_refresh_token,
+                  expires_in: (session as any).expires_in ?? 3600,
+                  email: session.user?.email,
+                  display_name:
+                    session.user?.user_metadata?.full_name ??
+                    session.user?.user_metadata?.name,
+                },
+              })
+              .catch((err) => console.warn("[MS365 SSO link] failed:", err));
+          }, 0);
+        }
       }
     );
 
@@ -88,9 +144,10 @@ export const useAuth = () => {
       });
       return { error: null };
     } catch (error: any) {
+      logAuthError("signUp", error, { email });
       toast({
         title: "Erreur d'inscription",
-        description: error.message,
+        description: friendlyAuthError(error),
         variant: "destructive",
       });
       return { error };
@@ -112,9 +169,10 @@ export const useAuth = () => {
       });
       return { error: null };
     } catch (error: any) {
+      logAuthError("signIn", error, { email });
       toast({
         title: "Erreur de connexion",
-        description: error.message,
+        description: friendlyAuthError(error),
         variant: "destructive",
       });
       return { error };
@@ -133,9 +191,10 @@ export const useAuth = () => {
       if (error) throw error;
       return { error: null };
     } catch (error: any) {
+      logAuthError("signInWithGoogle", error);
       toast({
         title: "Erreur de connexion Google",
-        description: error.message,
+        description: friendlyAuthError(error),
         variant: "destructive",
       });
       return { error };
@@ -144,25 +203,46 @@ export const useAuth = () => {
 
   const signInWithMicrosoft = async () => {
     try {
+      const scopes = [
+        "openid",
+        "profile",
+        "email",
+        "offline_access",
+        "User.Read",
+        "Mail.ReadWrite",
+        "Mail.Send",
+        "Calendars.ReadWrite",
+        "Chat.ReadWrite",
+        "ChatMessage.Send",
+        "Contacts.ReadWrite",
+        "Presence.Read.All",
+      ].join(" ");
+
       const { error } = await supabase.auth.signInWithOAuth({
         provider: 'azure',
         options: {
-          redirectTo: `${window.location.origin}/`,
-          scopes: 'email openid profile',
+          redirectTo: `${window.location.origin}/post-login`,
+          scopes,
         },
       });
 
       if (error) throw error;
       return { error: null };
     } catch (error: any) {
+      const msg = String(error?.message || "");
+      const notEnabled = /provider is not enabled|Unsupported provider|validation_failed/i.test(msg);
+      logAuthError("signInWithMicrosoft", error, { notEnabled });
       toast({
-        title: "Erreur de connexion Microsoft",
-        description: error.message,
+        title: notEnabled ? "Microsoft SSO indisponible" : "Erreur de connexion Microsoft",
+        description: notEnabled
+          ? "La connexion Microsoft n'est pas activée. Utilisez Google ou email/mot de passe. Vos intégrations Microsoft 365 restent disponibles une fois connecté."
+          : friendlyAuthError(error),
         variant: "destructive",
       });
       return { error };
     }
   };
+
 
   const signInWithApple = async () => {
     try {
@@ -176,9 +256,10 @@ export const useAuth = () => {
       if (error) throw error;
       return { error: null };
     } catch (error: any) {
+      logAuthError("signInWithApple", error);
       toast({
         title: "Erreur de connexion Apple",
-        description: error.message,
+        description: friendlyAuthError(error),
         variant: "destructive",
       });
       return { error };

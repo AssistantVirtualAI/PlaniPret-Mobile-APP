@@ -17,6 +17,9 @@ import MCallAudioSettings from "@/components/planipret/mobile/MCallAudioSettings
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import Ms365StatusBadge from "@/components/planipret/Ms365StatusBadge";
 import { openMs365Authorize } from "@/lib/ms365OAuth";
+import { useMplanipretSoftphone } from "@/hooks/useMplanipretSoftphone";
+import { ppSipProvider, type PpSipSnapshot } from "@/lib/planipret/sip/ppSipProvider";
+import { Radio } from "lucide-react";
 
 const initials = (name?: string) =>
   (name ?? "").split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0]?.toUpperCase()).join("") || "?";
@@ -83,19 +86,37 @@ export default function MMore() {
     })();
   }, [profile?.id]);
 
-  const nsConnected = !!profile?.ns_jwt && (!profile?.ns_jwt_expires_at || new Date(profile.ns_jwt_expires_at) > new Date());
+  const { sipConnected, reregister } = useMplanipretSoftphone();
+  const nsConnected = !!(profile?.ns_extension ?? profile?.extension) && sipConnected;
   const ms365Connected = !!profile?.ms365_access_token;
+
+  const [sipSnap, setSipSnap] = useState<PpSipSnapshot>(() => ppSipProvider.getSnapshot());
+  useEffect(() => ppSipProvider.subscribe(setSipSnap), []);
+  const sipStatusColor: Record<string, string> = {
+    idle: "#94A3B8", connecting: "#F59E0B", connected: "#3B82F6",
+    registered: "#10B981", disconnected: "#94A3B8", error: "#EF4444",
+  };
+  const sipStatusLabel = sipSnap.status === "registered" ? "Enregistré"
+    : sipSnap.status === "connecting" ? "Connexion…"
+    : sipSnap.status === "connected" ? "Connecté (non enregistré)"
+    : sipSnap.status === "error" ? "Erreur"
+    : sipSnap.status === "disconnected" ? "Déconnecté"
+    : "Inactif";
 
   const reconnectNs = async () => {
     setReconnecting(true);
-    const { data, error, status } = await safeEdgeFunction("ns-auth", { body: { action: "refresh" } });
-    setReconnecting(false);
-    if (error || (data as any)?.success === false) {
+    const { data, error, status } = await safeEdgeFunction("ns-resolve-sip-credentials", { body: { client_type: "mobile" } });
+    if (error || (data as any)?.success === false || (data as any)?.ok === false || (data as any)?.error) {
+      setReconnecting(false);
       toast.error(status === 403 ? t("more.phoneUnauthorized") : ((data as any)?.error ?? error ?? t("more.connectionFailed")));
       return;
     }
-    toast.success(t("more.phoneConnected"));
+    // Refresh profile then force the softphone to re-init SIP credentials.
     await reloadProfile();
+    try { window.dispatchEvent(new CustomEvent("pp:sip-force-reregister", { detail: { force: true } })); } catch {}
+    try { reregister?.(); } catch {}
+    setReconnecting(false);
+    toast.success(t("more.phoneConnected"));
   };
 
   const startMs365OAuth = (cfg: { client_id: string; tenant_id?: string }) => {
@@ -230,6 +251,14 @@ export default function MMore() {
           right={<span style={{ fontSize: 12, color: "var(--pp-text-muted)" }}>{profile?.ns_extension ?? profile?.extension ?? "—"}</span>} chevron />
         <Row icon={<Voicemail className="w-4 h-4" />} label={t("more.voicemail")}
           onClick={() => navigate("/mplanipret/calls?tab=voicemails")} chevron />
+        <Row
+          icon={<Radio className="w-4 h-4" style={{ color: sipStatusColor[sipSnap.status] }} />}
+          label="État SIP"
+          sub={sipSnap.errorCause ? `${sipStatusLabel} — ${sipSnap.errorCause}` : sipStatusLabel}
+          onClick={() => navigate("/mplanipret/sip-debug")}
+          right={<span className="text-[10px] font-bold px-2 py-0.5 rounded-full" style={{ background: sipStatusColor[sipSnap.status], color: "#fff" }}>{sipSnap.status.toUpperCase()}</span>}
+          chevron
+        />
       </Section>
 
       <Section title={t("more.sections.availability")}>
@@ -247,13 +276,20 @@ export default function MMore() {
       </Section>
 
       <Section title={t("more.sections.integrations")}>
-        <div className="px-3 pb-2 flex items-center justify-between">
+        <div className="px-3 pb-2 flex items-center justify-between gap-2">
           <Ms365StatusBadge />
-          <button
-            onClick={() => navigate("/mplanipret/ms365-diagnostics")}
-            className="text-[11px] font-semibold"
-            style={{ color: "#2E9BDC" }}
-          >Diagnostics →</button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => navigate("/mplanipret/diagnostics")}
+              className="text-[11px] font-semibold"
+              style={{ color: "#22c55e" }}
+            >Endpoints →</button>
+            <button
+              onClick={() => navigate("/mplanipret/ms365-diagnostics")}
+              className="text-[11px] font-semibold"
+              style={{ color: "#2E9BDC" }}
+            >MS365 →</button>
+          </div>
         </div>
         <Row icon={<Mail className="w-4 h-4" style={{ color: "#3FA3F0" }} />} label="Microsoft 365"
           sub={
