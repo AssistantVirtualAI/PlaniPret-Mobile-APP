@@ -70,9 +70,12 @@ export function useRealtimeManager(userId: string | undefined, handlers: Handler
           });
         }
       )
-      .subscribe();
+      .subscribe((status, err) => {
+        // Silently degrade on Realtime quota/network errors — never crash the app.
+        if (err) { /* best-effort */ }
+      });
     return () => {
-      supabase.removeChannel(ch);
+      try { supabase.removeChannel(ch); } catch {}
     };
   }, [userId, navigate, handlers]);
 }
