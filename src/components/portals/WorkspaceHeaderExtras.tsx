@@ -24,6 +24,20 @@ const STATUSES: Array<{ value: string; label: string; color: string }> = [
 export function WorkspaceHeaderExtras() {
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
+
+  const handleSignOut = async () => {
+    await signOut?.();
+    // On Capacitor (iOS/Android), redirect to the mobile auth screen.
+    // On web, stay on current page — the auth state change will handle it.
+    try {
+      const { Capacitor } = await import('@capacitor/core');
+      if (Capacitor.isNativePlatform()) {
+        navigate('/mplanipret', { replace: true });
+        return;
+      }
+    } catch { /* not on Capacitor */ }
+    navigate('/login', { replace: true });
+  };
   const [profile, setProfile] = useState<{ full_name: string | null; email: string | null; avatar_url: string | null }>({
     full_name: null, email: null, avatar_url: null,
   });
@@ -118,7 +132,7 @@ export function WorkspaceHeaderExtras() {
           <DropdownMenuItem onClick={() => navigate("/my/settings")}><Settings className="h-4 w-4 mr-2" />Settings</DropdownMenuItem>
           <DropdownMenuItem onClick={() => navigate("/my/settings?tab=security")}><KeyRound className="h-4 w-4 mr-2" />Change password</DropdownMenuItem>
           <DropdownMenuSeparator />
-          <DropdownMenuItem onClick={() => signOut?.()} className="text-destructive focus:text-destructive">
+          <DropdownMenuItem onClick={handleSignOut} className="text-destructive focus:text-destructive">
             <LogOut className="h-4 w-4 mr-2" />Sign out
           </DropdownMenuItem>
         </DropdownMenuContent>
