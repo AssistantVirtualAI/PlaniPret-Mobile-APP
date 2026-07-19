@@ -9,12 +9,25 @@ export async function ensureIncomingCallActionType() {
   if (!(await isNative())) return;
   try {
     const { LocalNotifications } = await import("@capacitor/local-notifications");
+    // Créer le channel Android pour les appels entrants (requis Android 8+)
+    try {
+      await LocalNotifications.createChannel({
+        id: "incoming_calls",
+        name: "Appels entrants",
+        description: "Notifications pour les appels téléphoniques entrants",
+        importance: 5,
+        sound: "beep.wav",
+        vibration: true,
+        lights: true,
+        lightColor: "#0A84FF",
+      });
+    } catch { /* ignore — channel already exists or not Android */ }
     await LocalNotifications.registerActionTypes({
       types: [{
         id: "INCOMING_CALL",
         actions: [
-          { id: "answer", title: "Answer" },
-          { id: "decline", title: "Decline", destructive: true },
+          { id: "answer", title: "Répondre" },
+          { id: "decline", title: "Refuser", destructive: true },
         ],
       }],
     });
@@ -34,8 +47,9 @@ export async function showIncomingCallNotification(args: { callId: string; from:
         body: args.from || "Unknown caller",
         actionTypeId: "INCOMING_CALL",
         extra: { callId: args.callId, type: "incoming_call" },
-        smallIcon: "ic_stat_icon_config_sample",
+        smallIcon: "ic_stat_planipret",
         sound: "beep.wav",
+        channelId: "incoming_calls",
         ongoing: true,
       }],
     });
