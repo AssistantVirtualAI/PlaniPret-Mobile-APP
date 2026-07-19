@@ -199,6 +199,8 @@ export function useMplanipretSoftphone() {
       if (softTimer) { clearTimeout(softTimer); softTimer = null; }
       if (hardTimer) { clearTimeout(hardTimer); hardTimer = null; }
     };
+    const cap: any = (typeof window !== "undefined") ? (window as any).Capacitor : null;
+    const isNative = !!cap?.isNativePlatform?.();
     const evaluate = () => {
       const st = ppSipProvider.getSnapshot().status;
       // On native Capacitor (iOS/Android), JsSIP is never started — status stays
@@ -239,8 +241,6 @@ export function useMplanipretSoftphone() {
     window.addEventListener("online", onResume);
     // Native app foreground → immediately re-REGISTER before the 10s watchdog.
     let appStateHandle: { remove: () => void } | null = null;
-    const cap: any = (typeof window !== "undefined") ? (window as any).Capacitor : null;
-    const isNative = !!cap?.isNativePlatform?.();
     if (isNative) {
       try {
         const AppPlugin = cap?.Plugins?.App;
