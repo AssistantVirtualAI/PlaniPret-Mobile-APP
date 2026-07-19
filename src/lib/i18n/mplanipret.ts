@@ -589,6 +589,21 @@ export const MP_DICT = {
       remote: "Télétravail",
     },
     theme: { light: "Clair", dark: "Sombre" },
+    ava: {
+      notifications: {
+        title: "Notifications",
+        all: "Toutes",
+        unread: "Non lues",
+        markAllRead: "Tout lire",
+        clear: "Vider",
+        loading: "Chargement…",
+        empty: "Aucune notification",
+        emptyDesc: "AVA vous alertera dès qu'un lead, courriel ou événement important arrivera.",
+        markRead: "Marquer comme lu",
+        markUnread: "Marquer comme non lu",
+        confirmClear: "Effacer toutes les notifications ?",
+      },
+    },
     access: {
       missingTitle: "Accès mobile Planiprêt",
       missingProfile: "Votre compte est connecté, mais aucun profil mobile Planiprêt n'est lié à cet utilisateur.",
@@ -1509,6 +1524,21 @@ export const MP_DICT = {
       remote: "Remote",
     },
     theme: { light: "Light", dark: "Dark" },
+    ava: {
+      notifications: {
+        title: "Notifications",
+        all: "All",
+        unread: "Unread",
+        markAllRead: "Mark all read",
+        clear: "Clear",
+        loading: "Loading…",
+        empty: "No notifications",
+        emptyDesc: "AVA will alert you when a lead, email or important event arrives.",
+        markRead: "Mark as read",
+        markUnread: "Mark as unread",
+        confirmClear: "Clear all notifications?",
+      },
+    },
     access: {
       missingTitle: "Planiprêt mobile access",
       missingProfile: "Your account is signed in, but no Planiprêt mobile profile is linked to this user.",
