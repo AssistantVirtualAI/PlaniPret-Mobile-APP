@@ -384,6 +384,15 @@ export function useMplanipretSoftphone() {
 
   const placeCall = useCallback(async (destination: string): Promise<OutboundResult> => {
     if (!destination) return { via: "none", ok: false, error: "empty destination" };
+    // On native Capacitor (iOS/Android) JsSIP is disabled — go directly to
+    // NS-API REST fallback without requiring a microphone permission prompt.
+    // The PBX will ring the device via SIP INVITE; audio is handled natively.
+    const isNativePlatform = (() => {
+      try { const cap: any = (window as any).Capacitor; return !!cap?.isNativePlatform?.(); } catch { return false; }
+    })();
+    if (isNativePlatform) {
+      return await callViaPBX(destination);
+    }
     const mic = await ensureMicPermission();
     if (mic.state !== "granted") {
       try { mic.stream?.getTracks().forEach((tr) => tr.stop()); } catch {}

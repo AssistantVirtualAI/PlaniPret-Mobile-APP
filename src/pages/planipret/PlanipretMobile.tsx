@@ -845,8 +845,21 @@ export default function PlanipretMobile() {
             </span>
           </div>
 
-          {/* Spacer gauche pour équilibrer la mise en page */}
-          <div style={{ width: 32 }} />
+          {/* Bouton Paramètres — gauche */}
+          <button
+            type="button"
+            onClick={() => navigate("/mplanipret/more")}
+            aria-label={t("nav.settings") || "Paramètres"}
+            className="flex items-center justify-center active:scale-95 transition"
+            style={{
+              width: 32, height: 32, borderRadius: 10,
+              background: "var(--pp-bg-elevated)",
+              border: "1px solid var(--pp-bg-border-2)",
+              color: "var(--pp-text-secondary)",
+            }}
+          >
+            <SettingsIcon className="w-4 h-4" />
+          </button>
 
           {/* Cloche notifications + lang/thème/profil — droite */}
           <div className="ml-auto flex items-center gap-1.5">
