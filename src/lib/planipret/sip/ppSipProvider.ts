@@ -42,6 +42,13 @@ export interface PpSipConfig {
   displayName?: string;
 }
 
+export interface PpSipEvent {
+  time: number;
+  level: "info" | "warn" | "error";
+  event: string;
+  detail?: string;
+}
+
 export interface PpSipSnapshot {
   status: PpSipStatus;
   callState: PpCallState;
@@ -59,6 +66,7 @@ export interface PpSipSnapshot {
 
 
 type Listener = (s: PpSipSnapshot) => void;
+type EventListener = (e: PpSipEvent[]) => void;
 
 // ─── Audio routing helpers ────────────────────────────────────────────────────
 // On web (browser / Android WebView), we use HTMLAudioElement.setSinkId() when
@@ -94,6 +102,8 @@ class PpSipProvider {
   private session: any = null;
   private cfg: PpSipConfig | null = null;
   private listeners = new Set<Listener>();
+  private eventListeners = new Set<EventListener>();
+  private eventLog: PpSipEvent[] = [];
   private snap: PpSipSnapshot = {
     status: "idle",
     callState: "idle",
@@ -118,6 +128,16 @@ class PpSipProvider {
   }
   getSnapshot(): PpSipSnapshot { return this.snap; }
   getConfig(): PpSipConfig | null { return this.cfg; }
+  getEvents(): PpSipEvent[] { return [...this.eventLog]; }
+  subscribeEvents(fn: EventListener): () => void {
+    this.eventListeners.add(fn);
+    fn([...this.eventLog]);
+    return () => { this.eventListeners.delete(fn); };
+  }
+  clearEvents(): void {
+    this.eventLog = [];
+    this.eventListeners.forEach((l) => { try { l([]); } catch {} });
+  }
 
   private update(patch: Partial<PpSipSnapshot>) {
     this.snap = { ...this.snap, ...patch };
@@ -128,6 +148,9 @@ class PpSipProvider {
     const fn = level === "error" ? "error" : level === "warn" ? "warn" : "log";
     // eslint-disable-next-line no-console
     (console as any)[fn](`[pp-sip] ${msg}`, detail ?? "");
+    const ev: PpSipEvent = { time: Date.now(), level, event: msg, detail: detail != null ? String(detail) : undefined };
+    this.eventLog = [...this.eventLog.slice(-199), ev];
+    this.eventListeners.forEach((l) => { try { l([...this.eventLog]); } catch {} });
   }
 
   async init(cfg: PpSipConfig) {

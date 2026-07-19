@@ -201,6 +201,13 @@ export function useMplanipretSoftphone() {
     };
     const evaluate = () => {
       const st = ppSipProvider.getSnapshot().status;
+      // On native Capacitor (iOS/Android), JsSIP is never started — status stays
+      // "idle" intentionally. The watchdog must not try to re-register in this case.
+      if (isNative && (st === "idle" || st === "disconnected")) {
+        disconnectedSince = 0;
+        clearTimers();
+        return;
+      }
       if (st === "registered" || st === "connected") {
         disconnectedSince = 0;
         clearTimers();

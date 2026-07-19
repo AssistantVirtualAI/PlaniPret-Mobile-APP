@@ -92,16 +92,20 @@ export default function MMore() {
 
   const [sipSnap, setSipSnap] = useState<PpSipSnapshot>(() => ppSipProvider.getSnapshot());
   useEffect(() => ppSipProvider.subscribe(setSipSnap), []);
+  const isNativePlatform = (() => {
+    try { const cap: any = (window as any).Capacitor; return !!cap?.isNativePlatform?.(); } catch { return false; }
+  })();
   const sipStatusColor: Record<string, string> = {
-    idle: "#94A3B8", connecting: "#F59E0B", connected: "#3B82F6",
+    idle: isNativePlatform ? "#10B981" : "#94A3B8",
+    connecting: "#F59E0B", connected: "#3B82F6",
     registered: "#10B981", disconnected: "#94A3B8", error: "#EF4444",
   };
-  const sipStatusLabel = sipSnap.status === "registered" ? "Enregistré"
-    : sipSnap.status === "connecting" ? "Connexion…"
-    : sipSnap.status === "connected" ? "Connecté (non enregistré)"
-    : sipSnap.status === "error" ? "Erreur"
-    : sipSnap.status === "disconnected" ? "Déconnecté"
-    : "Inactif";
+  const sipStatusLabel = sipSnap.status === "registered" ? (t("more.sip.registered") || "Enregistré")
+    : sipSnap.status === "connecting" ? (t("more.sip.connecting") || "Connexion…")
+    : sipSnap.status === "connected" ? (t("more.sip.connected") || "Connecté (non enregistré)")
+    : sipSnap.status === "error" ? (t("more.sip.error") || "Erreur")
+    : sipSnap.status === "disconnected" ? (t("more.sip.disconnected") || "Déconnecté")
+    : isNativePlatform ? (t("more.sip.readyNsApi") || "Prêt (NS-API)") : (t("more.sip.idle") || "Inactif");
 
   const reconnectNs = async () => {
     setReconnecting(true);
