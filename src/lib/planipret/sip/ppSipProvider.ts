@@ -154,12 +154,8 @@ class PpSipProvider {
   }
 
   async init(cfg: PpSipConfig) {
-    // Hard guard: never start JsSIP on Capacitor iOS — it crashes with
-    // "undefined is not an object (evaluating 'T.multi_header.length')".
-    if (IS_NATIVE) {
-      this.update({ status: "idle", errorCause: "native_platform" });
-      return;
-    }
+    // JsSIP runs on both web and Capacitor native (iOS/Android).
+    // The WebSocket SIP connection is identical to the web softphone.
     const wssUrl = String(cfg.wssUrl ?? "").trim();
     if (!cfg.extension || !cfg.sipDomain || !wssUrl || wssUrl === "undefined" || !/^wss?:\/\//i.test(wssUrl) || !cfg.password) {
       this.update({ status: "error", errorCause: "invalid_config" });
@@ -393,7 +389,6 @@ class PpSipProvider {
     return false;
   }
   async forceReregister() {
-    if (IS_NATIVE) return; // No-op on native Capacitor shell.
     try {
       if (!this.ua) return;
       try { this.ua.unregister({ all: true }); } catch {}

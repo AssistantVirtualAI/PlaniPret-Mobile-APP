@@ -94,12 +94,7 @@ export default function MSipDebug() {
           ))}
         </div>
 
-        {snap.errorCause && snap.errorCause === 'native_platform' ? (
-          <div className="flex items-start gap-2 p-2 rounded-lg" style={{ background: "rgba(16,185,129,0.10)", color: "#10B981" }}>
-            <CheckCircle2 className="w-4 h-4 flex-shrink-0 mt-0.5" />
-            <span className="text-[12px]">Mode natif iOS/Android — appels via NS-API REST (JsSIP désactivé)</span>
-          </div>
-        ) : snap.errorCause ? (
+        {snap.errorCause ? (
           <div className="flex items-start gap-2 p-2 rounded-lg" style={{ background: "rgba(239,68,68,0.08)", color: "#EF4444" }}>
             <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5" />
             <span className="text-[12px]">{snap.errorCause}</span>

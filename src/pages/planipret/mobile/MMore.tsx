@@ -96,7 +96,7 @@ export default function MMore() {
     try { const cap: any = (window as any).Capacitor; return !!cap?.isNativePlatform?.(); } catch { return false; }
   })();
   const sipStatusColor: Record<string, string> = {
-    idle: isNativePlatform ? "#10B981" : "#94A3B8",
+    idle: "#F59E0B",
     connecting: "#F59E0B", connected: "#3B82F6",
     registered: "#10B981", disconnected: "#94A3B8", error: "#EF4444",
   };
@@ -105,7 +105,7 @@ export default function MMore() {
     : sipSnap.status === "connected" ? (t("more.sip.connected") || "Connecté (non enregistré)")
     : sipSnap.status === "error" ? (t("more.sip.error") || "Erreur")
     : sipSnap.status === "disconnected" ? (t("more.sip.disconnected") || "Déconnecté")
-    : isNativePlatform ? (t("more.sip.readyNsApi") || "Prêt (NS-API)") : (t("more.sip.idle") || "Inactif");
+    : (t("more.sip.idle") || "Connexion en cours…");
 
   const reconnectNs = async () => {
     setReconnecting(true);

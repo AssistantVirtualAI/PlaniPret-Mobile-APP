@@ -203,13 +203,7 @@ export function useMplanipretSoftphone() {
     const isNative = !!cap?.isNativePlatform?.();
     const evaluate = () => {
       const st = ppSipProvider.getSnapshot().status;
-      // On native Capacitor (iOS/Android), JsSIP is never started — status stays
-      // "idle" intentionally. The watchdog must not try to re-register in this case.
-      if (isNative && (st === "idle" || st === "disconnected")) {
-        disconnectedSince = 0;
-        clearTimers();
-        return;
-      }
+
       if (st === "registered" || st === "connected") {
         disconnectedSince = 0;
         clearTimers();
@@ -391,15 +385,8 @@ export function useMplanipretSoftphone() {
 
   const placeCall = useCallback(async (destination: string): Promise<OutboundResult> => {
     if (!destination) return { via: "none", ok: false, error: "empty destination" };
-    // On native Capacitor (iOS/Android) JsSIP is disabled — go directly to
-    // NS-API REST fallback without requiring a microphone permission prompt.
-    // The PBX will ring the device via SIP INVITE; audio is handled natively.
-    const isNativePlatform = (() => {
-      try { const cap: any = (window as any).Capacitor; return !!cap?.isNativePlatform?.(); } catch { return false; }
-    })();
-    if (isNativePlatform) {
-      return await callViaPBX(destination);
-    }
+    // JsSIP is active on both web and native (iOS/Android).
+    // Use WebRTC SIP call first; fall back to NS-API REST only if SIP is not registered.
     const mic = await ensureMicPermission();
     if (mic.state !== "granted") {
       try { mic.stream?.getTracks().forEach((tr) => tr.stop()); } catch {}
