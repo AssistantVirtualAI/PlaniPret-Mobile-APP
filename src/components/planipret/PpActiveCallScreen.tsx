@@ -5,7 +5,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { supabase } from "@/integrations/supabase/client";
 import {
   Mic, MicOff, Pause, Play, PhoneForwarded, Grid3X3, PhoneOff, Phone,
   User, Search, X, ChevronLeft, Activity, Volume2, VolumeX,
@@ -13,6 +12,7 @@ import {
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import type { useMplanipretSoftphone } from "@/hooks/useMplanipretSoftphone";
 import PpCallDiagnosticPanel from "./PpCallDiagnosticPanel";
+import { getPpContacts, peekPpContacts } from "@/lib/ppContactsCache";
 
 type Contact = {
   id?: string;
@@ -135,31 +135,42 @@ export default function PpActiveCallScreen({
     return () => clearInterval(id);
   }, [snap.callState, snap.startedAt]);
 
-  // Load internal contacts when entering transfer view (once)
+  // Load internal contacts when entering transfer view.
+  // 1) Serve from cache instantly (peekPpContacts) so the list appears immediately.
+  // 2) Refresh in background via getPpContacts (deduped, TTL-aware).
   useEffect(() => {
-    if (view !== "transfer" || contacts.length > 0 || loadingContacts) return;
+    if (view !== "transfer") return;
+    // Instant render from cache (may be stale up to 24h — good enough for transfer).
+    const cached: Contact[] = [];
+    for (const c of (peekPpContacts("list") ?? [])) cached.push({ ...c, source: "personal" as const });
+    for (const c of (peekPpContacts("shared") ?? [])) cached.push({ ...c, source: "shared" as const });
+    for (const c of (peekPpContacts("directory") ?? [])) cached.push({ ...c, source: "directory" as const });
+    if (cached.length > 0) setContacts(cached);
+    // Background refresh — update list silently once fresh data arrives.
     let cancelled = false;
     (async () => {
-      setLoadingContacts(true);
+      if (!cached.length) setLoadingContacts(true);
       try {
-        const results: Contact[] = [];
         const [personal, shared, directory] = await Promise.all([
-          supabase.functions.invoke("pp-ns-contacts", { body: { action: "list" } }),
-          supabase.functions.invoke("pp-ns-contacts", { body: { action: "shared" } }),
-          supabase.functions.invoke("pp-ns-contacts", { body: { action: "directory" } }),
+          getPpContacts("list"),
+          getPpContacts("shared"),
+          getPpContacts("directory"),
         ]);
-        for (const c of ((personal.data as any)?.contacts ?? [])) results.push({ ...c, source: "personal" });
-        for (const c of ((shared.data as any)?.contacts ?? [])) results.push({ ...c, source: "shared" });
-        for (const c of ((directory.data as any)?.directory ?? [])) results.push({ ...c, source: "directory" });
-        if (!cancelled) setContacts(results);
+        if (!cancelled) {
+          const results: Contact[] = [];
+          for (const c of personal) results.push({ ...c, source: "personal" as const });
+          for (const c of shared) results.push({ ...c, source: "shared" as const });
+          for (const c of directory) results.push({ ...c, source: "directory" as const });
+          setContacts(results);
+        }
       } catch (e) {
-        console.error("[PpActiveCallScreen] contacts load failed", e);
+        console.error("[PpActiveCallScreen] contacts refresh failed", e);
       } finally {
         if (!cancelled) setLoadingContacts(false);
       }
     })();
     return () => { cancelled = true; };
-  }, [view, contacts.length, loadingContacts]);
+  }, [view]);
 
   const filteredContacts = useMemo(() => {
     const q = transferQuery.trim().toLowerCase();

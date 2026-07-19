@@ -14,6 +14,7 @@
 import { prefetchAllMplanipret } from "@/lib/routePrefetch";
 import { writePageCache, readPageCache } from "@/lib/ppPageCache";
 import { supabase } from "@/integrations/supabase/client";
+import { prefetchPpContacts } from "@/lib/ppContactsCache";
 
 let bootStarted = false;
 
@@ -25,6 +26,8 @@ async function prefetchPageData(userId: string): Promise<void> {
     prefetchMessagesData(userId),
     prefetchVoicemailData(userId),
     prefetchNotificationsData(userId),
+    // Warm contacts cache so the transfer list appears instantly during a call.
+    Promise.resolve(prefetchPpContacts(["list", "shared", "directory"])),
   ]);
 }
 
