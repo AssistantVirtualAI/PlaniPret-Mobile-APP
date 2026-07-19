@@ -1,11 +1,12 @@
-import { useEffect, useState } from "react";
-import { Bell, Globe, Moon, Sun } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { useState } from "react";
+import { Globe, Moon, Sun } from "lucide-react";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { useMplanipretTheme } from "@/hooks/useMplanipretTheme";
-import { supabase } from "@/integrations/supabase/client";
-import planipretLogoAsset from "@/assets/planipret-logo.png.asset.json";
 import MobileProfileSheet from "./MobileProfileSheet";
+
+// MobileHeaderControls — right-side controls only (lang, theme, profile).
+// The Planiprêt logo (centred) and the single notification bell are rendered
+// directly in PlanipretMobile.tsx to avoid duplication.
 
 const STATUS_COLOR: Record<string, string> = {
   available: "#10B981",
@@ -17,28 +18,7 @@ const STATUS_COLOR: Record<string, string> = {
 export default function MobileHeaderControls({ profile, reloadProfile }: { profile: any; reloadProfile: () => Promise<void> | void }) {
   const { t, lang, toggle: toggleLang } = useMplanipretLang();
   const { theme, toggle: toggleTheme } = useMplanipretTheme();
-  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
-  const [unread, setUnread] = useState(0);
-
-  useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
-      try {
-        const { data: u } = await supabase.auth.getUser();
-        if (!u?.user) return;
-        const { count } = await supabase
-          .from("planipret_ava_notifications" as any)
-          .select("id", { count: "exact", head: true })
-          .eq("user_id", u.user.id)
-          .is("read_at", null);
-        if (!cancelled) setUnread(count ?? 0);
-      } catch { /* noop */ }
-    };
-    load();
-    const t = setInterval(load, 30000);
-    return () => { cancelled = true; clearInterval(t); };
-  }, []);
 
   const initials = (profile?.full_name || profile?.email || "?")
     .split(/\s+/).map((s: string) => s[0]).filter(Boolean).slice(0, 2).join("").toUpperCase();
@@ -47,27 +27,6 @@ export default function MobileHeaderControls({ profile, reloadProfile }: { profi
   return (
     <>
       <div className="ml-auto flex items-center gap-1.5">
-        <span aria-label="Planiprêt" style={{
-          width: 26, height: 26, borderRadius: 8, overflow: "hidden",
-          display: "inline-flex", alignItems: "center", justifyContent: "center",
-          background: "#fff", border: "1px solid var(--pp-bg-border-2)",
-        }}>
-          <img src={planipretLogoAsset.url} alt="Planiprêt" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
-        </span>
-        <button onClick={() => navigate("/mplanipret/notifications")}
-          className="relative flex items-center justify-center rounded-full"
-          style={{ width: 28, height: 28, background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
-          aria-label="Notifications">
-          <Bell className="w-3.5 h-3.5" />
-          {unread > 0 && (
-            <span style={{
-              position: "absolute", top: -3, right: -3, minWidth: 14, height: 14, padding: "0 3px",
-              borderRadius: 999, background: "#EF4444", color: "#fff", fontSize: 9, fontWeight: 800,
-              display: "inline-flex", alignItems: "center", justifyContent: "center",
-              border: "1.5px solid var(--pp-bg-surface)",
-            }}>{unread > 99 ? "99+" : unread}</span>
-          )}
-        </button>
         <button onClick={toggleLang}
           className="flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-bold"
           style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}

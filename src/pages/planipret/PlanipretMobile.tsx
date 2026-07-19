@@ -12,7 +12,7 @@ import SessionTimeoutModal from "@/components/planipret/SessionTimeoutModal";
 import PrivacyConsentGate from "@/components/planipret/PrivacyConsentGate";
 import UniversalSearchBar from "@/components/planipret/UniversalSearchBar";
 import { OnboardingTutorial } from "@/components/planipret/OnboardingTutorial";
-import MobileScreenSkeleton from "@/components/planipret/mobile/MobileScreenSkeleton";
+import { MobilePageSkeleton } from "@/components/planipret/Skeletons";
 import { prefetchRoute, scheduleIdlePrefetch, prefetchAllMplanipret } from "@/lib/routePrefetch";
 
 import { useAvaNavigation } from "@/hooks/useAvaNavigation";
@@ -819,74 +819,80 @@ export default function PlanipretMobile() {
       )}
       <div className="h-full flex flex-col relative overflow-hidden" style={{ background: "var(--pp-bg-base)" }}>
 
-        {/* Top brand header — AVA (left) · Planiprêt (center) · Settings (right) */}
+        {/* Top brand header — Logo Planiprêt centré · Cloche (droite) · Lang/Thème/Profil (droite) */}
         <header
           className="relative flex items-center px-4 pp-mobile-header"
           style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 6px)", paddingBottom: 6 }}
         >
-
-
-          {/* AVA icon — left */}
-          <div className="flex items-center gap-1.5">
-            <AvaBadge />
-            <span className="flex items-center gap-1.5">
-              <span className="pp-live-dot" />
-              <span style={{ fontSize: 9, color: "var(--pp-success)", fontWeight: 700, letterSpacing: "0.05em" }}>REST</span>
+          {/* Logo Planiprêt — centré en position absolue */}
+          <div
+            className="absolute left-1/2 -translate-x-1/2 flex items-center justify-center"
+            style={{ pointerEvents: "none" }}
+          >
+            <span
+              style={{
+                width: 44, height: 44, borderRadius: 12, overflow: "hidden",
+                display: "inline-flex", alignItems: "center", justifyContent: "center",
+                background: "#fff", border: "1.5px solid var(--pp-bg-border-2)",
+                boxShadow: "0 2px 8px rgba(26,74,138,0.18)",
+              }}
+            >
+              <img
+                src={planipretLogoAsset.url}
+                alt="Planiprêt"
+                style={{ width: "100%", height: "100%", objectFit: "contain" }}
+              />
             </span>
           </div>
 
-          {/* Settings button — between AVA (left) and Planiprêt (center) */}
-          <button
-            type="button"
-            onClick={() => navigate("/mplanipret/more")}
-            aria-label="Paramètres"
-            className="ml-3 flex items-center justify-center active:scale-95 transition"
-            style={{
-              width: 32, height: 32, borderRadius: 10,
-              background: "var(--pp-bg-elevated)",
-              border: "1px solid var(--pp-bg-border-2)",
-              color: "var(--pp-text-secondary)",
-            }}
-          >
-            <SettingsIcon className="w-4 h-4" />
-          </button>
+          {/* Spacer gauche pour équilibrer la mise en page */}
+          <div style={{ width: 32 }} />
 
-          {/* Notifications bell — aggregate SMS + voicemail + AVA notifs */}
-          <button
-            type="button"
-            onClick={() => navigate("/mplanipret/notifications")}
-            aria-label={t("nav.notifications") || "Notifications"}
-            className="ml-2 relative flex items-center justify-center active:scale-95 transition"
-            style={{
-              width: 32, height: 32, borderRadius: 10,
-              background: "var(--pp-bg-elevated)",
-              border: "1px solid var(--pp-bg-border-2)",
-              color: totalUnread > 0 ? "var(--pp-brand-accent)" : "var(--pp-text-secondary)",
-            }}
-          >
-            <Bell className="w-4 h-4" />
-            {totalUnread > 0 && (
-              <span
-                className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full text-white text-[9px] font-bold flex items-center justify-center"
-                style={{ background: "var(--pp-danger, #E84C4C)" }}
-              >
-                {totalUnread > 9 ? "9+" : totalUnread}
-              </span>
-            )}
-          </button>
-
-
-          {/* Lang + theme + profile — right */}
-          <MobileHeaderControls profile={profile} reloadProfile={loadProfile} />
-
+          {/* Cloche notifications + lang/thème/profil — droite */}
+          <div className="ml-auto flex items-center gap-1.5">
+            {/* Cloche unique — SMS + VM + AVA */}
+            <button
+              type="button"
+              onClick={() => navigate("/mplanipret/notifications")}
+              aria-label={t("nav.notifications") || "Notifications"}
+              className="relative flex items-center justify-center active:scale-95 transition"
+              style={{
+                width: 32, height: 32, borderRadius: 10,
+                background: "var(--pp-bg-elevated)",
+                border: "1px solid var(--pp-bg-border-2)",
+                color: totalUnread > 0 ? "var(--pp-brand-accent)" : "var(--pp-text-secondary)",
+              }}
+            >
+              <Bell className="w-4 h-4" />
+              {totalUnread > 0 && (
+                <span
+                  className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full text-white text-[9px] font-bold flex items-center justify-center"
+                  style={{ background: "var(--pp-danger, #E84C4C)" }}
+                >
+                  {totalUnread > 9 ? "9+" : totalUnread}
+                </span>
+              )}
+            </button>
+            <MobileHeaderControls profile={profile} reloadProfile={loadProfile} />
+          </div>
         </header>
 
         <UniversalSearchBar />
         <div ref={scrollRef} className="flex-1 overflow-y-auto pb-[130px]">
           <PullIndicator pullDist={pullDist} refreshing={refreshing} threshold={threshold} color={ACCENT} />
           <PlanipretErrorBoundary key={location.pathname}>
-            <Suspense fallback={<MobileScreenSkeleton />}>
-              <Outlet context={{ profile, reloadProfile: loadProfile, openDialer, openAva, registerRefresh, softphone } satisfies PlanipretMobileContext} />
+            <Suspense fallback={<MobilePageSkeleton />}>
+              {/* key=pathname forces a remount only when the route changes,
+                  giving each page a clean state while keeping the scroll container alive */}
+              <div
+                key={location.pathname}
+                style={{
+                  animation: "pp-page-enter 180ms cubic-bezier(0.25,0.46,0.45,0.94) both",
+                  minHeight: "100%",
+                }}
+              >
+                <Outlet context={{ profile, reloadProfile: loadProfile, openDialer, openAva, registerRefresh, softphone } satisfies PlanipretMobileContext} />
+              </div>
             </Suspense>
           </PlanipretErrorBoundary>
         </div>
