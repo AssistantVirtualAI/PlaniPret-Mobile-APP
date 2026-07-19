@@ -14,6 +14,8 @@ import UniversalSearchBar from "@/components/planipret/UniversalSearchBar";
 import { OnboardingTutorial } from "@/components/planipret/OnboardingTutorial";
 import { MobilePageSkeleton } from "@/components/planipret/Skeletons";
 import { prefetchRoute, scheduleIdlePrefetch, prefetchAllMplanipret } from "@/lib/routePrefetch";
+import { bootPreloader, refreshPreloadedData } from "@/lib/ppBootLoader";
+import { usePpNotificationBadge } from "@/hooks/usePpNotificationBadge";
 
 import { useAvaNavigation } from "@/hooks/useAvaNavigation";
 const AvaVoiceAgent = lazy(() => import("@/components/planipret/mobile/AvaVoiceAgent"));
@@ -477,10 +479,11 @@ export default function PlanipretMobile() {
   const [loginLoading, setLoginLoading] = useState(false);
   const [dialerOpen, setDialerOpen] = useState(false);
   const [dialerInit, setDialerInit] = useState<string | undefined>(undefined);
-  const [unreadMsg, setUnreadMsg] = useState(0);
-  const [unreadVm, setUnreadVm] = useState(0);
-  const [unreadNotif, setUnreadNotif] = useState(0);
-  const totalUnread = unreadMsg + unreadVm + unreadNotif;
+  // Centralized notification badge — all sources (SMS, VM, missed calls, AVA, MS365)
+  const { totalUnread, counts: notifCounts, refresh: refreshBadge } = usePpNotificationBadge(profile?.user_id);
+  // Keep legacy setters for backward compat with toast handlers below
+  const unreadMsg = notifCounts.sms;
+  const unreadVm = notifCounts.voicemail;
   const [inbound, setInbound] = useState<InboundCall>(null);
   const [avaOpen, setAvaOpen] = useState(false);
   const [avaMode, setAvaMode] = useState<"voice" | "chat">("voice");
@@ -522,10 +525,24 @@ export default function PlanipretMobile() {
   useRealtimeManager(profile?.user_id, { onInboundRinging, onAiInsight });
   useAvaNavigation(profile?.user_id);
 
-  // Aggressive: prefetch every mobile chunk immediately on mount so tab
-  // switches feel instant — especially Microsoft integration screens which
-  // are heavy and used often.
-  useEffect(() => { prefetchAllMplanipret(); }, []);
+  // Boot preloader: warm all JS chunks + prefetch page data on mount.
+  // Re-runs data prefetch on visibility/focus resume (handled inside bootPreloader).
+  useEffect(() => {
+    bootPreloader(profile?.user_id ?? undefined);
+  }, [profile?.user_id]);
+
+  // Refresh preloaded data when app comes back to foreground.
+  useEffect(() => {
+    if (!profile?.user_id) return;
+    const onResume = () => refreshPreloadedData(profile.user_id);
+    const onVis = () => { if (document.visibilityState === "visible") onResume(); };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("focus", onResume);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("focus", onResume);
+    };
+  }, [profile?.user_id]);
 
 
   // Detect active outbound/in-progress call → FAB pulses red & hangs up on tap
@@ -600,21 +617,10 @@ export default function PlanipretMobile() {
     } catch {}
   };
 
+  // Toast alerts for new inbound events — badge counts are now handled by
+  // usePpNotificationBadge above (Realtime + periodic refresh).
   useEffect(() => {
     if (!profile?.user_id) return;
-    const sb: any = supabase;
-    const refreshCounts = async () => {
-      const [{ count: mc }, { count: vc }, { count: nc }] = await Promise.all([
-        supabase.from("planipret_phone_messages").select("id", { count: "exact", head: true }).eq("user_id", profile.user_id).eq("direction", "inbound").is("read_at", null),
-        supabase.from("planipret_voicemails").select("id", { count: "exact", head: true }).eq("user_id", profile.user_id).eq("folder", "inbox").eq("is_read", false),
-        sb.from("planipret_ava_notifications").select("id", { count: "exact", head: true }).eq("user_id", profile.user_id).is("read_at", null),
-      ]);
-      setUnreadMsg(mc ?? 0); setUnreadVm(vc ?? 0); setUnreadNotif(nc ?? 0);
-    };
-    refreshCounts();
-
-    // In-app toast alerts for new inbound events (message, voicemail, missed call).
-    // Deep-links straight to the relevant tab so the user can act immediately.
     const onNewSms = (payload: any) => {
       const row = payload.new || {};
       if (row.direction !== "inbound") return;
@@ -654,16 +660,15 @@ export default function PlanipretMobile() {
         action: { label: t("common.view") || "Voir", onClick: () => navigate("/mplanipret/notifications") },
       });
     };
-
     const ch = supabase
-      .channel("mplanipret-badges")
-      .on("postgres_changes", { event: "*", schema: "public", table: "planipret_phone_messages", filter: `user_id=eq.${profile.user_id}` }, (p: any) => { if (p.eventType === "INSERT") onNewSms(p); refreshCounts(); })
-      .on("postgres_changes", { event: "*", schema: "public", table: "planipret_voicemails", filter: `user_id=eq.${profile.user_id}` }, (p: any) => { if (p.eventType === "INSERT") onNewVm(p); refreshCounts(); })
+      .channel("mplanipret-toasts")
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "planipret_phone_messages", filter: `user_id=eq.${profile.user_id}` }, onNewSms)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "planipret_voicemails", filter: `user_id=eq.${profile.user_id}` }, onNewVm)
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "planipret_phone_calls", filter: `user_id=eq.${profile.user_id}` }, onNewMissed)
-      .on("postgres_changes", { event: "*", schema: "public", table: "planipret_ava_notifications", filter: `user_id=eq.${profile.user_id}` }, (p: any) => { if (p.eventType === "INSERT") onNewNotif(p); refreshCounts(); })
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "planipret_ava_notifications", filter: `user_id=eq.${profile.user_id}` }, onNewNotif)
       .subscribe();
     return () => { supabase.removeChannel(ch); };
-  }, [profile?.user_id, location.pathname, navigate, t]);
+  }, [profile?.user_id, navigate, t]);
 
   const loadProfile = async () => {
     const { data: { session } } = await supabase.auth.getSession();
