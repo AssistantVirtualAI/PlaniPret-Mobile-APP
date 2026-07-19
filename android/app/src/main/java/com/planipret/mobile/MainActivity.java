@@ -62,7 +62,7 @@ public class MainActivity extends BridgeActivity {
     }
 
     @Override
-    protected void onResume() {
+    public void onResume() {
         super.onResume();
         // Restore communication mode when app comes to foreground
         if (audioManager != null) {
@@ -71,7 +71,7 @@ public class MainActivity extends BridgeActivity {
     }
 
     @Override
-    protected void onDestroy() {
+    public void onDestroy() {
         super.onDestroy();
         // Release audio resources when app is destroyed
         if (audioManager != null) {
