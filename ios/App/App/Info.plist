@@ -90,5 +90,19 @@
 	<key>NSFaceIDUsageDescription</key>
 	<string>Planiprêt peut utiliser Face ID pour sécuriser l'accès à votre compte.</string>
 
+	<!-- Bluetooth (casques audio, AirPods) -->
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Planiprêt utilise le Bluetooth pour les casques audio et AirPods lors des appels.</string>
+	<key>NSBluetoothPeripheralUsageDescription</key>
+	<string>Planiprêt utilise le Bluetooth pour les casques audio lors des appels.</string>
+
+	<!-- Réseau local (requis iOS 14+ pour WebSocket VoIP) -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Planiprêt utilise le réseau local pour les connexions téléphoniques VoIP.</string>
+
+	<!-- Reconnaissance vocale (assistant AVA) -->
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Planiprêt peut utiliser la reconnaissance vocale pour l'assistant AVA.</string>
+
 </dict>
 </plist>
