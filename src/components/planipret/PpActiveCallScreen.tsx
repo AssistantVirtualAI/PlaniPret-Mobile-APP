@@ -60,6 +60,46 @@ export default function PpActiveCallScreen({
   const [loadingContacts, setLoadingContacts] = useState(false);
   const [diagOpen, setDiagOpen] = useState(false);
   const [speakerOn, setSpeakerOn] = useState(false);
+  // Outbound ringback tone for NS-API REST calls (native platform)
+  const ringbackRef = useRef<HTMLAudioElement | null>(null);
+  useEffect(() => {
+    const isRingingOut = snap.callState === "ringing-out";
+    if (isRingingOut) {
+      // Play a ringback tone so the user hears something while the PBX dials
+      if (!ringbackRef.current) {
+        const a = new Audio();
+        a.src = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA="; // silent placeholder
+        a.loop = true;
+        ringbackRef.current = a;
+      }
+      // Use Web Audio API to generate a 440Hz ringback tone
+      try {
+        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.frequency.value = 440;
+        gain.gain.value = 0.15;
+        osc.start();
+        // Ring pattern: 2s on, 4s off
+        const ringPattern = () => {
+          gain.gain.setValueAtTime(0.15, ctx.currentTime);
+          gain.gain.setValueAtTime(0, ctx.currentTime + 2);
+        };
+        ringPattern();
+        const interval = setInterval(ringPattern, 6000);
+        ringbackRef.current = { stop: () => { clearInterval(interval); try { osc.stop(); ctx.close(); } catch {} } } as any;
+      } catch {}
+    } else {
+      // Stop ringback when call is answered or ended
+      try { (ringbackRef.current as any)?.stop?.(); } catch {}
+      ringbackRef.current = null;
+    }
+    return () => {
+      try { (ringbackRef.current as any)?.stop?.(); } catch {}
+    };
+  }, [snap.callState]);
 
   useEffect(() => { setAudioEl(audioRef.current); return () => setAudioEl(null); }, [setAudioEl]);
 
@@ -195,7 +235,7 @@ export default function PpActiveCallScreen({
             </button>
           ) : <div className="w-9" />}
           <div className="text-xs text-white/60 uppercase tracking-widest">
-            {view === "keypad" ? "Clavier" : view === "transfer" ? "Transférer" : (isIncoming ? "Entrant" : isOutgoingRinging ? "Sortant" : "En cours")}
+            {view === "keypad" ? (t("call.keypad") || "Clavier") : view === "transfer" ? (t("call.transfer") || "Transférer") : (isIncoming ? (t("call.incomingLabel") || "Entrant") : isOutgoingRinging ? (t("call.outgoingLabel") || "Sortant") : (t("call.inProgressLabel") || "En cours"))}
           </div>
           <button onClick={() => setDiagOpen(true)} aria-label="Diagnostic" className="p-2 rounded-full" style={{ background: "rgba(255,255,255,0.08)" }}>
             <Activity className="w-4 h-4" />
@@ -215,7 +255,9 @@ export default function PpActiveCallScreen({
             {displayNumber && <div className="text-sm text-white/60 mt-1">{displayNumber}</div>}
             <div className="mt-3 text-sm text-white/70">{statusText}</div>
             {dtmfBuf && <div className="mt-2 text-xs text-white/50">DTMF: {dtmfBuf}</div>}
-            {snap.errorCause && <div className="mt-2 text-xs" style={{ color: "#FCA5A5" }}>{snap.errorCause}</div>}
+            {snap.errorCause && !['native_platform','idle'].includes(snap.errorCause) && (
+              <div className="mt-2 text-xs" style={{ color: "#FCA5A5" }}>{snap.errorCause}</div>
+            )}
           </div>
         )}
 
@@ -337,12 +379,12 @@ export default function PpActiveCallScreen({
               className="grid grid-cols-6 gap-2 rounded-[28px] px-3 py-3"
               style={{ background: "rgba(3,10,22,0.72)", border: "1px solid rgba(255,255,255,0.10)", boxShadow: "0 18px 48px rgba(0,0,0,0.42)", backdropFilter: "blur(18px)" }}
             >
-              <CallBtn active={snap.muted} onClick={() => (snap.muted ? unmute() : mute())} icon={snap.muted ? <MicOff /> : <Mic />} label={snap.muted ? "Activer" : "Muet"} />
-              <CallBtn active={speakerOn} onClick={() => setSpeakerOn((v) => !v)} icon={speakerOn ? <Volume2 /> : <VolumeX />} label="H.-parleur" />
-              <CallBtn active={isHeld} onClick={() => (isHeld ? unhold() : hold())} icon={isHeld ? <Play /> : <Pause />} label={isHeld ? "Reprendre" : "Attente"} />
-              <CallBtn onClick={() => setView("transfer")} icon={<PhoneForwarded />} label="Transférer" />
-              <CallBtn onClick={() => setView("keypad")} icon={<Grid3X3 />} label="Clavier" />
-              <CallBtn danger onClick={() => hangup()} icon={<PhoneOff />} label="Raccrocher" />
+              <CallBtn active={snap.muted} onClick={() => (snap.muted ? unmute() : mute())} icon={snap.muted ? <MicOff /> : <Mic />} label={snap.muted ? (t("call.unmute") || "Activer") : (t("call.mute") || "Muet")} />
+              <CallBtn active={speakerOn} onClick={() => setSpeakerOn((v) => !v)} icon={speakerOn ? <Volume2 /> : <VolumeX />} label={t("call.speaker") || "H.-parleur"} />
+              <CallBtn active={isHeld} onClick={() => (isHeld ? unhold() : hold())} icon={isHeld ? <Play /> : <Pause />} label={isHeld ? (t("call.resume") || "Reprendre") : (t("call.hold") || "Attente")} />
+              <CallBtn onClick={() => setView("transfer")} icon={<PhoneForwarded />} label={t("call.transfer") || "Transférer"} />
+              <CallBtn onClick={() => setView("keypad")} icon={<Grid3X3 />} label={t("call.keypad") || "Clavier"} />
+              <CallBtn danger onClick={() => hangup()} icon={<PhoneOff />} label={t("call.hangup") || "Raccrocher"} />
             </div>
           </div>
         )}

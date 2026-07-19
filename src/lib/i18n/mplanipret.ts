@@ -162,6 +162,11 @@ export const MP_DICT = {
     },
     call: {
       ringing: "Sonnerie…",
+      incoming: "Appel entrant",
+      incomingLabel: "Entrant",
+      outgoingLabel: "Sortant",
+      inProgressLabel: "En cours",
+      dtmfHeld: "Reprenez l'appel pour envoyer des tonalités",
       onHold: "En attente",
       mute: "Muet",
       unmute: "Activer micro",
@@ -1097,6 +1102,11 @@ export const MP_DICT = {
     },
     call: {
       ringing: "Ringing…",
+      incoming: "Incoming call",
+      incomingLabel: "Incoming",
+      outgoingLabel: "Outgoing",
+      inProgressLabel: "In progress",
+      dtmfHeld: "Resume the call to send tones",
       onHold: "On hold",
       mute: "Mute",
       unmute: "Unmute",
