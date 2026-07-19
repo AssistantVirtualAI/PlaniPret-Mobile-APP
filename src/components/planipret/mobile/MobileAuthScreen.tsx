@@ -49,18 +49,83 @@ export default function MobileAuthScreen({ onLoggedIn }: { onLoggedIn: () => Pro
 
   const signInWithMicrosoft = async () => {
     setLoading(true);
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: "azure",
-      options: {
-        redirectTo: `${window.location.origin}/mplanipret`,
-        scopes: "email openid profile offline_access User.Read User.ReadBasic.All Mail.ReadWrite Mail.Send MailboxSettings.Read Calendars.ReadWrite Chat.Read Chat.ReadBasic Chat.ReadWrite Channel.ReadBasic.All ChannelMessage.Read.All ChannelMessage.Send Team.ReadBasic.All Organization.Read.All Application.Read.All",
-      },
-    });
-    setLoading(false);
-    if (error) {
-      const msg = /unsupported|not enabled|provider/i.test(error.message)
+    try {
+      // On Capacitor (iOS/Android), OAuth must open in an in-app browser
+      // (SFSafariViewController / Chrome Custom Tab) and redirect back via
+      // the Supabase callback URL. Using window.location.origin would give
+      // "capacitor://localhost" which Azure does not accept.
+      const SUPABASE_URL = "https://gejxisrqtvxavbrfcoxz.supabase.co";
+      const SCOPES = "email openid profile offline_access User.Read User.ReadBasic.All Mail.ReadWrite Mail.Send MailboxSettings.Read Calendars.ReadWrite Chat.Read Chat.ReadBasic Chat.ReadWrite Channel.ReadBasic.All ChannelMessage.Read.All ChannelMessage.Send Team.ReadBasic.All Organization.Read.All Application.Read.All";
+
+      let isNative = false;
+      try {
+        const { Capacitor } = await import('@capacitor/core');
+        isNative = Capacitor.isNativePlatform();
+      } catch { /* web */ }
+
+      if (isNative) {
+        // Build the Supabase OAuth URL manually so we can open it in the
+        // in-app browser instead of navigating the WebView.
+        const { data, error } = await supabase.auth.signInWithOAuth({
+          provider: "azure",
+          options: {
+            redirectTo: `${SUPABASE_URL}/auth/v1/callback`,
+            scopes: SCOPES,
+            skipBrowserRedirect: true, // do NOT navigate the WebView
+          },
+        });
+        if (error) throw error;
+        if (!data?.url) throw new Error("No OAuth URL returned");
+
+        // Open in SFSafariViewController (iOS) / Chrome Custom Tab (Android)
+        const { Browser } = await import('@capacitor/browser');
+        await Browser.open({ url: data.url, presentationStyle: 'popover' });
+
+        // Listen for the deep link callback (appUrlOpen fires when Azure
+        // redirects back to the Supabase callback which then redirects to
+        // the app via the custom scheme or universal link).
+        const { App: CapacitorApp } = await import('@capacitor/app');
+        const listener = await CapacitorApp.addListener('appUrlOpen', async (event: { url: string }) => {
+          await listener.remove();
+          try { await Browser.close(); } catch { /* ignore */ }
+          // Extract the Supabase session tokens from the URL fragment/query.
+          const url = new URL(event.url);
+          const params = new URLSearchParams(
+            url.hash ? url.hash.slice(1) : url.search.slice(1)
+          );
+          const accessToken = params.get('access_token');
+          const refreshToken = params.get('refresh_token');
+          if (accessToken && refreshToken) {
+            const { error: sessErr } = await supabase.auth.setSession({
+              access_token: accessToken,
+              refresh_token: refreshToken,
+            });
+            if (sessErr) { toast.error(sessErr.message); setLoading(false); return; }
+            toast.success(t("auth.success"));
+            void import("@/lib/native/requestPermissionsAfterLogin").then(m => m.requestPermissionsAfterLogin());
+            await onLoggedIn();
+          } else {
+            toast.error(t("auth.failed"));
+          }
+          setLoading(false);
+        });
+      } else {
+        // Web: standard OAuth redirect
+        const { error } = await supabase.auth.signInWithOAuth({
+          provider: "azure",
+          options: {
+            redirectTo: `${window.location.origin}/mplanipret`,
+            scopes: SCOPES,
+          },
+        });
+        if (error) throw error;
+        // Loading stays true — page will redirect
+      }
+    } catch (err: any) {
+      setLoading(false);
+      const msg = /unsupported|not enabled|provider/i.test(err?.message ?? "")
         ? t("auth.msUnavailable")
-        : error.message;
+        : (err?.message ?? t("auth.failed"));
       toast.error(msg);
     }
   };
