@@ -471,6 +471,8 @@ export function useMplanipretSoftphone() {
     unhold: () => restCall?.id ? void restControl("unhold") : ppSipProvider.unhold(),
     sendDTMF: (k: string) => restCall?.id ? void restControl("dtmf", { digit: k }) : ppSipProvider.sendDTMF(k),
     transfer: (t: string) => restCall?.id ? void restControl("transfer", { destination: t, target: t }) : ppSipProvider.transfer(t),
+    transferExternal: (n: string) => restCall?.id ? void restControl("transfer", { destination: n, target: n }) : ppSipProvider.transferExternal(n),
+    setSpeaker: (enabled: boolean) => ppSipProvider.setSpeaker(enabled),
     setAudioEl: (el: HTMLAudioElement | null) => { ppSipProvider.audioEl = el; },
     forceHandover: () => handoverController.forceHandover(),
   }), [effectiveSnap, loading, net, quality, sipConnected, placeCall, answer, hangup, answeredElsewhere, attachRestCall, restCall?.id, restControl]);

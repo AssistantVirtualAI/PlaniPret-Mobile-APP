@@ -1,5 +1,6 @@
 import UIKit
 import Capacitor
+import AVFoundation
 
 @UIApplicationMain
 class AppDelegate: UIResponder, UIApplicationDelegate {
@@ -7,8 +8,32 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     var window: UIWindow?
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
-        // Override point for customization after application launch.
+        // Configure AVAudioSession for VoIP calls:
+        // - PlayAndRecord + voiceChat mode: enables mic + earpiece simultaneously
+        // - defaultToSpeaker is NOT set — audio routes to earpiece by default
+        // - The user must explicitly tap the speaker button to switch to loudspeaker
+        // - allowBluetooth: enables Bluetooth headsets and AirPods
+        configureAudioSession()
         return true
+    }
+
+    private func configureAudioSession() {
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(
+                .playAndRecord,
+                mode: .voiceChat,
+                options: [
+                    .allowBluetooth,
+                    .allowBluetoothA2DP,
+                    .mixWithOthers
+                    // Do NOT include .defaultToSpeaker
+                ]
+            )
+            try session.setActive(true)
+        } catch {
+            print("[Planipret] AVAudioSession configuration failed: \(error)")
+        }
     }
 
     func applicationWillResignActive(_ application: UIApplication) {
@@ -22,7 +47,8 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     func applicationWillEnterForeground(_ application: UIApplication) {
-        // Called as part of the transition from the background to the active state; here you can undo many of the changes made on entering the background.
+        // Re-activate audio session when returning from background
+        try? AVAudioSession.sharedInstance().setActive(true)
     }
 
     func applicationDidBecomeActive(_ application: UIApplication) {

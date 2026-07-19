@@ -1,4 +1,4 @@
-// Planipret mobile — dedicated JsSIP UA bound to the NS-API PBX.
+// ppSipProvider.ts — Planipret SIP softphone (WebRTC / JsSIP)
 //
 // This is intentionally independent from the Lemtel `sipProvider` in
 // `@/lib/softphone/jssipProvider` so /mplanipret talks only to the NS-API
@@ -17,6 +17,14 @@ const IS_NATIVE: boolean = (() => {
   try {
     const cap: any = (typeof window !== "undefined") ? (window as any).Capacitor : null;
     return !!cap?.isNativePlatform?.();
+  } catch { return false; }
+})();
+
+// Detect Android WebView (Capacitor native Android)
+const IS_ANDROID: boolean = (() => {
+  try {
+    const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";
+    return /Android/i.test(ua) && IS_NATIVE;
   } catch { return false; }
 })();
 
@@ -43,6 +51,7 @@ export interface PpSipSnapshot {
   callId: string;
   muted: boolean;
   onHold: boolean;
+  speaker: boolean;
   startedAt: number | null;
   errorCause?: string;
   lastRegistrationAt: number | null;
@@ -50,6 +59,35 @@ export interface PpSipSnapshot {
 
 
 type Listener = (s: PpSipSnapshot) => void;
+
+// ─── Audio routing helpers ────────────────────────────────────────────────────
+// On web (browser / Android WebView), we use HTMLAudioElement.setSinkId() when
+// available to switch between earpiece ("communications") and loudspeaker
+// (""). On iOS native we rely on the AudioSession category set in Swift
+// (AVAudioSessionCategoryPlayAndRecord with defaultToSpeaker = false).
+async function setAudioOutput(el: HTMLAudioElement | null, useSpeaker: boolean): Promise<void> {
+  if (!el) return;
+  try {
+    // setSinkId is available in Chrome/Android WebView; not in Safari/iOS WKWebView.
+    if (typeof (el as any).setSinkId === "function") {
+      if (useSpeaker) {
+        // Empty string = system default (loudspeaker on most Android devices)
+        await (el as any).setSinkId("");
+      } else {
+        // "communications" maps to earpiece / headset on Android
+        await (el as any).setSinkId("communications");
+      }
+    }
+    // For iOS WKWebView: the audio session category is controlled natively.
+    // We can hint the desired route by setting the audio element's playsInline
+    // and muted attributes, but the actual routing is handled by Swift.
+    // No JS-side action needed — the default is earpiece when
+    // AVAudioSessionCategoryPlayAndRecord is used without defaultToSpeaker.
+  } catch (e: any) {
+    // setSinkId may throw if the device ID is not found — silently ignore.
+    console.warn("[pp-sip] setAudioOutput failed:", e?.message || e);
+  }
+}
 
 class PpSipProvider {
   private ua: any = null;
@@ -65,6 +103,7 @@ class PpSipProvider {
     callId: "",
     muted: false,
     onHold: false,
+    speaker: false,
     startedAt: null,
     lastRegistrationAt: null,
   };
@@ -112,7 +151,6 @@ class PpSipProvider {
     this.cfg = cleanCfg;
     this.lastSig = sig;
     this.update({ status: "connecting", errorCause: undefined });
-
     try {
       const urls = Array.from(new Set([cleanCfg.wssUrl, ...(cleanCfg.wssUrls || [])]
         .map((u) => String(u ?? "").trim())
@@ -125,7 +163,15 @@ class PpSipProvider {
         password: cleanCfg.password,
         authorization_user: cleanCfg.sipUsername,
         realm: cleanCfg.sipDomain,
+        // transport=wss in contact_uri is required for NetSapiens WSS routing.
+        // hack_wss_in_transport: the actual transport IS WSS, but some PBX
+        // implementations expect "TCP" in the Via header — this spoof fixes it.
+        // hack_ip_in_contact: use the actual IP in the Contact header to avoid
+        // NAT traversal issues on Android LTE networks.
         contact_uri: `sip:${cleanCfg.sipUsername}@${cleanCfg.sipDomain};transport=wss`,
+        hack_via_tcp: true,
+        hack_wss_in_transport: true,
+        hack_ip_in_contact: true,
         register: true,
         session_timers: false,
         // Longer expiry keeps the registration alive between the JsSIP
@@ -137,7 +183,6 @@ class PpSipProvider {
         connection_recovery_max_interval: 30,
         user_agent: "Planipret Softphone 1.0",
       });
-
       ua.on("connecting", () => this.update({ status: "connecting" }));
       ua.on("connected", () => this.update({ status: "connected" }));
       ua.on("disconnected", (e: any) => {
@@ -162,7 +207,6 @@ class PpSipProvider {
         setTimeout(() => { try { this.ua?.register(); } catch {} }, 8000);
       });
       ua.on("newRTCSession", (e: any) => this.attachSession(e.session, e.originator));
-
       ua.start();
       this.ua = ua;
     } catch (err: any) {
@@ -191,10 +235,16 @@ class PpSipProvider {
       callId,
       muted: false,
       onHold: false,
+      speaker: false, // Always start with earpiece — user must explicitly enable speaker
     });
 
     session.on("progress", () => { if (!incoming) this.update({ callState: "ringing-out" }); });
-    session.on("confirmed", () => this.update({ callState: "active", startedAt: Date.now() }));
+    session.on("confirmed", () => {
+      this.update({ callState: "active", startedAt: Date.now() });
+      // Ensure audio is routed to earpiece (not speaker) when call connects.
+      // This fires after the remote track arrives and the audio element is set.
+      setAudioOutput(this.audioEl, false);
+    });
     session.on("failed", (e: any) => {
       this.update({ callState: "ended", errorCause: e?.cause || "failed" });
       setTimeout(() => this.resetCall(), 2000);
@@ -213,7 +263,10 @@ class PpSipProvider {
       pc.addEventListener("track", (ev: any) => {
         if (this.audioEl && ev.streams[0]) {
           this.audioEl.srcObject = ev.streams[0];
-          this.audioEl.play().catch(() => {});
+          // Route to earpiece by default — NOT speaker.
+          setAudioOutput(this.audioEl, this.snap.speaker).then(() => {
+            this.audioEl?.play().catch(() => {});
+          });
         }
       });
     }
@@ -230,13 +283,14 @@ class PpSipProvider {
       startedAt: null,
       muted: false,
       onHold: false,
+      speaker: false,
     });
   }
 
 
   async call(number: string) {
     if (!this.cfg || !this.ua) throw new Error("softphone_not_registered");
-    this.update({ callState: "ringing-out", remoteIdentity: number, remoteNumber: number, direction: "out", errorCause: undefined });
+    this.update({ callState: "ringing-out", remoteIdentity: number, remoteNumber: number, direction: "out", errorCause: undefined, speaker: false });
     try {
       const mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
@@ -260,20 +314,37 @@ class PpSipProvider {
 
   answer() {
     if (!this.session) return;
+    this.update({ speaker: false }); // Ensure earpiece on answer
     this.session.answer({
       mediaConstraints: { audio: true, video: false },
       rtcAnswerConstraints: { offerToReceiveAudio: true, offerToReceiveVideo: false },
     });
   }
+
   hangup() { try { this.session?.terminate(); } catch {} }
   mute() { this.session?.mute({ audio: true }); }
   unmute() { this.session?.unmute({ audio: true }); }
   hold() { this.session?.hold(); }
   unhold() { this.session?.unhold(); }
   sendDTMF(k: string) { this.session?.sendDTMF(k, { duration: 100, interToneGap: 70 }); }
+
   transfer(target: string) {
     if (!this.session || !this.cfg) return;
+    // Blind transfer via SIP REFER
     this.session.refer(`sip:${target}@${this.cfg.sipDomain}`);
+  }
+
+  // Attended (warm) transfer: put current call on hold, dial second leg,
+  // then bridge them. For now we use blind transfer as NS-API handles bridging.
+  transferExternal(e164Number: string) {
+    if (!this.session || !this.cfg) return;
+    // For external numbers, refer directly to the E.164 number
+    this.session.refer(`sip:${e164Number}@${this.cfg.sipDomain}`);
+  }
+
+  async setSpeaker(enabled: boolean) {
+    this.update({ speaker: enabled });
+    await setAudioOutput(this.audioEl, enabled);
   }
 
   // ---- Quality/handover helpers used by the audio & network modules ----
@@ -306,13 +377,11 @@ class PpSipProvider {
       setTimeout(() => { try { this.ua?.register(); } catch {} }, 250);
     } catch {}
   }
-
   stop() {
     try { this.ua?.stop(); } catch {}
     this.ua = null;
     this.session = null;
-    this.update({ status: "disconnected", callState: "idle", direction: null, startedAt: null });
+    this.update({ status: "disconnected", callState: "idle", direction: null, startedAt: null, speaker: false });
   }
 }
-
 export const ppSipProvider = new PpSipProvider();
