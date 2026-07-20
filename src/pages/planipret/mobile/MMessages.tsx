@@ -1377,10 +1377,10 @@ function SwipeEmailRow({
       className="relative overflow-hidden"
       style={{ borderBottom: "1px solid var(--pp-bg-border)" }}
     >
-      {/* Fond gauche : Supprimer + Archiver */}
+      {/* Fond gauche : Supprimer + Archiver — visible seulement si swipe gauche */}
       <div
         className="absolute inset-y-0 right-0 flex items-center"
-        style={{ width: THRESHOLD * 1.5 }}
+        style={{ width: THRESHOLD * 1.5, opacity: offset < -10 ? Math.min(1, Math.abs(offset) / THRESHOLD) : 0, transition: startXRef.current !== null ? "none" : "opacity 0.2s ease" }}
       >
         <button
           onClick={() => { resetSwipe(); onDelete(); }}
@@ -1402,10 +1402,10 @@ function SwipeEmailRow({
         )}
       </div>
 
-      {/* Fond droit : Flag */}
+      {/* Fond droit : Flag — visible seulement si swipe droit */}
       <div
         className="absolute inset-y-0 left-0 flex items-center justify-center"
-        style={{ width: THRESHOLD * 1.5 }}
+        style={{ width: THRESHOLD * 1.5, opacity: offset > 10 ? Math.min(1, offset / THRESHOLD) : 0, transition: startXRef.current !== null ? "none" : "opacity 0.2s ease" }}
       >
         <button
           onClick={() => { resetSwipe(); onFlag(); }}
@@ -1656,7 +1656,7 @@ function EmailDetailSheet({ email, folder, onClose, onCompose, onChanged, onOpti
   const canReply = folder !== "sent" && folder !== "drafts";
 
   return (
-    <div className="fixed inset-0 z-[100] flex flex-col" style={{ background: "var(--pp-bg-base)" }} onClick={onClose}>
+    <div className="fixed inset-0 z-[100] flex flex-col" style={{ background: "var(--pp-bg-base)", isolation: "isolate" }} onClick={onClose}>
       <div
         className="flex flex-col h-full"
         style={{ paddingTop: "env(safe-area-inset-top, 0px)", paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
@@ -1761,22 +1761,14 @@ function EmailDetailSheet({ email, folder, onClose, onCompose, onChanged, onOpti
                 box-sizing: border-box !important;
               }
               .pp-email-body table {
-                width: 100% !important;
-                table-layout: auto !important;
+                max-width: 100% !important;
+                table-layout: fixed !important;
                 border-collapse: collapse !important;
-                display: block !important;
-                overflow-x: hidden !important;
-              }
-              .pp-email-body tbody, .pp-email-body thead, .pp-email-body tr {
-                display: block !important;
-                width: 100% !important;
+                overflow-x: auto !important;
               }
               .pp-email-body td, .pp-email-body th {
-                display: block !important;
-                width: 100% !important;
                 word-break: break-word !important;
                 overflow-wrap: anywhere !important;
-                padding: 3px 0 !important;
               }
               .pp-email-body img {
                 max-width: 100% !important;
@@ -1802,7 +1794,13 @@ function EmailDetailSheet({ email, folder, onClose, onCompose, onChanged, onOpti
                 background: #ffffff;
                 border-radius: 12px;
                 padding: 12px;
-                overflow: hidden;
+                overflow-x: hidden;
+                overflow-y: visible;
+                color: #1a1a1a;
+              }
+              /* Forcer les couleurs de texte pour lisibilité sur fond blanc */
+              .pp-email-body-wrap .pp-email-body {
+                color: #1a1a1a !important;
               }
             `}</style>
             {loadingDetail && !detail ? (

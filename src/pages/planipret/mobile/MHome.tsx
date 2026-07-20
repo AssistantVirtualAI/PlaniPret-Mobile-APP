@@ -662,19 +662,24 @@ function EventDetailSheet({ event, onClose, lang }: { event: any; onClose: () =>
   const body = event.bodyPreview ?? event.body?.content ?? null;
 
   return (
-    <div className="fixed inset-0 z-[120] bg-black/70 backdrop-blur-sm flex items-end" onClick={onClose}>
+    <div className="fixed inset-0 z-[120] flex items-end" style={{ background: "rgba(0,0,0,0.65)" }} onClick={onClose}>
       <div
         className="w-full rounded-t-3xl flex flex-col shadow-2xl"
         style={{
-          background: "var(--pp-bg-base)",
+          background: "var(--pp-bg-elevated, #1a2535)",
           border: "1px solid var(--pp-bg-border-2)",
           maxHeight: "calc(100dvh - 40px)",
           paddingBottom: "env(safe-area-inset-bottom)",
+          boxShadow: "0 -8px 40px rgba(0,0,0,0.5)",
         }}
         onClick={(e) => e.stopPropagation()}
       >
+        {/* Poignée de glissement */}
+        <div className="flex justify-center pt-3 pb-1">
+          <div className="w-10 h-1 rounded-full" style={{ background: "var(--pp-bg-border-2, rgba(255,255,255,0.2))" }} />
+        </div>
         {/* Header */}
-        <div className="flex items-center justify-between px-4 pt-4 pb-3" style={{ borderBottom: "1px solid var(--pp-bg-border)" }}>
+        <div className="flex items-center justify-between px-4 pt-2 pb-3" style={{ borderBottom: "1px solid var(--pp-bg-border)" }}>
           <button onClick={onClose} className="p-1.5 rounded-full" style={{ color: "var(--pp-text-secondary)" }}>
             <ArrowLeft className="w-5 h-5" />
           </button>
@@ -695,7 +700,7 @@ function EventDetailSheet({ event, onClose, lang }: { event: any; onClose: () =>
         <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
           {/* Title */}
           <div>
-            <p className="text-lg font-bold" style={{ color: "var(--pp-text-primary)", fontFamily: "Urbanist,sans-serif" }}>
+            <p className="text-lg font-bold" style={{ color: "var(--pp-text-primary, #f0f4f8)", fontFamily: "Urbanist,sans-serif" }}>
               {event.subject ?? "Sans titre"}
             </p>
             {isTeams && (
@@ -727,7 +732,7 @@ function EventDetailSheet({ event, onClose, lang }: { event: any; onClose: () =>
 
           {/* Location */}
           {location && (
-            <div className="rounded-xl p-3 flex items-center gap-3" style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)" }}>
+            <div className="rounded-xl p-3 flex items-center gap-3" style={{ background: "rgba(255,255,255,0.06)", border: "1px solid var(--pp-bg-border-2)" }}>
               <ExternalLink className="w-4 h-4 flex-shrink-0" style={{ color: "var(--pp-text-muted)" }} />
               <p className="text-sm" style={{ color: "var(--pp-text-secondary)" }}>{location}</p>
             </div>
@@ -780,7 +785,7 @@ function EventDetailSheet({ event, onClose, lang }: { event: any; onClose: () =>
           {body && (
             <div>
               <p className="text-[11px] uppercase tracking-wider mb-1" style={{ color: "var(--pp-text-muted)" }}>Description</p>
-              <div className="rounded-xl p-3 text-sm" style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}>
+              <div className="rounded-xl p-3 text-sm" style={{ background: "rgba(255,255,255,0.06)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}>
                 <p className="whitespace-pre-wrap text-xs">{body.slice(0, 500)}{body.length > 500 ? "…" : ""}</p>
               </div>
             </div>
