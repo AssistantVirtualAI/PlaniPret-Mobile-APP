@@ -332,17 +332,29 @@ export default function MHome() {
 
 
       {/* ===== PERIOD FILTER ===== */}
-      <div className="flex items-center justify-between">
-        <div className="pp-segmented">
+      <div className="flex items-center justify-between gap-2">
+        <div className="pp-segmented flex-1">
           {(["day","week","month","shift"] as Period[]).map((p) => (
             <button key={p} onClick={() => setPeriod(p)} className={period === p ? "is-active" : ""}>
               {periodLabel[p]}
             </button>
           ))}
         </div>
-        <span className="text-[11px]" style={{ color: "var(--pp-text-muted)" }}>
-          {totalComms} comms
-        </span>
+        <button
+          onClick={() => { loadStats(); }}
+          disabled={statsLoading}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold shrink-0"
+          style={{
+            background: "var(--pp-bg-surface)",
+            border: "1px solid var(--pp-bg-border-2)",
+            color: "var(--pp-text-secondary)",
+            opacity: statsLoading ? 0.6 : 1,
+          }}
+          title="Actualiser les statistiques"
+        >
+          <RefreshCw className={`w-3 h-3 ${statsLoading ? "animate-spin" : ""}`} />
+          {statsLoading ? "..." : "Actualiser"}
+        </button>
       </div>
 
       {/* ===== DND BANNER ===== */}

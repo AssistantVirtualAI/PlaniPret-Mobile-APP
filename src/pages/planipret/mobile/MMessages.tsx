@@ -921,11 +921,11 @@ export function EmailsList({ profile }: { profile: any }) {
 
   const emailCacheKey = (f: EmailFolder) => `pp.emails.${profile?.user_id ?? ""}.${f}`;
 
-  const load = async (targetFolder?: EmailFolder, search?: string, silent = false) => {
+  const load = async (targetFolder?: EmailFolder, search?: string, silent = false, forceNetwork = false) => {
     if (!profile?.ms365_access_token) { setState("no_m365"); return; }
     const f = targetFolder ?? folder;
-    // Afficher le cache instantanément si disponible
-    if (!silent && !search) {
+    // Afficher le cache instantanément si disponible (sauf si forceNetwork = true)
+    if (!silent && !search && !forceNetwork) {
       try {
         const raw = sessionStorage.getItem(emailCacheKey(f));
         if (raw) {
@@ -1072,10 +1072,10 @@ export function EmailsList({ profile }: { profile: any }) {
             <Plus className="w-4 h-4" />
           </button>
           <button
-            onClick={() => load()}
+            onClick={() => load(folder, undefined, false, true)}
             className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0"
             style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
-            title="Actualiser"
+            title="Actualiser (forcer le rechargement)"
           >
             <RefreshCw className={`w-4 h-4 ${state === "loading" ? "animate-spin" : ""}`} />
           </button>
@@ -2178,9 +2178,7 @@ function Teams365Panel({ profile }: { profile: any }) {
   };
   useEffect(() => {
     load(); /* eslint-disable-next-line */
-    if (!connected) return;
-    const id = window.setInterval(() => { load(); }, 30_000);
-    return () => window.clearInterval(id);
+    // Auto-refresh désactivé — utiliser le bouton Actualiser manuellement
   }, [connected]);
 
   const startChatWith = async (userIds: string[], title: string, topicText?: string) => {
@@ -2495,8 +2493,7 @@ function TeamsThreadView({ target, onClose }: {
   useEffect(() => {
     load();
     if (target.kind === "chat") markChatRead(target.id);
-    const id = window.setInterval(() => load(), 15_000);
-    return () => window.clearInterval(id);
+    // Auto-refresh désactivé — utiliser le bouton Actualiser dans le header
     /* eslint-disable-next-line */
   }, []);
 
@@ -2572,6 +2569,9 @@ function TeamsThreadView({ target, onClose }: {
         <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-muted)" }}>
           {target.kind === "chat" ? "Chat" : "Canal"}
         </span>
+        <button onClick={load} className="p-1.5 rounded-full" style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-muted)" }} title="Actualiser">
+          <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
+        </button>
       </div>
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-2">
         {loading && messages.length === 0 ? <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>Chargement…</div> :
