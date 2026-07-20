@@ -96,3 +96,18 @@ export function prefetchAllMplanipret(): void {
   Promise.resolve().then(() => ALL_MPLANIPRET_PATHS.forEach(prefetchRoute));
 }
 
+// ── Aliases pour PlanipretMobile.tsx ─────────────────────────────────────────
+
+/** Alias of ALL_MPLANIPRET_PATHS — kept for backward compatibility. */
+export const ALL_MOBILE_TAB_PATHS = ALL_MPLANIPRET_PATHS;
+
+/** Alias of prefetchAllMplanipret — kept for backward compatibility. */
+export function prefetchAllMobileTabs(): void {
+  prefetchAllMplanipret();
+}
+
+/** Cancel any in-flight prefetch requests (no-op — prefetches are fire-and-forget). */
+export function cancelPendingPrefetches(): void {
+  // Nothing to cancel — prefetches are microtask-based and non-cancellable.
+  // This function exists to satisfy import contracts.
+}
