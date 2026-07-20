@@ -561,13 +561,46 @@ function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void 
 }
 
 function NotificationsSection({ profile, reloadProfile }: { profile: any; reloadProfile: () => Promise<void> }) {
-  const { t } = useMplanipretLang();
+  const { t, lang } = useMplanipretLang();
   const { subscribe, sendTest, busy } = usePlanipretPush();
   const setPref = async (field: string, val: boolean) => {
     await (supabase.from("planipret_profiles") as any).update({ [field]: val }).eq("user_id", profile.user_id);
     await reloadProfile();
   };
   const enablePush = async () => {
+    // On native iOS/Android, use Capacitor PushNotifications (triggers the real native popup)
+    const isNativeApp = !!(window as any).Capacitor?.isNativePlatform?.();
+    if (isNativeApp) {
+      try {
+        const { PushNotifications } = await import("@capacitor/push-notifications");
+        const check = await PushNotifications.checkPermissions();
+        if (check.receive === "granted") {
+          await PushNotifications.register();
+          toast.success(lang === "fr" ? "Notifications déjà activées ✅" : "Notifications already enabled ✅");
+          await reloadProfile();
+          return;
+        }
+        const req = await PushNotifications.requestPermissions();
+        if (req.receive === "granted") {
+          await PushNotifications.register();
+          toast.success(lang === "fr" ? "Notifications activées ✅" : "Notifications enabled ✅");
+          await reloadProfile();
+        } else {
+          // Permission denied — open iOS Settings
+          const { openAppSettings } = await import("@/lib/native/permissions/platform");
+          toast.error(
+            lang === "fr"
+              ? "Permission refusée. Activez dans Réglages iOS."
+              : "Permission denied. Enable in iOS Settings.",
+          );
+          setTimeout(() => openAppSettings(), 1500);
+        }
+      } catch (e: any) {
+        toast.error(e?.message ?? "Erreur notifications");
+      }
+      return;
+    }
+    // Web fallback (VAPID)
     const ok = await subscribe(profile.user_id);
     if (ok) await reloadProfile();
   };
