@@ -1115,8 +1115,27 @@ function EmailDetailSheet({ email, onClose, onReply, onForward, onChanged }: {
   const [sumOpen, setSumOpen] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [analysis, setAnalysis] = useState<any | null>(null);
-  const [busy, setBusy] = useState<"" | "flag" | "archive" | "delete">("");
+  const [busy, setBusy] = useState<"" | "flag" | "archive" | "delete">("")
   const [flagged, setFlagged] = useState<boolean>(email?.flag?.flagStatus === "flagged");
+  const [fullBodyHtml, setFullBodyHtml] = useState<string | null>(null);
+  const [fullBodyText, setFullBodyText] = useState<string | null>(null);
+  const [loadingBody, setLoadingBody] = useState(false);
+  const [showAiSummary, setShowAiSummary] = useState(false);
+  // Charger le corps complet du courriel au montage
+  useEffect(() => {
+    if (!email.id) return;
+    setLoadingBody(true);
+    supabase.functions.invoke("ms365-actions", {
+      body: { action: "read_email_detail", payload: { message_id: email.id } },
+    }).then(({ data }) => {
+      const e = (data as any)?.email;
+      if (e?.body?.content) {
+        const ct = (e.body.contentType ?? "").toLowerCase();
+        if (ct === "html") setFullBodyHtml(e.body.content);
+        else setFullBodyText(e.body.content);
+      }
+    }).catch(() => {}).finally(() => setLoadingBody(false));
+  }, [email.id]);
 
   const runAction = async (
     kind: "flag" | "archive" | "delete",
@@ -1224,11 +1243,49 @@ function EmailDetailSheet({ email, onClose, onReply, onForward, onChanged }: {
             <AvaProposedActionsCard analysis={analysis} onDismiss={() => setAnalysis(null)} />
           )}
 
+          {/* Corps complet du courriel */}
           <div
-            className="rounded-xl p-3 text-sm whitespace-pre-wrap"
-            style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
+            className="rounded-xl overflow-hidden"
+            style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)" }}
           >
-            {preview || t("messages.previewUnavailable")}
+            {/* Toggle : Corps complet / Résumé AI */}
+            <div className="flex border-b" style={{ borderColor: "var(--pp-bg-border)" }}>
+              <button
+                onClick={() => setShowAiSummary(false)}
+                className="flex-1 py-2 text-xs font-semibold"
+                style={{ color: !showAiSummary ? "var(--pp-brand-accent)" : "var(--pp-text-muted)", borderBottom: !showAiSummary ? "2px solid var(--pp-brand-accent)" : "2px solid transparent" }}
+              >
+                {t ? (t as any)("messages.fullEmail") ?? "Courriel complet" : "Courriel complet"}
+              </button>
+              <button
+                onClick={() => setShowAiSummary(true)}
+                className="flex-1 py-2 text-xs font-semibold"
+                style={{ color: showAiSummary ? "var(--pp-brand-accent)" : "var(--pp-text-muted)", borderBottom: showAiSummary ? "2px solid var(--pp-brand-accent)" : "2px solid transparent" }}
+              >
+                ✨ {t ? (t as any)("messages.aiSummary") ?? "Résumé AI" : "Résumé AI"}
+              </button>
+            </div>
+            <div className="p-3">
+              {!showAiSummary ? (
+                loadingBody ? (
+                  <div className="flex items-center justify-center py-6"><Loader2 className="w-5 h-5 animate-spin" style={{ color: "var(--pp-brand-accent)" }} /></div>
+                ) : fullBodyHtml ? (
+                  <div
+                    className="text-sm email-body"
+                    style={{ color: "var(--pp-text-secondary)", maxWidth: "100%", overflowX: "auto", wordBreak: "break-word" }}
+                    dangerouslySetInnerHTML={{ __html: fullBodyHtml }}
+                  />
+                ) : (
+                  <p className="text-sm whitespace-pre-wrap" style={{ color: "var(--pp-text-secondary)" }}>
+                    {fullBodyText ?? preview ?? t("messages.previewUnavailable")}
+                  </p>
+                )
+              ) : (
+                <p className="text-sm whitespace-pre-wrap" style={{ color: "var(--pp-text-secondary)" }}>
+                  {preview || t("messages.previewUnavailable")}
+                </p>
+              )}
+            </div>
           </div>
         </div>
 

@@ -20,7 +20,9 @@ import Ms365StatusBadge from "@/components/planipret/Ms365StatusBadge";
 import { openMs365Authorize } from "@/lib/ms365OAuth";
 import { useMplanipretSoftphone } from "@/hooks/useMplanipretSoftphone";
 import { ppSipProvider, type PpSipSnapshot } from "@/lib/planipret/sip/ppSipProvider";
-import { Radio } from "lucide-react";
+import { Radio, ShieldCheck } from "lucide-react";
+import { openAppSettings } from "@/lib/native/permissions/platform";
+import { markPrimerSkipped } from "@/lib/native/permissions/orchestrator";
 
 const initials = (name?: string) =>
   (name ?? "").split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0]?.toUpperCase()).join("") || "?";
@@ -258,6 +260,16 @@ export default function MMore() {
           sub={sipSnap.errorCause ? `${sipStatusLabel} — ${sipSnap.errorCause}` : sipStatusLabel}
           onClick={() => navigate("/mplanipret/sip-debug")}
           right={<span className="text-[10px] font-bold px-2 py-0.5 rounded-full" style={{ background: sipStatusColor[sipSnap.status], color: "#fff" }}>{sipSnap.status.toUpperCase()}</span>}
+          chevron
+        />
+        <Row
+          icon={<ShieldCheck className="w-4 h-4" style={{ color: "var(--pp-brand-accent)" }} />}
+          label={lang === "fr" ? "Autorisations (micro, contacts, notifs)" : "Permissions (mic, contacts, notifs)"}
+          sub={lang === "fr" ? "Ouvrir les réglages iOS/Android" : "Open iOS/Android settings"}
+          onClick={async () => {
+            await markPrimerSkipped().catch(() => {});
+            await openAppSettings();
+          }}
           chevron
         />
       </Section>
