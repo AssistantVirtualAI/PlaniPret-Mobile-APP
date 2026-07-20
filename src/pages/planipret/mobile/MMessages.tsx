@@ -1167,7 +1167,8 @@ export function EmailsList({ profile }: { profile: any }) {
                   : (e.from?.emailAddress?.name ?? e.from?.emailAddress?.address ?? t("messages.sender"));
                 const subject = e.subject ?? t("messages.noSubject");
                 const preview = e.bodyPreview ?? "";
-                const received = e.receivedDateTime ?? e.created_at;
+                // Pour les courriels envoyés, utiliser sentDateTime si disponible
+                const received = e.sentDateTime ?? e.receivedDateTime ?? e.created_at;
                 const unread = folder !== "sent" && folder !== "drafts" && e.isRead === false;
                 const flagged = e.flag?.flagStatus === "flagged";
                 const initials = avatarInitials(senderName);
@@ -1364,14 +1365,18 @@ function SwipeEmailRow({
 
   const handleTouchEnd = () => {
     if (offset < -THRESHOLD) {
-      setRevealed("left");
-      setOffset(-THRESHOLD);
+      // Swipe gauche dépasse le seuil : déclencher directement l'action (comportement Outlook)
+      // Si folder deleted, seul Supprimer est disponible, sinon on révèle les deux boutons
+      // Pour simplifier l'UX : swipe gauche = Supprimer directement
+      resetSwipe();
+      onDelete();
     } else if (offset > THRESHOLD) {
-      setRevealed("right");
-      setOffset(THRESHOLD);
+      // Swipe droit dépasse le seuil : flag directement
+      resetSwipe();
+      onFlag();
     } else {
       setOffset(0);
-      // Keep revealed state if buttons were already shown
+      setRevealed(null);
     }
     startXRef.current = null;
     startYRef.current = null;
@@ -1385,44 +1390,38 @@ function SwipeEmailRow({
       className="relative overflow-hidden"
       style={{ borderBottom: "1px solid var(--pp-bg-border)" }}
     >
-      {/* Fond gauche : Supprimer + Archiver — visible seulement si swipe gauche */}
+      {/* Fond gauche : indicateur visuel Supprimer (l'action se déclenche au touchend) */}
       <div
-        className="absolute inset-y-0 right-0 flex items-center"
-        style={{ width: THRESHOLD * 1.5, opacity: offset < -10 ? Math.min(1, Math.abs(offset) / THRESHOLD) : 0, transition: startXRef.current !== null ? "none" : "opacity 0.2s ease" }}
+        className="absolute inset-y-0 right-0 flex items-center justify-center"
+        style={{
+          width: "100%",
+          background: "#ef4444",
+          opacity: offset < -10 ? Math.min(1, Math.abs(offset) / THRESHOLD) : 0,
+          transition: startXRef.current !== null ? "none" : "opacity 0.2s ease",
+          pointerEvents: "none",
+        }}
       >
-        <button
-          onClick={() => { resetSwipe(); onDelete(); }}
-          className="flex-1 h-full flex flex-col items-center justify-center gap-0.5 text-white"
-          style={{ background: "#ef4444" }}
-        >
-          <Trash2 className="w-4 h-4" />
+        <div className="flex flex-col items-center gap-0.5 text-white mr-4">
+          <Trash2 className="w-5 h-5" />
           <span className="text-[10px] font-semibold">Supprimer</span>
-        </button>
-        {folder !== "deleted" && (
-          <button
-            onClick={() => { resetSwipe(); onArchive(); }}
-            className="flex-1 h-full flex flex-col items-center justify-center gap-0.5 text-white"
-            style={{ background: "#6366f1" }}
-          >
-            <Archive className="w-4 h-4" />
-            <span className="text-[10px] font-semibold">Archiver</span>
-          </button>
-        )}
+        </div>
       </div>
 
-      {/* Fond droit : Flag — visible seulement si swipe droit */}
+      {/* Fond droit : indicateur visuel Flag (l'action se déclenche au touchend) */}
       <div
         className="absolute inset-y-0 left-0 flex items-center justify-center"
-        style={{ width: THRESHOLD * 1.5, opacity: offset > 10 ? Math.min(1, offset / THRESHOLD) : 0, transition: startXRef.current !== null ? "none" : "opacity 0.2s ease" }}
+        style={{
+          width: "100%",
+          background: flagged ? "#6b7280" : "#f59e0b",
+          opacity: offset > 10 ? Math.min(1, offset / THRESHOLD) : 0,
+          transition: startXRef.current !== null ? "none" : "opacity 0.2s ease",
+          pointerEvents: "none",
+        }}
       >
-        <button
-          onClick={() => { resetSwipe(); onFlag(); }}
-          className="w-full h-full flex flex-col items-center justify-center gap-0.5 text-white"
-          style={{ background: flagged ? "#6b7280" : "#f59e0b" }}
-        >
-          <Flag className="w-4 h-4" />
+        <div className="flex flex-col items-center gap-0.5 text-white ml-4">
+          <Flag className="w-5 h-5" />
           <span className="text-[10px] font-semibold">{flagged ? "Retirer" : "Marquer"}</span>
-        </button>
+        </div>
       </div>
 
       {/* Contenu de la ligne — glisse avec le doigt */}
@@ -1678,7 +1677,7 @@ function EmailDetailSheet({ email, folder, onClose, onCompose, onChanged, onOpti
       >
         {/* ===== HEADER STICKY — toujours visible ===== */}
         <div
-          className="flex-shrink-0 flex items-center gap-2 px-3 py-2"
+          className="flex-shrink-0 flex items-center gap-1.5 px-3 py-2"
           style={{
             borderBottom: "1px solid var(--pp-bg-border)",
             background: "var(--pp-bg-deep)",
@@ -1694,6 +1693,38 @@ function EmailDetailSheet({ email, folder, onClose, onCompose, onChanged, onOpti
             <ArrowLeft className="w-5 h-5" />
           </button>
           <p className="flex-1 text-sm font-semibold truncate" style={{ color: "var(--pp-text-primary)" }}>{subject}</p>
+          {/* Boutons Répondre/Transférer dans le header pour maximiser la zone de lecture */}
+          {canReply && (
+            <>
+              <button
+                onClick={openReply}
+                className="p-1.5 rounded-full active:scale-95 transition flex-shrink-0"
+                style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-brand-accent)", border: "1px solid var(--pp-bg-border-2)" }}
+                title="Répondre"
+                aria-label="Répondre"
+              >
+                <Reply className="w-4 h-4" />
+              </button>
+              <button
+                onClick={openReplyAll}
+                className="p-1.5 rounded-full active:scale-95 transition flex-shrink-0"
+                style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-brand-accent)", border: "1px solid var(--pp-bg-border-2)" }}
+                title="Répondre à tous"
+                aria-label="Répondre à tous"
+              >
+                <UsersRound className="w-4 h-4" />
+              </button>
+            </>
+          )}
+          <button
+            onClick={openForward}
+            className="p-1.5 rounded-full active:scale-95 transition flex-shrink-0"
+            style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-brand-accent)", border: "1px solid var(--pp-bg-border-2)" }}
+            title="Transférer"
+            aria-label="Transférer"
+          >
+            <Forward className="w-4 h-4" />
+          </button>
           <div className="flex items-center gap-0.5 flex-shrink-0">
             <IconAction onClick={onToggleFlag} title={flagged ? "Retirer drapeau" : "Marquer"} busy={busy === "flag_email"}>
               <Flag className="w-4 h-4" style={{ color: flagged ? "#f59e0b" : "var(--pp-text-secondary)", fill: flagged ? "#f59e0b" : "none" }} />
@@ -1737,7 +1768,10 @@ function EmailDetailSheet({ email, folder, onClose, onCompose, onChanged, onOpti
               </p>
             )}
             <p className="text-[10px] mt-0.5" style={{ color: "var(--pp-text-faint)" }}>
-              {merged.receivedDateTime ? new Date(merged.receivedDateTime).toLocaleDateString("fr-CA", { weekday: "short", day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}
+              {(() => {
+                const dt = merged.sentDateTime ?? merged.receivedDateTime;
+                return dt ? new Date(dt).toLocaleDateString("fr-CA", { weekday: "short", day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
+              })()}
             </p>
           </div>
         </div>
@@ -1845,19 +1879,7 @@ function EmailDetailSheet({ email, folder, onClose, onCompose, onChanged, onOpti
           <div className="h-4" />
         </div>
 
-        {/* ===== BARRE D'ACTIONS STICKY EN BAS ===== */}
-        <div
-          className={`flex-shrink-0 px-3 py-2 gap-2 ${canReply ? "grid grid-cols-3" : "flex justify-center"}`}
-          style={{ borderTop: "1px solid var(--pp-bg-border)", background: "var(--pp-bg-deep)" }}
-        >
-          {canReply && (
-            <>
-              <ToolbarBtn onClick={openReply} icon={<Reply className="w-4 h-4" />} label="Répondre" />
-              <ToolbarBtn onClick={openReplyAll} icon={<UsersRound className="w-4 h-4" />} label="Rép. tous" />
-            </>
-          )}
-          <ToolbarBtn onClick={openForward} icon={<Forward className="w-4 h-4" />} label="Transférer" />
-        </div>
+        {/* Barre d'actions supprimée — boutons déplacés dans le header pour maximiser la zone de lecture */}
       </div>
 
       <AvaSummarizeSheet
