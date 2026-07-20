@@ -612,20 +612,20 @@ export default function MContacts() {
                       <Phone className="w-3.5 h-3.5" />
                     </button>
                   )}
-                  {/* SMS */}
+                  {/* SMS → navigue vers la page Messages onglet SMS avec le numéro pré-rempli */}
                   {phone && (
                     <button
-                      onClick={(e) => { e.stopPropagation(); setQuickSms({ to: phone, name: displayName || "" }); }}
+                      onClick={(e) => { e.stopPropagation(); navigate(`/mplanipret/messages?tab=sms&to=${encodeURIComponent(phone)}&name=${encodeURIComponent(displayName || "")}`); }}
                       className="flex items-center justify-center active:scale-95 transition"
                       style={{ width: 32, height: 32, borderRadius: "50%", background: "rgba(34,197,94,0.12)", border: "1px solid rgba(34,197,94,0.3)", color: "#22c55e" }}
                       aria-label="SMS">
                       <MessageSquare className="w-3.5 h-3.5" />
                     </button>
                   )}
-                  {/* Email */}
+                  {/* Email → navigue vers la page Messages onglet Courriel avec le destinataire pré-rempli */}
                   {c.email && (
                     <button
-                      onClick={(e) => { e.stopPropagation(); setQuickEmail({ to: c.email, name: displayName || "" }); }}
+                      onClick={(e) => { e.stopPropagation(); navigate(`/mplanipret/messages?tab=emails&to=${encodeURIComponent(c.email)}&name=${encodeURIComponent(displayName || "")}`); }}
                       className="flex items-center justify-center active:scale-95 transition"
                       style={{ width: 32, height: 32, borderRadius: "50%", background: "rgba(139,92,246,0.12)", border: "1px solid rgba(139,92,246,0.3)", color: "#8b5cf6" }}
                       aria-label="Courriel">

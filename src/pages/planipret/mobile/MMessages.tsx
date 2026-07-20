@@ -64,6 +64,15 @@ export default function MMessages() {
   const initialTab = (searchParams.get("tab") as SubTab) ?? "sms";
   const [sub, setSub] = useState<SubTab>(["sms","team","teams365","emails","roster"].includes(initialTab) ? initialTab : "sms");
 
+  // Réagir aux changements de searchParams même si la page était déjà montée
+  // (ex: navigate depuis MContacts alors que Messages est déjà actif)
+  useEffect(() => {
+    const newTab = searchParams.get("tab") as SubTab;
+    if (newTab && ["sms","team","teams365","emails","roster"].includes(newTab)) {
+      setSub(newTab);
+    }
+  }, [searchParams]);
+
   // Warm the Teams cache on mount so switching to the Teams tab is instant.
   useEffect(() => {
     if (!profile?.ms365_access_token) return;
