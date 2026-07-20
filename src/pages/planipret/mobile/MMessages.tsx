@@ -56,7 +56,13 @@ const fmtTime = (iso: string, lang: "fr" | "en" = "fr", t?: (key: string) => str
 export default function MMessages() {
   const { t } = useMplanipretLang();
   const { profile, openDialer, registerRefresh } = useOutletContext<PlanipretMobileContext>();
-  const [sub, setSub] = useState<SubTab>("sms");
+  const [searchParams] = useSearchParams();
+
+  // Navigation depuis la fiche contact :
+  //   /mplanipret/messages?tab=sms&to=+15141234567
+  //   /mplanipret/messages?tab=emails&to=client@email.com&name=Jean+Dupont
+  const initialTab = (searchParams.get("tab") as SubTab) ?? "sms";
+  const [sub, setSub] = useState<SubTab>(["sms","team","teams365","emails","roster"].includes(initialTab) ? initialTab : "sms");
 
   // Warm the Teams cache on mount so switching to the Teams tab is instant.
   useEffect(() => {
@@ -116,10 +122,10 @@ export default function MMessages() {
       </div>
 
       <div className="flex-1 overflow-hidden">
-        {sub === "sms" && <SmsList profile={profile} openDialer={openDialer} registerRefresh={registerRefresh} />}
+        {sub === "sms" && <SmsList profile={profile} openDialer={openDialer} registerRefresh={registerRefresh} initialTo={sub === "sms" ? (searchParams.get("to") ?? "") : ""} />}
         {sub === "team" && <TeamChat profile={profile} />}
         {sub === "teams365" && <Teams365Panel profile={profile} />}
-        {sub === "emails" && <EmailsList profile={profile} />}
+        {sub === "emails" && <EmailsList profile={profile} initialTo={searchParams.get("to") ?? ""} initialName={searchParams.get("name") ?? ""} />}
       </div>
     </div>
   );
@@ -230,7 +236,7 @@ const recipientFromRow = (c: any, source: SmsRecipient["source"], index: number)
 const recipientHay = (r: SmsRecipient) => `${r.name} ${r.phone} ${r.email ?? ""} ${r.extension ?? ""} ${r.department ?? ""}`.toLowerCase();
 const looksLikePhone = (value: string) => /^[+]?[-() .\d]{3,}$/.test(value.trim());
 
-function SmsList({ profile, openDialer, registerRefresh }: any) {
+function SmsList({ profile, openDialer, registerRefresh, initialTo = "" }: any) {
   const { t } = useMplanipretLang();
   const [searchParams] = useSearchParams();
   const myExt = profile?.extension ?? "";
@@ -300,6 +306,14 @@ function SmsList({ profile, openDialer, registerRefresh }: any) {
     const to = searchParams.get("to")?.trim();
     if (to) openSmsThread({ id: "", number: to }, false);
   }, [searchParams]);
+
+  // Navigation depuis la fiche contact via prop initialTo
+  useEffect(() => {
+    if (initialTo?.trim()) {
+      openSmsThread({ id: "", number: initialTo.trim() }, true);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialTo]);
 
   if (activeThread) {
     return (
@@ -903,7 +917,7 @@ const FOLDER_ICONS: Record<EmailFolder, React.ElementType> = {
   archive: Archive,
 };
 
-export function EmailsList({ profile }: { profile: any }) {
+export function EmailsList({ profile, initialTo = "", initialName = "" }: { profile: any; initialTo?: string; initialName?: string }) {
   const { t, lang } = useMplanipretLang();
   const PAGE_SIZE = 25;
   const [folder, setFolder] = useState<EmailFolder>("inbox");
@@ -997,6 +1011,15 @@ export function EmailsList({ profile }: { profile: any }) {
   useEffect(() => {
     load(); /* eslint-disable-next-line */
   }, [profile?.ms365_access_token]);
+
+  // Navigation depuis la fiche contact : ouvrir la composition avec le destinataire pré-rempli
+  useEffect(() => {
+    if (initialTo?.trim()) {
+      setComposeInit({ to: initialTo.trim(), subject: "", body: "" });
+      setComposeOpen(true);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialTo]);
 
   // Auto-prefetch next page when the sentinel scrolls into view (200px margin).
   useEffect(() => {
@@ -2126,7 +2149,9 @@ function EmailComposeSheet({ init, onClose, onSent }: { init: ComposeInit; onClo
         >
           <Paperclip className="w-3.5 h-3.5" /> Joindre
         </button>
-        <span className="text-[10px]" style={{ color: "var(--pp-text-muted)" }}>Max 3 Mo par fichier</span>
+        <span className="text-[10px] flex-1" style={{ color: "var(--pp-text-muted)" }}>Max 3 Mo</span>
+        {/* Bouton IA Claude — amélioration du corps du courriel */}
+        <AiImproveMenu text={body} onResult={setBody} mode="email" />
       </div>
     </div>
   );
@@ -2136,6 +2161,84 @@ function EmailComposeSheet({ init, onClose, onSent }: { init: ComposeInit; onClo
 // ============================================================
 // SHARED PRIMITIVES
 // ============================================================
+
+/** Hook partagé pour améliorer un texte via Claude (ai-text-improve) */
+function useAiImprove(mode: "sms" | "email") {
+  const [improving, setImproving] = useState(false);
+  const improve = async (
+    text: string,
+    action: "fix" | "improve" | "formal" | "shorter",
+    onResult: (result: string) => void
+  ) => {
+    if (!text.trim()) { toast.error("Écrivez d'abord un message"); return; }
+    setImproving(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("ai-text-improve", {
+        body: { text, mode, action },
+      });
+      if (error) throw error;
+      if (!(data as any)?.success) throw new Error((data as any)?.error ?? "IA indisponible");
+      onResult((data as any).result);
+    } catch (e: any) {
+      toast.error(e?.message ?? "Erreur IA");
+    } finally {
+      setImproving(false);
+    }
+  };
+  return { improving, improve };
+}
+
+/** Menu déroulant IA pour le Composer SMS */
+function AiImproveMenu({
+  text, onResult, mode,
+}: { text: string; onResult: (r: string) => void; mode: "sms" | "email" }) {
+  const { improving, improve } = useAiImprove(mode);
+  const [open, setOpen] = useState(false);
+  const actions: { key: "fix" | "improve" | "formal" | "shorter"; label: string; icon: string }[] = [
+    { key: "fix",     label: "Corriger les fautes",  icon: "✓" },
+    { key: "improve", label: "Améliorer le texte",   icon: "✨" },
+    { key: "formal",  label: "Rendre plus formel",   icon: "👔" },
+    { key: "shorter", label: "Raccourcir",            icon: "✂️" },
+  ];
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        disabled={improving || !text.trim()}
+        className="w-8 h-8 rounded-full flex items-center justify-center transition active:scale-95 disabled:opacity-40"
+        style={{ background: "linear-gradient(135deg,#7C3AED,#A855F7)", boxShadow: "0 2px 8px rgba(124,58,237,0.4)" }}
+        title="Améliorer avec IA"
+      >
+        {improving
+          ? <Loader2 className="w-3.5 h-3.5 text-white animate-spin" />
+          : <Sparkles className="w-3.5 h-3.5 text-white" />}
+      </button>
+      {open && (
+        <div
+          className="absolute bottom-10 left-0 z-50 rounded-2xl overflow-hidden shadow-xl min-w-[180px]"
+          style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)" }}
+        >
+          {actions.map((a) => (
+            <button
+              key={a.key}
+              onClick={() => { setOpen(false); improve(text, a.key, onResult); }}
+              className="w-full text-left px-4 py-3 text-sm flex items-center gap-2.5 hover:opacity-80 active:scale-95 transition"
+              style={{ color: "var(--pp-text-primary)", borderBottom: "1px solid var(--pp-bg-border)" }}
+            >
+              <span>{a.icon}</span> {a.label}
+            </button>
+          ))}
+          <button
+            onClick={() => setOpen(false)}
+            className="w-full text-center px-4 py-2 text-xs"
+            style={{ color: "var(--pp-text-muted)" }}
+          >Annuler</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Composer({
   text, setText, onSend, sending, placeholder, leftAction, extra, accent = "brand", inputRef, autoFocus = false,
 }: {
@@ -2155,6 +2258,8 @@ function Composer({
     >
       {extra}
       {leftAction}
+      {/* Bouton IA Claude — amélioration du texte SMS */}
+      <AiImproveMenu text={text} onResult={setText} mode="sms" />
       <input
         data-sms-composer-input="true"
         ref={inputRef}

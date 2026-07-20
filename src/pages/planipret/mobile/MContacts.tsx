@@ -851,6 +851,7 @@ function ContactDetailSheet({
   contact, onClose, onCall, onEdited,
 }: { contact: any; onClose: () => void; onCall: (phone: string) => void; onEdited?: (updated: any) => void }) {
   const { t, lang } = useMplanipretLang();
+  const navigate = useNavigate();
   const [history, setHistory] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [creatingTask, setCreatingTask] = useState(false);
@@ -916,11 +917,15 @@ function ContactDetailSheet({
 
   const openSms = () => {
     if (!smsTarget) { toast.error("Aucun numéro disponible"); return; }
-    setSmsOpen(true);
+    // Naviguer vers la page Messages onglet SMS avec le numéro pré-rempli
+    onClose();
+    navigate(`/mplanipret/messages?tab=sms&to=${encodeURIComponent(smsTarget)}`);
   };
   const openEmail = () => {
     if (!email) { toast.error("Aucun email disponible"); return; }
-    setEmailOpen(true);
+    // Naviguer vers la page Messages onglet Courriel avec le destinataire pré-rempli
+    onClose();
+    navigate(`/mplanipret/messages?tab=emails&to=${encodeURIComponent(email)}&name=${encodeURIComponent(name)}`);
   };
   const openAppt = () => {
     if (!maestroId) { toast.error("Client Maestro requis pour un RDV"); return; }
