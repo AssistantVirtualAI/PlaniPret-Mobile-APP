@@ -4,7 +4,7 @@ import { useOutletContext, useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import {
   Phone, PhoneMissed, MessageSquare, Voicemail,
-  ArrowDownLeft, ArrowUpRight, ArrowLeft, X, Calendar, Headphones, Bot,
+  ArrowDownLeft, ArrowUpRight, X, Calendar, Headphones, Bot,
   BellOff, Flame, Sparkles, ChevronRight, ChevronLeft, Mail, Users as UsersIcon,
   CheckSquare, RefreshCw, AlertCircle, Video, ExternalLink,
 } from "lucide-react";
@@ -16,6 +16,7 @@ import PermissionBanners from "@/components/planipret/mobile/PermissionBanners";
 import { TEMP_EMOJI } from "@/components/planipret/leadHelpers";
 import { useMaestroPipelineToasts } from "@/hooks/useMaestroPipelineToasts";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import { loadMHomeCache, saveMHomeCache, type SourceStatusMap } from "@/lib/mhomeCache";
 
 
 type Period = "day" | "week" | "month" | "shift";
@@ -72,25 +73,20 @@ export default function MHome() {
   });
   useEffect(() => { try { localStorage.setItem("pp.mobile.period.v2", period); } catch {} }, [period]);
 
-  // Lire le cache sessionStorage pour affichage instantané au montage
-  const _homeCache = (() => {
-    try {
-      const raw = sessionStorage.getItem(`pp.home.stats.${profile?.user_id ?? ""}.${period}`);
-      if (raw) { const p = JSON.parse(raw); if (Date.now() - p.at < 600_000) return p.data; }
-    } catch {}
-    return null;
-  })();
-
-  const [stats, setStats] = useState(_homeCache?.stats ?? { calls: 0, missed: 0, sms: 0, voicemails: 0, meetings: 0, hotLeads: 0, tasks: 0, outbound: 0 });
-  const [recent, setRecent] = useState<any[]>(_homeCache?.recent ?? []);
-  const [hotLeads, setHotLeads] = useState<any[]>(_homeCache?.hotLeads ?? []);
-  const [dueReminders, setDueReminders] = useState<any[]>(_homeCache?.dueReminders ?? []);
-  const [meetings, setMeetings] = useState<any[]>(_homeCache?.meetings ?? []);
-  const [msMeetings, setMsMeetings] = useState<any[]>([]);
+  const cached = useMemo(() => loadMHomeCache(profile?.user_id, period), [profile?.user_id, period]);
+  const [stats, setStats] = useState(() => cached?.stats ?? { calls: 0, missed: 0, sms: 0, voicemails: 0, meetings: 0, hotLeads: 0, tasks: 0, outbound: 0 });
+  const [recent, setRecent] = useState<any[]>(() => cached?.recent ?? []);
+  const [hotLeads, setHotLeads] = useState<any[]>(() => cached?.hotLeads ?? []);
+  const [dueReminders, setDueReminders] = useState<any[]>(() => cached?.dueReminders ?? []);
+  const [meetings, setMeetings] = useState<any[]>(() => cached?.meetings ?? []);
+  const [msMeetings, setMsMeetings] = useState<any[]>(() => cached?.msMeetings ?? []);
   const [msCalendarLoading, setMsCalendarLoading] = useState(false);
   const [msCalendarError, setMsCalendarError] = useState<string | null>(null);
-  const [statsLoading, setStatsLoading] = useState(!_homeCache);
-  const [brief, setBrief] = useState<any | null>(null);
+  // statsLoading = cold render only. Background refreshes never toggle it,
+  // so the cached view stays on-screen while KPIs refresh silently.
+  const [statsLoading, setStatsLoading] = useState(!cached);
+  const [refreshing, setRefreshing] = useState(false);
+  const [brief, setBrief] = useState<any | null>(() => cached?.brief ?? null);
   const [briefLoading, setBriefLoading] = useState(false);
   const [briefErr, setBriefErr] = useState<string | null>(null);
 
@@ -110,7 +106,11 @@ export default function MHome() {
 
   const loadStats = async () => {
     if (!profile) return;
-    setStatsLoading(true);
+    // Only show the cold skeleton when we have nothing cached. Otherwise
+    // hydrate from cache and refresh silently in the background.
+    const hasCached = !!loadMHomeCache(profile?.user_id, period);
+    if (!hasCached) setStatsLoading(true);
+    setRefreshing(true);
     try {
     const { sinceIso, untilIso } = periodRange(period);
     const nowIso = new Date().toISOString();
@@ -191,66 +191,88 @@ export default function MHome() {
     const liveVmItems = Array.isArray((nsVmLive.data as any)?.items) ? (nsVmLive.data as any).items : [];
     const liveVmUnread = liveVmItems.filter((v: any) => !(v.is_read ?? v.read ?? false)).length;
 
-    let microsoftEvents: any[] = [];
+    // Kick off Microsoft calendar fetch in PARALLEL with the main data load
+    // (previously it awaited after Promise.all, adding ~1-3s to Home render).
+    let msPromise: Promise<any[]> = Promise.resolve([]);
     setMsCalendarError(null);
     if (profile?.ms365_access_token) {
       setMsCalendarLoading(true);
-      try {
-        const calStart = new Date(); calStart.setDate(1); calStart.setHours(0,0,0,0);
-        const calEnd = new Date(calStart); calEnd.setMonth(calEnd.getMonth() + 2);
-        const { data: msData, error: msError } = await supabase.functions.invoke("ms365-actions", {
+      const calStart = new Date(); calStart.setDate(1); calStart.setHours(0,0,0,0);
+      const calEnd = new Date(calStart); calEnd.setMonth(calEnd.getMonth() + 2);
+      msPromise = supabase.functions
+        .invoke("ms365-actions", {
           body: { action: "list_calendar_events", payload: { start: calStart.toISOString(), end: calEnd.toISOString(), top: 200 } },
-        });
-        if (msError || (msData as any)?.success === false) {
-          const errMsg = (msData as any)?.error ?? msError?.message ?? "Calendrier Microsoft indisponible";
-          setMsCalendarError(errMsg);
-          if (/token|expir|unauthor|401|invalid_grant/i.test(errMsg)) {
-            const { startMs365Reconnect } = await import("@/lib/ms365E2E");
-            startMs365Reconnect("Erreur d'authentification sur le calendrier");
+        })
+        .then(({ data: msData, error: msError }) => {
+          if (msError || (msData as any)?.success === false) {
+            const errMsg = (msData as any)?.error ?? msError?.message ?? "Calendrier Microsoft indisponible";
+            setMsCalendarError(errMsg);
+            if (/token|expir|unauthor|401|invalid_grant/i.test(errMsg)) {
+              import("@/lib/ms365E2E").then((m) => m.startMs365Reconnect("Erreur d'authentification sur le calendrier")).catch(() => {});
+            }
+            return [];
           }
-        } else {
-          microsoftEvents = (msData as any)?.events ?? [];
-        }
-      } catch (e: any) {
-        setMsCalendarError(e?.message ?? "Calendrier Microsoft indisponible");
-      } finally {
-        setMsCalendarLoading(false);
-      }
+          return (msData as any)?.events ?? [];
+        })
+        .catch((e) => { setMsCalendarError(e?.message ?? "Calendrier Microsoft indisponible"); return []; })
+        .finally(() => setMsCalendarLoading(false));
     } else {
       setMsMeetings([]);
     }
+
+    const microsoftEvents = await msPromise;
     setMsMeetings(microsoftEvents);
 
-    const newStats = {
+    const nextStats = {
       calls: liveCallsInPeriod.length || callsRes.count || 0,
       missed: liveCallsInPeriod.length ? liveCallsInPeriod.filter((c: any) => nsCallDirection(c) === "missed").length : (missedRes.count ?? 0),
       sms: liveSmsThreads.length ? liveSmsThreads.reduce((sum: number, th: any) => sum + nsSmsUnread(th), 0) : (smsRes.count ?? 0),
-      voicemails: liveVmItems.length ? liveVmItems.filter((v: any) => !v.read && v.folder === "inbox").length : (vmRes.count ?? 0),
+      voicemails: liveVmItems.length ? liveVmUnread : (vmRes.count ?? 0),
       meetings: (meetingsRes.data ?? []).length + microsoftEvents.length,
       hotLeads: hotCountRes.count ?? 0,
       tasks: tasksCountRes.count ?? 0,
       outbound: outboundRes.count ?? 0,
     };
-    const newRecent = liveRecent.length ? liveRecent : (recentRes.data ?? []);
-    const newHotLeads = hotRes.data ?? [];
-    const newDueReminders = remRes.data ?? [];
-    const newMeetings = meetingsRes.data ?? [];
-    setStats(newStats);
-    setRecent(newRecent);
-    setHotLeads(newHotLeads);
-    setDueReminders(newDueReminders);
-    setMeetings(newMeetings);
-    // Sauvegarder dans le cache sessionStorage pour affichage instantané au prochain montage
-    try {
-      sessionStorage.setItem(
-        `pp.home.stats.${profile?.user_id ?? ""}.${period}`,
-        JSON.stringify({ data: { stats: newStats, recent: newRecent, hotLeads: newHotLeads, dueReminders: newDueReminders, meetings: newMeetings }, at: Date.now() })
-      );
-    } catch {}
+    const nextRecent = liveRecent.length ? liveRecent : (recentRes.data ?? []);
+    const nextHot = hotRes.data ?? [];
+    const nextRem = remRes.data ?? [];
+    const nextMeetings = meetingsRes.data ?? [];
+    setStats(nextStats);
+    setRecent(nextRecent);
+    setHotLeads(nextHot);
+    setDueReminders(nextRem);
+    setMeetings(nextMeetings);
+
+    // Per-source last-sync statuses feed the KPI Audit page.
+    const now = Date.now();
+    const mark = (ok: boolean, msg?: string | null) => ({ status: ok ? "ok" as const : "error" as const, lastAt: now, message: msg ?? null });
+    const sources: SourceStatusMap = {
+      ns_cdr:         { status: (nsCallsLive as any)?.error ? "error" : (liveCalls.length ? "ok" : "empty"), lastAt: now, message: (nsCallsLive as any)?.error?.message ?? null },
+      ns_sms:         { status: (nsSmsLive as any)?.error ? "error" : (liveSmsThreads.length ? "ok" : "empty"), lastAt: now, message: (nsSmsLive as any)?.error?.message ?? null },
+      ns_voicemail:   { status: (nsVmLive as any)?.error ? "error" : (liveVmItems.length ? "ok" : "empty"), lastAt: now, message: (nsVmLive as any)?.error?.message ?? null },
+      sb_calls:       mark(true),
+      sb_missed:      mark(true),
+      sb_sms_unread:  mark(true),
+      sb_voicemails:  mark(true),
+      sb_hot_leads:   mark(true),
+      sb_tasks:       mark(true),
+      sb_outbound:    mark(true),
+      sb_appointments:mark(true),
+      ms365_calendar: profile?.ms365_access_token
+        ? { status: msCalendarError ? "error" : (microsoftEvents.length ? "ok" : "empty"), lastAt: now, message: msCalendarError }
+        : { status: "unknown", lastAt: null, message: "MS365 non connecté" },
+    };
+
+    saveMHomeCache(profile?.user_id, period, {
+      stats: nextStats, recent: nextRecent, hotLeads: nextHot,
+      dueReminders: nextRem, meetings: nextMeetings, msMeetings: microsoftEvents,
+      sources,
+    });
     } catch (e) {
       console.error("[MHome] loadStats failed", e);
     } finally {
       setStatsLoading(false);
+      setRefreshing(false);
     }
   };
 
@@ -260,22 +282,21 @@ export default function MHome() {
     setBriefErr(null);
     const { data, error } = await supabase.functions.invoke("pp-ava-brief", { body: { period, force } });
     setBriefLoading(false);
+    const now = Date.now();
     if (error || (data as any)?.error) {
-      setBriefErr((data as any)?.error || error?.message || "brief unavailable");
+      const msg = (data as any)?.error || error?.message || "brief unavailable";
+      setBriefErr(msg);
+      saveMHomeCache(profile?.user_id, period, { sources: { ava_brief: { status: "error", lastAt: now, message: msg } } });
       return;
     }
     setBrief(data);
+    saveMHomeCache(profile?.user_id, period, {
+      brief: data,
+      sources: { ava_brief: { status: "ok", lastAt: now, message: null } },
+    });
   };
 
-  useEffect(() => {
-    // Si cache disponible, afficher immédiatement et rafraîchir en arrière-plan
-    if (_homeCache) {
-      void loadStats();
-    } else {
-      loadStats();
-    }
-    loadBrief(false);
-  /* eslint-disable-next-line */ }, [profile?.user_id, period]);
+  useEffect(() => { loadStats(); loadBrief(false); /* eslint-disable-next-line */ }, [profile?.user_id, period]);
   useEffect(() => {
     registerRefresh(async () => { await Promise.all([loadStats(), loadBrief(true)]); });
     return () => registerRefresh(null);
@@ -332,29 +353,28 @@ export default function MHome() {
 
 
       {/* ===== PERIOD FILTER ===== */}
-      <div className="flex items-center justify-between gap-2">
-        <div className="pp-segmented flex-1">
+      <div className="flex items-center justify-between">
+        <div className="pp-segmented">
           {(["day","week","month","shift"] as Period[]).map((p) => (
             <button key={p} onClick={() => setPeriod(p)} className={period === p ? "is-active" : ""}>
               {periodLabel[p]}
             </button>
           ))}
         </div>
-        <button
-          onClick={() => { loadStats(); }}
-          disabled={statsLoading}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold shrink-0"
-          style={{
-            background: "var(--pp-bg-surface)",
-            border: "1px solid var(--pp-bg-border-2)",
-            color: "var(--pp-text-secondary)",
-            opacity: statsLoading ? 0.6 : 1,
-          }}
-          title="Actualiser les statistiques"
-        >
-          <RefreshCw className={`w-3 h-3 ${statsLoading ? "animate-spin" : ""}`} />
-          {statsLoading ? "..." : "Actualiser"}
-        </button>
+        <div className="flex items-center gap-2">
+          {refreshing && (
+            <span className="flex items-center gap-1 text-[10px]" style={{ color: "var(--pp-text-muted)" }}>
+              <RefreshCw className="w-3 h-3 animate-spin" /> {t("home.refreshing") ?? "Actualisation…"}
+            </span>
+          )}
+          <button
+            onClick={() => navigate("/mplanipret/kpi-audit")}
+            className="text-[10px] underline decoration-dotted"
+            style={{ color: "var(--pp-text-muted)" }}
+          >
+            {totalComms} comms
+          </button>
+        </div>
       </div>
 
       {/* ===== DND BANNER ===== */}
@@ -650,159 +670,12 @@ function Kpi({ icon, value, label, accent, pulse, onClick }: {
   );
 }
 
-function EventDetailSheet({ event, onClose, lang }: { event: any; onClose: () => void; lang: string }) {
-  const locale = lang === "en" ? "en-CA" : "fr-CA";
-  const start = event.start?.dateTime ? new Date(event.start.dateTime) : null;
-  const end = event.end?.dateTime ? new Date(event.end.dateTime) : null;
-  const join = event.onlineMeeting?.joinUrl ?? event.webLink;
-  const isTeams = !!event.onlineMeeting?.joinUrl;
-  const attendees: any[] = Array.isArray(event.attendees) ? event.attendees : [];
-  const organizer = event.organizer?.emailAddress?.name ?? event.organizer?.emailAddress?.address ?? null;
-  const location = event.location?.displayName ?? null;
-  const body = event.bodyPreview ?? event.body?.content ?? null;
-
-  return (
-    <div className="fixed inset-0 z-[120] flex items-end" style={{ background: "rgba(0,0,0,0.65)" }} onClick={onClose}>
-      <div
-        className="w-full rounded-t-3xl flex flex-col shadow-2xl"
-        style={{
-          background: "var(--pp-bg-elevated, #1a2535)",
-          border: "1px solid var(--pp-bg-border-2)",
-          maxHeight: "calc(100dvh - 40px)",
-          paddingBottom: "env(safe-area-inset-bottom)",
-          boxShadow: "0 -8px 40px rgba(0,0,0,0.5)",
-        }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Poignée de glissement */}
-        <div className="flex justify-center pt-3 pb-1">
-          <div className="w-10 h-1 rounded-full" style={{ background: "var(--pp-bg-border-2, rgba(255,255,255,0.2))" }} />
-        </div>
-        {/* Header */}
-        <div className="flex items-center justify-between px-4 pt-2 pb-3" style={{ borderBottom: "1px solid var(--pp-bg-border)" }}>
-          <button onClick={onClose} className="p-1.5 rounded-full" style={{ color: "var(--pp-text-secondary)" }}>
-            <ArrowLeft className="w-5 h-5" />
-          </button>
-          <p className="text-xs uppercase tracking-wider font-semibold" style={{ color: "var(--pp-text-muted)" }}>Rendez-vous</p>
-          {join ? (
-            <button
-              onClick={() => window.open(join, "_blank", "noopener,noreferrer")}
-              className="px-3 py-1.5 rounded-full text-xs font-semibold text-white flex items-center gap-1.5"
-              style={{ background: isTeams ? "#5B5EA6" : "var(--pp-brand-accent)" }}
-            >
-              <Video className="w-3.5 h-3.5" />
-              {isTeams ? "Rejoindre Teams" : "Ouvrir"}
-            </button>
-          ) : <div className="w-10" />}
-        </div>
-
-        {/* Content */}
-        <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
-          {/* Title */}
-          <div>
-            <p className="text-lg font-bold" style={{ color: "var(--pp-text-primary, #f0f4f8)", fontFamily: "Urbanist,sans-serif" }}>
-              {event.subject ?? "Sans titre"}
-            </p>
-            {isTeams && (
-              <span className="inline-flex items-center gap-1 mt-1 px-2 py-0.5 rounded-full text-[11px] font-semibold"
-                style={{ background: "rgba(91,94,166,0.15)", color: "#5B5EA6" }}>
-                <Video className="w-3 h-3" /> Microsoft Teams
-              </span>
-            )}
-          </div>
-
-          {/* Date & Time */}
-          <div className="rounded-xl p-3 flex items-center gap-3" style={{ background: "rgba(46,155,220,0.07)", border: "1px solid rgba(46,155,220,0.15)" }}>
-            <Calendar className="w-5 h-5 flex-shrink-0" style={{ color: "var(--pp-brand-accent)" }} />
-            <div>
-              {start && (
-                <p className="text-sm font-semibold" style={{ color: "var(--pp-text-primary)" }}>
-                  {start.toLocaleDateString(locale, { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
-                </p>
-              )}
-              {(start || end) && (
-                <p className="text-xs mt-0.5" style={{ color: "var(--pp-text-muted)" }}>
-                  {start ? start.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" }) : ""}
-                  {start && end ? " → " : ""}
-                  {end ? end.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" }) : ""}
-                </p>
-              )}
-            </div>
-          </div>
-
-          {/* Location */}
-          {location && (
-            <div className="rounded-xl p-3 flex items-center gap-3" style={{ background: "rgba(255,255,255,0.06)", border: "1px solid var(--pp-bg-border-2)" }}>
-              <ExternalLink className="w-4 h-4 flex-shrink-0" style={{ color: "var(--pp-text-muted)" }} />
-              <p className="text-sm" style={{ color: "var(--pp-text-secondary)" }}>{location}</p>
-            </div>
-          )}
-
-          {/* Organizer */}
-          {organizer && (
-            <div>
-              <p className="text-[11px] uppercase tracking-wider mb-1" style={{ color: "var(--pp-text-muted)" }}>Organisateur</p>
-              <p className="text-sm" style={{ color: "var(--pp-text-secondary)" }}>{organizer}</p>
-            </div>
-          )}
-
-          {/* Attendees */}
-          {attendees.length > 0 && (
-            <div>
-              <p className="text-[11px] uppercase tracking-wider mb-2" style={{ color: "var(--pp-text-muted)" }}>
-                Participants ({attendees.length})
-              </p>
-              <ul className="space-y-1.5">
-                {attendees.slice(0, 10).map((a: any, i: number) => {
-                  const name = a.emailAddress?.name ?? a.emailAddress?.address ?? "Inconnu";
-                  const addr = a.emailAddress?.address ?? "";
-                  const status = a.status?.response ?? "none";
-                  const statusColor = status === "accepted" ? "#10B981" : status === "declined" ? "#ef4444" : "var(--pp-text-muted)";
-                  return (
-                    <li key={i} className="flex items-center gap-2">
-                      <div className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold flex-shrink-0"
-                        style={{ background: "rgba(46,155,220,0.12)", color: "var(--pp-brand-accent)" }}>
-                        {name.slice(0,2).toUpperCase()}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-xs font-medium truncate" style={{ color: "var(--pp-text-primary)" }}>{name}</p>
-                        {addr && <p className="text-[10px] truncate" style={{ color: "var(--pp-text-muted)" }}>{addr}</p>}
-                      </div>
-                      <span className="text-[10px] font-semibold" style={{ color: statusColor }}>
-                        {status === "accepted" ? "✓" : status === "declined" ? "✗" : "?"}
-                      </span>
-                    </li>
-                  );
-                })}
-                {attendees.length > 10 && (
-                  <li className="text-[11px]" style={{ color: "var(--pp-text-muted)" }}>+{attendees.length - 10} autres</li>
-                )}
-              </ul>
-            </div>
-          )}
-
-          {/* Body preview */}
-          {body && (
-            <div>
-              <p className="text-[11px] uppercase tracking-wider mb-1" style={{ color: "var(--pp-text-muted)" }}>Description</p>
-              <div className="rounded-xl p-3 text-sm" style={{ background: "rgba(255,255,255,0.06)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}>
-                <p className="whitespace-pre-wrap text-xs">{body.slice(0, 500)}{body.length > 500 ? "…" : ""}</p>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function MsCalendarSection({ profile, events, loading, error, lang }: {
   profile: any; events: any[]; loading: boolean; error: string | null; lang: string;
 }) {
   const today = new Date(); today.setHours(0,0,0,0);
   const [cursor, setCursor] = useState(() => { const d=new Date(); d.setDate(1); d.setHours(0,0,0,0); return d; });
   const [selected, setSelected] = useState<Date>(today);
-  const [activeEvent, setActiveEvent] = useState<any | null>(null);
 
   const locale = lang === "en" ? "en-CA" : "fr-CA";
 
@@ -937,36 +810,37 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
                   const join = m.onlineMeeting?.joinUrl ?? m.webLink;
                   const isTeams = !!m.onlineMeeting?.joinUrl;
                   return (
-                    <li key={m.id}>
-                      <button
-                        onClick={() => setActiveEvent(m)}
-                        className="w-full flex items-center gap-3 py-2 px-2 rounded-lg active:scale-[0.98] transition text-left"
-                        style={{ background: "rgba(46,155,220,0.06)", border: "1px solid rgba(46,155,220,0.15)" }}
-                      >
-                        <div className="w-14 flex-shrink-0 text-center px-1.5 py-1 rounded-md"
-                          style={{ background: "rgba(46,155,220,0.12)", color: "var(--pp-brand-accent)", fontFamily: "Urbanist,sans-serif" }}>
-                          <div className="text-[11px] font-bold tabular-nums leading-none">
-                            {start ? start.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" }) : "—"}
+                    <li key={m.id} className="flex items-center gap-3 py-2 px-2 rounded-lg"
+                      style={{ background: "rgba(46,155,220,0.06)", border: "1px solid rgba(46,155,220,0.15)" }}>
+                      <div className="w-14 flex-shrink-0 text-center px-1.5 py-1 rounded-md"
+                        style={{ background: "rgba(46,155,220,0.12)", color: "var(--pp-brand-accent)", fontFamily: "Urbanist,sans-serif" }}>
+                        <div className="text-[11px] font-bold tabular-nums leading-none">
+                          {start ? start.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" }) : "—"}
+                        </div>
+                        {end && (
+                          <div className="text-[9px] mt-0.5 opacity-70 tabular-nums leading-none">
+                            {end.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" })}
                           </div>
-                          {end && (
-                            <div className="text-[9px] mt-0.5 opacity-70 tabular-nums leading-none">
-                              {end.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" })}
-                            </div>
-                          )}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm truncate font-medium flex items-center gap-1.5" style={{ color: "var(--pp-text-primary)" }}>
-                            {isTeams && <Video className="w-3 h-3 flex-shrink-0" style={{ color: "var(--pp-brand-accent)" }} />}
-                            {m.subject ?? "Sans titre"}
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm truncate font-medium flex items-center gap-1.5" style={{ color: "var(--pp-text-primary)" }}>
+                          {isTeams && <Video className="w-3 h-3 flex-shrink-0" style={{ color: "var(--pp-brand-accent)" }} />}
+                          {m.subject ?? "Sans titre"}
+                        </p>
+                        {(m.location?.displayName || m.bodyPreview) && (
+                          <p className="text-[11px] truncate" style={{ color: "var(--pp-text-muted)" }}>
+                            {m.location?.displayName || m.bodyPreview}
                           </p>
-                          {(m.location?.displayName || m.bodyPreview) && (
-                            <p className="text-[11px] truncate" style={{ color: "var(--pp-text-muted)" }}>
-                              {m.location?.displayName || m.bodyPreview}
-                            </p>
-                          )}
-                        </div>
-                        <ChevronRight className="w-4 h-4 flex-shrink-0" style={{ color: "var(--pp-text-muted)" }} />
-                      </button>
+                        )}
+                      </div>
+                      {join && (
+                        <button onClick={() => window.open(join, "_blank", "noopener,noreferrer")}
+                          className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+                          style={{ color: "var(--pp-brand-accent)", background: "rgba(46,155,220,0.10)" }}>
+                          <ExternalLink className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                     </li>
                   );
                 })}
@@ -978,14 +852,6 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
 
       {error && (
         <p className="text-[11px] mt-2" style={{ color: "var(--pp-danger)" }}>{error}</p>
-      )}
-
-      {activeEvent && (
-        <EventDetailSheet
-          event={activeEvent}
-          onClose={() => setActiveEvent(null)}
-          lang={lang}
-        />
       )}
     </section>
   );

@@ -49,83 +49,18 @@ export default function MobileAuthScreen({ onLoggedIn }: { onLoggedIn: () => Pro
 
   const signInWithMicrosoft = async () => {
     setLoading(true);
-    try {
-      // On Capacitor (iOS/Android), OAuth must open in an in-app browser
-      // (SFSafariViewController / Chrome Custom Tab) and redirect back via
-      // the Supabase callback URL. Using window.location.origin would give
-      // "capacitor://localhost" which Azure does not accept.
-      const SUPABASE_URL = "https://gejxisrqtvxavbrfcoxz.supabase.co";
-      const SCOPES = "email openid profile offline_access User.Read User.ReadBasic.All Mail.ReadWrite Mail.Send MailboxSettings.Read Calendars.ReadWrite Chat.Read Chat.ReadBasic Chat.ReadWrite Channel.ReadBasic.All ChannelMessage.Read.All ChannelMessage.Send Team.ReadBasic.All Organization.Read.All Application.Read.All";
-
-      let isNative = false;
-      try {
-        const { Capacitor } = await import('@capacitor/core');
-        isNative = Capacitor.isNativePlatform();
-      } catch { /* web */ }
-
-      if (isNative) {
-        // Build the Supabase OAuth URL manually so we can open it in the
-        // in-app browser instead of navigating the WebView.
-        const { data, error } = await supabase.auth.signInWithOAuth({
-          provider: "azure",
-          options: {
-            redirectTo: `${SUPABASE_URL}/auth/v1/callback`,
-            scopes: SCOPES,
-            skipBrowserRedirect: true, // do NOT navigate the WebView
-          },
-        });
-        if (error) throw error;
-        if (!data?.url) throw new Error("No OAuth URL returned");
-
-        // Open in SFSafariViewController (iOS) / Chrome Custom Tab (Android)
-        const { Browser } = await import('@capacitor/browser');
-        await Browser.open({ url: data.url, presentationStyle: 'popover' });
-
-        // Listen for the deep link callback (appUrlOpen fires when Azure
-        // redirects back to the Supabase callback which then redirects to
-        // the app via the custom scheme or universal link).
-        const { App: CapacitorApp } = await import('@capacitor/app');
-        const listener = await CapacitorApp.addListener('appUrlOpen', async (event: { url: string }) => {
-          await listener.remove();
-          try { await Browser.close(); } catch { /* ignore */ }
-          // Extract the Supabase session tokens from the URL fragment/query.
-          const url = new URL(event.url);
-          const params = new URLSearchParams(
-            url.hash ? url.hash.slice(1) : url.search.slice(1)
-          );
-          const accessToken = params.get('access_token');
-          const refreshToken = params.get('refresh_token');
-          if (accessToken && refreshToken) {
-            const { error: sessErr } = await supabase.auth.setSession({
-              access_token: accessToken,
-              refresh_token: refreshToken,
-            });
-            if (sessErr) { toast.error(sessErr.message); setLoading(false); return; }
-            toast.success(t("auth.success"));
-            void import("@/lib/native/requestPermissionsAfterLogin").then(m => m.requestPermissionsAfterLogin());
-            await onLoggedIn();
-          } else {
-            toast.error(t("auth.failed"));
-          }
-          setLoading(false);
-        });
-      } else {
-        // Web: standard OAuth redirect
-        const { error } = await supabase.auth.signInWithOAuth({
-          provider: "azure",
-          options: {
-            redirectTo: `${window.location.origin}/mplanipret`,
-            scopes: SCOPES,
-          },
-        });
-        if (error) throw error;
-        // Loading stays true — page will redirect
-      }
-    } catch (err: any) {
-      setLoading(false);
-      const msg = /unsupported|not enabled|provider/i.test(err?.message ?? "")
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: "azure",
+      options: {
+        redirectTo: `${window.location.origin}/mplanipret`,
+        scopes: "email openid profile offline_access User.Read User.ReadBasic.All Mail.ReadWrite Mail.Send MailboxSettings.Read Calendars.ReadWrite Chat.Read Chat.ReadBasic Chat.ReadWrite Channel.ReadBasic.All ChannelMessage.Read.All ChannelMessage.Send Team.ReadBasic.All Organization.Read.All Application.Read.All",
+      },
+    });
+    setLoading(false);
+    if (error) {
+      const msg = /unsupported|not enabled|provider/i.test(error.message)
         ? t("auth.msUnavailable")
-        : (err?.message ?? t("auth.failed"));
+        : error.message;
       toast.error(msg);
     }
   };
@@ -235,17 +170,12 @@ export default function MobileAuthScreen({ onLoggedIn }: { onLoggedIn: () => Pro
         <button onClick={() => setShowLegal("privacy")} style={{ color: "var(--pp-brand-accent)", textDecoration: "underline" }}>{t("legal.privacy")}</button>.
       </p>
 
-      {/* Footer AVA avec logo image */}
-      <div className="flex flex-col items-center justify-center gap-0.5 py-2" style={{ borderTop: "1px solid var(--pp-bg-border)", paddingBottom: `calc(env(safe-area-inset-bottom, 0px) + 8px)` }}>
-        <div className="flex items-center gap-2">
-          <span style={{ fontFamily: "Urbanist,sans-serif", fontSize: 8, color: "var(--pp-text-muted)", letterSpacing: "0.14em", fontWeight: 600 }}>{t("footer.poweredBy")}</span>
-          {/* Logo AVA circulaire avec image */}
-          <div style={{ width: 22, height: 22, borderRadius: "50%", overflow: "hidden", border: "1.5px solid rgba(124,58,237,0.6)", background: "#0A1628", display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <img src={avaLogoAsset.url} alt="AVA" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-          </div>
-          <span style={{ fontFamily: "Urbanist,sans-serif", fontSize: 12, letterSpacing: "0.06em", fontWeight: 800, color: "#7C3AED" }}>AVA</span>
-        </div>
-        <span style={{ fontSize: 7, color: "var(--pp-text-faint)", letterSpacing: "0.08em" }}>· {t("footer.developedBy")}</span>
+      {/* Footer */}
+      <div className="h-[28px] flex items-center justify-center gap-2 pp-mobile-footer">
+        <span style={{ fontFamily: "Urbanist,sans-serif", fontSize: 9, color: "var(--pp-text-muted)", letterSpacing: "0.14em", fontWeight: 600 }}>{t("footer.poweredBy")}</span>
+        <div style={{ background: "#7C3AED", borderRadius: 4, padding: "2px 5px", color: "white", fontWeight: 700, fontSize: 8 }}>AVA</div>
+        <span style={{ fontFamily: "Urbanist,sans-serif", fontSize: 9, color: "var(--pp-brand-accent-2)", letterSpacing: "0.10em", fontWeight: 700 }}>AVA</span>
+        <span style={{ fontSize: 8.5, color: "var(--pp-text-faint)", letterSpacing: "0.1em" }}>· {t("footer.developedBy")}</span>
       </div>
 
       {showLegal && (

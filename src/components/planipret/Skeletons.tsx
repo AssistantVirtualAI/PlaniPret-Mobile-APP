@@ -102,32 +102,3 @@ export function AdminPageSkeleton() {
     </div>
   );
 }
-
-export function MobilePageSkeleton() {
-  return (
-    <div
-      className="flex flex-col"
-      style={{ background: "var(--pp-bg-base, #060D1A)", minHeight: "100%" }}
-    >
-      {/* Tab bar placeholder */}
-      <div className="flex gap-2 px-4 pt-3 pb-2">
-        {[90, 80, 70].map((w, i) => (
-          <Shimmer key={i} className="rounded-full" style={{ height: 32, width: w }} />
-        ))}
-      </div>
-      {/* Search bar */}
-      <Shimmer className="mx-4 mb-3 rounded-xl" style={{ height: 36 }} />
-      {/* List rows */}
-      {Array.from({ length: 9 }).map((_, i) => (
-        <div key={i} className="flex items-center gap-3 px-4 py-2.5">
-          <Shimmer className="rounded-full flex-shrink-0" style={{ width: 40, height: 40 }} />
-          <div className="flex-1 flex flex-col gap-1.5">
-            <Shimmer className="rounded" style={{ height: 13, width: `${50 + (i % 3) * 15}%` }} />
-            <Shimmer className="rounded" style={{ height: 11, width: `${40 + (i % 4) * 10}%` }} />
-          </div>
-          <Shimmer className="rounded" style={{ width: 36, height: 11 }} />
-        </div>
-      ))}
-    </div>
-  );
-}

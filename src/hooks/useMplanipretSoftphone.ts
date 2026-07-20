@@ -199,11 +199,8 @@ export function useMplanipretSoftphone() {
       if (softTimer) { clearTimeout(softTimer); softTimer = null; }
       if (hardTimer) { clearTimeout(hardTimer); hardTimer = null; }
     };
-    const cap: any = (typeof window !== "undefined") ? (window as any).Capacitor : null;
-    const isNative = !!cap?.isNativePlatform?.();
     const evaluate = () => {
       const st = ppSipProvider.getSnapshot().status;
-
       if (st === "registered" || st === "connected") {
         disconnectedSince = 0;
         clearTimers();
@@ -235,6 +232,8 @@ export function useMplanipretSoftphone() {
     window.addEventListener("online", onResume);
     // Native app foreground → immediately re-REGISTER before the 10s watchdog.
     let appStateHandle: { remove: () => void } | null = null;
+    const cap: any = (typeof window !== "undefined") ? (window as any).Capacitor : null;
+    const isNative = !!cap?.isNativePlatform?.();
     if (isNative) {
       try {
         const AppPlugin = cap?.Plugins?.App;
@@ -357,7 +356,7 @@ export function useMplanipretSoftphone() {
   }, [restCall?.id]);
 
   const callViaPBX = useCallback(async (destination: string): Promise<OutboundResult> => {
-    const { data, error } = await supabase.functions.invoke("pp-ns-calls", { body: { action: "start", to_number: destination } });
+    const { data, error } = await supabase.functions.invoke("pp-ns-calls", { body: { action: "start", to_number: destination, client_type: "mobile" } });
     if (error || (data as any)?.success === false) {
       const msg = (data as any)?.message ?? (data as any)?.error ?? error?.message ?? "PBX call failed";
       return { via: "none", ok: false, error: msg };
@@ -385,8 +384,6 @@ export function useMplanipretSoftphone() {
 
   const placeCall = useCallback(async (destination: string): Promise<OutboundResult> => {
     if (!destination) return { via: "none", ok: false, error: "empty destination" };
-    // JsSIP is active on both web and native (iOS/Android).
-    // Use WebRTC SIP call first; fall back to NS-API REST only if SIP is not registered.
     const mic = await ensureMicPermission();
     if (mic.state !== "granted") {
       try { mic.stream?.getTracks().forEach((tr) => tr.stop()); } catch {}
@@ -474,8 +471,6 @@ export function useMplanipretSoftphone() {
     unhold: () => restCall?.id ? void restControl("unhold") : ppSipProvider.unhold(),
     sendDTMF: (k: string) => restCall?.id ? void restControl("dtmf", { digit: k }) : ppSipProvider.sendDTMF(k),
     transfer: (t: string) => restCall?.id ? void restControl("transfer", { destination: t, target: t }) : ppSipProvider.transfer(t),
-    transferExternal: (n: string) => restCall?.id ? void restControl("transfer", { destination: n, target: n }) : ppSipProvider.transferExternal(n),
-    setSpeaker: (enabled: boolean) => ppSipProvider.setSpeaker(enabled),
     setAudioEl: (el: HTMLAudioElement | null) => { ppSipProvider.audioEl = el; },
     forceHandover: () => handoverController.forceHandover(),
   }), [effectiveSnap, loading, net, quality, sipConnected, placeCall, answer, hangup, answeredElsewhere, attachRestCall, restCall?.id, restControl]);

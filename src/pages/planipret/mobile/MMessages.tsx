@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { useOutletContext, useSearchParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
@@ -6,7 +6,7 @@ import { toast } from "sonner";
 import {
   Plus, X, ArrowLeft, Phone, Send, Paperclip, MessageSquare, Zap,
   Users, Mail, Sparkles, Loader2, RefreshCw, Reply, Circle, CheckCircle2, AlertTriangle, RotateCw,
-  UsersRound, Contact, Search, BookUser, Flag, Archive, Trash2, Forward, ChevronRight,
+  UsersRound, Contact, Search, BookUser, Trash2, Archive, Flag, Forward,
 } from "lucide-react";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
 import SmsTemplatesSheet from "@/components/planipret/SmsTemplatesSheet";
@@ -17,7 +17,8 @@ import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { useCallerNames } from "@/lib/planipret/callerLookup";
 import { connectMs365 } from "@/lib/ms365Connect";
 import { getPpContacts } from "@/lib/ppContactsCache";
-import { toE164 } from "@/lib/callEdge";
+import * as maestroTelecom from "@/lib/planipret/maestroTelecom";
+import { fetchTeams365, loadTeamsCache, prefetchTeams365Data, saveTeamsCachePatch, isTeamsCacheFresh, isTeamsCacheExpired, revalidateTeams365IfStale, TEAMS_TTL_MS } from "@/lib/teams365Cache";
 
 
 type SubTab = "sms" | "team" | "teams365" | "emails" | "roster";
@@ -58,33 +59,12 @@ export default function MMessages() {
   const { t } = useMplanipretLang();
   const { profile, openDialer, registerRefresh } = useOutletContext<PlanipretMobileContext>();
   const [searchParams] = useSearchParams();
-
-  // Navigation depuis la fiche contact :
-  //   /mplanipret/messages?tab=sms&to=+15141234567
-  //   /mplanipret/messages?tab=emails&to=client@email.com&name=Jean+Dupont
-  const initialTab = (searchParams.get("tab") as SubTab) ?? "sms";
-  const [sub, setSub] = useState<SubTab>(["sms","team","teams365","emails","roster"].includes(initialTab) ? initialTab : "sms");
-
-  // Réagir aux changements de searchParams même si la page était déjà montée
-  // (ex: navigate depuis MContacts alors que Messages est déjà actif)
+  const initialTab = (searchParams.get("tab") as SubTab) || "sms";
+  const [sub, setSub] = useState<SubTab>(initialTab);
   useEffect(() => {
-    const newTab = searchParams.get("tab") as SubTab;
-    if (newTab && ["sms","team","teams365","emails","roster"].includes(newTab)) {
-      setSub(newTab);
-    }
+    const tb = searchParams.get("tab") as SubTab | null;
+    if (tb && ["sms", "team", "teams365", "emails"].includes(tb)) setSub(tb);
   }, [searchParams]);
-
-  // Warm the Teams cache on mount so switching to the Teams tab is instant.
-  useEffect(() => {
-    if (!profile?.ms365_access_token) return;
-    const cacheKey = "planipret.teams365.cache.v1";
-    const hasCache = (() => { try { return !!localStorage.getItem(cacheKey); } catch { return false; } })();
-    if (hasCache) return; // already warm
-    const run = () => { void supabase.functions.invoke("ms365-teams-list", { body: {} }).catch(() => {}); };
-    const ric: any = (globalThis as any).requestIdleCallback;
-    if (typeof ric === "function") ric(run, { timeout: 2000 }); else setTimeout(run, 300);
-  }, [profile?.ms365_access_token]);
-
 
   return (
     <div className="h-full flex flex-col" style={{ background: "var(--pp-bg-base)" }}>
@@ -132,10 +112,10 @@ export default function MMessages() {
       </div>
 
       <div className="flex-1 overflow-hidden">
-        {sub === "sms" && <SmsList profile={profile} openDialer={openDialer} registerRefresh={registerRefresh} initialTo={sub === "sms" ? (searchParams.get("to") ?? "") : ""} />}
+        {sub === "sms" && <SmsList profile={profile} openDialer={openDialer} registerRefresh={registerRefresh} />}
         {sub === "team" && <TeamChat profile={profile} />}
         {sub === "teams365" && <Teams365Panel profile={profile} />}
-        {sub === "emails" && <EmailsList profile={profile} initialTo={searchParams.get("to") ?? ""} initialName={searchParams.get("name") ?? ""} />}
+        {sub === "emails" && <EmailsList profile={profile} />}
       </div>
     </div>
   );
@@ -246,9 +226,9 @@ const recipientFromRow = (c: any, source: SmsRecipient["source"], index: number)
 const recipientHay = (r: SmsRecipient) => `${r.name} ${r.phone} ${r.email ?? ""} ${r.extension ?? ""} ${r.department ?? ""}`.toLowerCase();
 const looksLikePhone = (value: string) => /^[+]?[-() .\d]{3,}$/.test(value.trim());
 
-function SmsList({ profile, openDialer, registerRefresh, initialTo = "" }: any) {
+function SmsList({ profile, openDialer, registerRefresh }: any) {
   const { t } = useMplanipretLang();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const myExt = profile?.extension ?? "";
   const [threads, setThreads] = useState<NsThread[]>([]);
   const [loading, setLoading] = useState(true);
@@ -270,22 +250,45 @@ function SmsList({ profile, openDialer, registerRefresh, initialTo = "" }: any) 
     document.querySelector<HTMLInputElement>('[data-sms-recipient-search="true"]')?.focus({ preventScroll: true });
   };
 
-  const load = async (silent = false) => {
+  const load = async () => {
     if (!profile?.user_id) return;
-    if (!silent) setLoading(true);
+    setLoading(true);
     setError(null);
     try {
-      const { data, error: err } = await supabase.functions.invoke("pp-ns-sms", {
-        body: { action: "threads" },
-      });
-      if (err) throw err;
-      const list: NsThread[] = (data as any)?.threads ?? [];
+      // --- Maestro Telecom (source primaire) ---
+      let list: NsThread[] = [];
+      let usedMaestro = false;
+      try {
+        const inbox = await maestroTelecom.getInbox();
+        // Normaliser le format Maestro → NsThread
+        const raw: any[] = Array.isArray(inbox) ? inbox : (inbox as any)?.data ?? (inbox as any)?.conversations ?? (inbox as any)?.threads ?? [];
+        if (raw.length > 0 || Array.isArray(inbox)) {
+          list = raw.map((item: any) => ({
+            id: item.id ?? item.conversation_id ?? item.thread_id ?? "",
+            messagesession_id: item.id ?? item.conversation_id ?? item.thread_id ?? "",
+            destination: item.phone_number ?? item.remote_party ?? item.contact_number ?? item.to ?? item.from ?? "",
+            remote_party: item.phone_number ?? item.remote_party ?? item.contact_number ?? item.to ?? item.from ?? "",
+            last_message: item.last_message ?? item.last_message_text ?? item.preview ?? item.body ?? "",
+            unread: item.unread_count ?? item.unread ?? 0,
+            last_message_at: item.updated_at ?? item.last_message_at ?? item.timestamp ?? new Date().toISOString(),
+          }));
+          usedMaestro = true;
+        }
+      } catch (maestroErr: any) {
+        console.warn("[maestro] inbox fallback to NS-API:", maestroErr?.message);
+      }
+      // --- NS-API (fallback si Maestro échoue ou retourne vide) ---
+      if (!usedMaestro) {
+        const { data, error: err } = await supabase.functions.invoke("pp-ns-sms", {
+          body: { action: "threads" },
+        });
+        if (err) throw err;
+        list = (data as any)?.threads ?? [];
+      }
       list.sort((a, b) => +new Date(threadTime(b)) - +new Date(threadTime(a)));
       setThreads(list);
-      // Sauvegarder dans sessionStorage pour affichage instantané au prochain montage
-      try { sessionStorage.setItem(`pp.sms.threads.${profile.user_id}`, JSON.stringify({ data: list, at: Date.now() })); } catch {}
     } catch (e: any) {
-      console.error("[pp-ns-sms] threads", e);
+      console.error("[sms] load threads", e);
       setError(e?.message ?? t("messages.sendFailed"));
       toast.error(e?.message ?? t("messages.sendFailed"));
     } finally {
@@ -293,95 +296,23 @@ function SmsList({ profile, openDialer, registerRefresh, initialTo = "" }: any) 
     }
   };
 
-  // Afficher le cache instantanément au montage, puis rafraîchir en arrière-plan
-  useEffect(() => {
-    if (!profile?.user_id) return;
-    try {
-      const raw = sessionStorage.getItem(`pp.sms.threads.${profile.user_id}`);
-      if (raw) {
-        const { data: cached, at } = JSON.parse(raw);
-        if (cached && Array.isArray(cached) && Date.now() - at < 600_000) {
-          setThreads(cached);
-          setLoading(false);
-          // Rafraîchir en arrière-plan
-          void load(true);
-          return;
-        }
-      }
-    } catch {}
-    void load();
-  /* eslint-disable-next-line */ }, [profile?.user_id]);
-  useEffect(() => { registerRefresh(() => load()); return () => registerRefresh(null); /* eslint-disable-next-line */ }, [profile?.user_id]);
-  // Navigation depuis contact : cherche un thread existant par numéro, sinon nouveau
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [profile?.user_id]);
+  useEffect(() => { registerRefresh(load); return () => registerRefresh(null); /* eslint-disable-next-line */ }, [profile?.user_id]);
   useEffect(() => {
     const to = searchParams.get("to")?.trim();
-    if (!to) return;
-    const normalized = toE164(to);
-    const digits10 = normalized.replace(/\D/g, "").slice(-10);
-    const findAndOpen = (list: any[]) => {
-      const existing = list.find((t: any) => {
-        const peer = threadPeer(t);
-        const peerDigits = peer.replace(/\D/g, "").slice(-10);
-        return peerDigits && peerDigits === digits10;
-      });
-      if (existing) {
-        openSmsThread({ id: threadId(existing), number: threadPeer(existing) }, true);
-      } else {
-        openSmsThread({ id: "", number: normalized || to }, true);
-      }
-    };
-    // Si les threads sont déjà chargés, chercher immédiatement
-    if (!loading && threads.length >= 0) {
-      findAndOpen(threads);
+    if (!to || loading) return;
+    const digits = (s: string) => String(s || "").replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "");
+    const target = digits(to);
+    const match = threads.find((th) => {
+      const p = digits(threadPeer(th));
+      return p && target && (p === target || p.endsWith(target) || target.endsWith(p));
+    });
+    if (match) {
+      openSmsThread({ id: threadId(match), number: threadPeer(match) }, false);
     } else {
-      // Attendre la fin du chargement
-      const interval = setInterval(() => {
-        if (!loading) {
-          clearInterval(interval);
-          findAndOpen(threads);
-        }
-      }, 100);
-      // Timeout de sécurité : ouvrir quand même après 3 secondes
-      const timeout = setTimeout(() => {
-        clearInterval(interval);
-        openSmsThread({ id: "", number: normalized || to }, true);
-      }, 3000);
-      return () => { clearInterval(interval); clearTimeout(timeout); };
+      openSmsThread({ id: "", number: to }, false);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [searchParams]);
-
-  // Navigation depuis la fiche contact via prop initialTo — cherche thread existant
-  useEffect(() => {
-    const to = initialTo?.trim();
-    if (!to) return;
-    const normalized = toE164(to);
-    const digits10 = normalized.replace(/\D/g, "").slice(-10);
-    const findAndOpen = (list: any[]) => {
-      const existing = list.find((t: any) => {
-        const peer = threadPeer(t);
-        const peerDigits = peer.replace(/\D/g, "").slice(-10);
-        return peerDigits && peerDigits === digits10;
-      });
-      openSmsThread(
-        existing ? { id: threadId(existing), number: threadPeer(existing) } : { id: "", number: normalized || to },
-        true
-      );
-    };
-    if (!loading) {
-      findAndOpen(threads);
-    } else {
-      const interval = setInterval(() => {
-        if (!loading) { clearInterval(interval); findAndOpen(threads); }
-      }, 100);
-      const timeout = setTimeout(() => {
-        clearInterval(interval);
-        openSmsThread({ id: "", number: normalized || to }, true);
-      }, 3000);
-      return () => { clearInterval(interval); clearTimeout(timeout); };
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialTo]);
+  }, [searchParams, loading, threads]);
 
   if (activeThread) {
     return (
@@ -391,7 +322,16 @@ function SmsList({ profile, openDialer, registerRefresh, initialTo = "" }: any) 
           number={activeThread.number}
           myExt={myExt}
           userId={profile.user_id}
-          onBack={() => { setActiveThread(null); load(); }}
+          onBack={() => {
+            setActiveThread(null);
+            // Nettoyer les paramètres URL pour éviter que le useEffect réouvre le thread
+            const clean = new URLSearchParams(searchParams);
+            clean.delete("to");
+            clean.delete("name");
+            clean.delete("tab");
+            setSearchParams(clean, { replace: true });
+            load();
+          }}
           onCall={(n) => openDialer(n)}
         />
       </div>
@@ -668,15 +608,41 @@ function ThreadView({ threadId: thId, number, myExt, userId, onBack, onCall }: {
   const inputRef = useRef<HTMLInputElement>(null);
 
   const loadMessages = async () => {
-    if (!currentThreadId) { setLoading(false); return; }
+    if (!number) { setLoading(false); return; }
     setLoading(true);
     setError(null);
     try {
-      const { data, error: err } = await supabase.functions.invoke("pp-ns-sms", {
-        body: { action: "messages", thread_id: currentThreadId },
-      });
-      if (err) throw err;
-      const list: NsMessage[] = (data as any)?.messages ?? [];
+      // --- Maestro Telecom (source primaire) ---
+      let list: NsMessage[] = [];
+      let usedMaestro = false;
+      try {
+        const resp = await maestroTelecom.getMessagesWith(number);
+        const raw: any[] = Array.isArray(resp) ? resp : (resp as any)?.data ?? (resp as any)?.messages ?? [];
+        if (raw.length > 0 || Array.isArray(resp)) {
+          list = raw.map((m: any) => ({
+            id: m.id ?? m.message_id ?? "",
+            direction: m.direction ?? (m.is_outbound ? "outbound" : "inbound"),
+            from: m.from ?? m.from_number ?? m.source ?? "",
+            to: m.to ?? m.to_number ?? m.destination ?? "",
+            message: m.message ?? m.body ?? m.text ?? "",
+            body: m.message ?? m.body ?? m.text ?? "",
+            timestamp: m.created_at ?? m.sent_at ?? m.timestamp ?? new Date().toISOString(),
+            created_at: m.created_at ?? m.sent_at ?? m.timestamp ?? new Date().toISOString(),
+            read_at: m.read_at ?? null,
+          }));
+          usedMaestro = true;
+        }
+      } catch (maestroErr: any) {
+        console.warn("[maestro] getMessagesWith fallback to NS-API:", maestroErr?.message);
+      }
+      // --- NS-API (fallback) ---
+      if (!usedMaestro && currentThreadId) {
+        const { data, error: err } = await supabase.functions.invoke("pp-ns-sms", {
+          body: { action: "messages", thread_id: currentThreadId },
+        });
+        if (err) throw err;
+        list = (data as any)?.messages ?? [];
+      }
       list.sort((a, b) => +new Date(msgTime(a)) - +new Date(msgTime(b)));
       setMessages(list);
     } catch (e: any) {
@@ -711,21 +677,30 @@ function ThreadView({ threadId: thId, number, myExt, userId, onBack, onCall }: {
     setMessages((prev) => [...prev, optimistic]);
     setText("");
     try {
-      const { data, error: err } = await supabase.functions.invoke("pp-ns-sms", {
-        body: { action: "send", to: number, message: body, ...(currentThreadId ? { thread_id: currentThreadId } : {}) },
-      });
-      if (err) throw err;
-      if ((data as any)?.ok === false || (data as any)?.error) {
-        const detail = (data as any)?.body || (data as any)?.error || t("messages.sendFailed");
-        throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+      // --- Maestro Telecom (envoi primaire) ---
+      let sentViaMaestro = false;
+      try {
+        await maestroTelecom.sendMessage({ to_user_number: number, message: body });
+        sentViaMaestro = true;
+      } catch (maestroErr: any) {
+        console.warn("[maestro] sendMessage fallback to NS-API:", maestroErr?.message);
       }
-      const result = (data as any)?.result ?? {};
-      const newThreadId = result?.messagesession_id ?? result?.["messagesession-id"] ?? result?.session_id ?? result?.id;
-      if (newThreadId && !currentThreadId) setCurrentThreadId(newThreadId);
-      // Maestro mirror is handled server-side inside pp-ns-sms.
-      // Refresh from server to reconcile optimistic message
-      setTimeout(() => loadMessages(), 600);
-
+      // --- NS-API (fallback si Maestro échoue) ---
+      if (!sentViaMaestro) {
+        const { data, error: err } = await supabase.functions.invoke("pp-ns-sms", {
+          body: { action: "send", to: number, message: body, ...(currentThreadId ? { thread_id: currentThreadId } : {}) },
+        });
+        if (err) throw err;
+        if ((data as any)?.ok === false || (data as any)?.error) {
+          const detail = (data as any)?.body || (data as any)?.error || t("messages.sendFailed");
+          throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+        }
+        const result = (data as any)?.result ?? {};
+        const newThreadId = result?.messagesession_id ?? result?.["messagesession-id"] ?? result?.session_id ?? result?.id;
+        if (newThreadId && !currentThreadId) setCurrentThreadId(newThreadId);
+      }
+      // Rafraîchir depuis le serveur pour réconcilier le message optimiste
+      setTimeout(() => loadMessages(), 800);
     } catch (e: any) {
       toast.error(e?.message ?? t("messages.sendFailed"));
       setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
@@ -965,405 +940,153 @@ function TeamChat({ profile }: { profile: any }) {
 }
 
 // ============================================================
-// EMAILS TAB (M365) — Style Outlook
+// EMAILS TAB (M365)
 // ============================================================
-type EmailFolder = "inbox" | "sent" | "drafts" | "deleted" | "archive";
-
-const FOLDER_LABELS: Record<EmailFolder, string> = {
-  inbox: "Boîte de réception",
-  sent: "Éléments envoyés",
-  drafts: "Brouillons",
-  deleted: "Éléments supprimés",
-  archive: "Archive",
-};
-
-const FOLDER_ICONS: Record<EmailFolder, React.ElementType> = {
-  inbox: Mail,
-  sent: Send,
-  drafts: BookUser,
-  deleted: Trash2,
-  archive: Archive,
-};
-
-export function EmailsList({ profile, initialTo = "", initialName = "" }: { profile: any; initialTo?: string; initialName?: string }) {
+function EmailsList({ profile }: { profile: any }) {
   const { t, lang } = useMplanipretLang();
-  const PAGE_SIZE = 25;
-  const [folder, setFolder] = useState<EmailFolder>("inbox");
-  const [folderMenuOpen, setFolderMenuOpen] = useState(false);
+  const [searchParams] = useSearchParams();
   const [emails, setEmails] = useState<any[] | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "no_m365" | "error">("loading");
   const [active, setActive] = useState<any | null>(null);
   const [composeOpen, setComposeOpen] = useState(false);
-  const [composeInit, setComposeInit] = useState<ComposeInit>({});
-  const [hasMore, setHasMore] = useState(false);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [searchActive, setSearchActive] = useState(false);
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const [composeInit, setComposeInit] = useState<{ to?: string; subject?: string; body?: string }>({});
 
-  const emailCacheKey = (f: EmailFolder) => `pp.emails.${profile?.user_id ?? ""}.${f}`;
+  useEffect(() => {
+    const to = searchParams.get("to")?.trim();
+    if (to && searchParams.get("tab") === "emails") {
+      setComposeInit({ to });
+      setComposeOpen(true);
+    }
+  }, [searchParams]);
 
-  const load = async (targetFolder?: EmailFolder, search?: string, silent = false, forceNetwork = false) => {
+  const load = async () => {
     if (!profile?.ms365_access_token) { setState("no_m365"); return; }
-    const f = targetFolder ?? folder;
-    // Afficher le cache instantanément si disponible (sauf si forceNetwork = true)
-    if (!silent && !search && !forceNetwork) {
-      try {
-        const raw = sessionStorage.getItem(emailCacheKey(f));
-        if (raw) {
-          const { data: cached, at } = JSON.parse(raw);
-          if (cached && Array.isArray(cached) && Date.now() - at < 300_000) {
-            setEmails(cached);
-            setState("ready");
-            // Rafraîchir en arrière-plan silencieusement
-            void load(f, undefined, true);
-            return;
-          }
-        }
-      } catch {}
-    }
-    if (!silent) setState((s) => (s === "ready" ? s : "loading"));
-    const payload: any = { top: PAGE_SIZE, skip: 0, folder: f };
-    if (search) payload.search = search;
+    setState((s) => (s === "ready" ? s : "loading"));
     const { data, error } = await supabase.functions.invoke("ms365-actions", {
-      body: { action: "read_emails", payload },
+      body: { action: "read_emails", payload: { top: 25 } },
     });
-    if (error || !(data as any)?.success) { if (!silent) setState("error"); return; }
-    const list = ((data as any).emails ?? (data as any).messages ?? []) as any[];
-    setEmails(list);
-    setHasMore(Boolean((data as any).hasMore) && list.length === PAGE_SIZE);
+    if (error || !(data as any)?.success) { setState("error"); return; }
+    setEmails(((data as any).emails ?? (data as any).messages ?? []));
     setState("ready");
-    // Sauvegarder dans le cache
-    if (!search) {
-      try { sessionStorage.setItem(emailCacheKey(f), JSON.stringify({ data: list, at: Date.now() })); } catch {}
-    }
-  };
-
-  const loadMore = async () => {
-    if (loadingMore || !emails) return;
-    setLoadingMore(true);
-    try {
-      const payload: any = { top: PAGE_SIZE, skip: emails.length, folder };
-      if (searchQuery) payload.search = searchQuery;
-      const { data, error } = await supabase.functions.invoke("ms365-actions", {
-        body: { action: "read_emails", payload },
-      });
-      if (error || !(data as any)?.success) { toast.error(t("messages.emailsLoadFailed")); return; }
-      const more = ((data as any).emails ?? []) as any[];
-      const seen = new Set(emails.map((e) => e.id));
-      const merged = [...emails, ...more.filter((e) => !seen.has(e.id))];
-      setEmails(merged);
-      setHasMore(Boolean((data as any).hasMore) && more.length === PAGE_SIZE);
-    } finally {
-      setLoadingMore(false);
-    }
-  };
-
-  const switchFolder = (f: EmailFolder) => {
-    // Mettre state=loading ET emails=[] AVANT load() pour éviter la fenêtre
-    // où state==='ready' mais emails===null (null.map crash)
-    setState("loading");
-    setEmails([]);
-    setFolder(f);
-    setFolderMenuOpen(false);
-    setSearchQuery("");
-    setSearchActive(false);
-    load(f, undefined);
-  };
-
-  const doSearch = () => {
-    if (!searchQuery.trim()) { load(folder, undefined); return; }
-    load(folder, searchQuery.trim());
   };
 
   useEffect(() => {
     load(); /* eslint-disable-next-line */
+    if (!profile?.ms365_access_token) return;
+    const id = window.setInterval(() => { load(); }, 60_000);
+    const onVis = () => { if (document.visibilityState === "visible") load(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { window.clearInterval(id); document.removeEventListener("visibilitychange", onVis); };
   }, [profile?.ms365_access_token]);
 
-  // Navigation depuis la fiche contact : ouvrir la composition avec le destinataire pré-rempli
-  useEffect(() => {
-    if (initialTo?.trim()) {
-      setComposeInit({ to: initialTo.trim(), subject: "", body: "" });
-      setComposeOpen(true);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialTo]);
-
-  // Auto-prefetch next page when the sentinel scrolls into view (200px margin).
-  useEffect(() => {
-    if (!hasMore || loadingMore || !emails || emails.length === 0) return;
-    const el = sentinelRef.current;
-    if (!el || typeof IntersectionObserver === "undefined") return;
-    const io = new IntersectionObserver(
-      (entries) => { if (entries.some((e) => e.isIntersecting)) loadMore(); },
-      { rootMargin: "200px 0px", threshold: 0 },
-    );
-    io.observe(el);
-    return () => io.disconnect();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasMore, loadingMore, emails?.length]);
-
-  // Avatar initials helper
-  const avatarInitials = (name: string) => {
-    const parts = (name || "").trim().split(/\s+/);
-    if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-    return (name || "?").slice(0, 2).toUpperCase();
-  };
-
-  const FolderIcon = FOLDER_ICONS[folder];
-
   return (
-    <div className="h-full flex flex-col" style={{ background: "var(--pp-bg-base)" }}>
-
-      {/* ===== OUTLOOK-STYLE TOOLBAR ===== */}
-      <div className="px-3 pt-2 pb-0" style={{ background: "var(--pp-bg-deep)", borderBottom: "1px solid var(--pp-bg-border)" }}>
-        {/* Row 1: Folder selector + Compose + Refresh */}
-        <div className="flex items-center gap-2 mb-2">
-          {/* Folder selector button */}
-          <div className="relative flex-1">
-            <button
-              onClick={() => setFolderMenuOpen((v) => !v)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold w-full"
-              style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
-            >
-              <FolderIcon className="w-4 h-4" style={{ color: "var(--pp-brand-accent)" }} />
-              <span className="flex-1 text-left truncate">{FOLDER_LABELS[folder]}</span>
-              <ChevronRight className="w-3.5 h-3.5 rotate-90" style={{ color: "var(--pp-text-muted)" }} />
-            </button>
-            {folderMenuOpen && (
-              <div
-                className="absolute top-full left-0 mt-1 w-56 rounded-xl shadow-2xl z-50 overflow-hidden"
-                style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)" }}
-              >
-                {(Object.keys(FOLDER_LABELS) as EmailFolder[]).map((f) => {
-                  const Icon = FOLDER_ICONS[f];
-                  return (
-                    <button
-                      key={f}
-                      onClick={() => switchFolder(f)}
-                      className="w-full flex items-center gap-3 px-4 py-3 text-sm active:opacity-70"
-                      style={{
-                        background: folder === f ? "rgba(46,155,220,0.10)" : "transparent",
-                        color: folder === f ? "var(--pp-brand-accent)" : "var(--pp-text-primary)",
-                        borderBottom: "1px solid var(--pp-bg-border)",
-                        fontWeight: folder === f ? 600 : 400,
-                      }}
-                    >
-                      <Icon className="w-4 h-4" />
-                      {FOLDER_LABELS[f]}
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+    <div className="h-full overflow-y-auto p-3">
+      <div className="flex items-center justify-between mb-2">
+        <button
+          onClick={() => { setComposeInit({}); setComposeOpen(true); }}
+          className="px-3 py-1.5 rounded-full flex items-center gap-1.5 text-xs font-semibold text-white"
+          style={{
+            background: "linear-gradient(135deg, var(--pp-brand-accent), var(--pp-brand-accent-2))",
+            boxShadow: "0 2px 12px rgba(46,155,220,0.4)",
+          }}
+        >
+          <Plus className="w-3.5 h-3.5" /> {t("messages.emailCompose")}
+        </button>
+        <div className="flex items-center gap-2">
           <button
-            onClick={() => { setComposeInit({}); setComposeOpen(true); }}
-            className="w-9 h-9 rounded-full flex items-center justify-center text-white flex-shrink-0"
-            style={{ background: "linear-gradient(135deg, var(--pp-brand-accent), var(--pp-brand-accent-2))", boxShadow: "0 2px 10px rgba(46,155,220,0.4)" }}
-            title="Nouveau courriel"
+            onClick={load}
+            className="text-xs flex items-center gap-1 px-2 py-1"
+            style={{ color: "var(--pp-text-muted)" }}
           >
-            <Plus className="w-4 h-4" />
+            <RefreshCw className={`w-3 h-3 ${state === "loading" ? "animate-spin" : ""}`} /> {t("common.refresh")}
           </button>
-          <button
-            onClick={() => load(folder, undefined, false, true)}
-            className="w-9 h-9 rounded-full flex items-center justify-center flex-shrink-0"
-            style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
-            title="Actualiser (forcer le rechargement)"
-          >
-            <RefreshCw className={`w-4 h-4 ${state === "loading" ? "animate-spin" : ""}`} />
-          </button>
-        </div>
-
-        {/* Row 2: Search bar */}
-        <div className="flex items-center gap-2 pb-2">
-          <div className="flex-1 flex items-center gap-2 px-3 py-1.5 rounded-full"
-            style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)" }}>
-            <Search className="w-3.5 h-3.5 flex-shrink-0" style={{ color: "var(--pp-text-muted)" }} />
-            <input
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") doSearch(); }}
-              placeholder="Rechercher dans les courriels…"
-              className="flex-1 text-xs bg-transparent outline-none"
-              style={{ color: "var(--pp-text-primary)" }}
-            />
-            {searchQuery && (
-              <button onClick={() => { setSearchQuery(""); load(folder, undefined); }}
-                style={{ color: "var(--pp-text-muted)" }}>
-                <X className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </div>
-          {searchQuery && (
-            <button
-              onClick={doSearch}
-              className="px-3 py-1.5 rounded-full text-xs font-semibold text-white"
-              style={{ background: "var(--pp-brand-accent)" }}
-            >
-              OK
-            </button>
-          )}
         </div>
       </div>
 
-      {/* ===== EMAIL LIST ===== */}
-      <div className="flex-1 overflow-y-auto">
-        {state === "loading" && (
-          <div className="space-y-px">
-            {Array.from({ length: 6 }).map((_, i) => (
-              <div key={i} className="flex items-center gap-3 px-4 py-3 animate-pulse"
-                style={{ borderBottom: "1px solid var(--pp-bg-border)" }}>
-                <div className="w-10 h-10 rounded-full flex-shrink-0" style={{ background: "var(--pp-bg-elevated)" }} />
-                <div className="flex-1 space-y-2">
-                  <div className="h-3 rounded" style={{ background: "var(--pp-bg-elevated)", width: "60%" }} />
-                  <div className="h-2.5 rounded" style={{ background: "var(--pp-bg-elevated)", width: "80%" }} />
-                  <div className="h-2 rounded" style={{ background: "var(--pp-bg-elevated)", width: "40%" }} />
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+      {state === "loading" && (
+        <div className="space-y-2">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="rounded-2xl h-20 animate-pulse" style={{ background: "var(--pp-bg-surface)" }} />
+          ))}
+        </div>
+      )}
 
-        {state === "no_m365" && (
-          <div className="p-6 text-center mt-6">
-            <Mail className="w-12 h-12 mx-auto mb-3" style={{ color: "var(--pp-brand-accent)" }} />
-            <p className="font-semibold mb-1" style={{ color: "var(--pp-text-primary)" }}>{t("messages.m365NotConnected")}</p>
-            <p className="text-xs mb-4" style={{ color: "var(--pp-text-muted)" }}>{t("messages.m365ConnectDesc")}</p>
-            <a href="/mplanipret/more"
-              className="inline-block text-xs px-5 py-2 rounded-full text-white font-semibold"
-              style={{ background: "linear-gradient(135deg, var(--pp-brand-accent), var(--pp-brand-accent-2))" }}>
-              {t("messages.connectM365")}
-            </a>
-          </div>
-        )}
+      {state === "no_m365" && (
+        <div
+          className="rounded-2xl p-6 text-center mt-6"
+          style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)" }}
+        >
+          <Mail className="w-10 h-10 mx-auto mb-3" style={{ color: "var(--pp-brand-accent)" }} />
+          <p className="font-semibold" style={{ color: "var(--pp-text-primary)" }}>{t("messages.m365NotConnected")}</p>
+          <p className="text-xs mt-1 mb-3" style={{ color: "var(--pp-text-muted)" }}>
+            {t("messages.m365ConnectDesc")}
+          </p>
+          <a
+            href="/mplanipret/more"
+            className="inline-block text-xs px-4 py-2 rounded-full text-white font-semibold"
+            style={{ background: "linear-gradient(135deg, var(--pp-brand-accent), var(--pp-brand-accent-2))" }}
+          >
+            {t("messages.connectM365")}
+          </a>
+        </div>
+      )}
 
-        {state === "error" && (
-          <div className="text-center py-10">
-            <p className="text-sm mb-3" style={{ color: "var(--pp-text-muted)" }}>{t("messages.emailsLoadFailed")}</p>
-            <button onClick={() => load()}
-              className="text-xs px-4 py-2 rounded-full"
-              style={{ border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}>
-              {t("common.retry")}
-            </button>
-          </div>
-        )}
+      {state === "error" && (
+        <div className="text-center py-10">
+          <p className="text-sm" style={{ color: "var(--pp-text-muted)" }}>{t("messages.emailsLoadFailed")}</p>
+          <button
+            onClick={load}
+            className="mt-3 text-xs px-3 py-1.5 rounded-full"
+            style={{ border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
+          >
+            {t("common.retry")}
+          </button>
+        </div>
+      )}
 
-        {state === "ready" && (emails?.length === 0 ? (
-          <EmptyState Icon={FolderIcon} title={FOLDER_LABELS[folder]} sub="Aucun courriel dans ce dossier." />
-        ) : (
-          <>
-            {/* Outlook-style email rows with swipe gestures */}
-            <ul>
-              {(emails ?? []).map((e: any, i: number) => {
-                const senderName = folder === "sent"
-                  ? (e.toRecipients?.[0]?.emailAddress?.name ?? e.toRecipients?.[0]?.emailAddress?.address ?? "Destinataire")
-                  : (e.from?.emailAddress?.name ?? e.from?.emailAddress?.address ?? t("messages.sender"));
-                const subject = e.subject ?? t("messages.noSubject");
-                const preview = e.bodyPreview ?? "";
-                // Pour les courriels envoyés, utiliser sentDateTime si disponible
-                const received = e.sentDateTime ?? e.receivedDateTime ?? e.created_at;
-                const unread = folder !== "sent" && folder !== "drafts" && e.isRead === false;
-                const flagged = e.flag?.flagStatus === "flagged";
-                const initials = avatarInitials(senderName);
+      {state === "ready" && (emails?.length === 0 ? (
+        <EmptyState Icon={Mail} title={t("messages.emptyInbox")} sub={t("messages.noRecentEmail")} />
+      ) : (
+        <ul className="space-y-1.5">
+          {emails!.map((e: any, i: number) => {
+            const from = e.from?.emailAddress?.name ?? e.from?.emailAddress?.address ?? t("messages.sender");
+            const subject = e.subject ?? t("messages.noSubject");
+            const preview = e.bodyPreview ?? "";
+            const received = e.receivedDateTime ?? e.created_at;
+            const unread = e.isRead === false;
+            return (
+              <li key={e.id ?? i}>
+                <button
+                  onClick={() => setActive(e)}
+                  className="w-full text-left rounded-2xl p-3 active:opacity-80"
+                  style={{
+                    background: "var(--pp-bg-surface)",
+                    border: "1px solid var(--pp-bg-border-2)",
+                    borderLeft: unread ? "3px solid var(--pp-brand-accent)" : "1px solid var(--pp-bg-border-2)",
+                  }}
+                >
+                  <div className="flex items-start justify-between gap-2 mb-1">
+                    <p className="font-semibold text-sm truncate" style={{ color: "var(--pp-text-primary)" }}>{from}</p>
+                    <span className="text-[10px] shrink-0" style={{ color: "var(--pp-text-faint)" }}>
+                      {received ? fmtTime(received, lang, t) : ""}
+                    </span>
+                  </div>
+                  <p className="text-xs truncate mb-1" style={{ color: "var(--pp-text-secondary)" }}>{subject}</p>
+                  <p className="text-[11px] line-clamp-2" style={{ color: "var(--pp-text-muted)" }}>{preview}</p>
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      ))}
 
-                const handleDelete = async () => {
-                  // Optimistic remove
-                  setEmails((prev) => prev ? prev.filter((x) => x.id !== e.id) : prev);
-                  const { data, error } = await supabase.functions.invoke("ms365-actions", {
-                    body: { action: "delete_email", payload: { message_id: e.id } },
-                  });
-                  if (error || !(data as any)?.success) {
-                    toast.error((data as any)?.error ?? error?.message ?? "Erreur suppression");
-                    load(folder, undefined, false, true); // Recharger si erreur
-                  } else {
-                    toast.success("Supprimé");
-                  }
-                };
-
-                const handleArchive = async () => {
-                  setEmails((prev) => prev ? prev.filter((x) => x.id !== e.id) : prev);
-                  const { data, error } = await supabase.functions.invoke("ms365-actions", {
-                    body: { action: "archive_email", payload: { message_id: e.id } },
-                  });
-                  if (error || !(data as any)?.success) {
-                    toast.error((data as any)?.error ?? error?.message ?? "Erreur archivage");
-                    load(folder, undefined, false, true);
-                  } else {
-                    toast.success("Archivé");
-                  }
-                };
-
-                const handleFlag = async () => {
-                  const isFlagged = e.flag?.flagStatus === "flagged";
-                  // Optimistic update
-                  setEmails((prev) => prev ? prev.map((x) =>
-                    x.id === e.id ? { ...x, flag: { flagStatus: isFlagged ? "notFlagged" : "flagged" } } : x
-                  ) : prev);
-                  const { data, error } = await supabase.functions.invoke("ms365-actions", {
-                    body: { action: "flag_email", payload: { message_id: e.id, unflag: isFlagged } },
-                  });
-                  if (error || !(data as any)?.success) {
-                    toast.error((data as any)?.error ?? error?.message ?? "Erreur drapeau");
-                    load(folder, undefined, false, true);
-                  } else {
-                    toast.success(isFlagged ? "Drapeau retiré" : "Drapeau ajouté");
-                  }
-                };
-
-                return (
-                  <li key={e.id ?? i}>
-                    <SwipeEmailRow
-                      email={e}
-                      folder={folder}
-                      unread={unread}
-                      flagged={flagged}
-                      initials={initials}
-                      senderName={senderName}
-                      subject={subject}
-                      preview={preview}
-                      received={received}
-                      lang={lang}
-                      t={t}
-                      onOpen={() => setActive(e)}
-                      onDelete={handleDelete}
-                      onArchive={handleArchive}
-                      onFlag={handleFlag}
-                    />
-                  </li>
-                );
-              })}
-            </ul>
-            {hasMore && <div ref={sentinelRef} aria-hidden className="h-1 w-full" />}
-            {hasMore && (
-              <button
-                onClick={loadMore}
-                disabled={loadingMore}
-                className="w-full py-3 text-xs font-semibold disabled:opacity-60 flex items-center justify-center gap-2"
-                style={{ color: "var(--pp-brand-accent)" }}
-              >
-                {loadingMore ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
-                {loadingMore ? "Chargement…" : "Charger plus de courriels"}
-              </button>
-            )}
-            {!hasMore && emails!.length >= PAGE_SIZE && (
-              <p className="text-center text-[11px] py-3" style={{ color: "var(--pp-text-faint)" }}>
-                — Fin de la liste —
-              </p>
-            )}
-          </>
-        ))}
-      </div>
-
-      {/* ===== DETAIL SHEET ===== */}
       {active && (
         <EmailDetailSheet
           email={active}
-          folder={folder}
           onClose={() => setActive(null)}
-          onCompose={(init) => { setActive(null); setComposeInit(init); setComposeOpen(true); }}
-          onChanged={() => load()}
-          onOptimisticRemove={(id) => setEmails((cur) => (cur ? cur.filter((e) => e.id !== id) : cur))}
+          onReply={(init) => { setActive(null); setComposeInit(init); setComposeOpen(true); }}
+          onForward={(init) => { setActive(null); setComposeInit(init); setComposeOpen(true); }}
+          onChanged={() => { setActive(null); load(); }}
         />
       )}
       {composeOpen && (
@@ -1377,319 +1100,46 @@ export function EmailsList({ profile, initialTo = "", initialName = "" }: { prof
   );
 }
 
-type ComposeInit = {
-  mode?: "new" | "reply" | "reply_all" | "forward";
-  message_id?: string;
-  to?: string;
-  cc?: string;
-  bcc?: string;
-  subject?: string;
-  body?: string;
-};
-
-/**
- * Composant SwipeEmailRow : ligne d'email avec gestes de glissement style Outlook
- * - Swipe gauche (> 80px) : révèle boutons Supprimer + Archiver
- * - Swipe droite (> 80px) : révèle bouton Marquer/Drapeau
- */
-function SwipeEmailRow({
-  email: e,
-  folder,
-  unread,
-  flagged,
-  initials,
-  senderName,
-  subject,
-  preview,
-  received,
-  lang,
-  t,
-  onOpen,
-  onDelete,
-  onArchive,
-  onFlag,
-}: {
+function EmailDetailSheet({ email, onClose, onReply, onForward, onChanged }: {
   email: any;
-  folder: string;
-  unread: boolean;
-  flagged: boolean;
-  initials: string;
-  senderName: string;
-  subject: string;
-  preview: string;
-  received: string | undefined;
-  lang: string;
-  t: (k: string) => string;
-  onOpen: () => void;
-  onDelete: () => void;
-  onArchive: () => void;
-  onFlag: () => void;
-}) {
-  const rowRef = React.useRef<HTMLDivElement>(null);
-  const startXRef = React.useRef<number | null>(null);
-  const startYRef = React.useRef<number | null>(null);
-  // Tracks whether a horizontal swipe gesture occurred (even below threshold)
-  const didSwipeRef = React.useRef(false);
-  const [offset, setOffset] = React.useState(0);
-  const [revealed, setRevealed] = React.useState<"left" | "right" | null>(null);
-  const THRESHOLD = 72;
-  // Minimum horizontal movement to consider it a swipe (not a tap)
-  const SWIPE_MIN = 8;
-
-  const handleTouchStart = (e: React.TouchEvent) => {
-    startXRef.current = e.touches[0].clientX;
-    startYRef.current = e.touches[0].clientY;
-    didSwipeRef.current = false;
-  };
-
-  const handleTouchMove = (e: React.TouchEvent) => {
-    if (startXRef.current === null || startYRef.current === null) return;
-    const dx = e.touches[0].clientX - startXRef.current;
-    const dy = e.touches[0].clientY - startYRef.current;
-    // Si le scroll vertical est dominant, ne pas intercepter
-    if (Math.abs(dy) > Math.abs(dx) + 10) return;
-    // Mark as swipe gesture if moved more than SWIPE_MIN px horizontally
-    if (Math.abs(dx) > SWIPE_MIN) {
-      didSwipeRef.current = true;
-    }
-    e.preventDefault();
-    const clamped = Math.max(-THRESHOLD * 1.5, Math.min(THRESHOLD * 1.5, dx));
-    setOffset(clamped);
-  };
-
-  const handleTouchEnd = () => {
-    if (offset < -THRESHOLD) {
-      // Swipe gauche dépasse le seuil : déclencher directement l'action (comportement Outlook)
-      // Si folder deleted, seul Supprimer est disponible, sinon on révèle les deux boutons
-      // Pour simplifier l'UX : swipe gauche = Supprimer directement
-      resetSwipe();
-      onDelete();
-    } else if (offset > THRESHOLD) {
-      // Swipe droit dépasse le seuil : flag directement
-      resetSwipe();
-      onFlag();
-    } else {
-      setOffset(0);
-      setRevealed(null);
-    }
-    startXRef.current = null;
-    startYRef.current = null;
-  };
-
-  const resetSwipe = () => { setOffset(0); setRevealed(null); didSwipeRef.current = false; };
-
-  return (
-    <div
-      ref={rowRef}
-      className="relative overflow-hidden"
-      style={{ borderBottom: "1px solid var(--pp-bg-border)" }}
-    >
-      {/* Fond gauche : indicateur visuel Supprimer (l'action se déclenche au touchend) */}
-      <div
-        className="absolute inset-y-0 right-0 flex items-center justify-center"
-        style={{
-          width: "100%",
-          background: "#ef4444",
-          opacity: offset < -10 ? Math.min(1, Math.abs(offset) / THRESHOLD) : 0,
-          transition: startXRef.current !== null ? "none" : "opacity 0.2s ease",
-          pointerEvents: "none",
-        }}
-      >
-        <div className="flex flex-col items-center gap-0.5 text-white mr-4">
-          <Trash2 className="w-5 h-5" />
-          <span className="text-[10px] font-semibold">Supprimer</span>
-        </div>
-      </div>
-
-      {/* Fond droit : indicateur visuel Flag (l'action se déclenche au touchend) */}
-      <div
-        className="absolute inset-y-0 left-0 flex items-center justify-center"
-        style={{
-          width: "100%",
-          background: flagged ? "#6b7280" : "#f59e0b",
-          opacity: offset > 10 ? Math.min(1, offset / THRESHOLD) : 0,
-          transition: startXRef.current !== null ? "none" : "opacity 0.2s ease",
-          pointerEvents: "none",
-        }}
-      >
-        <div className="flex flex-col items-center gap-0.5 text-white ml-4">
-          <Flag className="w-5 h-5" />
-          <span className="text-[10px] font-semibold">{flagged ? "Retirer" : "Marquer"}</span>
-        </div>
-      </div>
-
-      {/* Contenu de la ligne — glisse avec le doigt */}
-      <div
-        style={{
-          transform: `translateX(${offset}px)`,
-          transition: startXRef.current !== null ? "none" : "transform 0.2s ease",
-          background: unread ? "rgba(46,155,220,0.04)" : "var(--pp-bg-base)",
-          position: "relative",
-          zIndex: 1,
-        }}
-        onTouchStart={handleTouchStart}
-        onTouchMove={handleTouchMove}
-        onTouchEnd={handleTouchEnd}
-      >
-        <button
-          onClick={() => {
-            // If buttons are revealed, a tap resets the swipe instead of opening
-            if (revealed) { resetSwipe(); return; }
-            // If a horizontal swipe gesture occurred (even below threshold), block open
-            if (didSwipeRef.current) { didSwipeRef.current = false; return; }
-            onOpen();
-          }}
-          className="w-full flex items-start gap-3 px-4 py-3 active:opacity-70 text-left"
-        >
-          <div
-            className="w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold flex-shrink-0 mt-0.5"
-            style={{
-              background: unread ? "var(--pp-brand-accent)" : "var(--pp-bg-elevated)",
-              color: unread ? "#fff" : "var(--pp-text-secondary)",
-            }}
-          >
-            {initials}
-          </div>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center justify-between gap-2 mb-0.5">
-              <p className="text-sm truncate" style={{ color: "var(--pp-text-primary)", fontWeight: unread ? 700 : 400 }}>
-                {senderName}
-              </p>
-              <div className="flex items-center gap-1 flex-shrink-0">
-                {flagged && <Flag className="w-3 h-3" style={{ color: "#f59e0b", fill: "#f59e0b" }} />}
-                {e.hasAttachments && <Paperclip className="w-3 h-3" style={{ color: "var(--pp-text-muted)" }} />}
-                <span className="text-[10px]" style={{ color: "var(--pp-text-faint)" }}>
-                  {received ? fmtTime(received, lang, t) : ""}
-                </span>
-              </div>
-            </div>
-            <p className="text-xs truncate mb-0.5" style={{ color: unread ? "var(--pp-text-primary)" : "var(--pp-text-secondary)", fontWeight: unread ? 600 : 400 }}>
-              {subject}
-            </p>
-            <p className="text-[11px] line-clamp-1" style={{ color: "var(--pp-text-muted)" }}>{preview}</p>
-          </div>
-          {unread && (
-            <div className="w-2 h-2 rounded-full flex-shrink-0 mt-2" style={{ background: "var(--pp-brand-accent)" }} />
-          )}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/**
- * Nettoie le HTML d'un courriel Microsoft pour l'affichage mobile :
- * - Supprime les balises <html>, <head>, <body>, <meta>, <style> globaux
- * - Retire les attributs width/height fixes sur tables et images
- * - Conserve le contenu visible intact
- */
-function sanitizeEmailHtml(html: string): string {
-  // Supprimer les balises structurelles HTML qui cassent le layout
-  let clean = html
-    .replace(/<(!DOCTYPE|html|head|body)[^>]*>/gi, "")
-    .replace(/<\/(html|head|body)>/gi, "")
-    .replace(/<meta[^>]*>/gi, "")
-    // Supprimer les <style> globaux qui peuvent imposer des largeurs fixes
-    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
-    // Retirer les attributs width/height fixes sur les tables (ex: width="600")
-    .replace(/(<table[^>]*?)\s+width=["'][^"']*["']/gi, "$1")
-    .replace(/(<table[^>]*?)\s+height=["'][^"']*["']/gi, "$1")
-    // Retirer les width fixes en style inline sur les tables
-    .replace(/(<table[^>]*?)\s+style=["']([^"']*?)(width\s*:\s*[\d.]+px)[^"']*["']/gi, (_, tag, before) => `${tag} style="${before}width:100%"`)
-    // Forcer les images à être responsives
-    .replace(/(<img[^>]*?)\s+width=["'][^"']*["']/gi, "$1")
-    .replace(/(<img[^>]*?)\s+height=["'][^"']*["']/gi, "$1");
-  return clean;
-}
-
-function EmailDetailSheet({ email, folder, onClose, onCompose, onChanged, onOptimisticRemove }: {
-  email: any;
-  folder?: EmailFolder;
   onClose: () => void;
-  onCompose: (init: ComposeInit) => void;
+  onReply: (init: { to?: string; subject?: string; body?: string }) => void;
+  onForward: (init: { to?: string; subject?: string; body?: string }) => void;
   onChanged: () => void;
-  onOptimisticRemove?: (id: string) => void;
 }) {
   const { t } = useMplanipretLang();
-  const [detail, setDetail] = useState<any | null>(null);
-  const [loadingDetail, setLoadingDetail] = useState(false);
+  const from = email.from?.emailAddress?.name ?? email.from?.emailAddress?.address ?? t("messages.sender");
+  const fromAddr = email.from?.emailAddress?.address ?? "";
+  const subject = email.subject ?? t("messages.noSubject");
+  const preview = email.bodyPreview ?? "";
   const [sumOpen, setSumOpen] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [analysis, setAnalysis] = useState<any | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [flagged, setFlagged] = useState<boolean>(email.flag?.flagStatus === "flagged");
-  const [attachments, setAttachments] = useState<Array<{ id: string; name: string; contentType: string; size: number }>>([]);
-  const [downloadingAtt, setDownloadingAtt] = useState<string | null>(null);
+  const [busy, setBusy] = useState<"" | "flag" | "archive" | "delete">("");
+  const [flagged, setFlagged] = useState<boolean>(email?.flag?.flagStatus === "flagged");
 
-
-  const merged = detail ?? email;
-  const from = merged.from?.emailAddress?.name ?? merged.from?.emailAddress?.address ?? t("messages.sender");
-  const fromAddr = merged.from?.emailAddress?.address ?? "";
-  const subject = merged.subject ?? t("messages.noSubject");
-  const toList = Array.isArray(merged.toRecipients) ? merged.toRecipients : [];
-  const ccList = Array.isArray(merged.ccRecipients) ? merged.ccRecipients : [];
-  const bodyHtml: string = merged?.body?.content ?? "";
-  const bodyType: string = merged?.body?.contentType ?? "text";
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      if (!email?.id) return;
-      setLoadingDetail(true);
-      const { data } = await supabase.functions.invoke("ms365-actions", {
-        body: { action: "read_email_detail", payload: { message_id: email.id } },
-      });
-      if (!cancelled && (data as any)?.success) {
-        setDetail((data as any).email);
-        setFlagged((data as any).email?.flag?.flagStatus === "flagged");
-      }
-      if (!cancelled) setLoadingDetail(false);
-      // Mark as read on open (fire-and-forget). Also mutate the incoming
-      // preview object so the parent list reflects the new state without a
-      // refetch.
-      supabase.functions.invoke("ms365-actions", {
-        body: { action: "mark_read_email", payload: { message_id: email.id, isRead: true } },
-      }).then(({ error }) => {
-        if (!error) {
-          try { (email as any).isRead = true; onChanged(); } catch {}
-        }
-      }).catch(() => {});
-      // Load attachments list when the message has any.
-      if (email?.hasAttachments || (detail as any)?.hasAttachments) {
-        const { data: attData } = await supabase.functions.invoke("ms365-actions", {
-          body: { action: "list_attachments", payload: { message_id: email.id } },
-        });
-        if (!cancelled && (attData as any)?.success) {
-          setAttachments(((attData as any).attachments ?? []).filter((a: any) => !a.isInline));
-        }
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [email?.id]);
-
-  const downloadAttachment = async (att: { id: string; name: string; contentType: string }) => {
-    setDownloadingAtt(att.id);
+  const runAction = async (
+    kind: "flag" | "archive" | "delete",
+    action: string,
+    payload: Record<string, unknown>,
+    successMsg: string,
+  ) => {
+    if (!email.id) { toast.error("Message ID manquant"); return; }
+    setBusy(kind);
     try {
       const { data, error } = await supabase.functions.invoke("ms365-actions", {
-        body: { action: "get_attachment", payload: { message_id: email.id, attachment_id: att.id } },
+        body: { action, payload: { message_id: email.id, ...payload } },
       });
-      if (error || !(data as any)?.success) throw new Error((data as any)?.error ?? error?.message ?? "Échec");
-      const bytes = (data as any).attachment?.contentBytes;
-      if (!bytes) throw new Error("Contenu vide");
-      // Decode base64 → Blob → download
-      const bin = atob(bytes);
-      const arr = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-      const blob = new Blob([arr], { type: att.contentType || "application/octet-stream" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url; a.download = att.name || "attachment";
-      document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      if (error || !(data as any)?.success) {
+        throw new Error((data as any)?.error ?? error?.message ?? "Échec");
+      }
+      toast.success(successMsg);
+      if (kind === "flag") setFlagged((v) => !v);
+      else onChanged();
     } catch (e: any) {
-      toast.error(e?.message ?? "Téléchargement impossible");
+      toast.error(e?.message ?? "Erreur");
     } finally {
-      setDownloadingAtt(null);
+      setBusy("");
     }
   };
 
@@ -1701,612 +1151,368 @@ function EmailDetailSheet({ email, folder, onClose, onCompose, onChanged, onOpti
       const { data, error } = await supabase.functions.invoke("ava-email-analyzer", {
         body: { ms_message_id: email.id },
       });
-      if (error || !(data as any)?.success) throw new Error((data as any)?.error ?? error?.message ?? "Échec");
+      if (error || !(data as any)?.success) {
+        throw new Error((data as any)?.error ?? error?.message ?? "Échec de l'analyse");
+      }
       setAnalysis((data as any).analysis);
       if ((data as any).cached) toast.info("Analyse récupérée du cache");
-    } catch (e: any) { toast.error(e?.message ?? "Erreur AVA"); }
-    finally { setAnalyzing(false); }
-  };
-
-  const act = async (action: string, extra: Record<string, unknown> = {}, successMsg?: string) => {
-    if (!email.id) return;
-    setBusy(action);
-    const { data, error } = await supabase.functions.invoke("ms365-actions", {
-      body: { action, payload: { message_id: email.id, ...extra } },
-    });
-    setBusy(null);
-    if (error || !(data as any)?.success) {
-      toast.error((data as any)?.error ?? error?.message ?? "Échec");
-      return false;
-    }
-    if (successMsg) toast.success(successMsg);
-    return true;
-  };
-
-  const onDelete = async () => {
-    // Optimistic: remove from list & close immediately so the UI reflects the action.
-    if (email?.id) onOptimisticRemove?.(email.id);
-    onClose();
-    if (await act("delete_email", {}, "Supprimé")) { onChanged(); } else { onChanged(); }
-  };
-  const onArchive = async () => {
-    if (email?.id) onOptimisticRemove?.(email.id);
-    onClose();
-    if (await act("archive_email", {}, "Archivé")) { onChanged(); } else { onChanged(); }
-  };
-  const onToggleFlag = async () => {
-    if (await act("flag_email", { unflag: flagged }, flagged ? "Drapeau retiré" : "Drapeau ajouté")) {
-      setFlagged(!flagged); onChanged();
+    } catch (e: any) {
+      toast.error(e?.message ?? "Erreur AVA");
+    } finally {
+      setAnalyzing(false);
     }
   };
-  const onMarkUnread = async () => { if (await act("mark_read_email", { isRead: false }, "Marqué non lu")) { onChanged(); onClose(); } };
 
-  const buildQuote = () => {
-    const plain = merged.bodyPreview ?? "";
-    return `\n\n---\nDe: ${from} <${fromAddr}>\nEnvoyé: ${merged.receivedDateTime ?? ""}\nObjet: ${subject}\n\n${plain}`;
-  };
-
-  const openReply = () => onCompose({
-    mode: "reply", message_id: email.id, to: fromAddr,
-    subject: subject.startsWith("Re:") ? subject : `Re: ${subject}`, body: buildQuote(),
-  });
-  const openReplyAll = () => onCompose({
-    mode: "reply_all", message_id: email.id, to: fromAddr,
-    cc: ccList.map((r: any) => r?.emailAddress?.address).filter(Boolean).join(", "),
-    subject: subject.startsWith("Re:") ? subject : `Re: ${subject}`, body: buildQuote(),
-  });
-  const openForward = () => onCompose({
-    mode: "forward", message_id: email.id,
-    subject: subject.startsWith("Fwd:") ? subject : `Fwd: ${subject}`, body: buildQuote(),
-  });
-
-  const canReply = folder !== "sent" && folder !== "drafts";
 
   return (
-    <div className="fixed inset-0 z-[100] flex flex-col" style={{ background: "var(--pp-bg-base)", isolation: "isolate" }} onClick={onClose}>
+    <div className="absolute inset-0 z-40 bg-black/60 backdrop-blur-sm flex items-end" onClick={onClose}>
       <div
-        className="flex flex-col h-full"
-        style={{ paddingTop: "env(safe-area-inset-top, 0px)", paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
+        className="w-full rounded-t-3xl flex flex-col"
+        style={{ background: "var(--pp-bg-base)", border: "1px solid var(--pp-bg-border-2)", height: "92%" }}
         onClick={(e) => e.stopPropagation()}
       >
-        {/* ===== HEADER STICKY — toujours visible ===== */}
-        <div
-          className="flex-shrink-0 flex items-center gap-1.5 px-3 py-2"
-          style={{
-            borderBottom: "1px solid var(--pp-bg-border)",
-            background: "var(--pp-bg-deep)",
-            minHeight: 52,
-          }}
-        >
-          <button
-            onClick={onClose}
-            className="p-2 rounded-full flex-shrink-0 active:scale-95 transition"
-            style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-primary)" }}
-            aria-label="Retour"
-          >
+        <div className="flex items-center justify-between px-4 pt-3 pb-2" style={{ borderBottom: "1px solid var(--pp-bg-border)" }}>
+          <button onClick={onClose} className="p-1.5 rounded-full" style={{ color: "var(--pp-text-secondary)" }}>
             <ArrowLeft className="w-5 h-5" />
           </button>
-          <p className="flex-1 text-sm font-semibold truncate" style={{ color: "var(--pp-text-primary)" }}>{subject}</p>
-          {/* Boutons Répondre/Transférer dans le header pour maximiser la zone de lecture */}
-          {canReply && (
-            <>
-              <button
-                onClick={openReply}
-                className="p-1.5 rounded-full active:scale-95 transition flex-shrink-0"
-                style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-brand-accent)", border: "1px solid var(--pp-bg-border-2)" }}
-                title="Répondre"
-                aria-label="Répondre"
-              >
-                <Reply className="w-4 h-4" />
-              </button>
-              <button
-                onClick={openReplyAll}
-                className="p-1.5 rounded-full active:scale-95 transition flex-shrink-0"
-                style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-brand-accent)", border: "1px solid var(--pp-bg-border-2)" }}
-                title="Répondre à tous"
-                aria-label="Répondre à tous"
-              >
-                <UsersRound className="w-4 h-4" />
-              </button>
-            </>
-          )}
+          <p className="text-xs uppercase tracking-wider" style={{ color: "var(--pp-text-muted)" }}>Email</p>
           <button
-            onClick={openForward}
-            className="p-1.5 rounded-full active:scale-95 transition flex-shrink-0"
-            style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-brand-accent)", border: "1px solid var(--pp-bg-border-2)" }}
+            onClick={() => runAction("flag", "flag_email", { unflag: flagged }, flagged ? "Drapeau retiré" : "Message marqué")}
+            disabled={busy === "flag"}
+            title={flagged ? "Retirer le drapeau" : "Marquer d'un drapeau"}
+            className="p-1.5 rounded-full disabled:opacity-50"
+            style={{ color: flagged ? "#F59E0B" : "var(--pp-text-secondary)" }}
+          >
+            {busy === "flag" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Flag className="w-4 h-4" style={{ fill: flagged ? "#F59E0B" : "transparent" }} />}
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
+          <div>
+            <p className="text-base font-semibold" style={{ color: "var(--pp-text-primary)" }}>{subject}</p>
+            <p className="text-xs mt-1" style={{ color: "var(--pp-text-muted)" }}>
+              {t("messages.from")} <span style={{ color: "var(--pp-text-secondary)" }}>{from}</span> {fromAddr && `<${fromAddr}>`}
+            </p>
+          </div>
+
+          <button
+            onClick={analyzeWithAva}
+            disabled={analyzing}
+            className="w-full px-3 py-2 rounded-xl text-sm font-semibold flex items-center justify-center gap-2 disabled:opacity-60"
+            style={{
+              background: "linear-gradient(135deg, #2D1A5A, #9B7FE8)",
+              border: "1px solid rgba(155,127,232,0.35)",
+              color: "white",
+            }}
+          >
+            {analyzing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+            {analyzing ? "AVA analyse…" : "🤖 Analyser avec AVA"}
+          </button>
+
+          <button
+            onClick={() => setSumOpen(true)}
+            className="w-full px-3 py-2 rounded-xl text-xs font-medium flex items-center justify-center gap-2"
+            style={{
+              background: "rgba(155,127,232,0.12)",
+              border: "1px solid rgba(155,127,232,0.30)",
+              color: "var(--pp-agent)",
+            }}
+          >
+            <Sparkles className="w-3.5 h-3.5" /> {t("messages.summarizeWithAva")}
+          </button>
+
+          {analysis && (
+            <AvaProposedActionsCard analysis={analysis} onDismiss={() => setAnalysis(null)} />
+          )}
+
+          <div
+            className="rounded-xl p-3 text-sm whitespace-pre-wrap"
+            style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
+          >
+            {preview || t("messages.previewUnavailable")}
+          </div>
+        </div>
+
+        <div className="px-4 py-3 flex items-center gap-2" style={{ borderTop: "1px solid var(--pp-bg-border)" }}>
+          <button
+            onClick={() => onReply({
+              to: fromAddr,
+              subject: subject.startsWith("Re:") ? subject : `Re: ${subject}`,
+              body: `\n\n---\nDe: ${from}\n${preview}`,
+            })}
+            className="flex-1 py-2.5 rounded-full text-white font-semibold text-sm flex items-center justify-center gap-2"
+            style={{ background: "linear-gradient(135deg, var(--pp-brand-accent), var(--pp-brand-accent-2))" }}
+          >
+            <Reply className="w-4 h-4" /> {t("messages.reply")}
+          </button>
+          <button
+            onClick={() => onForward({
+              to: "",
+              subject: subject.startsWith("Fw:") ? subject : `Fw: ${subject}`,
+              body: `\n\n---------- Message transféré ----------\nDe: ${from} <${fromAddr}>\nObjet: ${subject}\n\n${preview}`,
+            })}
             title="Transférer"
-            aria-label="Transférer"
+            className="w-11 h-11 rounded-full flex items-center justify-center"
+            style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
           >
             <Forward className="w-4 h-4" />
           </button>
-          <div className="flex items-center gap-0.5 flex-shrink-0">
-            <IconAction onClick={onToggleFlag} title={flagged ? "Retirer drapeau" : "Marquer"} busy={busy === "flag_email"}>
-              <Flag className="w-4 h-4" style={{ color: flagged ? "#f59e0b" : "var(--pp-text-secondary)", fill: flagged ? "#f59e0b" : "none" }} />
-            </IconAction>
-            {folder !== "deleted" && (
-              <IconAction onClick={onArchive} title="Archiver" busy={busy === "archive_email"}>
-                <Archive className="w-4 h-4" />
-              </IconAction>
-            )}
-            <IconAction onClick={onMarkUnread} title="Marquer non lu" busy={busy === "mark_read_email"}>
-              <Circle className="w-4 h-4" />
-            </IconAction>
-            <IconAction onClick={onDelete} title="Supprimer" busy={busy === "delete_email"}>
-              <Trash2 className="w-4 h-4" style={{ color: "#ef4444" }} />
-            </IconAction>
-          </div>
-        </div>
-
-        {/* ===== SENDER INFO BAR STICKY ===== */}
-        <div
-          className="flex-shrink-0 px-4 py-2.5 flex items-start gap-3"
-          style={{ borderBottom: "1px solid var(--pp-bg-border)", background: "var(--pp-bg-surface)" }}
-        >
-          <div
-            className="w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold flex-shrink-0 mt-0.5"
-            style={{ background: "var(--pp-brand-accent)", color: "#fff" }}
+          <button
+            onClick={() => runAction("archive", "archive_email", {}, "Archivé")}
+            disabled={busy === "archive"}
+            title="Archiver"
+            className="w-11 h-11 rounded-full flex items-center justify-center disabled:opacity-50"
+            style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
           >
-            {from.slice(0, 2).toUpperCase()}
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold" style={{ color: "var(--pp-text-primary)" }}>{from}</p>
-            {fromAddr && <p className="text-[11px] break-all" style={{ color: "var(--pp-text-muted)" }}>{fromAddr}</p>}
-            {toList.length > 0 && (
-              <p className="text-[11px]" style={{ color: "var(--pp-text-muted)" }}>
-                <span className="font-medium">À :</span> {toList.map((r: any) => r?.emailAddress?.name ?? r?.emailAddress?.address).filter(Boolean).join(", ")}
-              </p>
-            )}
-            {ccList.length > 0 && (
-              <p className="text-[11px]" style={{ color: "var(--pp-text-muted)" }}>
-                <span className="font-medium">Cc :</span> {ccList.map((r: any) => r?.emailAddress?.address).filter(Boolean).join(", ")}
-              </p>
-            )}
-            <p className="text-[10px] mt-0.5" style={{ color: "var(--pp-text-faint)" }}>
-              {(() => {
-                const dt = merged.sentDateTime ?? merged.receivedDateTime;
-                return dt ? new Date(dt).toLocaleDateString("fr-CA", { weekday: "short", day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
-              })()}
-            </p>
-          </div>
+            {busy === "archive" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Archive className="w-4 h-4" />}
+          </button>
+          <button
+            onClick={() => {
+              if (!confirm("Supprimer ce message ? (déplacé dans Éléments supprimés)")) return;
+              runAction("delete", "delete_email", {}, "Supprimé");
+            }}
+            disabled={busy === "delete"}
+            title="Supprimer"
+            className="w-11 h-11 rounded-full flex items-center justify-center disabled:opacity-50"
+            style={{ background: "rgba(239,68,68,0.10)", border: "1px solid rgba(239,68,68,0.30)", color: "#EF4444" }}
+          >
+            {busy === "delete" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+          </button>
         </div>
-
-        {/* ===== CORPS SCROLLABLE ===== */}
-        <div className="flex-1 overflow-y-auto" style={{ WebkitOverflowScrolling: "touch" }}>
-          <div className="px-4 pt-3 pb-2">
-            <button
-              onClick={analyzeWithAva}
-              disabled={analyzing}
-              className="w-full px-3 py-2 rounded-xl text-sm font-semibold flex items-center justify-center gap-2 disabled:opacity-60"
-              style={{ background: "linear-gradient(135deg, #2D1A5A, #9B7FE8)", border: "1px solid rgba(155,127,232,0.35)", color: "white" }}
-            >
-              {analyzing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-              {analyzing ? "AVA analyse…" : "🤖 Analyser avec AVA"}
-            </button>
-
-            {analysis && (<div className="mt-2"><AvaProposedActionsCard analysis={analysis} onDismiss={() => setAnalysis(null)} /></div>)}
-          </div>
-
-          {/* Corps HTML du courriel — rendu via iframe srcdoc pour forcer le responsive mobile */}
-          <div className="px-3 pb-3">
-            {loadingDetail && !detail ? (
-              <div className="text-center py-8"><Loader2 className="w-5 h-5 animate-spin mx-auto" style={{ color: "var(--pp-brand-accent)" }} /></div>
-            ) : bodyType === "html" && bodyHtml ? (
-              <div
-                className="rounded-xl overflow-hidden"
-                style={{ background: "#ffffff", border: "1px solid rgba(0,0,0,0.08)" }}
-              >
-                <iframe
-                  title="email-body"
-                  sandbox="allow-same-origin"
-                  style={{ width: "100%", border: "none", minHeight: "200px", display: "block" }}
-                  srcDoc={[
-                    '<!DOCTYPE html><html><head>',
-                    '<meta charset="utf-8">',
-                    '<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">',
-                    '<style>',
-                    'html,body{margin:0;padding:8px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:14px;line-height:1.6;color:#1a1a1a;background:#ffffff;-webkit-text-size-adjust:100%;}',
-                    '*{max-width:100%!important;box-sizing:border-box!important;}',
-                    'img{max-width:100%!important;height:auto!important;display:block;}',
-                    'table{max-width:100%!important;width:100%!important;table-layout:fixed!important;border-collapse:collapse!important;}',
-                    'td,th{word-break:break-word!important;overflow-wrap:anywhere!important;}',
-                    'a{color:#2E9BDC;word-break:break-all;}',
-                    'pre,code{white-space:pre-wrap;word-break:break-word;}',
-                    '[class*="ExternalClass"],[id*="divRplyFwdMsg"],[class*="x_ExternalClass"]{display:none!important;}',
-                    '</style></head><body>',
-                    sanitizeEmailHtml(bodyHtml),
-                    '</body></html>',
-                  ].join('')}
-                  onLoad={(e) => {
-                    try {
-                      const iframe = e.currentTarget as HTMLIFrameElement;
-                      const doc = iframe.contentDocument || (iframe.contentWindow as any)?.document;
-                      if (doc) {
-                        const h = doc.documentElement.scrollHeight || doc.body?.scrollHeight || 0;
-                        if (h > 0) iframe.style.height = h + 'px';
-                      }
-                    } catch (_) { /* cross-origin guard */ }
-                  }}
-                />
-              </div>
-            ) : (
-              <div
-                className="rounded-xl p-4 text-sm whitespace-pre-wrap"
-                style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)", lineHeight: 1.6 }}
-              >
-                {bodyHtml || merged.bodyPreview || t("messages.previewUnavailable")}
-              </div>
-            )}
-          </div>
-
-          {attachments.length > 0 && (
-            <div className="mx-3 mb-3 rounded-xl p-3"
-                 style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)" }}>
-              <p className="text-[11px] uppercase tracking-wider mb-2" style={{ color: "var(--pp-text-muted)" }}>
-                Pièces jointes ({attachments.length})
-              </p>
-              <ul className="space-y-1.5">
-                {attachments.map((a) => (
-                  <li key={a.id} className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2 min-w-0 flex-1">
-                      <Paperclip className="w-3.5 h-3.5 shrink-0" style={{ color: "var(--pp-text-muted)" }} />
-                      <span className="text-xs truncate" style={{ color: "var(--pp-text-secondary)" }}>{a.name}</span>
-                      <span className="text-[10px] shrink-0" style={{ color: "var(--pp-text-faint)" }}>
-                        {(a.size / 1024).toFixed(0)} Ko
-                      </span>
-                    </div>
-                    <button
-                      onClick={() => downloadAttachment(a)}
-                      disabled={downloadingAtt === a.id}
-                      className="px-2 py-1 rounded-full text-[11px] font-semibold disabled:opacity-60 flex items-center gap-1"
-                      style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-brand-accent)" }}
-                      aria-label={`Télécharger ${a.name}`}
-                    >
-                      {downloadingAtt === a.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <ArrowLeft className="w-3 h-3 rotate-[-90deg]" />}
-                      Télécharger
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {/* Espace en bas pour ne pas être masqué par la barre d'actions */}
-          <div className="h-4" />
-        </div>
-
-        {/* Barre d'actions supprimée — boutons déplacés dans le header pour maximiser la zone de lecture */}
       </div>
 
       <AvaSummarizeSheet
         open={sumOpen}
         source="email"
         title={subject}
-        content={`De: ${from} <${fromAddr}>\nObjet: ${subject}\n\n${merged.bodyPreview ?? ""}`}
+        content={`De: ${from} <${fromAddr}>\nObjet: ${subject}\n\n${preview}`}
         onClose={() => setSumOpen(false)}
-        onInsert={(text) => { setSumOpen(false); onCompose({ mode: "reply", message_id: email.id, to: fromAddr, subject: subject.startsWith("Re:") ? subject : `Re: ${subject}`, body: `${text}${buildQuote()}` }); }}
+        onInsert={(text) => {
+          setSumOpen(false);
+          onReply({
+            to: fromAddr,
+            subject: subject.startsWith("Re:") ? subject : `Re: ${subject}`,
+            body: `${text}\n\n---\nDe: ${from}\n${preview}`,
+          });
+        }}
       />
     </div>
   );
 }
 
-function IconAction({ children, onClick, title, busy }: { children: React.ReactNode; onClick: () => void; title: string; busy?: boolean }) {
-  return (
-    <button onClick={onClick} disabled={busy} title={title} aria-label={title}
-      className="p-1.5 rounded-full disabled:opacity-40 active:scale-95 transition"
-      style={{ color: "var(--pp-text-secondary)" }}>
-      {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : children}
-    </button>
-  );
-}
 
-function ToolbarBtn({ icon, label, onClick }: { icon: React.ReactNode; label: string; onClick: () => void }) {
-  return (
-    <button onClick={onClick}
-      className="py-2 rounded-full text-white font-semibold text-xs flex items-center justify-center gap-1.5 active:scale-95 transition"
-      style={{ background: "linear-gradient(135deg, var(--pp-brand-accent), var(--pp-brand-accent-2))" }}>
-      {icon} {label}
-    </button>
-  );
-}
-
-async function fileToBase64(file: File): Promise<{ name: string; contentType: string; contentBytes: string }> {
-  const buf = await file.arrayBuffer();
-  const bytes = new Uint8Array(buf);
-  let bin = "";
-  for (let i = 0; i < bytes.byteLength; i++) bin += String.fromCharCode(bytes[i]);
-  return { name: file.name, contentType: file.type || "application/octet-stream", contentBytes: btoa(bin) };
-}
-
-function EmailComposeSheet({ init, onClose, onSent }: { init: ComposeInit; onClose: () => void; onSent: () => void }) {
+function EmailComposeSheet({ init, onClose, onSent }: { init: { to?: string; subject?: string; body?: string }; onClose: () => void; onSent: () => void }) {
   const { t } = useMplanipretLang();
-  const mode = init.mode ?? "new";
   const [to, setTo] = useState(init.to ?? "");
-  const [cc, setCc] = useState(init.cc ?? "");
-  const [bcc, setBcc] = useState(init.bcc ?? "");
-  const [showCc, setShowCc] = useState(Boolean(init.cc || init.bcc));
+  const [cc, setCc] = useState("");
+  const [bcc, setBcc] = useState("");
+  const [showCc, setShowCc] = useState(false);
   const [subject, setSubject] = useState(init.subject ?? "");
   const [body, setBody] = useState(init.body ?? "");
-  const [attachments, setAttachments] = useState<Array<{ name: string; contentType: string; contentBytes: string; size: number }>>([]);
   const [sending, setSending] = useState(false);
-  const fileRef = useRef<HTMLInputElement>(null);
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
+  const aiRef = useRef<HTMLDivElement | null>(null);
+  const bodyRef = useRef<HTMLTextAreaElement | null>(null);
 
-  const MAX_ATTACHMENT_BYTES = 3 * 1024 * 1024; // 3 MB per file
-
-  const pickFiles = async (files: FileList | null) => {
-    if (!files?.length) return;
-    const arr = Array.from(files);
-    const tooBig = arr.filter((f) => f.size > MAX_ATTACHMENT_BYTES);
-    const ok = arr.filter((f) => f.size <= MAX_ATTACHMENT_BYTES);
-    if (tooBig.length) {
-      const names = tooBig.map((f) => `${f.name} (${(f.size / 1024 / 1024).toFixed(1)} Mo)`).join(", ");
-      toast.error(`Fichier > 3 Mo ignoré: ${names}`);
-    }
-    if (!ok.length) return;
-    const encoded = await Promise.all(ok.map(async (f) => ({ ...(await fileToBase64(f)), size: f.size })));
-    setAttachments((cur) => [...cur, ...encoded]);
-  };
-
-
-  const removeAttachment = (idx: number) => setAttachments((cur) => cur.filter((_, i) => i !== idx));
+  useEffect(() => {
+    const onDoc = (e: MouseEvent) => {
+      if (aiRef.current && !aiRef.current.contains(e.target as Node)) setAiOpen(false);
+    };
+    if (aiOpen) document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [aiOpen]);
 
   const send = async () => {
-    const isReply = mode === "reply" || mode === "reply_all";
-    const isForward = mode === "forward";
-    if (!isReply && !to.trim()) { toast.error(t("messages.recipientRequired")); return; }
-    if (isForward && !to.trim()) { toast.error(t("messages.recipientRequired")); return; }
+    if (!to.trim()) { toast.error(t("messages.recipientRequired")); return; }
     setSending(true);
-    let action = "send_email";
-    let payload: any = {};
-    const attachmentsPayload = attachments.map(({ name, contentType, contentBytes }) => ({ name, contentType, contentBytes }));
-    if (mode === "reply") {
-      action = "reply_email";
-      payload = { message_id: init.message_id, body, attachments: attachmentsPayload };
-    } else if (mode === "reply_all") {
-      action = "reply_all_email";
-      payload = { message_id: init.message_id, body, attachments: attachmentsPayload };
-    } else if (mode === "forward") {
-      action = "forward_email";
-      payload = {
-        message_id: init.message_id,
-        to: to.split(",").map((s) => s.trim()).filter(Boolean),
-        comment: body,
-        attachments: attachmentsPayload,
-      };
-    } else {
-      payload = {
-        to: to.split(",").map((s) => s.trim()).filter(Boolean),
-        cc: cc.split(",").map((s) => s.trim()).filter(Boolean),
-        bcc: bcc.split(",").map((s) => s.trim()).filter(Boolean),
-        subject, body,
-        attachments: attachmentsPayload,
-      };
-    }
-    const { data, error } = await supabase.functions.invoke("ms365-actions", { body: { action, payload } });
+    const parseList = (s: string) => s.split(",").map((v) => v.trim()).filter(Boolean);
+    const { data, error } = await supabase.functions.invoke("ms365-actions", {
+      body: { action: "send_email", payload: {
+        to: parseList(to),
+        cc: cc.trim() ? parseList(cc) : undefined,
+        bcc: bcc.trim() ? parseList(bcc) : undefined,
+        subject,
+        body: body.replace(/\n/g, "<br/>"),
+      } },
+    });
     setSending(false);
     if (error || !(data as any)?.success) { toast.error(t("messages.emailSendFailed")); return; }
     toast.success(t("messages.emailSent"));
     onSent();
   };
 
-  const title = mode === "reply" ? "Répondre" : mode === "reply_all" ? "Répondre à tous" : mode === "forward" ? "Transférer" : t("messages.newEmail");
+  const runAi = async (action: "fix" | "improve" | "formal" | "shorter") => {
+    if (!body.trim()) return;
+    setAiBusy(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("ai-text-improve", {
+        body: { text: body, mode: "email", action },
+      });
+      if (error) throw error;
+      if ((data as any)?.success === false) throw new Error((data as any)?.error || "IA indisponible");
+      const result = (data as any)?.result;
+      if (typeof result === "string") setBody(result.trim());
+      else throw new Error("Réponse IA invalide");
+    } catch (e: any) {
+      toast.error("Erreur IA", { description: e?.message });
+    } finally {
+      setAiBusy(false);
+      setAiOpen(false);
+    }
+  };
+
+  const aiItems = [
+    { icon: "✓", label: "Corriger les fautes", action: "fix" as const },
+    { icon: "✨", label: "Améliorer le texte", action: "improve" as const },
+    { icon: "👔", label: "Rendre plus formel", action: "formal" as const },
+    { icon: "✂️", label: "Raccourcir", action: "shorter" as const },
+  ];
+
+  const fieldLabelStyle: React.CSSProperties = {
+    color: "var(--pp-text-muted)", fontSize: 11, fontWeight: 600, letterSpacing: "0.02em",
+    width: 44, textTransform: "uppercase",
+  };
+  const inlineInput: React.CSSProperties = {
+    flex: 1, background: "transparent", border: "none", outline: "none",
+    color: "var(--pp-text-primary)", fontSize: 14, padding: "10px 0",
+  };
+  const rowStyle: React.CSSProperties = {
+    display: "flex", alignItems: "center", gap: 8, padding: "0 16px",
+    borderBottom: "1px solid var(--pp-bg-border)",
+  };
 
   return (
-    // Plein écran opaque — pas de backdrop flou, fond solide pour une lisibilité maximale
-    <div
-      className="fixed inset-0 z-[110] flex flex-col"
-      style={{
-        background: "var(--pp-bg-base)",
-        paddingTop: "env(safe-area-inset-top, 0px)",
-        paddingBottom: "env(safe-area-inset-bottom, 0px)",
-      }}
-    >
-      {/* ===== HEADER ===== */}
+    <div className="absolute inset-0 z-[200] bg-black/60 backdrop-blur-sm flex items-end" onClick={onClose}>
       <div
-        className="flex-shrink-0 flex items-center gap-3 px-4 py-3"
-        style={{ borderBottom: "1px solid var(--pp-bg-border)", background: "var(--pp-bg-deep)", minHeight: 52 }}
+        className="w-full flex flex-col overflow-hidden"
+        style={{ background: "#faf9f8", height: "100%", color: "#201f1e" }}
+        onClick={(e) => e.stopPropagation()}
       >
-        <button
-          onClick={onClose}
-          className="p-2 rounded-full flex-shrink-0 active:scale-95 transition"
-          style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-primary)" }}
-          aria-label="Annuler"
-        >
-          <X className="w-5 h-5" />
-        </button>
-        <p className="flex-1 text-base font-semibold" style={{ color: "var(--pp-text-primary)" }}>{title}</p>
-        <button
-          onClick={send}
-          disabled={sending}
-          className="px-4 py-2 rounded-full text-white text-sm font-semibold flex items-center gap-1.5 disabled:opacity-50 active:scale-95 transition"
-          style={{ background: "linear-gradient(135deg, var(--pp-brand-accent), var(--pp-brand-accent-2))", boxShadow: "0 2px 12px rgba(46,155,220,0.4)" }}
-        >
-          {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-          {t("common.send")}
-        </button>
-      </div>
+        {/* Outlook-style top bar */}
+        <div className="flex items-center justify-between px-3 py-2"
+          style={{ background: "#0078d4", color: "#fff" }}>
+          <button onClick={onClose} className="p-2 rounded-full active:opacity-70" aria-label="close">
+            <X className="w-5 h-5" />
+          </button>
+          <p className="text-[15px] font-semibold">{t("messages.newEmail") ?? "Nouveau message"}</p>
+          <button
+            onClick={send}
+            disabled={sending || !to.trim()}
+            className="px-3 py-1.5 rounded-md text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50"
+            style={{ background: "#fff", color: "#0078d4" }}
+          >
+            {sending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+            {t("common.send")}
+          </button>
+        </div>
 
-      {/* ===== CHAMPS (toujours visibles, même en mode réponse) ===== */}
-      <div className="flex-shrink-0 px-4 pt-3 pb-1 space-y-2" style={{ background: "var(--pp-bg-surface)", borderBottom: "1px solid var(--pp-bg-border)" }}>
-        {/* Champ À : toujours visible (pré-rempli en mode réponse) */}
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-semibold w-8 flex-shrink-0" style={{ color: "var(--pp-text-muted)" }}>À :</span>
-          <input
-            value={to} onChange={(e) => setTo(e.target.value)}
-            placeholder={mode === "reply" || mode === "reply_all" ? "" : t("messages.toPlaceholder")}
-            readOnly={mode === "reply" || mode === "reply_all"}
-            className="flex-1 px-3 py-2 rounded-lg text-sm outline-none"
+        {/* Recipient rows */}
+        <div style={{ background: "#fff" }}>
+          <div style={rowStyle}>
+            <span style={fieldLabelStyle}>À</span>
+            <input value={to} onChange={(e) => setTo(e.target.value)}
+              placeholder="destinataire@exemple.com" style={inlineInput} />
+            {!showCc && (
+              <button onClick={() => setShowCc(true)} className="text-xs font-semibold px-2 py-1"
+                style={{ color: "#0078d4" }}>Cc/Cci</button>
+            )}
+          </div>
+          {showCc && (
+            <>
+              <div style={rowStyle}>
+                <span style={fieldLabelStyle}>Cc</span>
+                <input value={cc} onChange={(e) => setCc(e.target.value)} style={inlineInput} />
+              </div>
+              <div style={rowStyle}>
+                <span style={fieldLabelStyle}>Cci</span>
+                <input value={bcc} onChange={(e) => setBcc(e.target.value)} style={inlineInput} />
+              </div>
+            </>
+          )}
+          <div style={rowStyle}>
+            <span style={fieldLabelStyle}>Objet</span>
+            <input value={subject} onChange={(e) => setSubject(e.target.value)}
+              placeholder={t("messages.subject")} style={{ ...inlineInput, fontWeight: 600 }} />
+          </div>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto" style={{ background: "#fff" }}>
+          <textarea
+            ref={bodyRef}
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+            placeholder="Écrivez votre message…"
+            className="w-full h-full resize-none outline-none"
             style={{
-              background: (mode === "reply" || mode === "reply_all") ? "var(--pp-bg-elevated)" : "var(--pp-bg-elevated)",
-              border: "1px solid var(--pp-bg-border-2)",
-              color: "var(--pp-text-primary)",
-              opacity: (mode === "reply" || mode === "reply_all") ? 0.8 : 1,
+              minHeight: 260, padding: "16px", border: "none",
+              fontSize: 14, lineHeight: 1.55, color: "#201f1e", background: "transparent",
+              fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
             }}
           />
-          {mode === "new" && (
-            <button onClick={() => setShowCc((s) => !s)} className="text-[11px] px-2 py-1 rounded-lg flex-shrink-0"
-              style={{ color: "var(--pp-brand-accent)", background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)" }}>
-              Cc/Cci
+        </div>
+
+        {/* Outlook-style bottom toolbar */}
+        <div className="flex items-center gap-1 px-2 py-2"
+          style={{ background: "#f3f2f1", borderTop: "1px solid #edebe9" }}>
+          <ToolbarBtn label="B" title="Gras" bold onClick={() => {}} />
+          <ToolbarBtn label="I" title="Italique" italic onClick={() => {}} />
+          <ToolbarBtn label="U" title="Souligné" underline onClick={() => {}} />
+          <div style={{ width: 1, height: 20, background: "#e1dfdd", margin: "0 4px" }} />
+          <button className="p-2 rounded active:bg-black/5" title="Pièce jointe">
+            <Paperclip className="w-4 h-4" style={{ color: "#605e5c" }} />
+          </button>
+          <div className="flex-1" />
+          <div ref={aiRef} className="relative">
+            <button
+              onClick={() => setAiOpen((v) => !v)}
+              disabled={aiBusy || !body.trim()}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold text-white disabled:opacity-40 active:scale-95"
+              style={{ background: "linear-gradient(135deg,#7C3AED,#A855F7)" }}
+            >
+              {aiBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+              IA
             </button>
-          )}
+            {aiOpen && (
+              <div className="absolute bottom-10 right-0 z-[300] w-52 rounded-xl p-1.5 shadow-2xl"
+                style={{ background: "#fff", border: "1px solid #e1dfdd" }}>
+                {aiItems.map((it) => (
+                  <button key={it.action} onClick={() => runAi(it.action)}
+                    className="w-full text-left px-2.5 py-2 rounded-lg text-xs flex items-center gap-2 hover:bg-black/5"
+                    style={{ color: "#201f1e" }}>
+                    <span className="shrink-0">{it.icon}</span>
+                    <span>{it.label}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
-        {showCc && (
-          <>
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-semibold w-8 flex-shrink-0" style={{ color: "var(--pp-text-muted)" }}>Cc :</span>
-              <input value={cc} onChange={(e) => setCc(e.target.value)} placeholder=""
-                className="flex-1 px-3 py-2 rounded-lg text-sm outline-none"
-                style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }} />
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-semibold w-8 flex-shrink-0" style={{ color: "var(--pp-text-muted)" }}>Cci :</span>
-              <input value={bcc} onChange={(e) => setBcc(e.target.value)} placeholder=""
-                className="flex-1 px-3 py-2 rounded-lg text-sm outline-none"
-                style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }} />
-            </div>
-          </>
-        )}
-        {/* Objet : toujours visible */}
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-semibold w-8 flex-shrink-0" style={{ color: "var(--pp-text-muted)" }}>Obj :</span>
-          <input
-            value={subject} onChange={(e) => setSubject(e.target.value)} placeholder={t("messages.subject")}
-            className="flex-1 px-3 py-2 rounded-lg text-sm outline-none"
-            style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
-          />
-        </div>
-      </div>
-
-      {/* ===== ZONE DE TEXTE — remplit tout l'espace disponible ===== */}
-      <div className="flex-1 flex flex-col px-4 pt-3 pb-2 min-h-0">
-        <textarea
-          autoFocus
-          value={body} onChange={(e) => setBody(e.target.value)} placeholder={t("messages.yourMessage")}
-          className="flex-1 w-full px-3 py-2 rounded-xl text-sm outline-none resize-none"
-          style={{
-            background: "var(--pp-bg-elevated)",
-            border: "1px solid var(--pp-bg-border-2)",
-            color: "var(--pp-text-primary)",
-            lineHeight: 1.6,
-            minHeight: 120,
-          }}
-        />
-        {attachments.length > 0 && (
-          <ul className="mt-2 space-y-1">
-            {attachments.map((a, i) => (
-              <li key={i} className="flex items-center justify-between text-xs px-3 py-2 rounded-lg"
-                  style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}>
-                <span className="truncate flex items-center gap-2"><Paperclip className="w-3 h-3" /> {a.name} <span style={{ color: "var(--pp-text-muted)" }}>({Math.round(a.size / 1024)} Ko)</span></span>
-                <button onClick={() => removeAttachment(i)} style={{ color: "var(--pp-text-muted)" }} aria-label="Retirer">
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-
-      {/* ===== BARRE DU BAS ===== */}
-      <div
-        className="flex-shrink-0 px-4 py-2 flex items-center gap-3"
-        style={{ borderTop: "1px solid var(--pp-bg-border)", background: "var(--pp-bg-deep)" }}
-      >
-        <input ref={fileRef} type="file" multiple hidden onChange={(e) => { pickFiles(e.target.files); e.target.value = ""; }} />
-        <button
-          onClick={() => fileRef.current?.click()}
-          className="px-3 py-2 rounded-full text-xs flex items-center gap-1.5 active:scale-95 transition"
-          style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
-        >
-          <Paperclip className="w-3.5 h-3.5" /> Joindre
-        </button>
-        <span className="text-[10px] flex-1" style={{ color: "var(--pp-text-muted)" }}>Max 3 Mo</span>
-        {/* Bouton IA Claude — amélioration du corps du courriel */}
-        <AiImproveMenu text={body} onResult={setBody} mode="email" />
       </div>
     </div>
   );
 }
 
+function ToolbarBtn({ label, title, bold, italic, underline, onClick }: {
+  label: string; title: string; bold?: boolean; italic?: boolean; underline?: boolean; onClick: () => void;
+}) {
+  return (
+    <button onClick={onClick} title={title}
+      className="w-8 h-8 rounded flex items-center justify-center active:bg-black/5"
+      style={{
+        color: "#201f1e",
+        fontWeight: bold ? 700 : 500,
+        fontStyle: italic ? "italic" : "normal",
+        textDecoration: underline ? "underline" : "none",
+        fontSize: 14,
+      }}
+    >{label}</button>
+  );
+}
 
 // ============================================================
 // SHARED PRIMITIVES
 // ============================================================
-
-/** Hook partagé pour améliorer un texte via Claude (ai-text-improve) */
-function useAiImprove(mode: "sms" | "email") {
-  const [improving, setImproving] = useState(false);
-  const improve = async (
-    text: string,
-    action: "fix" | "improve" | "formal" | "shorter",
-    onResult: (result: string) => void
-  ) => {
-    if (!text.trim()) { toast.error("Écrivez d'abord un message"); return; }
-    setImproving(true);
-    try {
-      const { data, error } = await supabase.functions.invoke("ai-text-improve", {
-        body: { text, mode, action },
-      });
-      if (error) throw error;
-      if (!(data as any)?.success) throw new Error((data as any)?.error ?? "IA indisponible");
-      onResult((data as any).result);
-    } catch (e: any) {
-      toast.error(e?.message ?? "Erreur IA");
-    } finally {
-      setImproving(false);
-    }
-  };
-  return { improving, improve };
-}
-
-/** Menu déroulant IA pour le Composer SMS */
-function AiImproveMenu({
-  text, onResult, mode,
-}: { text: string; onResult: (r: string) => void; mode: "sms" | "email" }) {
-  const { improving, improve } = useAiImprove(mode);
-  const [open, setOpen] = useState(false);
-  const actions: { key: "fix" | "improve" | "formal" | "shorter"; label: string; icon: string }[] = [
-    { key: "fix",     label: "Corriger les fautes",  icon: "✓" },
-    { key: "improve", label: "Améliorer le texte",   icon: "✨" },
-    { key: "formal",  label: "Rendre plus formel",   icon: "👔" },
-    { key: "shorter", label: "Raccourcir",            icon: "✂️" },
-  ];
-  return (
-    <div className="relative">
-      <button
-        onClick={() => setOpen((o) => !o)}
-        disabled={improving || !text.trim()}
-        className="w-8 h-8 rounded-full flex items-center justify-center transition active:scale-95 disabled:opacity-40"
-        style={{ background: "linear-gradient(135deg,#7C3AED,#A855F7)", boxShadow: "0 2px 8px rgba(124,58,237,0.4)" }}
-        title="Améliorer avec IA"
-      >
-        {improving
-          ? <Loader2 className="w-3.5 h-3.5 text-white animate-spin" />
-          : <Sparkles className="w-3.5 h-3.5 text-white" />}
-      </button>
-      {open && (
-        <div
-          className="absolute bottom-10 left-0 z-50 rounded-2xl overflow-hidden shadow-xl min-w-[180px]"
-          style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)" }}
-        >
-          {actions.map((a) => (
-            <button
-              key={a.key}
-              onClick={() => { setOpen(false); improve(text, a.key, onResult); }}
-              className="w-full text-left px-4 py-3 text-sm flex items-center gap-2.5 hover:opacity-80 active:scale-95 transition"
-              style={{ color: "var(--pp-text-primary)", borderBottom: "1px solid var(--pp-bg-border)" }}
-            >
-              <span>{a.icon}</span> {a.label}
-            </button>
-          ))}
-          <button
-            onClick={() => setOpen(false)}
-            className="w-full text-center px-4 py-2 text-xs"
-            style={{ color: "var(--pp-text-muted)" }}
-          >Annuler</button>
-        </div>
-      )}
-    </div>
-  );
-}
-
 function Composer({
   text, setText, onSend, sending, placeholder, leftAction, extra, accent = "brand", inputRef, autoFocus = false,
 }: {
@@ -2326,8 +1532,6 @@ function Composer({
     >
       {extra}
       {leftAction}
-      {/* Bouton IA Claude — amélioration du texte SMS */}
-      <AiImproveMenu text={text} onResult={setText} mode="sms" />
       <input
         data-sms-composer-input="true"
         ref={inputRef}
@@ -2557,19 +1761,12 @@ function isChatUnread(chat: any, reads: Record<string, string>): boolean {
   return new Date(chat.lastUpdated).getTime() > new Date(last).getTime();
 }
 
-const TEAMS_CACHE_KEY = "planipret.teams365.cache.v1";
-function loadTeamsCache(): any | null {
-  try { const raw = sessionStorage.getItem(TEAMS_CACHE_KEY); return raw ? JSON.parse(raw) : null; } catch { return null; }
-}
-function saveTeamsCache(payload: any) {
-  try { sessionStorage.setItem(TEAMS_CACHE_KEY, JSON.stringify({ ...payload, cachedAt: Date.now() })); } catch { /* */ }
-}
-
 function Teams365Panel({ profile }: { profile: any }) {
   const [innerTab, setInnerTab] = useState<Teams365SubTab>("active");
   const cached = loadTeamsCache();
   const [loading, setLoading] = useState(!cached);
   const [refreshing, setRefreshing] = useState(false);
+  const [auxLoading, setAuxLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [diag, setDiag] = useState<any>(cached?.diagnostics ?? {});
   const [chats, setChats] = useState<any[]>(cached?.chats ?? []);
@@ -2591,41 +1788,89 @@ function Teams365Panel({ profile }: { profile: any }) {
 
   const connected = !!profile?.ms365_access_token;
 
-  const load = async () => {
+  const applyPayload = (payload: any) => {
+    if (Array.isArray(payload.chats)) {
+      const nextChats = payload.chats;
+      const currentReads = loadTeamsReads();
+      const nowUnread = new Set<string>(nextChats.filter((c: any) => isChatUnread(c, currentReads)).map((c: any) => c.id));
+      const newly: any[] = [];
+      for (const c of nextChats) {
+        if (nowUnread.has(c.id) && !prevUnreadIds.current.has(c.id)) newly.push(c);
+      }
+      if (prevUnreadIds.current.size > 0 && newly.length > 0) {
+        const first = newly[0];
+        toast.message(`Nouveau message · ${first.topic}`, {
+          description: first.previewFrom ? `${first.previewFrom}: ${(first.preview || "").replace(/<[^>]*>/g, "").slice(0, 80)}` : undefined,
+        });
+      }
+      prevUnreadIds.current = nowUnread;
+      setChats(nextChats);
+      setReads(currentReads);
+    }
+    if (Array.isArray(payload.teams)) setTeams(payload.teams);
+    if (Array.isArray(payload.people)) setPeople(payload.people);
+    if (payload.diagnostics) setDiag((d: any) => ({ ...d, ...payload.diagnostics }));
+  };
+
+  const loadAuxiliary = async () => {
+    setAuxLoading(true);
+    const [teamsPayload, peoplePayload] = await Promise.allSettled([
+      fetchTeams365("teams"),
+      fetchTeams365("people"),
+    ]);
+    if (teamsPayload.status === "fulfilled") applyPayload(teamsPayload.value);
+    if (peoplePayload.status === "fulfilled") applyPayload(peoplePayload.value);
+    const cache = loadTeamsCache();
+    if (cache) {
+      setTeams(cache.teams);
+      setPeople(cache.people);
+      setDiag(cache.diagnostics);
+    }
+    setAuxLoading(false);
+  };
+
+  const load = async (opts: { force?: boolean } = {}) => {
     if (!connected) { setLoading(false); setRefreshing(false); setErr("ms365_not_connected"); return; }
     const hasData = chats.length > 0 || people.length > 0 || teams.length > 0;
+    // TTL: if cache is still fresh and we already have data, skip the network hit.
+    if (!opts.force && hasData && isTeamsCacheFresh()) {
+      setLoading(false); setRefreshing(false);
+      return;
+    }
     if (hasData) setRefreshing(true); else setLoading(true);
     setErr(null);
-    const { data, error } = await supabase.functions.invoke("ms365-teams-list", { body: {} });
-    setLoading(false); setRefreshing(false);
-    const payload = (data as any) ?? {};
-    if (error && !payload.chats) { setErr(error.message || "Erreur"); return; }
-    if (payload.connected === false || payload.error === "ms365_not_connected") { setErr("ms365_not_connected"); return; }
-    if (payload.error) { setErr(payload.error); return; }
-    const nextChats = payload.chats || [];
-    const currentReads = loadTeamsReads();
-    const nowUnread = new Set<string>(nextChats.filter((c: any) => isChatUnread(c, currentReads)).map((c: any) => c.id));
-    const newly: any[] = [];
-    for (const c of nextChats) {
-      if (nowUnread.has(c.id) && !prevUnreadIds.current.has(c.id)) newly.push(c);
+    let payload: any = {};
+    try {
+      payload = await fetchTeams365("summary");
+    } catch (e: any) {
+      if (!hasData) setErr(e?.message || "Erreur");
+      setLoading(false); setRefreshing(false);
+      return;
     }
-    if (prevUnreadIds.current.size > 0 && newly.length > 0) {
-      const first = newly[0];
-      toast.message(`Nouveau message · ${first.topic}`, {
-        description: first.previewFrom ? `${first.previewFrom}: ${(first.preview || "").replace(/<[^>]*>/g, "").slice(0, 80)}` : undefined,
-      });
-    }
-    prevUnreadIds.current = nowUnread;
-    setChats(nextChats);
-    setTeams(payload.teams || []);
-    setPeople(payload.people || []);
-    setDiag(payload.diagnostics || {});
-    setReads(currentReads);
-    saveTeamsCache({ chats: nextChats, teams: payload.teams || [], people: payload.people || [], diagnostics: payload.diagnostics || {} });
+    setLoading(false);
+    if (payload.connected === false || payload.error === "ms365_not_connected") { setRefreshing(false); setErr("ms365_not_connected"); return; }
+    if (payload.error) { setRefreshing(false); setErr(payload.error); return; }
+    applyPayload(payload);
+    saveTeamsCachePatch({
+      chats: Array.isArray(payload.chats) ? payload.chats : undefined,
+      diagnostics: payload.diagnostics ?? {},
+    });
+    setRefreshing(false);
+    void loadAuxiliary();
   };
   useEffect(() => {
-    load(); /* eslint-disable-next-line */
-    // Auto-refresh désactivé — utiliser le bouton Actualiser manuellement
+    // Instant: cache is already hydrated in initial state; only fetch when stale.
+    load();
+    if (!connected) return;
+    // Warm auxiliary (teams/people) in background if the cache is expired.
+    if (isTeamsCacheExpired()) prefetchTeams365Data();
+    // Periodic revalidation only fires when the soft TTL has elapsed.
+    const id = window.setInterval(() => { void revalidateTeams365IfStale("summary").then((p) => { if (p) applyPayload(p); }); }, TEAMS_TTL_MS);
+    // Refresh on tab focus so the user always sees recent chats when returning.
+    const onFocus = () => { void revalidateTeams365IfStale("summary").then((p) => { if (p) applyPayload(p); }); };
+    window.addEventListener("focus", onFocus);
+    return () => { window.clearInterval(id); window.removeEventListener("focus", onFocus); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected]);
 
   const startChatWith = async (userIds: string[], title: string, topicText?: string) => {
@@ -2638,7 +1883,7 @@ function Teams365Panel({ profile }: { profile: any }) {
     if (error || p?.error) { toast.error(p?.error || error?.message || "Impossible de créer le chat"); return; }
     openThread({ kind: "chat", id: p.chat_id, title });
     setGroupMode(false); setSelectedIds(new Set()); setGroupTopic("");
-    load();
+    load({ force: true });
   };
 
   const openThread = (t: NonNullable<typeof active>) => {
@@ -2652,7 +1897,7 @@ function Teams365Panel({ profile }: { profile: any }) {
     a === "Away" || a === "BeRightBack" ? "#f59e0b" :
     "#6b7280";
 
-  if (active) return <TeamsThreadView target={active} onClose={() => { setActive(null); load(); }} />;
+  if (active) return <TeamsThreadView target={active} onClose={() => { setActive(null); load({ force: true }); }} />;
 
   const filteredPeople = people.filter((p) => {
     const q = search.trim().toLowerCase();
@@ -2672,13 +1917,46 @@ function Teams365Panel({ profile }: { profile: any }) {
     { k: "teams", label: "Équipes", badge: 0 },
   ];
 
+  const anyLoading = loading || refreshing || auxLoading;
+  const cacheAgeSec = (() => { const c = loadTeamsCache(); return c ? Math.round((Date.now() - c.cachedAt) / 1000) : null; })();
+
   return (
-    <div className="h-full overflow-y-auto px-4 py-3 space-y-3">
+    <div className="h-full overflow-y-auto px-4 py-3 space-y-3 relative">
+      {/* Thin top progress bar during initial load / refresh / warm-up */}
+      {anyLoading && (
+        <div
+          aria-hidden
+          className="absolute left-0 right-0 top-0 h-[2px] overflow-hidden pointer-events-none"
+          style={{ background: "rgba(46,155,220,0.10)" }}
+        >
+          <div
+            className="h-full"
+            style={{
+              width: "40%",
+              background: "linear-gradient(90deg, transparent, var(--pp-brand-accent), transparent)",
+              animation: "pp-progress-slide 1.1s linear infinite",
+            }}
+          />
+        </div>
+      )}
+      <style>{`@keyframes pp-progress-slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(350%); } }`}</style>
+
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold" style={{ color: "var(--pp-text-primary)" }}>Microsoft Teams</h2>
-        <button onClick={load} className="text-xs px-2 py-1 rounded-full flex items-center gap-1"
+        <div className="flex items-center gap-2 min-w-0">
+          <h2 className="text-sm font-semibold" style={{ color: "var(--pp-text-primary)" }}>Microsoft Teams</h2>
+          {anyLoading ? (
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: "rgba(46,155,220,0.10)", color: "var(--pp-brand-accent)" }}>
+              {loading && !chats.length ? "Chargement…" : refreshing ? "Actualisation…" : "Préchauffage…"}
+            </span>
+          ) : cacheAgeSec !== null && cacheAgeSec < 3600 ? (
+            <span className="text-[10px]" style={{ color: "var(--pp-text-muted)" }}>
+              màj il y a {cacheAgeSec < 60 ? `${cacheAgeSec}s` : `${Math.floor(cacheAgeSec / 60)}min`}
+            </span>
+          ) : null}
+        </div>
+        <button onClick={() => load({ force: true })} disabled={anyLoading} className="text-xs px-2 py-1 rounded-full flex items-center gap-1 disabled:opacity-60"
           style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-muted)" }}>
-          <RefreshCw className={`w-3 h-3 ${loading ? "animate-spin" : ""}`} /> Recharger
+          <RefreshCw className={`w-3 h-3 ${anyLoading ? "animate-spin" : ""}`} /> Recharger
         </button>
       </div>
 
@@ -2735,7 +2013,7 @@ function Teams365Panel({ profile }: { profile: any }) {
                 className="w-full text-xs px-3 py-2 rounded-lg outline-none"
                 style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-primary)", border: "1px solid var(--pp-bg-border-2)" }} />
               {loading && !chats.length ? (
-                <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>Chargement…</div>
+                <TeamsListSkeleton />
               ) : filteredChats.length === 0 ? (
                 <div className="rounded-xl p-6 text-center" style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)" }}>
                   <MessageSquare className="w-8 h-8 mx-auto mb-2" style={{ color: "var(--pp-text-muted)" }} />
@@ -2810,8 +2088,8 @@ function Teams365Panel({ profile }: { profile: any }) {
               <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Rechercher un coéquipier…"
                 className="w-full text-xs px-3 py-2 rounded-lg outline-none"
                 style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-primary)", border: "1px solid var(--pp-bg-border-2)" }} />
-              {loading && !people.length ? (
-                <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>Chargement…</div>
+              {(loading || auxLoading) && !people.length ? (
+                <TeamsListSkeleton compact />
               ) : filteredPeople.length === 0 ? (
                 <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>Aucun coéquipier trouvé.</div>
               ) : (
@@ -2866,7 +2144,9 @@ function Teams365Panel({ profile }: { profile: any }) {
                 <span>Équipes & canaux ({teams.length})</span>
                 {diag.teams_error && <span style={{ color: "#dc2626" }}>Err: {String(diag.teams_error).slice(0, 40)}</span>}
               </div>
-              {teams.length === 0 ? (
+              {auxLoading && teams.length === 0 ? (
+                <TeamsListSkeleton compact />
+              ) : teams.length === 0 ? (
                 <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>Aucune équipe.</div>
               ) : (
                 <div className="space-y-2">
@@ -2891,6 +2171,23 @@ function Teams365Panel({ profile }: { profile: any }) {
           )}
         </>
       )}
+    </div>
+  );
+}
+
+function TeamsListSkeleton({ compact = false }: { compact?: boolean }) {
+  return (
+    <div className="space-y-1" aria-label="Chargement Teams">
+      {[0, 1, 2, 3].slice(0, compact ? 3 : 4).map((i) => (
+        <div key={i} className="w-full px-3 py-2.5 rounded-lg flex items-center gap-3 animate-pulse"
+          style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border)" }}>
+          <div className="w-10 h-10 rounded-full shrink-0" style={{ background: "var(--pp-bg-surface)" }} />
+          <div className="flex-1 space-y-2">
+            <div className="h-3 rounded-full w-2/3" style={{ background: "var(--pp-bg-surface)" }} />
+            <div className="h-2.5 rounded-full w-5/6" style={{ background: "var(--pp-bg-surface)" }} />
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -2940,7 +2237,8 @@ function TeamsThreadView({ target, onClose }: {
   useEffect(() => {
     load();
     if (target.kind === "chat") markChatRead(target.id);
-    // Auto-refresh désactivé — utiliser le bouton Actualiser dans le header
+    const id = window.setInterval(() => load(), 15_000);
+    return () => window.clearInterval(id);
     /* eslint-disable-next-line */
   }, []);
 
@@ -3016,9 +2314,6 @@ function TeamsThreadView({ target, onClose }: {
         <span className="text-[10px] px-2 py-0.5 rounded-full" style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-muted)" }}>
           {target.kind === "chat" ? "Chat" : "Canal"}
         </span>
-        <button onClick={load} className="p-1.5 rounded-full" style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-muted)" }} title="Actualiser">
-          <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
-        </button>
       </div>
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-2">
         {loading && messages.length === 0 ? <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>Chargement…</div> :

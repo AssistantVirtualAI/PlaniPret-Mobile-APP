@@ -5,6 +5,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { supabase } from "@/integrations/supabase/client";
 import {
   Mic, MicOff, Pause, Play, PhoneForwarded, Grid3X3, PhoneOff, Phone,
   User, Search, X, ChevronLeft, Activity, Volume2, VolumeX,
@@ -12,7 +13,6 @@ import {
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import type { useMplanipretSoftphone } from "@/hooks/useMplanipretSoftphone";
 import PpCallDiagnosticPanel from "./PpCallDiagnosticPanel";
-import { getPpContacts, peekPpContacts } from "@/lib/ppContactsCache";
 
 type Contact = {
   id?: string;
@@ -54,71 +54,21 @@ export default function PpActiveCallScreen({
   const [elapsed, setElapsed] = useState(0);
   const [view, setView] = useState<"main" | "keypad" | "transfer">("main");
   const [dtmfBuf, setDtmfBuf] = useState("");
-  const [lastDtmf, setLastDtmf] = useState<string | null>(null);
   const [transferQuery, setTransferQuery] = useState("");
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [loadingContacts, setLoadingContacts] = useState(false);
   const [diagOpen, setDiagOpen] = useState(false);
   const [speakerOn, setSpeakerOn] = useState(false);
-  // Outbound ringback tone for NS-API REST calls (native platform)
-  const ringbackRef = useRef<HTMLAudioElement | null>(null);
-  useEffect(() => {
-    // Play ringback only during ringing-out. Stop immediately on early-media
-    // (SIP 183 with SDP = voicemail or remote party answered the media path).
-    const isRingingOut = snap.callState === "ringing-out";
-    if (isRingingOut) {
-      // Play a ringback tone so the user hears something while the PBX dials
-      if (!ringbackRef.current) {
-        const a = new Audio();
-        a.src = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA="; // silent placeholder
-        a.loop = true;
-        ringbackRef.current = a;
-      }
-      // Use Web Audio API to generate a 440Hz ringback tone
-      try {
-        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.frequency.value = 440;
-        gain.gain.value = 0.15;
-        osc.start();
-        // Ring pattern: 2s on, 4s off
-        const ringPattern = () => {
-          gain.gain.setValueAtTime(0.15, ctx.currentTime);
-          gain.gain.setValueAtTime(0, ctx.currentTime + 2);
-        };
-        ringPattern();
-        const interval = setInterval(ringPattern, 6000);
-        ringbackRef.current = { stop: () => { clearInterval(interval); try { osc.stop(); ctx.close(); } catch {} } } as any;
-      } catch {}
-    } else {
-      // Stop ringback when call is answered or ended
-      try { (ringbackRef.current as any)?.stop?.(); } catch {}
-      ringbackRef.current = null;
-    }
-    return () => {
-      try { (ringbackRef.current as any)?.stop?.(); } catch {}
-    };
-  }, [snap.callState]);
 
   useEffect(() => { setAudioEl(audioRef.current); return () => setAudioEl(null); }, [setAudioEl]);
 
-  const active = snap.callState === "ringing-out" || snap.callState === "early-media" || snap.callState === "ringing-in"
+  const active = snap.callState === "ringing-out" || snap.callState === "ringing-in"
     || snap.callState === "active" || snap.callState === "held";
 
-  // Reset transient state only when the call ends. Never reset on transitions
-  // between active sub-states (ringing-out → active, active → held, etc.) so
-  // the DTMF keypad stays visible right after the callee picks up.
+  // Reset transient state each new call
   useEffect(() => {
     if (!active) { setView("main"); setDtmfBuf(""); setTransferQuery(""); setElapsed(0); }
   }, [active]);
-
-  // Do NOT auto-open the DTMF keypad — show main controls (mute/speaker/transfer)
-  // by default when the call is answered. Brokers can tap the keypad button manually.
-
-
 
   // Duration timer for connected calls
   useEffect(() => {
@@ -129,42 +79,31 @@ export default function PpActiveCallScreen({
     return () => clearInterval(id);
   }, [snap.callState, snap.startedAt]);
 
-  // Load internal contacts when entering transfer view.
-  // 1) Serve from cache instantly (peekPpContacts) so the list appears immediately.
-  // 2) Refresh in background via getPpContacts (deduped, TTL-aware).
+  // Load internal contacts when entering transfer view (once)
   useEffect(() => {
-    if (view !== "transfer") return;
-    // Instant render from cache (may be stale up to 24h — good enough for transfer).
-    const cached: Contact[] = [];
-    for (const c of (peekPpContacts("list") ?? [])) cached.push({ ...c, source: "personal" as const });
-    for (const c of (peekPpContacts("shared") ?? [])) cached.push({ ...c, source: "shared" as const });
-    for (const c of (peekPpContacts("directory") ?? [])) cached.push({ ...c, source: "directory" as const });
-    if (cached.length > 0) setContacts(cached);
-    // Background refresh — update list silently once fresh data arrives.
+    if (view !== "transfer" || contacts.length > 0 || loadingContacts) return;
     let cancelled = false;
     (async () => {
-      if (!cached.length) setLoadingContacts(true);
+      setLoadingContacts(true);
       try {
+        const results: Contact[] = [];
         const [personal, shared, directory] = await Promise.all([
-          getPpContacts("list"),
-          getPpContacts("shared"),
-          getPpContacts("directory"),
+          supabase.functions.invoke("pp-ns-contacts", { body: { action: "list" } }),
+          supabase.functions.invoke("pp-ns-contacts", { body: { action: "shared" } }),
+          supabase.functions.invoke("pp-ns-contacts", { body: { action: "directory" } }),
         ]);
-        if (!cancelled) {
-          const results: Contact[] = [];
-          for (const c of personal) results.push({ ...c, source: "personal" as const });
-          for (const c of shared) results.push({ ...c, source: "shared" as const });
-          for (const c of directory) results.push({ ...c, source: "directory" as const });
-          setContacts(results);
-        }
+        for (const c of ((personal.data as any)?.contacts ?? [])) results.push({ ...c, source: "personal" });
+        for (const c of ((shared.data as any)?.contacts ?? [])) results.push({ ...c, source: "shared" });
+        for (const c of ((directory.data as any)?.directory ?? [])) results.push({ ...c, source: "directory" });
+        if (!cancelled) setContacts(results);
       } catch (e) {
-        console.error("[PpActiveCallScreen] contacts refresh failed", e);
+        console.error("[PpActiveCallScreen] contacts load failed", e);
       } finally {
         if (!cancelled) setLoadingContacts(false);
       }
     })();
     return () => { cancelled = true; };
-  }, [view]);
+  }, [view, contacts.length, loadingContacts]);
 
   const filteredContacts = useMemo(() => {
     const q = transferQuery.trim().toLowerCase();
@@ -182,16 +121,7 @@ export default function PpActiveCallScreen({
     }).slice(0, 60);
   }, [contacts, transferQuery]);
 
-  const pressDtmf = useCallback((k: string) => {
-    if (snap.callState !== "active") return;
-    setDtmfBuf((b) => (b + k).slice(-16));
-    setLastDtmf(k);
-    if (typeof navigator !== "undefined" && "vibrate" in navigator) {
-      try { (navigator as any).vibrate?.(15); } catch { /* noop */ }
-    }
-    sendDTMF(k);
-    window.setTimeout(() => setLastDtmf((cur) => (cur === k ? null : cur)), 450);
-  }, [sendDTMF, snap.callState]);
+  const pressDtmf = useCallback((k: string) => { setDtmfBuf((b) => (b + k).slice(-16)); sendDTMF(k); }, [sendDTMF]);
   const doTransfer = useCallback((target: string) => {
     const to = target.trim(); if (!to) return;
     transfer(to);
@@ -207,13 +137,11 @@ export default function PpActiveCallScreen({
 
   const isIncoming = snap.callState === "ringing-in";
   const isOutgoingRinging = snap.callState === "ringing-out";
-  const isEarlyMedia = snap.callState === "early-media";
   const isHeld = snap.callState === "held";
   const displayName = snap.remoteIdentity || snap.remoteNumber || "—";
   const displayNumber = snap.remoteNumber && snap.remoteNumber !== displayName ? snap.remoteNumber : null;
   const statusText = isIncoming ? (t("call.incoming") || "Appel entrant")
-    : isOutgoingRinging ? (t("call.ringing") || "Sonnérie…")
-    : isEarlyMedia ? (t("call.earlyMedia") || "Messagerie vocale…")
+    : isOutgoingRinging ? (t("call.ringing") || "Sonnerie…")
     : isHeld ? (t("call.onHold") || "En attente")
     : fmt(elapsed);
 
@@ -242,7 +170,7 @@ export default function PpActiveCallScreen({
             </button>
           ) : <div className="w-9" />}
           <div className="text-xs text-white/60 uppercase tracking-widest">
-            {view === "keypad" ? (t("call.keypad") || "Clavier") : view === "transfer" ? (t("call.transfer") || "Transférer") : (isIncoming ? (t("call.incomingLabel") || "Entrant") : (isOutgoingRinging || isEarlyMedia) ? (t("call.outgoingLabel") || "Sortant") : (t("call.inProgressLabel") || "En cours"))}
+            {view === "keypad" ? "Clavier" : view === "transfer" ? "Transférer" : (isIncoming ? "Entrant" : isOutgoingRinging ? "Sortant" : "En cours")}
           </div>
           <button onClick={() => setDiagOpen(true)} aria-label="Diagnostic" className="p-2 rounded-full" style={{ background: "rgba(255,255,255,0.08)" }}>
             <Activity className="w-4 h-4" />
@@ -262,54 +190,22 @@ export default function PpActiveCallScreen({
             {displayNumber && <div className="text-sm text-white/60 mt-1">{displayNumber}</div>}
             <div className="mt-3 text-sm text-white/70">{statusText}</div>
             {dtmfBuf && <div className="mt-2 text-xs text-white/50">DTMF: {dtmfBuf}</div>}
-            {snap.errorCause && !['native_platform','idle'].includes(snap.errorCause) && (
-              <div className="mt-2 text-xs" style={{ color: "#FCA5A5" }}>{snap.errorCause}</div>
-            )}
+            {snap.errorCause && <div className="mt-2 text-xs" style={{ color: "#FCA5A5" }}>{snap.errorCause}</div>}
           </div>
         )}
 
         {/* Keypad view */}
         {view === "keypad" && (
           <div className="flex-1 flex flex-col items-center justify-center px-8">
-            {isHeld && (
-              <div
-                className="mb-3 text-[11px] px-3 py-1.5 rounded-full"
-                style={{ background: "rgba(245,158,11,0.15)", border: "1px solid rgba(245,158,11,0.4)", color: "#FCD34D" }}
-              >
-                {t("call.dtmfHeld") || "Reprenez l'appel pour envoyer des tonalités"}
-              </div>
-            )}
-            <div
-              className="text-lg mb-1 min-h-[24px] font-mono tracking-widest transition-colors"
-              style={{ color: lastDtmf ? "#2E9BDC" : "rgba(255,255,255,0.8)" }}
-            >
-              {dtmfBuf || "—"}
-            </div>
-            <div className="text-[10px] uppercase tracking-widest mb-3" style={{ color: "rgba(255,255,255,0.4)" }}>
-              {lastDtmf ? `${t("call.dtmfSent") || "Envoyé"} · ${lastDtmf}` : (t("call.dtmfHint") || "Touchez une touche pour envoyer")}
-            </div>
+            <div className="text-lg text-white/80 mb-4 min-h-[24px]">{dtmfBuf || "—"}</div>
             <div className="grid grid-cols-3 gap-4" style={{ maxWidth: 300 }}>
-              {KEYS.map((k) => {
-                const isFlash = lastDtmf === k;
-                const disabled = snap.callState !== "active";
-                return (
-                  <button
-                    key={k}
-                    onClick={() => pressDtmf(k)}
-                    disabled={disabled}
-                    aria-label={`DTMF ${k}`}
-                    className="w-20 h-20 rounded-full text-3xl font-semibold active:scale-95 transition mx-auto disabled:opacity-40 disabled:cursor-not-allowed"
-                    style={{
-                      background: isFlash ? "rgba(46,155,220,0.35)" : "rgba(255,255,255,0.08)",
-                      border: `1px solid ${isFlash ? "rgba(46,155,220,0.8)" : "rgba(255,255,255,0.15)"}`,
-                      boxShadow: isFlash ? "0 0 24px rgba(46,155,220,0.55)" : undefined,
-                      transform: isFlash ? "scale(0.94)" : undefined,
-                    }}
-                  >
-                    {k}
-                  </button>
-                );
-              })}
+              {KEYS.map((k) => (
+                <button key={k} onClick={() => pressDtmf(k)}
+                  className="w-20 h-20 rounded-full text-3xl font-semibold active:scale-95 transition mx-auto"
+                  style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)" }}>
+                  {k}
+                </button>
+              ))}
             </div>
           </div>
         )}
@@ -379,20 +275,19 @@ export default function PpActiveCallScreen({
           </div>
         )}
 
-        {/* Action bar (main view) — market-standard: all controls visible together.
-             Shown during ringing-out, early-media, active, and held states. */}
+        {/* Action bar (main view) — market-standard: all controls visible together */}
         {view === "main" && !isIncoming && (
           <div className="shrink-0 px-4 pb-6">
             <div
               className="grid grid-cols-6 gap-2 rounded-[28px] px-3 py-3"
               style={{ background: "rgba(3,10,22,0.72)", border: "1px solid rgba(255,255,255,0.10)", boxShadow: "0 18px 48px rgba(0,0,0,0.42)", backdropFilter: "blur(18px)" }}
             >
-              <CallBtn active={snap.muted} onClick={() => (snap.muted ? unmute() : mute())} icon={snap.muted ? <MicOff /> : <Mic />} label={snap.muted ? (t("call.unmute") || "Activer") : (t("call.mute") || "Muet")} />
-              <CallBtn active={speakerOn} onClick={() => setSpeakerOn((v) => !v)} icon={speakerOn ? <Volume2 /> : <VolumeX />} label={t("call.speaker") || "H.-parleur"} />
-              <CallBtn active={isHeld} onClick={() => (isHeld ? unhold() : hold())} icon={isHeld ? <Play /> : <Pause />} label={isHeld ? (t("call.resume") || "Reprendre") : (t("call.hold") || "Attente")} />
-              <CallBtn onClick={() => setView("transfer")} icon={<PhoneForwarded />} label={t("call.transfer") || "Transférer"} />
-              <CallBtn onClick={() => setView("keypad")} icon={<Grid3X3 />} label={t("call.keypad") || "Clavier"} />
-              <CallBtn danger onClick={() => hangup()} icon={<PhoneOff />} label={t("call.hangup") || "Raccrocher"} />
+              <CallBtn active={snap.muted} onClick={() => (snap.muted ? unmute() : mute())} icon={snap.muted ? <MicOff /> : <Mic />} label={snap.muted ? "Activer" : "Muet"} />
+              <CallBtn active={speakerOn} onClick={() => setSpeakerOn((v) => !v)} icon={speakerOn ? <Volume2 /> : <VolumeX />} label="H.-parleur" />
+              <CallBtn active={isHeld} onClick={() => (isHeld ? unhold() : hold())} icon={isHeld ? <Play /> : <Pause />} label={isHeld ? "Reprendre" : "Attente"} />
+              <CallBtn onClick={() => setView("transfer")} icon={<PhoneForwarded />} label="Transférer" />
+              <CallBtn onClick={() => setView("keypad")} icon={<Grid3X3 />} label="Clavier" />
+              <CallBtn danger onClick={() => hangup()} icon={<PhoneOff />} label="Raccrocher" />
             </div>
           </div>
         )}

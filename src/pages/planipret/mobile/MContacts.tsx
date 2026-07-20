@@ -124,9 +124,6 @@ export default function MContacts() {
   const [filterDept, setFilterDept] = useState<string>("");
   const [filterTeam, setFilterTeam] = useState<string>("");
   const [sortBy, setSortBy] = useState<"relevance" | "name" | "team" | "department">("relevance");
-  // Quick-action sheets (SMS / Email) triggered directly from contact rows
-  const [quickSms, setQuickSms] = useState<{ to: string; name: string } | null>(null);
-  const [quickEmail, setQuickEmail] = useState<{ to: string; name: string } | null>(null);
   const loadedTabsRef = useRef<Set<Tab>>(new Set<Tab>([
     "favorites",
     ...(peekPpContacts("directory") ? (["directory"] as Tab[]) : []),
@@ -157,19 +154,13 @@ export default function MContacts() {
   const load = useCallback(async (which: Tab, opts: { force?: boolean; limit?: number; background?: boolean } = {}) => {
     if (which === "favorites") return; // local only
     if (!opts.force && loadedTabsRef.current.has(which)) return;
-    // Si le cache a déjà des données, on les affiche IMMÉDIATEMENT et on rafraîchit en arrière-plan
+    // If the shared cache already has data for this action, skip the spinner
+    // and refresh in the background so the page renders instantly.
     const cachedHint = which === "directory" ? peekPpContacts("directory") : peekPpContacts("list");
-    if (cachedHint && cachedHint.length > 0) {
-      // Afficher les données du cache instantanément
-      if (which === "directory") setDirectory(cachedHint as any[]);
-      else setPersonal((cachedHint as any[]).map(normalizeContact));
-      loadedTabsRef.current.add(which);
-    }
     const runBackground = opts.background || (!opts.force && !!cachedHint);
     if (!runBackground) setLoadingTab(which);
     setLoadError(null);
     try {
-      // Import statique — plus de dynamic import() qui ajoute ~50ms de latence
       const { getPpContacts } = await import("@/lib/ppContactsCache");
       if (which === "directory") {
         const rows = await getPpContacts("directory", { limit: opts.limit ?? 500, force: opts.force });
@@ -203,20 +194,19 @@ export default function MContacts() {
 
   useEffect(() => {
     if (tab === "favorites") return;
-    // Chargement immédiat depuis le cache, puis refresh en arrière-plan
-    void load(tab, { limit: 200 });
-    const id = window.setTimeout(() => { void load(tab, { force: true, limit: 500, background: true }); }, 1500);
+    void load(tab, { limit: 120 });
+    const id = window.setTimeout(() => { void load(tab, { force: true, limit: 500, background: true }); }, 700);
     return () => window.clearTimeout(id);
   }, [tab, load]);
 
-  // Préchargement agressif : les deux onglets en parallèle dès le montage
+  // Prefetch personal + directory in parallel after first paint so subsequent
+  // tab switches render from memory. Dedup + TTL handled by ppContactsCache.
   useEffect(() => {
-    // Warm immédiat du cache contacts
     prefetchPpContacts(["list", "directory"], 500);
-    // Charger directory en arrière-plan immédiatement (pas de délai)
-    void load("directory", { limit: 200, background: true });
-    void load("personal", { limit: 200, background: true });
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    const quick = window.setTimeout(() => { void load("directory", { limit: 120, background: true }); }, 250);
+    const full = window.setTimeout(() => { void load("directory", { force: true, limit: 500, background: true }); }, 1000);
+    return () => { window.clearTimeout(quick); window.clearTimeout(full); };
+  }, [load]);
 
   // Contacts permission: show the request on the Contacts page, then trigger the
   // native prompt from an explicit tap. If denied, keep a clear recovery path.
@@ -488,26 +478,7 @@ export default function MContacts() {
         </div>
       )}
 
-      {loading && list.length === 0 && (
-        <div className="space-y-2">
-          {[...Array(6)].map((_, i) => (
-            <div key={i} className="pp-card flex items-center gap-3" style={{ padding: 12, opacity: 1 - i * 0.1 }}>
-              <div className="rounded-full shrink-0" style={{ width: 44, height: 44, background: "var(--pp-bg-elevated)", animation: "pulse 1.5s ease-in-out infinite" }} />
-              <div className="flex-1 space-y-2">
-                <div className="rounded" style={{ height: 14, width: `${60 + (i % 3) * 15}%`, background: "var(--pp-bg-elevated)", animation: "pulse 1.5s ease-in-out infinite" }} />
-                <div className="rounded" style={{ height: 11, width: `${40 + (i % 2) * 20}%`, background: "var(--pp-bg-elevated)", animation: "pulse 1.5s ease-in-out infinite" }} />
-              </div>
-              <div className="rounded-full shrink-0" style={{ width: 32, height: 32, background: "var(--pp-bg-elevated)", animation: "pulse 1.5s ease-in-out infinite" }} />
-              <div className="rounded-full shrink-0" style={{ width: 32, height: 32, background: "var(--pp-bg-elevated)", animation: "pulse 1.5s ease-in-out infinite" }} />
-            </div>
-          ))}
-        </div>
-      )}
-      {loading && list.length > 0 && (
-        <div className="flex items-center gap-2 px-1 pb-1" style={{ color: "var(--pp-text-faint)", fontSize: 11 }}>
-          <Loader2 className="w-3 h-3 animate-spin" /> Mise à jour...
-        </div>
-      )}
+      {loading && <div className="text-center py-8 text-sm" style={{ color: "var(--pp-text-muted)" }}>{t("common.loading")}</div>}
 
       {!loading && list.length === 0 && (
         <div className="text-center py-8 pp-card" style={{ padding: 32 }}>
@@ -600,52 +571,53 @@ export default function MContacts() {
                     </div>
                   )}
                 </div>
-                {/* ── Quick actions: Appel + SMS + Email ── */}
-                <div className="flex items-center gap-1 flex-shrink-0">
-                  {/* Appeler */}
-                  {phone && (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); openDialer(phone); }}
-                      className="flex items-center justify-center active:scale-95 transition"
-                      style={{ width: 32, height: 32, borderRadius: "50%", background: "rgba(46,155,220,0.12)", border: "1px solid rgba(46,155,220,0.3)", color: "var(--pp-brand-accent)" }}
-                      aria-label={t("common.call")}>
-                      <Phone className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                  {/* SMS → navigue vers la page Messages onglet SMS avec le numéro pré-rempli */}
-                  {phone && (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); navigate(`/mplanipret/messages?tab=sms&to=${encodeURIComponent(phone)}&name=${encodeURIComponent(displayName || "")}`); }}
-                      className="flex items-center justify-center active:scale-95 transition"
-                      style={{ width: 32, height: 32, borderRadius: "50%", background: "rgba(34,197,94,0.12)", border: "1px solid rgba(34,197,94,0.3)", color: "#22c55e" }}
-                      aria-label="SMS">
-                      <MessageSquare className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                  {/* Email → navigue vers la page Messages onglet Courriel avec le destinataire pré-rempli */}
-                  {c.email && (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); navigate(`/mplanipret/messages?tab=emails&to=${encodeURIComponent(c.email)}&name=${encodeURIComponent(displayName || "")}`); }}
-                      className="flex items-center justify-center active:scale-95 transition"
-                      style={{ width: 32, height: 32, borderRadius: "50%", background: "rgba(139,92,246,0.12)", border: "1px solid rgba(139,92,246,0.3)", color: "#8b5cf6" }}
-                      aria-label="Courriel">
-                      <Mail className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                  {/* Favori */}
+                <button
+                  onClick={(e) => { e.stopPropagation(); toggleFav(favEntry); }}
+                  className="flex items-center justify-center active:scale-95 transition"
+                  style={{
+                    width: 32, height: 32, borderRadius: "50%",
+                    background: starred ? "rgba(245,158,11,0.15)" : "var(--pp-bg-elevated)",
+                    border: `1px solid ${starred ? "rgba(245,158,11,0.4)" : "var(--pp-bg-border-2)"}`,
+                    color: starred ? "#f59e0b" : "var(--pp-text-secondary)",
+                  }}
+                  aria-label={starred ? (t("contacts.removeFavorite") || "Retirer") : (t("contacts.addFavorite") || "Ajouter")}>
+                  <Star className="w-3.5 h-3.5" fill={starred ? "#f59e0b" : "none"} />
+                </button>
+                {/* SMS → navigue vers Messages onglet SMS */}
+                {phone && (
                   <button
-                    onClick={(e) => { e.stopPropagation(); toggleFav(favEntry); }}
-                    className="flex items-center justify-center active:scale-95 transition"
-                    style={{
-                      width: 32, height: 32, borderRadius: "50%",
-                      background: starred ? "rgba(245,158,11,0.15)" : "var(--pp-bg-elevated)",
-                      border: `1px solid ${starred ? "rgba(245,158,11,0.4)" : "var(--pp-bg-border-2)"}`,
-                      color: starred ? "#f59e0b" : "var(--pp-text-secondary)",
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const qs = new URLSearchParams({ tab: "sms", to: phone, name: displayName || "" });
+                      navigate(`/mplanipret/messages?${qs.toString()}`);
                     }}
-                    aria-label={starred ? (t("contacts.removeFavorite") || "Retirer") : (t("contacts.addFavorite") || "Ajouter")}>
-                    <Star className="w-3.5 h-3.5" fill={starred ? "#f59e0b" : "none"} />
+                    className="flex items-center justify-center active:scale-95 transition"
+                    style={{ width: 32, height: 32, borderRadius: "50%", background: "rgba(34,197,94,0.12)", border: "1px solid rgba(34,197,94,0.3)", color: "#22c55e" }}
+                    aria-label="SMS">
+                    <MessageSquare className="w-3.5 h-3.5" />
                   </button>
-                </div>
+                )}
+                {/* Email → navigue vers Messages onglet Courriel */}
+                {c.email && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      const qs = new URLSearchParams({ tab: "emails", to: c.email, name: displayName || "" });
+                      navigate(`/mplanipret/messages?${qs.toString()}`);
+                    }}
+                    className="flex items-center justify-center active:scale-95 transition"
+                    style={{ width: 32, height: 32, borderRadius: "50%", background: "rgba(139,92,246,0.12)", border: "1px solid rgba(139,92,246,0.3)", color: "#8b5cf6" }}
+                    aria-label="Courriel">
+                    <Mail className="w-3.5 h-3.5" />
+                  </button>
+                )}
+                {/* Appel */}
+                <button onClick={(e) => { e.stopPropagation(); phone && openDialer(phone); }}
+                  className="flex items-center justify-center active:scale-95 transition"
+                  style={{ width: 32, height: 32, borderRadius: "50%", background: "rgba(46,155,220,0.12)", border: "1px solid rgba(46,155,220,0.3)", color: "var(--pp-brand-accent)" }}
+                  aria-label={t("common.call")}>
+                  <Phone className="w-3.5 h-3.5" />
+                </button>
               </div>
             );
           })}
@@ -663,12 +635,6 @@ export default function MContacts() {
           contact={selected}
           onClose={() => setSelected(null)}
           onCall={(p) => { setSelected(null); openDialer(p); }}
-          onEdited={(updated) => {
-            setSelected(updated);
-            // Mettre à jour la liste locale
-            if (tab === "personal") setPersonal((prev) => prev.map((c) => (c.id === updated.id || c.phone === updated.phone) ? { ...c, ...updated } : c));
-            if (tab === "directory") setDirectory((prev) => prev.map((c) => (c.id === updated.id || c.extension === updated.extension) ? { ...c, ...updated } : c));
-          }}
         />
       )}
 
@@ -676,24 +642,6 @@ export default function MContacts() {
         <CreateContactSheet
           onClose={() => setCreateOpen(false)}
           onCreated={() => { setCreateOpen(false); load("personal", { force: true }); }}
-        />
-      )}
-
-      {/* Quick SMS sheet — ouvert directement depuis la ligne de contact */}
-      {quickSms && (
-        <SmsComposerSheet
-          to={quickSms.to}
-          contactName={quickSms.name}
-          onClose={() => setQuickSms(null)}
-        />
-      )}
-
-      {/* Quick Email sheet — ouvert directement depuis la ligne de contact */}
-      {quickEmail && (
-        <EmailComposerSheet
-          to={quickEmail.to}
-          contactName={quickEmail.name}
-          onClose={() => setQuickEmail(null)}
         />
       )}
     </div>
@@ -727,9 +675,9 @@ function CreateContactSheet({ onClose, onCreated }: { onClose: () => void; onCre
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+    <div className="absolute inset-0 z-40 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
       <div className="w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl p-4"
-        style={{ background: "var(--pp-bg-base)", border: "1px solid var(--pp-bg-border-2)", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 16px)" }}
+        style={{ background: "var(--pp-bg-base)", border: "1px solid var(--pp-bg-border-2)" }}
         onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-3">
           <div className="text-lg font-bold" style={{ color: "var(--pp-text-primary)" }}>
@@ -764,92 +712,9 @@ function CreateContactSheet({ onClose, onCreated }: { onClose: () => void; onCre
 }
 
 
-/**
- * Feuille de modification d'un contact existant (personal/native/directory)
- */
-function EditContactSheet({ contact, onClose, onSaved }: { contact: any; onClose: () => void; onSaved: (updated: any) => void }) {
-  const { t } = useMplanipretLang();
-  const [form, setForm] = useState({
-    first_name: contact.first_name ?? contact.name?.split(" ")[0] ?? "",
-    last_name: contact.last_name ?? (contact.name?.split(" ").slice(1).join(" ") ?? ""),
-    phone: contact.phone ?? contact.cell_phone ?? contact.mobile ?? "",
-    email: contact.email ?? "",
-    company: contact.company ?? "",
-    extension: contact.extension ?? "",
-  });
-  const [saving, setSaving] = useState(false);
-
-  const save = async () => {
-    setSaving(true);
-    try {
-      // Contacts natifs du téléphone (source="native") — mise à jour locale
-      if (contact.source === "native" || contact.contactId) {
-        // On ne peut pas modifier les contacts natifs via JS sans plugin natif
-        // On crée plutôt une copie dans le backend NS
-        const { data, error } = await supabase.functions.invoke("pp-ns-contacts", {
-          body: { action: "create", ...form },
-        });
-        if (error) throw error;
-        if ((data as any)?.error) throw new Error((data as any).error);
-        toast.success("Contact enregistré dans l'annuaire");
-        onSaved({ ...contact, ...form });
-      } else {
-        // Contact NS backend — mise à jour
-        const id = contact.id || contact.ns_id;
-        const { data, error } = await supabase.functions.invoke("pp-ns-contacts", {
-          body: { action: id ? "update" : "create", id, ...form },
-        });
-        if (error) throw error;
-        if ((data as any)?.error) throw new Error((data as any).error);
-        toast.success(t("contacts.updated") || "Contact mis à jour");
-        onSaved({ ...contact, ...form });
-      }
-    } catch (e: any) {
-      toast.error(t("contacts.updateFailed") || "Échec mise à jour", { description: e?.message });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-black/70 backdrop-blur-sm" onClick={onClose}>
-      <div className="w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl p-4"
-        style={{ background: "var(--pp-bg-base)", border: "1px solid var(--pp-bg-border-2)", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 16px)" }}
-        onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between mb-3">
-          <div className="text-lg font-bold" style={{ color: "var(--pp-text-primary)" }}>Modifier le contact</div>
-          <button onClick={onClose} style={{ color: "var(--pp-text-muted)" }}><X className="w-5 h-5" /></button>
-        </div>
-        <div className="space-y-2">
-          {([
-            ["first_name", t("contacts.firstName") || "Prénom"],
-            ["last_name", t("contacts.lastName") || "Nom"],
-            ["phone", t("contacts.phoneLabel") || "Téléphone"],
-            ["email", "Email"],
-            ["company", t("contacts.company") || "Société"],
-            ["extension", t("contacts.extension") || "Extension"],
-          ] as const).map(([k, label]) => (
-            <input key={k}
-              value={(form as any)[k]}
-              onChange={(e) => setForm((f) => ({ ...f, [k]: e.target.value }))}
-              placeholder={label}
-              className="w-full px-3 py-2 rounded-lg text-sm outline-none"
-              style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }} />
-          ))}
-        </div>
-        <button onClick={save} disabled={saving}
-          className="w-full mt-4 py-2.5 rounded-lg text-white font-semibold text-sm disabled:opacity-50"
-          style={{ background: "var(--pp-brand-accent)" }}>
-          {saving ? <Loader2 className="w-4 h-4 animate-spin mx-auto" /> : (t("common.save") || "Enregistrer")}
-        </button>
-      </div>
-    </div>
-  );
-}
-
 function ContactDetailSheet({
-  contact, onClose, onCall, onEdited,
-}: { contact: any; onClose: () => void; onCall: (phone: string) => void; onEdited?: (updated: any) => void }) {
+  contact, onClose, onCall,
+}: { contact: any; onClose: () => void; onCall: (phone: string) => void }) {
   const { t, lang } = useMplanipretLang();
   const navigate = useNavigate();
   const [history, setHistory] = useState<any[]>([]);
@@ -859,7 +724,6 @@ function ContactDetailSheet({
   const [smsOpen, setSmsOpen] = useState(false);
   const [emailOpen, setEmailOpen] = useState(false);
   const [apptOpen, setApptOpen] = useState(false);
-  const [editOpen, setEditOpen] = useState(false);
 
   const name = `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim()
     || contact.name || contact.display_name || contact.phone || contact.email || "Contact";
@@ -917,15 +781,15 @@ function ContactDetailSheet({
 
   const openSms = () => {
     if (!smsTarget) { toast.error("Aucun numéro disponible"); return; }
-    // Naviguer vers la page Messages onglet SMS avec le numéro pré-rempli
+    const qs = new URLSearchParams({ tab: "sms", to: smsTarget, name });
     onClose();
-    navigate(`/mplanipret/messages?tab=sms&to=${encodeURIComponent(smsTarget)}`);
+    navigate(`/mplanipret/messages?${qs.toString()}`);
   };
   const openEmail = () => {
     if (!email) { toast.error("Aucun email disponible"); return; }
-    // Naviguer vers la page Messages onglet Courriel avec le destinataire pré-rempli
+    const qs = new URLSearchParams({ tab: "emails", to: email, name });
     onClose();
-    navigate(`/mplanipret/messages?tab=emails&to=${encodeURIComponent(email)}&name=${encodeURIComponent(name)}`);
+    navigate(`/mplanipret/messages?${qs.toString()}`);
   };
   const openAppt = () => {
     if (!maestroId) { toast.error("Client Maestro requis pour un RDV"); return; }
@@ -944,10 +808,10 @@ function ContactDetailSheet({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+    <div className="absolute inset-0 z-40 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
       <div
         className="w-full sm:max-w-md max-h-[88vh] overflow-y-auto rounded-t-3xl sm:rounded-3xl p-4"
-        style={{ background: "var(--pp-bg-base)", border: "1px solid var(--pp-bg-border-2)", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 16px)" }}
+        style={{ background: "var(--pp-bg-base)", border: "1px solid var(--pp-bg-border-2)" }}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between mb-3">
@@ -966,16 +830,16 @@ function ContactDetailSheet({
           <button onClick={onClose} className="p-1" style={{ color: "var(--pp-text-muted)" }} aria-label={t("common.close")}><X className="w-5 h-5" /></button>
         </div>
 
-        {/* Quick actions */}
-        <div className="grid grid-cols-3 gap-2 mb-2">
+        {/* Quick actions — endpoints:
+              call → openDialer (softphone) · SMS → pp-ns-sms(send) ·
+              Email → ms365-actions(send_email) · Tâche → maestro-task ·
+              RDV → maestro-appointment */}
+        <div className="grid grid-cols-5 gap-2 mb-4">
           <QuickAction icon={<Phone className="w-4 h-4" />} label={t("common.call")} onClick={() => phone && onCall(phone)} disabled={!phone} />
           <QuickAction icon={<MessageSquare className="w-4 h-4" />} label="SMS" onClick={openSms} disabled={!smsTarget} />
           <QuickAction icon={<Mail className="w-4 h-4" />} label="Email" onClick={openEmail} disabled={!email} />
-        </div>
-        <div className="grid grid-cols-3 gap-2 mb-4">
           <QuickAction icon={creatingTask ? <Loader2 className="w-4 h-4 animate-spin" /> : <ListChecks className="w-4 h-4" />} label="Tâche" onClick={createTask} disabled={creatingTask || !maestroId} />
           <QuickAction icon={<Calendar className="w-4 h-4" />} label="RDV" onClick={openAppt} disabled={!maestroId} />
-          <QuickAction icon={<UserCog className="w-4 h-4" />} label="Modifier" onClick={() => setEditOpen(true)} />
         </div>
 
 
@@ -1059,14 +923,6 @@ function ContactDetailSheet({
           onClose={() => setApptOpen(false)}
         />
       )}
-
-      {editOpen && (
-        <EditContactSheet
-          contact={contact}
-          onClose={() => setEditOpen(false)}
-          onSaved={(updated) => { setEditOpen(false); onEdited?.(updated); }}
-        />
-      )}
     </div>
   );
 }
@@ -1098,69 +954,73 @@ function ContactField({ label, value, onCall }: { label: string; value: string; 
   );
 }
 
-// ─── Bouton IA Claude pour les sheets de composition dans MContacts ───────────
-function AiContactImproveButton({
-  text, onResult, mode, disabled = false,
-}: { text: string; onResult: (r: string) => void; mode: "sms" | "email"; disabled?: boolean }) {
+function AiContactImproveButton({ text, onResult, mode, disabled }: { text: string; onResult: (r: string) => void; mode: "sms" | "email"; disabled?: boolean }) {
   const [open, setOpen] = useState(false);
-  const [improving, setImproving] = useState(false);
-  const actions: { key: "fix" | "improve" | "formal" | "shorter"; label: string; icon: string }[] = [
-    { key: "fix",     label: "Corriger les fautes",  icon: "✓" },
-    { key: "improve", label: "Améliorer le texte",   icon: "✨" },
-    { key: "formal",  label: "Rendre plus formel",   icon: "👔" },
-    { key: "shorter", label: "Raccourcir",            icon: "✂️" },
-  ];
-  const improve = async (action: "fix" | "improve" | "formal" | "shorter") => {
-    if (!text.trim()) { toast.error("Écrivez d'abord un message"); return; }
-    setOpen(false);
-    setImproving(true);
+  const [busy, setBusy] = useState(false);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const onDocClick = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    if (open) document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [open]);
+
+  const run = async (action: "fix" | "improve" | "formal" | "shorter") => {
+    if (!text.trim()) return;
+    setBusy(true);
     try {
       const { data, error } = await supabase.functions.invoke("ai-text-improve", {
         body: { text, mode, action },
       });
       if (error) throw error;
-      if (!(data as any)?.success) throw new Error((data as any)?.error ?? "IA indisponible");
-      onResult((data as any).result);
+      if ((data as any)?.success === false) throw new Error((data as any)?.error || "IA indisponible");
+      const result = (data as any)?.result;
+      if (typeof result === "string") onResult(result.trim());
+      else throw new Error("Réponse IA invalide");
     } catch (e: any) {
-      toast.error(e?.message ?? "Erreur IA");
+      toast.error("Erreur IA", { description: e?.message });
     } finally {
-      setImproving(false);
+      setBusy(false);
+      setOpen(false);
     }
   };
+
+  const items = [
+    { icon: "✓", label: "Corriger les fautes", action: "fix" as const },
+    { icon: "✨", label: "Améliorer le texte", action: "improve" as const },
+    { icon: "👔", label: "Rendre plus formel", action: "formal" as const },
+    { icon: "✂️", label: "Raccourcir", action: "shorter" as const },
+  ];
+
   return (
-    <div className="relative">
+    <div ref={containerRef} className="relative">
       <button
-        onClick={() => setOpen((o) => !o)}
-        disabled={improving || disabled || !text.trim()}
-        className="flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium transition active:scale-95 disabled:opacity-40"
-        style={{ background: "linear-gradient(135deg,#7C3AED,#A855F7)", color: "#fff", boxShadow: "0 2px 8px rgba(124,58,237,0.35)" }}
-        title="Améliorer avec IA"
+        onClick={() => setOpen((v) => !v)}
+        disabled={disabled || busy || !text.trim()}
+        className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold text-white disabled:opacity-40 active:scale-95 transition"
+        style={{ background: "linear-gradient(135deg,#7C3AED,#A855F7)" }}
       >
-        {improving
-          ? <Loader2 className="w-3 h-3 animate-spin" />
-          : <Sparkles className="w-3 h-3" />}
-        IA
+        {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Sparkles className="w-3 h-3" />}
+        <span>IA</span>
       </button>
       {open && (
-        <div
-          className="absolute top-8 right-0 z-[300] rounded-2xl overflow-hidden shadow-xl min-w-[180px]"
-          style={{ background: "var(--pp-bg-surface, #1e293b)", border: "1px solid rgba(255,255,255,0.12)" }}
-        >
-          {actions.map((a) => (
+        <div className="absolute top-8 right-0 z-[300] w-48 rounded-xl p-1.5 shadow-xl"
+          style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)" }}>
+          {items.map((it) => (
             <button
-              key={a.key}
-              onClick={() => improve(a.key)}
-              className="w-full text-left px-4 py-3 text-sm flex items-center gap-2.5 active:opacity-70 transition"
-              style={{ color: "var(--pp-text-primary, #f1f5f9)", borderBottom: "1px solid rgba(255,255,255,0.07)" }}
+              key={it.action}
+              onClick={() => run(it.action)}
+              className="w-full text-left px-2.5 py-2 rounded-lg text-xs flex items-center gap-2 transition"
+              style={{ color: "var(--pp-text-primary)" }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = "var(--pp-bg-surface)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
             >
-              <span>{a.icon}</span> {a.label}
+              <span className="shrink-0">{it.icon}</span>
+              <span>{it.label}</span>
             </button>
           ))}
-          <button
-            onClick={() => setOpen(false)}
-            className="w-full text-center px-4 py-2 text-xs"
-            style={{ color: "var(--pp-text-muted, #94a3b8)" }}
-          >Annuler</button>
         </div>
       )}
     </div>
@@ -1214,7 +1074,8 @@ function SmsComposerSheet({ to, contactName, onClose }: { to: string; contactNam
     setStatus("sending");
     setErrorMsg(null);
     try {
-      await callEdge("pp-ns-sms", { action: "send", to: number, message: msg, from: smsFrom || undefined });
+      const res = await callEdge<any>("pp-ns-sms", { action: "send", to: number, message: msg, from: smsFrom || undefined });
+      if (res?.ok === false || res?.error) throw { name: "EdgeError", message: res?.body || res?.error || "SMS failed", status: res?.status ?? 200, body: res, fn: "pp-ns-sms" };
       setStatus("sent");
       toast.success("SMS envoyé", { description: `À ${contactName} · ${number}` });
       window.setTimeout(() => onClose(), 1200);
@@ -1318,10 +1179,9 @@ function SmsComposerSheet({ to, contactName, onClose }: { to: string; contactNam
           style={{ fontSize: 16, background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
         />
 
-        <div className="flex items-center justify-between mt-0 mb-1">
+        <div className="flex items-center justify-between mt-1 mb-1">
           <label className="text-[10px] font-semibold uppercase" style={{ color: "var(--pp-text-muted)" }}>Message</label>
-          {/* Bouton IA Claude */}
-          <AiContactImproveButton text={body} onResult={setBody} mode="sms" disabled={sending || sent} />
+          <AiContactImproveButton text={body} mode="sms" onResult={(r) => setBody(r)} disabled={sending || sent} />
         </div>
         <textarea
           ref={taRef}
@@ -1333,6 +1193,7 @@ function SmsComposerSheet({ to, contactName, onClose }: { to: string; contactNam
           className="w-full mt-1 mb-3 px-3 py-2 rounded-lg outline-none resize-none disabled:opacity-60"
           style={{ fontSize: 16, background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
         />
+
         <button
           onClick={send}
           disabled={disabled}
@@ -1426,9 +1287,9 @@ function EmailComposerSheet({ to, contactName, onClose }: { to: string; contactN
           style={{ fontSize: 16, background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
         />
 
-        <div className="flex items-center justify-between mt-0 mb-1">
+        <div className="flex items-center justify-between mt-1 mb-1">
           <label className="text-[10px] font-semibold uppercase" style={{ color: "var(--pp-text-muted)" }}>Message</label>
-          <AiContactImproveButton text={body} onResult={setBody} mode="email" disabled={sending} />
+          <AiContactImproveButton text={body} mode="email" onResult={(r) => setBody(r)} disabled={sending || connecting} />
         </div>
         <textarea
           ref={taRef}
@@ -1436,7 +1297,8 @@ function EmailComposerSheet({ to, contactName, onClose }: { to: string; contactN
           onChange={(e) => setBody(e.target.value)}
           rows={6}
           placeholder="Écrire votre message…"
-          className="w-full mt-1 mb-3 px-3 py-2 rounded-lg outline-none resize-none"
+          disabled={sending || connecting}
+          className="w-full mt-1 mb-3 px-3 py-2 rounded-lg outline-none resize-none disabled:opacity-60"
           style={{ fontSize: 16, background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
         />
 

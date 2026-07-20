@@ -1,4 +1,4 @@
-// ppSipProvider.ts — Planipret SIP softphone (WebRTC / JsSIP)
+// Planipret mobile — dedicated JsSIP UA bound to the NS-API PBX.
 //
 // This is intentionally independent from the Lemtel `sipProvider` in
 // `@/lib/softphone/jssipProvider` so /mplanipret talks only to the NS-API
@@ -8,59 +8,8 @@
 
 import JsSIP from "jssip";
 
-// ─── Defensive patch for JsSIP multi_header crash ────────────────────────────
-// JsSIP's SIP message parser accesses `T.multi_header.length` without null-
-// checking T. On Capacitor iOS, if the WebSocket receives a malformed or empty
-// SIP packet (e.g. during disconnection), this throws:
-//   TypeError: undefined is not an object (evaluating 'T.multi_header.length')
-// We patch JsSIP.Utils.parseMessage to wrap it in a try/catch so the error is
-// swallowed as a warning instead of crashing the JS engine.
-// This patch is applied once at module load time and does NOT affect call logic.
-(() => {
-  try {
-    const utils = (JsSIP as any).Utils;
-    if (utils && typeof utils.parseMessage === "function") {
-      const original = utils.parseMessage.bind(utils);
-      utils.parseMessage = function patchedParseMessage(...args: any[]) {
-        try {
-          return original(...args);
-        } catch (e: any) {
-          // Silently swallow multi_header and similar SIP parse errors
-          // so they don't crash the app. The UA will handle the disconnect.
-          if (process.env.NODE_ENV !== "production") {
-            console.warn("[pp-sip] parseMessage swallowed:", e?.message || e);
-          }
-          return null;
-        }
-      };
-    }
-  } catch {
-    // If patching fails (e.g. JsSIP internals changed), silently skip.
-  }
-})();
-
-// JsSIP uses `multi_header.length` internally during SDP parsing. On Capacitor
-// iOS the WebKit WKWebView ships a WebRTC stub that does not fully implement
-// the SDP/SIP stack, causing a hard crash: "undefined is not an object
-// (evaluating 'T.multi_header.length')". SIP.js / JsSIP must never be
-// initialised on a native Capacitor shell — NS-API REST fallback handles calls.
-const IS_NATIVE: boolean = (() => {
-  try {
-    const cap: any = (typeof window !== "undefined") ? (window as any).Capacitor : null;
-    return !!cap?.isNativePlatform?.();
-  } catch { return false; }
-})();
-
-// Detect Android WebView (Capacitor native Android)
-const IS_ANDROID: boolean = (() => {
-  try {
-    const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";
-    return /Android/i.test(ua) && IS_NATIVE;
-  } catch { return false; }
-})();
-
 export type PpSipStatus = "idle" | "connecting" | "connected" | "registered" | "disconnected" | "error";
-export type PpCallState = "idle" | "ringing-out" | "early-media" | "ringing-in" | "active" | "held" | "ended";
+export type PpCallState = "idle" | "ringing-out" | "ringing-in" | "active" | "held" | "ended";
 
 export interface PpSipConfig {
   extension: string;
@@ -73,13 +22,6 @@ export interface PpSipConfig {
   displayName?: string;
 }
 
-export interface PpSipEvent {
-  time: number;
-  level: "info" | "warn" | "error";
-  event: string;
-  detail?: string;
-}
-
 export interface PpSipSnapshot {
   status: PpSipStatus;
   callState: PpCallState;
@@ -89,7 +31,6 @@ export interface PpSipSnapshot {
   callId: string;
   muted: boolean;
   onHold: boolean;
-  speaker: boolean;
   startedAt: number | null;
   errorCause?: string;
   lastRegistrationAt: number | null;
@@ -97,36 +38,15 @@ export interface PpSipSnapshot {
 
 
 type Listener = (s: PpSipSnapshot) => void;
-type EventListener = (e: PpSipEvent[]) => void;
 
-// ─── Audio routing helpers ────────────────────────────────────────────────────
-// On web (browser / Android WebView), we use HTMLAudioElement.setSinkId() when
-// available to switch between earpiece ("communications") and loudspeaker
-// (""). On iOS native we rely on the AudioSession category set in Swift
-// (AVAudioSessionCategoryPlayAndRecord with defaultToSpeaker = false).
-async function setAudioOutput(el: HTMLAudioElement | null, useSpeaker: boolean): Promise<void> {
-  if (!el) return;
-  try {
-    // setSinkId is available in Chrome/Android WebView; not in Safari/iOS WKWebView.
-    if (typeof (el as any).setSinkId === "function") {
-      if (useSpeaker) {
-        // Empty string = system default (loudspeaker on most Android devices)
-        await (el as any).setSinkId("");
-      } else {
-        // "communications" maps to earpiece / headset on Android
-        await (el as any).setSinkId("communications");
-      }
-    }
-    // For iOS WKWebView: the audio session category is controlled natively.
-    // We can hint the desired route by setting the audio element's playsInline
-    // and muted attributes, but the actual routing is handled by Swift.
-    // No JS-side action needed — the default is earpiece when
-    // AVAudioSessionCategoryPlayAndRecord is used without defaultToSpeaker.
-  } catch (e: any) {
-    // setSinkId may throw if the device ID is not found — silently ignore.
-    console.warn("[pp-sip] setAudioOutput failed:", e?.message || e);
-  }
+export interface PpSipEvent {
+  time: number;
+  level: "info" | "warn" | "error";
+  event: string;
+  detail?: string;
 }
+type EventListener = (events: PpSipEvent[]) => void;
+const EVENT_BUFFER_MAX = 120;
 
 class PpSipProvider {
   private ua: any = null;
@@ -134,7 +54,7 @@ class PpSipProvider {
   private cfg: PpSipConfig | null = null;
   private listeners = new Set<Listener>();
   private eventListeners = new Set<EventListener>();
-  private eventLog: PpSipEvent[] = [];
+  private events: PpSipEvent[] = [];
   private snap: PpSipSnapshot = {
     status: "idle",
     callState: "idle",
@@ -144,7 +64,6 @@ class PpSipProvider {
     callId: "",
     muted: false,
     onHold: false,
-    speaker: false,
     startedAt: null,
     lastRegistrationAt: null,
   };
@@ -159,34 +78,44 @@ class PpSipProvider {
   }
   getSnapshot(): PpSipSnapshot { return this.snap; }
   getConfig(): PpSipConfig | null { return this.cfg; }
-  getEvents(): PpSipEvent[] { return [...this.eventLog]; }
+
+  /** Subscribe to the SIP event ring buffer used by the debug screen. */
   subscribeEvents(fn: EventListener): () => void {
     this.eventListeners.add(fn);
-    fn([...this.eventLog]);
+    fn(this.events);
     return () => { this.eventListeners.delete(fn); };
   }
-  clearEvents(): void {
-    this.eventLog = [];
-    this.eventListeners.forEach((l) => { try { l([]); } catch {} });
+  getEvents(): PpSipEvent[] { return this.events; }
+  clearEvents() {
+    this.events = [];
+    this.eventListeners.forEach((l) => { try { l(this.events); } catch {} });
+  }
+
+  private pushEvent(level: PpSipEvent["level"], event: string, detail?: string) {
+    const entry: PpSipEvent = { time: Date.now(), level, event, detail };
+    this.events = [entry, ...this.events].slice(0, EVENT_BUFFER_MAX);
+    this.eventListeners.forEach((l) => { try { l(this.events); } catch {} });
   }
 
   private update(patch: Partial<PpSipSnapshot>) {
+    const prev = this.snap.status;
     this.snap = { ...this.snap, ...patch };
+    if (patch.status && patch.status !== prev) {
+      this.pushEvent("info", "status", `${prev} → ${patch.status}${patch.errorCause ? ` (${patch.errorCause})` : ""}`);
+    }
     this.listeners.forEach((l) => { try { l(this.snap); } catch {} });
   }
 
   private log(level: "info" | "warn" | "error", msg: string, detail?: any) {
     const fn = level === "error" ? "error" : level === "warn" ? "warn" : "log";
+    const detailStr = detail == null ? "" : typeof detail === "string" ? detail : (() => { try { return JSON.stringify(detail); } catch { return String(detail); } })();
     // eslint-disable-next-line no-console
     (console as any)[fn](`[pp-sip] ${msg}`, detail ?? "");
-    const ev: PpSipEvent = { time: Date.now(), level, event: msg, detail: detail != null ? String(detail) : undefined };
-    this.eventLog = [...this.eventLog.slice(-199), ev];
-    this.eventListeners.forEach((l) => { try { l([...this.eventLog]); } catch {} });
+    this.pushEvent(level, msg, detailStr || undefined);
   }
 
+
   async init(cfg: PpSipConfig) {
-    // JsSIP runs on both web and Capacitor native (iOS/Android).
-    // The WebSocket SIP connection is identical to the web softphone.
     const wssUrl = String(cfg.wssUrl ?? "").trim();
     if (!cfg.extension || !cfg.sipDomain || !wssUrl || wssUrl === "undefined" || !/^wss?:\/\//i.test(wssUrl) || !cfg.password) {
       this.update({ status: "error", errorCause: "invalid_config" });
@@ -201,11 +130,13 @@ class PpSipProvider {
     this.cfg = cleanCfg;
     this.lastSig = sig;
     this.update({ status: "connecting", errorCause: undefined });
+
     try {
       const urls = Array.from(new Set([cleanCfg.wssUrl, ...(cleanCfg.wssUrls || [])]
         .map((u) => String(u ?? "").trim())
         .filter((u) => /^wss?:\/\//i.test(u)))) as string[];
       if (!urls.length) throw new Error("No valid SIP WSS URL");
+      this.log("info", "ua.start", `ext=${cleanCfg.sipUsername}@${cleanCfg.sipDomain} wss=${urls.join(",")}`);
       const sockets = urls.map((u) => new (JsSIP as any).WebSocketInterface(u));
       const ua = new (JsSIP as any).UA({
         sockets,
@@ -213,15 +144,7 @@ class PpSipProvider {
         password: cleanCfg.password,
         authorization_user: cleanCfg.sipUsername,
         realm: cleanCfg.sipDomain,
-        // transport=wss in contact_uri is required for NetSapiens WSS routing.
-        // hack_wss_in_transport: the actual transport IS WSS, but some PBX
-        // implementations expect "TCP" in the Via header — this spoof fixes it.
-        // hack_ip_in_contact: use the actual IP in the Contact header to avoid
-        // NAT traversal issues on Android LTE networks.
         contact_uri: `sip:${cleanCfg.sipUsername}@${cleanCfg.sipDomain};transport=wss`,
-        hack_via_tcp: true,
-        hack_wss_in_transport: true,
-        hack_ip_in_contact: true,
         register: true,
         session_timers: false,
         // Longer expiry keeps the registration alive between the JsSIP
@@ -232,17 +155,26 @@ class PpSipProvider {
         connection_recovery_min_interval: 2,
         connection_recovery_max_interval: 30,
         user_agent: "Planipret Softphone 1.0",
+        // Do NOT spoof "TCP" in the Via header. The actual transport is WSS;
+        // forcing TCP makes NetSapiens/FusionPBX try to reply over TCP/5060
+        // instead of the WSS tunnel and the REGISTER response never arrives
+        // (stack stays stuck at `connecting`/`idle`). `hack_wss_in_transport`
+        // asks JsSIP to keep `transport=wss` in Via/Contact URIs.
+        hack_via_tcp: false,
+        hack_wss_in_transport: true,
+        hack_ip_in_contact: true,
       });
-      ua.on("connecting", () => this.update({ status: "connecting" }));
-      ua.on("connected", () => this.update({ status: "connected" }));
+
+      ua.on("connecting", () => { this.log("info", "ws.connecting"); this.update({ status: "connecting" }); });
+      ua.on("connected", () => { this.log("info", "ws.connected"); this.update({ status: "connected" }); });
       ua.on("disconnected", (e: any) => {
-        this.log("warn", "ws disconnected", e);
+        this.log("warn", "ws.disconnected", { code: e?.code, reason: e?.reason });
         this.update({ status: "disconnected", errorCause: e?.reason || "ws_disconnected" });
         // JsSIP retries the socket via connection_recovery_*; no manual work needed.
       });
-      ua.on("registered", () => this.update({ status: "registered", errorCause: undefined, lastRegistrationAt: Date.now() }));
+      ua.on("registered", () => { this.log("info", "register.ok"); this.update({ status: "registered", errorCause: undefined, lastRegistrationAt: Date.now() }); });
       ua.on("unregistered", () => {
-        this.log("warn", "unregistered - forcing re-register");
+        this.log("warn", "register.unregistered - forcing re-register");
         this.update({ status: "connected", errorCause: "re_registering" });
         // NetSapiens sometimes returns 401/403 mid-session on stale nonce;
         // trigger an immediate re-REGISTER instead of leaving the UA idle.
@@ -250,13 +182,15 @@ class PpSipProvider {
       });
       ua.on("registrationFailed", (e: any) => {
         const cause = e?.cause || e?.response?.reason_phrase || "registration_failed";
-        this.log("error", `registration failed: ${cause}`);
-        this.update({ status: "error", errorCause: cause });
+        const code = e?.response?.status_code;
+        this.log("error", `register.failed code=${code ?? "?"} cause=${cause}`);
+        this.update({ status: "error", errorCause: `${code ?? ""} ${cause}`.trim() });
         // Retry once after a short backoff — most NS failures here are transient
         // (429, 503, nonce reuse) and recover on a second attempt.
         setTimeout(() => { try { this.ua?.register(); } catch {} }, 8000);
       });
       ua.on("newRTCSession", (e: any) => this.attachSession(e.session, e.originator));
+
       ua.start();
       this.ua = ua;
     } catch (err: any) {
@@ -285,31 +219,10 @@ class PpSipProvider {
       callId,
       muted: false,
       onHold: false,
-      speaker: false, // Always start with earpiece — user must explicitly enable speaker
     });
 
-    session.on("progress", (e: any) => {
-      if (!incoming) {
-        // Detect SIP 183 Session Progress with SDP (early media / voicemail).
-        // When the PBX sends a 183 with an SDP body, the remote party has already
-        // answered the media path (e.g. voicemail greeting). Switch to
-        // "early-media" so the ringback tone is stopped and the remote audio
-        // stream is played instead.
-        const statusCode = e?.response?.status_code ?? e?.message?.status_code ?? 0;
-        const hasSdp = !!(e?.response?.body || e?.message?.body);
-        if (statusCode === 183 && hasSdp) {
-          this.update({ callState: "early-media" });
-        } else {
-          this.update({ callState: "ringing-out" });
-        }
-      }
-    });
-    session.on("confirmed", () => {
-      this.update({ callState: "active", startedAt: Date.now() });
-      // Ensure audio is routed to earpiece (not speaker) when call connects.
-      // This fires after the remote track arrives and the audio element is set.
-      setAudioOutput(this.audioEl, false);
-    });
+    session.on("progress", () => { if (!incoming) this.update({ callState: "ringing-out" }); });
+    session.on("confirmed", () => this.update({ callState: "active", startedAt: Date.now() }));
     session.on("failed", (e: any) => {
       this.update({ callState: "ended", errorCause: e?.cause || "failed" });
       setTimeout(() => this.resetCall(), 2000);
@@ -328,10 +241,7 @@ class PpSipProvider {
       pc.addEventListener("track", (ev: any) => {
         if (this.audioEl && ev.streams[0]) {
           this.audioEl.srcObject = ev.streams[0];
-          // Route to earpiece by default — NOT speaker.
-          setAudioOutput(this.audioEl, this.snap.speaker).then(() => {
-            this.audioEl?.play().catch(() => {});
-          });
+          this.audioEl.play().catch(() => {});
         }
       });
     }
@@ -348,14 +258,13 @@ class PpSipProvider {
       startedAt: null,
       muted: false,
       onHold: false,
-      speaker: false,
     });
   }
 
 
   async call(number: string) {
     if (!this.cfg || !this.ua) throw new Error("softphone_not_registered");
-    this.update({ callState: "ringing-out", remoteIdentity: number, remoteNumber: number, direction: "out", errorCause: undefined, speaker: false });
+    this.update({ callState: "ringing-out", remoteIdentity: number, remoteNumber: number, direction: "out", errorCause: undefined });
     try {
       const mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
@@ -379,37 +288,20 @@ class PpSipProvider {
 
   answer() {
     if (!this.session) return;
-    this.update({ speaker: false }); // Ensure earpiece on answer
     this.session.answer({
       mediaConstraints: { audio: true, video: false },
       rtcAnswerConstraints: { offerToReceiveAudio: true, offerToReceiveVideo: false },
     });
   }
-
   hangup() { try { this.session?.terminate(); } catch {} }
   mute() { this.session?.mute({ audio: true }); }
   unmute() { this.session?.unmute({ audio: true }); }
   hold() { this.session?.hold(); }
   unhold() { this.session?.unhold(); }
   sendDTMF(k: string) { this.session?.sendDTMF(k, { duration: 100, interToneGap: 70 }); }
-
   transfer(target: string) {
     if (!this.session || !this.cfg) return;
-    // Blind transfer via SIP REFER
     this.session.refer(`sip:${target}@${this.cfg.sipDomain}`);
-  }
-
-  // Attended (warm) transfer: put current call on hold, dial second leg,
-  // then bridge them. For now we use blind transfer as NS-API handles bridging.
-  transferExternal(e164Number: string) {
-    if (!this.session || !this.cfg) return;
-    // For external numbers, refer directly to the E.164 number
-    this.session.refer(`sip:${e164Number}@${this.cfg.sipDomain}`);
-  }
-
-  async setSpeaker(enabled: boolean) {
-    this.update({ speaker: enabled });
-    await setAudioOutput(this.audioEl, enabled);
   }
 
   // ---- Quality/handover helpers used by the audio & network modules ----
@@ -441,11 +333,13 @@ class PpSipProvider {
       setTimeout(() => { try { this.ua?.register(); } catch {} }, 250);
     } catch {}
   }
+
   stop() {
     try { this.ua?.stop(); } catch {}
     this.ua = null;
     this.session = null;
-    this.update({ status: "disconnected", callState: "idle", direction: null, startedAt: null, speaker: false });
+    this.update({ status: "disconnected", callState: "idle", direction: null, startedAt: null });
   }
 }
+
 export const ppSipProvider = new PpSipProvider();

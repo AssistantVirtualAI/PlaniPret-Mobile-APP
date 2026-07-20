@@ -9,6 +9,7 @@ import { ArrowLeft, RefreshCw, LogIn, Copy, Loader2, CheckCircle2, XCircle, Aler
 import { toast } from "sonner";
 import { buildMs365AuthorizeUrl, getMs365RedirectUri } from "@/lib/ms365OAuth";
 
+
 export default function MMs365Diagnostics() {
   const nav = useNavigate();
   const { data, loading, refresh } = useMs365Status(30_000);
@@ -59,6 +60,7 @@ export default function MMs365Diagnostics() {
             <h1 className="text-lg font-bold">Diagnostics Microsoft 365</h1>
             <p className="text-xs" style={{ color: "#8FA8C0" }}>Triage rapide des erreurs de connexion</p>
           </div>
+          
           <button onClick={refresh} className="p-2 rounded-lg" style={{ background: "#0A1628", border: "1px solid #0E2A45" }}>
             <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
           </button>

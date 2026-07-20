@@ -10,6 +10,7 @@ import type { PlanipretMobileContext } from "../PlanipretMobile";
 import { usePlanipretPush } from "@/hooks/usePlanipretPush";
 
 import { Ms365ScopesCard } from "@/components/planipret/Ms365ScopesCard";
+import MaestroConnectCard from "@/components/planipret/mobile/MaestroConnectCard";
 import { SiriShortcutsCard } from "@/components/planipret/SiriShortcutsCard";
 import { safeEdgeFunction } from "@/lib/safeEdgeFunction";
 import MNetworkSection from "@/components/planipret/mobile/MNetworkSection";
@@ -92,20 +93,16 @@ export default function MMore() {
 
   const [sipSnap, setSipSnap] = useState<PpSipSnapshot>(() => ppSipProvider.getSnapshot());
   useEffect(() => ppSipProvider.subscribe(setSipSnap), []);
-  const isNativePlatform = (() => {
-    try { const cap: any = (window as any).Capacitor; return !!cap?.isNativePlatform?.(); } catch { return false; }
-  })();
   const sipStatusColor: Record<string, string> = {
-    idle: "#F59E0B",
-    connecting: "#F59E0B", connected: "#3B82F6",
+    idle: "#94A3B8", connecting: "#F59E0B", connected: "#3B82F6",
     registered: "#10B981", disconnected: "#94A3B8", error: "#EF4444",
   };
-  const sipStatusLabel = sipSnap.status === "registered" ? (t("more.sip.registered") || "Enregistré")
-    : sipSnap.status === "connecting" ? (t("more.sip.connecting") || "Connexion…")
-    : sipSnap.status === "connected" ? (t("more.sip.connected") || "Connecté (non enregistré)")
-    : sipSnap.status === "error" ? (t("more.sip.error") || "Erreur")
-    : sipSnap.status === "disconnected" ? (t("more.sip.disconnected") || "Déconnecté")
-    : (t("more.sip.idle") || "Connexion en cours…");
+  const sipStatusLabel = sipSnap.status === "registered" ? "Enregistré"
+    : sipSnap.status === "connecting" ? "Connexion…"
+    : sipSnap.status === "connected" ? "Connecté (non enregistré)"
+    : sipSnap.status === "error" ? "Erreur"
+    : sipSnap.status === "disconnected" ? "Déconnecté"
+    : "Inactif";
 
   const reconnectNs = async () => {
     setReconnecting(true);
@@ -258,7 +255,7 @@ export default function MMore() {
         <Row
           icon={<Radio className="w-4 h-4" style={{ color: sipStatusColor[sipSnap.status] }} />}
           label="État SIP"
-          sub={sipSnap.errorCause && sipSnap.errorCause !== 'native_platform' ? `${sipStatusLabel} — ${sipSnap.errorCause}` : sipStatusLabel}
+          sub={sipSnap.errorCause ? `${sipStatusLabel} — ${sipSnap.errorCause}` : sipStatusLabel}
           onClick={() => navigate("/mplanipret/sip-debug")}
           right={<span className="text-[10px] font-bold px-2 py-0.5 rounded-full" style={{ background: sipStatusColor[sipSnap.status], color: "#fff" }}>{sipSnap.status.toUpperCase()}</span>}
           chevron
@@ -322,6 +319,7 @@ export default function MMore() {
             <Ms365ScopesCard profile={profile} onReconnect={connectMs365} />
           </div>
         )}
+        <MaestroConnectCard />
       </Section>
 
       <div className="pp-card" style={{ padding: 4 }}>
@@ -408,6 +406,7 @@ export default function MMore() {
             ].join(" · ");
             ((data as any)?.coherent ? toast.success : toast.warning)(`${t("more.diagnostic")}: ${flags}`);
           }} chevron />
+        <Row icon={<SettingsIcon className="w-4 h-4" />} label="Audit des KPI Home" sub="Vérifier les sources et la dernière sync" onClick={() => navigate("/mplanipret/kpi-audit")} chevron />
         <Row icon={<Info className="w-4 h-4" />} label={t("more.appVersion")} right={<span style={{ fontSize: 12, color: "var(--pp-text-faint)" }}>v1.0.0 (build 1)</span>} />
       </Section>
 

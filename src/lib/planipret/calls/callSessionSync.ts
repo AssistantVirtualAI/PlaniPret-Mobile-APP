@@ -80,44 +80,26 @@ export async function endSession(callId: string, reason: string): Promise<void> 
 }
 
 /** Subscribe to updates on a specific call_id. Invokes `onUpdate` with the
- *  new row whenever the row changes. Returns an unsubscribe function.
- *  Silently degrades if Supabase Realtime rejects the subscription (quota
- *  exceeded, network error, etc.) — the call continues normally without sync. */
+ *  new row whenever the row changes. Returns an unsubscribe function. */
 export function subscribeToCall(
   callId: string,
   onUpdate: (row: CallSessionRow) => void,
 ): () => void {
   if (!callId) return () => {};
-  let channel: RealtimeChannel | null = null;
-  try {
-    channel = supabase
-      .channel(`pp-call-${callId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "UPDATE",
-          schema: "public",
-          table: "planipret_call_sessions",
-          filter: `call_id=eq.${callId}`,
-        },
-        (payload) => {
-          try { onUpdate(payload.new as CallSessionRow); } catch {}
-        },
-      )
-      .subscribe((status, err) => {
-        // Silently ignore subscription errors — do not crash the call screen.
-        if (err) { /* best-effort realtime, non-blocking */ }
-        if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
-          try { if (channel) supabase.removeChannel(channel); } catch {}
-          channel = null;
-        }
-      });
-  } catch {
-    // Realtime not available — continue without sync.
-    return () => {};
-  }
-  return () => {
-    try { if (channel) supabase.removeChannel(channel); } catch {}
-    channel = null;
-  };
+  const channel: RealtimeChannel = supabase
+    .channel(`pp-call-${callId}`)
+    .on(
+      "postgres_changes",
+      {
+        event: "UPDATE",
+        schema: "public",
+        table: "planipret_call_sessions",
+        filter: `call_id=eq.${callId}`,
+      },
+      (payload) => {
+        try { onUpdate(payload.new as CallSessionRow); } catch {}
+      },
+    )
+    .subscribe();
+  return () => { try { supabase.removeChannel(channel); } catch {} };
 }
