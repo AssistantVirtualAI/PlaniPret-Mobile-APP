@@ -8,6 +8,37 @@
 
 import JsSIP from "jssip";
 
+// ─── Defensive patch for JsSIP multi_header crash ────────────────────────────
+// JsSIP's SIP message parser accesses `T.multi_header.length` without null-
+// checking T. On Capacitor iOS, if the WebSocket receives a malformed or empty
+// SIP packet (e.g. during disconnection), this throws:
+//   TypeError: undefined is not an object (evaluating 'T.multi_header.length')
+// We patch JsSIP.Utils.parseMessage to wrap it in a try/catch so the error is
+// swallowed as a warning instead of crashing the JS engine.
+// This patch is applied once at module load time and does NOT affect call logic.
+(() => {
+  try {
+    const utils = (JsSIP as any).Utils;
+    if (utils && typeof utils.parseMessage === "function") {
+      const original = utils.parseMessage.bind(utils);
+      utils.parseMessage = function patchedParseMessage(...args: any[]) {
+        try {
+          return original(...args);
+        } catch (e: any) {
+          // Silently swallow multi_header and similar SIP parse errors
+          // so they don't crash the app. The UA will handle the disconnect.
+          if (process.env.NODE_ENV !== "production") {
+            console.warn("[pp-sip] parseMessage swallowed:", e?.message || e);
+          }
+          return null;
+        }
+      };
+    }
+  } catch {
+    // If patching fails (e.g. JsSIP internals changed), silently skip.
+  }
+})();
+
 // JsSIP uses `multi_header.length` internally during SDP parsing. On Capacitor
 // iOS the WebKit WKWebView ships a WebRTC stub that does not fully implement
 // the SDP/SIP stack, causing a hard crash: "undefined is not an object
