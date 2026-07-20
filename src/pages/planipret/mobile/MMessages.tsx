@@ -17,6 +17,7 @@ import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { useCallerNames } from "@/lib/planipret/callerLookup";
 import { connectMs365 } from "@/lib/ms365Connect";
 import { getPpContacts } from "@/lib/ppContactsCache";
+import { toE164 } from "@/lib/callEdge";
 
 
 type SubTab = "sms" | "team" | "teams365" | "emails" | "roster";
@@ -311,15 +312,73 @@ function SmsList({ profile, openDialer, registerRefresh, initialTo = "" }: any) 
     void load();
   /* eslint-disable-next-line */ }, [profile?.user_id]);
   useEffect(() => { registerRefresh(() => load()); return () => registerRefresh(null); /* eslint-disable-next-line */ }, [profile?.user_id]);
+  // Navigation depuis contact : cherche un thread existant par numéro, sinon nouveau
   useEffect(() => {
     const to = searchParams.get("to")?.trim();
-    if (to) openSmsThread({ id: "", number: to }, false);
+    if (!to) return;
+    const normalized = toE164(to);
+    const digits10 = normalized.replace(/\D/g, "").slice(-10);
+    const findAndOpen = (list: any[]) => {
+      const existing = list.find((t: any) => {
+        const peer = threadPeer(t);
+        const peerDigits = peer.replace(/\D/g, "").slice(-10);
+        return peerDigits && peerDigits === digits10;
+      });
+      if (existing) {
+        openSmsThread({ id: threadId(existing), number: threadPeer(existing) }, true);
+      } else {
+        openSmsThread({ id: "", number: normalized || to }, true);
+      }
+    };
+    // Si les threads sont déjà chargés, chercher immédiatement
+    if (!loading && threads.length >= 0) {
+      findAndOpen(threads);
+    } else {
+      // Attendre la fin du chargement
+      const interval = setInterval(() => {
+        if (!loading) {
+          clearInterval(interval);
+          findAndOpen(threads);
+        }
+      }, 100);
+      // Timeout de sécurité : ouvrir quand même après 3 secondes
+      const timeout = setTimeout(() => {
+        clearInterval(interval);
+        openSmsThread({ id: "", number: normalized || to }, true);
+      }, 3000);
+      return () => { clearInterval(interval); clearTimeout(timeout); };
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
-  // Navigation depuis la fiche contact via prop initialTo
+  // Navigation depuis la fiche contact via prop initialTo — cherche thread existant
   useEffect(() => {
-    if (initialTo?.trim()) {
-      openSmsThread({ id: "", number: initialTo.trim() }, true);
+    const to = initialTo?.trim();
+    if (!to) return;
+    const normalized = toE164(to);
+    const digits10 = normalized.replace(/\D/g, "").slice(-10);
+    const findAndOpen = (list: any[]) => {
+      const existing = list.find((t: any) => {
+        const peer = threadPeer(t);
+        const peerDigits = peer.replace(/\D/g, "").slice(-10);
+        return peerDigits && peerDigits === digits10;
+      });
+      openSmsThread(
+        existing ? { id: threadId(existing), number: threadPeer(existing) } : { id: "", number: normalized || to },
+        true
+      );
+    };
+    if (!loading) {
+      findAndOpen(threads);
+    } else {
+      const interval = setInterval(() => {
+        if (!loading) { clearInterval(interval); findAndOpen(threads); }
+      }, 100);
+      const timeout = setTimeout(() => {
+        clearInterval(interval);
+        openSmsThread({ id: "", number: normalized || to }, true);
+      }, 3000);
+      return () => { clearInterval(interval); clearTimeout(timeout); };
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialTo]);
