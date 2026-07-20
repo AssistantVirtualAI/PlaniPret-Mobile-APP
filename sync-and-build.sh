@@ -7,7 +7,6 @@
 set -e
 
 STANDALONE_DIR="$HOME/planipret-standalone"
-GITHUB_RAW="https://raw.githubusercontent.com/AssistantVirtualAI/PlaniPret-Mobile-APP/main"
 PKG_HASH_FILE="$STANDALONE_DIR/.pkg_hash"
 
 cd "$STANDALONE_DIR"
@@ -62,6 +61,25 @@ npm run build
 echo "📱 Copie vers iOS..."
 npx cap copy ios --silent 2>/dev/null || npx cap copy ios
 
+# ─── Étape 6 : pod install si Pods manquants ─────────────────────────────────
+PODS_DIR="$STANDALONE_DIR/ios/App/Pods"
+PODS_XCCONFIG="$STANDALONE_DIR/ios/App/Pods/Target Support Files/Pods-App/Pods-App.debug.xcconfig"
+
+if [ ! -f "$PODS_XCCONFIG" ]; then
+  echo "🍫 Pods manquants — pod install en cours..."
+  if command -v pod &>/dev/null; then
+    cd "$STANDALONE_DIR/ios/App"
+    pod install --silent && echo "  ✅ Pods installés" || echo "  ⚠️  pod install a échoué — lance manuellement : cd ~/planipret-standalone/ios/App && pod install"
+    cd "$STANDALONE_DIR"
+  else
+    echo "  ⚠️  CocoaPods non installé. Lance :"
+    echo "       sudo gem install cocoapods"
+    echo "       cd ~/planipret-standalone/ios/App && pod install"
+  fi
+else
+  echo "  ✅ Pods déjà installés"
+fi
+
 echo ""
-echo "✅ Terminé ! Ouvre Xcode pour déployer :"
+echo "✅ Terminé ! Lance Xcode :"
 echo "   npx cap open ios"
