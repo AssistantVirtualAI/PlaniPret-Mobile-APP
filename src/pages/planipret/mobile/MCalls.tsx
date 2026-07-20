@@ -374,7 +374,10 @@ export default function MCalls() {
   }, [load, loadRecordings, registerRefresh]);
 
 
-  // Realtime updates on phone_calls (for new entries + auto-refresh recordings)
+  // Realtime updates on phone_calls — only refresh recordings tab automatically.
+  // The main call list (recents/missed) is NOT auto-refreshed to avoid the list
+  // appearing and disappearing while the broker is browsing it. Brokers can pull
+  // to refresh manually or tap the refresh button.
   useEffect(() => {
     if (!userId) return;
     const ch = supabase
@@ -382,18 +385,20 @@ export default function MCalls() {
       .on("postgres_changes", { event: "*", schema: "public", table: "planipret_phone_calls" }, (payload: any) => {
         const row = payload?.new ?? payload?.old ?? {};
         if (row.user_id && row.user_id !== userId && row.user_id !== profileAuthId && row.extension !== profileExtension) return;
-        if (callsRefreshDebounceRef.current) window.clearTimeout(callsRefreshDebounceRef.current);
-        callsRefreshDebounceRef.current = window.setTimeout(() => {
-          void load();
-          if (tab === "recordings") void loadRecordings();
-        }, 1_000);
+        // Only auto-refresh the recordings tab — not the main call list.
+        if (tab === "recordings") {
+          if (callsRefreshDebounceRef.current) window.clearTimeout(callsRefreshDebounceRef.current);
+          callsRefreshDebounceRef.current = window.setTimeout(() => {
+            void loadRecordings();
+          }, 1_000);
+        }
       })
       .subscribe();
     return () => {
       if (callsRefreshDebounceRef.current) window.clearTimeout(callsRefreshDebounceRef.current);
       supabase.removeChannel(ch);
     };
-  }, [userId, profileAuthId, profileExtension, tab, load, loadRecordings]);
+  }, [userId, profileAuthId, profileExtension, tab, loadRecordings]);
 
   const missedCount = useMemo(() => calls.filter(isMissed).length, [calls]);
 

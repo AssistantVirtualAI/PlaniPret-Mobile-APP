@@ -63,6 +63,8 @@ export default function PpActiveCallScreen({
   // Outbound ringback tone for NS-API REST calls (native platform)
   const ringbackRef = useRef<HTMLAudioElement | null>(null);
   useEffect(() => {
+    // Play ringback only during ringing-out. Stop immediately on early-media
+    // (SIP 183 with SDP = voicemail or remote party answered the media path).
     const isRingingOut = snap.callState === "ringing-out";
     if (isRingingOut) {
       // Play a ringback tone so the user hears something while the PBX dials
@@ -103,7 +105,7 @@ export default function PpActiveCallScreen({
 
   useEffect(() => { setAudioEl(audioRef.current); return () => setAudioEl(null); }, [setAudioEl]);
 
-  const active = snap.callState === "ringing-out" || snap.callState === "ringing-in"
+  const active = snap.callState === "ringing-out" || snap.callState === "early-media" || snap.callState === "ringing-in"
     || snap.callState === "active" || snap.callState === "held";
 
   // Reset transient state only when the call ends. Never reset on transitions
@@ -113,16 +115,8 @@ export default function PpActiveCallScreen({
     if (!active) { setView("main"); setDtmfBuf(""); setTransferQuery(""); setElapsed(0); }
   }, [active]);
 
-  // Auto-open the DTMF keypad the moment the call is answered so brokers can
-  // navigate IVRs without an extra tap.
-  const openedKeypadRef = useRef(false);
-  useEffect(() => {
-    if (snap.callState === "active" && !openedKeypadRef.current) {
-      openedKeypadRef.current = true;
-      setView("keypad");
-    }
-    if (!active) openedKeypadRef.current = false;
-  }, [snap.callState, active]);
+  // Do NOT auto-open the DTMF keypad — show main controls (mute/speaker/transfer)
+  // by default when the call is answered. Brokers can tap the keypad button manually.
 
 
 
@@ -213,11 +207,13 @@ export default function PpActiveCallScreen({
 
   const isIncoming = snap.callState === "ringing-in";
   const isOutgoingRinging = snap.callState === "ringing-out";
+  const isEarlyMedia = snap.callState === "early-media";
   const isHeld = snap.callState === "held";
   const displayName = snap.remoteIdentity || snap.remoteNumber || "—";
   const displayNumber = snap.remoteNumber && snap.remoteNumber !== displayName ? snap.remoteNumber : null;
   const statusText = isIncoming ? (t("call.incoming") || "Appel entrant")
-    : isOutgoingRinging ? (t("call.ringing") || "Sonnerie…")
+    : isOutgoingRinging ? (t("call.ringing") || "Sonnérie…")
+    : isEarlyMedia ? (t("call.earlyMedia") || "Messagerie vocale…")
     : isHeld ? (t("call.onHold") || "En attente")
     : fmt(elapsed);
 
@@ -246,7 +242,7 @@ export default function PpActiveCallScreen({
             </button>
           ) : <div className="w-9" />}
           <div className="text-xs text-white/60 uppercase tracking-widest">
-            {view === "keypad" ? (t("call.keypad") || "Clavier") : view === "transfer" ? (t("call.transfer") || "Transférer") : (isIncoming ? (t("call.incomingLabel") || "Entrant") : isOutgoingRinging ? (t("call.outgoingLabel") || "Sortant") : (t("call.inProgressLabel") || "En cours"))}
+            {view === "keypad" ? (t("call.keypad") || "Clavier") : view === "transfer" ? (t("call.transfer") || "Transférer") : (isIncoming ? (t("call.incomingLabel") || "Entrant") : (isOutgoingRinging || isEarlyMedia) ? (t("call.outgoingLabel") || "Sortant") : (t("call.inProgressLabel") || "En cours"))}
           </div>
           <button onClick={() => setDiagOpen(true)} aria-label="Diagnostic" className="p-2 rounded-full" style={{ background: "rgba(255,255,255,0.08)" }}>
             <Activity className="w-4 h-4" />
@@ -383,7 +379,8 @@ export default function PpActiveCallScreen({
           </div>
         )}
 
-        {/* Action bar (main view) — market-standard: all controls visible together */}
+        {/* Action bar (main view) — market-standard: all controls visible together.
+             Shown during ringing-out, early-media, active, and held states. */}
         {view === "main" && !isIncoming && (
           <div className="shrink-0 px-4 pb-6">
             <div

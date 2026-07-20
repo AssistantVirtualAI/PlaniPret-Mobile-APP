@@ -29,7 +29,7 @@ const IS_ANDROID: boolean = (() => {
 })();
 
 export type PpSipStatus = "idle" | "connecting" | "connected" | "registered" | "disconnected" | "error";
-export type PpCallState = "idle" | "ringing-out" | "ringing-in" | "active" | "held" | "ended";
+export type PpCallState = "idle" | "ringing-out" | "early-media" | "ringing-in" | "active" | "held" | "ended";
 
 export interface PpSipConfig {
   extension: string;
@@ -257,7 +257,22 @@ class PpSipProvider {
       speaker: false, // Always start with earpiece — user must explicitly enable speaker
     });
 
-    session.on("progress", () => { if (!incoming) this.update({ callState: "ringing-out" }); });
+    session.on("progress", (e: any) => {
+      if (!incoming) {
+        // Detect SIP 183 Session Progress with SDP (early media / voicemail).
+        // When the PBX sends a 183 with an SDP body, the remote party has already
+        // answered the media path (e.g. voicemail greeting). Switch to
+        // "early-media" so the ringback tone is stopped and the remote audio
+        // stream is played instead.
+        const statusCode = e?.response?.status_code ?? e?.message?.status_code ?? 0;
+        const hasSdp = !!(e?.response?.body || e?.message?.body);
+        if (statusCode === 183 && hasSdp) {
+          this.update({ callState: "early-media" });
+        } else {
+          this.update({ callState: "ringing-out" });
+        }
+      }
+    });
     session.on("confirmed", () => {
       this.update({ callState: "active", startedAt: Date.now() });
       // Ensure audio is routed to earpiece (not speaker) when call connects.
