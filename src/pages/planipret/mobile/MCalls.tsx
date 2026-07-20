@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { motion } from "framer-motion";
 import { useOutletContext, useSearchParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
@@ -7,6 +7,7 @@ import {
   Search, X, Phone, PhoneIncoming, PhoneOutgoing, PhoneMissed, PhoneOff, Copy,
   Bot, ChevronDown, ChevronUp, Pause, Play, Mic, MicOff, ArrowRightLeft, Loader2,
   Check, Sparkles, RefreshCw, Voicemail as VmIcon, Save, Trash2, FileText, Download,
+  MessageSquare, UserPlus,
 } from "lucide-react";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
 import { TEMP_COLORS, TEMP_EMOJI, TEMP_LABEL, tempBorder, callbackDelayToDate, delayLabel, type LeadTemp } from "@/components/planipret/leadHelpers";
@@ -661,8 +662,11 @@ function CallRow({ call, onTap, onCall, showCallBtn }: { call: Call; onTap: () =
   const showNumberSub = !!numberSub && numberSub !== label;
   const st = statusInfo(call, lang as "fr" | "en");
   const hasAi = !!call.ai_summary;
+  const [addContactOpen, setAddContactOpen] = React.useState(false);
+  const [smsOpen, setSmsOpen] = React.useState(false);
 
   return (
+    <>
     <li className="list-none">
       <div
         className="rounded-2xl px-3 py-3 flex items-center gap-3 active:opacity-80"
@@ -714,6 +718,18 @@ function CallRow({ call, onTap, onCall, showCallBtn }: { call: Call; onTap: () =
               <Bot className="w-3.5 h-3.5" />
             </span>
           )}
+          {/* Bouton SMS */}
+          {num && (
+            <button
+              onClick={(e) => { e.stopPropagation(); setSmsOpen(true); }}
+              className="rounded-full flex items-center justify-center"
+              style={{ width: 36, height: 36, background: "rgba(46,155,220,0.10)", color: "var(--pp-brand-accent)" }}
+              aria-label="SMS"
+            >
+              <MessageSquare className="w-4 h-4" />
+            </button>
+          )}
+          {/* Bouton Appeler */}
           <button
             onClick={onCall}
             className="rounded-full flex items-center justify-center"
@@ -727,9 +743,157 @@ function CallRow({ call, onTap, onCall, showCallBtn }: { call: Call; onTap: () =
           >
             <Phone className="w-4 h-4" />
           </button>
+          {/* Bouton Ajouter contact */}
+          {num && (
+            <button
+              onClick={(e) => { e.stopPropagation(); setAddContactOpen(true); }}
+              className="rounded-full flex items-center justify-center"
+              style={{ width: 36, height: 36, background: "rgba(34,197,94,0.12)", color: "var(--pp-success)" }}
+              aria-label="Ajouter aux contacts"
+            >
+              <UserPlus className="w-4 h-4" />
+            </button>
+          )}
         </div>
       </div>
     </li>
+
+    {/* Sheet SMS depuis l'historique */}
+    {smsOpen && num && (
+      <CallHistorySmsSheet
+        to={num}
+        contactName={label !== num ? label : undefined}
+        onClose={() => setSmsOpen(false)}
+      />
+    )}
+
+    {/* Sheet Ajouter contact depuis l'historique */}
+    {addContactOpen && num && (
+      <AddContactFromCallSheet
+        phone={num}
+        suggestedName={label !== num ? label : ""}
+        onClose={() => setAddContactOpen(false)}
+      />
+    )}
+    </>
+  );
+}
+
+/** Sheet SMS rapide depuis l'historique d'appels */
+function CallHistorySmsSheet({ to, contactName, onClose }: { to: string; contactName?: string; onClose: () => void }) {
+  const [msg, setMsg] = React.useState("");
+  const [sending, setSending] = React.useState(false);
+  const name = contactName || to;
+
+  const send = async () => {
+    if (!msg.trim()) return;
+    setSending(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("pp-ns-sms", {
+        body: { action: "send", to, message: msg.trim() },
+      });
+      if (error) throw error;
+      if ((data as any)?.error) throw new Error((data as any).error);
+      toast.success("SMS envoyé");
+      onClose();
+    } catch (e: any) {
+      toast.error("Échec envoi SMS", { description: e?.message });
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+      <div className="w-full rounded-t-3xl p-4"
+        style={{ background: "var(--pp-bg-base)", border: "1px solid var(--pp-bg-border-2)", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 16px)" }}
+        onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-base font-bold" style={{ color: "var(--pp-text-primary)" }}>SMS à {name}</div>
+          <button onClick={onClose} style={{ color: "var(--pp-text-muted)" }}><X className="w-5 h-5" /></button>
+        </div>
+        <textarea
+          value={msg}
+          onChange={(e) => setMsg(e.target.value)}
+          placeholder="Votre message..."
+          rows={4}
+          className="w-full px-3 py-2 rounded-lg text-sm outline-none resize-none"
+          style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
+        />
+        <button onClick={send} disabled={sending || !msg.trim()}
+          className="w-full mt-3 py-2.5 rounded-lg text-white font-semibold text-sm disabled:opacity-50"
+          style={{ background: "var(--pp-brand-accent)" }}>
+          {sending ? <Loader2 className="w-4 h-4 animate-spin mx-auto" /> : "Envoyer"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Sheet Ajouter un contact depuis l'historique d'appels */
+function AddContactFromCallSheet({ phone, suggestedName, onClose }: { phone: string; suggestedName: string; onClose: () => void }) {
+  const [form, setForm] = React.useState({
+    first_name: suggestedName.split(" ")[0] ?? "",
+    last_name: suggestedName.split(" ").slice(1).join(" ") ?? "",
+    phone,
+    email: "",
+    company: "",
+  });
+  const [saving, setSaving] = React.useState(false);
+
+  const save = async () => {
+    if (!form.first_name && !form.last_name && !form.phone) {
+      toast.error("Prénom, nom ou téléphone requis");
+      return;
+    }
+    setSaving(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("pp-ns-contacts", {
+        body: { action: "create", ...form },
+      });
+      if (error) throw error;
+      if ((data as any)?.error) throw new Error((data as any).error);
+      toast.success("Contact ajouté");
+      onClose();
+    } catch (e: any) {
+      toast.error("Échec ajout contact", { description: e?.message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+      <div className="w-full rounded-t-3xl p-4"
+        style={{ background: "var(--pp-bg-base)", border: "1px solid var(--pp-bg-border-2)", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 16px)" }}
+        onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-base font-bold" style={{ color: "var(--pp-text-primary)" }}>Ajouter aux contacts</div>
+          <button onClick={onClose} style={{ color: "var(--pp-text-muted)" }}><X className="w-5 h-5" /></button>
+        </div>
+        <div className="space-y-2">
+          {([
+            ["first_name", "Prénom"],
+            ["last_name", "Nom"],
+            ["phone", "Téléphone"],
+            ["email", "Email"],
+            ["company", "Société"],
+          ] as const).map(([k, label]) => (
+            <input key={k}
+              value={(form as any)[k]}
+              onChange={(e) => setForm((f) => ({ ...f, [k]: e.target.value }))}
+              placeholder={label}
+              className="w-full px-3 py-2 rounded-lg text-sm outline-none"
+              style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }} />
+          ))}
+        </div>
+        <button onClick={save} disabled={saving}
+          className="w-full mt-4 py-2.5 rounded-lg text-white font-semibold text-sm disabled:opacity-50"
+          style={{ background: "var(--pp-success)" }}>
+          {saving ? <Loader2 className="w-4 h-4 animate-spin mx-auto" /> : "Enregistrer le contact"}
+        </button>
+      </div>
+    </div>
   );
 }
 

@@ -606,6 +606,12 @@ export default function MContacts() {
           contact={selected}
           onClose={() => setSelected(null)}
           onCall={(p) => { setSelected(null); openDialer(p); }}
+          onEdited={(updated) => {
+            setSelected(updated);
+            // Mettre à jour la liste locale
+            if (tab === "personal") setPersonal((prev) => prev.map((c) => (c.id === updated.id || c.phone === updated.phone) ? { ...c, ...updated } : c));
+            if (tab === "directory") setDirectory((prev) => prev.map((c) => (c.id === updated.id || c.extension === updated.extension) ? { ...c, ...updated } : c));
+          }}
         />
       )}
 
@@ -646,9 +652,9 @@ function CreateContactSheet({ onClose, onCreated }: { onClose: () => void; onCre
   };
 
   return (
-    <div className="absolute inset-0 z-40 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
       <div className="w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl p-4"
-        style={{ background: "var(--pp-bg-base)", border: "1px solid var(--pp-bg-border-2)" }}
+        style={{ background: "var(--pp-bg-base)", border: "1px solid var(--pp-bg-border-2)", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 16px)" }}
         onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between mb-3">
           <div className="text-lg font-bold" style={{ color: "var(--pp-text-primary)" }}>
@@ -683,9 +689,92 @@ function CreateContactSheet({ onClose, onCreated }: { onClose: () => void; onCre
 }
 
 
+/**
+ * Feuille de modification d'un contact existant (personal/native/directory)
+ */
+function EditContactSheet({ contact, onClose, onSaved }: { contact: any; onClose: () => void; onSaved: (updated: any) => void }) {
+  const { t } = useMplanipretLang();
+  const [form, setForm] = useState({
+    first_name: contact.first_name ?? contact.name?.split(" ")[0] ?? "",
+    last_name: contact.last_name ?? (contact.name?.split(" ").slice(1).join(" ") ?? ""),
+    phone: contact.phone ?? contact.cell_phone ?? contact.mobile ?? "",
+    email: contact.email ?? "",
+    company: contact.company ?? "",
+    extension: contact.extension ?? "",
+  });
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      // Contacts natifs du téléphone (source="native") — mise à jour locale
+      if (contact.source === "native" || contact.contactId) {
+        // On ne peut pas modifier les contacts natifs via JS sans plugin natif
+        // On crée plutôt une copie dans le backend NS
+        const { data, error } = await supabase.functions.invoke("pp-ns-contacts", {
+          body: { action: "create", ...form },
+        });
+        if (error) throw error;
+        if ((data as any)?.error) throw new Error((data as any).error);
+        toast.success("Contact enregistré dans l'annuaire");
+        onSaved({ ...contact, ...form });
+      } else {
+        // Contact NS backend — mise à jour
+        const id = contact.id || contact.ns_id;
+        const { data, error } = await supabase.functions.invoke("pp-ns-contacts", {
+          body: { action: id ? "update" : "create", id, ...form },
+        });
+        if (error) throw error;
+        if ((data as any)?.error) throw new Error((data as any).error);
+        toast.success(t("contacts.updated") || "Contact mis à jour");
+        onSaved({ ...contact, ...form });
+      }
+    } catch (e: any) {
+      toast.error(t("contacts.updateFailed") || "Échec mise à jour", { description: e?.message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center bg-black/70 backdrop-blur-sm" onClick={onClose}>
+      <div className="w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl p-4"
+        style={{ background: "var(--pp-bg-base)", border: "1px solid var(--pp-bg-border-2)", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 16px)" }}
+        onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-3">
+          <div className="text-lg font-bold" style={{ color: "var(--pp-text-primary)" }}>Modifier le contact</div>
+          <button onClick={onClose} style={{ color: "var(--pp-text-muted)" }}><X className="w-5 h-5" /></button>
+        </div>
+        <div className="space-y-2">
+          {([
+            ["first_name", t("contacts.firstName") || "Prénom"],
+            ["last_name", t("contacts.lastName") || "Nom"],
+            ["phone", t("contacts.phoneLabel") || "Téléphone"],
+            ["email", "Email"],
+            ["company", t("contacts.company") || "Société"],
+            ["extension", t("contacts.extension") || "Extension"],
+          ] as const).map(([k, label]) => (
+            <input key={k}
+              value={(form as any)[k]}
+              onChange={(e) => setForm((f) => ({ ...f, [k]: e.target.value }))}
+              placeholder={label}
+              className="w-full px-3 py-2 rounded-lg text-sm outline-none"
+              style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }} />
+          ))}
+        </div>
+        <button onClick={save} disabled={saving}
+          className="w-full mt-4 py-2.5 rounded-lg text-white font-semibold text-sm disabled:opacity-50"
+          style={{ background: "var(--pp-brand-accent)" }}>
+          {saving ? <Loader2 className="w-4 h-4 animate-spin mx-auto" /> : (t("common.save") || "Enregistrer")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ContactDetailSheet({
-  contact, onClose, onCall,
-}: { contact: any; onClose: () => void; onCall: (phone: string) => void }) {
+  contact, onClose, onCall, onEdited,
+}: { contact: any; onClose: () => void; onCall: (phone: string) => void; onEdited?: (updated: any) => void }) {
   const { t, lang } = useMplanipretLang();
   const [history, setHistory] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -694,6 +783,7 @@ function ContactDetailSheet({
   const [smsOpen, setSmsOpen] = useState(false);
   const [emailOpen, setEmailOpen] = useState(false);
   const [apptOpen, setApptOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
 
   const name = `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim()
     || contact.name || contact.display_name || contact.phone || contact.email || "Contact";
@@ -774,10 +864,10 @@ function ContactDetailSheet({
   };
 
   return (
-    <div className="absolute inset-0 z-40 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
       <div
         className="w-full sm:max-w-md max-h-[88vh] overflow-y-auto rounded-t-3xl sm:rounded-3xl p-4"
-        style={{ background: "var(--pp-bg-base)", border: "1px solid var(--pp-bg-border-2)" }}
+        style={{ background: "var(--pp-bg-base)", border: "1px solid var(--pp-bg-border-2)", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 16px)" }}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between mb-3">
@@ -796,16 +886,16 @@ function ContactDetailSheet({
           <button onClick={onClose} className="p-1" style={{ color: "var(--pp-text-muted)" }} aria-label={t("common.close")}><X className="w-5 h-5" /></button>
         </div>
 
-        {/* Quick actions — endpoints:
-              call → openDialer (softphone) · SMS → pp-ns-sms(send) ·
-              Email → ms365-actions(send_email) · Tâche → maestro-task ·
-              RDV → maestro-appointment */}
-        <div className="grid grid-cols-5 gap-2 mb-4">
+        {/* Quick actions */}
+        <div className="grid grid-cols-3 gap-2 mb-2">
           <QuickAction icon={<Phone className="w-4 h-4" />} label={t("common.call")} onClick={() => phone && onCall(phone)} disabled={!phone} />
           <QuickAction icon={<MessageSquare className="w-4 h-4" />} label="SMS" onClick={openSms} disabled={!smsTarget} />
           <QuickAction icon={<Mail className="w-4 h-4" />} label="Email" onClick={openEmail} disabled={!email} />
+        </div>
+        <div className="grid grid-cols-3 gap-2 mb-4">
           <QuickAction icon={creatingTask ? <Loader2 className="w-4 h-4 animate-spin" /> : <ListChecks className="w-4 h-4" />} label="Tâche" onClick={createTask} disabled={creatingTask || !maestroId} />
           <QuickAction icon={<Calendar className="w-4 h-4" />} label="RDV" onClick={openAppt} disabled={!maestroId} />
+          <QuickAction icon={<UserCog className="w-4 h-4" />} label="Modifier" onClick={() => setEditOpen(true)} />
         </div>
 
 
@@ -887,6 +977,14 @@ function ContactDetailSheet({
           maestroClientId={maestroId}
           contactName={name}
           onClose={() => setApptOpen(false)}
+        />
+      )}
+
+      {editOpen && (
+        <EditContactSheet
+          contact={contact}
+          onClose={() => setEditOpen(false)}
+          onSaved={(updated) => { setEditOpen(false); onEdited?.(updated); }}
         />
       )}
     </div>
