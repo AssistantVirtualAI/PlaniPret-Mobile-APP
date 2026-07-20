@@ -20,12 +20,13 @@ let bootStarted = false;
 
 /** Prefetch critical data for a page and store in ppPageCache. */
 async function prefetchPageData(userId: string): Promise<void> {
-  // Run all data fetches in parallel — each one writes to ppPageCache.
+  // Run all data fetches in parallel — each one writes to ppPageCache / sessionStorage.
   await Promise.allSettled([
     prefetchCallsData(userId),
     prefetchMessagesData(userId),
     prefetchVoicemailData(userId),
     prefetchNotificationsData(userId),
+    prefetchSmsThreads(userId),
     // Warm contacts cache so the transfer list appears instantly during a call.
     Promise.resolve(prefetchPpContacts(["list", "shared", "directory"])),
   ]);
@@ -106,6 +107,23 @@ export function bootPreloader(userId?: string): void {
 
     delay(() => { void prefetchPageData(userId); });
   }
+}
+
+/** Précharger les threads SMS dans sessionStorage pour affichage instantané */
+async function prefetchSmsThreads(userId: string): Promise<void> {
+  const key = `pp.sms.threads.${userId}`;
+  try {
+    const raw = sessionStorage.getItem(key);
+    if (raw) {
+      const { at } = JSON.parse(raw);
+      if (Date.now() - at < 90_000) return; // encore frais
+    }
+  } catch {}
+  try {
+    const res = await supabase.functions.invoke("pp-ns-sms", { body: { action: "threads" } });
+    const threads = (res.data as any)?.threads ?? [];
+    sessionStorage.setItem(key, JSON.stringify({ data: threads, at: Date.now() }));
+  } catch { /* silent */ }
 }
 
 /** Re-run data prefetch (e.g., after focus/resume). Chunks are already warm. */

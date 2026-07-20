@@ -199,23 +199,33 @@ export default function MCalls() {
     if (!userId) return;
     setLoading(true);
     try {
-      // 1) NS-API live CDRs via pp-ns-cdr (segmenté par extension côté serveur)
-      const { data: ns, error: nsErr } = await supabase.functions.invoke("pp-ns-cdr", {
-        body: { action: "list", limit: 50, offset: 0 },
-      });
-      if (nsErr) throw nsErr;
-      const nsAny = ns as any;
-      setDegraded({ active: !!nsAny?.degraded, reason: nsAny?.reason, reopens_at: nsAny?.reopens_at ?? null });
-      const items: any[] = nsAny?.items ?? [];
-
-      // 2) Données enrichies locales (transcripts, AI, lead scoring)
+      // Charger les données locales Supabase EN PREMIER pour affichage instantané
       let localQuery: any = supabase
         .from("planipret_phone_calls")
         .select("*")
         .order("started_at", { ascending: false })
         .limit(200);
       if (phoneCallScopeFilter) localQuery = localQuery.or(phoneCallScopeFilter);
-      const { data: local } = await localQuery;
+
+      // Lancer NS-CDR et Supabase local EN PARALLÈLE
+      const [nsResult, localResult] = await Promise.allSettled([
+        supabase.functions.invoke("pp-ns-cdr", { body: { action: "list", limit: 50, offset: 0 } }),
+        localQuery,
+      ]);
+
+      // Afficher les données locales immédiatement si NS tarde
+      const local = localResult.status === "fulfilled" ? localResult.value.data : null;
+      if (local && local.length > 0 && nsResult.status === "pending") {
+        setCalls((local ?? []) as Call[]);
+        setLoading(false);
+      }
+
+      if (nsResult.status === "rejected") throw nsResult.reason;
+      const { data: ns, error: nsErr } = nsResult.value;
+      if (nsErr) throw nsErr;
+      const nsAny = ns as any;
+      setDegraded({ active: !!nsAny?.degraded, reason: nsAny?.reason, reopens_at: nsAny?.reopens_at ?? null });
+      const items: any[] = nsAny?.items ?? [];
       const byNsId = new Map<string, any>();
       (local ?? []).forEach((r: any) => { if (r.ns_call_id) byNsId.set(r.ns_call_id, r); });
 

@@ -254,9 +254,9 @@ function SmsList({ profile, openDialer, registerRefresh }: any) {
     document.querySelector<HTMLInputElement>('[data-sms-recipient-search="true"]')?.focus({ preventScroll: true });
   };
 
-  const load = async () => {
+  const load = async (silent = false) => {
     if (!profile?.user_id) return;
-    setLoading(true);
+    if (!silent) setLoading(true);
     setError(null);
     try {
       const { data, error: err } = await supabase.functions.invoke("pp-ns-sms", {
@@ -266,6 +266,8 @@ function SmsList({ profile, openDialer, registerRefresh }: any) {
       const list: NsThread[] = (data as any)?.threads ?? [];
       list.sort((a, b) => +new Date(threadTime(b)) - +new Date(threadTime(a)));
       setThreads(list);
+      // Sauvegarder dans sessionStorage pour affichage instantané au prochain montage
+      try { sessionStorage.setItem(`pp.sms.threads.${profile.user_id}`, JSON.stringify({ data: list, at: Date.now() })); } catch {}
     } catch (e: any) {
       console.error("[pp-ns-sms] threads", e);
       setError(e?.message ?? t("messages.sendFailed"));
@@ -275,8 +277,25 @@ function SmsList({ profile, openDialer, registerRefresh }: any) {
     }
   };
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [profile?.user_id]);
-  useEffect(() => { registerRefresh(load); return () => registerRefresh(null); /* eslint-disable-next-line */ }, [profile?.user_id]);
+  // Afficher le cache instantanément au montage, puis rafraîchir en arrière-plan
+  useEffect(() => {
+    if (!profile?.user_id) return;
+    try {
+      const raw = sessionStorage.getItem(`pp.sms.threads.${profile.user_id}`);
+      if (raw) {
+        const { data: cached, at } = JSON.parse(raw);
+        if (cached && Array.isArray(cached) && Date.now() - at < 600_000) {
+          setThreads(cached);
+          setLoading(false);
+          // Rafraîchir en arrière-plan
+          void load(true);
+          return;
+        }
+      }
+    } catch {}
+    void load();
+  /* eslint-disable-next-line */ }, [profile?.user_id]);
+  useEffect(() => { registerRefresh(() => load()); return () => registerRefresh(null); /* eslint-disable-next-line */ }, [profile?.user_id]);
   useEffect(() => {
     const to = searchParams.get("to")?.trim();
     if (to) openSmsThread({ id: "", number: to }, false);
@@ -900,20 +919,42 @@ export function EmailsList({ profile }: { profile: any }) {
   const [searchActive, setSearchActive] = useState(false);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
 
-  const load = async (targetFolder?: EmailFolder, search?: string) => {
+  const emailCacheKey = (f: EmailFolder) => `pp.emails.${profile?.user_id ?? ""}.${f}`;
+
+  const load = async (targetFolder?: EmailFolder, search?: string, silent = false) => {
     if (!profile?.ms365_access_token) { setState("no_m365"); return; }
-    setState((s) => (s === "ready" ? s : "loading"));
     const f = targetFolder ?? folder;
+    // Afficher le cache instantanément si disponible
+    if (!silent && !search) {
+      try {
+        const raw = sessionStorage.getItem(emailCacheKey(f));
+        if (raw) {
+          const { data: cached, at } = JSON.parse(raw);
+          if (cached && Array.isArray(cached) && Date.now() - at < 300_000) {
+            setEmails(cached);
+            setState("ready");
+            // Rafraîchir en arrière-plan silencieusement
+            void load(f, undefined, true);
+            return;
+          }
+        }
+      } catch {}
+    }
+    if (!silent) setState((s) => (s === "ready" ? s : "loading"));
     const payload: any = { top: PAGE_SIZE, skip: 0, folder: f };
     if (search) payload.search = search;
     const { data, error } = await supabase.functions.invoke("ms365-actions", {
       body: { action: "read_emails", payload },
     });
-    if (error || !(data as any)?.success) { setState("error"); return; }
+    if (error || !(data as any)?.success) { if (!silent) setState("error"); return; }
     const list = ((data as any).emails ?? (data as any).messages ?? []) as any[];
     setEmails(list);
     setHasMore(Boolean((data as any).hasMore) && list.length === PAGE_SIZE);
     setState("ready");
+    // Sauvegarder dans le cache
+    if (!search) {
+      try { sessionStorage.setItem(emailCacheKey(f), JSON.stringify({ data: list, at: Date.now() })); } catch {}
+    }
   };
 
   const loadMore = async () => {

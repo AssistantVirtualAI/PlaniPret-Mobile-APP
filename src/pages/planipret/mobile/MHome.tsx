@@ -72,15 +72,24 @@ export default function MHome() {
   });
   useEffect(() => { try { localStorage.setItem("pp.mobile.period.v2", period); } catch {} }, [period]);
 
-  const [stats, setStats] = useState({ calls: 0, missed: 0, sms: 0, voicemails: 0, meetings: 0, hotLeads: 0, tasks: 0, outbound: 0 });
-  const [recent, setRecent] = useState<any[]>([]);
-  const [hotLeads, setHotLeads] = useState<any[]>([]);
-  const [dueReminders, setDueReminders] = useState<any[]>([]);
-  const [meetings, setMeetings] = useState<any[]>([]);
+  // Lire le cache sessionStorage pour affichage instantané au montage
+  const _homeCache = (() => {
+    try {
+      const raw = sessionStorage.getItem(`pp.home.stats.${profile?.user_id ?? ""}.${period}`);
+      if (raw) { const p = JSON.parse(raw); if (Date.now() - p.at < 600_000) return p.data; }
+    } catch {}
+    return null;
+  })();
+
+  const [stats, setStats] = useState(_homeCache?.stats ?? { calls: 0, missed: 0, sms: 0, voicemails: 0, meetings: 0, hotLeads: 0, tasks: 0, outbound: 0 });
+  const [recent, setRecent] = useState<any[]>(_homeCache?.recent ?? []);
+  const [hotLeads, setHotLeads] = useState<any[]>(_homeCache?.hotLeads ?? []);
+  const [dueReminders, setDueReminders] = useState<any[]>(_homeCache?.dueReminders ?? []);
+  const [meetings, setMeetings] = useState<any[]>(_homeCache?.meetings ?? []);
   const [msMeetings, setMsMeetings] = useState<any[]>([]);
   const [msCalendarLoading, setMsCalendarLoading] = useState(false);
   const [msCalendarError, setMsCalendarError] = useState<string | null>(null);
-  const [statsLoading, setStatsLoading] = useState(true);
+  const [statsLoading, setStatsLoading] = useState(!_homeCache);
   const [brief, setBrief] = useState<any | null>(null);
   const [briefLoading, setBriefLoading] = useState(false);
   const [briefErr, setBriefErr] = useState<string | null>(null);
@@ -212,20 +221,32 @@ export default function MHome() {
     }
     setMsMeetings(microsoftEvents);
 
-    setStats({
+    const newStats = {
       calls: liveCallsInPeriod.length || callsRes.count || 0,
       missed: liveCallsInPeriod.length ? liveCallsInPeriod.filter((c: any) => nsCallDirection(c) === "missed").length : (missedRes.count ?? 0),
       sms: liveSmsThreads.length ? liveSmsThreads.reduce((sum: number, th: any) => sum + nsSmsUnread(th), 0) : (smsRes.count ?? 0),
-      voicemails: liveVmItems.length ? liveVmUnread : (vmRes.count ?? 0),
+      voicemails: liveVmItems.length ? liveVmItems.filter((v: any) => !v.read && v.folder === "inbox").length : (vmRes.count ?? 0),
       meetings: (meetingsRes.data ?? []).length + microsoftEvents.length,
       hotLeads: hotCountRes.count ?? 0,
       tasks: tasksCountRes.count ?? 0,
       outbound: outboundRes.count ?? 0,
-    });
-    setRecent(liveRecent.length ? liveRecent : (recentRes.data ?? []));
-    setHotLeads(hotRes.data ?? []);
-    setDueReminders(remRes.data ?? []);
-    setMeetings(meetingsRes.data ?? []);
+    };
+    const newRecent = liveRecent.length ? liveRecent : (recentRes.data ?? []);
+    const newHotLeads = hotRes.data ?? [];
+    const newDueReminders = remRes.data ?? [];
+    const newMeetings = meetingsRes.data ?? [];
+    setStats(newStats);
+    setRecent(newRecent);
+    setHotLeads(newHotLeads);
+    setDueReminders(newDueReminders);
+    setMeetings(newMeetings);
+    // Sauvegarder dans le cache sessionStorage pour affichage instantané au prochain montage
+    try {
+      sessionStorage.setItem(
+        `pp.home.stats.${profile?.user_id ?? ""}.${period}`,
+        JSON.stringify({ data: { stats: newStats, recent: newRecent, hotLeads: newHotLeads, dueReminders: newDueReminders, meetings: newMeetings }, at: Date.now() })
+      );
+    } catch {}
     } catch (e) {
       console.error("[MHome] loadStats failed", e);
     } finally {
@@ -246,7 +267,15 @@ export default function MHome() {
     setBrief(data);
   };
 
-  useEffect(() => { loadStats(); loadBrief(false); /* eslint-disable-next-line */ }, [profile?.user_id, period]);
+  useEffect(() => {
+    // Si cache disponible, afficher immédiatement et rafraîchir en arrière-plan
+    if (_homeCache) {
+      void loadStats();
+    } else {
+      loadStats();
+    }
+    loadBrief(false);
+  /* eslint-disable-next-line */ }, [profile?.user_id, period]);
   useEffect(() => {
     registerRefresh(async () => { await Promise.all([loadStats(), loadBrief(true)]); });
     return () => registerRefresh(null);

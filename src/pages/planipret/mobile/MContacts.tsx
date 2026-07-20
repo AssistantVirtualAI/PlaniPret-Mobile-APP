@@ -154,13 +154,19 @@ export default function MContacts() {
   const load = useCallback(async (which: Tab, opts: { force?: boolean; limit?: number; background?: boolean } = {}) => {
     if (which === "favorites") return; // local only
     if (!opts.force && loadedTabsRef.current.has(which)) return;
-    // If the shared cache already has data for this action, skip the spinner
-    // and refresh in the background so the page renders instantly.
+    // Si le cache a déjà des données, on les affiche IMMÉDIATEMENT et on rafraîchit en arrière-plan
     const cachedHint = which === "directory" ? peekPpContacts("directory") : peekPpContacts("list");
+    if (cachedHint && cachedHint.length > 0) {
+      // Afficher les données du cache instantanément
+      if (which === "directory") setDirectory(cachedHint as any[]);
+      else setPersonal((cachedHint as any[]).map(normalizeContact));
+      loadedTabsRef.current.add(which);
+    }
     const runBackground = opts.background || (!opts.force && !!cachedHint);
     if (!runBackground) setLoadingTab(which);
     setLoadError(null);
     try {
+      // Import statique — plus de dynamic import() qui ajoute ~50ms de latence
       const { getPpContacts } = await import("@/lib/ppContactsCache");
       if (which === "directory") {
         const rows = await getPpContacts("directory", { limit: opts.limit ?? 500, force: opts.force });
@@ -194,19 +200,20 @@ export default function MContacts() {
 
   useEffect(() => {
     if (tab === "favorites") return;
-    void load(tab, { limit: 120 });
-    const id = window.setTimeout(() => { void load(tab, { force: true, limit: 500, background: true }); }, 700);
+    // Chargement immédiat depuis le cache, puis refresh en arrière-plan
+    void load(tab, { limit: 200 });
+    const id = window.setTimeout(() => { void load(tab, { force: true, limit: 500, background: true }); }, 1500);
     return () => window.clearTimeout(id);
   }, [tab, load]);
 
-  // Prefetch personal + directory in parallel after first paint so subsequent
-  // tab switches render from memory. Dedup + TTL handled by ppContactsCache.
+  // Préchargement agressif : les deux onglets en parallèle dès le montage
   useEffect(() => {
+    // Warm immédiat du cache contacts
     prefetchPpContacts(["list", "directory"], 500);
-    const quick = window.setTimeout(() => { void load("directory", { limit: 120, background: true }); }, 250);
-    const full = window.setTimeout(() => { void load("directory", { force: true, limit: 500, background: true }); }, 1000);
-    return () => { window.clearTimeout(quick); window.clearTimeout(full); };
-  }, [load]);
+    // Charger directory en arrière-plan immédiatement (pas de délai)
+    void load("directory", { limit: 200, background: true });
+    void load("personal", { limit: 200, background: true });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Contacts permission: show the request on the Contacts page, then trigger the
   // native prompt from an explicit tap. If denied, keep a clear recovery path.
@@ -478,7 +485,26 @@ export default function MContacts() {
         </div>
       )}
 
-      {loading && <div className="text-center py-8 text-sm" style={{ color: "var(--pp-text-muted)" }}>{t("common.loading")}</div>}
+      {loading && list.length === 0 && (
+        <div className="space-y-2">
+          {[...Array(6)].map((_, i) => (
+            <div key={i} className="pp-card flex items-center gap-3" style={{ padding: 12, opacity: 1 - i * 0.1 }}>
+              <div className="rounded-full shrink-0" style={{ width: 44, height: 44, background: "var(--pp-bg-elevated)", animation: "pulse 1.5s ease-in-out infinite" }} />
+              <div className="flex-1 space-y-2">
+                <div className="rounded" style={{ height: 14, width: `${60 + (i % 3) * 15}%`, background: "var(--pp-bg-elevated)", animation: "pulse 1.5s ease-in-out infinite" }} />
+                <div className="rounded" style={{ height: 11, width: `${40 + (i % 2) * 20}%`, background: "var(--pp-bg-elevated)", animation: "pulse 1.5s ease-in-out infinite" }} />
+              </div>
+              <div className="rounded-full shrink-0" style={{ width: 32, height: 32, background: "var(--pp-bg-elevated)", animation: "pulse 1.5s ease-in-out infinite" }} />
+              <div className="rounded-full shrink-0" style={{ width: 32, height: 32, background: "var(--pp-bg-elevated)", animation: "pulse 1.5s ease-in-out infinite" }} />
+            </div>
+          ))}
+        </div>
+      )}
+      {loading && list.length > 0 && (
+        <div className="flex items-center gap-2 px-1 pb-1" style={{ color: "var(--pp-text-faint)", fontSize: 11 }}>
+          <Loader2 className="w-3 h-3 animate-spin" /> Mise à jour...
+        </div>
+      )}
 
       {!loading && list.length === 0 && (
         <div className="text-center py-8 pp-card" style={{ padding: 32 }}>
