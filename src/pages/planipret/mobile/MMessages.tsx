@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { useOutletContext, useSearchParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
@@ -1159,7 +1159,7 @@ export function EmailsList({ profile }: { profile: any }) {
           <EmptyState Icon={FolderIcon} title={FOLDER_LABELS[folder]} sub="Aucun courriel dans ce dossier." />
         ) : (
           <>
-            {/* Outlook-style email rows */}
+            {/* Outlook-style email rows with swipe gestures */}
             <ul>
               {emails!.map((e: any, i: number) => {
                 const senderName = folder === "sent"
@@ -1171,61 +1171,70 @@ export function EmailsList({ profile }: { profile: any }) {
                 const unread = folder !== "sent" && folder !== "drafts" && e.isRead === false;
                 const flagged = e.flag?.flagStatus === "flagged";
                 const initials = avatarInitials(senderName);
+
+                const handleDelete = async () => {
+                  // Optimistic remove
+                  setEmails((prev) => prev ? prev.filter((x) => x.id !== e.id) : prev);
+                  const { data, error } = await supabase.functions.invoke("ms365-actions", {
+                    body: { action: "delete_email", payload: { message_id: e.id } },
+                  });
+                  if (error || !(data as any)?.success) {
+                    toast.error((data as any)?.error ?? error?.message ?? "Erreur suppression");
+                    load(folder, undefined, false, true); // Recharger si erreur
+                  } else {
+                    toast.success("Supprimé");
+                  }
+                };
+
+                const handleArchive = async () => {
+                  setEmails((prev) => prev ? prev.filter((x) => x.id !== e.id) : prev);
+                  const { data, error } = await supabase.functions.invoke("ms365-actions", {
+                    body: { action: "archive_email", payload: { message_id: e.id } },
+                  });
+                  if (error || !(data as any)?.success) {
+                    toast.error((data as any)?.error ?? error?.message ?? "Erreur archivage");
+                    load(folder, undefined, false, true);
+                  } else {
+                    toast.success("Archivé");
+                  }
+                };
+
+                const handleFlag = async () => {
+                  const isFlagged = e.flag?.flagStatus === "flagged";
+                  // Optimistic update
+                  setEmails((prev) => prev ? prev.map((x) =>
+                    x.id === e.id ? { ...x, flag: { flagStatus: isFlagged ? "notFlagged" : "flagged" } } : x
+                  ) : prev);
+                  const { data, error } = await supabase.functions.invoke("ms365-actions", {
+                    body: { action: "flag_email", payload: { message_id: e.id, unflag: isFlagged } },
+                  });
+                  if (error || !(data as any)?.success) {
+                    toast.error((data as any)?.error ?? error?.message ?? "Erreur drapeau");
+                    load(folder, undefined, false, true);
+                  } else {
+                    toast.success(isFlagged ? "Drapeau retiré" : "Drapeau ajouté");
+                  }
+                };
+
                 return (
-                  <li key={e.id ?? i}
-                    style={{
-                      borderBottom: "1px solid var(--pp-bg-border)",
-                      background: unread ? "rgba(46,155,220,0.04)" : "transparent",
-                    }}
-                  >
-                    <button
-                      onClick={() => setActive(e)}
-                      className="w-full flex items-start gap-3 px-4 py-3 active:opacity-70 text-left"
-                    >
-                      {/* Avatar circle */}
-                      <div
-                        className="w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold flex-shrink-0 mt-0.5"
-                        style={{
-                          background: unread ? "var(--pp-brand-accent)" : "var(--pp-bg-elevated)",
-                          color: unread ? "#fff" : "var(--pp-text-secondary)",
-                        }}
-                      >
-                        {initials}
-                      </div>
-                      {/* Content */}
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between gap-2 mb-0.5">
-                          <p
-                            className="text-sm truncate"
-                            style={{
-                              color: "var(--pp-text-primary)",
-                              fontWeight: unread ? 700 : 400,
-                            }}
-                          >
-                            {senderName}
-                          </p>
-                          <div className="flex items-center gap-1 flex-shrink-0">
-                            {flagged && <Flag className="w-3 h-3" style={{ color: "#f59e0b", fill: "#f59e0b" }} />}
-                            {e.hasAttachments && <Paperclip className="w-3 h-3" style={{ color: "var(--pp-text-muted)" }} />}
-                            <span className="text-[10px]" style={{ color: "var(--pp-text-faint)" }}>
-                              {received ? fmtTime(received, lang, t) : ""}
-                            </span>
-                          </div>
-                        </div>
-                        <p
-                          className="text-xs truncate mb-0.5"
-                          style={{ color: unread ? "var(--pp-text-primary)" : "var(--pp-text-secondary)", fontWeight: unread ? 600 : 400 }}
-                        >
-                          {subject}
-                        </p>
-                        <p className="text-[11px] line-clamp-1" style={{ color: "var(--pp-text-muted)" }}>{preview}</p>
-                      </div>
-                      {/* Unread dot */}
-                      {unread && (
-                        <div className="w-2 h-2 rounded-full flex-shrink-0 mt-2"
-                          style={{ background: "var(--pp-brand-accent)" }} />
-                      )}
-                    </button>
+                  <li key={e.id ?? i}>
+                    <SwipeEmailRow
+                      email={e}
+                      folder={folder}
+                      unread={unread}
+                      flagged={flagged}
+                      initials={initials}
+                      senderName={senderName}
+                      subject={subject}
+                      preview={preview}
+                      received={received}
+                      lang={lang}
+                      t={t}
+                      onOpen={() => setActive(e)}
+                      onDelete={handleDelete}
+                      onArchive={handleArchive}
+                      onFlag={handleFlag}
+                    />
                   </li>
                 );
               })}
@@ -1282,6 +1291,184 @@ type ComposeInit = {
   subject?: string;
   body?: string;
 };
+
+/**
+ * Composant SwipeEmailRow : ligne d'email avec gestes de glissement style Outlook
+ * - Swipe gauche (> 80px) : révèle boutons Supprimer + Archiver
+ * - Swipe droite (> 80px) : révèle bouton Marquer/Drapeau
+ */
+function SwipeEmailRow({
+  email: e,
+  folder,
+  unread,
+  flagged,
+  initials,
+  senderName,
+  subject,
+  preview,
+  received,
+  lang,
+  t,
+  onOpen,
+  onDelete,
+  onArchive,
+  onFlag,
+}: {
+  email: any;
+  folder: string;
+  unread: boolean;
+  flagged: boolean;
+  initials: string;
+  senderName: string;
+  subject: string;
+  preview: string;
+  received: string | undefined;
+  lang: string;
+  t: (k: string) => string;
+  onOpen: () => void;
+  onDelete: () => void;
+  onArchive: () => void;
+  onFlag: () => void;
+}) {
+  const rowRef = React.useRef<HTMLDivElement>(null);
+  const startXRef = React.useRef<number | null>(null);
+  const startYRef = React.useRef<number | null>(null);
+  const [offset, setOffset] = React.useState(0);
+  const [revealed, setRevealed] = React.useState<"left" | "right" | null>(null);
+  const THRESHOLD = 72;
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    startXRef.current = e.touches[0].clientX;
+    startYRef.current = e.touches[0].clientY;
+    setRevealed(null);
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (startXRef.current === null || startYRef.current === null) return;
+    const dx = e.touches[0].clientX - startXRef.current;
+    const dy = e.touches[0].clientY - startYRef.current;
+    // Si le scroll vertical est dominant, ne pas intercepter
+    if (Math.abs(dy) > Math.abs(dx) + 10) return;
+    e.preventDefault();
+    const clamped = Math.max(-THRESHOLD * 1.5, Math.min(THRESHOLD * 1.5, dx));
+    setOffset(clamped);
+  };
+
+  const handleTouchEnd = () => {
+    if (offset < -THRESHOLD) {
+      setRevealed("left");
+      setOffset(-THRESHOLD);
+    } else if (offset > THRESHOLD) {
+      setRevealed("right");
+      setOffset(THRESHOLD);
+    } else {
+      setOffset(0);
+      setRevealed(null);
+    }
+    startXRef.current = null;
+    startYRef.current = null;
+  };
+
+  const resetSwipe = () => { setOffset(0); setRevealed(null); };
+
+  return (
+    <div
+      ref={rowRef}
+      className="relative overflow-hidden"
+      style={{ borderBottom: "1px solid var(--pp-bg-border)" }}
+    >
+      {/* Fond gauche : Supprimer + Archiver */}
+      <div
+        className="absolute inset-y-0 right-0 flex items-center"
+        style={{ width: THRESHOLD * 1.5 }}
+      >
+        <button
+          onClick={() => { resetSwipe(); onDelete(); }}
+          className="flex-1 h-full flex flex-col items-center justify-center gap-0.5 text-white"
+          style={{ background: "#ef4444" }}
+        >
+          <Trash2 className="w-4 h-4" />
+          <span className="text-[10px] font-semibold">Supprimer</span>
+        </button>
+        {folder !== "deleted" && (
+          <button
+            onClick={() => { resetSwipe(); onArchive(); }}
+            className="flex-1 h-full flex flex-col items-center justify-center gap-0.5 text-white"
+            style={{ background: "#6366f1" }}
+          >
+            <Archive className="w-4 h-4" />
+            <span className="text-[10px] font-semibold">Archiver</span>
+          </button>
+        )}
+      </div>
+
+      {/* Fond droit : Flag */}
+      <div
+        className="absolute inset-y-0 left-0 flex items-center justify-center"
+        style={{ width: THRESHOLD * 1.5 }}
+      >
+        <button
+          onClick={() => { resetSwipe(); onFlag(); }}
+          className="w-full h-full flex flex-col items-center justify-center gap-0.5 text-white"
+          style={{ background: flagged ? "#6b7280" : "#f59e0b" }}
+        >
+          <Flag className="w-4 h-4" />
+          <span className="text-[10px] font-semibold">{flagged ? "Retirer" : "Marquer"}</span>
+        </button>
+      </div>
+
+      {/* Contenu de la ligne — glisse avec le doigt */}
+      <div
+        style={{
+          transform: `translateX(${offset}px)`,
+          transition: startXRef.current !== null ? "none" : "transform 0.2s ease",
+          background: unread ? "rgba(46,155,220,0.04)" : "var(--pp-bg-base)",
+          position: "relative",
+          zIndex: 1,
+        }}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+      >
+        <button
+          onClick={() => { if (revealed) { resetSwipe(); return; } onOpen(); }}
+          className="w-full flex items-start gap-3 px-4 py-3 active:opacity-70 text-left"
+        >
+          <div
+            className="w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold flex-shrink-0 mt-0.5"
+            style={{
+              background: unread ? "var(--pp-brand-accent)" : "var(--pp-bg-elevated)",
+              color: unread ? "#fff" : "var(--pp-text-secondary)",
+            }}
+          >
+            {initials}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center justify-between gap-2 mb-0.5">
+              <p className="text-sm truncate" style={{ color: "var(--pp-text-primary)", fontWeight: unread ? 700 : 400 }}>
+                {senderName}
+              </p>
+              <div className="flex items-center gap-1 flex-shrink-0">
+                {flagged && <Flag className="w-3 h-3" style={{ color: "#f59e0b", fill: "#f59e0b" }} />}
+                {e.hasAttachments && <Paperclip className="w-3 h-3" style={{ color: "var(--pp-text-muted)" }} />}
+                <span className="text-[10px]" style={{ color: "var(--pp-text-faint)" }}>
+                  {received ? fmtTime(received, lang, t) : ""}
+                </span>
+              </div>
+            </div>
+            <p className="text-xs truncate mb-0.5" style={{ color: unread ? "var(--pp-text-primary)" : "var(--pp-text-secondary)", fontWeight: unread ? 600 : 400 }}>
+              {subject}
+            </p>
+            <p className="text-[11px] line-clamp-1" style={{ color: "var(--pp-text-muted)" }}>{preview}</p>
+          </div>
+          {unread && (
+            <div className="w-2 h-2 rounded-full flex-shrink-0 mt-2" style={{ background: "var(--pp-brand-accent)" }} />
+          )}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 /**
  * Nettoie le HTML d'un courriel Microsoft pour l'affichage mobile :
@@ -1469,21 +1656,27 @@ function EmailDetailSheet({ email, folder, onClose, onCompose, onChanged, onOpti
   const canReply = folder !== "sent" && folder !== "drafts";
 
   return (
-    <div className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-sm flex items-end" onClick={onClose}>
+    <div className="fixed inset-0 z-[100] flex flex-col" style={{ background: "var(--pp-bg-base)" }} onClick={onClose}>
       <div
-        className="w-full rounded-t-3xl flex flex-col shadow-2xl"
-        style={{
-          background: "var(--pp-bg-base)",
-          border: "1px solid var(--pp-bg-border-2)",
-          height: "calc(100vh - env(safe-area-inset-top) - 24px)",
-          maxHeight: "calc(100dvh - 24px)",
-          paddingBottom: "env(safe-area-inset-bottom)",
-        }}
+        className="flex flex-col h-full"
+        style={{ paddingTop: "env(safe-area-inset-top, 0px)", paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
         onClick={(e) => e.stopPropagation()}
       >
-        {/* ===== HEADER ===== */}
-        <div className="flex items-center gap-2 px-3 pt-3 pb-2" style={{ borderBottom: "1px solid var(--pp-bg-border)" }}>
-          <button onClick={onClose} className="p-1.5 rounded-full flex-shrink-0" style={{ color: "var(--pp-text-secondary)" }}>
+        {/* ===== HEADER STICKY — toujours visible ===== */}
+        <div
+          className="flex-shrink-0 flex items-center gap-2 px-3 py-2"
+          style={{
+            borderBottom: "1px solid var(--pp-bg-border)",
+            background: "var(--pp-bg-deep)",
+            minHeight: 52,
+          }}
+        >
+          <button
+            onClick={onClose}
+            className="p-2 rounded-full flex-shrink-0 active:scale-95 transition"
+            style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-primary)" }}
+            aria-label="Retour"
+          >
             <ArrowLeft className="w-5 h-5" />
           </button>
           <p className="flex-1 text-sm font-semibold truncate" style={{ color: "var(--pp-text-primary)" }}>{subject}</p>
@@ -1505,57 +1698,63 @@ function EmailDetailSheet({ email, folder, onClose, onCompose, onChanged, onOpti
           </div>
         </div>
 
-        {/* ===== SENDER INFO BAR ===== */}
-        <div className="px-4 py-2.5 flex items-center gap-3" style={{ borderBottom: "1px solid var(--pp-bg-border)", background: "var(--pp-bg-surface)" }}>
-          <div className="w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold flex-shrink-0"
-            style={{ background: "var(--pp-brand-accent)", color: "#fff" }}>
+        {/* ===== SENDER INFO BAR STICKY ===== */}
+        <div
+          className="flex-shrink-0 px-4 py-2.5 flex items-start gap-3"
+          style={{ borderBottom: "1px solid var(--pp-bg-border)", background: "var(--pp-bg-surface)" }}
+        >
+          <div
+            className="w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold flex-shrink-0 mt-0.5"
+            style={{ background: "var(--pp-brand-accent)", color: "#fff" }}
+          >
             {from.slice(0, 2).toUpperCase()}
           </div>
           <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold truncate" style={{ color: "var(--pp-text-primary)" }}>{from}</p>
-            {fromAddr && <p className="text-[11px] truncate" style={{ color: "var(--pp-text-muted)" }}>{fromAddr}</p>}
+            <p className="text-sm font-semibold" style={{ color: "var(--pp-text-primary)" }}>{from}</p>
+            {fromAddr && <p className="text-[11px] break-all" style={{ color: "var(--pp-text-muted)" }}>{fromAddr}</p>}
             {toList.length > 0 && (
-              <p className="text-[11px] truncate" style={{ color: "var(--pp-text-muted)" }}>
-                À : {toList.map((r: any) => r?.emailAddress?.name ?? r?.emailAddress?.address).filter(Boolean).join(", ")}
+              <p className="text-[11px]" style={{ color: "var(--pp-text-muted)" }}>
+                <span className="font-medium">À :</span> {toList.map((r: any) => r?.emailAddress?.name ?? r?.emailAddress?.address).filter(Boolean).join(", ")}
               </p>
             )}
             {ccList.length > 0 && (
-              <p className="text-[11px] truncate" style={{ color: "var(--pp-text-muted)" }}>
-                Cc : {ccList.map((r: any) => r?.emailAddress?.address).filter(Boolean).join(", ")}
+              <p className="text-[11px]" style={{ color: "var(--pp-text-muted)" }}>
+                <span className="font-medium">Cc :</span> {ccList.map((r: any) => r?.emailAddress?.address).filter(Boolean).join(", ")}
               </p>
             )}
+            <p className="text-[10px] mt-0.5" style={{ color: "var(--pp-text-faint)" }}>
+              {merged.receivedDateTime ? new Date(merged.receivedDateTime).toLocaleDateString("fr-CA", { weekday: "short", day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : ""}
+            </p>
           </div>
-          <span className="text-[10px] flex-shrink-0" style={{ color: "var(--pp-text-faint)" }}>
-            {merged.receivedDateTime ? new Date(merged.receivedDateTime).toLocaleDateString("fr-CA", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : ""}
-          </span>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
-          <button
-            onClick={analyzeWithAva}
-            disabled={analyzing}
-            className="w-full px-3 py-2 rounded-xl text-sm font-semibold flex items-center justify-center gap-2 disabled:opacity-60"
-            style={{ background: "linear-gradient(135deg, #2D1A5A, #9B7FE8)", border: "1px solid rgba(155,127,232,0.35)", color: "white" }}
-          >
-            {analyzing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-            {analyzing ? "AVA analyse…" : "🤖 Analyser avec AVA"}
-          </button>
+        {/* ===== CORPS SCROLLABLE ===== */}
+        <div className="flex-1 overflow-y-auto" style={{ WebkitOverflowScrolling: "touch" }}>
+          <div className="px-4 pt-3 pb-2">
+            <button
+              onClick={analyzeWithAva}
+              disabled={analyzing}
+              className="w-full px-3 py-2 rounded-xl text-sm font-semibold flex items-center justify-center gap-2 disabled:opacity-60"
+              style={{ background: "linear-gradient(135deg, #2D1A5A, #9B7FE8)", border: "1px solid rgba(155,127,232,0.35)", color: "white" }}
+            >
+              {analyzing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+              {analyzing ? "AVA analyse…" : "🤖 Analyser avec AVA"}
+            </button>
 
-          {analysis && (<AvaProposedActionsCard analysis={analysis} onDismiss={() => setAnalysis(null)} />)}
+            {analysis && (<div className="mt-2"><AvaProposedActionsCard analysis={analysis} onDismiss={() => setAnalysis(null)} /></div>)}
+          </div>
 
-          <div
-            className="rounded-xl p-3 text-sm"
-            style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
-          >
-{/* Styles de normalisation mobile injectés avant le HTML du courriel */}
+          {/* Corps HTML du courriel */}
+          <div className="px-3 pb-3">
             <style>{`
               .pp-email-body {
-                overflow-x: hidden;
-                word-break: break-word;
-                overflow-wrap: anywhere;
-                -webkit-text-size-adjust: 100%;
-                font-size: 13px;
-                line-height: 1.55;
+                overflow-x: hidden !important;
+                word-break: break-word !important;
+                overflow-wrap: anywhere !important;
+                -webkit-text-size-adjust: 100% !important;
+                font-size: 14px !important;
+                line-height: 1.6 !important;
+                color: var(--pp-text-primary) !important;
               }
               .pp-email-body * {
                 max-width: 100% !important;
@@ -1563,45 +1762,70 @@ function EmailDetailSheet({ email, folder, onClose, onCompose, onChanged, onOpti
               }
               .pp-email-body table {
                 width: 100% !important;
-                table-layout: fixed !important;
+                table-layout: auto !important;
                 border-collapse: collapse !important;
+                display: block !important;
+                overflow-x: hidden !important;
+              }
+              .pp-email-body tbody, .pp-email-body thead, .pp-email-body tr {
+                display: block !important;
+                width: 100% !important;
               }
               .pp-email-body td, .pp-email-body th {
+                display: block !important;
+                width: 100% !important;
                 word-break: break-word !important;
                 overflow-wrap: anywhere !important;
-                padding: 4px 6px !important;
+                padding: 3px 0 !important;
               }
               .pp-email-body img {
                 max-width: 100% !important;
+                width: auto !important;
                 height: auto !important;
-                display: block;
+                display: block !important;
               }
               .pp-email-body a {
-                color: var(--pp-brand-accent, #2E9BDC);
-                word-break: break-all;
+                color: var(--pp-brand-accent, #2E9BDC) !important;
+                word-break: break-all !important;
               }
-              .pp-email-body p, .pp-email-body div, .pp-email-body span {
+              .pp-email-body p, .pp-email-body div, .pp-email-body span,
+              .pp-email-body h1, .pp-email-body h2, .pp-email-body h3 {
                 max-width: 100% !important;
+                overflow-wrap: anywhere !important;
               }
               /* Masquer les bannières d'avertissement externe de Microsoft */
               .pp-email-body [class*="ExternalClass"],
-              .pp-email-body [id*="divRplyFwdMsg"] { display: none !important; }
+              .pp-email-body [id*="divRplyFwdMsg"],
+              .pp-email-body [class*="x_ExternalClass"] { display: none !important; }
+              /* Fond blanc forcé pour les emails HTML */
+              .pp-email-body-wrap {
+                background: #ffffff;
+                border-radius: 12px;
+                padding: 12px;
+                overflow: hidden;
+              }
             `}</style>
             {loadingDetail && !detail ? (
-              <div className="text-center py-6"><Loader2 className="w-4 h-4 animate-spin mx-auto" /></div>
+              <div className="text-center py-8"><Loader2 className="w-5 h-5 animate-spin mx-auto" style={{ color: "var(--pp-brand-accent)" }} /></div>
             ) : bodyType === "html" && bodyHtml ? (
-              <div
-                className="pp-email-body"
-                style={{ overflowX: "hidden", maxWidth: "100%" }}
-                dangerouslySetInnerHTML={{ __html: sanitizeEmailHtml(bodyHtml) }}
-              />
+              <div className="pp-email-body-wrap">
+                <div
+                  className="pp-email-body"
+                  dangerouslySetInnerHTML={{ __html: sanitizeEmailHtml(bodyHtml) }}
+                />
+              </div>
             ) : (
-              <div className="whitespace-pre-wrap">{bodyHtml || merged.bodyPreview || t("messages.previewUnavailable")}</div>
+              <div
+                className="rounded-xl p-4 text-sm whitespace-pre-wrap"
+                style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)", lineHeight: 1.6 }}
+              >
+                {bodyHtml || merged.bodyPreview || t("messages.previewUnavailable")}
+              </div>
             )}
           </div>
 
           {attachments.length > 0 && (
-            <div className="rounded-xl p-3"
+            <div className="mx-3 mb-3 rounded-xl p-3"
                  style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)" }}>
               <p className="text-[11px] uppercase tracking-wider mb-2" style={{ color: "var(--pp-text-muted)" }}>
                 Pièces jointes ({attachments.length})
@@ -1631,12 +1855,14 @@ function EmailDetailSheet({ email, folder, onClose, onCompose, onChanged, onOpti
               </ul>
             </div>
           )}
+          {/* Espace en bas pour ne pas être masqué par la barre d'actions */}
+          <div className="h-4" />
         </div>
 
-
+        {/* ===== BARRE D'ACTIONS STICKY EN BAS ===== */}
         <div
-          className={`px-3 py-2 gap-2 ${canReply ? "grid grid-cols-3" : "flex justify-center"}`}
-          style={{ borderTop: "1px solid var(--pp-bg-border)" }}
+          className={`flex-shrink-0 px-3 py-2 gap-2 ${canReply ? "grid grid-cols-3" : "flex justify-center"}`}
+          style={{ borderTop: "1px solid var(--pp-bg-border)", background: "var(--pp-bg-deep)" }}
         >
           {canReply && (
             <>
