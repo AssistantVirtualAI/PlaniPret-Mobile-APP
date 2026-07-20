@@ -102,3 +102,19 @@ export function AdminPageSkeleton() {
     </div>
   );
 }
+
+export function MobilePageSkeleton() {
+  return (
+    <div className="flex flex-col h-full p-3 gap-3" style={{ background: "var(--pp-bg-base, #0A1425)" }}>
+      <Shimmer className="h-10 w-2/3 rounded-xl" />
+      <div className="flex gap-2">
+        {Array.from({ length: 4 }).map((_, i) => (
+          <Shimmer key={i} className="h-8 w-20 rounded-full" />
+        ))}
+      </div>
+      {Array.from({ length: 6 }).map((_, i) => (
+        <Shimmer key={i} className="h-16 w-full rounded-2xl" />
+      ))}
+    </div>
+  );
+}
