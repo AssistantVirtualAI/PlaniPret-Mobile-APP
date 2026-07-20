@@ -4,7 +4,7 @@ import { useOutletContext, useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import {
   Phone, PhoneMissed, MessageSquare, Voicemail,
-  ArrowDownLeft, ArrowUpRight, X, Calendar, Headphones, Bot,
+  ArrowDownLeft, ArrowUpRight, ArrowLeft, X, Calendar, Headphones, Bot,
   BellOff, Flame, Sparkles, ChevronRight, ChevronLeft, Mail, Users as UsersIcon,
   CheckSquare, RefreshCw, AlertCircle, Video, ExternalLink,
 } from "lucide-react";
@@ -609,12 +609,154 @@ function Kpi({ icon, value, label, accent, pulse, onClick }: {
   );
 }
 
+function EventDetailSheet({ event, onClose, lang }: { event: any; onClose: () => void; lang: string }) {
+  const locale = lang === "en" ? "en-CA" : "fr-CA";
+  const start = event.start?.dateTime ? new Date(event.start.dateTime) : null;
+  const end = event.end?.dateTime ? new Date(event.end.dateTime) : null;
+  const join = event.onlineMeeting?.joinUrl ?? event.webLink;
+  const isTeams = !!event.onlineMeeting?.joinUrl;
+  const attendees: any[] = Array.isArray(event.attendees) ? event.attendees : [];
+  const organizer = event.organizer?.emailAddress?.name ?? event.organizer?.emailAddress?.address ?? null;
+  const location = event.location?.displayName ?? null;
+  const body = event.bodyPreview ?? event.body?.content ?? null;
+
+  return (
+    <div className="fixed inset-0 z-[120] bg-black/70 backdrop-blur-sm flex items-end" onClick={onClose}>
+      <div
+        className="w-full rounded-t-3xl flex flex-col shadow-2xl"
+        style={{
+          background: "var(--pp-bg-base)",
+          border: "1px solid var(--pp-bg-border-2)",
+          maxHeight: "calc(100dvh - 40px)",
+          paddingBottom: "env(safe-area-inset-bottom)",
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="flex items-center justify-between px-4 pt-4 pb-3" style={{ borderBottom: "1px solid var(--pp-bg-border)" }}>
+          <button onClick={onClose} className="p-1.5 rounded-full" style={{ color: "var(--pp-text-secondary)" }}>
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+          <p className="text-xs uppercase tracking-wider font-semibold" style={{ color: "var(--pp-text-muted)" }}>Rendez-vous</p>
+          {join ? (
+            <button
+              onClick={() => window.open(join, "_blank", "noopener,noreferrer")}
+              className="px-3 py-1.5 rounded-full text-xs font-semibold text-white flex items-center gap-1.5"
+              style={{ background: isTeams ? "#5B5EA6" : "var(--pp-brand-accent)" }}
+            >
+              <Video className="w-3.5 h-3.5" />
+              {isTeams ? "Rejoindre Teams" : "Ouvrir"}
+            </button>
+          ) : <div className="w-10" />}
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4">
+          {/* Title */}
+          <div>
+            <p className="text-lg font-bold" style={{ color: "var(--pp-text-primary)", fontFamily: "Urbanist,sans-serif" }}>
+              {event.subject ?? "Sans titre"}
+            </p>
+            {isTeams && (
+              <span className="inline-flex items-center gap-1 mt-1 px-2 py-0.5 rounded-full text-[11px] font-semibold"
+                style={{ background: "rgba(91,94,166,0.15)", color: "#5B5EA6" }}>
+                <Video className="w-3 h-3" /> Microsoft Teams
+              </span>
+            )}
+          </div>
+
+          {/* Date & Time */}
+          <div className="rounded-xl p-3 flex items-center gap-3" style={{ background: "rgba(46,155,220,0.07)", border: "1px solid rgba(46,155,220,0.15)" }}>
+            <Calendar className="w-5 h-5 flex-shrink-0" style={{ color: "var(--pp-brand-accent)" }} />
+            <div>
+              {start && (
+                <p className="text-sm font-semibold" style={{ color: "var(--pp-text-primary)" }}>
+                  {start.toLocaleDateString(locale, { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
+                </p>
+              )}
+              {(start || end) && (
+                <p className="text-xs mt-0.5" style={{ color: "var(--pp-text-muted)" }}>
+                  {start ? start.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" }) : ""}
+                  {start && end ? " → " : ""}
+                  {end ? end.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" }) : ""}
+                </p>
+              )}
+            </div>
+          </div>
+
+          {/* Location */}
+          {location && (
+            <div className="rounded-xl p-3 flex items-center gap-3" style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)" }}>
+              <ExternalLink className="w-4 h-4 flex-shrink-0" style={{ color: "var(--pp-text-muted)" }} />
+              <p className="text-sm" style={{ color: "var(--pp-text-secondary)" }}>{location}</p>
+            </div>
+          )}
+
+          {/* Organizer */}
+          {organizer && (
+            <div>
+              <p className="text-[11px] uppercase tracking-wider mb-1" style={{ color: "var(--pp-text-muted)" }}>Organisateur</p>
+              <p className="text-sm" style={{ color: "var(--pp-text-secondary)" }}>{organizer}</p>
+            </div>
+          )}
+
+          {/* Attendees */}
+          {attendees.length > 0 && (
+            <div>
+              <p className="text-[11px] uppercase tracking-wider mb-2" style={{ color: "var(--pp-text-muted)" }}>
+                Participants ({attendees.length})
+              </p>
+              <ul className="space-y-1.5">
+                {attendees.slice(0, 10).map((a: any, i: number) => {
+                  const name = a.emailAddress?.name ?? a.emailAddress?.address ?? "Inconnu";
+                  const addr = a.emailAddress?.address ?? "";
+                  const status = a.status?.response ?? "none";
+                  const statusColor = status === "accepted" ? "#10B981" : status === "declined" ? "#ef4444" : "var(--pp-text-muted)";
+                  return (
+                    <li key={i} className="flex items-center gap-2">
+                      <div className="w-7 h-7 rounded-full flex items-center justify-center text-[11px] font-bold flex-shrink-0"
+                        style={{ background: "rgba(46,155,220,0.12)", color: "var(--pp-brand-accent)" }}>
+                        {name.slice(0,2).toUpperCase()}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-xs font-medium truncate" style={{ color: "var(--pp-text-primary)" }}>{name}</p>
+                        {addr && <p className="text-[10px] truncate" style={{ color: "var(--pp-text-muted)" }}>{addr}</p>}
+                      </div>
+                      <span className="text-[10px] font-semibold" style={{ color: statusColor }}>
+                        {status === "accepted" ? "✓" : status === "declined" ? "✗" : "?"}
+                      </span>
+                    </li>
+                  );
+                })}
+                {attendees.length > 10 && (
+                  <li className="text-[11px]" style={{ color: "var(--pp-text-muted)" }}>+{attendees.length - 10} autres</li>
+                )}
+              </ul>
+            </div>
+          )}
+
+          {/* Body preview */}
+          {body && (
+            <div>
+              <p className="text-[11px] uppercase tracking-wider mb-1" style={{ color: "var(--pp-text-muted)" }}>Description</p>
+              <div className="rounded-xl p-3 text-sm" style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}>
+                <p className="whitespace-pre-wrap text-xs">{body.slice(0, 500)}{body.length > 500 ? "…" : ""}</p>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function MsCalendarSection({ profile, events, loading, error, lang }: {
   profile: any; events: any[]; loading: boolean; error: string | null; lang: string;
 }) {
   const today = new Date(); today.setHours(0,0,0,0);
   const [cursor, setCursor] = useState(() => { const d=new Date(); d.setDate(1); d.setHours(0,0,0,0); return d; });
   const [selected, setSelected] = useState<Date>(today);
+  const [activeEvent, setActiveEvent] = useState<any | null>(null);
 
   const locale = lang === "en" ? "en-CA" : "fr-CA";
 
@@ -749,37 +891,36 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
                   const join = m.onlineMeeting?.joinUrl ?? m.webLink;
                   const isTeams = !!m.onlineMeeting?.joinUrl;
                   return (
-                    <li key={m.id} className="flex items-center gap-3 py-2 px-2 rounded-lg"
-                      style={{ background: "rgba(46,155,220,0.06)", border: "1px solid rgba(46,155,220,0.15)" }}>
-                      <div className="w-14 flex-shrink-0 text-center px-1.5 py-1 rounded-md"
-                        style={{ background: "rgba(46,155,220,0.12)", color: "var(--pp-brand-accent)", fontFamily: "Urbanist,sans-serif" }}>
-                        <div className="text-[11px] font-bold tabular-nums leading-none">
-                          {start ? start.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" }) : "—"}
-                        </div>
-                        {end && (
-                          <div className="text-[9px] mt-0.5 opacity-70 tabular-nums leading-none">
-                            {end.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" })}
+                    <li key={m.id}>
+                      <button
+                        onClick={() => setActiveEvent(m)}
+                        className="w-full flex items-center gap-3 py-2 px-2 rounded-lg active:scale-[0.98] transition text-left"
+                        style={{ background: "rgba(46,155,220,0.06)", border: "1px solid rgba(46,155,220,0.15)" }}
+                      >
+                        <div className="w-14 flex-shrink-0 text-center px-1.5 py-1 rounded-md"
+                          style={{ background: "rgba(46,155,220,0.12)", color: "var(--pp-brand-accent)", fontFamily: "Urbanist,sans-serif" }}>
+                          <div className="text-[11px] font-bold tabular-nums leading-none">
+                            {start ? start.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" }) : "—"}
                           </div>
-                        )}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm truncate font-medium flex items-center gap-1.5" style={{ color: "var(--pp-text-primary)" }}>
-                          {isTeams && <Video className="w-3 h-3 flex-shrink-0" style={{ color: "var(--pp-brand-accent)" }} />}
-                          {m.subject ?? "Sans titre"}
-                        </p>
-                        {(m.location?.displayName || m.bodyPreview) && (
-                          <p className="text-[11px] truncate" style={{ color: "var(--pp-text-muted)" }}>
-                            {m.location?.displayName || m.bodyPreview}
+                          {end && (
+                            <div className="text-[9px] mt-0.5 opacity-70 tabular-nums leading-none">
+                              {end.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" })}
+                            </div>
+                          )}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm truncate font-medium flex items-center gap-1.5" style={{ color: "var(--pp-text-primary)" }}>
+                            {isTeams && <Video className="w-3 h-3 flex-shrink-0" style={{ color: "var(--pp-brand-accent)" }} />}
+                            {m.subject ?? "Sans titre"}
                           </p>
-                        )}
-                      </div>
-                      {join && (
-                        <button onClick={() => window.open(join, "_blank", "noopener,noreferrer")}
-                          className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
-                          style={{ color: "var(--pp-brand-accent)", background: "rgba(46,155,220,0.10)" }}>
-                          <ExternalLink className="w-3.5 h-3.5" />
-                        </button>
-                      )}
+                          {(m.location?.displayName || m.bodyPreview) && (
+                            <p className="text-[11px] truncate" style={{ color: "var(--pp-text-muted)" }}>
+                              {m.location?.displayName || m.bodyPreview}
+                            </p>
+                          )}
+                        </div>
+                        <ChevronRight className="w-4 h-4 flex-shrink-0" style={{ color: "var(--pp-text-muted)" }} />
+                      </button>
                     </li>
                   );
                 })}
@@ -791,6 +932,14 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
 
       {error && (
         <p className="text-[11px] mt-2" style={{ color: "var(--pp-danger)" }}>{error}</p>
+      )}
+
+      {activeEvent && (
+        <EventDetailSheet
+          event={activeEvent}
+          onClose={() => setActiveEvent(null)}
+          lang={lang}
+        />
       )}
     </section>
   );

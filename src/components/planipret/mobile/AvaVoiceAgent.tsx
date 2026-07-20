@@ -201,6 +201,8 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
       "read_emails", "summarize_email", "send_email",
       "get_calendar_today", "get_calendar_week",
       "create_calendar_event", "move_calendar_event", "cancel_calendar_event",
+      "find_contact", "get_upcoming_meetings", "search_ms365_contacts",
+      "list_teams_chats", "send_teams_message",
       "navigate_to", "show_client_in_app", "open_call_detail",
       "show_toast", "open_dialer", "open_sms_composer", "close_ava",
       "get_daily_briefing", "get_my_stats",
