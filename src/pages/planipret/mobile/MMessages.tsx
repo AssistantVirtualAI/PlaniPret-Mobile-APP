@@ -1996,97 +1996,134 @@ function EmailComposeSheet({ init, onClose, onSent }: { init: ComposeInit; onClo
   const title = mode === "reply" ? "Répondre" : mode === "reply_all" ? "Répondre à tous" : mode === "forward" ? "Transférer" : t("messages.newEmail");
 
   return (
-    <div className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-sm flex items-end" onClick={onClose}>
+    // Plein écran opaque — pas de backdrop flou, fond solide pour une lisibilité maximale
+    <div
+      className="fixed inset-0 z-[110] flex flex-col"
+      style={{
+        background: "var(--pp-bg-base)",
+        paddingTop: "env(safe-area-inset-top, 0px)",
+        paddingBottom: "env(safe-area-inset-bottom, 0px)",
+      }}
+    >
+      {/* ===== HEADER ===== */}
       <div
-        className="w-full rounded-t-3xl flex flex-col shadow-2xl"
-        style={{
-          background: "var(--pp-bg-base)",
-          border: "1px solid var(--pp-bg-border-2)",
-          height: "calc(100vh - env(safe-area-inset-top) - 24px)",
-          maxHeight: "calc(100dvh - 24px)",
-          paddingBottom: "env(safe-area-inset-bottom)",
-        }}
-        onClick={(e) => e.stopPropagation()}
+        className="flex-shrink-0 flex items-center gap-3 px-4 py-3"
+        style={{ borderBottom: "1px solid var(--pp-bg-border)", background: "var(--pp-bg-deep)", minHeight: 52 }}
       >
-        <div className="flex items-center justify-between px-4 pt-3 pb-2" style={{ borderBottom: "1px solid var(--pp-bg-border)" }}>
-          <button onClick={onClose} className="p-1.5 rounded-full" style={{ color: "var(--pp-text-secondary)" }}>
-            <X className="w-5 h-5" />
-          </button>
-          <p className="text-xs uppercase tracking-wider" style={{ color: "var(--pp-text-muted)" }}>{title}</p>
-          <button
-            onClick={send}
-            disabled={sending}
-            className="px-3 py-1 rounded-full text-white text-xs font-semibold flex items-center gap-1 disabled:opacity-50"
-            style={{ background: "linear-gradient(135deg, var(--pp-brand-accent), var(--pp-brand-accent-2))" }}
-          >
-            {sending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
-            {t("common.send")}
-          </button>
-        </div>
-        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
-          {(mode === "new" || mode === "forward") && (
-            <>
-              <div className="flex items-center gap-2">
-                <input
-                  value={to} onChange={(e) => setTo(e.target.value)} placeholder={t("messages.toPlaceholder")}
-                  className="flex-1 px-3 py-2 rounded-lg text-sm outline-none"
-                  style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
-                />
-                {mode === "new" && (
-                  <button onClick={() => setShowCc((s) => !s)} className="text-[11px] px-2 py-1 rounded-lg"
-                    style={{ color: "var(--pp-brand-accent)", background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)" }}>
-                    Cc/Cci
-                  </button>
-                )}
-              </div>
-              {mode === "new" && showCc && (
-                <>
-                  <input value={cc} onChange={(e) => setCc(e.target.value)} placeholder="Cc"
-                    className="w-full px-3 py-2 rounded-lg text-sm outline-none"
-                    style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }} />
-                  <input value={bcc} onChange={(e) => setBcc(e.target.value)} placeholder="Cci"
-                    className="w-full px-3 py-2 rounded-lg text-sm outline-none"
-                    style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }} />
-                </>
-              )}
-              <input
-                value={subject} onChange={(e) => setSubject(e.target.value)} placeholder={t("messages.subject")}
-                className="w-full px-3 py-2 rounded-lg text-sm outline-none"
-                style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
-              />
-            </>
+        <button
+          onClick={onClose}
+          className="p-2 rounded-full flex-shrink-0 active:scale-95 transition"
+          style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-primary)" }}
+          aria-label="Annuler"
+        >
+          <X className="w-5 h-5" />
+        </button>
+        <p className="flex-1 text-base font-semibold" style={{ color: "var(--pp-text-primary)" }}>{title}</p>
+        <button
+          onClick={send}
+          disabled={sending}
+          className="px-4 py-2 rounded-full text-white text-sm font-semibold flex items-center gap-1.5 disabled:opacity-50 active:scale-95 transition"
+          style={{ background: "linear-gradient(135deg, var(--pp-brand-accent), var(--pp-brand-accent-2))", boxShadow: "0 2px 12px rgba(46,155,220,0.4)" }}
+        >
+          {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+          {t("common.send")}
+        </button>
+      </div>
+
+      {/* ===== CHAMPS (toujours visibles, même en mode réponse) ===== */}
+      <div className="flex-shrink-0 px-4 pt-3 pb-1 space-y-2" style={{ background: "var(--pp-bg-surface)", borderBottom: "1px solid var(--pp-bg-border)" }}>
+        {/* Champ À : toujours visible (pré-rempli en mode réponse) */}
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold w-8 flex-shrink-0" style={{ color: "var(--pp-text-muted)" }}>À :</span>
+          <input
+            value={to} onChange={(e) => setTo(e.target.value)}
+            placeholder={mode === "reply" || mode === "reply_all" ? "" : t("messages.toPlaceholder")}
+            readOnly={mode === "reply" || mode === "reply_all"}
+            className="flex-1 px-3 py-2 rounded-lg text-sm outline-none"
+            style={{
+              background: (mode === "reply" || mode === "reply_all") ? "var(--pp-bg-elevated)" : "var(--pp-bg-elevated)",
+              border: "1px solid var(--pp-bg-border-2)",
+              color: "var(--pp-text-primary)",
+              opacity: (mode === "reply" || mode === "reply_all") ? 0.8 : 1,
+            }}
+          />
+          {mode === "new" && (
+            <button onClick={() => setShowCc((s) => !s)} className="text-[11px] px-2 py-1 rounded-lg flex-shrink-0"
+              style={{ color: "var(--pp-brand-accent)", background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)" }}>
+              Cc/Cci
+            </button>
           )}
-          <textarea
-            value={body} onChange={(e) => setBody(e.target.value)} placeholder={t("messages.yourMessage")}
-            rows={14}
-            className="w-full px-3 py-2 rounded-lg text-sm outline-none resize-none"
+        </div>
+        {showCc && (
+          <>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-semibold w-8 flex-shrink-0" style={{ color: "var(--pp-text-muted)" }}>Cc :</span>
+              <input value={cc} onChange={(e) => setCc(e.target.value)} placeholder=""
+                className="flex-1 px-3 py-2 rounded-lg text-sm outline-none"
+                style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }} />
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-semibold w-8 flex-shrink-0" style={{ color: "var(--pp-text-muted)" }}>Cci :</span>
+              <input value={bcc} onChange={(e) => setBcc(e.target.value)} placeholder=""
+                className="flex-1 px-3 py-2 rounded-lg text-sm outline-none"
+                style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }} />
+            </div>
+          </>
+        )}
+        {/* Objet : toujours visible */}
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold w-8 flex-shrink-0" style={{ color: "var(--pp-text-muted)" }}>Obj :</span>
+          <input
+            value={subject} onChange={(e) => setSubject(e.target.value)} placeholder={t("messages.subject")}
+            className="flex-1 px-3 py-2 rounded-lg text-sm outline-none"
             style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
           />
-
-          {attachments.length > 0 && (
-            <ul className="space-y-1">
-              {attachments.map((a, i) => (
-                <li key={i} className="flex items-center justify-between text-xs px-3 py-2 rounded-lg"
-                    style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}>
-                  <span className="truncate flex items-center gap-2"><Paperclip className="w-3 h-3" /> {a.name} <span style={{ color: "var(--pp-text-muted)" }}>({Math.round(a.size / 1024)} Ko)</span></span>
-                  <button onClick={() => removeAttachment(i)} style={{ color: "var(--pp-text-muted)" }} aria-label="Retirer">
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
         </div>
+      </div>
 
-        <div className="px-4 py-2 flex items-center gap-2" style={{ borderTop: "1px solid var(--pp-bg-border)" }}>
-          <input ref={fileRef} type="file" multiple hidden onChange={(e) => { pickFiles(e.target.files); e.target.value = ""; }} />
-          <button onClick={() => fileRef.current?.click()}
-            className="px-3 py-2 rounded-full text-xs flex items-center gap-1.5"
-            style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}>
-            <Paperclip className="w-3.5 h-3.5" /> Joindre
-          </button>
-          <span className="text-[10px]" style={{ color: "var(--pp-text-muted)" }}>Max 3 Mo par fichier</span>
-        </div>
+      {/* ===== ZONE DE TEXTE — remplit tout l'espace disponible ===== */}
+      <div className="flex-1 flex flex-col px-4 pt-3 pb-2 min-h-0">
+        <textarea
+          autoFocus
+          value={body} onChange={(e) => setBody(e.target.value)} placeholder={t("messages.yourMessage")}
+          className="flex-1 w-full px-3 py-2 rounded-xl text-sm outline-none resize-none"
+          style={{
+            background: "var(--pp-bg-elevated)",
+            border: "1px solid var(--pp-bg-border-2)",
+            color: "var(--pp-text-primary)",
+            lineHeight: 1.6,
+            minHeight: 120,
+          }}
+        />
+        {attachments.length > 0 && (
+          <ul className="mt-2 space-y-1">
+            {attachments.map((a, i) => (
+              <li key={i} className="flex items-center justify-between text-xs px-3 py-2 rounded-lg"
+                  style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}>
+                <span className="truncate flex items-center gap-2"><Paperclip className="w-3 h-3" /> {a.name} <span style={{ color: "var(--pp-text-muted)" }}>({Math.round(a.size / 1024)} Ko)</span></span>
+                <button onClick={() => removeAttachment(i)} style={{ color: "var(--pp-text-muted)" }} aria-label="Retirer">
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {/* ===== BARRE DU BAS ===== */}
+      <div
+        className="flex-shrink-0 px-4 py-2 flex items-center gap-3"
+        style={{ borderTop: "1px solid var(--pp-bg-border)", background: "var(--pp-bg-deep)" }}
+      >
+        <input ref={fileRef} type="file" multiple hidden onChange={(e) => { pickFiles(e.target.files); e.target.value = ""; }} />
+        <button
+          onClick={() => fileRef.current?.click()}
+          className="px-3 py-2 rounded-full text-xs flex items-center gap-1.5 active:scale-95 transition"
+          style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
+        >
+          <Paperclip className="w-3.5 h-3.5" /> Joindre
+        </button>
+        <span className="text-[10px]" style={{ color: "var(--pp-text-muted)" }}>Max 3 Mo par fichier</span>
       </div>
     </div>
   );
