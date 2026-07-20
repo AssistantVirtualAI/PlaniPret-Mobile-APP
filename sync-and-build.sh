@@ -1,106 +1,67 @@
 #!/bin/bash
-# sync-and-build.sh — Synchronise depuis Lovable et build pour iOS
+# sync-and-build.sh — Synchronise depuis GitHub et build pour iOS
 # Usage : ./sync-and-build.sh
+#
+# RAPIDE : npm install est sauté si package.json n'a pas changé.
+# Temps typique : ~15s (build seul) vs ~90s (avec npm install)
 set -e
 
-LOVABLE_DIR="$HOME/Documents/lovable-planipret"
-STANDALONE_DIR="$HOME/Documents/planipret-standalone"
-LOVABLE_REPO="https://github.com/AssistantVirtualAI/attach-app-creator-8134a2fa.git"
-LOVABLE_BRANCH="Planipret"
+STANDALONE_DIR="$HOME/planipret-standalone"
 GITHUB_RAW="https://raw.githubusercontent.com/AssistantVirtualAI/PlaniPret-Mobile-APP/main"
+PKG_HASH_FILE="$STANDALONE_DIR/.pkg_hash"
 
 cd "$STANDALONE_DIR"
 
-# ─── Étape 1 : Mettre à jour le standalone depuis GitHub ─────────────────────
-echo "⬇️  Mise à jour standalone depuis GitHub..."
-git fetch origin
-git reset --hard origin/main
-echo "  ✅ Standalone à jour"
+# ─── Étape 1 : Récupérer les derniers changements depuis GitHub ───────────────
+echo "⬇️  Mise à jour depuis GitHub..."
+git fetch origin --quiet
+git reset --hard origin/main --quiet
+echo "  ✅ Code à jour ($(git log --oneline -1))"
 
-# ─── Étape 2 : Corriger node_modules/rollup (retirer wasm-node si présent) ───
-echo "🔧 Vérification Rollup natif ARM64..."
+# ─── Étape 2 : npm install seulement si package.json a changé ────────────────
+CURRENT_HASH=$(md5 -q package.json 2>/dev/null || md5sum package.json 2>/dev/null | cut -d' ' -f1)
+SAVED_HASH=$(cat "$PKG_HASH_FILE" 2>/dev/null || echo "")
 
+if [ "$CURRENT_HASH" != "$SAVED_HASH" ] || [ ! -d node_modules ]; then
+  echo "📦 package.json modifié — npm install en cours..."
+  npm install --legacy-peer-deps --silent
+  echo "$CURRENT_HASH" > "$PKG_HASH_FILE"
+  echo "  ✅ Dépendances installées"
+else
+  echo "  ✅ Dépendances inchangées — npm install sauté"
+fi
+
+# ─── Étape 3 : Vérification Rollup natif ARM64 (Mac Silicon) ─────────────────
 if [ "$(uname -m)" = "arm64" ]; then
   ROLLUP_NM="$STANDALONE_DIR/node_modules/rollup"
-  WASM_NM="$STANDALONE_DIR/node_modules/@rollup/wasm-node"
+  ROLLUP_ARM64_DIR="$STANDALONE_DIR/node_modules/@rollup/rollup-darwin-arm64"
 
-  # Détecter si node_modules/rollup est en fait wasm-node (fichier wasm présent)
+  # Retirer wasm-node si présent (incompatible ARM64 natif)
   if [ -f "$ROLLUP_NM/dist/rollup.wasm.node" ] || grep -q "wasm" "$ROLLUP_NM/package.json" 2>/dev/null; then
-    echo "  ⚠️  node_modules/rollup contient wasm-node — correction en cours..."
-    rm -rf "$ROLLUP_NM"
-    rm -rf "$WASM_NM"
+    echo "  ⚠️  Rollup wasm détecté — remplacement par natif ARM64..."
+    rm -rf "$ROLLUP_NM" "$STANDALONE_DIR/node_modules/@rollup/wasm-node"
     npm install --ignore-scripts --prefer-offline --silent 2>/dev/null || npm install --ignore-scripts --silent
-    echo "  ✅ Rollup réinstallé proprement"
   fi
 
   # Installer le binaire natif ARM64 si absent
-  ROLLUP_VERSION=$(node -e "console.log(require('./node_modules/rollup/package.json').version)" 2>/dev/null || echo "")
-  ROLLUP_ARM64_DIR="$STANDALONE_DIR/node_modules/@rollup/rollup-darwin-arm64"
-
-  if [ ! -d "$ROLLUP_ARM64_DIR" ] && [ -n "$ROLLUP_VERSION" ]; then
-    echo "  📦 Installation du binaire Rollup natif ARM64..."
-    npm install --save-optional "@rollup/rollup-darwin-arm64@$ROLLUP_VERSION" --silent
-    echo "  ✅ Rollup ARM64 installé — build sera ~10x plus rapide"
-  elif [ -d "$ROLLUP_ARM64_DIR" ]; then
-    echo "  ✅ Rollup ARM64 natif présent"
+  if [ ! -d "$ROLLUP_ARM64_DIR" ]; then
+    ROLLUP_VERSION=$(node -e "console.log(require('./node_modules/rollup/package.json').version)" 2>/dev/null || echo "")
+    if [ -n "$ROLLUP_VERSION" ]; then
+      echo "  📦 Installation Rollup natif ARM64 (@$ROLLUP_VERSION)..."
+      npm install --save-optional "@rollup/rollup-darwin-arm64@$ROLLUP_VERSION" --silent
+      echo "  ✅ Rollup ARM64 installé — build ~10x plus rapide"
+    fi
   fi
 fi
 
-# Installer @vitejs/plugin-react-swc si absent
-if ! node -e "require('@vitejs/plugin-react-swc')" 2>/dev/null; then
-  echo "  📦 Installation de @vitejs/plugin-react-swc..."
-  npm install --save-dev @vitejs/plugin-react-swc --silent
-fi
-
-echo "  ✅ Dépendances OK"
-
-# ─── Étape 3 : S'assurer que le repo Lovable est sain ────────────────────────
-echo "🔄 Vérification du repo Lovable..."
-if (cd "$LOVABLE_DIR" 2>/dev/null && git fetch origin 2>/dev/null && git reset --hard "origin/$LOVABLE_BRANCH" 2>/dev/null); then
-  echo "  ✅ Repo Lovable à jour"
-else
-  echo "  ⚠️  Repo Lovable corrompu — re-clonage en cours..."
-  rm -rf "$LOVABLE_DIR"
-  git clone --branch "$LOVABLE_BRANCH" --single-branch "$LOVABLE_REPO" "$LOVABLE_DIR"
-  echo "  ✅ Repo Lovable re-cloné"
-fi
-
-# ─── Étape 4 : Sync fichiers source ──────────────────────────────────────────
-echo "📦 Sync fichiers source..."
-rsync -a \
-  --exclude='node_modules' \
-  --exclude='ios' \
-  --exclude='android' \
-  --exclude='.git' \
-  --exclude='dist' \
-  --exclude='index.html' \
-  --exclude='tsconfig.json' \
-  --exclude='vite.config.ts' \
-  --exclude='package.json' \
-  --exclude='package-lock.json' \
-  --exclude='src/integrations/supabase/client.ts' \
-  --exclude='src/components/auth/MplanipretGuard.tsx' \
-  --exclude='src/index.tsx' \
-  "$LOVABLE_DIR/apps/planipret-mobile/" \
-  "$STANDALONE_DIR/"
-echo "  ✅ Fichiers synchronisés"
-
-# ─── Étape 5 : Restaurer les fichiers critiques depuis GitHub ─────────────────
-echo "🔧 Restauration des fichiers de configuration iOS/Mac..."
-curl -sf "$GITHUB_RAW/vite.config.ts"                          -o "$STANDALONE_DIR/vite.config.ts"                          && echo "  ✅ vite.config.ts"     || echo "  ⚠️  vite.config.ts: échec"
-curl -sf "$GITHUB_RAW/index.html"                              -o "$STANDALONE_DIR/index.html"                              && echo "  ✅ index.html"         || echo "  ⚠️  index.html: échec"
-curl -sf "$GITHUB_RAW/tsconfig.json"                           -o "$STANDALONE_DIR/tsconfig.json"                           && echo "  ✅ tsconfig.json"      || echo "  ⚠️  tsconfig.json: échec"
-curl -sf "$GITHUB_RAW/src/integrations/supabase/client.ts"     -o "$STANDALONE_DIR/src/integrations/supabase/client.ts"     && echo "  ✅ supabase/client.ts" || echo "  ⚠️  supabase/client.ts: échec"
-curl -sf "$GITHUB_RAW/src/components/auth/MplanipretGuard.tsx" -o "$STANDALONE_DIR/src/components/auth/MplanipretGuard.tsx" && echo "  ✅ MplanipretGuard.tsx"|| echo "  ⚠️  MplanipretGuard.tsx: échec"
-curl -sf "$GITHUB_RAW/src/index.tsx"                           -o "$STANDALONE_DIR/src/index.tsx"                           && echo "  ✅ index.tsx"          || echo "  ⚠️  index.tsx: échec"
-curl -sf "$GITHUB_RAW/package.json"                            -o "$STANDALONE_DIR/package.json"                            && echo "  ✅ package.json"       || echo "  ⚠️  package.json: échec"
-
-# ─── Étape 6 : Build ─────────────────────────────────────────────────────────
-echo "🔨 Build..."
-cd "$STANDALONE_DIR"
+# ─── Étape 4 : Build ─────────────────────────────────────────────────────────
+echo "🔨 Build Vite..."
 npm run build
 
+# ─── Étape 5 : Copier vers iOS ───────────────────────────────────────────────
+echo "📱 Copie vers iOS..."
+npx cap copy ios --silent 2>/dev/null || npx cap copy ios
+
 echo ""
-echo "✅ Build terminé !"
-echo "👉 Prochaine étape :"
-echo "   ./node_modules/.bin/cap sync ios && ./node_modules/.bin/cap open ios"
+echo "✅ Terminé ! Ouvre Xcode pour déployer :"
+echo "   npx cap open ios"
