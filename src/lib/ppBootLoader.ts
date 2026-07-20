@@ -100,12 +100,18 @@ export function bootPreloader(userId?: string): void {
 
   // Phase 2: prefetch page data after a short delay so the initial paint
   // is not delayed by network requests.
+  // Guard: skip data prefetch when there is no active session to avoid 401s
+  // on unauthenticated loads (mirrors the Lovable auto-sync fix).
   if (userId) {
     const delay = typeof (window as any).requestIdleCallback === "function"
       ? (fn: () => void) => (window as any).requestIdleCallback(fn, { timeout: 3000 })
       : (fn: () => void) => setTimeout(fn, 800);
 
-    delay(() => { void prefetchPageData(userId); });
+    delay(async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return; // no active session — skip to avoid 401
+      void prefetchPageData(userId);
+    });
   }
 }
 

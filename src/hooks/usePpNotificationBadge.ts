@@ -46,6 +46,10 @@ export function usePpNotificationBadge(userId: string | undefined): PpNotificati
 
   const fetchCounts = useCallback(async () => {
     if (!userId || refreshing.current) return;
+    // Skip the call entirely when there is no active Supabase session
+    // to avoid 401 errors on unauthenticated loads.
+    const { data: { session: activeSession } } = await supabase.auth.getSession();
+    if (!activeSession) return;
     refreshing.current = true;
     try {
       const [smsRes, vmRes, missedRes, avaRes] = await Promise.allSettled([
@@ -79,12 +83,15 @@ export function usePpNotificationBadge(userId: string | undefined): PpNotificati
       ]);
 
       // MS365 unread emails — best-effort, non-blocking
+      // Only called when a valid session exists (guard above already checked).
       let ms365Count = 0;
       try {
         const ms365Res = await supabase.functions.invoke("ms365-actions", {
           body: { action: "unread_count" },
         });
-        ms365Count = (ms365Res.data as any)?.unread_count ?? 0;
+        if (!ms365Res.error) {
+          ms365Count = (ms365Res.data as any)?.unread_count ?? 0;
+        }
       } catch { /* MS365 may not be configured */ }
 
       if (!mounted.current) return;
