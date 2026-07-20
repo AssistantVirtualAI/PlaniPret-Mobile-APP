@@ -1098,6 +1098,75 @@ function ContactField({ label, value, onCall }: { label: string; value: string; 
   );
 }
 
+// ─── Bouton IA Claude pour les sheets de composition dans MContacts ───────────
+function AiContactImproveButton({
+  text, onResult, mode, disabled = false,
+}: { text: string; onResult: (r: string) => void; mode: "sms" | "email"; disabled?: boolean }) {
+  const [open, setOpen] = useState(false);
+  const [improving, setImproving] = useState(false);
+  const actions: { key: "fix" | "improve" | "formal" | "shorter"; label: string; icon: string }[] = [
+    { key: "fix",     label: "Corriger les fautes",  icon: "✓" },
+    { key: "improve", label: "Améliorer le texte",   icon: "✨" },
+    { key: "formal",  label: "Rendre plus formel",   icon: "👔" },
+    { key: "shorter", label: "Raccourcir",            icon: "✂️" },
+  ];
+  const improve = async (action: "fix" | "improve" | "formal" | "shorter") => {
+    if (!text.trim()) { toast.error("Écrivez d'abord un message"); return; }
+    setOpen(false);
+    setImproving(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("ai-text-improve", {
+        body: { text, mode, action },
+      });
+      if (error) throw error;
+      if (!(data as any)?.success) throw new Error((data as any)?.error ?? "IA indisponible");
+      onResult((data as any).result);
+    } catch (e: any) {
+      toast.error(e?.message ?? "Erreur IA");
+    } finally {
+      setImproving(false);
+    }
+  };
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        disabled={improving || disabled || !text.trim()}
+        className="flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium transition active:scale-95 disabled:opacity-40"
+        style={{ background: "linear-gradient(135deg,#7C3AED,#A855F7)", color: "#fff", boxShadow: "0 2px 8px rgba(124,58,237,0.35)" }}
+        title="Améliorer avec IA"
+      >
+        {improving
+          ? <Loader2 className="w-3 h-3 animate-spin" />
+          : <Sparkles className="w-3 h-3" />}
+        IA
+      </button>
+      {open && (
+        <div
+          className="absolute top-8 right-0 z-[300] rounded-2xl overflow-hidden shadow-xl min-w-[180px]"
+          style={{ background: "var(--pp-bg-surface, #1e293b)", border: "1px solid rgba(255,255,255,0.12)" }}
+        >
+          {actions.map((a) => (
+            <button
+              key={a.key}
+              onClick={() => improve(a.key)}
+              className="w-full text-left px-4 py-3 text-sm flex items-center gap-2.5 active:opacity-70 transition"
+              style={{ color: "var(--pp-text-primary, #f1f5f9)", borderBottom: "1px solid rgba(255,255,255,0.07)" }}
+            >
+              <span>{a.icon}</span> {a.label}
+            </button>
+          ))}
+          <button
+            onClick={() => setOpen(false)}
+            className="w-full text-center px-4 py-2 text-xs"
+            style={{ color: "var(--pp-text-muted, #94a3b8)" }}
+          >Annuler</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SmsComposerSheet({ to, contactName, onClose }: { to: string; contactName: string; onClose: () => void }) {
   const [recipient, setRecipient] = useState(to);
   const [body, setBody] = useState("");
@@ -1174,7 +1243,7 @@ function SmsComposerSheet({ to, contactName, onClose }: { to: string; contactNam
   const disabled = sending || sent || preflight === "loading" || noNumber || !recipient.trim() || !body.trim();
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+    <div className="fixed inset-0 z-[200] flex items-end justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
       <div
         className="w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl p-4"
         style={{ background: "var(--pp-bg-base)", border: "1px solid var(--pp-bg-border-2)", paddingBottom: "max(1rem, env(safe-area-inset-bottom))" }}
@@ -1249,7 +1318,11 @@ function SmsComposerSheet({ to, contactName, onClose }: { to: string; contactNam
           style={{ fontSize: 16, background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
         />
 
-        <label className="text-[10px] font-semibold uppercase" style={{ color: "var(--pp-text-muted)" }}>Message</label>
+        <div className="flex items-center justify-between mt-0 mb-1">
+          <label className="text-[10px] font-semibold uppercase" style={{ color: "var(--pp-text-muted)" }}>Message</label>
+          {/* Bouton IA Claude */}
+          <AiContactImproveButton text={body} onResult={setBody} mode="sms" disabled={sending || sent} />
+        </div>
         <textarea
           ref={taRef}
           value={body}
@@ -1260,7 +1333,6 @@ function SmsComposerSheet({ to, contactName, onClose }: { to: string; contactNam
           className="w-full mt-1 mb-3 px-3 py-2 rounded-lg outline-none resize-none disabled:opacity-60"
           style={{ fontSize: 16, background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
         />
-
         <button
           onClick={send}
           disabled={disabled}
@@ -1323,7 +1395,7 @@ function EmailComposerSheet({ to, contactName, onClose }: { to: string; contactN
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+    <div className="fixed inset-0 z-[200] flex items-end justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
       <div
         className="w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl p-4"
         style={{ background: "var(--pp-bg-base)", border: "1px solid var(--pp-bg-border-2)", paddingBottom: "max(1rem, env(safe-area-inset-bottom))" }}
@@ -1354,7 +1426,10 @@ function EmailComposerSheet({ to, contactName, onClose }: { to: string; contactN
           style={{ fontSize: 16, background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
         />
 
-        <label className="text-[10px] font-semibold uppercase" style={{ color: "var(--pp-text-muted)" }}>Message</label>
+        <div className="flex items-center justify-between mt-0 mb-1">
+          <label className="text-[10px] font-semibold uppercase" style={{ color: "var(--pp-text-muted)" }}>Message</label>
+          <AiContactImproveButton text={body} onResult={setBody} mode="email" disabled={sending} />
+        </div>
         <textarea
           ref={taRef}
           value={body}
