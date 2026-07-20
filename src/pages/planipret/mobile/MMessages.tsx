@@ -1242,6 +1242,31 @@ type ComposeInit = {
   body?: string;
 };
 
+/**
+ * Nettoie le HTML d'un courriel Microsoft pour l'affichage mobile :
+ * - Supprime les balises <html>, <head>, <body>, <meta>, <style> globaux
+ * - Retire les attributs width/height fixes sur tables et images
+ * - Conserve le contenu visible intact
+ */
+function sanitizeEmailHtml(html: string): string {
+  // Supprimer les balises structurelles HTML qui cassent le layout
+  let clean = html
+    .replace(/<(!DOCTYPE|html|head|body)[^>]*>/gi, "")
+    .replace(/<\/(html|head|body)>/gi, "")
+    .replace(/<meta[^>]*>/gi, "")
+    // Supprimer les <style> globaux qui peuvent imposer des largeurs fixes
+    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
+    // Retirer les attributs width/height fixes sur les tables (ex: width="600")
+    .replace(/(<table[^>]*?)\s+width=["'][^"']*["']/gi, "$1")
+    .replace(/(<table[^>]*?)\s+height=["'][^"']*["']/gi, "$1")
+    // Retirer les width fixes en style inline sur les tables
+    .replace(/(<table[^>]*?)\s+style=["']([^"']*?)(width\s*:\s*[\d.]+px)[^"']*["']/gi, (_, tag, before) => `${tag} style="${before}width:100%"`)
+    // Forcer les images à être responsives
+    .replace(/(<img[^>]*?)\s+width=["'][^"']*["']/gi, "$1")
+    .replace(/(<img[^>]*?)\s+height=["'][^"']*["']/gi, "$1");
+  return clean;
+}
+
 function EmailDetailSheet({ email, folder, onClose, onCompose, onChanged, onOptimisticRemove }: {
   email: any;
   folder?: EmailFolder;
@@ -1481,11 +1506,54 @@ function EmailDetailSheet({ email, folder, onClose, onCompose, onChanged, onOpti
             className="rounded-xl p-3 text-sm"
             style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
           >
+{/* Styles de normalisation mobile injectés avant le HTML du courriel */}
+            <style>{`
+              .pp-email-body {
+                overflow-x: hidden;
+                word-break: break-word;
+                overflow-wrap: anywhere;
+                -webkit-text-size-adjust: 100%;
+                font-size: 13px;
+                line-height: 1.55;
+              }
+              .pp-email-body * {
+                max-width: 100% !important;
+                box-sizing: border-box !important;
+              }
+              .pp-email-body table {
+                width: 100% !important;
+                table-layout: fixed !important;
+                border-collapse: collapse !important;
+              }
+              .pp-email-body td, .pp-email-body th {
+                word-break: break-word !important;
+                overflow-wrap: anywhere !important;
+                padding: 4px 6px !important;
+              }
+              .pp-email-body img {
+                max-width: 100% !important;
+                height: auto !important;
+                display: block;
+              }
+              .pp-email-body a {
+                color: var(--pp-brand-accent, #2E9BDC);
+                word-break: break-all;
+              }
+              .pp-email-body p, .pp-email-body div, .pp-email-body span {
+                max-width: 100% !important;
+              }
+              /* Masquer les bannières d'avertissement externe de Microsoft */
+              .pp-email-body [class*="ExternalClass"],
+              .pp-email-body [id*="divRplyFwdMsg"] { display: none !important; }
+            `}</style>
             {loadingDetail && !detail ? (
               <div className="text-center py-6"><Loader2 className="w-4 h-4 animate-spin mx-auto" /></div>
             ) : bodyType === "html" && bodyHtml ? (
-              <div className="pp-email-body" style={{ maxWidth: "100%", overflowWrap: "anywhere" }}
-                   dangerouslySetInnerHTML={{ __html: bodyHtml }} />
+              <div
+                className="pp-email-body"
+                style={{ overflowX: "hidden", maxWidth: "100%" }}
+                dangerouslySetInnerHTML={{ __html: sanitizeEmailHtml(bodyHtml) }}
+              />
             ) : (
               <div className="whitespace-pre-wrap">{bodyHtml || merged.bodyPreview || t("messages.previewUnavailable")}</div>
             )}

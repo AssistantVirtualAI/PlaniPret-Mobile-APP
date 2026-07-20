@@ -827,7 +827,6 @@ export default function PlanipretMobile() {
         {/* Top brand header — Logo Planiprêt centré · Cloche (droite) · Lang/Thème/Profil (droite) */}
         <header
           className="relative flex items-center px-4 pp-mobile-header"
-          style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 6px)", paddingBottom: 6 }}
         >
           {/* Logo Planiprêt — centré en position absolue */}
           <div
@@ -997,13 +996,15 @@ export default function PlanipretMobile() {
         <div className="absolute bottom-0 inset-x-0 h-[40px] flex flex-col items-center justify-center z-10 pp-mobile-footer" style={{ gap: 1 }}>
           <div className="flex items-center gap-2">
             <span style={{ fontFamily: "Urbanist,sans-serif", fontSize: 7, color: "var(--pp-text-muted)", letterSpacing: "0.14em", fontWeight: 600 }}>{t("footer.poweredBy")}</span>
+            {/* Logo AVA avec image — visible en thème clair et sombre */}
             <div className="relative flex items-center justify-center" style={{ width: 24, height: 24 }}>
               <div className="absolute inset-0 rounded-full" style={{ background: "radial-gradient(circle, rgba(124,58,237,0.45) 0%, rgba(46,155,220,0.18) 50%, transparent 75%)", filter: "blur(5px)", animation: "ava-footer-pulse 3s ease-in-out infinite" }} />
-              <div className="absolute inset-0 rounded-full flex items-center justify-center overflow-hidden" style={{ background: "conic-gradient(from 0deg, #7C3AED, #2E9BDC, #00D4AA, #7C3AED)", padding: 1.5, animation: "ava-footer-spin 6s linear infinite" }}>
-                <div className="w-full h-full rounded-full flex items-center justify-center" style={{ background: "var(--pp-bg-surface, #0A1628)", color: "#fff", fontWeight: 800, fontSize: 8, fontFamily: "Urbanist,sans-serif", letterSpacing: "0.02em" }}>AVA</div>
+              <div className="absolute inset-0 rounded-full overflow-hidden" style={{ border: "1.5px solid rgba(124,58,237,0.6)", animation: "ava-footer-spin 6s linear infinite", background: "conic-gradient(from 0deg, #7C3AED, #2E9BDC, #00D4AA, #7C3AED)" }} />
+              <div className="absolute inset-[2px] rounded-full overflow-hidden flex items-center justify-center" style={{ background: "#0A1628" }}>
+                <img src={avaLogoAsset.url} alt="AVA" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
               </div>
             </div>
-            <span style={{ fontFamily: "Urbanist,sans-serif", fontSize: 12, letterSpacing: "0.06em", fontWeight: 800, background: "linear-gradient(90deg,#7C3AED,#2E9BDC)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", backgroundClip: "text" }}>AVA</span>
+            <span style={{ fontFamily: "Urbanist,sans-serif", fontSize: 12, letterSpacing: "0.06em", fontWeight: 800, color: "#7C3AED" }}>AVA</span>
           </div>
           <span style={{ fontSize: 6, color: "var(--pp-text-faint)", letterSpacing: "0.08em" }}>· {t("footer.developedBy")}</span>
           <style>{`

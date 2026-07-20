@@ -924,9 +924,8 @@
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
   border-bottom: 1px solid var(--pp-bg-border);
-  /* Respect iOS safe area — sit just below the status bar. */
-  margin-top: env(safe-area-inset-top, 0px) !important;
-  padding-top: 10px !important;
+  /* Safe area is handled by paddingTop in the React component — do NOT add margin-top here to avoid double-counting. */
+  padding-top: calc(env(safe-area-inset-top, 0px) + 6px) !important;
   padding-bottom: 10px !important;
 }
 .planipret-mobile-scope .pp-mobile-tabbar {

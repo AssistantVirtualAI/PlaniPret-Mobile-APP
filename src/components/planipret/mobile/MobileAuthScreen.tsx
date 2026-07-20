@@ -235,12 +235,17 @@ export default function MobileAuthScreen({ onLoggedIn }: { onLoggedIn: () => Pro
         <button onClick={() => setShowLegal("privacy")} style={{ color: "var(--pp-brand-accent)", textDecoration: "underline" }}>{t("legal.privacy")}</button>.
       </p>
 
-      {/* Footer */}
-      <div className="h-[28px] flex items-center justify-center gap-2 pp-mobile-footer">
-        <span style={{ fontFamily: "Urbanist,sans-serif", fontSize: 9, color: "var(--pp-text-muted)", letterSpacing: "0.14em", fontWeight: 600 }}>{t("footer.poweredBy")}</span>
-        <div style={{ background: "#7C3AED", borderRadius: 4, padding: "2px 5px", color: "white", fontWeight: 700, fontSize: 8 }}>AVA</div>
-        <span style={{ fontFamily: "Urbanist,sans-serif", fontSize: 9, color: "var(--pp-brand-accent-2)", letterSpacing: "0.10em", fontWeight: 700 }}>AVA</span>
-        <span style={{ fontSize: 8.5, color: "var(--pp-text-faint)", letterSpacing: "0.1em" }}>· {t("footer.developedBy")}</span>
+      {/* Footer AVA avec logo image */}
+      <div className="flex flex-col items-center justify-center gap-0.5 py-2" style={{ borderTop: "1px solid var(--pp-bg-border)", paddingBottom: `calc(env(safe-area-inset-bottom, 0px) + 8px)` }}>
+        <div className="flex items-center gap-2">
+          <span style={{ fontFamily: "Urbanist,sans-serif", fontSize: 8, color: "var(--pp-text-muted)", letterSpacing: "0.14em", fontWeight: 600 }}>{t("footer.poweredBy")}</span>
+          {/* Logo AVA circulaire avec image */}
+          <div style={{ width: 22, height: 22, borderRadius: "50%", overflow: "hidden", border: "1.5px solid rgba(124,58,237,0.6)", background: "#0A1628", display: "flex", alignItems: "center", justifyContent: "center" }}>
+            <img src={avaLogoAsset.url} alt="AVA" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+          </div>
+          <span style={{ fontFamily: "Urbanist,sans-serif", fontSize: 12, letterSpacing: "0.06em", fontWeight: 800, color: "#7C3AED" }}>AVA</span>
+        </div>
+        <span style={{ fontSize: 7, color: "var(--pp-text-faint)", letterSpacing: "0.08em" }}>· {t("footer.developedBy")}</span>
       </div>
 
       {showLegal && (
