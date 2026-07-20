@@ -1333,14 +1333,18 @@ function SwipeEmailRow({
   const rowRef = React.useRef<HTMLDivElement>(null);
   const startXRef = React.useRef<number | null>(null);
   const startYRef = React.useRef<number | null>(null);
+  // Tracks whether a horizontal swipe gesture occurred (even below threshold)
+  const didSwipeRef = React.useRef(false);
   const [offset, setOffset] = React.useState(0);
   const [revealed, setRevealed] = React.useState<"left" | "right" | null>(null);
   const THRESHOLD = 72;
+  // Minimum horizontal movement to consider it a swipe (not a tap)
+  const SWIPE_MIN = 8;
 
   const handleTouchStart = (e: React.TouchEvent) => {
     startXRef.current = e.touches[0].clientX;
     startYRef.current = e.touches[0].clientY;
-    setRevealed(null);
+    didSwipeRef.current = false;
   };
 
   const handleTouchMove = (e: React.TouchEvent) => {
@@ -1349,6 +1353,10 @@ function SwipeEmailRow({
     const dy = e.touches[0].clientY - startYRef.current;
     // Si le scroll vertical est dominant, ne pas intercepter
     if (Math.abs(dy) > Math.abs(dx) + 10) return;
+    // Mark as swipe gesture if moved more than SWIPE_MIN px horizontally
+    if (Math.abs(dx) > SWIPE_MIN) {
+      didSwipeRef.current = true;
+    }
     e.preventDefault();
     const clamped = Math.max(-THRESHOLD * 1.5, Math.min(THRESHOLD * 1.5, dx));
     setOffset(clamped);
@@ -1363,13 +1371,13 @@ function SwipeEmailRow({
       setOffset(THRESHOLD);
     } else {
       setOffset(0);
-      setRevealed(null);
+      // Keep revealed state if buttons were already shown
     }
     startXRef.current = null;
     startYRef.current = null;
   };
 
-  const resetSwipe = () => { setOffset(0); setRevealed(null); };
+  const resetSwipe = () => { setOffset(0); setRevealed(null); didSwipeRef.current = false; };
 
   return (
     <div
@@ -1431,7 +1439,13 @@ function SwipeEmailRow({
         onTouchEnd={handleTouchEnd}
       >
         <button
-          onClick={() => { if (revealed) { resetSwipe(); return; } onOpen(); }}
+          onClick={() => {
+            // If buttons are revealed, a tap resets the swipe instead of opening
+            if (revealed) { resetSwipe(); return; }
+            // If a horizontal swipe gesture occurred (even below threshold), block open
+            if (didSwipeRef.current) { didSwipeRef.current = false; return; }
+            onOpen();
+          }}
           className="w-full flex items-start gap-3 px-4 py-3 active:opacity-70 text-left"
         >
           <div
@@ -1744,72 +1758,46 @@ function EmailDetailSheet({ email, folder, onClose, onCompose, onChanged, onOpti
             {analysis && (<div className="mt-2"><AvaProposedActionsCard analysis={analysis} onDismiss={() => setAnalysis(null)} /></div>)}
           </div>
 
-          {/* Corps HTML du courriel */}
+          {/* Corps HTML du courriel — rendu via iframe srcdoc pour forcer le responsive mobile */}
           <div className="px-3 pb-3">
-            <style>{`
-              .pp-email-body {
-                overflow-x: hidden !important;
-                word-break: break-word !important;
-                overflow-wrap: anywhere !important;
-                -webkit-text-size-adjust: 100% !important;
-                font-size: 14px !important;
-                line-height: 1.6 !important;
-                color: var(--pp-text-primary) !important;
-              }
-              .pp-email-body * {
-                max-width: 100% !important;
-                box-sizing: border-box !important;
-              }
-              .pp-email-body table {
-                max-width: 100% !important;
-                table-layout: fixed !important;
-                border-collapse: collapse !important;
-                overflow-x: auto !important;
-              }
-              .pp-email-body td, .pp-email-body th {
-                word-break: break-word !important;
-                overflow-wrap: anywhere !important;
-              }
-              .pp-email-body img {
-                max-width: 100% !important;
-                width: auto !important;
-                height: auto !important;
-                display: block !important;
-              }
-              .pp-email-body a {
-                color: var(--pp-brand-accent, #2E9BDC) !important;
-                word-break: break-all !important;
-              }
-              .pp-email-body p, .pp-email-body div, .pp-email-body span,
-              .pp-email-body h1, .pp-email-body h2, .pp-email-body h3 {
-                max-width: 100% !important;
-                overflow-wrap: anywhere !important;
-              }
-              /* Masquer les bannières d'avertissement externe de Microsoft */
-              .pp-email-body [class*="ExternalClass"],
-              .pp-email-body [id*="divRplyFwdMsg"],
-              .pp-email-body [class*="x_ExternalClass"] { display: none !important; }
-              /* Fond blanc forcé pour les emails HTML */
-              .pp-email-body-wrap {
-                background: #ffffff;
-                border-radius: 12px;
-                padding: 12px;
-                overflow-x: hidden;
-                overflow-y: visible;
-                color: #1a1a1a;
-              }
-              /* Forcer les couleurs de texte pour lisibilité sur fond blanc */
-              .pp-email-body-wrap .pp-email-body {
-                color: #1a1a1a !important;
-              }
-            `}</style>
             {loadingDetail && !detail ? (
               <div className="text-center py-8"><Loader2 className="w-5 h-5 animate-spin mx-auto" style={{ color: "var(--pp-brand-accent)" }} /></div>
             ) : bodyType === "html" && bodyHtml ? (
-              <div className="pp-email-body-wrap">
-                <div
-                  className="pp-email-body"
-                  dangerouslySetInnerHTML={{ __html: sanitizeEmailHtml(bodyHtml) }}
+              <div
+                className="rounded-xl overflow-hidden"
+                style={{ background: "#ffffff", border: "1px solid rgba(0,0,0,0.08)" }}
+              >
+                <iframe
+                  title="email-body"
+                  sandbox="allow-same-origin"
+                  style={{ width: "100%", border: "none", minHeight: "200px", display: "block" }}
+                  srcDoc={[
+                    '<!DOCTYPE html><html><head>',
+                    '<meta charset="utf-8">',
+                    '<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">',
+                    '<style>',
+                    'html,body{margin:0;padding:8px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:14px;line-height:1.6;color:#1a1a1a;background:#ffffff;-webkit-text-size-adjust:100%;}',
+                    '*{max-width:100%!important;box-sizing:border-box!important;}',
+                    'img{max-width:100%!important;height:auto!important;display:block;}',
+                    'table{max-width:100%!important;width:100%!important;table-layout:fixed!important;border-collapse:collapse!important;}',
+                    'td,th{word-break:break-word!important;overflow-wrap:anywhere!important;}',
+                    'a{color:#2E9BDC;word-break:break-all;}',
+                    'pre,code{white-space:pre-wrap;word-break:break-word;}',
+                    '[class*="ExternalClass"],[id*="divRplyFwdMsg"],[class*="x_ExternalClass"]{display:none!important;}',
+                    '</style></head><body>',
+                    sanitizeEmailHtml(bodyHtml),
+                    '</body></html>',
+                  ].join('')}
+                  onLoad={(e) => {
+                    try {
+                      const iframe = e.currentTarget as HTMLIFrameElement;
+                      const doc = iframe.contentDocument || (iframe.contentWindow as any)?.document;
+                      if (doc) {
+                        const h = doc.documentElement.scrollHeight || doc.body?.scrollHeight || 0;
+                        if (h > 0) iframe.style.height = h + 'px';
+                      }
+                    } catch (_) { /* cross-origin guard */ }
+                  }}
                 />
               </div>
             ) : (
