@@ -124,6 +124,9 @@ export default function MContacts() {
   const [filterDept, setFilterDept] = useState<string>("");
   const [filterTeam, setFilterTeam] = useState<string>("");
   const [sortBy, setSortBy] = useState<"relevance" | "name" | "team" | "department">("relevance");
+  // Quick-action sheets (SMS / Email) triggered directly from contact rows
+  const [quickSms, setQuickSms] = useState<{ to: string; name: string } | null>(null);
+  const [quickEmail, setQuickEmail] = useState<{ to: string; name: string } | null>(null);
   const loadedTabsRef = useRef<Set<Tab>>(new Set<Tab>([
     "favorites",
     ...(peekPpContacts("directory") ? (["directory"] as Tab[]) : []),
@@ -597,24 +600,52 @@ export default function MContacts() {
                     </div>
                   )}
                 </div>
-                <button
-                  onClick={(e) => { e.stopPropagation(); toggleFav(favEntry); }}
-                  className="flex items-center justify-center active:scale-95 transition"
-                  style={{
-                    width: 32, height: 32, borderRadius: "50%",
-                    background: starred ? "rgba(245,158,11,0.15)" : "var(--pp-bg-elevated)",
-                    border: `1px solid ${starred ? "rgba(245,158,11,0.4)" : "var(--pp-bg-border-2)"}`,
-                    color: starred ? "#f59e0b" : "var(--pp-text-secondary)",
-                  }}
-                  aria-label={starred ? (t("contacts.removeFavorite") || "Retirer") : (t("contacts.addFavorite") || "Ajouter")}>
-                  <Star className="w-3.5 h-3.5" fill={starred ? "#f59e0b" : "none"} />
-                </button>
-                <button onClick={(e) => { e.stopPropagation(); phone && openDialer(phone); }}
-                  className="flex items-center justify-center active:scale-95 transition"
-                  style={{ width: 32, height: 32, borderRadius: "50%", background: "rgba(46,155,220,0.12)", border: "1px solid rgba(46,155,220,0.3)", color: "var(--pp-brand-accent)" }}
-                  aria-label={t("common.call")}>
-                  <Phone className="w-3.5 h-3.5" />
-                </button>
+                {/* ── Quick actions: Appel + SMS + Email ── */}
+                <div className="flex items-center gap-1 flex-shrink-0">
+                  {/* Appeler */}
+                  {phone && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); openDialer(phone); }}
+                      className="flex items-center justify-center active:scale-95 transition"
+                      style={{ width: 32, height: 32, borderRadius: "50%", background: "rgba(46,155,220,0.12)", border: "1px solid rgba(46,155,220,0.3)", color: "var(--pp-brand-accent)" }}
+                      aria-label={t("common.call")}>
+                      <Phone className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                  {/* SMS */}
+                  {phone && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setQuickSms({ to: phone, name: displayName || "" }); }}
+                      className="flex items-center justify-center active:scale-95 transition"
+                      style={{ width: 32, height: 32, borderRadius: "50%", background: "rgba(34,197,94,0.12)", border: "1px solid rgba(34,197,94,0.3)", color: "#22c55e" }}
+                      aria-label="SMS">
+                      <MessageSquare className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                  {/* Email */}
+                  {c.email && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setQuickEmail({ to: c.email, name: displayName || "" }); }}
+                      className="flex items-center justify-center active:scale-95 transition"
+                      style={{ width: 32, height: 32, borderRadius: "50%", background: "rgba(139,92,246,0.12)", border: "1px solid rgba(139,92,246,0.3)", color: "#8b5cf6" }}
+                      aria-label="Courriel">
+                      <Mail className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                  {/* Favori */}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); toggleFav(favEntry); }}
+                    className="flex items-center justify-center active:scale-95 transition"
+                    style={{
+                      width: 32, height: 32, borderRadius: "50%",
+                      background: starred ? "rgba(245,158,11,0.15)" : "var(--pp-bg-elevated)",
+                      border: `1px solid ${starred ? "rgba(245,158,11,0.4)" : "var(--pp-bg-border-2)"}`,
+                      color: starred ? "#f59e0b" : "var(--pp-text-secondary)",
+                    }}
+                    aria-label={starred ? (t("contacts.removeFavorite") || "Retirer") : (t("contacts.addFavorite") || "Ajouter")}>
+                    <Star className="w-3.5 h-3.5" fill={starred ? "#f59e0b" : "none"} />
+                  </button>
+                </div>
               </div>
             );
           })}
@@ -645,6 +676,24 @@ export default function MContacts() {
         <CreateContactSheet
           onClose={() => setCreateOpen(false)}
           onCreated={() => { setCreateOpen(false); load("personal", { force: true }); }}
+        />
+      )}
+
+      {/* Quick SMS sheet — ouvert directement depuis la ligne de contact */}
+      {quickSms && (
+        <SmsComposerSheet
+          to={quickSms.to}
+          contactName={quickSms.name}
+          onClose={() => setQuickSms(null)}
+        />
+      )}
+
+      {/* Quick Email sheet — ouvert directement depuis la ligne de contact */}
+      {quickEmail && (
+        <EmailComposerSheet
+          to={quickEmail.to}
+          contactName={quickEmail.name}
+          onClose={() => setQuickEmail(null)}
         />
       )}
     </div>
