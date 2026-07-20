@@ -978,11 +978,14 @@ export function EmailsList({ profile }: { profile: any }) {
   };
 
   const switchFolder = (f: EmailFolder) => {
+    // Mettre state=loading ET emails=[] AVANT load() pour éviter la fenêtre
+    // où state==='ready' mais emails===null (null.map crash)
+    setState("loading");
+    setEmails([]);
     setFolder(f);
     setFolderMenuOpen(false);
     setSearchQuery("");
     setSearchActive(false);
-    setEmails(null);
     load(f, undefined);
   };
 
@@ -1161,7 +1164,7 @@ export function EmailsList({ profile }: { profile: any }) {
           <>
             {/* Outlook-style email rows with swipe gestures */}
             <ul>
-              {emails!.map((e: any, i: number) => {
+              {(emails ?? []).map((e: any, i: number) => {
                 const senderName = folder === "sent"
                   ? (e.toRecipients?.[0]?.emailAddress?.name ?? e.toRecipients?.[0]?.emailAddress?.address ?? "Destinataire")
                   : (e.from?.emailAddress?.name ?? e.from?.emailAddress?.address ?? t("messages.sender"));
