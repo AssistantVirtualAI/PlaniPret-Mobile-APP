@@ -4,8 +4,23 @@ type State = { error: Error | null };
 
 export class PlanipretErrorBoundary extends React.Component<{ children: React.ReactNode }, State> {
   state: State = { error: null };
-  static getDerivedStateFromError(error: Error) { return { error }; }
-  componentDidCatch(error: Error, info: any) { console.error("[PlanipretErrorBoundary]", error, info); }
+  static getDerivedStateFromError(error: Error) {
+    // Ignore empty/falsy errors — React StrictMode double-mount artefacts or
+    // non-fatal internal events surface here on iOS Capacitor as `{}` with no
+    // message. They must not trigger the crash screen.
+    if (!error) return {};
+    if (typeof error === 'object' && Object.keys(error).length === 0) return {};
+    const msg = (error as Error)?.message ?? '';
+    if (!msg) return {};
+    return { error };
+  }
+  componentDidCatch(error: Error, info: any) {
+    if (!error) return;
+    if (typeof error === 'object' && Object.keys(error).length === 0) return;
+    const msg = (error as Error)?.message ?? '';
+    if (!msg) return;
+    console.error("[PlanipretErrorBoundary]", error, info);
+  }
   render() {
     if (!this.state.error) return this.props.children;
     return (

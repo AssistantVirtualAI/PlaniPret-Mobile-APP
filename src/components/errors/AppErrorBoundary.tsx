@@ -63,10 +63,22 @@ export class AppErrorBoundary extends Component<Props, State> {
   };
 
   public static getDerivedStateFromError(raw: unknown): Partial<State> {
+    // Ignore empty/falsy errors — React StrictMode double-mount artefacts or
+    // non-fatal iOS Capacitor internal events surface as `{}` with no message.
+    // Returning {} (no state change) prevents the crash screen from showing.
+    if (!raw) return {};
+    if (typeof raw === 'object' && !(raw instanceof Error) && Object.keys(raw).length === 0) return {};
+    const msg = (raw as any)?.message ?? '';
+    if (typeof raw === 'object' && !(raw instanceof Error) && !msg) return {};
     return { hasError: true, error: normaliseError(raw) };
   }
 
   public componentDidCatch(raw: unknown, errorInfo: ErrorInfo) {
+    // Same guard — skip empty {} errors silently
+    if (!raw) return;
+    if (typeof raw === 'object' && !(raw instanceof Error) && Object.keys(raw).length === 0) return;
+    const msg = (raw as any)?.message ?? '';
+    if (typeof raw === 'object' && !(raw instanceof Error) && !msg) return;
     const error = normaliseError(raw);
     console.error('[ErrorBoundary] Caught error:', error, errorInfo);
     this.setState({ errorInfo });
