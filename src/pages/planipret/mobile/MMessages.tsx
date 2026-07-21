@@ -59,11 +59,28 @@ export default function MMessages() {
   const { t } = useMplanipretLang();
   const { profile, openDialer, registerRefresh } = useOutletContext<PlanipretMobileContext>();
   const [searchParams] = useSearchParams();
-  const initialTab = (searchParams.get("tab") as SubTab) || "sms";
+  // Restore last sub-tab from localStorage so clicking the bottom nav Messages
+  // tab always returns to the last visited sub-tab (SMS, Emails, Teams…)
+  const STORAGE_KEY = "pp_messages_subtab";
+  const initialTab = (() => {
+    const fromUrl = searchParams.get("tab") as SubTab | null;
+    if (fromUrl && ["sms", "team", "teams365", "emails"].includes(fromUrl)) return fromUrl;
+    const saved = localStorage.getItem(STORAGE_KEY) as SubTab | null;
+    if (saved && ["sms", "team", "teams365", "emails"].includes(saved)) return saved;
+    return "sms" as SubTab;
+  })();
   const [sub, setSub] = useState<SubTab>(initialTab);
+  // Persist sub-tab changes to localStorage
+  const setSubAndSave = (tab: SubTab) => {
+    setSub(tab);
+    try { localStorage.setItem(STORAGE_KEY, tab); } catch {}
+  };
   useEffect(() => {
     const tb = searchParams.get("tab") as SubTab | null;
-    if (tb && ["sms", "team", "teams365", "emails"].includes(tb)) setSub(tb);
+    if (tb && ["sms", "team", "teams365", "emails"].includes(tb)) {
+      setSub(tb);
+      try { localStorage.setItem(STORAGE_KEY, tb); } catch {}
+    }
   }, [searchParams]);
 
   return (
@@ -88,7 +105,7 @@ export default function MMessages() {
               <button
                 key={item.k}
                 type="button"
-                onClick={() => setSub(item.k)}
+                onClick={() => setSubAndSave(item.k)}
                 className="shrink-0 px-3.5 py-2 text-xs font-semibold rounded-full transition flex items-center gap-1.5 active:scale-95"
                 style={
                   active
@@ -1044,11 +1061,17 @@ function EmailsList({ profile }: { profile: any }) {
   useEffect(() => {
     load(); /* eslint-disable-next-line */
     if (!profile?.ms365_access_token) return;
-    const id = window.setInterval(() => { load(); }, 60_000);
-    const onVis = () => { if (document.visibilityState === "visible") load(); };
+    // Poll every 60s but skip if a sheet (compose or detail) is currently open
+    const id = window.setInterval(() => {
+      if (!composeOpen && !active) load();
+    }, 60_000);
+    // Also reload on tab focus, but only when no sheet is open
+    const onVis = () => {
+      if (document.visibilityState === "visible" && !composeOpen && !active) load();
+    };
     document.addEventListener("visibilitychange", onVis);
     return () => { window.clearInterval(id); document.removeEventListener("visibilitychange", onVis); };
-  }, [profile?.ms365_access_token]);
+  }, [profile?.ms365_access_token]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="h-full overflow-y-auto p-3">
