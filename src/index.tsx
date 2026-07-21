@@ -89,7 +89,18 @@ async function bootstrap() {
     // Mark that React has booted (used by error handlers)
     (window as any).__PP_REACT_BOOTED__ = true;
     // React.StrictMode is disabled — it causes double-mount artefacts on iOS Capacitor
-    createRoot(container).render(
+    // onRecoverableError intercepts errors that React re-throws internally (e.g. from commitRoot)
+    // This is the ONLY way to catch {} artefacts that bypass ErrorBoundary and window.onerror
+    createRoot(container, {
+      onRecoverableError: (error: unknown, errorInfo: { componentStack?: string | null }) => {
+        if (isIgnorableNativeStartupError(error)) {
+          console.warn('[PP] onRecoverableError: swallowed empty iOS artefact');
+          return;
+        }
+        const msg = error instanceof Error ? error.message : String(error);
+        console.error('[PP] onRecoverableError:', msg, errorInfo?.componentStack ?? '');
+      },
+    }).render(
       <BrowserRouter>
         <App />
       </BrowserRouter>,
