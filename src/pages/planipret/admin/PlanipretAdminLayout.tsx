@@ -1,7 +1,11 @@
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
+import { PrefetchNavLink } from "@/components/PrefetchLink";
 import { supabase } from "@/integrations/supabase/client";
-import { LayoutDashboard, Users, Phone, MessageSquare, Mic, Plug, BarChart3, LogOut, ShieldCheck, CheckSquare, Search, ChevronRight, Sparkles, Smartphone, PlugZap } from "lucide-react";
+import {
+  LayoutDashboard, Users, Phone, MessageSquare, Mic, Plug,
+  BarChart3, LogOut, ShieldCheck, CheckSquare, Search, ChevronRight, Sparkles, Smartphone, PlugZap, Bot, Activity, Gauge, Zap,
+} from "lucide-react";
 import SessionTimeoutModal from "@/components/planipret/SessionTimeoutModal";
 import { useAdminRealtime } from "@/hooks/useAdminRealtime";
 import { usePlanipretNsAutoSync } from "@/hooks/usePlanipretNsAutoSync";
@@ -18,64 +22,75 @@ import planipretLogo from "@/assets/planipret-logo.png.asset.json";
 import { toast } from "sonner";
 
 type NavBadge = "brokers" | "missed" | "integrations" | "audit";
-type NavItem = { to: string; label: string; Icon: any; badge?: NavBadge };
-type NavGroup = { title: string; items: NavItem[] };
+type NavKey = "overview" | "reports" | "ava" | "avaAgent" | "avaLogs" | "avaToolsAudit" | "brokers" | "calls" | "messages" | "recordings" | "integrations" | "mobileDevices" | "sipDiagnostic" | "compliance" | "auditChecklist" | "diagnostics" | "maestroSync";
+type SectionKey = "pilotage" | "brokers" | "communications" | "system";
+type PageKey = "overview" | "users" | "calls" | "messages" | "recordings" | "integrations" | "reports" | "auditChecklist" | "compliance" | "ava" | "avaAgent" | "avaLogs" | "avaToolsAudit" | "mobileDevices" | "sipDiagnostic" | "diagnostics" | "maestroSync";
 
-const NAV: NavGroup[] = [
+const NAV: Array<{ sectionKey: SectionKey; items: Array<{ to: string; key: NavKey; Icon: any; badge?: NavBadge }> }> = [
   {
-    title: "Pilotage",
+    sectionKey: "pilotage",
     items: [
-      { to: "/planipret/admin/overview", label: "Vue d'ensemble", Icon: LayoutDashboard },
-      { to: "/planipret/admin/reports",  label: "Rapports",       Icon: BarChart3 },
-      { to: "/planipret/admin/ava",      label: "AVA Analytics",  Icon: Sparkles },
+      { to: "/planipret/admin/overview", key: "overview", Icon: LayoutDashboard },
+      { to: "/planipret/admin/reports",  key: "reports",  Icon: BarChart3 },
+      { to: "/planipret/admin/ava",       key: "ava",      Icon: Sparkles },
+      { to: "/planipret/admin/ava-agent",  key: "avaAgent", Icon: Bot },
+      { to: "/planipret/admin/ava-logs",   key: "avaLogs",  Icon: Activity },
+      { to: "/planipret/admin/ava-tools-audit", key: "avaToolsAudit", Icon: Activity },
     ],
   },
   {
-    title: "Courtiers",
+    sectionKey: "brokers",
     items: [
-      { to: "/planipret/admin/users", label: "Courtiers", Icon: Users, badge: "brokers" },
+      { to: "/planipret/admin/users", key: "brokers", Icon: Users, badge: "brokers" },
     ],
   },
   {
-    title: "Communications",
+    sectionKey: "communications",
     items: [
-      { to: "/planipret/admin/calls",      label: "Appels",        Icon: Phone,         badge: "missed" },
-      { to: "/planipret/admin/messages",   label: "Messages",      Icon: MessageSquare },
-      { to: "/planipret/admin/recordings", label: "Enregistrements", Icon: Mic },
+      { to: "/planipret/admin/calls",      key: "calls",       Icon: Phone,         badge: "missed" },
+      { to: "/planipret/admin/messages",   key: "messages",    Icon: MessageSquare },
+      { to: "/planipret/admin/recordings", key: "recordings",  Icon: Mic },
     ],
   },
   {
-    title: "Système",
+    sectionKey: "system",
     items: [
-      { to: "/planipret/admin/integrations",    label: "Intégrations", Icon: Plug,        badge: "integrations" },
-      { to: "/planipret/admin/mobile-devices",  label: "Devices mobiles", Icon: Smartphone },
-      { to: "/planipret/admin/sip-diagnostic",  label: "Diagnostic SIP",  Icon: PlugZap },
-      { to: "/planipret/admin/compliance",      label: "Conformité",   Icon: ShieldCheck },
-      { to: "/planipret/admin/audit-checklist", label: "Audit",        Icon: CheckSquare, badge: "audit" },
+      { to: "/planipret/admin/integrations",    key: "integrations",    Icon: Plug,        badge: "integrations" },
+      { to: "/planipret/admin/mobile-devices",  key: "mobileDevices",   Icon: Smartphone },
+      { to: "/planipret/admin/sip-diagnostic",  key: "sipDiagnostic",   Icon: PlugZap },
+      { to: "/planipret/admin/diagnostics",     key: "diagnostics",     Icon: Gauge },
+      { to: "/planipret/admin/maestro-sync",    key: "maestroSync",     Icon: Zap },
+      { to: "/planipret/admin/compliance",      key: "compliance",      Icon: ShieldCheck },
+      { to: "/planipret/admin/audit-checklist", key: "auditChecklist",  Icon: CheckSquare, badge: "audit" },
     ],
   },
 ];
 
-const PAGE_TITLES: Record<string, string> = {
-  "/planipret/admin/overview": "Vue d'ensemble",
-  "/planipret/admin/users": "Gestion des courtiers",
-  "/planipret/admin/calls": "Historique des appels",
-  "/planipret/admin/messages": "Messages",
-  "/planipret/admin/recordings": "Enregistrements d'appels",
-  "/planipret/admin/integrations": "Intégrations",
-  "/planipret/admin/reports": "Rapports & Analytics",
-  "/planipret/admin/audit-checklist": "Audit système",
-  "/planipret/admin/compliance": "Conformité PIPEDA · Loi 25",
-  "/planipret/admin/ava": "AVA — Analytics",
-  "/planipret/admin/mobile-devices": "Vérification devices mobiles",
-  "/planipret/admin/sip-diagnostic": "Diagnostic SIP — 113_web",
+const PAGE_KEY_BY_PATH: Record<string, PageKey> = {
+  "/planipret/admin/overview": "overview",
+  "/planipret/admin/users": "users",
+  "/planipret/admin/calls": "calls",
+  "/planipret/admin/messages": "messages",
+  "/planipret/admin/recordings": "recordings",
+  "/planipret/admin/integrations": "integrations",
+  "/planipret/admin/reports": "reports",
+  "/planipret/admin/audit-checklist": "auditChecklist",
+  "/planipret/admin/compliance": "compliance",
+  "/planipret/admin/ava": "ava",
+  "/planipret/admin/ava-agent": "avaAgent",
+  "/planipret/admin/ava-logs": "avaLogs",
+  "/planipret/admin/ava-tools-audit": "avaToolsAudit",
+  "/planipret/admin/mobile-devices": "mobileDevices",
+  "/planipret/admin/sip-diagnostic": "sipDiagnostic",
+  "/planipret/admin/diagnostics": "diagnostics",
+  "/planipret/admin/maestro-sync": "maestroSync",
 };
 
 const initials = (n?: string) =>
   (n ?? "A").split(/\s+/).slice(0, 2).map((p) => p[0]?.toUpperCase()).join("") || "A";
 
 export default function PlanipretAdminLayout() {
-  const { lang, setLang } = useMplanipretLang();
+  const { lang, setLang, t: tt } = useMplanipretLang();
   const navigate = useNavigate();
   const location = useLocation();
   const [profile, setProfile] = useState<any>(null);
@@ -211,9 +226,11 @@ export default function PlanipretAdminLayout() {
     );
   }
 
-  const title = PAGE_TITLES[location.pathname] ?? "Tableau de bord";
+  const pageKey = PAGE_KEY_BY_PATH[location.pathname];
+  const title = pageKey ? tt(`adminPortal.pageTitles.${pageKey}`) : tt("adminPortal.dashboardTitle");
   const dateLabel = new Date().toLocaleDateString(lang === "en" ? "en-CA" : "fr-CA", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
-  const sectionLabel = NAV.find((g) => g.items.some((i) => i.to === location.pathname))?.title ?? "Administration";
+  const sectionKey = NAV.find((g) => g.items.some((i) => i.to === location.pathname))?.sectionKey;
+  const sectionLabel = sectionKey ? tt(`adminPortal.sections.${sectionKey}`) : tt("adminPortal.administration");
 
   const renderBadge = (b?: NavBadge) => {
     if (b === "brokers" && brokerCount > 0) {
@@ -256,16 +273,17 @@ export default function PlanipretAdminLayout() {
         style={{ background: "var(--pp-bg-base)" }}>
         <div className="text-center max-w-xs pp-card" style={{ padding: 24 }}>
           <h2 className="pp-heading" style={{ fontWeight: 700, fontSize: 18, marginBottom: 8 }}>
-            Dashboard admin
+            {tt("adminPortal.mobileNoticeTitle")}
           </h2>
           <p style={{ fontSize: 13, color: "var(--pp-text-secondary)", marginBottom: 16 }}>
-            Le dashboard admin est optimisé pour desktop. Sur mobile, utilisez l'application courtier.
+            {tt("adminPortal.mobileNoticeBody")}
           </p>
           <button onClick={() => navigate("/mplanipret")} className="pp-btn-primary">
-            Ouvrir l'app mobile
+            {tt("adminPortal.openMobileApp")}
           </button>
         </div>
       </div>
+
 
       {/* Sidebar */}
       <aside className="pp-sidebar hidden md:flex flex-col fixed left-0 top-0 h-screen w-[248px] z-40">
@@ -283,8 +301,8 @@ export default function PlanipretAdminLayout() {
               }}
             />
             <div className="min-w-0">
-              <div className="pp-sidebar-brand" style={{ fontSize: 15 }}>Planiprêt</div>
-              <div className="pp-sidebar-sub" style={{ fontSize: 11 }}>Admin Portal</div>
+              <div className="pp-sidebar-brand" style={{ fontSize: 15 }}>{tt("adminPortal.brand")}</div>
+              <div className="pp-sidebar-sub" style={{ fontSize: 11 }}>{tt("adminPortal.subBrand")}</div>
             </div>
           </div>
         </div>
@@ -292,21 +310,30 @@ export default function PlanipretAdminLayout() {
         {/* Nav groups */}
         <nav className="flex-1 py-2 overflow-y-auto">
           {NAV.map((group) => (
-            <div key={group.title}>
-              <div className="pp-nav-section">{group.title}</div>
-              {group.items.map(({ to, label, Icon, badge }) => (
-                <NavLink key={to} to={to} end
-                  className={({ isActive }) => `pp-nav-item ${isActive ? "is-active" : ""}`}>
-                  {({ isActive }) => (
-                    <>
-                      <Icon className="w-[17px] h-[17px] flex-shrink-0"
-                        style={{ color: isActive ? "var(--pp-brand-accent-2)" : "var(--pp-text-muted)" }} />
-                      <span className="flex-1 truncate">{label}</span>
-                      {renderBadge(badge)}
-                    </>
-                  )}
-                </NavLink>
-              ))}
+            <div key={group.sectionKey}>
+              <div className="pp-nav-section">{tt(`adminPortal.sections.${group.sectionKey}`)}</div>
+              {group.items.map(({ to, key, Icon, badge }) => {
+                const raw = tt(`adminPortal.nav.${key}`);
+                const label = raw && !raw.startsWith("adminPortal.")
+                  ? raw
+                  : (key === "diagnostics" ? (lang === "en" ? "Diagnostics" : "Diagnostic")
+                    : key === "maestroSync" ? (lang === "en" ? "Maestro sync" : "Sync Maestro")
+                    : key === "avaToolsAudit" ? (lang === "en" ? "AVA tools audit" : "Audit outils AVA")
+                    : key);
+                return (
+                  <PrefetchNavLink key={to} to={to} end
+                    className={({ isActive }) => `pp-nav-item ${isActive ? "is-active" : ""}`}>
+                    {({ isActive }) => (
+                      <>
+                        <Icon className="w-[17px] h-[17px] flex-shrink-0"
+                          style={{ color: isActive ? "var(--pp-brand-accent-2)" : "var(--pp-text-muted)" }} />
+                        <span className="flex-1 truncate">{label}</span>
+                        {renderBadge(badge)}
+                      </>
+                    )}
+                  </PrefetchNavLink>
+                );
+              })}
             </div>
           ))}
         </nav>
