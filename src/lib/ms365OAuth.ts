@@ -104,5 +104,18 @@ export async function openMs365Authorize(cfg: {
   prompt?: "select_account" | "consent" | "none";
   scopes?: string;
 }): Promise<void> {
-  window.location.href = await buildMs365AuthorizeUrl(cfg);
+  const url = await buildMs365AuthorizeUrl(cfg);
+  try {
+    const { Capacitor } = await import("@capacitor/core");
+    if (Capacitor.isNativePlatform()) {
+      // On iOS/Android: use SFSafariViewController so the deep-link callback
+      // (capacitor://localhost/auth/microsoft/callback) is properly intercepted
+      // by App.addListener('appUrlOpen') in NativeDeepLinkBridge.
+      const { Browser } = await import("@capacitor/browser");
+      await Browser.open({ url, presentationStyle: "fullscreen" });
+      return;
+    }
+  } catch { /* fall through to web */ }
+  // Web: direct navigation
+  window.location.href = url;
 }
