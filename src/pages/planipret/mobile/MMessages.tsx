@@ -1078,7 +1078,8 @@ function EmailsList({ profile }: { profile: any }) {
   }, [profile?.ms365_access_token]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div className="h-full overflow-y-auto p-3">
+    <div className="relative h-full flex flex-col">
+      <div className="flex-1 overflow-y-auto p-3">
       <div className="flex items-center justify-between mb-2">
         <button
           onClick={() => { setComposeInit({}); setComposeOpen(true); }}
@@ -1185,6 +1186,7 @@ function EmailsList({ profile }: { profile: any }) {
           })}
         </ul>
       ))}
+      </div>{/* end overflow-y-auto */}
 
       {active && (
         <EmailDetailSheet

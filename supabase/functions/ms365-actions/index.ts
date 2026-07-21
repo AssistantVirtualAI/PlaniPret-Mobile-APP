@@ -38,8 +38,15 @@ Deno.serve(async (req) => {
       userId = String(bodyUserId);
     } else {
       const userClient = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_ANON_KEY")!, { global: { headers: { Authorization: authHeader } } });
-      const { data: claims } = await userClient.auth.getClaims(token);
-      userId = claims?.claims?.sub;
+      // getClaims() may be unavailable in some Supabase JS versions; fall back to getUser()
+      try {
+        const { data: claims } = await (userClient.auth as any).getClaims?.(token) ?? { data: null };
+        userId = claims?.claims?.sub;
+      } catch (_) { /* ignore */ }
+      if (!userId) {
+        const { data: { user } } = await userClient.auth.getUser();
+        userId = user?.id;
+      }
     }
     if (!userId) return new Response(JSON.stringify({ success: false, error: "Unauthorized", code: 401 }), { status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 

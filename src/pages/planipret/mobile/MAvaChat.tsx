@@ -15,6 +15,7 @@ type Msg = { id: string; role: "user" | "assistant"; message: string; created_at
 type Session = { id: string; title: string; last_message_at: string };
 
 const MUTATING_ACTIONS = new Set(["send_email", "create_calendar_event", "send_teams_message", "reply_teams_message"]);
+type PendingConfirm = { suggestion: AvaSuggestion; label: string } | null;
 
 export default function MAvaChat() {
   const [userId, setUserId] = useState<string | null>(null);
@@ -31,6 +32,7 @@ export default function MAvaChat() {
   const [speakReplies, setSpeakReplies] = useState<boolean>(() => localStorage.getItem("ava_tts_on") === "1");
   const [speakingId, setSpeakingId] = useState<string | null>(null);
   const [runningSuggestion, setRunningSuggestion] = useState<string | null>(null);
+  const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const suppressSessionLoadRef = useRef<string | null>(null);
@@ -119,7 +121,13 @@ export default function MAvaChat() {
   const runSuggestion = async (suggestion: AvaSuggestion) => {
     const action = String(suggestion.payload?.action ?? "");
     const needsConfirm = suggestion.kind === "call" || suggestion.kind === "sms" || MUTATING_ACTIONS.has(action);
-    if (needsConfirm && !confirm(`Confirmer: ${suggestion.label}`)) return;
+    // On iOS WebView, window.confirm() is blocked — use inline confirmation instead
+    if (needsConfirm) { setPendingConfirm({ suggestion, label: suggestion.label }); return; }
+    await executeConfirmedAction(suggestion);
+  };
+
+  const executeConfirmedAction = async (suggestion: AvaSuggestion) => {
+    setPendingConfirm(null);
     setRunningSuggestion(suggestion.id);
     try {
       const { data, error } = await supabase.functions.invoke("pp-ava-chat", {
@@ -128,7 +136,11 @@ export default function MAvaChat() {
       if (error) throw error;
       const replyText = String((data as any)?.reply ?? "Action terminée.");
       setMessages((m) => [...m, { id: `act-${Date.now()}`, role: "assistant", message: replyText, created_at: new Date().toISOString() }]);
-      toast.success("Action AVA traitée");
+      if ((data as any)?.result?.ok === false || (data as any)?.result?.success === false) {
+        toast.error("Action échouée : " + ((data as any)?.result?.error ?? "Erreur inconnue"));
+      } else {
+        toast.success("Action AVA traitée");
+      }
     } catch (e: any) {
       toast.error(e?.message ?? "Action AVA impossible");
     } finally {
@@ -276,8 +288,8 @@ export default function MAvaChat() {
 
 
 
-      <div className="flex-1 min-h-0 overflow-hidden">
-        <div ref={scrollRef} className="h-full overflow-y-auto px-4 py-4 pb-6 space-y-4 max-w-3xl w-full mx-auto">
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto">
+        <div className="px-4 py-4 pb-6 space-y-4 max-w-3xl w-full mx-auto">
           {messages.length === 0 && (
             <div className="flex flex-col items-center justify-center py-14 gap-4 text-center">
               <AvaOrb state="idle" size={140} />
@@ -362,7 +374,29 @@ export default function MAvaChat() {
         </div>
       </div>
 
-      <div className="sticky bottom-0 z-10 backdrop-blur-xl px-3 pb-3 pt-2" style={{ background: "color-mix(in srgb, var(--pp-bg-surface) 70%, transparent)", borderTop: "1px solid var(--pp-bg-border)", transform: "translateZ(0)" }}>
+      {/* Inline confirmation — replaces window.confirm() blocked on iOS WebView */}
+      {pendingConfirm && (
+        <div className="fixed inset-0 z-[300] flex items-end justify-center" style={{ background: "rgba(0,0,0,0.55)" }}>
+          <div className="w-full max-w-md mx-4 mb-8 rounded-2xl p-5 space-y-4" style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", boxShadow: "0 24px 48px rgba(0,0,0,0.4)" }}>
+            <p className="text-sm font-semibold" style={{ color: "var(--pp-text-primary)" }}>Confirmer l'action</p>
+            <p className="text-sm" style={{ color: "var(--pp-text-secondary)" }}>{pendingConfirm.label}</p>
+            <div className="flex gap-3 pt-1">
+              <button
+                onClick={() => setPendingConfirm(null)}
+                className="flex-1 py-2 rounded-xl text-sm font-semibold"
+                style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-secondary)", border: "1px solid var(--pp-bg-border-2)" }}
+              >Annuler</button>
+              <button
+                onClick={() => executeConfirmedAction(pendingConfirm.suggestion)}
+                className="flex-1 py-2 rounded-xl text-sm font-semibold text-white"
+                style={{ background: "linear-gradient(135deg,#2E9BDC,#7C3AED)", boxShadow: "0 6px 18px rgba(124,58,237,0.4)" }}
+              >Confirmer</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="shrink-0 z-10 backdrop-blur-xl px-3 pt-2" style={{ background: "color-mix(in srgb, var(--pp-bg-surface) 70%, transparent)", borderTop: "1px solid var(--pp-bg-border)", transform: "translateZ(0)", paddingBottom: "max(12px, env(safe-area-inset-bottom, 12px))" }}>
        <div className="flex items-end gap-2 max-w-3xl w-full mx-auto rounded-full pl-2 pr-1.5 py-1.5" style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", boxShadow: "0 10px 30px -10px rgba(124,58,237,0.25)" }}>
         <button
           onClick={recording ? stopRec : startRec}
@@ -403,13 +437,16 @@ export default function MAvaChat() {
 }
 
 // Strip stray JSON arrays/objects the model sometimes appends after its reply.
+// Only removes JSON if it looks like a raw dump (starts with [ or { on its own line),
+// NOT if the text naturally contains brackets (e.g. lists, options).
 function cleanReply(raw: string): string {
   if (!raw) return "";
   let s = raw.trim();
   // Remove fenced ```json ... ``` blocks
   s = s.replace(/```(?:json)?\s*[\[{][\s\S]*?[\]}]\s*```/g, "").trim();
-  // Remove a trailing raw JSON array/object dump
-  const m = s.match(/^([\s\S]*?)\s*(\[[\s\S]*\]|\{[\s\S]*\})\s*$/);
+  // Only remove a trailing JSON dump if it starts on a new line after real text
+  // and the preceding text is substantial (>40 chars) — avoids cutting short replies
+  const m = s.match(/^([\s\S]{40,}?)\n+(\[[\s\S]*\]|\{[\s\S]*\})\s*$/);
   if (m && m[1].trim().length > 0) s = m[1].trim();
   return s;
 }
