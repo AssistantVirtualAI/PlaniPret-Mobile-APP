@@ -19,6 +19,7 @@ import { connectMs365 } from "@/lib/ms365Connect";
 import { getPpContacts } from "@/lib/ppContactsCache";
 import * as maestroTelecom from "@/lib/planipret/maestroTelecom";
 import { fetchTeams365, loadTeamsCache, prefetchTeams365Data, saveTeamsCachePatch, isTeamsCacheFresh, isTeamsCacheExpired, revalidateTeams365IfStale, TEAMS_TTL_MS } from "@/lib/teams365Cache";
+import { useSafeAreaInsets } from "@/hooks/useSafeAreaInsets";
 
 
 type SubTab = "sms" | "team" | "teams365" | "emails" | "roster";
@@ -1251,6 +1252,7 @@ function EmailDetailSheet({ email, onClose, onReply, onForward, onChanged }: {
   onChanged: () => void;
 }) {
   const { t } = useMplanipretLang();
+  const safeArea = useSafeAreaInsets();
   const from = email.from?.emailAddress?.name ?? email.from?.emailAddress?.address ?? t("messages.sender");
   const fromAddr = email.from?.emailAddress?.address ?? "";
   const subject = email.subject ?? t("messages.noSubject");
@@ -1332,11 +1334,10 @@ function EmailDetailSheet({ email, onClose, onReply, onForward, onChanged }: {
       style={{
         background: "var(--pp-bg-base)",
         paddingTop: "env(safe-area-inset-top, 0px)",
-        paddingBottom: "env(safe-area-inset-bottom, 0px)",
       }}
     >
       <div className="w-full flex flex-col" style={{ height: "100%", minHeight: 0 }}>
-        <div className="flex items-center justify-between px-4 pt-3 pb-2" style={{ borderBottom: "1px solid var(--pp-bg-border)", flexShrink: 0 }}>
+        <div className="flex items-center justify-between px-4 pb-2" style={{ borderBottom: "1px solid var(--pp-bg-border)", flexShrink: 0, paddingTop: Math.max(safeArea.top, 12) }}>
           <button onClick={onClose} className="p-1.5 rounded-full" style={{ color: "var(--pp-text-secondary)" }}>
             <ArrowLeft className="w-5 h-5" />
           </button>
@@ -1351,7 +1352,7 @@ function EmailDetailSheet({ email, onClose, onReply, onForward, onChanged }: {
             {busy === "flag" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Flag className="w-4 h-4" style={{ fill: flagged ? "#F59E0B" : "transparent" }} />}
           </button>
         </div>
-        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3" style={{ WebkitOverflowScrolling: "touch", minHeight: 0 }}>
+        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3" style={{ WebkitOverflowScrolling: "touch", minHeight: 0, overflowX: "hidden", maxWidth: "100vw" }}>
           <div>
             <p className="text-base font-semibold" style={{ color: "var(--pp-text-primary)" }}>{subject}</p>
             <p className="text-xs mt-1" style={{ color: "var(--pp-text-muted)" }}>
@@ -1421,8 +1422,10 @@ function EmailDetailSheet({ email, onClose, onReply, onForward, onChanged }: {
                     style={{ color: "var(--pp-text-secondary)", maxWidth: "100%", overflowX: "hidden", wordBreak: "break-word" }}
                   >
                     <style>{`
+                      .email-body { overflow-x: hidden !important; max-width: 100% !important; }
                       .email-body img { max-width: 100% !important; height: auto !important; }
                       .email-body table { max-width: 100% !important; width: 100% !important; table-layout: fixed !important; word-break: break-word; }
+                      .email-body pre { white-space: pre-wrap !important; word-break: break-all !important; }
                       .email-body td, .email-body th { word-break: break-word; }
                       .email-body a { word-break: break-all; }
                       .email-body * { max-width: 100% !important; box-sizing: border-box; }
@@ -1444,7 +1447,7 @@ function EmailDetailSheet({ email, onClose, onReply, onForward, onChanged }: {
           </div>
         </div>
 
-        <div className="px-4 py-3 flex items-center gap-2" style={{ borderTop: "1px solid var(--pp-bg-border)", flexShrink: 0 }}>
+        <div className="px-4 pt-3 flex items-center gap-2" style={{ borderTop: "1px solid var(--pp-bg-border)", flexShrink: 0, paddingBottom: `calc(${safeArea.bottom > 0 ? safeArea.bottom + "px" : "env(safe-area-inset-bottom, 0px)"} + 12px)` }}>
           <button
             onClick={() => onReply({
               to: fromAddr,

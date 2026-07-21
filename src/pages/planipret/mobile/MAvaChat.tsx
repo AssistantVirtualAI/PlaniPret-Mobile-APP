@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
+import { useAvaContext } from "@/hooks/useAvaContext";
 import { Button } from "@/components/ui/button";
 
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
@@ -32,6 +33,7 @@ export default function MAvaChat() {
   const [speakingId, setSpeakingId] = useState<string | null>(null);
   const [runningSuggestion, setRunningSuggestion] = useState<string | null>(null);
   const [pendingConfirm, setPendingConfirm] = useState<AvaSuggestion | null>(null);
+  const avaContext = useAvaContext();
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const suppressSessionLoadRef = useRef<string | null>(null);
@@ -97,7 +99,7 @@ export default function MAvaChat() {
     try {
       const history = messages.slice(-8).map((m) => ({ role: m.role, content: m.message }));
       const { data, error } = await supabase.functions.invoke("pp-ava-chat", {
-        body: { mode: "chat", user_message: text, session_id: sessionId, history },
+        body: { mode: "chat", user_message: text, session_id: sessionId, history, context: avaContext },
       });
       if (error) throw error;
       const d = data as any;
@@ -124,7 +126,7 @@ export default function MAvaChat() {
     setRunningSuggestion(suggestion.id);
     try {
       const { data, error } = await supabase.functions.invoke("pp-ava-chat", {
-        body: { mode: "chat", confirm_action: suggestion, approved: true, session_id: sessionId },
+        body: { mode: "chat", confirm_action: suggestion, approved: true, session_id: sessionId, context: avaContext },
       });
       if (error) throw error;
       const replyText = String((data as any)?.reply ?? "Action terminée.");

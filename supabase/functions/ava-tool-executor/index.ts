@@ -784,7 +784,8 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
     const ALLOWED = new Set([
       "/mplanipret/home", "/mplanipret/calls", "/mplanipret/messages",
       "/mplanipret/contacts", "/mplanipret/voicemail", "/mplanipret/more",
-      "/mplanipret/stats",
+      "/mplanipret/stats", "/mplanipret/pipeline", "/mplanipret/search",
+      "/mplanipret/notifications", "/mplanipret/extension-sync", "/mplanipret/ava",
     ]);
     const base = (p.route ?? "").split("?")[0];
     if (!ALLOWED.has(base)) return { success: false, error: "route_not_allowed" };
@@ -990,6 +991,72 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
         { name: "Anthropic / Lovable AI", status: Deno.env.get("LOVABLE_API_KEY") ? "connected" : "not_connected", message: "" },
       ],
     };
+  },
+
+  // ===== ALIASES (pour compatibilité avec EXPECTED_TOOL_NAMES) =====
+  async search_contact(ctx, p) {
+    // Alias vers find_contact pour compatibilité
+    return await TOOLS.find_contact(ctx, p);
+  },
+
+  // ===== ALIASES M365 (pour compatibilité avec EXPECTED_TOOL_NAMES) =====
+  async update_calendar_event(ctx, p) {
+    return await msAction(ctx, "update_calendar_event", p);
+  },
+  async delete_calendar_event(ctx, p) {
+    return await msAction(ctx, "delete_calendar_event", { event_id: p.event_id });
+  },
+  async search_ms365_contacts(ctx, p) {
+    const r = await msAction(ctx, "search_contact", { query: p.query });
+    return { success: !r?.error, contacts: r?.results ?? [], count: r?.results?.length ?? 0 };
+  },
+
+  // ===== PUSH MAESTRO =====
+  async push_call_summary(ctx, p) {
+    try {
+      const { data: call } = await ctx.admin.from("planipret_phone_calls")
+        .select("contact_name, contact_number, duration_seconds, created_at")
+        .eq("id", p.call_id).maybeSingle();
+      const clientId = p.client_id ?? call?.maestro_client_id;
+      if (!clientId) return { success: false, error: "client_id_required", message: "Fournis un client_id Maestro pour pousser le résumé." };
+      const body = {
+        channel: "call",
+        direction: "outbound",
+        summary: p.summary,
+        coaching: p.coaching,
+        notes: p.notes,
+        sentiment: p.sentiment,
+        next_steps: p.next_steps,
+        duration_seconds: call?.duration_seconds,
+        occurred_at: call?.created_at ?? new Date().toISOString(),
+      };
+      const result = await maestroFetch(ctx, `/api/v1/clients/${clientId}/communications`, { method: "POST", body: JSON.stringify(body) });
+      return { success: true, communication_id: result?.id, message: "Résumé d'appel poussé dans Maestro" };
+    } catch (e) { return { success: false, error: String(e) }; }
+  },
+
+  async push_client_note(ctx, p) {
+    try {
+      const body = { type: p.type ?? "general", content: p.note, occurred_at: new Date().toISOString() };
+      const result = await maestroFetch(ctx, `/api/v1/clients/${p.client_id}/notes`, { method: "POST", body: JSON.stringify(body) });
+      return { success: true, note_id: result?.id, message: "Note ajoutée dans Maestro" };
+    } catch (e) { return { success: false, error: String(e) }; }
+  },
+
+  async push_communication_log(ctx, p) {
+    try {
+      const body = {
+        channel: p.channel ?? "call",
+        direction: p.direction ?? "outbound",
+        summary: p.summary,
+        coaching: p.coaching,
+        notes: p.notes,
+        duration_seconds: p.duration_seconds,
+        occurred_at: p.occurred_at ?? new Date().toISOString(),
+      };
+      const result = await maestroFetch(ctx, `/api/v1/clients/${p.client_id}/communications`, { method: "POST", body: JSON.stringify(body) });
+      return { success: true, communication_id: result?.id, message: "Communication enregistrée dans Maestro" };
+    } catch (e) { return { success: false, error: String(e) }; }
   },
 };
 
