@@ -142,7 +142,18 @@ function Dialer({ open, onClose, initial, openMessages, softphone }: { open: boo
   const [contactsError, setContactsError] = useState<string | null>(null);
   const [contactsLoadKey, setContactsLoadKey] = useState(0);
   const holdTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => { if (open) { setNumber(initial ?? ""); setMode("keypad"); setQuery(""); } }, [open, initial]);
+  useEffect(() => {
+    if (open) {
+      setNumber(initial ?? "");
+      setMode("keypad");
+      setQuery("");
+    } else {
+      // Reset contacts so next open always re-fetches fresh data
+      setContacts([]);
+      setContactsError(null);
+      setLoadingContacts(false);
+    }
+  }, [open, initial]);
   const append = (c: string) => setNumber((n) => (n + c).slice(0, 20));
   const back = () => setNumber((n) => n.slice(0, -1));
   const startHold = () => {
@@ -889,17 +900,19 @@ export default function PlanipretMobile() {
         >
 
 
-          {/* Left group: AVA + Planiprêt logos side by side */}
-          <div className="flex items-center gap-2">
-            <AvaBadge />
-            <span className="flex items-center gap-1.5">
-              <span className="pp-live-dot" />
-              <span style={{ fontSize: 9, color: "var(--pp-success)", fontWeight: 700, letterSpacing: "0.05em" }}>REST</span>
-            </span>
+          {/* Left group: status dot */}
+          <div className="flex items-center gap-1.5" style={{ minWidth: 48 }}>
+            <span className="pp-live-dot" />
+            <span style={{ fontSize: 9, color: "var(--pp-success)", fontWeight: 700, letterSpacing: "0.05em" }}>REST</span>
+          </div>
+
+          {/* Center: Planiprêt logo — bigger */}
+          <div className="absolute left-1/2" style={{ transform: "translateX(-50%)" }}>
             <span aria-label="Planiprêt" style={{
-              width: 28, height: 28, borderRadius: 8, overflow: "hidden",
+              width: 44, height: 44, borderRadius: 12, overflow: "hidden",
               display: "inline-flex", alignItems: "center", justifyContent: "center",
               background: "#fff", border: "1px solid var(--pp-bg-border-2)",
+              boxShadow: "0 2px 8px rgba(0,0,0,0.10)",
             }}>
               <img src={planipretLogoAsset.url} alt="Planiprêt" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
             </span>
@@ -990,19 +1003,21 @@ export default function PlanipretMobile() {
         </nav>
 
 
-        {/* Powered by AVA footer — discret */}
+        {/* Powered by AVA footer — visible both themes */}
         <div className="absolute bottom-0 inset-x-0 h-[40px] flex flex-col items-center justify-center z-10 pp-mobile-footer" style={{ gap: 1 }}>
-          <div className="flex items-center gap-2">
-            <span style={{ fontFamily: "Urbanist,sans-serif", fontSize: 7, color: "var(--pp-text-muted)", letterSpacing: "0.14em", fontWeight: 600 }}>{t("footer.poweredBy")}</span>
-            <div className="relative flex items-center justify-center" style={{ width: 24, height: 24 }}>
-              <div className="absolute inset-0 rounded-full" style={{ background: "radial-gradient(circle, rgba(124,58,237,0.45) 0%, rgba(46,155,220,0.18) 50%, transparent 75%)", filter: "blur(5px)", animation: "ava-footer-pulse 3s ease-in-out infinite" }} />
+          <div className="flex items-center gap-1.5">
+            <span style={{ fontFamily: "Urbanist,sans-serif", fontSize: 7, color: "var(--pp-text-secondary)", letterSpacing: "0.14em", fontWeight: 600 }}>{t("footer.poweredBy")}</span>
+            <div className="relative flex items-center justify-center" style={{ width: 22, height: 22 }}>
+              <div className="absolute inset-0 rounded-full" style={{ background: "radial-gradient(circle, rgba(124,58,237,0.45) 0%, rgba(46,155,220,0.18) 50%, transparent 75%)", filter: "blur(4px)", animation: "ava-footer-pulse 3s ease-in-out infinite" }} />
               <div className="absolute inset-0 rounded-full flex items-center justify-center overflow-hidden" style={{ background: "conic-gradient(from 0deg, #7C3AED, #2E9BDC, #00D4AA, #7C3AED)", padding: 1.5, animation: "ava-footer-spin 6s linear infinite" }}>
-                <div className="w-full h-full rounded-full flex items-center justify-center" style={{ background: "var(--pp-bg-surface, #0A1628)", color: "#fff", fontWeight: 800, fontSize: 8, fontFamily: "Urbanist,sans-serif", letterSpacing: "0.02em" }}>AVA</div>
+                <div className="w-full h-full rounded-full overflow-hidden flex items-center justify-center">
+                  <img src={avaLogoAsset.url} alt="AVA" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                </div>
               </div>
             </div>
             <span style={{ fontFamily: "Urbanist,sans-serif", fontSize: 12, letterSpacing: "0.06em", fontWeight: 800, background: "linear-gradient(90deg,#7C3AED,#2E9BDC)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", backgroundClip: "text" }}>AVA</span>
           </div>
-          <span style={{ fontSize: 6, color: "var(--pp-text-faint)", letterSpacing: "0.08em" }}>· {t("footer.developedBy")}</span>
+          <span style={{ fontSize: 6, color: "var(--pp-text-secondary)", letterSpacing: "0.08em" }}>· {t("footer.developedBy")}</span>
           <style>{`
             @keyframes ava-footer-pulse { 0%,100% { opacity: 0.5; transform: scale(1); } 50% { opacity: 0.9; transform: scale(1.08); } }
             @keyframes ava-footer-spin { to { transform: rotate(360deg); } }

@@ -1135,10 +1135,33 @@ function MaestroSyncSection({ call, onUpdated }: { call: RecordingCall; onUpdate
   const sync = async () => {
     setBusy("sync");
     try {
+      // Step 1: push CDR (call record)
       const { error } = await supabase.functions.invoke("maestro-cdr", { body: { call_id: call.id } });
       if (error) throw error;
+
+      // Step 2: push AI summary + coaching notes if available
+      if (call.ai_summary || call.ai_coaching) {
+        const aiPayload: Record<string, unknown> = { call_id: call.id };
+        if (call.ai_summary) aiPayload.ai_summary = call.ai_summary;
+        if (call.ai_coaching) {
+          // Build coaching notes text from coaching object
+          const coachingText = typeof call.ai_coaching === "string"
+            ? call.ai_coaching
+            : [
+                call.ai_coaching?.strengths?.length ? `Strengths: ${call.ai_coaching.strengths.join(", ")}` : null,
+                call.ai_coaching?.improvements?.length ? `Improvements: ${call.ai_coaching.improvements.join(", ")}` : null,
+                call.ai_coaching?.overall ? `Overall: ${call.ai_coaching.overall}` : null,
+              ].filter(Boolean).join("\n");
+          if (coachingText) aiPayload.notes = coachingText;
+        }
+        // Fire and forget — don't block the UI if AI sync fails
+        supabase.functions.invoke("maestro-ai-analysis", { body: aiPayload }).catch(() => {});
+      }
+
       onUpdated({ ...call, maestro_synced: true });
-      toast.success("Synchronisé avec Maestro");
+      toast.success("Synchronisé avec Maestro", {
+        description: call.ai_summary ? "CDR + résumé AI envoyés" : "CDR envoyé",
+      });
     } catch (e: any) {
       toast.error("Sync échouée", { description: e?.message });
     } finally {

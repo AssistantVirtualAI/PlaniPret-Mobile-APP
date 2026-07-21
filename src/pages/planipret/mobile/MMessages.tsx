@@ -940,6 +940,77 @@ function TeamChat({ profile }: { profile: any }) {
 }
 
 // ============================================================
+// SWIPEABLE EMAIL ROW
+// ============================================================
+function SwipeableEmailRow({
+  email, onOpen, onDelete, onArchive, onFlag, children,
+}: {
+  email: any;
+  onOpen: () => void;
+  onDelete: () => void;
+  onArchive: () => void;
+  onFlag: () => void;
+  children: React.ReactNode;
+}) {
+  const startX = React.useRef(0);
+  const [offset, setOffset] = React.useState(0);
+  const [action, setAction] = React.useState<null | "delete" | "archive" | "flag">(null);
+  const THRESHOLD = 80;
+
+  const onTouchStart = (e: React.TouchEvent) => {
+    startX.current = e.touches[0].clientX;
+    setAction(null);
+  };
+  const onTouchMove = (e: React.TouchEvent) => {
+    const dx = e.touches[0].clientX - startX.current;
+    if (Math.abs(dx) < 8) return;
+    const clamped = Math.max(-140, Math.min(140, dx));
+    setOffset(clamped);
+    if (clamped < -THRESHOLD) setAction("delete");
+    else if (clamped > THRESHOLD) setAction("archive");
+    else setAction(null);
+  };
+  const onTouchEnd = () => {
+    if (action === "delete") { setOffset(0); onDelete(); }
+    else if (action === "archive") { setOffset(0); onArchive(); }
+    else setOffset(0);
+  };
+
+  const unread = email.isRead === false;
+  return (
+    <li className="relative overflow-hidden rounded-2xl">
+      {/* Left reveal — archive (swipe right) */}
+      <div className="absolute inset-y-0 left-0 flex items-center justify-start px-4 rounded-2xl"
+        style={{ background: "#16a34a", minWidth: 80 }}>
+        <span style={{ color: "#fff", fontSize: 11, fontWeight: 700 }}>Archive</span>
+      </div>
+      {/* Right reveal — delete (swipe left) */}
+      <div className="absolute inset-y-0 right-0 flex items-center justify-end px-4 rounded-2xl"
+        style={{ background: "#dc2626", minWidth: 80 }}>
+        <span style={{ color: "#fff", fontSize: 11, fontWeight: 700 }}>Suppr.</span>
+      </div>
+      {/* Email card */}
+      <button
+        onTouchStart={onTouchStart}
+        onTouchMove={onTouchMove}
+        onTouchEnd={onTouchEnd}
+        onClick={offset === 0 ? onOpen : undefined}
+        className="w-full text-left rounded-2xl p-3 active:opacity-80 relative z-10"
+        style={{
+          background: "var(--pp-bg-surface)",
+          border: "1px solid var(--pp-bg-border-2)",
+          borderLeft: unread ? "3px solid var(--pp-brand-accent)" : "1px solid var(--pp-bg-border-2)",
+          transform: `translateX(${offset}px)`,
+          transition: offset === 0 ? "transform 0.25s ease" : "none",
+        }}
+      >
+        {children}
+      </button>
+    </li>
+  );
+}
+
+// ============================================================
 // EMAILS TAB (M365)
 // ============================================================
 function EmailsList({ profile }: { profile: any }) {
@@ -1055,26 +1126,34 @@ function EmailsList({ profile }: { profile: any }) {
             const received = e.receivedDateTime ?? e.created_at;
             const unread = e.isRead === false;
             return (
-              <li key={e.id ?? i}>
-                <button
-                  onClick={() => setActive(e)}
-                  className="w-full text-left rounded-2xl p-3 active:opacity-80"
-                  style={{
-                    background: "var(--pp-bg-surface)",
-                    border: "1px solid var(--pp-bg-border-2)",
-                    borderLeft: unread ? "3px solid var(--pp-brand-accent)" : "1px solid var(--pp-bg-border-2)",
-                  }}
-                >
-                  <div className="flex items-start justify-between gap-2 mb-1">
-                    <p className="font-semibold text-sm truncate" style={{ color: "var(--pp-text-primary)" }}>{from}</p>
-                    <span className="text-[10px] shrink-0" style={{ color: "var(--pp-text-faint)" }}>
-                      {received ? fmtTime(received, lang, t) : ""}
-                    </span>
-                  </div>
-                  <p className="text-xs truncate mb-1" style={{ color: "var(--pp-text-secondary)" }}>{subject}</p>
-                  <p className="text-[11px] line-clamp-2" style={{ color: "var(--pp-text-muted)" }}>{preview}</p>
-                </button>
-              </li>
+              <SwipeableEmailRow
+                key={e.id ?? i}
+                email={e}
+                onOpen={() => setActive(e)}
+                onDelete={async () => {
+                  await supabase.functions.invoke("ms365-actions", { body: { action: "delete_email", payload: { id: e.id } } });
+                  setEmails((prev) => prev ? prev.filter((x: any) => x.id !== e.id) : prev);
+                  toast.success(t("messages.emailDeleted") ?? "Supprimé");
+                }}
+                onArchive={async () => {
+                  await supabase.functions.invoke("ms365-actions", { body: { action: "move_email", payload: { id: e.id, destination: "Archive" } } });
+                  setEmails((prev) => prev ? prev.filter((x: any) => x.id !== e.id) : prev);
+                  toast.success(t("messages.emailArchived") ?? "Archivé");
+                }}
+                onFlag={async () => {
+                  await supabase.functions.invoke("ms365-actions", { body: { action: "flag_email", payload: { id: e.id } } });
+                  toast.success(t("messages.emailFlagged") ?? "Marqué");
+                }}
+              >
+                <div className="flex items-start justify-between gap-2 mb-1">
+                  <p className="font-semibold text-sm truncate" style={{ color: "var(--pp-text-primary)" }}>{from}</p>
+                  <span className="text-[10px] shrink-0" style={{ color: "var(--pp-text-faint)" }}>
+                    {received ? fmtTime(received, lang, t) : ""}
+                  </span>
+                </div>
+                <p className="text-xs truncate mb-1" style={{ color: "var(--pp-text-secondary)" }}>{subject}</p>
+                <p className="text-[11px] line-clamp-2" style={{ color: "var(--pp-text-muted)" }}>{preview}</p>
+              </SwipeableEmailRow>
             );
           })}
         </ul>
@@ -1272,9 +1351,18 @@ function EmailDetailSheet({ email, onClose, onReply, onForward, onChanged }: {
                 ) : fullBodyHtml ? (
                   <div
                     className="text-sm email-body"
-                    style={{ color: "var(--pp-text-secondary)", maxWidth: "100%", overflowX: "auto", wordBreak: "break-word" }}
-                    dangerouslySetInnerHTML={{ __html: fullBodyHtml }}
-                  />
+                    style={{ color: "var(--pp-text-secondary)", maxWidth: "100%", overflowX: "hidden", wordBreak: "break-word" }}
+                  >
+                    <style>{`
+                      .email-body img { max-width: 100% !important; height: auto !important; }
+                      .email-body table { max-width: 100% !important; width: 100% !important; table-layout: fixed !important; word-break: break-word; }
+                      .email-body td, .email-body th { word-break: break-word; }
+                      .email-body a { word-break: break-all; }
+                      .email-body * { max-width: 100% !important; box-sizing: border-box; }
+                      .email-body div, .email-body p, .email-body span { font-size: 14px !important; line-height: 1.5 !important; }
+                    `}</style>
+                    <div dangerouslySetInnerHTML={{ __html: fullBodyHtml }} />
+                  </div>
                 ) : (
                   <p className="text-sm whitespace-pre-wrap" style={{ color: "var(--pp-text-secondary)" }}>
                     {fullBodyText ?? preview ?? t("messages.previewUnavailable")}
@@ -1442,7 +1530,7 @@ function EmailComposeSheet({ init, onClose, onSent }: { init: { to?: string; sub
     <div className="absolute inset-0 z-[200] bg-black/60 backdrop-blur-sm flex items-end" onClick={onClose}>
       <div
         className="w-full flex flex-col overflow-hidden"
-        style={{ background: "#faf9f8", height: "100%", color: "#201f1e" }}
+        style={{ background: "#faf9f8", height: "100%", color: "#201f1e", paddingTop: "env(safe-area-inset-top, 0px)", boxSizing: "border-box" as const }}
         onClick={(e) => e.stopPropagation()}
       >
         {/* Outlook-style top bar */}
