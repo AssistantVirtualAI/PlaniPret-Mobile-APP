@@ -89,7 +89,8 @@ export const useAnimation = () => ({
   stop: () => {},
   set: () => {},
 });
-export const useMotionValue = <T,>(v: T) => ({ get: () => v, set: () => {} });
+export const useMotionValue = <T,>(v: T) => ({ get: () => v, set: () => {}, velocity: 0 });
+export const useSpring = <T,>(v: T, _config?: Record<string, unknown>) => ({ get: () => v, set: () => {}, velocity: 0 });
 export const useTransform = <T,>(_a: unknown, _b: unknown, _c?: unknown) =>
   ({ get: () => undefined as unknown as T, set: () => {} });
 export const useScroll = () => ({
