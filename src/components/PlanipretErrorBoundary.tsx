@@ -1,44 +1,63 @@
 import React from "react";
 
-type State = { error: Error | null };
+type State = { message: string };
 
-/**
- * Returns true if the thrown value is a non-fatal iOS Capacitor / React
- * internal artefact (e.g. the `{}` thrown by StatusBar UNIMPLEMENTED).
- * Uses Object.getOwnPropertyNames() to inspect ALL properties.
- */
-function isEmptyNativeArtifact(raw: unknown): boolean {
-  if (!raw || typeof raw !== 'object') return !raw;
-  const obj = raw as Record<string, unknown>;
-  const keys = new Set([...Object.keys(obj), ...Object.getOwnPropertyNames(obj)]);
-  for (const key of ['message', 'stack', 'name', 'code', 'details', 'hint', 'error']) {
-    const value = obj[key] ?? Object.getOwnPropertyDescriptor(obj, key)?.value;
-    if (value != null && String(value).trim()) return false;
+function getErrorMessage(raw: unknown): string {
+  if (!raw) return '';
+  if (typeof raw === 'string') return raw.trim();
+  if (raw instanceof Error) return (raw.message || '').trim();
+  if (typeof raw === 'object') {
+    const obj = raw as Record<string, unknown>;
+    for (const key of ['message', 'hint', 'details', 'reason', 'description']) {
+      try {
+        const val = obj[key];
+        if (val && typeof val === 'string' && val.trim() && val !== 'undefined') return val.trim();
+      } catch { /* ignore */ }
+    }
+    for (const key of ['message', 'stack', 'name']) {
+      try {
+        const desc = Object.getOwnPropertyDescriptor(raw, key);
+        const val = desc?.value;
+        if (val && typeof val === 'string' && val.trim() && val !== 'Error' && val !== 'undefined') return val.trim();
+      } catch { /* ignore */ }
+    }
   }
-  return keys.size === 0;
+  return '';
 }
 
 export class PlanipretErrorBoundary extends React.Component<{ children: React.ReactNode }, State> {
-  state: State = { error: null };
+  state: State = { message: '' };
+
   static getDerivedStateFromError(raw: unknown): Partial<State> {
-    if (isEmptyNativeArtifact(raw)) return {}; // No state change
-    const err = raw instanceof Error ? raw : new Error(String((raw as any)?.message ?? 'Unknown error'));
-    return { error: err };
+    const message = getErrorMessage(raw);
+    if (!message) {
+      console.warn('[PlanipretErrorBoundary] Swallowed empty iOS error:', raw);
+      return {}; // No state change
+    }
+    return { message };
   }
+
   componentDidCatch(raw: unknown, info: any) {
-    if (isEmptyNativeArtifact(raw)) return;
-    console.error("[PlanipretErrorBoundary]", raw, info);
+    const message = getErrorMessage(raw);
+    if (!message) return;
+    console.error("[PlanipretErrorBoundary]", message, info);
   }
+
   render() {
-    if (!this.state.error || isEmptyNativeArtifact(this.state.error)) return this.props.children;
+    // Only show crash screen if there is a real non-empty message
+    if (!this.state.message) return this.props.children;
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-100 p-6">
         <div className="max-w-md bg-white rounded-xl shadow-md p-6 text-center">
           <div className="text-3xl mb-2">⚠️</div>
           <h2 className="font-semibold text-lg mb-2">Une erreur est survenue</h2>
-          <p className="text-sm text-slate-600 mb-4">{this.state.error.message}</p>
-          <button onClick={() => { this.setState({ error: null }); location.reload(); }}
-            className="px-4 py-2 rounded-lg bg-slate-900 text-white text-sm">Recharger</button>
+          <p className="text-sm text-slate-600 mb-4">{this.state.message}</p>
+          <button
+            onClick={() => { this.setState({ message: '' }); location.reload(); }}
+            className="px-4 py-2 rounded-lg bg-slate-900 text-white text-sm"
+          >
+            Recharger
+          </button>
         </div>
       </div>
     );

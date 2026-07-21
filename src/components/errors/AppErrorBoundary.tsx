@@ -9,104 +9,98 @@ interface Props {
 
 interface State {
   hasError: boolean;
-  error: Error | null;
+  message: string;
+  stack: string;
   errorInfo: ErrorInfo | null;
 }
 
 /**
- * Returns true if the thrown value is a non-fatal iOS Capacitor / React
- * internal artefact (e.g. the `{}` thrown by StatusBar UNIMPLEMENTED).
- *
- * Uses Object.getOwnPropertyNames() to inspect ALL properties (including
- * non-enumerable ones) before concluding the object is truly empty.
+ * Extract a non-empty message string from any thrown value.
+ * Returns empty string if the error has no real message (iOS Capacitor artefact).
  */
-function isEmptyNativeArtifact(raw: unknown): boolean {
-  if (!raw || typeof raw !== 'object') return !raw;
-  const obj = raw as Record<string, unknown>;
-  const keys = new Set([
-    ...Object.keys(obj),
-    ...Object.getOwnPropertyNames(obj),
-  ]);
-  for (const key of ['message', 'stack', 'name', 'code', 'details', 'hint', 'error']) {
-    const value = obj[key] ?? Object.getOwnPropertyDescriptor(obj, key)?.value;
-    if (value != null && String(value).trim()) return false;
+function getErrorMessage(raw: unknown): string {
+  if (!raw) return '';
+  if (typeof raw === 'string') return raw.trim();
+  if (raw instanceof Error) return (raw.message || '').trim();
+  if (typeof raw === 'object') {
+    // Try direct property access first
+    const obj = raw as Record<string, unknown>;
+    for (const key of ['message', 'hint', 'details', 'reason', 'description']) {
+      try {
+        const val = obj[key];
+        if (val && typeof val === 'string' && val.trim() && val !== 'undefined') {
+          return val.trim();
+        }
+      } catch { /* ignore */ }
+    }
+    // Try non-enumerable properties via descriptor
+    for (const key of ['message', 'stack', 'name']) {
+      try {
+        const desc = Object.getOwnPropertyDescriptor(raw, key);
+        const val = desc?.value;
+        if (val && typeof val === 'string' && val.trim() && val !== 'Error' && val !== 'undefined') {
+          return val.trim();
+        }
+      } catch { /* ignore */ }
+    }
   }
-  return keys.size === 0;
+  return '';
 }
 
-function normaliseError(raw: unknown): Error {
-  if (raw instanceof Error) return raw;
-  if (typeof raw === 'object' && raw !== null) {
-    const obj = raw as Record<string, unknown>;
-    const readProp = (key: string): string | undefined => {
-      const val = obj[key] ?? Object.getOwnPropertyDescriptor(obj, key)?.value;
-      return val != null ? String(val) : undefined;
-    };
-    const message =
-      readProp('message') ||
-      readProp('hint') ||
-      readProp('details') ||
-      readProp('code') ||
-      readProp('error') ||
-      JSON.stringify(raw);
-    const err = new Error(message || 'Unknown error');
-    const stack = readProp('stack');
-    if (stack) err.stack = stack;
-    return err;
+function getErrorStack(raw: unknown): string {
+  if (!raw) return '';
+  if (raw instanceof Error) return raw.stack || '';
+  if (typeof raw === 'object') {
+    try {
+      return String((raw as any).stack || '') || '';
+    } catch { return ''; }
   }
-  if (typeof raw === 'string') return new Error(raw);
-  if (typeof raw === 'number' || typeof raw === 'boolean') return new Error(String(raw));
-  return new Error('Unknown error');
+  return '';
 }
 
 export class AppErrorBoundary extends Component<Props, State> {
   public state: State = {
     hasError: false,
-    error: null,
+    message: '',
+    stack: '',
     errorInfo: null,
   };
 
   public static getDerivedStateFromError(raw: unknown): Partial<State> {
-    // iOS Capacitor throws empty {} at startup — ignore them completely.
-    if (isEmptyNativeArtifact(raw)) {
-      console.warn('[ErrorBoundary] Ignored empty native React artifact');
-      return {}; // No state change — children keep rendering
+    const message = getErrorMessage(raw);
+    if (!message) {
+      // No real message — iOS Capacitor artefact, ignore completely
+      console.warn('[ErrorBoundary] Swallowed empty iOS error:', raw);
+      return {}; // No state change
     }
-    return { hasError: true, error: normaliseError(raw) };
+    return {
+      hasError: true,
+      message,
+      stack: getErrorStack(raw),
+    };
   }
 
   public componentDidCatch(raw: unknown, errorInfo: ErrorInfo) {
-    if (isEmptyNativeArtifact(raw)) {
-      console.warn('[ErrorBoundary] Ignored empty native React artifact');
+    const message = getErrorMessage(raw);
+    if (!message) {
+      console.warn('[ErrorBoundary] Swallowed empty iOS error (componentDidCatch):', raw);
       return;
     }
-    const error = normaliseError(raw);
-    console.error('[ErrorBoundary] Caught error:', error, errorInfo);
+    console.error('[ErrorBoundary] Caught error:', message, errorInfo);
     this.setState({ errorInfo });
   }
 
-  private handleReload = () => {
-    window.location.reload();
-  };
-
-  private handleGoBack = () => {
-    window.history.back();
-  };
-
+  private handleReload = () => { window.location.reload(); };
+  private handleGoBack = () => { window.history.back(); };
   private handleReset = () => {
-    this.setState({ hasError: false, error: null, errorInfo: null });
+    this.setState({ hasError: false, message: '', stack: '', errorInfo: null });
   };
 
   public render() {
-    if (this.state.hasError) {
-      // Render() guard: even if hasError was set, if the error has no real
-      // content, render children normally (React may merge partial state).
-      if (!this.state.error || isEmptyNativeArtifact(this.state.error)) {
-        return this.props.children;
-      }
-      if (this.props.fallback) {
-        return this.props.fallback;
-      }
+    // CRITICAL: even if hasError was set somehow, only show crash screen if
+    // there is a real non-empty message string.
+    if (this.state.hasError && this.state.message) {
+      if (this.props.fallback) return this.props.fallback;
 
       return (
         <div className="min-h-screen flex items-center justify-center bg-background p-4">
@@ -114,32 +108,27 @@ export class AppErrorBoundary extends Component<Props, State> {
             <div className="w-16 h-16 mx-auto bg-destructive/10 rounded-full flex items-center justify-center">
               <AlertTriangle className="w-8 h-8 text-destructive" />
             </div>
-
             <div className="space-y-2">
               <h1 className="text-2xl font-bold text-foreground">Something went wrong</h1>
               <p className="text-muted-foreground">
-                A runtime error was thrown while rendering. Full message and stack trace below.
+                A runtime error was thrown while rendering.
               </p>
             </div>
-
-            {this.state.error && (
-              <div className="text-left bg-muted/50 rounded-lg p-4 overflow-auto max-h-60">
-                <p className="text-sm font-mono text-destructive break-all">
-                  {this.state.error.toString()}
-                </p>
-                {this.state.error.stack && (
-                  <pre className="text-xs text-muted-foreground mt-2 whitespace-pre-wrap break-all">
-                    {this.state.error.stack}
-                  </pre>
-                )}
-                {this.state.errorInfo?.componentStack && (
-                  <pre className="text-xs text-muted-foreground mt-2 whitespace-pre-wrap break-all">
-                    {this.state.errorInfo.componentStack}
-                  </pre>
-                )}
-              </div>
-            )}
-
+            <div className="text-left bg-muted/50 rounded-lg p-4 overflow-auto max-h-60">
+              <p className="text-sm font-mono text-destructive break-all">
+                {this.state.message}
+              </p>
+              {this.state.stack && (
+                <pre className="text-xs text-muted-foreground mt-2 whitespace-pre-wrap break-all">
+                  {this.state.stack}
+                </pre>
+              )}
+              {this.state.errorInfo?.componentStack && (
+                <pre className="text-xs text-muted-foreground mt-2 whitespace-pre-wrap break-all">
+                  {this.state.errorInfo.componentStack}
+                </pre>
+              )}
+            </div>
             <div className="flex flex-col sm:flex-row gap-3 justify-center">
               <Button variant="outline" onClick={this.handleGoBack} className="gap-2">
                 <ArrowLeft className="w-4 h-4" />

@@ -1,5 +1,9 @@
 /**
  * Planiprêt Mobile — Standalone Capacitor app entry
+ *
+ * IMPORTANT: This file installs a global error interceptor BEFORE React mounts.
+ * iOS Capacitor throws empty {} objects internally (e.g. StatusBar UNIMPLEMENTED).
+ * These must be swallowed before they reach React's error boundary machinery.
  */
 import React from 'react';
 import { createRoot } from 'react-dom/client';
@@ -10,7 +14,49 @@ import { Capacitor } from '@capacitor/core';
 import App from './App';
 import './styles.css';
 
-// Global anti-zoom guards for iOS/Android WebView (no pinch, no double-tap zoom).
+// ─── GLOBAL iOS CAPACITOR ERROR ABSORBER ────────────────────────────────────
+// Must be installed BEFORE React mounts. iOS Capacitor throws {} objects that
+// have no message, no stack, and no meaningful content. React's error boundary
+// cannot distinguish these from real errors. We intercept them here globally.
+function hasRealMessage(err: unknown): boolean {
+  if (!err) return false;
+  if (typeof err === 'string') return err.trim().length > 0;
+  if (err instanceof Error) return !!(err.message && err.message.trim());
+  if (typeof err === 'object') {
+    // Check all possible message-bearing properties including non-enumerable
+    for (const key of ['message', 'stack', 'name', 'description', 'reason']) {
+      try {
+        const val = (err as any)[key];
+        if (val && typeof val === 'string' && val.trim() && val !== 'Error' && val !== 'undefined') {
+          return true;
+        }
+      } catch { /* ignore */ }
+    }
+    return false;
+  }
+  return true;
+}
+
+// Intercept synchronous errors before React sees them
+const _origOnerror = window.onerror;
+window.onerror = function(msg, src, line, col, err) {
+  if (!hasRealMessage(err) && (!msg || msg === 'Script error.' || msg === 'undefined')) {
+    console.warn('[PP] Swallowed empty iOS Capacitor error:', err);
+    return true; // Prevent default — stops React from seeing it
+  }
+  return _origOnerror ? _origOnerror.call(this, msg, src, line, col, err) : false;
+};
+
+// Intercept unhandled promise rejections
+window.addEventListener('unhandledrejection', (e) => {
+  if (!hasRealMessage(e.reason)) {
+    console.warn('[PP] Swallowed empty iOS Capacitor rejection:', e.reason);
+    e.preventDefault();
+    e.stopImmediatePropagation();
+  }
+}, true);
+
+// ─── GLOBAL ANTI-ZOOM GUARDS ─────────────────────────────────────────────────
 if (typeof document !== 'undefined') {
   document.addEventListener('gesturestart', (e) => e.preventDefault());
   document.addEventListener('gesturechange', (e) => e.preventDefault());
@@ -34,6 +80,7 @@ if (typeof document !== 'undefined') {
   });
 }
 
+// ─── BOOTSTRAP ───────────────────────────────────────────────────────────────
 async function bootstrap() {
   try {
     if (Capacitor.isNativePlatform()) {
@@ -47,9 +94,7 @@ async function bootstrap() {
   try {
     const container = document.getElementById('root');
     if (!container) throw new Error('Root element not found');
-    // React.StrictMode intentionally double-mounts components in development,
-    // which triggers error boundaries with empty errors on Capacitor iOS.
-    // We disable it unconditionally in this native build.
+    // React.StrictMode is disabled — it causes double-mount artefacts on iOS Capacitor
     createRoot(container).render(
       <BrowserRouter>
         <App />
