@@ -3,6 +3,21 @@ import MobileScreenSkeleton from "@/components/planipret/mobile/MobileScreenSkel
 
 type State = { error: Error | null; retryKey: number };
 
+function isEmptyNativeArtifact(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object') return !raw;
+  if (raw instanceof Error && !String(raw.message ?? '').trim()) return true;
+  const obj = raw as Record<string, unknown>;
+  const keys = new Set([...Object.keys(obj), ...Object.getOwnPropertyNames(obj)]);
+  const hasOnlyGeneratedErrorFields = [...keys].every((key) =>
+    ['stack', 'name', 'message', 'errorMessage'].includes(key)
+  );
+  for (const key of ['message', 'errorMessage', 'code', 'details', 'hint', 'error']) {
+    const value = obj[key] ?? Object.getOwnPropertyDescriptor(obj, key)?.value;
+    if (value != null && String(value).trim()) return false;
+  }
+  return keys.size === 0 || hasOnlyGeneratedErrorFields;
+}
+
 /**
  * Error boundary tailored for lazy-loaded route chunks in the mobile app.
  * - Shows MobileScreenSkeleton while the chunk is loading.
@@ -18,19 +33,13 @@ export class LazyRouteBoundary extends React.Component<
 > {
   state: State = { error: null, retryKey: 0 };
 
-  static getDerivedStateFromError(error: Error): Partial<State> {
-    // Ignore empty/falsy errors — these are React StrictMode double-mount
-    // artefacts or non-fatal internal React events, not real crashes.
-    if (!error || (typeof error === 'object' && Object.keys(error).length === 0)) {
-      return {}; // no state change — don't show error screen
-    }
-    // Ignore errors with no message (same cause)
-    const msg = (error as Error)?.message ?? '';
-    if (!msg) return {};
+  static getDerivedStateFromError(error: Error): Partial<State> | null {
+    if (isEmptyNativeArtifact(error)) return null;
     return { error };
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
+    if (isEmptyNativeArtifact(error)) return;
     console.error("[LazyRouteBoundary]", error, info);
   }
 

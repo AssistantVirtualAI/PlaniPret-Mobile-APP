@@ -85,7 +85,6 @@ async function bootstrap() {
   try {
     if (Capacitor.isNativePlatform()) {
       try { await StatusBar.setStyle({ style: Style.Dark }); } catch (e) { console.log('[PP] StatusBar.setStyle:', e); }
-      try { await StatusBar.setBackgroundColor({ color: '#1A4A8A' }); } catch (e) { console.log('[PP] StatusBar.setBackgroundColor:', e); }
       try { await SplashScreen.hide(); } catch (e) { console.log('[PP] SplashScreen.hide:', e); }
     }
   } catch (e) {

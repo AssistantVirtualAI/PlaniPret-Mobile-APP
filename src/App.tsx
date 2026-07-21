@@ -11,6 +11,7 @@ import { ThemeProvider } from "@/context/ThemeContext";
 import { ClientProvider } from "@/context/ClientContext";
 import { LanguageProvider } from "@/context/LanguageContext";
 import { AppErrorBoundary } from "@/components/errors/AppErrorBoundary";
+import { Capacitor } from "@capacitor/core";
 
 
 const Landing = lazyWithRetry(() => import("./pages/Landing"));
@@ -453,8 +454,13 @@ function NativeDeepLinkBridge() {
   return null;
 }
 
+const RootErrorBoundary = ({ children }: { children: React.ReactNode }) => {
+  if (Capacitor.isNativePlatform()) return <>{children}</>;
+  return <AppErrorBoundary>{children}</AppErrorBoundary>;
+};
+
 const App = () => (
-  <AppErrorBoundary>
+  <RootErrorBoundary>
     <QueryClientProvider client={queryClient}>
       <LanguageProvider>
         <ThemeProvider>
@@ -1298,7 +1304,7 @@ const App = () => (
       </ThemeProvider>
     </LanguageProvider>
   </QueryClientProvider>
-  </AppErrorBoundary>
+  </RootErrorBoundary>
 );
 
 export default App;
