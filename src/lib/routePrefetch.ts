@@ -5,29 +5,7 @@
 type Factory = () => Promise<any>;
 
 const registry: Record<string, Factory> = {
-  // Planipret admin
-  "/planipret/admin": () => import("@/pages/planipret/admin/PlanipretAdminLayout"),
-  "/planipret/admin/overview": () => import("@/pages/planipret/admin/PAOverview"),
-  "/planipret/admin/users": () => import("@/pages/planipret/admin/PAUsers"),
-  "/planipret/admin/calls": () => import("@/pages/planipret/admin/PACalls"),
-  "/planipret/admin/messages": () => import("@/pages/planipret/admin/PAMessages"),
-  "/planipret/admin/recordings": () => import("@/pages/planipret/admin/PARecordings"),
-  "/planipret/admin/reports": () => import("@/pages/planipret/admin/PAReports"),
-  "/planipret/admin/leads": () => import("@/pages/planipret/admin/PALeads"),
-  "/planipret/admin/templates": () => import("@/pages/planipret/admin/PATemplates"),
-  "/planipret/admin/integrations": () => import("@/pages/planipret/PlanipretIntegrations"),
-  "/planipret/admin/debug": () => import("@/pages/planipret/admin/PADebug"),
-  "/planipret/admin/ava": () => import("@/pages/planipret/admin/PAAva"),
-  "/planipret/admin/ava-agent": () => import("@/pages/planipret/admin/PAAvaAgent"),
-  "/planipret/admin/ava-logs": () => import("@/pages/planipret/admin/PAAvaLogs"),
-  "/planipret/admin/audit": () => import("@/pages/planipret/admin/PAAuditLog"),
-  "/planipret/admin/audit-checklist": () => import("@/pages/planipret/admin/PAAuditChecklist"),
-  "/planipret/admin/compliance": () => import("@/pages/planipret/admin/PACompliance"),
-  "/planipret/admin/mobile-devices": () => import("@/pages/planipret/admin/PAMobileDevices"),
-  "/planipret/admin/sip-diagnostic": () => import("@/pages/planipret/admin/PASipDiagnostic"),
-  "/planipret/admin/diagnostics": () => import("@/pages/planipret/admin/PADiagnostics"),
-
-  // Planipret mobile screens
+  // Planipret mobile screens (the only screens shipped in the standalone Capacitor app)
   "/mplanipret": () => import("@/pages/planipret/mobile/MHome"),
   "/mplanipret/home": () => import("@/pages/planipret/mobile/MHome"),
   "/mplanipret/calls": () => import("@/pages/planipret/mobile/MCalls"),
