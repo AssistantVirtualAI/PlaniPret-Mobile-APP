@@ -36,10 +36,33 @@ function stripMotionProps(props: Record<string, unknown>) {
 
 type AnyProps = Record<string, unknown> & { children?: React.ReactNode };
 
+function normalizeChildren(children: React.ReactNode): React.ReactNode {
+  if (children == null || typeof children !== 'object') return children;
+  if (React.isValidElement(children)) return children;
+  if (Array.isArray(children)) return children;
+
+  const maybeIterable = children as any;
+  if (typeof maybeIterable[Symbol.iterator] === 'function') {
+    try {
+      return Array.from(maybeIterable as Iterable<React.ReactNode>);
+    } catch {
+      return null;
+    }
+  }
+
+  // Some animation wrappers can hand React an opaque object during native iOS
+  // startup. Passing that object through as children triggers React minified
+  // error #150 inside vendor-react before the app can render.
+  return null;
+}
+
 function createMotionComponent(tag: string) {
-  const Comp = React.forwardRef<HTMLElement, AnyProps>((props, ref) =>
-    React.createElement(tag, { ...stripMotionProps(props), ref })
-  );
+  const Comp = React.forwardRef<HTMLElement, AnyProps>((props, ref) => {
+    const clean = stripMotionProps(props);
+    const children = normalizeChildren(clean.children as React.ReactNode);
+    delete clean.children;
+    return React.createElement(tag, { ...clean, ref }, children);
+  });
   Comp.displayName = `motion.${tag}`;
   return Comp;
 }
@@ -57,7 +80,7 @@ export const motion: Record<string, React.ComponentType<AnyProps>> = new Proxy(
 ) as Record<string, React.ComponentType<AnyProps>>;
 
 export function AnimatePresence({ children }: { children?: React.ReactNode }) {
-  return React.createElement(React.Fragment, null, children);
+  return React.createElement(React.Fragment, null, normalizeChildren(children));
 }
 
 // No-op hooks/utilities that some code may import.
@@ -75,11 +98,10 @@ export const useScroll = () => ({
   scrollXProgress: useMotionValue(0),
   scrollYProgress: useMotionValue(0),
 });
-export const useSpring = <T,>(v: T, _opts?: unknown) => ({ get: () => v, set: () => {}, onChange: (_cb: unknown) => () => {} });
-export const useInView = (_ref?: unknown, _opts?: unknown) => true;
+export const useInView = () => true;
 export const LayoutGroup = ({ children }: { children?: React.ReactNode }) =>
-  React.createElement(React.Fragment, null, children);
+  React.createElement(React.Fragment, null, normalizeChildren(children));
 export const MotionConfig = ({ children }: { children?: React.ReactNode }) =>
-  React.createElement(React.Fragment, null, children);
+  React.createElement(React.Fragment, null, normalizeChildren(children));
 
 export default { motion, AnimatePresence };
