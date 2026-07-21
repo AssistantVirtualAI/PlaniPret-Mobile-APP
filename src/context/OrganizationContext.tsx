@@ -110,8 +110,12 @@ export const OrganizationProvider: React.FC<{ children: React.ReactNode }> = ({ 
           .from('organization_members')
           .select('organization_id, accepted_at')
           .eq('user_id', user.id);
-        if (mErr) throw mErr;
-        orgIds = (memberships || []).map((m) => m.organization_id).filter(Boolean);
+        if (mErr) {
+          console.warn('[OrganizationContext] organization_members query error:', mErr);
+          // Graceful fallback: treat as empty membership list rather than crashing
+        } else {
+          orgIds = (memberships || []).map((m) => m.organization_id).filter(Boolean);
+        }
       }
       // Always pull memberships for the accepted_at field
       const { data: memberships } = await supabase
@@ -141,8 +145,16 @@ export const OrganizationProvider: React.FC<{ children: React.ReactNode }> = ({ 
           .in('organization_id', orgIds),
       ]);
 
-      if (oErr) throw oErr;
-      if (rErr) throw rErr;
+      if (oErr) {
+        console.warn('[OrganizationContext] organizations query error:', oErr);
+        setOrganizations([]);
+        setOrganizationMemberships([]);
+        return;
+      }
+      if (rErr) {
+        console.warn('[OrganizationContext] user_roles query error:', rErr);
+        // Continue with empty roles rather than crashing
+      }
       // Show the organizations the user is explicitly linked to.
       // Important: the historical AVA Main Dashboard UUID is now the Planipret
       // organization, so it must never be filtered out here.
@@ -169,12 +181,9 @@ export const OrganizationProvider: React.FC<{ children: React.ReactNode }> = ({ 
         setSelectedOrg(next);
       }
     } catch (error: any) {
-      console.error('Error loading organizations:', error);
-      toast({
-        title: 'Erreur',
-        description: "Impossible de charger les organisations",
-        variant: 'destructive',
-      });
+      console.error('[OrganizationContext] Unexpected error loading organizations:', error);
+      // Do NOT call toast() here — the Toaster provider may not be mounted yet
+      // (causes the app-level ErrorBoundary to catch a {} error on first render)
     } finally {
       setIsLoading(false);
     }
