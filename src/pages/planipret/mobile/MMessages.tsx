@@ -974,19 +974,28 @@ function SwipeableEmailRow({
   children: ReactNode;
 }) {
   const startX = useRef(0);
+  const startY = useRef(0);
+  const dragging = useRef(false);
   const [offset, setOffset] = useState(0);
-  const [action, setAction] = useState<null | "delete" | "archive" | "flag">(null);
-  const THRESHOLD = 80;
+  const [action, setAction] = useState<null | "delete" | "archive">(null);
+  // swipe LEFT → delete (rouge, droite), swipe RIGHT → archive (vert, gauche)
+  const THRESHOLD = 72;
 
   const onTouchStart = (e: ReactTouchEvent<HTMLDivElement>) => {
     startX.current = e.touches[0].clientX;
+    startY.current = e.touches[0].clientY;
+    dragging.current = false;
     setAction(null);
   };
   const onTouchMove = (e: ReactTouchEvent<HTMLDivElement>) => {
     const dx = e.touches[0].clientX - startX.current;
-    if (Math.abs(dx) < 8) return;
-    const clamped = Math.max(-140, Math.min(140, dx));
+    const dy = e.touches[0].clientY - startY.current;
+    if (!dragging.current && Math.abs(dy) > Math.abs(dx) + 4) return; // scroll vertical prioritaire
+    if (Math.abs(dx) < 6) return;
+    dragging.current = true;
+    const clamped = Math.max(-120, Math.min(120, dx));
     setOffset(clamped);
+    // swipe gauche (dx < 0) → delete, swipe droite (dx > 0) → archive
     if (clamped < -THRESHOLD) setAction("delete");
     else if (clamped > THRESHOLD) setAction("archive");
     else setAction(null);
@@ -995,34 +1004,54 @@ function SwipeableEmailRow({
     if (action === "delete") { setOffset(0); onDelete(); }
     else if (action === "archive") { setOffset(0); onArchive(); }
     else setOffset(0);
+    dragging.current = false;
   };
 
   const unread = email.isRead === false;
+  // Largeur des révélateurs proportionnelle au swipe (visible seulement quand on swipe)
+  const revealW = Math.min(Math.abs(offset), 120);
   return (
     <li className="relative overflow-hidden rounded-2xl">
-      {/* Left reveal — archive (swipe right) */}
-      <div className="absolute inset-y-0 left-0 flex items-center justify-start px-4 rounded-2xl"
-        style={{ background: "#16a34a", minWidth: 80 }}>
-        <span style={{ color: "#fff", fontSize: 11, fontWeight: 700 }}>Archive</span>
+      {/* Gauche — archive (swipe droite) */}
+      <div
+        className="absolute inset-y-0 left-0 flex items-center justify-center rounded-l-2xl"
+        style={{
+          background: "#16a34a",
+          width: offset > 0 ? revealW : 0,
+          opacity: offset > 8 ? 1 : 0,
+          transition: offset === 0 ? "width 0.22s ease, opacity 0.15s" : "none",
+          overflow: "hidden",
+        }}
+      >
+        <Archive className="w-5 h-5" style={{ color: "#fff", flexShrink: 0 }} />
       </div>
-      {/* Right reveal — delete (swipe left) */}
-      <div className="absolute inset-y-0 right-0 flex items-center justify-end px-4 rounded-2xl"
-        style={{ background: "#dc2626", minWidth: 80 }}>
-        <span style={{ color: "#fff", fontSize: 11, fontWeight: 700 }}>Suppr.</span>
+      {/* Droite — delete (swipe gauche) */}
+      <div
+        className="absolute inset-y-0 right-0 flex items-center justify-center rounded-r-2xl"
+        style={{
+          background: "#dc2626",
+          width: offset < 0 ? revealW : 0,
+          opacity: offset < -8 ? 1 : 0,
+          transition: offset === 0 ? "width 0.22s ease, opacity 0.15s" : "none",
+          overflow: "hidden",
+        }}
+      >
+        <Trash2 className="w-5 h-5" style={{ color: "#fff", flexShrink: 0 }} />
       </div>
       {/* Email card */}
       <button
         onTouchStart={onTouchStart}
         onTouchMove={onTouchMove}
         onTouchEnd={onTouchEnd}
-        onClick={offset === 0 ? onOpen : undefined}
+        onClick={!dragging.current && offset === 0 ? onOpen : undefined}
         className="w-full text-left rounded-2xl p-3 active:opacity-80 relative z-10"
         style={{
           background: "var(--pp-bg-surface)",
           border: "1px solid var(--pp-bg-border-2)",
           borderLeft: unread ? "3px solid var(--pp-brand-accent)" : "1px solid var(--pp-bg-border-2)",
           transform: `translateX(${offset}px)`,
-          transition: offset === 0 ? "transform 0.25s ease" : "none",
+          transition: offset === 0 ? "transform 0.22s ease" : "none",
+          touchAction: "pan-y",
         }}
       >
         {children}
@@ -1082,8 +1111,8 @@ function EmailsList({ profile }: { profile: any }) {
   }, [profile?.ms365_access_token]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div className="relative flex flex-col" style={{ height: "calc(100dvh - 242px)", minHeight: 400 }}>
-      <div className="flex-1 overflow-y-auto p-3">
+    <div className="relative flex flex-col" style={{ height: "100%", minHeight: 0 }}>
+      <div className="flex-1 overflow-y-auto p-3" style={{ WebkitOverflowScrolling: "touch" }}>
       <div className="flex items-center justify-between mb-2">
         <button
           onClick={() => { setComposeInit({}); setComposeOpen(true); }}
@@ -1298,12 +1327,16 @@ function EmailDetailSheet({ email, onClose, onReply, onForward, onChanged }: {
 
 
   return (
-    <div className="fixed inset-0 z-[9999] flex items-end" style={{ background: "rgba(0,0,0,0.5)" }}>
-      <div
-        className="w-full rounded-t-3xl flex flex-col"
-        style={{ background: "var(--pp-bg-base)", border: "1px solid var(--pp-bg-border-2)", height: "92%" }}
-      >
-        <div className="flex items-center justify-between px-4 pt-3 pb-2" style={{ borderBottom: "1px solid var(--pp-bg-border)" }}>
+    <div
+      className="fixed inset-0 z-[9999] flex flex-col"
+      style={{
+        background: "var(--pp-bg-base)",
+        paddingTop: "env(safe-area-inset-top, 0px)",
+        paddingBottom: "env(safe-area-inset-bottom, 0px)",
+      }}
+    >
+      <div className="w-full flex flex-col" style={{ height: "100%", minHeight: 0 }}>
+        <div className="flex items-center justify-between px-4 pt-3 pb-2" style={{ borderBottom: "1px solid var(--pp-bg-border)", flexShrink: 0 }}>
           <button onClick={onClose} className="p-1.5 rounded-full" style={{ color: "var(--pp-text-secondary)" }}>
             <ArrowLeft className="w-5 h-5" />
           </button>
@@ -1318,7 +1351,7 @@ function EmailDetailSheet({ email, onClose, onReply, onForward, onChanged }: {
             {busy === "flag" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Flag className="w-4 h-4" style={{ fill: flagged ? "#F59E0B" : "transparent" }} />}
           </button>
         </div>
-        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
+        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3" style={{ WebkitOverflowScrolling: "touch", minHeight: 0 }}>
           <div>
             <p className="text-base font-semibold" style={{ color: "var(--pp-text-primary)" }}>{subject}</p>
             <p className="text-xs mt-1" style={{ color: "var(--pp-text-muted)" }}>
@@ -1411,7 +1444,7 @@ function EmailDetailSheet({ email, onClose, onReply, onForward, onChanged }: {
           </div>
         </div>
 
-        <div className="px-4 py-3 flex items-center gap-2" style={{ borderTop: "1px solid var(--pp-bg-border)" }}>
+        <div className="px-4 py-3 flex items-center gap-2" style={{ borderTop: "1px solid var(--pp-bg-border)", flexShrink: 0 }}>
           <button
             onClick={() => onReply({
               to: fromAddr,
@@ -1457,7 +1490,7 @@ function EmailDetailSheet({ email, onClose, onReply, onForward, onChanged }: {
             {busy === "delete" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
           </button>
         </div>
-      </div>
+      </div>{/* end w-full flex flex-col */}
 
       <AvaSummarizeSheet
         open={sumOpen}
@@ -1561,14 +1594,14 @@ function EmailComposeSheet({ init, onClose, onSent }: { init: { to?: string; sub
   };
 
   return (
-    <div className="fixed inset-0 z-[9999] flex flex-col" style={{ background: "#faf9f8", color: "#201f1e", paddingTop: "env(safe-area-inset-top, 0px)", paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
+    <div className="fixed inset-0 z-[9999] flex flex-col" style={{ background: "#faf9f8", color: "#201f1e" }}>
       <div
         className="w-full flex flex-col overflow-hidden h-full"
         style={{ background: "#faf9f8" }}
       >
         {/* Outlook-style top bar */}
         <div className="flex items-center justify-between px-3 py-2"
-          style={{ background: "#0078d4", color: "#fff" }}>
+          style={{ background: "#0078d4", color: "#fff", paddingTop: "calc(env(safe-area-inset-top, 0px) + 8px)" }}>
           <button onClick={onClose} className="p-2 rounded-full active:opacity-70" aria-label="close">
             <X className="w-5 h-5" />
           </button>
@@ -1632,7 +1665,7 @@ function EmailComposeSheet({ init, onClose, onSent }: { init: { to?: string; sub
 
         {/* Outlook-style bottom toolbar */}
         <div className="flex items-center gap-1 px-2 py-2"
-          style={{ background: "#f3f2f1", borderTop: "1px solid #edebe9" }}>
+          style={{ background: "#f3f2f1", borderTop: "1px solid #edebe9", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 8px)" }}>
           <ToolbarBtn label="B" title="Gras" bold onClick={() => {}} />
           <ToolbarBtn label="I" title="Italique" italic onClick={() => {}} />
           <ToolbarBtn label="U" title="Souligné" underline onClick={() => {}} />
