@@ -27,13 +27,23 @@ const capacitorVersion = readCapacitorVersion();
 function patchReactCommitRootPlugin(): Plugin {
   const PA_PATTERN =
     'function Pa(e,t,n){n=Be(-1,n),n.tag=3,n.payload={element:null};var r=t.value;return n.callback=function(){Xr||(Xr=!0,Ou=r),Eu(e,t)},n}';
+  // ANALYSIS: React reads payload for tag=3 at pos 71848:
+  //   case 3: w.flags=w.flags&-65537|128; case 0:
+  //     if(w=k.payload, p=typeof w=="function" ? w.call(g,m,p) : w, p==null) break e;
+  //     m=A({},m,p); break e;
+  // So for tag=3, payload is read as an object and merged into state via Object.assign.
+  // payload={element:null} -> nextState={element:null} -> root renders null -> blank screen.
+  // FIX: set payload to the CURRENT memoizedState so the merge is a no-op (tree stays mounted).
+  // payload=function(){return e.memoizedState} IS supported because React checks typeof payload==="function".
+  // BUT: the issue is that case 3 FALLS THROUGH to case 0 which reads payload again.
+  // The real fix: skip Pa() entirely for empty errors — don't enqueue any update at all.
   const PA_REPLACEMENT =
     'function Pa(e,t,n){' +
     'var _ppV=t&&t.value;' +
     'if(_ppV&&typeof _ppV==="object"&&Object.keys(_ppV).length===0&&String(_ppV.message||"").trim()===""){' +
-    'n=Be(-1,n);n.tag=3;' +
-    'n.payload=function(){return e.memoizedState};' +
-    'n.callback=function(){console.warn("[PP] Pa: swallowed empty root error")};' +
+    // Return a no-op update: tag=0 (StateUpdate), payload=function that returns current state unchanged
+    'n=Be(-1,n);n.tag=0;' +
+    'n.payload=function(_s){console.warn("[PP] Pa: swallowed empty root error");return _s};' +
     'return n}' +
     'n=Be(-1,n),n.tag=3,n.payload={element:null};var r=t.value;return n.callback=function(){Xr||(Xr=!0,Ou=r),Eu(e,t)},n}';
 
