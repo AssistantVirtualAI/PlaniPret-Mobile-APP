@@ -19,6 +19,14 @@ export class LazyRouteBoundary extends React.Component<
   state: State = { error: null, retryKey: 0 };
 
   static getDerivedStateFromError(error: Error): Partial<State> {
+    // Ignore empty/falsy errors — these are React StrictMode double-mount
+    // artefacts or non-fatal internal React events, not real crashes.
+    if (!error || (typeof error === 'object' && Object.keys(error).length === 0)) {
+      return {}; // no state change — don't show error screen
+    }
+    // Ignore errors with no message (same cause)
+    const msg = (error as Error)?.message ?? '';
+    if (!msg) return {};
     return { error };
   }
 
