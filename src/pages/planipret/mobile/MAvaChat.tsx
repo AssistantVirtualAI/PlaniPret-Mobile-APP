@@ -232,7 +232,7 @@ export default function MAvaChat() {
   }
 
   return (
-    <div className="flex flex-col h-full overflow-hidden" style={{ background: "var(--pp-bg-base)", paddingBottom: 130, contain: "layout paint" }}>
+    <div className="flex flex-col" style={{ background: "var(--pp-bg-base)", height: "calc(100dvh - 242px)", minHeight: 400 }}>
       <div className="sticky top-0 z-10 flex items-center gap-2 px-3 py-1 backdrop-blur-xl" style={{ background: "color-mix(in srgb, var(--pp-bg-surface) 78%, transparent)", borderBottom: "1px solid var(--pp-bg-border)" }}>
 
         <Sheet>

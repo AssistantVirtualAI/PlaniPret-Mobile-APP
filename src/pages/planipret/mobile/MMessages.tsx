@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { flushSync } from "react-dom";
+import { flushSync, createPortal } from "react-dom";
 import { useOutletContext, useSearchParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
@@ -1078,7 +1078,7 @@ function EmailsList({ profile }: { profile: any }) {
   }, [profile?.ms365_access_token]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div className="relative h-full flex flex-col">
+    <div className="relative flex flex-col" style={{ height: "calc(100dvh - 242px)", minHeight: 400 }}>
       <div className="flex-1 overflow-y-auto p-3">
       <div className="flex items-center justify-between mb-2">
         <button
@@ -1188,21 +1188,23 @@ function EmailsList({ profile }: { profile: any }) {
       ))}
       </div>{/* end overflow-y-auto */}
 
-      {active && (
+      {active && createPortal(
         <EmailDetailSheet
           email={active}
           onClose={() => setActive(null)}
           onReply={(init) => { setActive(null); setComposeInit(init); setComposeOpen(true); }}
           onForward={(init) => { setActive(null); setComposeInit(init); setComposeOpen(true); }}
           onChanged={() => { setActive(null); load(); }}
-        />
+        />,
+        document.body
       )}
-      {composeOpen && (
+      {composeOpen && createPortal(
         <EmailComposeSheet
           init={composeInit}
           onClose={() => setComposeOpen(false)}
           onSent={() => { setComposeOpen(false); load(); }}
-        />
+        />,
+        document.body
       )}
     </div>
   );
@@ -1292,7 +1294,7 @@ function EmailDetailSheet({ email, onClose, onReply, onForward, onChanged }: {
 
 
   return (
-    <div className="absolute inset-0 z-40 flex items-end">
+    <div className="fixed inset-0 z-[9999] flex items-end" style={{ background: "rgba(0,0,0,0.5)" }}>
       <div
         className="w-full rounded-t-3xl flex flex-col"
         style={{ background: "var(--pp-bg-base)", border: "1px solid var(--pp-bg-border-2)", height: "92%" }}
@@ -1555,10 +1557,10 @@ function EmailComposeSheet({ init, onClose, onSent }: { init: { to?: string; sub
   };
 
   return (
-    <div className="absolute inset-0 z-[200] flex items-end">
+    <div className="fixed inset-0 z-[9999] flex flex-col" style={{ background: "#faf9f8", color: "#201f1e", paddingTop: "env(safe-area-inset-top, 0px)", paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
       <div
-        className="w-full flex flex-col overflow-hidden"
-        style={{ background: "#faf9f8", height: "100%", color: "#201f1e", paddingTop: "env(safe-area-inset-top, 0px)", boxSizing: "border-box" as const }}
+        className="w-full flex flex-col overflow-hidden h-full"
+        style={{ background: "#faf9f8" }}
       >
         {/* Outlook-style top bar */}
         <div className="flex items-center justify-between px-3 py-2"
