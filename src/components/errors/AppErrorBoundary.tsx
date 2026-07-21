@@ -13,6 +13,48 @@ interface State {
   errorInfo: ErrorInfo | null;
 }
 
+/**
+ * Normalise any thrown value into a proper Error object with a message.
+ *
+ * Supabase PostgrestError objects have non-enumerable properties, so they
+ * serialise as `{}` when cast to string. We extract the message / hint /
+ * code fields manually to produce a readable error message.
+ */
+function normaliseError(raw: unknown): Error {
+  if (raw instanceof Error) return raw;
+
+  // Handle plain objects (e.g. PostgrestError { message, hint, code, details })
+  if (raw !== null && typeof raw === 'object') {
+    const obj = raw as Record<string, unknown>;
+    // Try to read Supabase-style fields — they are non-enumerable so we use
+    // Object.getOwnPropertyDescriptor to access them even when JSON.stringify
+    // returns "{}".
+    const readProp = (key: string): string | undefined => {
+      const val =
+        obj[key] ??
+        Object.getOwnPropertyDescriptor(obj, key)?.value;
+      return val != null ? String(val) : undefined;
+    };
+
+    const message =
+      readProp('message') ||
+      readProp('hint') ||
+      readProp('details') ||
+      readProp('code') ||
+      readProp('error') ||
+      JSON.stringify(raw);
+
+    const err = new Error(message || 'Unknown error (empty object)');
+    err.stack = readProp('stack') || err.stack;
+    return err;
+  }
+
+  if (typeof raw === 'string') return new Error(raw);
+  if (typeof raw === 'number' || typeof raw === 'boolean') return new Error(String(raw));
+
+  return new Error('Unknown error');
+}
+
 export class AppErrorBoundary extends Component<Props, State> {
   public state: State = {
     hasError: false,
@@ -20,11 +62,12 @@ export class AppErrorBoundary extends Component<Props, State> {
     errorInfo: null,
   };
 
-  public static getDerivedStateFromError(error: Error): Partial<State> {
-    return { hasError: true, error };
+  public static getDerivedStateFromError(raw: unknown): Partial<State> {
+    return { hasError: true, error: normaliseError(raw) };
   }
 
-  public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+  public componentDidCatch(raw: unknown, errorInfo: ErrorInfo) {
+    const error = normaliseError(raw);
     console.error('[ErrorBoundary] Caught error:', error, errorInfo);
     this.setState({ errorInfo });
   }

@@ -296,6 +296,16 @@ const queryClient = new QueryClient({
       refetchOnWindowFocus: false,
       refetchOnReconnect: true,
       retry: 1,
+      // CRITICAL (iOS crash fix): Never propagate query errors to the React ErrorBoundary.
+      // Supabase PostgrestError objects have non-enumerable properties so they serialise
+      // as {} and crash the app with an empty "Something went wrong" screen.
+      // Each query/component handles its own error state via isError / error.
+      throwOnError: false,
+    },
+    mutations: {
+      // Same protection for mutations — prevents unhandled mutation errors from
+      // bubbling up to the ErrorBoundary.
+      throwOnError: false,
     },
   },
 });
