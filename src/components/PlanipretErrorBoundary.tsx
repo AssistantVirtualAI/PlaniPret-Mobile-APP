@@ -2,24 +2,43 @@ import React from "react";
 
 type State = { error: Error | null };
 
+/**
+ * Extract a real message from any thrown value.
+ * Returns null for empty/non-fatal iOS Capacitor artefacts (e.g. `{}`).
+ */
+function extractMessage(raw: unknown): string | null {
+  if (raw === null || raw === undefined) return null;
+  if (raw instanceof Error) return raw.message || null;
+  if (typeof raw === 'string') return raw || null;
+  if (typeof raw === 'number' || typeof raw === 'boolean') return String(raw);
+  if (typeof raw === 'object') {
+    const tryGet = (key: string): string | null => {
+      try {
+        const val = (raw as any)[key] ?? Object.getOwnPropertyDescriptor(raw, key)?.value;
+        return val != null && String(val).trim() ? String(val).trim() : null;
+      } catch { return null; }
+    };
+    return tryGet('message') || tryGet('hint') || tryGet('details') || tryGet('code') || null;
+  }
+  return null;
+}
+
 export class PlanipretErrorBoundary extends React.Component<{ children: React.ReactNode }, State> {
   state: State = { error: null };
-  static getDerivedStateFromError(error: Error) {
-    // Ignore empty/falsy errors — React StrictMode double-mount artefacts or
-    // non-fatal internal events surface here on iOS Capacitor as `{}` with no
-    // message. They must not trigger the crash screen.
-    if (!error) return {};
-    if (typeof error === 'object' && Object.keys(error).length === 0) return {};
-    const msg = (error as Error)?.message ?? '';
-    if (!msg) return {};
-    return { error };
+  static getDerivedStateFromError(raw: unknown): Partial<State> {
+    // iOS Capacitor throws empty {} at startup — ignore them completely.
+    const msg = extractMessage(raw);
+    if (!msg) {
+      console.warn('[PlanipretErrorBoundary] Ignoring non-fatal empty error:', raw);
+      return {}; // No state change — keep rendering children
+    }
+    const err = raw instanceof Error ? raw : new Error(msg);
+    return { error: err };
   }
-  componentDidCatch(error: Error, info: any) {
-    if (!error) return;
-    if (typeof error === 'object' && Object.keys(error).length === 0) return;
-    const msg = (error as Error)?.message ?? '';
-    if (!msg) return;
-    console.error("[PlanipretErrorBoundary]", error, info);
+  componentDidCatch(raw: unknown, info: any) {
+    const msg = extractMessage(raw);
+    if (!msg) return; // Skip empty errors silently
+    console.error("[PlanipretErrorBoundary]", raw, info);
   }
   render() {
     if (!this.state.error) return this.props.children;

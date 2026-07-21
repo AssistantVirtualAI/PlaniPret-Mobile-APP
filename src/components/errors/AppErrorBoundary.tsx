@@ -14,45 +14,61 @@ interface State {
 }
 
 /**
- * Normalise any thrown value into a proper Error object with a message.
+ * Extract a meaningful message from any thrown value.
+ * Returns null if the error is empty/non-fatal (iOS Capacitor artefact).
  *
- * Supabase PostgrestError objects have non-enumerable properties, so they
- * serialise as `{}` when cast to string. We extract the message / hint /
- * code fields manually to produce a readable error message.
+ * iOS Capacitor throws internal `{}` objects at startup (e.g. from StatusBar
+ * UNIMPLEMENTED responses). These have no message, no stack, and no enumerable
+ * properties — but may have non-enumerable ones. We must not show a crash
+ * screen for these.
  */
-function normaliseError(raw: unknown): Error {
-  if (raw instanceof Error) return raw;
+function extractMessage(raw: unknown): string | null {
+  if (raw === null || raw === undefined) return null;
 
-  // Handle plain objects (e.g. PostgrestError { message, hint, code, details })
-  if (raw !== null && typeof raw === 'object') {
-    const obj = raw as Record<string, unknown>;
-    // Try to read Supabase-style fields — they are non-enumerable so we use
-    // Object.getOwnPropertyDescriptor to access them even when JSON.stringify
-    // returns "{}".
-    const readProp = (key: string): string | undefined => {
-      const val =
-        obj[key] ??
-        Object.getOwnPropertyDescriptor(obj, key)?.value;
-      return val != null ? String(val) : undefined;
-    };
-
-    const message =
-      readProp('message') ||
-      readProp('hint') ||
-      readProp('details') ||
-      readProp('code') ||
-      readProp('error') ||
-      JSON.stringify(raw);
-
-    const err = new Error(message || 'Unknown error (empty object)');
-    err.stack = readProp('stack') || err.stack;
-    return err;
+  // Real Error objects always have a message
+  if (raw instanceof Error) {
+    return raw.message || null;
   }
 
-  if (typeof raw === 'string') return new Error(raw);
-  if (typeof raw === 'number' || typeof raw === 'boolean') return new Error(String(raw));
+  if (typeof raw === 'string') return raw || null;
+  if (typeof raw === 'number' || typeof raw === 'boolean') return String(raw);
 
-  return new Error('Unknown error');
+  if (typeof raw === 'object') {
+    const obj = raw as Record<string, unknown>;
+
+    // Try every possible way to get a message — including non-enumerable props
+    const tryGet = (key: string): string | null => {
+      try {
+        const val = obj[key] ?? Object.getOwnPropertyDescriptor(obj, key)?.value;
+        return val != null && String(val).trim() ? String(val).trim() : null;
+      } catch { return null; }
+    };
+
+    return (
+      tryGet('message') ||
+      tryGet('hint') ||
+      tryGet('details') ||
+      tryGet('code') ||
+      tryGet('error') ||
+      tryGet('description') ||
+      null  // No message found → treat as non-fatal iOS artefact
+    );
+  }
+
+  return null;
+}
+
+function normaliseError(raw: unknown): Error {
+  if (raw instanceof Error) return raw;
+  const msg = extractMessage(raw) || 'Unknown error';
+  const err = new Error(msg);
+  if (typeof raw === 'object' && raw !== null) {
+    try {
+      const stack = (raw as any).stack ?? Object.getOwnPropertyDescriptor(raw, 'stack')?.value;
+      if (stack) err.stack = String(stack);
+    } catch {}
+  }
+  return err;
 }
 
 export class AppErrorBoundary extends Component<Props, State> {
@@ -63,22 +79,20 @@ export class AppErrorBoundary extends Component<Props, State> {
   };
 
   public static getDerivedStateFromError(raw: unknown): Partial<State> {
-    // Ignore empty/falsy errors — React StrictMode double-mount artefacts or
-    // non-fatal iOS Capacitor internal events surface as `{}` with no message.
-    // Returning {} (no state change) prevents the crash screen from showing.
-    if (!raw) return {};
-    if (typeof raw === 'object' && !(raw instanceof Error) && Object.keys(raw).length === 0) return {};
-    const msg = (raw as any)?.message ?? '';
-    if (typeof raw === 'object' && !(raw instanceof Error) && !msg) return {};
+    // CRITICAL: iOS Capacitor throws empty {} objects at startup from internal
+    // events (StatusBar UNIMPLEMENTED, React StrictMode double-mount artefacts).
+    // If we cannot extract a real message, we MUST NOT show the crash screen.
+    const msg = extractMessage(raw);
+    if (!msg) {
+      console.warn('[ErrorBoundary] Ignoring non-fatal empty error:', raw);
+      return {}; // No state change — children keep rendering
+    }
     return { hasError: true, error: normaliseError(raw) };
   }
 
   public componentDidCatch(raw: unknown, errorInfo: ErrorInfo) {
-    // Same guard — skip empty {} errors silently
-    if (!raw) return;
-    if (typeof raw === 'object' && !(raw instanceof Error) && Object.keys(raw).length === 0) return;
-    const msg = (raw as any)?.message ?? '';
-    if (typeof raw === 'object' && !(raw instanceof Error) && !msg) return;
+    const msg = extractMessage(raw);
+    if (!msg) return; // Same guard — skip empty errors silently
     const error = normaliseError(raw);
     console.error('[ErrorBoundary] Caught error:', error, errorInfo);
     this.setState({ errorInfo });
@@ -108,7 +122,7 @@ export class AppErrorBoundary extends Component<Props, State> {
             <div className="w-16 h-16 mx-auto bg-destructive/10 rounded-full flex items-center justify-center">
               <AlertTriangle className="w-8 h-8 text-destructive" />
             </div>
-            
+
             <div className="space-y-2">
               <h1 className="text-2xl font-bold text-foreground">Something went wrong</h1>
               <p className="text-muted-foreground">
