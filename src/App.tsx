@@ -455,7 +455,7 @@ function NativeDeepLinkBridge() {
 }
 
 const RootErrorBoundary = ({ children }: { children: React.ReactNode }) => {
-  if (Capacitor.isNativePlatform()) return <>{children}</>;
+  // AppErrorBoundary is now safe on iOS — it renders children normally for empty {} artefacts
   return <AppErrorBoundary>{children}</AppErrorBoundary>;
 };
 
