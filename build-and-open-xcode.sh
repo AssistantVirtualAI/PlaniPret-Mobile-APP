@@ -1,8 +1,13 @@
 #!/bin/bash
-# build-and-open-xcode.sh — Build rapide + sync Capacitor + ouvrir Xcode
+# build-and-open-xcode.sh — Build production + sync Capacitor + ouvrir Xcode
 # Usage :
-#   ./build-and-open-xcode.sh          → build rapide (sans minification, ~2-3 min)
-#   ./build-and-open-xcode.sh prod     → build production (avec minification, ~8 min)
+#   ./build-and-open-xcode.sh          → build production (avec minification + patches iOS, ~8 min)
+#   ./build-and-open-xcode.sh fast     → build rapide SANS patches iOS (déconseillé pour debug)
+#
+# IMPORTANT: le build production (défaut) est OBLIGATOIRE pour iOS car il applique
+# les patches critiques de vendor-react (patchReactCommitRootPlugin) qui empêchent
+# le blank screen sur iOS WKWebView. Le mode fast désactive la minification et
+# ces patches ne peuvent pas s'appliquer → blank screen garanti.
 set -e
 
 STANDALONE_DIR="$HOME/Documents/planipret-standalone"
@@ -32,12 +37,13 @@ if [ "$(uname -m)" = "arm64" ]; then
 fi
 
 # ─── Build Vite ───────────────────────────────────────────────────────────────
-if [ "$1" = "prod" ]; then
-  echo "🔨 Build production (avec minification)..."
-  npm run build
-else
-  echo "🔨 Build rapide (sans minification — pour test iOS)..."
+if [ "$1" = "fast" ]; then
+  echo "🔨 Build rapide (sans minification — patches iOS désactivés)..."
+  echo "⚠️  ATTENTION: ce mode ne patche pas vendor-react → blank screen possible sur iOS"
   npm run build:fast
+else
+  echo "🔨 Build production (avec minification + patches iOS React)..."
+  npm run build
 fi
 
 echo ""
