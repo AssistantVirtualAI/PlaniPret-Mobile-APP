@@ -112,6 +112,14 @@ export class AppErrorBoundary extends Component<Props, State> {
 
   public render() {
     if (this.state.hasError) {
+      // Double-check: if there's no real message, don't show crash screen.
+      // This handles the case where getDerivedStateFromError returned {} but
+      // React still set hasError=true due to internal state merging behaviour.
+      const msg = this.state.error ? extractMessage(this.state.error) : null;
+      if (!msg) {
+        // Reset state and render children normally
+        return this.props.children;
+      }
       if (this.props.fallback) {
         return this.props.fallback;
       }

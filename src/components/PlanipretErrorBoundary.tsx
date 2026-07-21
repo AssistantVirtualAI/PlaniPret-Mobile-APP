@@ -41,7 +41,8 @@ export class PlanipretErrorBoundary extends React.Component<{ children: React.Re
     console.error("[PlanipretErrorBoundary]", raw, info);
   }
   render() {
-    if (!this.state.error) return this.props.children;
+    // Double-check: if error has no real message, render children normally.
+    if (!this.state.error || !extractMessage(this.state.error)) return this.props.children;
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-100 p-6">
         <div className="max-w-md bg-white rounded-xl shadow-md p-6 text-center">
