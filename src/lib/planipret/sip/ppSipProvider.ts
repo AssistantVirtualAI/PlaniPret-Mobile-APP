@@ -39,22 +39,33 @@ export interface PpSipSnapshot {
 
 type Listener = (s: PpSipSnapshot) => void;
 
-export interface PpSipEvent {
-  time: number;
-  level: "info" | "warn" | "error";
-  event: string;
-  detail?: string;
+let sipParserGuardInstalled = false;
+
+function isKnownJsSipParserCrash(value: unknown): boolean {
+  const text = String(value instanceof Error ? value.message : value ?? "");
+  return /multi_header\.length|multi_header/i.test(text);
 }
-type EventListener = (events: PpSipEvent[]) => void;
-const EVENT_BUFFER_MAX = 120;
+
+function installSipParserGuard() {
+  if (sipParserGuardInstalled || typeof window === "undefined") return;
+  sipParserGuardInstalled = true;
+  window.addEventListener("error", (event) => {
+    if (!isKnownJsSipParserCrash(event.message) && !isKnownJsSipParserCrash((event as any).error)) return;
+    console.warn("[pp-sip] ignored malformed SIP parser frame", event.message);
+    event.preventDefault();
+  });
+  window.addEventListener("unhandledrejection", (event) => {
+    if (!isKnownJsSipParserCrash(event.reason)) return;
+    console.warn("[pp-sip] ignored malformed SIP parser rejection", event.reason);
+    event.preventDefault();
+  });
+}
 
 class PpSipProvider {
   private ua: any = null;
   private session: any = null;
   private cfg: PpSipConfig | null = null;
   private listeners = new Set<Listener>();
-  private eventListeners = new Set<EventListener>();
-  private events: PpSipEvent[] = [];
   private snap: PpSipSnapshot = {
     status: "idle",
     callState: "idle",
@@ -79,43 +90,19 @@ class PpSipProvider {
   getSnapshot(): PpSipSnapshot { return this.snap; }
   getConfig(): PpSipConfig | null { return this.cfg; }
 
-  /** Subscribe to the SIP event ring buffer used by the debug screen. */
-  subscribeEvents(fn: EventListener): () => void {
-    this.eventListeners.add(fn);
-    fn(this.events);
-    return () => { this.eventListeners.delete(fn); };
-  }
-  getEvents(): PpSipEvent[] { return this.events; }
-  clearEvents() {
-    this.events = [];
-    this.eventListeners.forEach((l) => { try { l(this.events); } catch {} });
-  }
-
-  private pushEvent(level: PpSipEvent["level"], event: string, detail?: string) {
-    const entry: PpSipEvent = { time: Date.now(), level, event, detail };
-    this.events = [entry, ...this.events].slice(0, EVENT_BUFFER_MAX);
-    this.eventListeners.forEach((l) => { try { l(this.events); } catch {} });
-  }
-
   private update(patch: Partial<PpSipSnapshot>) {
-    const prev = this.snap.status;
     this.snap = { ...this.snap, ...patch };
-    if (patch.status && patch.status !== prev) {
-      this.pushEvent("info", "status", `${prev} → ${patch.status}${patch.errorCause ? ` (${patch.errorCause})` : ""}`);
-    }
     this.listeners.forEach((l) => { try { l(this.snap); } catch {} });
   }
 
   private log(level: "info" | "warn" | "error", msg: string, detail?: any) {
     const fn = level === "error" ? "error" : level === "warn" ? "warn" : "log";
-    const detailStr = detail == null ? "" : typeof detail === "string" ? detail : (() => { try { return JSON.stringify(detail); } catch { return String(detail); } })();
     // eslint-disable-next-line no-console
     (console as any)[fn](`[pp-sip] ${msg}`, detail ?? "");
-    this.pushEvent(level, msg, detailStr || undefined);
   }
 
-
   async init(cfg: PpSipConfig) {
+    installSipParserGuard();
     const wssUrl = String(cfg.wssUrl ?? "").trim();
     if (!cfg.extension || !cfg.sipDomain || !wssUrl || wssUrl === "undefined" || !/^wss?:\/\//i.test(wssUrl) || !cfg.password) {
       this.update({ status: "error", errorCause: "invalid_config" });
@@ -136,7 +123,6 @@ class PpSipProvider {
         .map((u) => String(u ?? "").trim())
         .filter((u) => /^wss?:\/\//i.test(u)))) as string[];
       if (!urls.length) throw new Error("No valid SIP WSS URL");
-      this.log("info", "ua.start", `ext=${cleanCfg.sipUsername}@${cleanCfg.sipDomain} wss=${urls.join(",")}`);
       const sockets = urls.map((u) => new (JsSIP as any).WebSocketInterface(u));
       const ua = new (JsSIP as any).UA({
         sockets,
@@ -155,26 +141,18 @@ class PpSipProvider {
         connection_recovery_min_interval: 2,
         connection_recovery_max_interval: 30,
         user_agent: "Planipret Softphone 1.0",
-        // Do NOT spoof "TCP" in the Via header. The actual transport is WSS;
-        // forcing TCP makes NetSapiens/FusionPBX try to reply over TCP/5060
-        // instead of the WSS tunnel and the REGISTER response never arrives
-        // (stack stays stuck at `connecting`/`idle`). `hack_wss_in_transport`
-        // asks JsSIP to keep `transport=wss` in Via/Contact URIs.
-        hack_via_tcp: false,
-        hack_wss_in_transport: true,
-        hack_ip_in_contact: true,
       });
 
-      ua.on("connecting", () => { this.log("info", "ws.connecting"); this.update({ status: "connecting" }); });
-      ua.on("connected", () => { this.log("info", "ws.connected"); this.update({ status: "connected" }); });
+      ua.on("connecting", () => this.update({ status: "connecting" }));
+      ua.on("connected", () => this.update({ status: "connected" }));
       ua.on("disconnected", (e: any) => {
-        this.log("warn", "ws.disconnected", { code: e?.code, reason: e?.reason });
+        this.log("warn", "ws disconnected", e);
         this.update({ status: "disconnected", errorCause: e?.reason || "ws_disconnected" });
         // JsSIP retries the socket via connection_recovery_*; no manual work needed.
       });
-      ua.on("registered", () => { this.log("info", "register.ok"); this.update({ status: "registered", errorCause: undefined, lastRegistrationAt: Date.now() }); });
+      ua.on("registered", () => this.update({ status: "registered", errorCause: undefined, lastRegistrationAt: Date.now() }));
       ua.on("unregistered", () => {
-        this.log("warn", "register.unregistered - forcing re-register");
+        this.log("warn", "unregistered - forcing re-register");
         this.update({ status: "connected", errorCause: "re_registering" });
         // NetSapiens sometimes returns 401/403 mid-session on stale nonce;
         // trigger an immediate re-REGISTER instead of leaving the UA idle.
@@ -182,9 +160,8 @@ class PpSipProvider {
       });
       ua.on("registrationFailed", (e: any) => {
         const cause = e?.cause || e?.response?.reason_phrase || "registration_failed";
-        const code = e?.response?.status_code;
-        this.log("error", `register.failed code=${code ?? "?"} cause=${cause}`);
-        this.update({ status: "error", errorCause: `${code ?? ""} ${cause}`.trim() });
+        this.log("error", `registration failed: ${cause}`);
+        this.update({ status: "error", errorCause: cause });
         // Retry once after a short backoff — most NS failures here are transient
         // (429, 503, nonce reuse) and recover on a second attempt.
         setTimeout(() => { try { this.ua?.register(); } catch {} }, 8000);
