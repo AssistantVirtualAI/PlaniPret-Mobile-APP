@@ -116,8 +116,13 @@ export default defineConfig({
     outDir: 'dist',
     emptyOutDir: true,
     target: 'es2015',
-    chunkSizeWarningLimit: 600,
-    sourcemap: true,
+    chunkSizeWarningLimit: 1500,
+    // esbuild is ~10-20x faster than terser for minification.
+    // For a Capacitor iOS app, esbuild output is perfectly fine.
+    minify: 'esbuild',
+    // Disable sourcemaps in production iOS builds — they add significant
+    // build time and are not needed for Capacitor device testing.
+    sourcemap: false,
     // Skip gzip-size reporting per chunk — saves ~20-40s on large bundles.
     reportCompressedSize: false,
     rollupOptions: {
