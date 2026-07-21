@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode, type TouchEvent as ReactTouchEvent, type CSSProperties, type RefObject } from "react";
 import { flushSync, createPortal } from "react-dom";
 import { useOutletContext, useSearchParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
@@ -971,18 +971,18 @@ function SwipeableEmailRow({
   onDelete: () => void;
   onArchive: () => void;
   onFlag: () => void;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
-  const startX = React.useRef(0);
-  const [offset, setOffset] = React.useState(0);
-  const [action, setAction] = React.useState<null | "delete" | "archive" | "flag">(null);
+  const startX = useRef(0);
+  const [offset, setOffset] = useState(0);
+  const [action, setAction] = useState<null | "delete" | "archive" | "flag">(null);
   const THRESHOLD = 80;
 
-  const onTouchStart = (e: React.TouchEvent) => {
+  const onTouchStart = (e: ReactTouchEvent<HTMLDivElement>) => {
     startX.current = e.touches[0].clientX;
     setAction(null);
   };
-  const onTouchMove = (e: React.TouchEvent) => {
+  const onTouchMove = (e: ReactTouchEvent<HTMLDivElement>) => {
     const dx = e.touches[0].clientX - startX.current;
     if (Math.abs(dx) < 8) return;
     const clamped = Math.max(-140, Math.min(140, dx));
@@ -1547,15 +1547,15 @@ function EmailComposeSheet({ init, onClose, onSent }: { init: { to?: string; sub
     { icon: "✂️", label: "Raccourcir", action: "shorter" as const },
   ];
 
-  const fieldLabelStyle: React.CSSProperties = {
+  const fieldLabelStyle: CSSProperties = {
     color: "var(--pp-text-muted)", fontSize: 11, fontWeight: 600, letterSpacing: "0.02em",
     width: 44, textTransform: "uppercase",
   };
-  const inlineInput: React.CSSProperties = {
+  const inlineInput: CSSProperties = {
     flex: 1, background: "transparent", border: "none", outline: "none",
     color: "var(--pp-text-primary)", fontSize: 14, padding: "10px 0",
   };
-  const rowStyle: React.CSSProperties = {
+  const rowStyle: CSSProperties = {
     display: "flex", alignItems: "center", gap: 8, padding: "0 16px",
     borderBottom: "1px solid var(--pp-bg-border)",
   };
@@ -1695,8 +1695,8 @@ function Composer({
   text, setText, onSend, sending, placeholder, leftAction, extra, accent = "brand", inputRef, autoFocus = false,
 }: {
   text: string; setText: (v: string) => void; onSend: () => void; sending: boolean;
-  placeholder?: string; leftAction?: React.ReactNode; extra?: React.ReactNode;
-  accent?: "brand" | "agent"; inputRef?: React.RefObject<HTMLInputElement>; autoFocus?: boolean;
+  placeholder?: string; leftAction?: ReactNode; extra?: ReactNode;
+  accent?: "brand" | "agent"; inputRef?: RefObject<HTMLInputElement>; autoFocus?: boolean;
 }) {
   const { t } = useMplanipretLang();
   const accentBg =
