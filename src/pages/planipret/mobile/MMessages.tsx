@@ -709,8 +709,12 @@ function ThreadView({ threadId: thId, number, myExt, userId, onBack, onCall }: {
         });
         if (err) throw err;
         if ((data as any)?.ok === false || (data as any)?.error) {
-          const detail = (data as any)?.body || (data as any)?.error || t("messages.sendFailed");
-          throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+          // Strip HTML tags from error body (NS-API sometimes returns HTML error pages)
+          const rawDetail = (data as any)?.error || (data as any)?.body || t("messages.sendFailed");
+          const cleanDetail = typeof rawDetail === "string"
+            ? rawDetail.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 120)
+            : t("messages.sendFailed");
+          throw new Error(cleanDetail || t("messages.sendFailed"));
         }
         const result = (data as any)?.result ?? {};
         const newThreadId = result?.messagesession_id ?? result?.["messagesession-id"] ?? result?.session_id ?? result?.id;
