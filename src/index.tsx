@@ -18,43 +18,34 @@ import './styles.css';
 // Must be installed BEFORE React mounts. iOS Capacitor throws {} objects that
 // have no message, no stack, and no meaningful content. React's error boundary
 // cannot distinguish these from real errors. We intercept them here globally.
-function hasRealMessage(err: unknown): boolean {
-  if (!err) return false;
-  if (typeof err === 'string') return err.trim().length > 0;
-  if (err instanceof Error) return !!(err.message && err.message.trim());
-  if (typeof err === 'object') {
-    // Check all possible message-bearing properties including non-enumerable
-    for (const key of ['message', 'stack', 'name', 'description', 'reason']) {
-      try {
-        const val = (err as any)[key];
-        if (val && typeof val === 'string' && val.trim() && val !== 'Error' && val !== 'undefined') {
-          return true;
-        }
-      } catch { /* ignore */ }
-    }
-    return false;
-  }
-  return true;
+function isIgnorableNativeStartupError(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object') return !raw;
+  const obj = raw as Record<string, unknown>;
+  const message = String(obj.message ?? obj.errorMessage ?? '').trim();
+  const code = String(obj.code ?? '').trim();
+  const keys = new Set([...Object.keys(obj), ...Object.getOwnPropertyNames(obj)]);
+  return (
+    (!message && keys.size <= 3 && [...keys].every((k) => ['stack', 'name', 'message', 'errorMessage'].includes(k))) ||
+    (code === 'UNIMPLEMENTED' && /not implemented/i.test(message))
+  );
 }
 
-// Intercept synchronous errors before React sees them
-const _origOnerror = window.onerror;
-window.onerror = function(msg, src, line, col, err) {
-  if (!hasRealMessage(err) && (!msg || msg === 'Script error.' || msg === 'undefined')) {
-    console.warn('[PP] Swallowed empty iOS Capacitor error:', err);
-    return true; // Prevent default — stops React from seeing it
-  }
-  return _origOnerror ? _origOnerror.call(this, msg, src, line, col, err) : false;
-};
+if (typeof window !== 'undefined') {
+  // Use capture phase (true) to intercept before any other handler
+  window.addEventListener('error', (event) => {
+    if (!isIgnorableNativeStartupError((event as ErrorEvent).error)) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    console.warn('[PP] Swallowed empty iOS Capacitor error');
+  }, true);
 
-// Intercept unhandled promise rejections
-window.addEventListener('unhandledrejection', (e) => {
-  if (!hasRealMessage(e.reason)) {
-    console.warn('[PP] Swallowed empty iOS Capacitor rejection:', e.reason);
-    e.preventDefault();
-    e.stopImmediatePropagation();
-  }
-}, true);
+  window.addEventListener('unhandledrejection', (event) => {
+    if (!isIgnorableNativeStartupError(event.reason)) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    console.warn('[PP] Swallowed empty iOS Capacitor rejection');
+  }, true);
+}
 
 // ─── GLOBAL ANTI-ZOOM GUARDS ─────────────────────────────────────────────────
 if (typeof document !== 'undefined') {
@@ -93,6 +84,10 @@ async function bootstrap() {
   try {
     const container = document.getElementById('root');
     if (!container) throw new Error('Root element not found');
+    // Clear the "Chargement..." placeholder text before React mounts
+    if (container.textContent?.trim() === 'Chargement...') container.innerHTML = '';
+    // Mark that React has booted (used by error handlers)
+    (window as any).__PP_REACT_BOOTED__ = true;
     // React.StrictMode is disabled — it causes double-mount artefacts on iOS Capacitor
     createRoot(container).render(
       <BrowserRouter>

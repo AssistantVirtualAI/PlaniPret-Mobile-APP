@@ -17,7 +17,7 @@ import { OnboardingTutorial } from "@/components/planipret/OnboardingTutorial";
 import { useAvaNavigation } from "@/hooks/useAvaNavigation";
 const AvaVoiceAgent = lazy(() => import("@/components/planipret/mobile/AvaVoiceAgent"));
 import MobileScreenSkeleton from "@/components/planipret/mobile/MobileScreenSkeleton";
-import { prefetchRoute, scheduleIdlePrefetch, ALL_MOBILE_TAB_PATHS, prefetchAllMobileTabs, cancelPendingPrefetches } from "@/lib/routePrefetch";
+import { prefetchRoute, scheduleIdlePrefetch, CORE_MOBILE_TAB_PATHS, ALL_MOBILE_TAB_PATHS, prefetchAllMobileTabs, cancelPendingPrefetches } from "@/lib/routePrefetch";
 import { useQueryClient } from "@tanstack/react-query";
 import AvaChatSheet from "@/components/planipret/mobile/AvaChatSheet";
 import avaLogoAsset from "@/assets/ava-statistics-logo.png.asset.json";
@@ -586,7 +586,7 @@ export default function PlanipretMobile() {
 
   // Warm up sibling tab chunks during idle time so tab switches feel instant.
   useEffect(() => {
-    scheduleIdlePrefetch(ALL_MOBILE_TAB_PATHS);
+    scheduleIdlePrefetch(CORE_MOBILE_TAB_PATHS);
   }, []);
 
   // On route change: cancel any not-yet-started background prefetches so
@@ -595,7 +595,7 @@ export default function PlanipretMobile() {
   useEffect(() => {
     cancelPendingPrefetches(location.pathname);
     prefetchRoute(location.pathname);
-    const t = window.setTimeout(() => scheduleIdlePrefetch(ALL_MOBILE_TAB_PATHS), 400);
+    const t = window.setTimeout(() => scheduleIdlePrefetch(CORE_MOBILE_TAB_PATHS), 600);
     return () => window.clearTimeout(t);
   }, [location.pathname]);
 
@@ -607,7 +607,7 @@ export default function PlanipretMobile() {
     const onResume = () => {
       // 1) Prefetch current + neighboring route chunks (idempotent, cheap).
       prefetchRoute(location.pathname);
-      scheduleIdlePrefetch(ALL_MOBILE_TAB_PATHS);
+      scheduleIdlePrefetch(CORE_MOBILE_TAB_PATHS);
       // 2) Revalidate active queries so on-screen data refreshes in background.
       qc.invalidateQueries({ refetchType: "active" });
     };
@@ -830,7 +830,7 @@ export default function PlanipretMobile() {
     // Teams and the dialer render from memory instead of blocking on network.
     prefetchPpContacts(["list", "shared", "directory"]);
     if (profile?.ms365_access_token) prefetchTeams365Data();
-    prefetchAllMobileTabs();
+    window.setTimeout(() => prefetchAllMobileTabs(), 900);
   }, [profile?.user_id, profile?.ns_extension, profile?.extension, profile?.ms365_access_token]);
 
 

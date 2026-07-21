@@ -51,7 +51,16 @@ export function scheduleIdlePrefetch(paths: string[]): void {
   else setTimeout(run, 1500);
 }
 
-/** All mobile Planiprêt routes — used to warm every chunk on app boot. */
+/** Core mobile Planiprêt routes — safe to warm shortly after app boot. */
+export const CORE_MOBILE_TAB_PATHS = [
+  "/mplanipret/home",
+  "/mplanipret/calls",
+  "/mplanipret/messages",
+  "/mplanipret/ava",
+  "/mplanipret/contacts",
+];
+
+/** All mobile Planiprêt routes — used only after the shell is stable. */
 export const ALL_MPLANIPRET_PATHS = [
   "/mplanipret/home",
   "/mplanipret/calls",
@@ -68,10 +77,9 @@ export const ALL_MPLANIPRET_PATHS = [
   "/mplanipret/ms365-diagnostics",
 ];
 
-/** Aggressive: prefetch every mobile chunk immediately on mount. */
+/** Conservative: prefetch core tabs after the mobile shell has mounted. */
 export function prefetchAllMplanipret(): void {
-  // Kick off right away (microtask) so chunks download in parallel with initial paint.
-  Promise.resolve().then(() => ALL_MPLANIPRET_PATHS.forEach(prefetchRoute));
+  scheduleIdlePrefetch(CORE_MOBILE_TAB_PATHS);
 }
 
 // ── Aliases pour PlanipretMobile.tsx ─────────────────────────────────────────
