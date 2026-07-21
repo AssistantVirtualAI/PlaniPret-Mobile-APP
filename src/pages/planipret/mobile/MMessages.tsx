@@ -1051,9 +1051,13 @@ function EmailsList({ profile }: { profile: any }) {
     if (!profile?.ms365_access_token) { setState("no_m365"); return; }
     setState((s) => (s === "ready" ? s : "loading"));
     const { data, error } = await supabase.functions.invoke("ms365-actions", {
-      body: { action: "read_emails", payload: { top: 25 } },
+      body: { action: "read_emails", payload: { top: 25, folder: "inbox" } },
     });
-    if (error || !(data as any)?.success) { setState("error"); return; }
+    if (error) { console.error("[EmailsList] invoke error", error); setState("error"); return; }
+    if (!(data as any)?.success) {
+      console.error("[EmailsList] API error", (data as any)?.error, (data as any)?.details);
+      setState("error"); return;
+    }
     setEmails(((data as any).emails ?? (data as any).messages ?? []));
     setState("ready");
   };
@@ -1154,17 +1158,17 @@ function EmailsList({ profile }: { profile: any }) {
                 email={e}
                 onOpen={() => setActive(e)}
                 onDelete={async () => {
-                  await supabase.functions.invoke("ms365-actions", { body: { action: "delete_email", payload: { id: e.id } } });
+                  await supabase.functions.invoke("ms365-actions", { body: { action: "delete_email", payload: { message_id: e.id } } });
                   setEmails((prev) => prev ? prev.filter((x: any) => x.id !== e.id) : prev);
                   toast.success(t("messages.emailDeleted") ?? "Supprimé");
                 }}
                 onArchive={async () => {
-                  await supabase.functions.invoke("ms365-actions", { body: { action: "move_email", payload: { id: e.id, destination: "Archive" } } });
+                  await supabase.functions.invoke("ms365-actions", { body: { action: "archive_email", payload: { message_id: e.id } } });
                   setEmails((prev) => prev ? prev.filter((x: any) => x.id !== e.id) : prev);
                   toast.success(t("messages.emailArchived") ?? "Archivé");
                 }}
                 onFlag={async () => {
-                  await supabase.functions.invoke("ms365-actions", { body: { action: "flag_email", payload: { id: e.id } } });
+                  await supabase.functions.invoke("ms365-actions", { body: { action: "flag_email", payload: { message_id: e.id } } });
                   toast.success(t("messages.emailFlagged") ?? "Marqué");
                 }}
               >
@@ -1286,11 +1290,10 @@ function EmailDetailSheet({ email, onClose, onReply, onForward, onChanged }: {
 
 
   return (
-    <div className="absolute inset-0 z-40 bg-black/60 backdrop-blur-sm flex items-end" onClick={onClose}>
+    <div className="absolute inset-0 z-40 flex items-end">
       <div
         className="w-full rounded-t-3xl flex flex-col"
         style={{ background: "var(--pp-bg-base)", border: "1px solid var(--pp-bg-border-2)", height: "92%" }}
-        onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-4 pt-3 pb-2" style={{ borderBottom: "1px solid var(--pp-bg-border)" }}>
           <button onClick={onClose} className="p-1.5 rounded-full" style={{ color: "var(--pp-text-secondary)" }}>
@@ -1550,11 +1553,10 @@ function EmailComposeSheet({ init, onClose, onSent }: { init: { to?: string; sub
   };
 
   return (
-    <div className="absolute inset-0 z-[200] bg-black/60 backdrop-blur-sm flex items-end" onClick={onClose}>
+    <div className="absolute inset-0 z-[200] flex items-end">
       <div
         className="w-full flex flex-col overflow-hidden"
         style={{ background: "#faf9f8", height: "100%", color: "#201f1e", paddingTop: "env(safe-area-inset-top, 0px)", boxSizing: "border-box" as const }}
-        onClick={(e) => e.stopPropagation()}
       >
         {/* Outlook-style top bar */}
         <div className="flex items-center justify-between px-3 py-2"

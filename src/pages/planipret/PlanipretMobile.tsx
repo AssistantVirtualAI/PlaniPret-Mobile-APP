@@ -897,22 +897,20 @@ export default function PlanipretMobile() {
         >
 
 
-          {/* Left group: status dot */}
-          <div className="flex items-center gap-1.5" style={{ minWidth: 80 }}>
-            <span className="pp-live-dot" />
-            <span style={{ fontSize: 9, color: "var(--pp-success)", fontWeight: 700, letterSpacing: "0.05em" }}>REST</span>
-          </div>
-
-          {/* Center: Planiprêt logo — bigger */}
-          <div className="absolute left-1/2" style={{ transform: "translateX(-50%)" }}>
+          {/* Left group: Planiprêt logo (big, flush left) + status dot */}
+          <div className="flex items-center gap-2">
             <span aria-label="Planiprêt" style={{
-              width: 44, height: 44, borderRadius: 12, overflow: "hidden",
+              width: 56, height: 56, borderRadius: 14, overflow: "hidden",
               display: "inline-flex", alignItems: "center", justifyContent: "center",
               background: "#fff", border: "1px solid var(--pp-bg-border-2)",
-              boxShadow: "0 2px 8px rgba(0,0,0,0.10)",
+              boxShadow: "0 2px 8px rgba(0,0,0,0.12)", flexShrink: 0,
             }}>
               <img src={planipretLogoAsset.url} alt="Planiprêt" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
             </span>
+            <div className="flex flex-col" style={{ lineHeight: 1.1 }}>
+              <span className="pp-live-dot" style={{ marginBottom: 2 }} />
+              <span style={{ fontSize: 9, color: "var(--pp-success)", fontWeight: 700, letterSpacing: "0.05em" }}>REST</span>
+            </div>
           </div>
 
           {/* Right group: bell + settings + lang + theme + profile */}
