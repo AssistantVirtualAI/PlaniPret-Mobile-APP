@@ -229,10 +229,12 @@ function Dialer({ open, onClose, initial, openMessages, softphone }: { open: boo
   };
 
   useEffect(() => {
-    if (!open || mode !== "search" || contacts.length > 0 || loadingContacts) return;
+    if (!open || mode !== "search") return;
     let cancelled = false;
-    setLoadingContacts(true);
+    // Reset so we always fetch fresh data when entering search mode
+    setContacts([]);
     setContactsError(null);
+    setLoadingContacts(true);
     const appendBatch = (rows: any[], source: DialerContact["source"]) => {
       if (cancelled || !rows?.length) return;
       setContacts((cur) => [...cur, ...rows.map((c) => ({ ...c, source }))]);
@@ -255,7 +257,7 @@ function Dialer({ open, onClose, initial, openMessages, softphone }: { open: boo
       });
     });
     return () => { cancelled = true; };
-  }, [open, mode, contacts.length, loadingContacts, contactsLoadKey]);
+  }, [open, mode, contactsLoadKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
 
   const tokens = tokenize(query);
@@ -885,12 +887,7 @@ export default function PlanipretMobile() {
 
   return (
     <Frame>
-      {showPrimer && (
-        <PermissionsPrimer
-          extension={profile?.ns_extension || profile?.extension || ""}
-          onDone={() => setShowPrimer(false)}
-        />
-      )}
+      {/* PermissionsPrimer removed — native iOS permission popups are used directly */}
       <div className="h-full flex flex-col relative overflow-hidden" style={{ background: "var(--pp-bg-base)" }}>
 
         {/* Top brand header — AVA (left) · Planiprêt (center) · Settings (right) */}
@@ -901,7 +898,7 @@ export default function PlanipretMobile() {
 
 
           {/* Left group: status dot */}
-          <div className="flex items-center gap-1.5" style={{ minWidth: 48 }}>
+          <div className="flex items-center gap-1.5" style={{ minWidth: 80 }}>
             <span className="pp-live-dot" />
             <span style={{ fontSize: 9, color: "var(--pp-success)", fontWeight: 700, letterSpacing: "0.05em" }}>REST</span>
           </div>
