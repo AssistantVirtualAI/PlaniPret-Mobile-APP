@@ -2,35 +2,42 @@
 # build-and-open-xcode.sh — Build + sync Capacitor + ouvrir Xcode
 #
 # Usage :
-#   ./build-and-open-xcode.sh          → build production (~3-5 min, patches iOS actifs)
-#   ./build-and-open-xcode.sh fast     → build rapide sans minification (~1-2 min, patches iOS inactifs)
+#   ./build-and-open-xcode.sh          → build production (~30s, patches iOS actifs)
+#   ./build-and-open-xcode.sh fast     → build rapide sans minification (~30s, patches iOS inactifs)
 #
 # NOTE: le mode prod est requis pour les patches vendor-react (Pa() + commitRoot)
-# qui empêchent le blank screen sur iOS WKWebView. Ces patches ciblent le code
-# minifié et ne s'appliquent pas en mode fast.
+# qui empêchent le blank screen sur iOS WKWebView.
 set -e
 
-STANDALONE_DIR="$HOME/Documents/planipret-standalone"
+STANDALONE_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$STANDALONE_DIR"
 
-# ─── Correction Rollup ARM64 ──────────────────────────────────────────────────
+# ─── Vérification et installation des binaires natifs ARM64 ──────────────────
 if [ "$(uname -m)" = "arm64" ]; then
-  ROLLUP_NM="$STANDALONE_DIR/node_modules/rollup"
-  WASM_NM="$STANDALONE_DIR/node_modules/@rollup/wasm-node"
+  echo "🔍 Vérification des binaires natifs ARM64..."
 
-  if [ -f "$ROLLUP_NM/dist/rollup.wasm.node" ] || grep -q "wasm" "$ROLLUP_NM/package.json" 2>/dev/null; then
-    echo "⚠️  Rollup wasm-node détecté — réinstallation du natif ARM64..."
-    rm -rf "$ROLLUP_NM" "$WASM_NM"
-    npm install --ignore-scripts --prefer-offline --silent 2>/dev/null || npm install --ignore-scripts --silent
-    echo "  ✅ Rollup natif réinstallé"
-  fi
-
+  # 1. Rollup ARM64 natif
   ROLLUP_VERSION=$(node -e "console.log(require('./node_modules/rollup/package.json').version)" 2>/dev/null || echo "")
   ROLLUP_ARM64_DIR="$STANDALONE_DIR/node_modules/@rollup/rollup-darwin-arm64"
+
   if [ ! -d "$ROLLUP_ARM64_DIR" ] && [ -n "$ROLLUP_VERSION" ]; then
-    echo "📦 Installation binaire Rollup ARM64..."
+    echo "  📦 Installation @rollup/rollup-darwin-arm64@$ROLLUP_VERSION..."
     npm install --save-optional "@rollup/rollup-darwin-arm64@$ROLLUP_VERSION" --silent
-    echo "  ✅ Rollup ARM64 installé"
+    echo "  ✅ Rollup ARM64 natif installé"
+  else
+    echo "  ✅ Rollup ARM64 OK"
+  fi
+
+  # 2. SWC ARM64 natif
+  SWC_VERSION=$(node -e "console.log(require('./node_modules/@swc/core/package.json').version)" 2>/dev/null || echo "")
+  SWC_ARM64_DIR="$STANDALONE_DIR/node_modules/@swc/core-darwin-arm64"
+
+  if [ ! -d "$SWC_ARM64_DIR" ] && [ -n "$SWC_VERSION" ]; then
+    echo "  📦 Installation @swc/core-darwin-arm64@$SWC_VERSION..."
+    npm install --save-optional "@swc/core-darwin-arm64@$SWC_VERSION" --silent
+    echo "  ✅ SWC ARM64 natif installé"
+  else
+    echo "  ✅ SWC ARM64 OK"
   fi
 fi
 
@@ -53,4 +60,4 @@ echo "🚀 Ouverture Xcode..."
 
 echo ""
 echo "✅ Prêt ! Xcode est ouvert."
-echo "   → Dans Xcode : sélectionner votre iPhone → ▶ Run"
+echo "   → Dans Xcode : Product → Clean Build Folder (⇧⌘K) → Run (⌘R)"
