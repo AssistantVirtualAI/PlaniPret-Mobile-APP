@@ -264,17 +264,35 @@ Deno.serve(async (req) => {
         "from-number": fromNumber,
       };
 
-      // If we have an existing thread_id, POST to that session; otherwise POST
-      // to the /messagesessions collection and NS-API will create the session
-      // AND send the message in one step, returning { messagesession_id }.
-      const path = thread_id
-        ? `${userBase}/messagesessions/${encodeURIComponent(thread_id)}/messages`
-        : `${userBase}/messagesessions`;
-
-      const res = await nsFetch(path, { method: "POST", body: JSON.stringify(nsBody) });
-      const lastText = await res.text();
+      // NS-API v2: try /messagesessions/messages first (preferred endpoint),
+      // fallback to /messagesessions for older NS tenants.
+      let path: string;
+      let res: Response;
+      let lastText: string;
       let result: any = null;
-      try { result = lastText ? JSON.parse(lastText) : {}; } catch { result = { raw: lastText }; }
+
+      if (thread_id) {
+        // Existing thread — always use the thread messages endpoint
+        path = `${userBase}/messagesessions/${encodeURIComponent(thread_id)}/messages`;
+        res = await nsFetch(path, { method: "POST", body: JSON.stringify(nsBody) });
+        lastText = await res.text();
+        try { result = lastText ? JSON.parse(lastText) : {}; } catch { result = { raw: lastText }; }
+      } else {
+        // New thread — try /messagesessions/messages first (NS v2 preferred)
+        path = `${userBase}/messagesessions/messages`;
+        res = await nsFetch(path, { method: "POST", body: JSON.stringify(nsBody) });
+        lastText = await res.text();
+        try { result = lastText ? JSON.parse(lastText) : {}; } catch { result = { raw: lastText }; }
+
+        // Fallback to /messagesessions if the preferred endpoint returns 404 or 405
+        if (!res.ok && (res.status === 404 || res.status === 405)) {
+          console.warn(`[pp-ns-sms] /messagesessions/messages returned ${res.status}, falling back to /messagesessions`);
+          path = `${userBase}/messagesessions`;
+          res = await nsFetch(path, { method: "POST", body: JSON.stringify(nsBody) });
+          lastText = await res.text();
+          try { result = lastText ? JSON.parse(lastText) : {}; } catch { result = { raw: lastText }; }
+        }
+      }
 
       if (!res.ok) {
         console.error("[pp-ns-sms] NS send failed", res.status, path, lastText);
