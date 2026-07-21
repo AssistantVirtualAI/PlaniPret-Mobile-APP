@@ -597,24 +597,28 @@ export default function PlanipretMobile() {
 
   // Warm up sibling tab chunks during idle time so tab switches feel instant.
   useEffect(() => {
-    scheduleIdlePrefetch(CORE_MOBILE_TAB_PATHS);
-  }, []);
+    if (loading) return;
+    const t = window.setTimeout(() => scheduleIdlePrefetch(CORE_MOBILE_TAB_PATHS), 1000);
+    return () => window.clearTimeout(t);
+  }, [loading]);
 
   // On route change: cancel any not-yet-started background prefetches so
   // low-priority work never fights the chunk the user just opened. Then
   // re-schedule sibling prefetches once the current route is settled.
   useEffect(() => {
+    if (loading) return;
     cancelPendingPrefetches(location.pathname);
     prefetchRoute(location.pathname);
     const t = window.setTimeout(() => scheduleIdlePrefetch(CORE_MOBILE_TAB_PATHS), 600);
     return () => window.clearTimeout(t);
-  }, [location.pathname]);
+  }, [location.pathname, loading]);
 
   // When the app returns to the foreground (Capacitor resume or tab visibility),
   // revalidate active queries and re-warm the sibling tab chunks so the next
   // interaction after a background pause feels instant instead of stale.
   const qc = useQueryClient();
   useEffect(() => {
+    if (loading) return;
     const onResume = () => {
       // 1) Prefetch current + neighboring route chunks (idempotent, cheap).
       prefetchRoute(location.pathname);
@@ -640,7 +644,7 @@ export default function PlanipretMobile() {
       window.removeEventListener("focus", onResume);
       capUnsub?.();
     };
-  }, [qc, location.pathname]);
+  }, [qc, location.pathname, loading]);
 
 
   // Track IDs the user just hung up locally so realtime echoes of a still-

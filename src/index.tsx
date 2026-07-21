@@ -1,23 +1,13 @@
 /**
  * Planiprêt Mobile — Standalone Capacitor app entry
- *
- * IMPORTANT: This file installs a global error interceptor BEFORE React mounts.
- * iOS Capacitor throws empty {} objects internally (e.g. StatusBar UNIMPLEMENTED).
- * These must be swallowed before they reach React's error boundary machinery.
  */
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
-import { StatusBar, Style } from '@capacitor/status-bar';
-import { SplashScreen } from '@capacitor/splash-screen';
 import { Capacitor } from '@capacitor/core';
 import App from './App';
 import './styles.css';
 
-// ─── GLOBAL iOS CAPACITOR ERROR ABSORBER ────────────────────────────────────
-// Must be installed BEFORE React mounts. iOS Capacitor throws {} objects that
-// have no message, no stack, and no meaningful content. React's error boundary
-// cannot distinguish these from real errors. We intercept them here globally.
 function isIgnorableNativeStartupError(raw: unknown): boolean {
   if (!raw || typeof raw !== 'object') return !raw;
   const obj = raw as Record<string, unknown>;
@@ -31,23 +21,47 @@ function isIgnorableNativeStartupError(raw: unknown): boolean {
 }
 
 if (typeof window !== 'undefined') {
-  // Use capture phase (true) to intercept before any other handler
+  const isNativeShell = () => {
+    try { return Capacitor.isNativePlatform() || window.location.protocol === 'capacitor:'; }
+    catch { return window.location.protocol === 'capacitor:'; }
+  };
+
+  // iOS WKWebView can throw an empty native Error while React installs its
+  // delegated event listeners during createRoot(). If that bubbles, startup
+  // stops inside vendor-react before the first screen renders. Ignore only the
+  // known empty/UNIMPLEMENTED native artifacts and let real app errors through.
+  try {
+    const proto = (globalThis as any).EventTarget?.prototype as {
+      addEventListener?: EventTarget['addEventListener'];
+      __ppSafeAddEventListener?: boolean;
+    } | undefined;
+    if (proto?.addEventListener && !proto.__ppSafeAddEventListener) {
+      const originalAdd = proto.addEventListener;
+      proto.addEventListener = function patchedAddEventListener(type, listener, options) {
+        try {
+          return originalAdd.call(this, type, listener, options);
+        } catch (error) {
+          if (isNativeShell() && isIgnorableNativeStartupError(error)) return undefined;
+          throw error;
+        }
+      } as typeof proto.addEventListener;
+      proto.__ppSafeAddEventListener = true;
+    }
+  } catch {}
+
   window.addEventListener('error', (event) => {
     if (!isIgnorableNativeStartupError((event as ErrorEvent).error)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    console.warn('[PP] Swallowed empty iOS Capacitor error');
   }, true);
-
   window.addEventListener('unhandledrejection', (event) => {
     if (!isIgnorableNativeStartupError(event.reason)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    console.warn('[PP] Swallowed empty iOS Capacitor rejection');
   }, true);
 }
 
-// ─── GLOBAL ANTI-ZOOM GUARDS ─────────────────────────────────────────────────
+// Global anti-zoom guards for iOS/Android WebView (no pinch, no double-tap zoom).
 if (typeof document !== 'undefined') {
   document.addEventListener('gesturestart', (e) => e.preventDefault());
   document.addEventListener('gesturechange', (e) => e.preventDefault());
@@ -71,41 +85,27 @@ if (typeof document !== 'undefined') {
   });
 }
 
-// ─── BOOTSTRAP ───────────────────────────────────────────────────────────────
 async function bootstrap() {
-  try {
-    if (Capacitor.isNativePlatform()) {
-      try { await StatusBar.setStyle({ style: Style.Dark }); } catch (e) { console.log('[PP] StatusBar.setStyle:', e); }
-      try { await SplashScreen.hide(); } catch (e) { console.log('[PP] SplashScreen.hide:', e); }
-    }
-  } catch (e) {
-    console.error('[PP] Native init failed:', e);
-  }
   try {
     const container = document.getElementById('root');
     if (!container) throw new Error('Root element not found');
-    // Clear the placeholder text before React mounts
-    const placeholderText = container.textContent?.trim() ?? '';
-    if (placeholderText === 'Chargement...' || placeholderText === 'Démarrage...') container.innerHTML = '';
-    // React.StrictMode is disabled — it causes double-mount artefacts on iOS Capacitor
-    // onRecoverableError intercepts errors that React re-throws internally (e.g. from commitRoot)
-    // This is the ONLY way to catch {} artefacts that bypass ErrorBoundary and window.onerror
-    createRoot(container, {
-      onRecoverableError: (error: unknown, errorInfo: { componentStack?: string | null }) => {
-        if (isIgnorableNativeStartupError(error)) {
-          console.warn('[PP] onRecoverableError: swallowed empty iOS artefact');
-          return;
-        }
-        const msg = error instanceof Error ? error.message : String(error);
-        console.error('[PP] onRecoverableError:', msg, errorInfo?.componentStack ?? '');
+    (window as any).__PP_REACT_BOOT_ATTEMPTED__ = true;
+    if (container.textContent?.trim() === 'Démarrage...') container.innerHTML = '';
+    // React.StrictMode intentionally double-mounts components in development,
+    // which triggers error boundaries with empty errors on Capacitor iOS.
+    // We disable it unconditionally in this native build.
+    const root = createRoot(container, {
+      onRecoverableError(error) {
+        if (isIgnorableNativeStartupError(error)) return;
+        console.error('[PP] React recoverable error:', error);
       },
-    }).render(
+    });
+    root.render(
       <BrowserRouter>
         <App />
       </BrowserRouter>,
     );
-    // Mark that React has booted — used by index.html fallback timer
-    (window as any).__PP_REACT_BOOTED__ = true;
+    window.setTimeout(() => { (window as any).__PP_REACT_BOOTED__ = true; }, 0);
   } catch (e) {
     console.error('[PP] Render failed:', e);
     const el = document.getElementById('root');
@@ -120,7 +120,6 @@ setTimeout(() => {
   try {
     const el = document.getElementById('root');
     if (el) el.style.display = 'block';
-    if (Capacitor.isNativePlatform()) SplashScreen.hide().catch(() => {});
   } catch {}
 }, 3000);
 

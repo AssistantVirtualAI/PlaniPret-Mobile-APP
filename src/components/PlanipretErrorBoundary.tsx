@@ -1,63 +1,51 @@
 import React from "react";
 
-type State = { hasError: boolean; isIgnorable: boolean; error: Error | null };
+type State = { error: Error | null };
 
 function isEmptyNativeArtifact(raw: unknown): boolean {
-  if (raw === null || raw === undefined) return true;
-  if (raw instanceof Error) return !String(raw.message ?? '').trim();
-  if (typeof raw !== 'object') return false;
+  if (!raw || typeof raw !== 'object') return !raw;
+
+  // Capacitor iOS sometimes reports an internal React/router artifact as
+  // `Error {}` with only a generated stack. No message means no actionable
+  // render failure, so keep the mobile app mounted.
+  if (raw instanceof Error && !String(raw.message ?? '').trim()) return true;
+
   const obj = raw as Record<string, unknown>;
-  const allKeys = new Set([...Object.keys(obj), ...Object.getOwnPropertyNames(obj)]);
-  for (const key of ['message', 'errorMessage', 'code', 'details', 'hint', 'error', 'data']) {
-    const desc = Object.getOwnPropertyDescriptor(obj, key);
-    const value = desc?.value ?? (obj as any)[key];
-    if (value != null && String(value).trim() !== '' && String(value) !== '{}') return false;
-  }
-  const onlyGenerated = [...allKeys].every((k) =>
-    ['stack', 'name', 'message', 'errorMessage', '__proto__', 'constructor'].includes(k)
+  const keys = new Set([...Object.keys(obj), ...Object.getOwnPropertyNames(obj)]);
+  const message = String(obj.message ?? Object.getOwnPropertyDescriptor(obj, 'message')?.value ?? '').trim();
+  const errorMessage = String(obj.errorMessage ?? Object.getOwnPropertyDescriptor(obj, 'errorMessage')?.value ?? '').trim();
+  const code = String(obj.code ?? Object.getOwnPropertyDescriptor(obj, 'code')?.value ?? '').trim();
+  if (code === 'UNIMPLEMENTED' && /not implemented/i.test(message || errorMessage)) return true;
+  const hasOnlyGeneratedErrorFields = [...keys].every((key) =>
+    ['stack', 'name', 'message', 'errorMessage', 'code', 'data'].includes(key)
   );
-  return allKeys.size === 0 || onlyGenerated;
+  for (const key of ['message', 'errorMessage', 'code', 'details', 'hint', 'error']) {
+    const value = obj[key] ?? Object.getOwnPropertyDescriptor(obj, key)?.value;
+    if (value != null && String(value).trim()) return false;
+  }
+  return keys.size === 0 || hasOnlyGeneratedErrorFields;
 }
 
 export class PlanipretErrorBoundary extends React.Component<{ children: React.ReactNode }, State> {
-  state: State = { hasError: false, isIgnorable: false, error: null };
-
-  static getDerivedStateFromError(raw: unknown): State {
-    if (isEmptyNativeArtifact(raw)) {
-      return { hasError: true, isIgnorable: true, error: null };
-    }
-    const error = raw instanceof Error ? raw : new Error(String(raw));
-    return { hasError: true, isIgnorable: false, error };
+  state: State = { error: null };
+  static getDerivedStateFromError(error: Error) {
+    if (isEmptyNativeArtifact(error)) return null;
+    return { error };
   }
-
-  componentDidCatch(raw: unknown, info: any) {
-    if (isEmptyNativeArtifact(raw)) {
-      console.warn("[PlanipretErrorBoundary] Ignored empty iOS Capacitor artefact");
-      // Reset so children render normally on next paint
-      this.setState({ hasError: false, isIgnorable: false, error: null });
-      return;
-    }
-    console.error("[PlanipretErrorBoundary]", raw, info);
+  componentDidCatch(error: Error, info: any) {
+    if (isEmptyNativeArtifact(error)) return;
+    console.error("[PlanipretErrorBoundary]", error, info);
   }
-
   render() {
-    const { hasError, isIgnorable, error } = this.state;
-
-    // Ignorable artefact — render children as if nothing happened
-    if (!hasError || isIgnorable) return this.props.children;
-
+    if (!this.state.error) return this.props.children;
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-100 p-6">
         <div className="max-w-md bg-white rounded-xl shadow-md p-6 text-center">
           <div className="text-3xl mb-2">⚠️</div>
           <h2 className="font-semibold text-lg mb-2">Une erreur est survenue</h2>
-          <p className="text-sm text-slate-600 mb-4">{error?.message}</p>
-          <button
-            onClick={() => { this.setState({ hasError: false, isIgnorable: false, error: null }); location.reload(); }}
-            className="px-4 py-2 rounded-lg bg-slate-900 text-white text-sm"
-          >
-            Recharger
-          </button>
+          <p className="text-sm text-slate-600 mb-4">{this.state.error.message}</p>
+          <button onClick={() => { this.setState({ error: null }); location.reload(); }}
+            className="px-4 py-2 rounded-lg bg-slate-900 text-white text-sm">Recharger</button>
         </div>
       </div>
     );

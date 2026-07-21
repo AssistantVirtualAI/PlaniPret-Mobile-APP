@@ -39,6 +39,22 @@
           return (!message && onlyGeneratedFields) || (code === 'UNIMPLEMENTED' && /not implemented/i.test(message));
         }
         window.__PP_REACT_BOOTED__ = false;
+        window.__PP_REACT_BOOT_ATTEMPTED__ = false;
+        try {
+          var originalAdd = EventTarget && EventTarget.prototype && EventTarget.prototype.addEventListener;
+          if (originalAdd && !EventTarget.prototype.__ppSafeAddEventListener) {
+            EventTarget.prototype.addEventListener = function (type, listener, options) {
+              try {
+                return originalAdd.call(this, type, listener, options);
+              } catch (err) {
+                var isNative = location.protocol === 'capacitor:' || !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+                if (isNative && isIgnorableNativeStartupError(err)) return;
+                throw err;
+              }
+            };
+            EventTarget.prototype.__ppSafeAddEventListener = true;
+          }
+        } catch (_) {}
         window.addEventListener('error', function (event) {
           if (!isIgnorableNativeStartupError(event.error)) return;
           event.preventDefault();
@@ -61,7 +77,7 @@
       setTimeout(function () {
         var root = document.getElementById('root');
         if (root && root.innerHTML.indexOf('Démarrage...') !== -1 && !window.__PP_REACT_BOOTED__) {
-          root.innerHTML = '<div style="color:white;padding:24px;background:#0A1425;min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:system-ui,sans-serif;text-align:center">Démarrage interrompu.<br/>Fermez puis relancez l\u2019application.</div>';
+          root.innerHTML = '<div style="color:white;padding:24px;background:#0A1425;min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:system-ui,sans-serif;text-align:center">Démarrage interrompu.<br/>Fermez puis relancez l’application.</div>';
         }
       }, 8000);
     </script>
