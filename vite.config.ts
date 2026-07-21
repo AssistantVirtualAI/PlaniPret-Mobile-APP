@@ -18,22 +18,11 @@ function readCapacitorVersion(): string {
 const capacitorVersion = readCapacitorVersion();
 
 /**
- * Vite plugin: patch the minified vendor-react bundle to fully neutralise
- * empty-object errors on iOS WKWebView cold boot.
+ * Patch the minified vendor-react bundle to neutralise empty-object errors
+ * on iOS WKWebView cold boot (React error #150 / commitRoot re-throw).
  *
- * Applied only in production mode (minify !== false) because the patches
- * target minified variable names (Pa, Xr, Ou, Be, Eu) that only exist after
- * esbuild minification. In fast/dev mode the bundle is not minified, so the
- * patches are skipped automatically.
- *
- * PATCH 1 — Pa() (createRootErrorUpdate):
- *   Intercepts before React unmounts the tree. If the error is an empty object
- *   (iOS WKWebView artefact), the update keeps the tree mounted instead of
- *   setting payload={element:null}.
- *
- * PATCH 2 — commitRoot re-throw (safety net):
- *   If Xr is set by another path, the final re-throw is replaced with a
- *   conditional that swallows {} but still throws real errors.
+ * Only active in production mode (minify !== false) because the patterns
+ * only exist in minified code.
  */
 function patchReactCommitRootPlugin(): Plugin {
   const PA_PATTERN =
@@ -62,27 +51,19 @@ function patchReactCommitRootPlugin(): Plugin {
       for (const [fileName, chunk] of Object.entries(bundle)) {
         if (chunk.type !== 'chunk') continue;
         if (!fileName.includes('vendor-react')) continue;
+        if (!chunk.code.includes('function Pa(')) continue; // skip unminified
 
-        // Only patch minified bundles — patterns don't exist in unminified code
-        if (!chunk.code.includes('function Pa(')) continue;
-
-        let patched = false;
         if (chunk.code.includes(PA_PATTERN)) {
           chunk.code = chunk.code.replace(PA_PATTERN, PA_REPLACEMENT);
-          console.log(`[patch-react-commit-root] ✅ Patch 1 (Pa guard) applied to ${fileName}`);
-          patched = true;
+          console.log(`[patch-react-commit-root] ✅ Patch 1 applied to ${fileName}`);
         } else {
-          console.warn(`[patch-react-commit-root] ⚠️  Patch 1 pattern not found in ${fileName}`);
+          console.warn(`[patch-react-commit-root] ⚠️  Patch 1 not found in ${fileName}`);
         }
         if (chunk.code.includes(THROW_PATTERN)) {
           chunk.code = chunk.code.replace(THROW_PATTERN, THROW_REPLACEMENT);
-          console.log(`[patch-react-commit-root] ✅ Patch 2 (re-throw guard) applied to ${fileName}`);
-          patched = true;
+          console.log(`[patch-react-commit-root] ✅ Patch 2 applied to ${fileName}`);
         } else {
-          console.warn(`[patch-react-commit-root] ⚠️  Patch 2 pattern not found in ${fileName}`);
-        }
-        if (!patched) {
-          console.warn(`[patch-react-commit-root] ⚠️  No patches applied — React version may have changed`);
+          console.warn(`[patch-react-commit-root] ⚠️  Patch 2 not found in ${fileName}`);
         }
       }
     },
@@ -91,14 +72,12 @@ function patchReactCommitRootPlugin(): Plugin {
 
 export default defineConfig(({ mode }) => ({
   plugins: [react(), patchReactCommitRootPlugin()],
-  // Persistent cache between builds — first build slow, subsequent ones ~30 sec
+  // Persistent cache — first build slow, subsequent ones ~30 sec
   cacheDir: '.vite-cache',
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
-      // Replace framer-motion with a lightweight shim on mobile.
       'framer-motion': path.resolve(__dirname, './src/lib/motion-shim.tsx'),
-      // Stub livekit-client — drops ~1.17 MB from the bundle.
       'livekit-client': path.resolve(__dirname, './src/lib/livekit-shim.ts'),
     },
   },
@@ -107,10 +86,7 @@ export default defineConfig(({ mode }) => ({
     emptyOutDir: true,
     target: 'es2015',
     chunkSizeWarningLimit: 1500,
-    // No sourcemaps for iOS device builds — saves 15-20 min of build time.
     sourcemap: false,
-    // esbuild minifier — fast and correct for Capacitor iOS.
-    // fast mode: no minification (for quick iteration), no treeshaking.
     minify: mode === 'fast' ? false : 'esbuild',
     reportCompressedSize: false,
     rollupOptions: {
@@ -120,13 +96,13 @@ export default defineConfig(({ mode }) => ({
           if (id.includes('node_modules/react/') || id.includes('node_modules/react-dom/') || id.includes('node_modules/scheduler/')) return 'vendor-react';
           if (id.includes('node_modules/react-router')) return 'vendor-router';
           if (id.includes('@supabase')) return 'vendor-supabase';
-          if (id.includes('recharts') || id.includes('d3-') || id.includes('victory-')) return 'vendor-charts';
+          if (id.includes('recharts') || id.includes('d3-')) return 'vendor-charts';
           if (id.includes('@radix-ui')) return 'vendor-radix';
           if (id.includes('lucide-react')) return 'vendor-lucide';
           if (id.includes('@tanstack')) return 'vendor-tanstack';
           if (id.includes('jssip') || id.includes('sip.js')) return 'vendor-sip';
           if (id.includes('framer-motion')) return 'vendor-motion';
-          // NOTE: vendor-misc omitted — caused circular deps with vendor-react
+          // vendor-misc intentionally omitted — causes circular deps with vendor-react
         },
       },
     },
