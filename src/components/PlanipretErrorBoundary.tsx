@@ -3,46 +3,34 @@ import React from "react";
 type State = { error: Error | null };
 
 /**
- * Extract a real message from any thrown value.
- * Returns null for empty/non-fatal iOS Capacitor artefacts (e.g. `{}`).
+ * Returns true if the thrown value is a non-fatal iOS Capacitor / React
+ * internal artefact (e.g. the `{}` thrown by StatusBar UNIMPLEMENTED).
+ * Uses Object.getOwnPropertyNames() to inspect ALL properties.
  */
-function extractMessage(raw: unknown): string | null {
-  if (raw === null || raw === undefined) return null;
-  if (raw instanceof Error) return raw.message || null;
-  if (typeof raw === 'string') return raw || null;
-  if (typeof raw === 'number' || typeof raw === 'boolean') return String(raw);
-  if (typeof raw === 'object') {
-    const tryGet = (key: string): string | null => {
-      try {
-        const val = (raw as any)[key] ?? Object.getOwnPropertyDescriptor(raw, key)?.value;
-        return val != null && String(val).trim() ? String(val).trim() : null;
-      } catch { return null; }
-    };
-    return tryGet('message') || tryGet('hint') || tryGet('details') || tryGet('code') || null;
+function isEmptyNativeArtifact(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object') return !raw;
+  const obj = raw as Record<string, unknown>;
+  const keys = new Set([...Object.keys(obj), ...Object.getOwnPropertyNames(obj)]);
+  for (const key of ['message', 'stack', 'name', 'code', 'details', 'hint', 'error']) {
+    const value = obj[key] ?? Object.getOwnPropertyDescriptor(obj, key)?.value;
+    if (value != null && String(value).trim()) return false;
   }
-  return null;
+  return keys.size === 0;
 }
 
 export class PlanipretErrorBoundary extends React.Component<{ children: React.ReactNode }, State> {
   state: State = { error: null };
   static getDerivedStateFromError(raw: unknown): Partial<State> {
-    // iOS Capacitor throws empty {} at startup — ignore them completely.
-    const msg = extractMessage(raw);
-    if (!msg) {
-      console.warn('[PlanipretErrorBoundary] Ignoring non-fatal empty error:', raw);
-      return {}; // No state change — keep rendering children
-    }
-    const err = raw instanceof Error ? raw : new Error(msg);
+    if (isEmptyNativeArtifact(raw)) return {}; // No state change
+    const err = raw instanceof Error ? raw : new Error(String((raw as any)?.message ?? 'Unknown error'));
     return { error: err };
   }
   componentDidCatch(raw: unknown, info: any) {
-    const msg = extractMessage(raw);
-    if (!msg) return; // Skip empty errors silently
+    if (isEmptyNativeArtifact(raw)) return;
     console.error("[PlanipretErrorBoundary]", raw, info);
   }
   render() {
-    // Double-check: if error has no real message, render children normally.
-    if (!this.state.error || !extractMessage(this.state.error)) return this.props.children;
+    if (!this.state.error || isEmptyNativeArtifact(this.state.error)) return this.props.children;
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-100 p-6">
         <div className="max-w-md bg-white rounded-xl shadow-md p-6 text-center">
