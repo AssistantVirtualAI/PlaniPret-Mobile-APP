@@ -5,6 +5,16 @@ import { ROUTES } from "@/lib/routes";
 import { recordRedirect } from "@/lib/debug/navDebug";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 
+function withTimeout<T>(promise: PromiseLike<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(`${label}_timeout`)), ms);
+    promise.then(
+      (value) => { window.clearTimeout(timer); resolve(value); },
+      (error) => { window.clearTimeout(timer); reject(error); },
+    );
+  });
+}
+
 /**
  * Dedicated access guard for the Planiprêt MOBILE app (`/mplanipret/*`).
  *
@@ -25,10 +35,19 @@ export function MplanipretGuard({ children }: { children: ReactNode }) {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const { data: { user } } = await supabase.auth.getUser();
+      let userId: string | null = null;
+      try {
+        // getUser() performs a network validation and can stall during iOS cold
+        // boot. getSession() is local-storage backed and enough for this guard;
+        // PlanipretMobile does the real profile authorization next.
+        const { data: { session } } = await withTimeout(supabase.auth.getSession(), 2500, "mplanipret_session");
+        userId = session?.user?.id ?? null;
+      } catch (error) {
+        console.warn("[MplanipretGuard] session check timed out; rendering mobile shell", error);
+      }
       if (cancelled) return;
 
-      if (!user) {
+      if (!userId) {
         recordRedirect(location.pathname, ROUTES.MPLANIPRET, "MplanipretGuard", "no auth session — render inline mobile login");
         setState("allow");
         return;
@@ -36,14 +55,19 @@ export function MplanipretGuard({ children }: { children: ReactNode }) {
 
       // Block Lemtel-only users — they have no business in the Planiprêt mobile app.
       try {
-        const { data: lemtelOnly } = await supabase.rpc("is_lemtel_only", { _user_id: user.id });
+        const { data: lemtelOnly } = await withTimeout(
+          supabase.rpc("is_lemtel_only", { _user_id: userId }),
+          2500,
+          "mplanipret_lemtel_check",
+        );
         if (cancelled) return;
         if (lemtelOnly === true) {
           recordRedirect(location.pathname, "/portal", "MplanipretGuard", "lemtel-only user");
           navigate("/portal", { replace: true });
           return;
         }
-      } catch {
+      } catch (error) {
+        console.warn("[MplanipretGuard] lemtel check skipped", error);
         // RPC failure should not push the user into the admin portal — fail open here.
       }
 

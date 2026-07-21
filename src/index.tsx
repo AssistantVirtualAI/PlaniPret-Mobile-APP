@@ -84,10 +84,9 @@ async function bootstrap() {
   try {
     const container = document.getElementById('root');
     if (!container) throw new Error('Root element not found');
-    // Clear the "Chargement..." placeholder text before React mounts
-    if (container.textContent?.trim() === 'Chargement...') container.innerHTML = '';
-    // Mark that React has booted (used by error handlers)
-    (window as any).__PP_REACT_BOOTED__ = true;
+    // Clear the placeholder text before React mounts
+    const placeholderText = container.textContent?.trim() ?? '';
+    if (placeholderText === 'Chargement...' || placeholderText === 'Démarrage...') container.innerHTML = '';
     // React.StrictMode is disabled — it causes double-mount artefacts on iOS Capacitor
     // onRecoverableError intercepts errors that React re-throws internally (e.g. from commitRoot)
     // This is the ONLY way to catch {} artefacts that bypass ErrorBoundary and window.onerror
@@ -105,6 +104,8 @@ async function bootstrap() {
         <App />
       </BrowserRouter>,
     );
+    // Mark that React has booted — used by index.html fallback timer
+    (window as any).__PP_REACT_BOOTED__ = true;
   } catch (e) {
     console.error('[PP] Render failed:', e);
     const el = document.getElementById('root');

@@ -24,12 +24,46 @@
   <body>
     <div id="root"></div>
     <script>
+      (function () {
+        function isIgnorableNativeStartupError(raw) {
+          if (!raw || typeof raw !== 'object') return !raw;
+          var message = String(raw.message || raw.errorMessage || '').trim();
+          var code = String(raw.code || '').trim();
+          var keys = [];
+          try {
+            keys = Object.keys(raw).concat(Object.getOwnPropertyNames(raw));
+          } catch (_) {}
+          var onlyGeneratedFields = keys.length <= 4 && keys.every(function (key) {
+            return ['stack', 'name', 'message', 'errorMessage'].indexOf(key) !== -1;
+          });
+          return (!message && onlyGeneratedFields) || (code === 'UNIMPLEMENTED' && /not implemented/i.test(message));
+        }
+        window.__PP_REACT_BOOTED__ = false;
+        window.addEventListener('error', function (event) {
+          if (!isIgnorableNativeStartupError(event.error)) return;
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        }, true);
+        window.addEventListener('unhandledrejection', function (event) {
+          if (!isIgnorableNativeStartupError(event.reason)) return;
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        }, true);
+      })();
+
       setTimeout(function () {
         var root = document.getElementById('root');
-        if (root && root.innerHTML === '') {
-          root.innerHTML = '<div style="color:white;padding:20px;background:#0A1425;min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:system-ui,sans-serif">Chargement...</div>';
+        if (root && root.innerHTML === '' && !window.__PP_REACT_BOOTED__) {
+          root.innerHTML = '<div style="color:white;padding:20px;background:#0A1425;min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:system-ui,sans-serif">Démarrage...</div>';
         }
-      }, 2000);
+      }, 1200);
+
+      setTimeout(function () {
+        var root = document.getElementById('root');
+        if (root && root.innerHTML.indexOf('Démarrage...') !== -1 && !window.__PP_REACT_BOOTED__) {
+          root.innerHTML = '<div style="color:white;padding:24px;background:#0A1425;min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:system-ui,sans-serif;text-align:center">Démarrage interrompu.<br/>Fermez puis relancez l\u2019application.</div>';
+        }
+      }, 8000);
     </script>
     <script type="module" src="/src/index.tsx"></script>
   </body>

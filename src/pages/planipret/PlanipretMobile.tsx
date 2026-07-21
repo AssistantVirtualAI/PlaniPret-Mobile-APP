@@ -17,7 +17,7 @@ import { OnboardingTutorial } from "@/components/planipret/OnboardingTutorial";
 import { useAvaNavigation } from "@/hooks/useAvaNavigation";
 const AvaVoiceAgent = lazy(() => import("@/components/planipret/mobile/AvaVoiceAgent"));
 import MobileScreenSkeleton from "@/components/planipret/mobile/MobileScreenSkeleton";
-import { prefetchRoute, scheduleIdlePrefetch, CORE_MOBILE_TAB_PATHS, ALL_MOBILE_TAB_PATHS, prefetchAllMobileTabs, cancelPendingPrefetches } from "@/lib/routePrefetch";
+import { prefetchRoute, scheduleIdlePrefetch, CORE_MOBILE_TAB_PATHS, prefetchAllMobileTabs, cancelPendingPrefetches } from "@/lib/routePrefetch";
 import { useQueryClient } from "@tanstack/react-query";
 import AvaChatSheet from "@/components/planipret/mobile/AvaChatSheet";
 import avaLogoAsset from "@/assets/ava-statistics-logo.png.asset.json";
@@ -41,6 +41,17 @@ import { prefetchTeams365Data } from "@/lib/teams365Cache";
 
 
 const ACCENT = "#2E9BDC";
+const PROFILE_BOOT_TIMEOUT_MS = 4500;
+
+function withTimeout<T>(promise: PromiseLike<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error(`${label}_timeout`)), ms);
+    promise.then(
+      (value) => { window.clearTimeout(timer); resolve(value); },
+      (error) => { window.clearTimeout(timer); reject(error); },
+    );
+  });
+}
 
 const AvaBadge = ({ compact = false, circle = false }: { compact?: boolean; circle?: boolean }) => {
   const size = circle ? "100%" : compact ? 18 : 34;
@@ -742,20 +753,20 @@ export default function PlanipretMobile() {
   }, [profile?.user_id, location.pathname]);
 
   const loadProfile = async () => {
-    const { data: { session } } = await supabase.auth.getSession();
-    const user = session?.user ?? null;
-    if (!user) {
-      recordRedirect(location.pathname, ROUTES.MPLANIPRET, "PlanipretMobile.loadProfile", "no auth session — stay inside mobile app");
-      setProfile(null);
-      setAccessError("unauthenticated");
-      setLoading(false);
-      return;
-    }
-    // Capture Microsoft 365 tokens once after Azure SSO redirect.
     try {
+      const { data: { session } } = await withTimeout(supabase.auth.getSession(), PROFILE_BOOT_TIMEOUT_MS, "pp_session");
+      const user = session?.user ?? null;
+      if (!user) {
+        recordRedirect(location.pathname, ROUTES.MPLANIPRET, "PlanipretMobile.loadProfile", "no auth session — stay inside mobile app");
+        setProfile(null);
+        setAccessError("unauthenticated");
+        setLoading(false);
+        return;
+      }
+      // Capture Microsoft 365 tokens once after Azure SSO redirect.
       const captured = sessionStorage.getItem("pp_ms_captured");
       if (session.provider_token && captured !== session.access_token) {
-        await supabase.functions.invoke("ms365-store-session", {
+        void supabase.functions.invoke("ms365-store-session", {
           body: {
             provider_token: session.provider_token,
             provider_refresh_token: (session as any).provider_refresh_token ?? null,
@@ -766,33 +777,43 @@ export default function PlanipretMobile() {
         });
         sessionStorage.setItem("pp_ms_captured", session.access_token);
       }
-    } catch (_) { /* non-blocking */ }
-    const { data, error } = await supabase.from("planipret_profiles").select("*").eq("user_id", user.id).maybeSingle();
-    if (error) {
-      recordRedirect(location.pathname, ROUTES.MPLANIPRET, "PlanipretMobile.loadProfile", "profile load failed");
+
+      const { data, error } = await withTimeout(
+        supabase.from("planipret_profiles").select("*").eq("user_id", user.id).maybeSingle(),
+        PROFILE_BOOT_TIMEOUT_MS,
+        "pp_profile",
+      );
+      if (error) {
+        recordRedirect(location.pathname, ROUTES.MPLANIPRET, "PlanipretMobile.loadProfile", "profile load failed");
+        setAccessError("load_failed");
+        setLoading(false);
+        return;
+      }
+      if (!data) {
+        recordRedirect(location.pathname, ROUTES.MPLANIPRET, "PlanipretMobile.loadProfile", "missing planipret_profiles row");
+        setAccessError("missing_profile");
+        setLoading(false);
+        return;
+      }
+      setAccessError(null);
+      setProfile(data);
+      setLoading(false);
+      // Hydrate FR/EN from DB (source of truth across devices)
+      if (data.language === "fr" || data.language === "en") {
+        if (data.language !== lang) setLang(data.language);
+      } else {
+        // Fallback: no language stored → use current detected lang and persist back
+        const fallback: "fr" | "en" = lang === "en" ? "en" : "fr";
+        setLang(fallback);
+        try {
+          await supabase.from("planipret_profiles").update({ language: fallback }).eq("user_id", user.id);
+        } catch { /* non-blocking */ }
+      }
+    } catch (error) {
+      console.error("[PlanipretMobile] loadProfile failed", error);
+      recordRedirect(location.pathname, ROUTES.MPLANIPRET, "PlanipretMobile.loadProfile", "profile boot timeout/failure");
       setAccessError("load_failed");
       setLoading(false);
-      return;
-    }
-    if (!data) {
-      recordRedirect(location.pathname, ROUTES.MPLANIPRET, "PlanipretMobile.loadProfile", "missing planipret_profiles row");
-      setAccessError("missing_profile");
-      setLoading(false);
-      return;
-    }
-    setAccessError(null);
-    setProfile(data);
-    setLoading(false);
-    // Hydrate FR/EN from DB (source of truth across devices)
-    if (data.language === "fr" || data.language === "en") {
-      if (data.language !== lang) setLang(data.language);
-    } else {
-      // Fallback: no language stored → use current detected lang and persist back
-      const fallback: "fr" | "en" = lang === "en" ? "en" : "fr";
-      setLang(fallback);
-      try {
-        await supabase.from("planipret_profiles").update({ language: fallback }).eq("user_id", user.id);
-      } catch { /* non-blocking */ }
     }
   };
 
