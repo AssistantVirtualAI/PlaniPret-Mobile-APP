@@ -1417,22 +1417,34 @@ function EmailDetailSheet({ email, onClose, onReply, onForward, onChanged }: {
                 loadingBody ? (
                   <div className="flex items-center justify-center py-6"><Loader2 className="w-5 h-5 animate-spin" style={{ color: "var(--pp-brand-accent)" }} /></div>
                 ) : fullBodyHtml ? (
-                  <div
-                    className="text-sm email-body"
-                    style={{ color: "var(--pp-text-secondary)", maxWidth: "100%", overflowX: "hidden", wordBreak: "break-word" }}
-                  >
-                    <style>{`
-                      .email-body { overflow-x: hidden !important; max-width: 100% !important; }
-                      .email-body img { max-width: 100% !important; height: auto !important; }
-                      .email-body table { max-width: 100% !important; width: 100% !important; table-layout: fixed !important; word-break: break-word; }
-                      .email-body pre { white-space: pre-wrap !important; word-break: break-all !important; }
-                      .email-body td, .email-body th { word-break: break-word; }
-                      .email-body a { word-break: break-all; }
-                      .email-body * { max-width: 100% !important; box-sizing: border-box; }
-                      .email-body div, .email-body p, .email-body span { font-size: 14px !important; line-height: 1.5 !important; }
-                    `}</style>
-                    <div dangerouslySetInnerHTML={{ __html: fullBodyHtml }} />
-                  </div>
+                  <iframe
+                    srcDoc={`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
+                      html,body{margin:0;padding:0;background:transparent;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.55;color:#ccc;}
+                      *{max-width:100%!important;box-sizing:border-box!important;}
+                      table{width:100%!important;table-layout:fixed!important;border-collapse:collapse;}
+                      td,th{word-break:break-word;max-width:100%!important;}
+                      img{max-width:100%!important;height:auto!important;display:block;}
+                      pre{white-space:pre-wrap!important;word-break:break-all!important;}
+                      a{word-break:break-all;color:#9B7FE8;}
+                      div,p,span{font-size:14px;line-height:1.55;}
+                      body{overflow-x:hidden!important;}
+                    </style></head><body>${fullBodyHtml.replace(/`/g, '\`')}</body></html>`}
+                    sandbox="allow-same-origin"
+                    scrolling="no"
+                    style={{ width: "100%", border: "none", display: "block", minHeight: 200 }}
+                    onLoad={(e) => {
+                      const iframe = e.currentTarget;
+                      const doc = iframe.contentDocument;
+                      if (doc) {
+                        const resize = () => {
+                          iframe.style.height = doc.documentElement.scrollHeight + "px";
+                        };
+                        resize();
+                        const obs = new ResizeObserver(resize);
+                        obs.observe(doc.body);
+                      }
+                    }}
+                  />
                 ) : (
                   <p className="text-sm whitespace-pre-wrap" style={{ color: "var(--pp-text-secondary)" }}>
                     {fullBodyText ?? preview ?? t("messages.previewUnavailable")}
