@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
 import { clearRememberedMs365RedirectUri, getRememberedMs365CodeVerifier, getRememberedMs365RedirectUri } from "@/lib/ms365OAuth";
+import { clearMicrosoftSignInIntent, getMicrosoftSignInIntent, getMicrosoftSignInNext } from "@/lib/ms365AuthLogin";
 
 async function getSessionWithRetry() {
   for (let i = 0; i < 8; i += 1) {
@@ -25,12 +26,32 @@ export default function Ms365Callback() {
       const err = params.get("error_description") ?? params.get("error");
       if (err) { setStatus("error"); setError(err); return; }
       if (!code) { setStatus("error"); setError("Code OAuth manquant"); return; }
-      const session = await getSessionWithRetry();
-      if (!session) { setStatus("error"); setError("Session expirée — reconnectez-vous"); return; }
       // Must match the redirect URI registered in Azure App Registration.
       const redirect_uri = getRememberedMs365RedirectUri();
       const state = params.get("state");
       const code_verifier = getRememberedMs365CodeVerifier(state);
+      if (getMicrosoftSignInIntent() === "login") {
+        const { data, error: e } = await supabase.functions.invoke("ms365-auth-session", { body: { code, redirect_uri, code_verifier } });
+        if (e || !(data as any)?.success) {
+          const details = (data as any)?.details;
+          const msg = (data as any)?.error ?? e?.message ?? "Échec OAuth";
+          const full = details ? `${msg} — ${details.error_description ?? details.error ?? ""}`.trim() : msg;
+          console.error("ms365 auth failed", { data, e });
+          setStatus("error"); setError(full);
+          return;
+        }
+        const verify = await supabase.auth.verifyOtp({ type: "magiclink", email: (data as any).email, token_hash: (data as any).token_hash });
+        if (verify.error) { setStatus("error"); setError(verify.error.message); return; }
+        clearRememberedMs365RedirectUri();
+        const next = getMicrosoftSignInNext("/mplanipret");
+        clearMicrosoftSignInIntent();
+        try { void import("@/lib/native/requestPermissionsAfterLogin").then(m => m.requestPermissionsAfterLogin()); } catch {}
+        setStatus("ok");
+        setTimeout(() => navigate(next, { replace: true }), 700);
+        return;
+      }
+      const session = await getSessionWithRetry();
+      if (!session) { setStatus("error"); setError("Session expirée — reconnectez-vous"); return; }
       const { data, error: e } = await supabase.functions.invoke("ms365-oauth-exchange", { body: { code, redirect_uri, code_verifier } });
       if (e || !(data as any)?.success) {
         const details = (data as any)?.details;

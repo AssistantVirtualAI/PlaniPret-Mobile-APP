@@ -7,6 +7,7 @@ import { useMplanipretTheme } from "@/hooks/useMplanipretTheme";
 import { useSafeAreaInsets } from "@/hooks/useSafeAreaInsets";
 import avaLogoAsset from "@/assets/ava-statistics-logo.png.asset.json";
 import planipretLogoAsset from "@/assets/planipret-logo.png.asset.json";
+import { startMicrosoftSignIn } from "@/lib/ms365AuthLogin";
 
 const AvaBadge = ({ size = 44 }: { size?: number }) => (
   <img src={avaLogoAsset.url} alt="AVA" style={{ width: size, height: size, objectFit: "contain", borderRadius: 10 }} />
@@ -49,20 +50,9 @@ export default function MobileAuthScreen({ onLoggedIn }: { onLoggedIn: () => Pro
 
   const signInWithMicrosoft = async () => {
     setLoading(true);
-    const { error } = await supabase.auth.signInWithOAuth({
-      provider: "azure",
-      options: {
-        redirectTo: `${window.location.origin}/mplanipret`,
-        scopes: "email openid profile offline_access User.Read User.ReadBasic.All Mail.ReadWrite Mail.Send MailboxSettings.Read Calendars.ReadWrite Chat.Read Chat.ReadBasic Chat.ReadWrite Channel.ReadBasic.All ChannelMessage.Read.All ChannelMessage.Send Team.ReadBasic.All Organization.Read.All Application.Read.All",
-      },
-    });
-    setLoading(false);
-    if (error) {
-      const msg = /unsupported|not enabled|provider/i.test(error.message)
-        ? t("auth.msUnavailable")
-        : error.message;
-      toast.error(msg);
-    }
+    try { await startMicrosoftSignIn("/mplanipret"); }
+    catch (error: any) { toast.error(error?.message || t("auth.msUnavailable")); }
+    finally { setLoading(false); }
   };
 
 
