@@ -101,6 +101,7 @@ export default defineConfig(({ mode }) => ({
     reportCompressedSize: false,
     rollupOptions: {
       treeshake: mode !== 'fast',
+      maxParallelFileOps: mode === 'fast' ? 4 : 20, // fast: moins de RAM
       output: {
         manualChunks(id) {
           if (id.includes('node_modules/react/') || id.includes('node_modules/react-dom/') || id.includes('node_modules/scheduler/')) return 'vendor-react';
