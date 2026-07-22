@@ -32,6 +32,10 @@ PAGES_DIVERGENT=(
   "pages/planipret/mobile/MMessages.tsx"
   "pages/planipret/mobile/MMore.tsx"
   "pages/planipret/mobile/MMs365Diagnostics.tsx"
+  "pages/planipret/mobile/MDiagnostics.tsx"
+  "pages/planipret/mobile/MKpiAudit.tsx"
+  "pages/planipret/mobile/MLayoutQA.tsx"
+  "pages/planipret/mobile/MStyleDiagnostics.tsx"
 )
 
 for f in "${PAGES_DIVERGENT[@]}"; do
@@ -50,6 +54,11 @@ done
 COMPONENTS_DIVERGENT=(
   "components/planipret/mobile/ActiveCallOverlay.tsx"
   "components/planipret/mobile/AvaChatSheet.tsx"
+  "components/planipret/mobile/AvaVoiceAgent.tsx"
+  "components/planipret/mobile/MobileHeaderControls.tsx"
+  "components/planipret/mobile/MobileScreenSkeleton.tsx"
+  "components/planipret/mobile/MobileScreen.tsx"
+  "components/planipret/mobile/recordings/RecordingsList.tsx"
 )
 
 for f in "${COMPONENTS_DIVERGENT[@]}"; do

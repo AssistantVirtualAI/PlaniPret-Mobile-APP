@@ -26,11 +26,7 @@ const PAIRS = [
 
 const ALLOWED_MOBILE_ONLY = new Set([
   // pages ou composants qui existent uniquement dans l'app mobile Capacitor
-  'MDiagnostics.tsx',
-  'MKpiAudit.tsx',
-  'MLayoutQA.tsx',
-  'MStyleDiagnostics.tsx',
-  'MobileScreen.tsx',
+  // (vide — tous les fichiers sont maintenant syncés via sync-parity.sh)
 ]);
 const ALLOWED_WEB_ONLY = new Set([]);
 
