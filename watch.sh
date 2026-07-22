@@ -35,13 +35,14 @@ echo ""
 # ── 1. Git pull (rapide — seulement les diffs) ────────────────────────────────
 echo "▶ [1/3] git pull origin main"
 BEFORE=$(git rev-parse HEAD 2>/dev/null || echo "none")
-git pull origin main --ff-only --quiet 2>/dev/null || git pull origin main --ff-only
-AFTER=$(git rev-parse HEAD 2>/dev/null || echo "none")
+git fetch origin main --quiet
+AFTER=$(git rev-parse origin/main 2>/dev/null || echo "none")
 
 if [ "$BEFORE" != "$AFTER" ]; then
-  echo "   ✓ Nouveaux commits récupérés"
-  # Vérifier si package.json a changé
-  if git diff --name-only "$BEFORE" "$AFTER" 2>/dev/null | grep -q "^package.json$"; then
+  PKG_CHANGED=$(git diff --name-only "$BEFORE" "$AFTER" 2>/dev/null | grep -c "^package.json$" || true)
+  git reset --hard origin/main --quiet
+  echo "   ✓ Mis à jour"
+  if [ "$PKG_CHANGED" -gt 0 ]; then
     echo "   ⚠ package.json modifié → npm install requis"
     npm install --prefer-offline --silent
     echo "   ✓ npm install terminé"

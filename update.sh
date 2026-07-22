@@ -23,17 +23,20 @@ echo "║   Planiprêt Mobile — Update & Build iOS  ║"
 echo "╚══════════════════════════════════════════╝"
 echo ""
 
-# ── 1. Git pull ──────────────────────────────────────────────────────────────
-echo "▶ [1/4] git pull"
+# ── 1. Git sync (fetch + reset — jamais de merge lent) ───────────────────────
+echo "▶ [1/4] git sync"
 BEFORE=$(git rev-parse HEAD)
-git pull origin main --ff-only --quiet
-AFTER=$(git rev-parse HEAD)
+git fetch origin main --quiet
+AFTER=$(git rev-parse origin/main)
 
 if [ "$BEFORE" = "$AFTER" ]; then
   echo "   ✓ Déjà à jour"
 else
-  echo "   ✓ Nouveaux commits appliqués"
-  if git diff --name-only "$BEFORE" "$AFTER" | grep -q "^package.json$"; then
+  # Vérifier si package.json change avant le reset
+  PKG_CHANGED=$(git diff --name-only "$BEFORE" "$AFTER" 2>/dev/null | grep -c "^package.json$" || true)
+  git reset --hard origin/main --quiet
+  echo "   ✓ Mis à jour ($(git log --oneline -1))"
+  if [ "$PKG_CHANGED" -gt 0 ]; then
     echo "   ⚠ package.json modifié → npm install requis"
     FULL=true
   fi
