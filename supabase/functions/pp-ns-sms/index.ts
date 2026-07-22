@@ -256,12 +256,16 @@ Deno.serve(async (req) => {
         return jsonResponse({ ok: false, error: "Aucun numéro SMS (DID) assigné à ce courtier" }, 200);
       }
 
-      // NS-API v2 SMS body — recipient=destination, sender="from-number".
+      // NS-API v2 SMS body.
+      // NS-API v2 uses "recipient" for the to-number; older tenants use "destination".
+      // We send both to maximize compatibility.
       const nsBody: Record<string, unknown> = {
         type: type === "chat" ? "chat" : "sms",
+        recipient: destination,
         destination,
         message,
         "from-number": fromNumber,
+        "to-number": destination,
       };
 
       // NS-API v2: try /messagesessions/messages first (preferred endpoint),
@@ -272,11 +276,19 @@ Deno.serve(async (req) => {
       let result: any = null;
 
       if (thread_id) {
-        // Existing thread — always use the thread messages endpoint
+        // Existing thread — try thread messages endpoint first
         path = `${userBase}/messagesessions/${encodeURIComponent(thread_id)}/messages`;
         res = await nsFetch(path, { method: "POST", body: JSON.stringify(nsBody) });
         lastText = await res.text();
         try { result = lastText ? JSON.parse(lastText) : {}; } catch { result = { raw: lastText }; }
+        // Fallback: if thread endpoint fails (400/404/405), try creating a new session
+        if (!res.ok && (res.status === 400 || res.status === 404 || res.status === 405)) {
+          console.warn(`[pp-ns-sms] thread endpoint returned ${res.status}, falling back to /messagesessions`);
+          path = `${userBase}/messagesessions`;
+          res = await nsFetch(path, { method: "POST", body: JSON.stringify(nsBody) });
+          lastText = await res.text();
+          try { result = lastText ? JSON.parse(lastText) : {}; } catch { result = { raw: lastText }; }
+        }
       } else {
         // New thread — try /messagesessions/messages first (NS v2 preferred)
         path = `${userBase}/messagesessions/messages`;
@@ -284,8 +296,8 @@ Deno.serve(async (req) => {
         lastText = await res.text();
         try { result = lastText ? JSON.parse(lastText) : {}; } catch { result = { raw: lastText }; }
 
-        // Fallback to /messagesessions if the preferred endpoint returns 404 or 405
-        if (!res.ok && (res.status === 404 || res.status === 405)) {
+        // Fallback to /messagesessions if the preferred endpoint returns 404, 405, or 400
+        if (!res.ok && (res.status === 404 || res.status === 405 || res.status === 400)) {
           console.warn(`[pp-ns-sms] /messagesessions/messages returned ${res.status}, falling back to /messagesessions`);
           path = `${userBase}/messagesessions`;
           res = await nsFetch(path, { method: "POST", body: JSON.stringify(nsBody) });

@@ -676,6 +676,11 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
   const today = new Date(); today.setHours(0,0,0,0);
   const [cursor, setCursor] = useState(() => { const d=new Date(); d.setDate(1); d.setHours(0,0,0,0); return d; });
   const [selected, setSelected] = useState<Date>(today);
+  const [selectedEvent, setSelectedEvent] = useState<any>(null);
+  const [eventAction, setEventAction] = useState<"idle"|"deleting"|"editing">("idle");
+  const [editSubject, setEditSubject] = useState("");
+  const [editStart, setEditStart] = useState("");
+  const [editEnd, setEditEnd] = useState("");
 
   const locale = lang === "en" ? "en-CA" : "fr-CA";
 
@@ -810,8 +815,16 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
                   const join = m.onlineMeeting?.joinUrl ?? m.webLink;
                   const isTeams = !!m.onlineMeeting?.joinUrl;
                   return (
-                    <li key={m.id} className="flex items-center gap-3 py-2 px-2 rounded-lg"
-                      style={{ background: "rgba(46,155,220,0.06)", border: "1px solid rgba(46,155,220,0.15)" }}>
+                    <li key={m.id}
+                      className="flex items-center gap-3 py-2 px-2 rounded-lg cursor-pointer active:opacity-70"
+                      style={{ background: "rgba(46,155,220,0.06)", border: "1px solid rgba(46,155,220,0.15)" }}
+                      onClick={() => {
+                        setSelectedEvent(m);
+                        setEditSubject(m.subject ?? "");
+                        setEditStart(m.start?.dateTime ? m.start.dateTime.slice(0,16) : "");
+                        setEditEnd(m.end?.dateTime ? m.end.dateTime.slice(0,16) : "");
+                        setEventAction("idle");
+                      }}>
                       <div className="w-14 flex-shrink-0 text-center px-1.5 py-1 rounded-md"
                         style={{ background: "rgba(46,155,220,0.12)", color: "var(--pp-brand-accent)", fontFamily: "Urbanist,sans-serif" }}>
                         <div className="text-[11px] font-bold tabular-nums leading-none">
@@ -835,7 +848,7 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
                         )}
                       </div>
                       {join && (
-                        <button onClick={() => window.open(join, "_blank", "noopener,noreferrer")}
+                        <button onClick={(e) => { e.stopPropagation(); window.open(join, "_blank", "noopener,noreferrer"); }}
                           className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
                           style={{ color: "var(--pp-brand-accent)", background: "rgba(46,155,220,0.10)" }}>
                           <ExternalLink className="w-3.5 h-3.5" />
@@ -844,6 +857,133 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
                     </li>
                   );
                 })}
+
+                {/* Event detail sheet */}
+                {selectedEvent && (
+                  <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(0,0,0,0.5)" }}
+                    onClick={() => setSelectedEvent(null)}>
+                    <div className="w-full rounded-t-2xl p-5 space-y-4"
+                      style={{ background: "var(--pp-bg-elevated)", maxHeight: "80vh", overflowY: "auto" }}
+                      onClick={(e) => e.stopPropagation()}>
+                      {/* Header */}
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-base font-bold" style={{ color: "var(--pp-text-primary)" }}>
+                            {selectedEvent.subject ?? "Sans titre"}
+                          </p>
+                          {selectedEvent.start?.dateTime && (
+                            <p className="text-xs mt-0.5" style={{ color: "var(--pp-text-muted)" }}>
+                              {new Date(selectedEvent.start.dateTime).toLocaleDateString(locale, { weekday: "long", day: "numeric", month: "long" })}
+                              {" · "}
+                              {new Date(selectedEvent.start.dateTime).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" })}
+                              {selectedEvent.end?.dateTime && " – " + new Date(selectedEvent.end.dateTime).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" })}
+                            </p>
+                          )}
+                          {selectedEvent.location?.displayName && (
+                            <p className="text-xs mt-0.5" style={{ color: "var(--pp-text-muted)" }}>
+                              📍 {selectedEvent.location.displayName}
+                            </p>
+                          )}
+                        </div>
+                        <button onClick={() => setSelectedEvent(null)}
+                          className="w-8 h-8 rounded-full flex items-center justify-center flex-shrink-0"
+                          style={{ background: "var(--pp-bg-border)", color: "var(--pp-text-muted)" }}>
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+
+                      {/* Edit form */}
+                      {eventAction === "editing" && (
+                        <div className="space-y-3">
+                          <div>
+                            <label className="text-xs font-semibold" style={{ color: "var(--pp-text-muted)" }}>Titre</label>
+                            <input value={editSubject} onChange={e => setEditSubject(e.target.value)}
+                              className="w-full mt-1 px-3 py-2 rounded-lg text-sm"
+                              style={{ background: "var(--pp-bg-deep)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }} />
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <label className="text-xs font-semibold" style={{ color: "var(--pp-text-muted)" }}>Début</label>
+                              <input type="datetime-local" value={editStart} onChange={e => setEditStart(e.target.value)}
+                                className="w-full mt-1 px-3 py-2 rounded-lg text-sm"
+                                style={{ background: "var(--pp-bg-deep)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }} />
+                            </div>
+                            <div>
+                              <label className="text-xs font-semibold" style={{ color: "var(--pp-text-muted)" }}>Fin</label>
+                              <input type="datetime-local" value={editEnd} onChange={e => setEditEnd(e.target.value)}
+                                className="w-full mt-1 px-3 py-2 rounded-lg text-sm"
+                                style={{ background: "var(--pp-bg-deep)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }} />
+                            </div>
+                          </div>
+                          <div className="flex gap-2">
+                            <button onClick={async () => {
+                              try {
+                                const { error } = await supabase.functions.invoke("ms365-actions", {
+                                  body: { action: "update_calendar_event", payload: {
+                                    event_id: selectedEvent.id,
+                                    subject: editSubject,
+                                    start: { dateTime: new Date(editStart).toISOString(), timeZone: "America/Toronto" },
+                                    end: { dateTime: new Date(editEnd).toISOString(), timeZone: "America/Toronto" },
+                                  }},
+                                });
+                                if (error) throw error;
+                                toast.success("Réunion modifiée");
+                                setSelectedEvent(null);
+                                setEventAction("idle");
+                              } catch (e: any) { toast.error(e?.message ?? "Erreur lors de la modification"); }
+                            }}
+                              className="flex-1 py-2.5 rounded-xl text-sm font-semibold"
+                              style={{ background: "var(--pp-brand-accent)", color: "#fff" }}>
+                              Enregistrer
+                            </button>
+                            <button onClick={() => setEventAction("idle")}
+                              className="flex-1 py-2.5 rounded-xl text-sm font-semibold"
+                              style={{ background: "var(--pp-bg-border)", color: "var(--pp-text-secondary)" }}>
+                              Annuler
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Actions */}
+                      {eventAction === "idle" && (
+                        <div className="flex flex-col gap-2">
+                          {(selectedEvent.onlineMeeting?.joinUrl ?? selectedEvent.webLink) && (
+                            <button onClick={() => window.open(selectedEvent.onlineMeeting?.joinUrl ?? selectedEvent.webLink, "_blank", "noopener,noreferrer")}
+                              className="w-full py-3 rounded-xl text-sm font-semibold flex items-center justify-center gap-2"
+                              style={{ background: "linear-gradient(135deg,var(--pp-brand-accent),var(--pp-brand-accent-2))", color: "#fff" }}>
+                              <Video className="w-4 h-4" /> Rejoindre la réunion
+                            </button>
+                          )}
+                          <button onClick={() => setEventAction("editing")}
+                            className="w-full py-3 rounded-xl text-sm font-semibold"
+                            style={{ background: "var(--pp-bg-deep)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}>
+                            ✏️ Modifier
+                          </button>
+                          <button onClick={async () => {
+                            if (!confirm("Supprimer cette réunion ?")) return;
+                            setEventAction("deleting");
+                            try {
+                              const { error } = await supabase.functions.invoke("ms365-actions", {
+                                body: { action: "delete_calendar_event", payload: { event_id: selectedEvent.id } },
+                              });
+                              if (error) throw error;
+                              toast.success("Réunion supprimée");
+                              setSelectedEvent(null);
+                            } catch (e: any) {
+                              toast.error(e?.message ?? "Erreur lors de la suppression");
+                              setEventAction("idle");
+                            }
+                          }}
+                            className="w-full py-3 rounded-xl text-sm font-semibold"
+                            style={{ background: "rgba(239,68,68,0.10)", border: "1px solid rgba(239,68,68,0.25)", color: "#EF4444" }}>
+                            {eventAction === "deleting" ? "Suppression..." : "🗑️ Supprimer"}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </ul>
             )}
           </div>

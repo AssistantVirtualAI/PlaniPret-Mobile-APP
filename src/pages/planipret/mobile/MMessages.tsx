@@ -1417,34 +1417,25 @@ function EmailDetailSheet({ email, onClose, onReply, onForward, onChanged }: {
                 loadingBody ? (
                   <div className="flex items-center justify-center py-6"><Loader2 className="w-5 h-5 animate-spin" style={{ color: "var(--pp-brand-accent)" }} /></div>
                 ) : fullBodyHtml ? (
-                  <iframe
-                    srcDoc={`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>
-                      html,body{margin:0;padding:0;background:transparent;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.55;color:#ccc;}
-                      *{max-width:100%!important;box-sizing:border-box!important;}
-                      table{width:100%!important;table-layout:fixed!important;border-collapse:collapse;}
-                      td,th{word-break:break-word;max-width:100%!important;}
-                      img{max-width:100%!important;height:auto!important;display:block;}
-                      pre{white-space:pre-wrap!important;word-break:break-all!important;}
-                      a{word-break:break-all;color:#9B7FE8;}
-                      div,p,span{font-size:14px;line-height:1.55;}
-                      body{overflow-x:hidden!important;}
-                    </style></head><body>${fullBodyHtml.replace(/`/g, '\`')}</body></html>`}
-                    sandbox="allow-same-origin"
-                    scrolling="no"
-                    style={{ width: "100%", border: "none", display: "block", minHeight: 200 }}
-                    onLoad={(e) => {
-                      const iframe = e.currentTarget;
-                      const doc = iframe.contentDocument;
-                      if (doc) {
-                        const resize = () => {
-                          iframe.style.height = doc.documentElement.scrollHeight + "px";
-                        };
-                        resize();
-                        const obs = new ResizeObserver(resize);
-                        obs.observe(doc.body);
-                      }
-                    }}
-                  />
+                  <>
+                    <style>{`
+                      .pp-email-body { overflow-x: hidden !important; word-break: break-word !important; }
+                      .pp-email-body * { max-width: 100% !important; box-sizing: border-box !important; word-break: break-word !important; overflow-wrap: break-word !important; }
+                      .pp-email-body table { width: 100% !important; max-width: 100% !important; table-layout: fixed !important; border-collapse: collapse !important; }
+                      .pp-email-body td, .pp-email-body th { max-width: 100% !important; word-break: break-word !important; overflow: hidden !important; white-space: normal !important; }
+                      .pp-email-body img { max-width: 100% !important; height: auto !important; display: block !important; }
+                      .pp-email-body pre { white-space: pre-wrap !important; word-break: break-all !important; }
+                      .pp-email-body a { word-break: break-all !important; color: #9B7FE8 !important; }
+                      .pp-email-body [width] { width: 100% !important; max-width: 100% !important; }
+                      .pp-email-body [style*="width:"] { max-width: 100% !important; }
+                      .pp-email-body div, .pp-email-body p, .pp-email-body span { font-size: 14px; line-height: 1.55; }
+                    `}</style>
+                    <div
+                      className="pp-email-body"
+                      style={{ overflowX: "hidden", maxWidth: "100%", wordBreak: "break-word", fontSize: 14, lineHeight: 1.55, color: "var(--pp-text-secondary)" }}
+                      dangerouslySetInnerHTML={{ __html: fullBodyHtml }}
+                    />
+                  </>
                 ) : (
                   <p className="text-sm whitespace-pre-wrap" style={{ color: "var(--pp-text-secondary)" }}>
                     {fullBodyText ?? preview ?? t("messages.previewUnavailable")}
