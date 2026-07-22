@@ -26,10 +26,7 @@ for arg in "$@"; do
   esac
 done
 
-echo "▶ [1/4] Audit parité web ↔ mobile"
-node scripts/audit-parity.mjs
-
-echo "▶ [2/4] Vite build ($([ "$DEV" = true ] && echo development || echo production))"
+echo "▶ [1/4] Vite build ($([ "$DEV" = true ] && echo development || echo production))"
 if [ "$DEV" = true ]; then
   npx vite build --mode development
 else
