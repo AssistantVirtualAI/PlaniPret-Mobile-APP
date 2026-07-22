@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { User, Session } from '@supabase/supabase-js';
 import { supabase } from '@/integrations/supabase/client';
 import { useToast } from '@/hooks/use-toast';
+import { startMicrosoftSignIn } from '@/lib/ms365AuthLogin';
 
 export const useAuth = () => {
   const [user, setUser] = useState<User | null>(null);
@@ -144,15 +145,7 @@ export const useAuth = () => {
 
   const signInWithMicrosoft = async () => {
     try {
-      const { error } = await supabase.auth.signInWithOAuth({
-        provider: 'azure',
-        options: {
-          redirectTo: `${window.location.origin}/`,
-          scopes: 'email openid profile',
-        },
-      });
-
-      if (error) throw error;
+      await startMicrosoftSignIn('/mplanipret');
       return { error: null };
     } catch (error: any) {
       toast({
