@@ -45,7 +45,7 @@ export function useSessionTimeout(opts: Options = {}) {
       await supabase.auth.signOut();
     } finally {
       toast.info("Votre session a expiré pour des raisons de sécurité (inactivité).");
-      navigate(loginWithRedirect(ROUTES.MPLANIPRET), { replace: true });
+      navigate(ROUTES.MPLANIPRET, { replace: true });
     }
   };
 

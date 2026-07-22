@@ -256,55 +256,38 @@ Deno.serve(async (req) => {
         return jsonResponse({ ok: false, error: "Aucun numéro SMS (DID) assigné à ce courtier" }, 200);
       }
 
-      // NS-API v2 SMS body.
-      // NS-API v2 uses "recipient" for the to-number; older tenants use "destination".
-      // We send both to maximize compatibility.
+      // NS-API v2 SMS: POST /users/{ext}/messagesessions/messages creates the
+      // session (if needed) and sends the message in one shot. This is the
+      // endpoint NetSapiens actually accepts — POSTing to /messagesessions
+      // directly returns HTTP 500 on most tenants.
       const nsBody: Record<string, unknown> = {
         type: type === "chat" ? "chat" : "sms",
-        recipient: destination,
         destination,
         message,
         "from-number": fromNumber,
-        "to-number": destination,
       };
 
-      // NS-API v2: try /messagesessions/messages first (preferred endpoint),
-      // fallback to /messagesessions for older NS tenants.
-      let path: string;
-      let res: Response;
-      let lastText: string;
-      let result: any = null;
+      // NS-API requires a 32-char random session id when creating a new thread.
+      const sessionId = thread_id ?? newMessageSessionId();
+      const path = `${userBase}/messagesessions/${encodeURIComponent(sessionId)}/messages`;
 
-      if (thread_id) {
-        // Existing thread — try thread messages endpoint first
-        path = `${userBase}/messagesessions/${encodeURIComponent(thread_id)}/messages`;
-        res = await nsFetch(path, { method: "POST", body: JSON.stringify(nsBody) });
-        lastText = await res.text();
-        try { result = lastText ? JSON.parse(lastText) : {}; } catch { result = { raw: lastText }; }
-        // Fallback: if thread endpoint fails (400/404/405), try creating a new session
-        if (!res.ok && (res.status === 400 || res.status === 404 || res.status === 405)) {
-          console.warn(`[pp-ns-sms] thread endpoint returned ${res.status}, falling back to /messagesessions`);
-          path = `${userBase}/messagesessions`;
-          res = await nsFetch(path, { method: "POST", body: JSON.stringify(nsBody) });
-          lastText = await res.text();
-          try { result = lastText ? JSON.parse(lastText) : {}; } catch { result = { raw: lastText }; }
-        }
-      } else {
-        // New thread — try /messagesessions/messages first (NS v2 preferred)
-        path = `${userBase}/messagesessions/messages`;
-        res = await nsFetch(path, { method: "POST", body: JSON.stringify(nsBody) });
-        lastText = await res.text();
-        try { result = lastText ? JSON.parse(lastText) : {}; } catch { result = { raw: lastText }; }
+      let res = await nsFetch(path, { method: "POST", body: JSON.stringify(nsBody) });
+      let lastText = await res.text();
 
-        // Fallback to /messagesessions if the preferred endpoint returns 404, 405, or 400
-        if (!res.ok && (res.status === 404 || res.status === 405 || res.status === 400)) {
-          console.warn(`[pp-ns-sms] /messagesessions/messages returned ${res.status}, falling back to /messagesessions`);
-          path = `${userBase}/messagesessions`;
-          res = await nsFetch(path, { method: "POST", body: JSON.stringify(nsBody) });
-          lastText = await res.text();
-          try { result = lastText ? JSON.parse(lastText) : {}; } catch { result = { raw: lastText }; }
-        }
+      // Fallback: older NS builds accept POST /messagesessions with the
+      // session id embedded in the body.
+      if (!res.ok && res.status !== 401 && res.status !== 403) {
+        const altPath = `${userBase}/messagesessions`;
+        const alt = await nsFetch(altPath, {
+          method: "POST",
+          body: JSON.stringify({ ...nsBody, "messagesession-id": sessionId, messagesession_id: sessionId }),
+        });
+        const altText = await alt.text();
+        if (alt.ok) { res = alt; lastText = altText; }
       }
+
+      let result: any = null;
+      try { result = lastText ? JSON.parse(lastText) : {}; } catch { result = { raw: lastText }; }
 
       if (!res.ok) {
         console.error("[pp-ns-sms] NS send failed", res.status, path, lastText);
@@ -318,13 +301,13 @@ Deno.serve(async (req) => {
         ?? result?.messagesession_id
         ?? result?.["messagesession-id"]
         ?? result?.messagesession
-        ?? null;
+        ?? sessionId;
 
       try {
         await supabase
           .from("planipret_phone_messages")
           .insert({
-            user_id: ctx.profileId,
+            user_id: ctx.userId,
             direction: "outbound",
             to_number: destination,
             from_number: fromNumber,

@@ -35,9 +35,23 @@ export function useSafeAreaInsets() {
     };
 
     read();
+    // Re-read whenever the WebView regains focus/visibility. On iOS, Capacitor
+    // may drop the previously-cached safe-area env() values while the app was
+    // backgrounded, so we refresh on every resume path.
+    const readSoon = () => { read(); setTimeout(read, 120); setTimeout(read, 400); };
     window.addEventListener("resize", read);
+    window.addEventListener("orientationchange", readSoon);
+    window.addEventListener("pageshow", readSoon);
+    window.addEventListener("focus", readSoon);
+    document.addEventListener("visibilitychange", readSoon);
+    document.addEventListener("resume", readSoon as EventListener);
     return () => {
       window.removeEventListener("resize", read);
+      window.removeEventListener("orientationchange", readSoon);
+      window.removeEventListener("pageshow", readSoon);
+      window.removeEventListener("focus", readSoon);
+      document.removeEventListener("visibilitychange", readSoon);
+      document.removeEventListener("resume", readSoon as EventListener);
       el.remove();
     };
   }, []);
