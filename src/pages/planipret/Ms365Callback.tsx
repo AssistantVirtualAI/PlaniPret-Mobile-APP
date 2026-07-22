@@ -84,7 +84,7 @@ export default function Ms365Callback() {
           setStatus("error"); setError(full);
           return;
         }
-        const verify = await supabase.auth.verifyOtp({ type: "magiclink", email: (data as any).email, token_hash: (data as any).token_hash });
+        const verify = await supabase.auth.verifyOtp({ type: "magiclink", token_hash: (data as any).token_hash });
         if (verify.error) { setStatus("error"); setError(verify.error.message); return; }
         clearRememberedMs365RedirectUri();
         const next = getMicrosoftSignInNext("/mplanipret");
