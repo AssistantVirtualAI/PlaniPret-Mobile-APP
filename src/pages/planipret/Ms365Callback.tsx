@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Capacitor } from "@capacitor/core";
 import { supabase } from "@/integrations/supabase/client";
@@ -20,8 +20,14 @@ export default function Ms365Callback() {
   const navigate = useNavigate();
   const [status, setStatus] = useState<"loading" | "ok" | "error">("loading");
   const [error, setError] = useState<string | null>(null);
+  // Guard against React StrictMode double-invocation which would consume the
+  // OAuth code twice (first call succeeds, second call gets invalid_grant).
+  const ranRef = useRef(false);
 
   useEffect(() => {
+    if (ranRef.current) return;
+    ranRef.current = true;
+
     (async () => {
       // On iOS/Android: close the SFSafariViewController / Chrome Custom Tab immediately
       // so the app comes back to the foreground before processing the OAuth code.
@@ -35,10 +41,21 @@ export default function Ms365Callback() {
       const err = params.get("error_description") ?? params.get("error");
       if (err) { setStatus("error"); setError(err); return; }
       if (!code) { setStatus("error"); setError("Code OAuth manquant"); return; }
+
       // Must match the redirect URI registered in Azure App Registration.
       const redirect_uri = getRememberedMs365RedirectUri();
       const state = params.get("state");
       const code_verifier = getRememberedMs365CodeVerifier(state);
+
+      // Log for debugging redirect_uri mismatch with Azure
+      console.log("[ms365-callback] exchange", { redirect_uri, has_code_verifier: !!code_verifier, intent: getMicrosoftSignInIntent() });
+
+      if (!code_verifier) {
+        setStatus("error");
+        setError("PKCE code_verifier manquant — veuillez réessayer la connexion");
+        return;
+      }
+
       if (getMicrosoftSignInIntent() === "login") {
         // Use raw fetch to capture the body even on non-2xx responses
         let data: any = null;
@@ -77,6 +94,7 @@ export default function Ms365Callback() {
         setTimeout(() => navigate(next, { replace: true }), 700);
         return;
       }
+
       const session = await getSessionWithRetry();
       if (!session) { setStatus("error"); setError("Session expirée — reconnectez-vous"); return; }
       const { data, error: e } = await supabase.functions.invoke("ms365-oauth-exchange", { body: { code, redirect_uri, code_verifier } });
