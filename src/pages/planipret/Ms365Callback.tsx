@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { Capacitor } from "@capacitor/core";
 import { supabase } from "@/integrations/supabase/client";
 import { CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
 import { clearRememberedMs365RedirectUri, getRememberedMs365CodeVerifier, getRememberedMs365RedirectUri } from "@/lib/ms365OAuth";
@@ -22,6 +23,14 @@ export default function Ms365Callback() {
 
   useEffect(() => {
     (async () => {
+      // On iOS/Android: close the SFSafariViewController / Chrome Custom Tab immediately
+      // so the app comes back to the foreground before processing the OAuth code.
+      if (Capacitor.isNativePlatform()) {
+        try {
+          const { Browser } = await import("@capacitor/browser");
+          await Browser.close();
+        } catch { /* ignore on web */ }
+      }
       const code = params.get("code");
       const err = params.get("error_description") ?? params.get("error");
       if (err) { setStatus("error"); setError(err); return; }
