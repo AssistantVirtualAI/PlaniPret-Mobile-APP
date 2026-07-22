@@ -28,7 +28,9 @@
     "precheck:build": "node scripts/precheck-build.mjs",
     "ios:build-sync": "npm run build && npm run precheck:build && npx cap sync ios",
     "android:build-sync": "npm run build && npm run precheck:build && npx cap sync android",
-    "sync:ios:fast": "npm run build && cap copy ios"
+    "sync:ios:fast": "npm run build && cap copy ios",
+    "watch": "bash watch.sh",
+    "watch:once": "bash watch.sh --once"
   },
   "dependencies": {
     "@11labs/react": "^0.2.0",
