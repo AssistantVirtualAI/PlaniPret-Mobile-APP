@@ -1353,7 +1353,6 @@ function EmailDetailSheet({ email, onClose, onReply, onForward, onChanged }: {
       className="fixed inset-0 z-[9999] flex flex-col"
       style={{
         background: "var(--pp-bg-base)",
-        paddingTop: "env(safe-area-inset-top, 0px)",
       }}
     >
       <div className="w-full flex flex-col" style={{ height: "100%", minHeight: 0 }}>

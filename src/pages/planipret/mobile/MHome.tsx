@@ -874,66 +874,111 @@ function NewMeetingSheet({
     }
   };
 
+  const inputStyle: React.CSSProperties = {
+    padding: "11px 14px",
+    borderRadius: 12,
+    border: "1.5px solid var(--pp-bg-border-2, rgba(255,255,255,0.12))",
+    background: "var(--pp-bg-surface, rgba(255,255,255,0.06))",
+    color: "var(--pp-text-primary, #fff)",
+    fontSize: 14,
+    width: "100%",
+    outline: "none",
+  };
   return (
     <div
       onClick={onClose}
       style={{
-        position: "fixed", inset: 0, background: "rgba(4,10,25,0.55)",
+        position: "fixed", inset: 0,
+        background: "rgba(4,10,25,0.72)",
+        backdropFilter: "blur(6px)",
         display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 9999,
       }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="pp-card"
         style={{
-          width: "100%", maxWidth: 520, borderRadius: "16px 16px 0 0",
-          padding: 16, maxHeight: "90dvh", overflowY: "auto",
-          background: "var(--pp-bg-elevated, #fff)",
+          width: "100%", maxWidth: 520,
+          borderRadius: "20px 20px 0 0",
+          padding: "20px 18px calc(env(safe-area-inset-bottom, 0px) + 20px)",
+          maxHeight: "92dvh", overflowY: "auto",
+          background: "var(--pp-bg-deep, #0d1a2e)",
+          border: "1.5px solid var(--pp-bg-border-2, rgba(255,255,255,0.1))",
+          borderBottom: "none",
+          boxShadow: "0 -8px 40px rgba(0,0,0,0.5)",
         }}
       >
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-base font-semibold pp-heading">Nouvelle réunion</h3>
-          <button onClick={onClose} className="w-8 h-8 rounded-lg flex items-center justify-center"
-            style={{ background: "rgba(0,0,0,0.06)" }}>
-            <X className="w-4 h-4" />
+        {/* Handle bar */}
+        <div style={{ width: 36, height: 4, borderRadius: 2, background: "rgba(255,255,255,0.18)", margin: "0 auto 16px" }} />
+        <div className="flex items-center justify-between mb-4">
+          <h3 style={{ fontSize: 18, fontWeight: 700, color: "var(--pp-text-primary, #fff)", margin: 0 }}>📅 Nouvelle réunion</h3>
+          <button onClick={onClose}
+            style={{ width: 32, height: 32, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center",
+              background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.12)", cursor: "pointer" }}>
+            <X style={{ width: 16, height: 16, color: "var(--pp-text-secondary, #aaa)" }} />
           </button>
         </div>
-        <div className="space-y-3">
-          <input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Titre"
-            className="pp-input w-full" style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid var(--pp-bg-border)" }} />
-          <div className="grid grid-cols-2 gap-2">
-            <label className="text-xs" style={{ color: "var(--pp-text-muted)" }}>
-              Début
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Titre de la réunion"
+            style={{ ...inputStyle, fontSize: 15, fontWeight: 500 }} />
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div>
+              <p style={{ fontSize: 11, color: "var(--pp-text-muted, #888)", marginBottom: 4, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>Début</p>
               <input type="datetime-local" value={start} onChange={(e) => setStart(e.target.value)}
-                className="w-full mt-1" style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid var(--pp-bg-border)" }} />
-            </label>
-            <label className="text-xs" style={{ color: "var(--pp-text-muted)" }}>
-              Fin
+                style={{ ...inputStyle, fontSize: 12 }} />
+            </div>
+            <div>
+              <p style={{ fontSize: 11, color: "var(--pp-text-muted, #888)", marginBottom: 4, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>Fin</p>
               <input type="datetime-local" value={end} onChange={(e) => setEnd(e.target.value)}
-                className="w-full mt-1" style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid var(--pp-bg-border)" }} />
-            </label>
+                style={{ ...inputStyle, fontSize: 12 }} />
+            </div>
           </div>
           <input value={attendees} onChange={(e) => setAttendees(e.target.value)}
-            placeholder="Participants (courriels, séparés par des virgules)"
-            className="w-full" style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid var(--pp-bg-border)" }} />
+            placeholder="Participants (courriels, séparés par virgules)"
+            style={inputStyle} />
           <input value={location} onChange={(e) => setLocation(e.target.value)}
             placeholder="Lieu (optionnel)"
-            className="w-full" style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid var(--pp-bg-border)" }} />
+            style={inputStyle} />
           <textarea value={body} onChange={(e) => setBody(e.target.value)}
             placeholder="Notes / ordre du jour"
             rows={3}
-            className="w-full" style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid var(--pp-bg-border)" }} />
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={teams} onChange={(e) => setTeams(e.target.checked)} />
-            Créer une réunion Teams
-          </label>
+            style={{ ...inputStyle, resize: "none", lineHeight: 1.5 }} />
+          {/* Teams toggle */}
+          <div
+            onClick={() => setTeams(!teams)}
+            style={{
+              display: "flex", alignItems: "center", gap: 12,
+              padding: "12px 14px", borderRadius: 12,
+              background: teams ? "rgba(46,155,220,0.12)" : "var(--pp-bg-surface, rgba(255,255,255,0.04))",
+              border: `1.5px solid ${teams ? "rgba(46,155,220,0.35)" : "var(--pp-bg-border-2, rgba(255,255,255,0.1))"}`,
+              cursor: "pointer", userSelect: "none",
+            }}
+          >
+            <div style={{
+              width: 20, height: 20, borderRadius: 6, flexShrink: 0,
+              background: teams ? "#2e9bdc" : "rgba(255,255,255,0.08)",
+              border: `2px solid ${teams ? "#2e9bdc" : "rgba(255,255,255,0.2)"}`,
+              display: "flex", alignItems: "center", justifyContent: "center",
+            }}>
+              {teams && <span style={{ color: "#fff", fontSize: 12, fontWeight: 700 }}>✓</span>}
+            </div>
+            <div>
+              <p style={{ fontSize: 13, fontWeight: 600, color: "var(--pp-text-primary, #fff)", margin: 0 }}>🎥 Créer une réunion Teams</p>
+              <p style={{ fontSize: 11, color: "var(--pp-text-muted, #888)", margin: 0 }}>Lien Teams généré automatiquement</p>
+            </div>
+          </div>
           <button
             onClick={submit}
             disabled={saving}
-            className="w-full h-11 rounded-xl font-semibold active:scale-[0.98]"
-            style={{ background: "var(--pp-brand-accent)", color: "#fff", opacity: saving ? 0.6 : 1 }}
+            style={{
+              width: "100%", height: 48, borderRadius: 14,
+              fontWeight: 700, fontSize: 15,
+              background: saving ? "rgba(46,155,220,0.4)" : "linear-gradient(135deg, #2e9bdc, #7c3aed)",
+              color: "#fff", border: "none", cursor: saving ? "default" : "pointer",
+              boxShadow: saving ? "none" : "0 4px 20px rgba(46,155,220,0.4)",
+              transition: "all 0.2s",
+            }}
           >
-            {saving ? "Création…" : "Créer la réunion"}
+            {saving ? "Création en cours…" : "✅ Créer la réunion"}
           </button>
         </div>
       </div>
