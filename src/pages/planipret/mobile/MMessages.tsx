@@ -1276,8 +1276,28 @@ function EmailDetailSheet({ email, onClose, onReply, onForward, onChanged }: {
       const e = (data as any)?.email;
       if (e?.body?.content) {
         const ct = (e.body.contentType ?? "").toLowerCase();
-        if (ct === "html") setFullBodyHtml(e.body.content);
-        else setFullBodyText(e.body.content);
+        if (ct === "html") {
+          // Sanitize Outlook HTML: strip fixed width/height so images and tables
+          // scale to the sheet width instead of overflowing on mobile.
+          try {
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(e.body.content, "text/html");
+            doc.querySelectorAll("img, table, td, th, div, p, span, a").forEach((el) => {
+              el.removeAttribute("width");
+              el.removeAttribute("height");
+              const s = (el as HTMLElement).style;
+              if (s) {
+                if (s.width && s.width !== "100%") s.removeProperty("width");
+                if (s.maxWidth) s.removeProperty("max-width");
+                if (s.height && s.height !== "auto") s.removeProperty("height");
+                if (s.minWidth) s.removeProperty("min-width");
+              }
+            });
+            setFullBodyHtml(doc.body.innerHTML);
+          } catch {
+            setFullBodyHtml(e.body.content);
+          }
+        } else setFullBodyText(e.body.content);
       }
     }).catch(() => {}).finally(() => setLoadingBody(false));
   }, [email.id]);
