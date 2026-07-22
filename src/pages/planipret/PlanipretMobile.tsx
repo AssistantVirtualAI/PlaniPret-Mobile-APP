@@ -842,6 +842,15 @@ export default function PlanipretMobile() {
   useEffect(() => {
     loadProfile();
     if (location.pathname === ROUTES.MPLANIPRET) navigate(ROUTES.MPLANIPRET_HOME, { replace: true });
+    // Listen for SIGNED_OUT so the mobile auth screen shows immediately after logout
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event) => {
+      if (event === "SIGNED_OUT") {
+        setProfile(null);
+        setAccessError("unauthenticated");
+        setLoading(false);
+      }
+    });
+    return () => subscription.unsubscribe();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

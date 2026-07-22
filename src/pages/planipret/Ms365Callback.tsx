@@ -40,12 +40,30 @@ export default function Ms365Callback() {
       const state = params.get("state");
       const code_verifier = getRememberedMs365CodeVerifier(state);
       if (getMicrosoftSignInIntent() === "login") {
-        const { data, error: e } = await supabase.functions.invoke("ms365-auth-session", { body: { code, redirect_uri, code_verifier } });
-        if (e || !(data as any)?.success) {
-          const details = (data as any)?.details;
-          const msg = (data as any)?.error ?? e?.message ?? "Échec OAuth";
+        // Use raw fetch to capture the body even on non-2xx responses
+        let data: any = null;
+        let fetchErr: string | null = null;
+        try {
+          const { data: { session: currentSession } } = await supabase.auth.getSession();
+          const anonKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ?? "";
+          const supabaseUrl = import.meta.env.VITE_SUPABASE_URL ?? "";
+          const fnUrl = `${supabaseUrl}/functions/v1/ms365-auth-session`;
+          const headers: Record<string, string> = {
+            "Content-Type": "application/json",
+            "apikey": anonKey,
+          };
+          if (currentSession?.access_token) headers["Authorization"] = `Bearer ${currentSession.access_token}`;
+          const res = await fetch(fnUrl, { method: "POST", headers, body: JSON.stringify({ code, redirect_uri, code_verifier }) });
+          data = await res.json().catch(() => null);
+          if (!res.ok && !data) fetchErr = `HTTP ${res.status}`;
+        } catch (err: any) {
+          fetchErr = err?.message ?? "Réseau indisponible";
+        }
+        if (fetchErr || !data?.success) {
+          const details = data?.details;
+          const msg = data?.error ?? fetchErr ?? "Échec OAuth";
           const full = details ? `${msg} — ${details.error_description ?? details.error ?? ""}`.trim() : msg;
-          console.error("ms365 auth failed", { data, e });
+          console.error("ms365 auth failed", { data, fetchErr });
           setStatus("error"); setError(full);
           return;
         }
