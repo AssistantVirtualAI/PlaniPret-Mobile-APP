@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useSafeAreaInsets } from "@/hooks/useSafeAreaInsets";
 import { flushSync, createPortal } from "react-dom";
 import { useOutletContext, useSearchParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
@@ -7,7 +6,7 @@ import { toast } from "sonner";
 import {
   Plus, X, ArrowLeft, Phone, Send, Paperclip, MessageSquare, Zap,
   Users, Mail, Sparkles, Loader2, RefreshCw, Reply, Circle, CheckCircle2, AlertTriangle, RotateCw,
-  UsersRound, Contact, Search, BookUser, Flag, Archive, Trash2, Forward,
+  UsersRound, Contact, Search, BookUser, Trash2, Archive, Flag, Forward,
 } from "lucide-react";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
 import SmsTemplatesSheet from "@/components/planipret/SmsTemplatesSheet";
@@ -18,11 +17,11 @@ import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { useCallerNames } from "@/lib/planipret/callerLookup";
 import { connectMs365 } from "@/lib/ms365Connect";
 import { getPpContacts } from "@/lib/ppContactsCache";
-import RecipientAutocomplete from "@/components/planipret/mobile/RecipientAutocomplete";
-import EmailHistoryList from "@/components/planipret/mobile/EmailHistoryList";
+import * as maestroTelecom from "@/lib/planipret/maestroTelecom";
+import { fetchTeams365, loadTeamsCache, prefetchTeams365Data, saveTeamsCachePatch, isTeamsCacheFresh, isTeamsCacheExpired, revalidateTeams365IfStale, TEAMS_TTL_MS } from "@/lib/teams365Cache";
 
 
-type SubTab = "sms" | "team" | "teams365" | "emails" | "history" | "roster";
+type SubTab = "sms" | "team" | "teams365" | "emails" | "roster";
 
 
 type Msg = {
@@ -57,38 +56,37 @@ const fmtTime = (iso: string, lang: "fr" | "en" = "fr", t?: (key: string) => str
 };
 
 export default function MMessages() {
-  const { t, lang } = useMplanipretLang();
+  const { t } = useMplanipretLang();
   const { profile, openDialer, registerRefresh } = useOutletContext<PlanipretMobileContext>();
   const [searchParams] = useSearchParams();
-  const initialTab = ((): SubTab => {
-    const q = searchParams.get("tab");
-    return (q === "sms" || q === "team" || q === "teams365" || q === "emails" || q === "roster") ? q : "sms";
+  // Restore last sub-tab from localStorage so clicking the bottom nav Messages
+  // tab always returns to the last visited sub-tab (SMS, Emails, Teams…)
+  const STORAGE_KEY = "pp_messages_subtab";
+  const initialTab = (() => {
+    const fromUrl = searchParams.get("tab") as SubTab | null;
+    if (fromUrl && ["sms", "team", "teams365", "emails"].includes(fromUrl)) return fromUrl;
+    const saved = localStorage.getItem(STORAGE_KEY) as SubTab | null;
+    if (saved && ["sms", "team", "teams365", "emails"].includes(saved)) return saved;
+    return "sms" as SubTab;
   })();
   const [sub, setSub] = useState<SubTab>(initialTab);
-  const qTo = searchParams.get("to") ?? "";
-  const qName = searchParams.get("name") ?? "";
-
-  // Warm the Teams cache on mount so switching to the Teams tab is instant.
+  // Persist sub-tab changes to localStorage
+  const setSubAndSave = (tab: SubTab) => {
+    setSub(tab);
+    try { localStorage.setItem(STORAGE_KEY, tab); } catch {}
+  };
   useEffect(() => {
-    if (!profile?.ms365_access_token) return;
-    const cacheKey = "planipret.teams365.cache.v1";
-    const hasCache = (() => { try { return !!localStorage.getItem(cacheKey); } catch { return false; } })();
-    if (hasCache) return; // already warm
-    const run = async () => {
-      // Skip when there is no active session to avoid 401 on unauthenticated loads.
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
-      void supabase.functions.invoke("ms365-teams-list", { body: {} }).catch(() => {});
-    };
-    const ric: any = (globalThis as any).requestIdleCallback;
-    if (typeof ric === "function") ric(run, { timeout: 2000 }); else setTimeout(run, 300);
-  }, [profile?.ms365_access_token]);
-
+    const tb = searchParams.get("tab") as SubTab | null;
+    if (tb && ["sms", "team", "teams365", "emails"].includes(tb)) {
+      setSub(tb);
+      try { localStorage.setItem(STORAGE_KEY, tb); } catch {}
+    }
+  }, [searchParams]);
 
   return (
     <div className="h-full flex flex-col" style={{ background: "var(--pp-bg-base)" }}>
       <div
-        className="px-4 pt-5 pb-3"
+        className="px-4 pt-4 pb-3"
         style={{ background: "var(--pp-bg-deep)", borderBottom: "1px solid var(--pp-bg-border)" }}
       >
         <h1 className="text-2xl font-bold mb-3" style={{ color: "var(--pp-text-primary)" }}>{t("messages.title")}</h1>
@@ -101,14 +99,13 @@ export default function MMessages() {
             { k: "team" as SubTab, label: t("messages.tabs.team"), Icon: UsersRound },
             { k: "teams365" as SubTab, label: "Teams", Icon: Users },
             { k: "emails" as SubTab, label: t("messages.tabs.emails"), Icon: Mail },
-            { k: "history" as SubTab, label: lang === "fr" ? "Historique" : "History", Icon: Mail },
           ].map((item) => {
             const active = sub === item.k;
             return (
               <button
                 key={item.k}
                 type="button"
-                onClick={() => setSub(item.k)}
+                onClick={() => setSubAndSave(item.k)}
                 className="shrink-0 px-3.5 py-2 text-xs font-semibold rounded-full transition flex items-center gap-1.5 active:scale-95"
                 style={
                   active
@@ -132,11 +129,10 @@ export default function MMessages() {
       </div>
 
       <div className="flex-1 overflow-hidden">
-        {sub === "sms" && <SmsList profile={profile} openDialer={openDialer} registerRefresh={registerRefresh} initialTo={qTo} />}
+        {sub === "sms" && <SmsList profile={profile} openDialer={openDialer} registerRefresh={registerRefresh} />}
         {sub === "team" && <TeamChat profile={profile} />}
         {sub === "teams365" && <Teams365Panel profile={profile} />}
-        {sub === "emails" && <EmailsList profile={profile} initialTo={qTo} initialName={qName} />}
-        {sub === "history" && <EmailHistoryList />}
+        {sub === "emails" && <EmailsList profile={profile} />}
       </div>
     </div>
   );
@@ -247,9 +243,9 @@ const recipientFromRow = (c: any, source: SmsRecipient["source"], index: number)
 const recipientHay = (r: SmsRecipient) => `${r.name} ${r.phone} ${r.email ?? ""} ${r.extension ?? ""} ${r.department ?? ""}`.toLowerCase();
 const looksLikePhone = (value: string) => /^[+]?[-() .\d]{3,}$/.test(value.trim());
 
-function SmsList({ profile, openDialer, registerRefresh, initialTo }: any) {
+function SmsList({ profile, openDialer, registerRefresh }: any) {
   const { t } = useMplanipretLang();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const myExt = profile?.extension ?? "";
   const [threads, setThreads] = useState<NsThread[]>([]);
   const [loading, setLoading] = useState(true);
@@ -276,15 +272,40 @@ function SmsList({ profile, openDialer, registerRefresh, initialTo }: any) {
     setLoading(true);
     setError(null);
     try {
-      const { data, error: err } = await supabase.functions.invoke("pp-ns-sms", {
-        body: { action: "threads" },
-      });
-      if (err) throw err;
-      const list: NsThread[] = (data as any)?.threads ?? [];
+      // --- Maestro Telecom (source primaire) ---
+      let list: NsThread[] = [];
+      let usedMaestro = false;
+      try {
+        const inbox = await maestroTelecom.getInbox();
+        // Normaliser le format Maestro → NsThread
+        const raw: any[] = Array.isArray(inbox) ? inbox : (inbox as any)?.data ?? (inbox as any)?.conversations ?? (inbox as any)?.threads ?? [];
+        if (raw.length > 0 || Array.isArray(inbox)) {
+          list = raw.map((item: any) => ({
+            id: item.id ?? item.conversation_id ?? item.thread_id ?? "",
+            messagesession_id: item.id ?? item.conversation_id ?? item.thread_id ?? "",
+            destination: item.phone_number ?? item.remote_party ?? item.contact_number ?? item.to ?? item.from ?? "",
+            remote_party: item.phone_number ?? item.remote_party ?? item.contact_number ?? item.to ?? item.from ?? "",
+            last_message: item.last_message ?? item.last_message_text ?? item.preview ?? item.body ?? "",
+            unread: item.unread_count ?? item.unread ?? 0,
+            last_message_at: item.updated_at ?? item.last_message_at ?? item.timestamp ?? new Date().toISOString(),
+          }));
+          usedMaestro = true;
+        }
+      } catch (maestroErr: any) {
+        console.warn("[maestro] inbox fallback to NS-API:", maestroErr?.message);
+      }
+      // --- NS-API (fallback si Maestro échoue ou retourne vide) ---
+      if (!usedMaestro) {
+        const { data, error: err } = await supabase.functions.invoke("pp-ns-sms", {
+          body: { action: "threads" },
+        });
+        if (err) throw err;
+        list = (data as any)?.threads ?? [];
+      }
       list.sort((a, b) => +new Date(threadTime(b)) - +new Date(threadTime(a)));
       setThreads(list);
     } catch (e: any) {
-      console.error("[pp-ns-sms] threads", e);
+      console.error("[sms] load threads", e);
       setError(e?.message ?? t("messages.sendFailed"));
       toast.error(e?.message ?? t("messages.sendFailed"));
     } finally {
@@ -296,8 +317,19 @@ function SmsList({ profile, openDialer, registerRefresh, initialTo }: any) {
   useEffect(() => { registerRefresh(load); return () => registerRefresh(null); /* eslint-disable-next-line */ }, [profile?.user_id]);
   useEffect(() => {
     const to = searchParams.get("to")?.trim();
-    if (to) openSmsThread({ id: "", number: to }, false);
-  }, [searchParams]);
+    if (!to || loading) return;
+    const digits = (s: string) => String(s || "").replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "");
+    const target = digits(to);
+    const match = threads.find((th) => {
+      const p = digits(threadPeer(th));
+      return p && target && (p === target || p.endsWith(target) || target.endsWith(p));
+    });
+    if (match) {
+      openSmsThread({ id: threadId(match), number: threadPeer(match) }, false);
+    } else {
+      openSmsThread({ id: "", number: to }, false);
+    }
+  }, [searchParams, loading, threads]);
 
   if (activeThread) {
     return (
@@ -307,7 +339,16 @@ function SmsList({ profile, openDialer, registerRefresh, initialTo }: any) {
           number={activeThread.number}
           myExt={myExt}
           userId={profile.user_id}
-          onBack={() => { setActiveThread(null); load(); }}
+          onBack={() => {
+            setActiveThread(null);
+            // Nettoyer les paramètres URL pour éviter que le useEffect réouvre le thread
+            const clean = new URLSearchParams(searchParams);
+            clean.delete("to");
+            clean.delete("name");
+            clean.delete("tab");
+            setSearchParams(clean, { replace: true });
+            load();
+          }}
           onCall={(n) => openDialer(n)}
         />
       </div>
@@ -584,15 +625,41 @@ function ThreadView({ threadId: thId, number, myExt, userId, onBack, onCall }: {
   const inputRef = useRef<HTMLInputElement>(null);
 
   const loadMessages = async () => {
-    if (!currentThreadId) { setLoading(false); return; }
+    if (!number) { setLoading(false); return; }
     setLoading(true);
     setError(null);
     try {
-      const { data, error: err } = await supabase.functions.invoke("pp-ns-sms", {
-        body: { action: "messages", thread_id: currentThreadId },
-      });
-      if (err) throw err;
-      const list: NsMessage[] = (data as any)?.messages ?? [];
+      // --- Maestro Telecom (source primaire) ---
+      let list: NsMessage[] = [];
+      let usedMaestro = false;
+      try {
+        const resp = await maestroTelecom.getMessagesWith(number);
+        const raw: any[] = Array.isArray(resp) ? resp : (resp as any)?.data ?? (resp as any)?.messages ?? [];
+        if (raw.length > 0 || Array.isArray(resp)) {
+          list = raw.map((m: any) => ({
+            id: m.id ?? m.message_id ?? "",
+            direction: m.direction ?? (m.is_outbound ? "outbound" : "inbound"),
+            from: m.from ?? m.from_number ?? m.source ?? "",
+            to: m.to ?? m.to_number ?? m.destination ?? "",
+            message: m.message ?? m.body ?? m.text ?? "",
+            body: m.message ?? m.body ?? m.text ?? "",
+            timestamp: m.created_at ?? m.sent_at ?? m.timestamp ?? new Date().toISOString(),
+            created_at: m.created_at ?? m.sent_at ?? m.timestamp ?? new Date().toISOString(),
+            read_at: m.read_at ?? null,
+          }));
+          usedMaestro = true;
+        }
+      } catch (maestroErr: any) {
+        console.warn("[maestro] getMessagesWith fallback to NS-API:", maestroErr?.message);
+      }
+      // --- NS-API (fallback) ---
+      if (!usedMaestro && currentThreadId) {
+        const { data, error: err } = await supabase.functions.invoke("pp-ns-sms", {
+          body: { action: "messages", thread_id: currentThreadId },
+        });
+        if (err) throw err;
+        list = (data as any)?.messages ?? [];
+      }
       list.sort((a, b) => +new Date(msgTime(a)) - +new Date(msgTime(b)));
       setMessages(list);
     } catch (e: any) {
@@ -627,40 +694,41 @@ function ThreadView({ threadId: thId, number, myExt, userId, onBack, onCall }: {
     setMessages((prev) => [...prev, optimistic]);
     setText("");
     try {
-      const payload = { action: "send", to: number, message: body, ...(currentThreadId ? { thread_id: currentThreadId } : {}) };
-      console.info("[pp-ns-sms] send →", { to: number, len: body.length, thread_id: currentThreadId ?? null });
-      const { data, error: err } = await supabase.functions.invoke("pp-ns-sms", { body: payload });
-      if (err) {
-        console.error("[pp-ns-sms] invoke error", err);
-        throw new Error(err.message || t("messages.sendFailed"));
+      // --- Maestro Telecom (envoi primaire) ---
+      let sentViaMaestro = false;
+      try {
+        await maestroTelecom.sendMessage({ to_user_number: number, message: body });
+        sentViaMaestro = true;
+      } catch (maestroErr: any) {
+        console.warn("[maestro] sendMessage fallback to NS-API:", maestroErr?.message);
       }
-      const d: any = data ?? {};
-      if (d.ok === false || d.error) {
-        const status = d.status ? ` (HTTP ${d.status})` : "";
-        const bodyDetail =
-          typeof d.body === "string" ? d.body :
-          d.body ? JSON.stringify(d.body) :
-          typeof d.error === "string" ? d.error :
-          JSON.stringify(d.error ?? d);
-        console.error("[pp-ns-sms] server rejected", { status: d.status, from: d.from, to: d.to, endpoint: d.endpoint, body: d.body, error: d.error });
-        const hint = d.from ? "" : " — aucun numéro SMS (DID) assigné à ce courtier.";
-        throw new Error(`SMS refusé${status}${hint}\n${bodyDetail.slice(0, 260)}`);
+      // --- NS-API (fallback si Maestro échoue) ---
+      if (!sentViaMaestro) {
+        const { data, error: err } = await supabase.functions.invoke("pp-ns-sms", {
+          body: { action: "send", to: number, message: body, ...(currentThreadId ? { thread_id: currentThreadId } : {}) },
+        });
+        if (err) throw err;
+        if ((data as any)?.ok === false || (data as any)?.error) {
+          // Strip HTML tags from error body (NS-API sometimes returns HTML error pages)
+          const rawDetail = (data as any)?.error || (data as any)?.body || t("messages.sendFailed");
+          const cleanDetail = typeof rawDetail === "string"
+            ? rawDetail.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 120)
+            : t("messages.sendFailed");
+          throw new Error(cleanDetail || t("messages.sendFailed"));
+        }
+        const result = (data as any)?.result ?? {};
+        const newThreadId = result?.messagesession_id ?? result?.["messagesession-id"] ?? result?.session_id ?? result?.id;
+        if (newThreadId && !currentThreadId) setCurrentThreadId(newThreadId);
       }
-      const result = d.result ?? {};
-      const newThreadId = result?.messagesession_id ?? result?.["messagesession-id"] ?? result?.session_id ?? result?.id;
-      if (newThreadId && !currentThreadId) setCurrentThreadId(newThreadId);
-      // Refresh from server to reconcile optimistic message
-      setTimeout(() => loadMessages(), 600);
-
+      // Rafraîchir depuis le serveur pour réconcilier le message optimiste
+      setTimeout(() => loadMessages(), 800);
     } catch (e: any) {
-      console.error("[pp-ns-sms] send failed", e);
-      toast.error(e?.message ?? t("messages.sendFailed"), { duration: 6000 });
+      toast.error(e?.message ?? t("messages.sendFailed"));
       setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
     } finally {
       setSending(false);
     }
   };
-
 
   return (
     <div className="absolute inset-0 flex flex-col min-h-0" style={{ background: "var(--pp-bg-base)" }}>
@@ -739,7 +807,6 @@ function ThreadView({ threadId: thId, number, myExt, userId, onBack, onCall }: {
             <Paperclip className="w-5 h-5" />
           </button>
         }
-        aiAction={<AiImproveMenu text={text} mode="sms" onResult={setText} />}
       />
       <SmsTemplatesSheet open={tplOpen} onClose={() => setTplOpen(false)} userId={userId} onPick={(body) => setText((t) => t ? `${t} ${body}` : body)} />
       <AvaSummarizeSheet
@@ -894,11 +961,92 @@ function TeamChat({ profile }: { profile: any }) {
 }
 
 // ============================================================
+// SWIPEABLE EMAIL ROW
+// ============================================================
+function SwipeableEmailRow({
+  email, onOpen, onDelete, onArchive, onFlag, children,
+}: {
+  email: any;
+  onOpen: () => void;
+  onDelete: () => void;
+  onArchive: () => void;
+  onFlag: () => void;
+  children: React.ReactNode;
+}) {
+  const startX = React.useRef(0);
+  const [offset, setOffset] = React.useState(0);
+  const [action, setAction] = React.useState<null | "delete" | "archive" | "flag">(null);
+  const THRESHOLD = 80;
+
+  const onTouchStart = (e: React.TouchEvent) => {
+    startX.current = e.touches[0].clientX;
+    setAction(null);
+  };
+  const onTouchMove = (e: React.TouchEvent) => {
+    const dx = e.touches[0].clientX - startX.current;
+    if (Math.abs(dx) < 8) return;
+    const clamped = Math.max(-140, Math.min(140, dx));
+    setOffset(clamped);
+    // Swipe RIGHT (positive dx) → Delete revealed on left
+    // Swipe LEFT (negative dx)  → Archive revealed on right
+    if (clamped > THRESHOLD) setAction("delete");
+    else if (clamped < -THRESHOLD) setAction("archive");
+    else setAction(null);
+  };
+  const onTouchEnd = () => {
+    if (action === "delete") { setOffset(0); onDelete(); }
+    else if (action === "archive") { setOffset(0); onArchive(); }
+    else setOffset(0);
+  };
+
+  const unread = email.isRead === false;
+  const showDelete = offset > 8;   // swiping right → delete backdrop visible
+  const showArchive = offset < -8; // swiping left  → archive backdrop visible
+  return (
+    <li className="relative overflow-hidden rounded-2xl">
+      {/* Left backdrop — Delete (revealed when swiping RIGHT) */}
+      {showDelete && (
+        <div className="absolute inset-y-0 left-0 flex items-center justify-start px-4 rounded-2xl"
+          style={{ background: "#dc2626", minWidth: 80 }}>
+            <Trash2 className="w-4 h-4" style={{ color: "#fff" }} />
+            <span style={{ color: "#fff", fontSize: 11, fontWeight: 700, marginLeft: 6 }}>Suppr.</span>
+        </div>
+      )}
+      {/* Right backdrop — Archive (revealed when swiping LEFT) */}
+      {showArchive && (
+        <div className="absolute inset-y-0 right-0 flex items-center justify-end px-4 rounded-2xl"
+          style={{ background: "#16a34a", minWidth: 80 }}>
+            <span style={{ color: "#fff", fontSize: 11, fontWeight: 700, marginRight: 6 }}>Archive</span>
+            <Archive className="w-4 h-4" style={{ color: "#fff" }} />
+        </div>
+      )}
+      {/* Email card */}
+      <button
+        onTouchStart={onTouchStart}
+        onTouchMove={onTouchMove}
+        onTouchEnd={onTouchEnd}
+        onClick={offset === 0 ? onOpen : undefined}
+        className="w-full text-left rounded-2xl p-3 active:opacity-80 relative z-10"
+        style={{
+          background: "var(--pp-bg-surface)",
+          border: "1px solid var(--pp-bg-border-2)",
+          borderLeft: unread ? "3px solid var(--pp-brand-accent)" : "1px solid var(--pp-bg-border-2)",
+          transform: `translateX(${offset}px)`,
+          transition: offset === 0 ? "transform 0.25s ease" : "none",
+        }}
+      >
+        {children}
+      </button>
+    </li>
+  );
+}
+
+// ============================================================
 // EMAILS TAB (M365)
 // ============================================================
-export function EmailsList({ profile, initialTo, initialName }: { profile: any; initialTo?: string; initialName?: string }) {
+function EmailsList({ profile }: { profile: any }) {
   const { t, lang } = useMplanipretLang();
-  const PAGE_SIZE = 25;
+  const [searchParams] = useSearchParams();
   const [emails, setEmails] = useState<any[] | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "no_m365" | "error">("loading");
   const [active, setActive] = useState<any | null>(null);
@@ -906,78 +1054,46 @@ export function EmailsList({ profile, initialTo, initialName }: { profile: any; 
   const [composeInit, setComposeInit] = useState<{ to?: string; subject?: string; body?: string }>({});
 
   useEffect(() => {
-    if (initialTo && initialTo.trim()) {
-      setComposeInit({ to: initialTo, subject: "", body: "" });
+    const to = searchParams.get("to")?.trim();
+    if (to && searchParams.get("tab") === "emails") {
+      setComposeInit({ to });
       setComposeOpen(true);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialTo]);
-
-  const [hasMore, setHasMore] = useState(false);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  }, [searchParams]);
 
   const load = async () => {
     if (!profile?.ms365_access_token) { setState("no_m365"); return; }
     setState((s) => (s === "ready" ? s : "loading"));
     const { data, error } = await supabase.functions.invoke("ms365-actions", {
-      body: { action: "read_emails", payload: { top: PAGE_SIZE, skip: 0 } },
+      body: { action: "read_emails", payload: { top: 25, folder: "inbox" } },
     });
-    if (error || !(data as any)?.success) { setState("error"); return; }
-    const list = ((data as any).emails ?? (data as any).messages ?? []) as any[];
-    setEmails(list);
-    setHasMore(Boolean((data as any).hasMore) && list.length === PAGE_SIZE);
+    if (error) { console.error("[EmailsList] invoke error", error); setState("error"); return; }
+    if (!(data as any)?.success) {
+      console.error("[EmailsList] API error", (data as any)?.error, (data as any)?.details);
+      setState("error"); return;
+    }
+    setEmails(((data as any).emails ?? (data as any).messages ?? []));
     setState("ready");
   };
 
-  const loadMore = async () => {
-    if (loadingMore || !emails) return;
-    setLoadingMore(true);
-    try {
-      const { data, error } = await supabase.functions.invoke("ms365-actions", {
-        body: { action: "read_emails", payload: { top: PAGE_SIZE, skip: emails.length } },
-      });
-      if (error || !(data as any)?.success) { toast.error(t("messages.emailsLoadFailed")); return; }
-      const more = ((data as any).emails ?? []) as any[];
-      // Dedupe by id
-      const seen = new Set(emails.map((e) => e.id));
-      const merged = [...emails, ...more.filter((e) => !seen.has(e.id))];
-      setEmails(merged);
-      setHasMore(Boolean((data as any).hasMore) && more.length === PAGE_SIZE);
-    } finally {
-      setLoadingMore(false);
-    }
-  };
-
   useEffect(() => {
-    // Guard: skip auto-sync when there is no active session to avoid 401.
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (!session) return;
-      load();
-      if (!profile?.ms365_access_token) return;
-      const id = window.setInterval(() => { load(); }, 60_000);
-      const onVis = () => { if (document.visibilityState === "visible") load(); };
-      document.addEventListener("visibilitychange", onVis);
-      // Note: cleanup not possible here due to async; intervals are short-lived anyway.
-    }); /* eslint-disable-next-line */
-  }, [profile?.ms365_access_token]);
-
-  // Auto-prefetch next page when the sentinel scrolls into view (200px margin).
-  useEffect(() => {
-    if (!hasMore || loadingMore || !emails || emails.length === 0) return;
-    const el = sentinelRef.current;
-    if (!el || typeof IntersectionObserver === "undefined") return;
-    const io = new IntersectionObserver(
-      (entries) => { if (entries.some((e) => e.isIntersecting)) loadMore(); },
-      { rootMargin: "200px 0px", threshold: 0 },
-    );
-    io.observe(el);
-    return () => io.disconnect();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasMore, loadingMore, emails?.length]);
+    load(); /* eslint-disable-next-line */
+    if (!profile?.ms365_access_token) return;
+    // Poll every 60s but skip if a sheet (compose or detail) is currently open
+    const id = window.setInterval(() => {
+      if (!composeOpen && !active) load();
+    }, 60_000);
+    // Also reload on tab focus, but only when no sheet is open
+    const onVis = () => {
+      if (document.visibilityState === "visible" && !composeOpen && !active) load();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { window.clearInterval(id); document.removeEventListener("visibilitychange", onVis); };
+  }, [profile?.ms365_access_token]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
-    <div className="relative flex flex-col overflow-y-auto p-3" style={{ height: "calc(100dvh - 242px)", minHeight: 400 }}>
+    <div className="relative flex flex-col" style={{ height: "calc(100dvh - 242px)", minHeight: 400 }}>
+      <div className="flex-1 overflow-y-auto p-3">
       <div className="flex items-center justify-between mb-2">
         <button
           onClick={() => { setComposeInit({}); setComposeOpen(true); }}
@@ -1044,71 +1160,55 @@ export function EmailsList({ profile, initialTo, initialName }: { profile: any; 
       {state === "ready" && (emails?.length === 0 ? (
         <EmptyState Icon={Mail} title={t("messages.emptyInbox")} sub={t("messages.noRecentEmail")} />
       ) : (
-        <>
-          <ul className="space-y-1.5">
-            {emails!.map((e: any, i: number) => {
-              const from = e.from?.emailAddress?.name ?? e.from?.emailAddress?.address ?? t("messages.sender");
-              const subject = e.subject ?? t("messages.noSubject");
-              const preview = e.bodyPreview ?? "";
-              const received = e.receivedDateTime ?? e.created_at;
-              const unread = e.isRead === false;
-              const flagged = e.flag?.flagStatus === "flagged";
-              return (
-                <li key={e.id ?? i}>
-                  <button
-                    onClick={() => setActive(e)}
-                    className="w-full text-left rounded-2xl p-3 active:opacity-80"
-                    style={{
-                      background: "var(--pp-bg-surface)",
-                      border: "1px solid var(--pp-bg-border-2)",
-                      borderLeft: unread ? "3px solid var(--pp-brand-accent)" : "1px solid var(--pp-bg-border-2)",
-                    }}
-                  >
-                    <div className="flex items-start justify-between gap-2 mb-1">
-                      <p className="font-semibold text-sm truncate flex items-center gap-1.5" style={{ color: "var(--pp-text-primary)" }}>
-                        {from}
-                        {e.hasAttachments && <Paperclip className="w-3 h-3" style={{ color: "var(--pp-text-muted)" }} />}
-                        {flagged && <Flag className="w-3 h-3" style={{ color: "#f59e0b", fill: "#f59e0b" }} />}
-                      </p>
-                      <span className="text-[10px] shrink-0" style={{ color: "var(--pp-text-faint)" }}>
-                        {received ? fmtTime(received, lang, t) : ""}
-                      </span>
-                    </div>
-                    <p className="text-xs truncate mb-1" style={{ color: "var(--pp-text-secondary)" }}>{subject}</p>
-                    <p className="text-[11px] line-clamp-2" style={{ color: "var(--pp-text-muted)" }}>{preview}</p>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-          {/* Sentinel: auto-triggers loadMore when scrolled near bottom */}
-          {hasMore && <div ref={sentinelRef} aria-hidden className="h-1 w-full" />}
-          {hasMore && (
-            <button
-              onClick={loadMore}
-              disabled={loadingMore}
-              className="mt-3 w-full py-2 rounded-full text-xs font-semibold disabled:opacity-60 flex items-center justify-center gap-2"
-              style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
-            >
-              {loadingMore ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
-              {loadingMore ? t("common.loading") ?? "Chargement…" : "Charger plus"}
-            </button>
-          )}
-          {!hasMore && emails!.length >= PAGE_SIZE && (
-            <p className="text-center text-[11px] mt-3" style={{ color: "var(--pp-text-faint)" }}>
-              — Fin de la liste —
-            </p>
-          )}
-        </>
+        <ul className="space-y-1.5">
+          {emails!.map((e: any, i: number) => {
+            const from = e.from?.emailAddress?.name ?? e.from?.emailAddress?.address ?? t("messages.sender");
+            const subject = e.subject ?? t("messages.noSubject");
+            const preview = e.bodyPreview ?? "";
+            const received = e.receivedDateTime ?? e.created_at;
+            const unread = e.isRead === false;
+            return (
+              <SwipeableEmailRow
+                key={e.id ?? i}
+                email={e}
+                onOpen={() => setActive(e)}
+                onDelete={async () => {
+                  await supabase.functions.invoke("ms365-actions", { body: { action: "delete_email", payload: { message_id: e.id } } });
+                  setEmails((prev) => prev ? prev.filter((x: any) => x.id !== e.id) : prev);
+                  toast.success(t("messages.emailDeleted") ?? "Supprimé");
+                }}
+                onArchive={async () => {
+                  await supabase.functions.invoke("ms365-actions", { body: { action: "archive_email", payload: { message_id: e.id } } });
+                  setEmails((prev) => prev ? prev.filter((x: any) => x.id !== e.id) : prev);
+                  toast.success(t("messages.emailArchived") ?? "Archivé");
+                }}
+                onFlag={async () => {
+                  await supabase.functions.invoke("ms365-actions", { body: { action: "flag_email", payload: { message_id: e.id } } });
+                  toast.success(t("messages.emailFlagged") ?? "Marqué");
+                }}
+              >
+                <div className="flex items-start justify-between gap-2 mb-1">
+                  <p className="font-semibold text-sm truncate" style={{ color: "var(--pp-text-primary)" }}>{from}</p>
+                  <span className="text-[10px] shrink-0" style={{ color: "var(--pp-text-faint)" }}>
+                    {received ? fmtTime(received, lang, t) : ""}
+                  </span>
+                </div>
+                <p className="text-xs truncate mb-1" style={{ color: "var(--pp-text-secondary)" }}>{subject}</p>
+                <p className="text-[11px] line-clamp-2" style={{ color: "var(--pp-text-muted)" }}>{preview}</p>
+              </SwipeableEmailRow>
+            );
+          })}
+        </ul>
       ))}
+      </div>{/* end overflow-y-auto */}
 
       {active && createPortal(
         <EmailDetailSheet
           email={active}
           onClose={() => setActive(null)}
-          onCompose={(init) => { setActive(null); setComposeInit(init); setComposeOpen(true); }}
-          onChanged={() => load()}
-          onOptimisticRemove={(id) => setEmails((cur) => (cur ? cur.filter((e) => e.id !== id) : cur))}
+          onReply={(init) => { setActive(null); setComposeInit(init); setComposeOpen(true); }}
+          onForward={(init) => { setActive(null); setComposeInit(init); setComposeOpen(true); }}
+          onChanged={() => { setActive(null); load(); }}
         />,
         document.body
       )}
@@ -1124,104 +1224,150 @@ export function EmailsList({ profile, initialTo, initialName }: { profile: any; 
   );
 }
 
-type ComposeInit = {
-  mode?: "new" | "reply" | "reply_all" | "forward";
-  message_id?: string;
-  to?: string;
-  cc?: string;
-  bcc?: string;
-  subject?: string;
-  body?: string;
-};
-
-function EmailDetailSheet({ email, onClose, onCompose, onChanged, onOptimisticRemove }: {
-  email: any;
-  onClose: () => void;
-  onCompose: (init: ComposeInit) => void;
-  onChanged: () => void;
-  onOptimisticRemove?: (id: string) => void;
-}) {
-  const { t } = useMplanipretLang();
-  const safeArea = useSafeAreaInsets();
-  const [detail, setDetail] = useState<any | null>(null);
-  const [loadingDetail, setLoadingDetail] = useState(false);
-  const [sumOpen, setSumOpen] = useState(false);
-  const [analyzing, setAnalyzing] = useState(false);
-  const [analysis, setAnalysis] = useState<any | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [flagged, setFlagged] = useState<boolean>(email.flag?.flagStatus === "flagged");
-  const [attachments, setAttachments] = useState<Array<{ id: string; name: string; contentType: string; size: number }>>([]);
-  const [downloadingAtt, setDownloadingAtt] = useState<string | null>(null);
-
-
-  const merged = detail ?? email;
-  const from = merged.from?.emailAddress?.name ?? merged.from?.emailAddress?.address ?? t("messages.sender");
-  const fromAddr = merged.from?.emailAddress?.address ?? "";
-  const subject = merged.subject ?? t("messages.noSubject");
-  const toList = Array.isArray(merged.toRecipients) ? merged.toRecipients : [];
-  const ccList = Array.isArray(merged.ccRecipients) ? merged.ccRecipients : [];
-  const bodyHtml: string = merged?.body?.content ?? "";
-  const bodyType: string = merged?.body?.contentType ?? "text";
+function SenderQuickActions({ email, name }: { email: string; name: string }) {
+  const { openDialer } = useOutletContext<PlanipretMobileContext>();
+  const [state, setState] = useState<"idle" | "loading" | "found" | "not_found">("idle");
+  const [phone, setPhone] = useState<string | null>(null);
+  const [contactName, setContactName] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    if (!email) { setState("not_found"); return; }
+    setState("loading");
     (async () => {
-      if (!email?.id) return;
-      setLoadingDetail(true);
-      const { data } = await supabase.functions.invoke("ms365-actions", {
-        body: { action: "read_email_detail", payload: { message_id: email.id } },
-      });
-      if (!cancelled && (data as any)?.success) {
-        setDetail((data as any).email);
-        setFlagged((data as any).email?.flag?.flagStatus === "flagged");
-      }
-      if (!cancelled) setLoadingDetail(false);
-      // Mark as read on open (fire-and-forget). Also mutate the incoming
-      // preview object so the parent list reflects the new state without a
-      // refetch.
-      supabase.functions.invoke("ms365-actions", {
-        body: { action: "mark_read_email", payload: { message_id: email.id, isRead: true } },
-      }).then(({ error }) => {
-        if (!error) {
-          try { (email as any).isRead = true; onChanged(); } catch {}
+      try {
+        const contacts = await getPpContacts("directory");
+        const hit = (contacts ?? []).find((c: any) =>
+          (c?.email ?? "").toLowerCase() === email.toLowerCase() ||
+          (Array.isArray(c?.emails) && c.emails.some((e: string) => (e ?? "").toLowerCase() === email.toLowerCase()))
+        );
+        const ph = hit?.phone ?? hit?.mobile ?? hit?.phones?.[0] ?? null;
+        if (cancelled) return;
+        if (ph) {
+          setPhone(String(ph));
+          setContactName(hit?.name ?? hit?.display_name ?? null);
+          setState("found");
+        } else {
+          setState("not_found");
         }
-      }).catch(() => {});
-      // Load attachments list when the message has any.
-      if (email?.hasAttachments || (detail as any)?.hasAttachments) {
-        const { data: attData } = await supabase.functions.invoke("ms365-actions", {
-          body: { action: "list_attachments", payload: { message_id: email.id } },
-        });
-        if (!cancelled && (attData as any)?.success) {
-          setAttachments(((attData as any).attachments ?? []).filter((a: any) => !a.isInline));
-        }
+      } catch {
+        if (!cancelled) setState("not_found");
       }
     })();
     return () => { cancelled = true; };
-  }, [email?.id]);
+  }, [email]);
 
-  const downloadAttachment = async (att: { id: string; name: string; contentType: string }) => {
-    setDownloadingAtt(att.id);
+  const callNow = () => {
+    if (!phone) { toast.info("Aucun numéro trouvé pour cet expéditeur"); return; }
+    try { openDialer(phone); } catch { toast.error("Impossible d'ouvrir le clavier"); }
+  };
+  const smsNow = () => {
+    if (!phone) { toast.info("Aucun numéro trouvé pour cet expéditeur"); return; }
+    const url = `/mplanipret/messages?tab=sms&to=${encodeURIComponent(phone)}`;
+    window.location.hash = "";
+    window.history.pushState({}, "", url);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  };
+
+  const disabled = state !== "found";
+  const subLabel =
+    state === "loading" ? "Recherche du contact…" :
+    state === "found" ? `${contactName ?? name} · ${phone}` :
+    "Aucun numéro connu pour cet expéditeur";
+
+  return (
+    <div
+      className="rounded-xl p-2.5 flex items-center gap-2"
+      style={{ background: "rgba(46,155,220,0.08)", border: "1px solid rgba(46,155,220,0.25)" }}
+    >
+      <Sparkles className="w-4 h-4 flex-shrink-0" style={{ color: "var(--pp-brand-accent)" }} />
+      <div className="flex-1 min-w-0">
+        <p className="text-[11px] font-semibold" style={{ color: "var(--pp-text-primary)" }}>AVA · Contacter</p>
+        <p className="text-[10px] truncate" style={{ color: "var(--pp-text-muted)" }}>{subLabel}</p>
+      </div>
+      <button
+        onClick={callNow}
+        disabled={disabled}
+        className="w-9 h-9 rounded-full flex items-center justify-center disabled:opacity-40"
+        style={{ background: "rgba(34,197,94,0.15)", border: "1px solid rgba(34,197,94,0.35)", color: "#22c55e" }}
+        aria-label="Appeler"
+      >
+        {state === "loading" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Phone className="w-4 h-4" />}
+      </button>
+      <button
+        onClick={smsNow}
+        disabled={disabled}
+        className="w-9 h-9 rounded-full flex items-center justify-center disabled:opacity-40"
+        style={{ background: "rgba(46,155,220,0.15)", border: "1px solid rgba(46,155,220,0.35)", color: "var(--pp-brand-accent)" }}
+        aria-label="Texto"
+      >
+        <MessageSquare className="w-4 h-4" />
+      </button>
+    </div>
+  );
+}
+
+
+
+function EmailDetailSheet({ email, onClose, onReply, onForward, onChanged }: {
+  email: any;
+  onClose: () => void;
+  onReply: (init: { to?: string; subject?: string; body?: string }) => void;
+  onForward: (init: { to?: string; subject?: string; body?: string }) => void;
+  onChanged: () => void;
+}) {
+  const { t } = useMplanipretLang();
+  const from = email.from?.emailAddress?.name ?? email.from?.emailAddress?.address ?? t("messages.sender");
+  const fromAddr = email.from?.emailAddress?.address ?? "";
+  const subject = email.subject ?? t("messages.noSubject");
+  const preview = email.bodyPreview ?? "";
+  const [sumOpen, setSumOpen] = useState(false);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analysis, setAnalysis] = useState<any | null>(null);
+  const [busy, setBusy] = useState<"" | "flag" | "archive" | "delete">("")
+  const [flagged, setFlagged] = useState<boolean>(email?.flag?.flagStatus === "flagged");
+  const [fullBodyHtml, setFullBodyHtml] = useState<string | null>(null);
+  const [fullBodyText, setFullBodyText] = useState<string | null>(null);
+  const [loadingBody, setLoadingBody] = useState(false);
+  const [showAiSummary, setShowAiSummary] = useState(false);
+  // Charger le corps complet du courriel au montage
+  useEffect(() => {
+    if (!email.id) return;
+    setLoadingBody(true);
+    supabase.functions.invoke("ms365-actions", {
+      body: { action: "read_email_detail", payload: { message_id: email.id } },
+    }).then(({ data }) => {
+      const e = (data as any)?.email;
+      if (e?.body?.content) {
+        const ct = (e.body.contentType ?? "").toLowerCase();
+        if (ct === "html") setFullBodyHtml(e.body.content);
+        else setFullBodyText(e.body.content);
+      }
+    }).catch(() => {}).finally(() => setLoadingBody(false));
+  }, [email.id]);
+
+  const runAction = async (
+    kind: "flag" | "archive" | "delete",
+    action: string,
+    payload: Record<string, unknown>,
+    successMsg: string,
+  ) => {
+    if (!email.id) { toast.error("Message ID manquant"); return; }
+    setBusy(kind);
     try {
       const { data, error } = await supabase.functions.invoke("ms365-actions", {
-        body: { action: "get_attachment", payload: { message_id: email.id, attachment_id: att.id } },
+        body: { action, payload: { message_id: email.id, ...payload } },
       });
-      if (error || !(data as any)?.success) throw new Error((data as any)?.error ?? error?.message ?? "Échec");
-      const bytes = (data as any).attachment?.contentBytes;
-      if (!bytes) throw new Error("Contenu vide");
-      // Decode base64 → Blob → download
-      const bin = atob(bytes);
-      const arr = new Uint8Array(bin.length);
-      for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-      const blob = new Blob([arr], { type: att.contentType || "application/octet-stream" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url; a.download = att.name || "attachment";
-      document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      if (error || !(data as any)?.success) {
+        throw new Error((data as any)?.error ?? error?.message ?? "Échec");
+      }
+      toast.success(successMsg);
+      if (kind === "flag") setFlagged((v) => !v);
+      else onChanged();
     } catch (e: any) {
-      toast.error(e?.message ?? "Téléchargement impossible");
+      toast.error(e?.message ?? "Erreur");
     } finally {
-      setDownloadingAtt(null);
+      setBusy("");
     }
   };
 
@@ -1233,195 +1379,182 @@ function EmailDetailSheet({ email, onClose, onCompose, onChanged, onOptimisticRe
       const { data, error } = await supabase.functions.invoke("ava-email-analyzer", {
         body: { ms_message_id: email.id },
       });
-      if (error || !(data as any)?.success) throw new Error((data as any)?.error ?? error?.message ?? "Échec");
+      if (error || !(data as any)?.success) {
+        throw new Error((data as any)?.error ?? error?.message ?? "Échec de l'analyse");
+      }
       setAnalysis((data as any).analysis);
       if ((data as any).cached) toast.info("Analyse récupérée du cache");
-    } catch (e: any) { toast.error(e?.message ?? "Erreur AVA"); }
-    finally { setAnalyzing(false); }
-  };
-
-  const act = async (action: string, extra: Record<string, unknown> = {}, successMsg?: string) => {
-    if (!email.id) return;
-    setBusy(action);
-    const { data, error } = await supabase.functions.invoke("ms365-actions", {
-      body: { action, payload: { message_id: email.id, ...extra } },
-    });
-    setBusy(null);
-    if (error || !(data as any)?.success) {
-      toast.error((data as any)?.error ?? error?.message ?? "Échec");
-      return false;
-    }
-    if (successMsg) toast.success(successMsg);
-    return true;
-  };
-
-  const onDelete = async () => {
-    // Optimistic: remove from list & close immediately so the UI reflects the action.
-    if (email?.id) onOptimisticRemove?.(email.id);
-    onClose();
-    if (await act("delete_email", {}, "Supprimé")) { onChanged(); } else { onChanged(); }
-  };
-  const onArchive = async () => {
-    if (email?.id) onOptimisticRemove?.(email.id);
-    onClose();
-    if (await act("archive_email", {}, "Archivé")) { onChanged(); } else { onChanged(); }
-  };
-  const onToggleFlag = async () => {
-    if (await act("flag_email", { unflag: flagged }, flagged ? "Drapeau retiré" : "Drapeau ajouté")) {
-      setFlagged(!flagged); onChanged();
+    } catch (e: any) {
+      toast.error(e?.message ?? "Erreur AVA");
+    } finally {
+      setAnalyzing(false);
     }
   };
-  const onMarkUnread = async () => { if (await act("mark_read_email", { isRead: false }, "Marqué non lu")) { onChanged(); onClose(); } };
 
-  const buildQuote = () => {
-    const plain = merged.bodyPreview ?? "";
-    return `\n\n---\nDe: ${from} <${fromAddr}>\nEnvoyé: ${merged.receivedDateTime ?? ""}\nObjet: ${subject}\n\n${plain}`;
-  };
-
-  const openReply = () => onCompose({
-    mode: "reply", message_id: email.id, to: fromAddr,
-    subject: subject.startsWith("Re:") ? subject : `Re: ${subject}`, body: buildQuote(),
-  });
-  const openReplyAll = () => onCompose({
-    mode: "reply_all", message_id: email.id, to: fromAddr,
-    cc: ccList.map((r: any) => r?.emailAddress?.address).filter(Boolean).join(", "),
-    subject: subject.startsWith("Re:") ? subject : `Re: ${subject}`, body: buildQuote(),
-  });
-  const openForward = () => onCompose({
-    mode: "forward", message_id: email.id,
-    subject: subject.startsWith("Fwd:") ? subject : `Fwd: ${subject}`, body: buildQuote(),
-  });
 
   return (
-    <div className="fixed inset-0 z-[9999] flex items-end" style={{ background: "rgba(0,0,0,0.5)" }} onClick={onClose}>
+    <div className="fixed inset-0 z-[9999] flex flex-col" style={{ background: "rgba(0,0,0,0.5)" }}>
       <div
-        className="w-full rounded-t-3xl flex flex-col shadow-2xl"
-        style={{
-          background: "var(--pp-bg-base)",
-          border: "1px solid var(--pp-bg-border-2)",
-          // Use native safeArea.top (from Capacitor) instead of CSS env() which
-          // can return 0 inside a WebView until the viewport is fully laid out.
-          height: `calc(100vh - ${safeArea.top > 0 ? safeArea.top : 44}px - 24px)`,
-          maxHeight: "calc(100dvh - 24px)",
-        }}
-        onClick={(e) => e.stopPropagation()}
+        className="w-full flex flex-col mt-auto"
+        style={{ background: "var(--pp-bg-base)", borderTop: "1px solid var(--pp-bg-border-2)", height: "100%", paddingTop: "env(safe-area-inset-top, 0px)", paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
       >
-        <div
-          className="flex items-center justify-between px-4 pt-3 pb-2"
-          style={{ borderBottom: "1px solid var(--pp-bg-border)", flexShrink: 0, paddingTop: Math.max(safeArea.top > 0 ? safeArea.top : 44, 12) }}
-        >
+        <div className="flex items-center justify-between px-4 pt-3 pb-2" style={{ borderBottom: "1px solid var(--pp-bg-border)" }}>
           <button onClick={onClose} className="p-1.5 rounded-full" style={{ color: "var(--pp-text-secondary)" }}>
             <ArrowLeft className="w-5 h-5" />
           </button>
           <p className="text-xs uppercase tracking-wider" style={{ color: "var(--pp-text-muted)" }}>Email</p>
-          <div className="flex items-center gap-1">
-            <IconAction onClick={onToggleFlag} title={flagged ? "Retirer drapeau" : "Marquer"} busy={busy === "flag_email"}>
-              <Flag className="w-4 h-4" style={{ color: flagged ? "#f59e0b" : "var(--pp-text-secondary)", fill: flagged ? "#f59e0b" : "none" }} />
-            </IconAction>
-            <IconAction onClick={onArchive} title="Archiver" busy={busy === "archive_email"}>
-              <Archive className="w-4 h-4" />
-            </IconAction>
-            <IconAction onClick={onMarkUnread} title="Marquer non lu" busy={busy === "mark_read_email"}>
-              <Circle className="w-4 h-4" />
-            </IconAction>
-            <IconAction onClick={onDelete} title="Supprimer" busy={busy === "delete_email"}>
-              <Trash2 className="w-4 h-4" style={{ color: "#ef4444" }} />
-            </IconAction>
-          </div>
+          <button
+            onClick={() => runAction("flag", "flag_email", { unflag: flagged }, flagged ? "Drapeau retiré" : "Message marqué")}
+            disabled={busy === "flag"}
+            title={flagged ? "Retirer le drapeau" : "Marquer d'un drapeau"}
+            className="p-1.5 rounded-full disabled:opacity-50"
+            style={{ color: flagged ? "#F59E0B" : "var(--pp-text-secondary)" }}
+          >
+            {busy === "flag" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Flag className="w-4 h-4" style={{ fill: flagged ? "#F59E0B" : "transparent" }} />}
+          </button>
         </div>
-
-        <div
-          className="flex-1 overflow-y-auto px-4 py-3 space-y-3"
-          style={{ WebkitOverflowScrolling: "touch", minHeight: 0, overflowX: "hidden", maxWidth: "100vw" }}
-        >
+        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
           <div>
             <p className="text-base font-semibold" style={{ color: "var(--pp-text-primary)" }}>{subject}</p>
             <p className="text-xs mt-1" style={{ color: "var(--pp-text-muted)" }}>
               {t("messages.from")} <span style={{ color: "var(--pp-text-secondary)" }}>{from}</span> {fromAddr && `<${fromAddr}>`}
             </p>
-            {toList.length > 0 && (
-              <p className="text-xs mt-0.5" style={{ color: "var(--pp-text-muted)" }}>
-                À: {toList.map((r: any) => r?.emailAddress?.address).filter(Boolean).join(", ")}
-              </p>
-            )}
-            {ccList.length > 0 && (
-              <p className="text-xs mt-0.5" style={{ color: "var(--pp-text-muted)" }}>
-                Cc: {ccList.map((r: any) => r?.emailAddress?.address).filter(Boolean).join(", ")}
-              </p>
-            )}
           </div>
+
+          <SenderQuickActions email={fromAddr} name={from} />
+
+
 
           <button
             onClick={analyzeWithAva}
             disabled={analyzing}
             className="w-full px-3 py-2 rounded-xl text-sm font-semibold flex items-center justify-center gap-2 disabled:opacity-60"
-            style={{ background: "linear-gradient(135deg, #2D1A5A, #9B7FE8)", border: "1px solid rgba(155,127,232,0.35)", color: "white" }}
+            style={{
+              background: "linear-gradient(135deg, #2D1A5A, #9B7FE8)",
+              border: "1px solid rgba(155,127,232,0.35)",
+              color: "white",
+            }}
           >
             {analyzing ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
             {analyzing ? "AVA analyse…" : "🤖 Analyser avec AVA"}
           </button>
 
-          {analysis && (<AvaProposedActionsCard analysis={analysis} onDismiss={() => setAnalysis(null)} />)}
-
-          <div
-            className="rounded-xl p-3 text-sm"
-            style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
+          <button
+            onClick={() => setSumOpen(true)}
+            className="w-full px-3 py-2 rounded-xl text-xs font-medium flex items-center justify-center gap-2"
+            style={{
+              background: "rgba(155,127,232,0.12)",
+              border: "1px solid rgba(155,127,232,0.30)",
+              color: "var(--pp-agent)",
+            }}
           >
-            {loadingDetail && !detail ? (
-              <div className="text-center py-6"><Loader2 className="w-4 h-4 animate-spin mx-auto" /></div>
-            ) : bodyType === "html" && bodyHtml ? (
-              <div
-                className="pp-email-body"
-                style={{ maxWidth: "100%", width: "100%", overflowWrap: "anywhere", overflowX: "auto", overflowY: "visible" }}
-                dangerouslySetInnerHTML={{ __html: bodyHtml }}
-              />
-            ) : (
-              <div className="whitespace-pre-wrap break-words">{bodyHtml || merged.bodyPreview || t("messages.previewUnavailable")}</div>
-            )}
+            <Sparkles className="w-3.5 h-3.5" /> {t("messages.summarizeWithAva")}
+          </button>
 
-          </div>
-
-          {attachments.length > 0 && (
-            <div className="rounded-xl p-3"
-                 style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)" }}>
-              <p className="text-[11px] uppercase tracking-wider mb-2" style={{ color: "var(--pp-text-muted)" }}>
-                Pièces jointes ({attachments.length})
-              </p>
-              <ul className="space-y-1.5">
-                {attachments.map((a) => (
-                  <li key={a.id} className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2 min-w-0 flex-1">
-                      <Paperclip className="w-3.5 h-3.5 shrink-0" style={{ color: "var(--pp-text-muted)" }} />
-                      <span className="text-xs truncate" style={{ color: "var(--pp-text-secondary)" }}>{a.name}</span>
-                      <span className="text-[10px] shrink-0" style={{ color: "var(--pp-text-faint)" }}>
-                        {(a.size / 1024).toFixed(0)} Ko
-                      </span>
-                    </div>
-                    <button
-                      onClick={() => downloadAttachment(a)}
-                      disabled={downloadingAtt === a.id}
-                      className="px-2 py-1 rounded-full text-[11px] font-semibold disabled:opacity-60 flex items-center gap-1"
-                      style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-brand-accent)" }}
-                      aria-label={`Télécharger ${a.name}`}
-                    >
-                      {downloadingAtt === a.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <ArrowLeft className="w-3 h-3 rotate-[-90deg]" />}
-                      Télécharger
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </div>
+          {analysis && (
+            <AvaProposedActionsCard analysis={analysis} onDismiss={() => setAnalysis(null)} />
           )}
+
+          {/* Corps complet du courriel */}
+          <div
+            className="rounded-xl overflow-hidden"
+            style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)" }}
+          >
+            {/* Toggle : Corps complet / Résumé AI */}
+            <div className="flex border-b" style={{ borderColor: "var(--pp-bg-border)" }}>
+              <button
+                onClick={() => setShowAiSummary(false)}
+                className="flex-1 py-2 text-xs font-semibold"
+                style={{ color: !showAiSummary ? "var(--pp-brand-accent)" : "var(--pp-text-muted)", borderBottom: !showAiSummary ? "2px solid var(--pp-brand-accent)" : "2px solid transparent" }}
+              >
+                {t ? (t as any)("messages.fullEmail") ?? "Courriel complet" : "Courriel complet"}
+              </button>
+              <button
+                onClick={() => setShowAiSummary(true)}
+                className="flex-1 py-2 text-xs font-semibold"
+                style={{ color: showAiSummary ? "var(--pp-brand-accent)" : "var(--pp-text-muted)", borderBottom: showAiSummary ? "2px solid var(--pp-brand-accent)" : "2px solid transparent" }}
+              >
+                ✨ {t ? (t as any)("messages.aiSummary") ?? "Résumé AI" : "Résumé AI"}
+              </button>
+            </div>
+            <div className="p-3">
+              {!showAiSummary ? (
+                loadingBody ? (
+                  <div className="flex items-center justify-center py-6"><Loader2 className="w-5 h-5 animate-spin" style={{ color: "var(--pp-brand-accent)" }} /></div>
+                ) : fullBodyHtml ? (
+                  <div
+                    className="text-sm email-body"
+                    style={{ color: "var(--pp-text-secondary)", maxWidth: "100%", overflowX: "hidden", wordBreak: "break-word" }}
+                  >
+                    <style>{`
+                      .email-body img { max-width: 100% !important; height: auto !important; }
+                      .email-body table { max-width: 100% !important; width: 100% !important; table-layout: fixed !important; word-break: break-word; }
+                      .email-body td, .email-body th { word-break: break-word; }
+                      .email-body a { word-break: break-all; }
+                      .email-body * { max-width: 100% !important; box-sizing: border-box; }
+                      .email-body div, .email-body p, .email-body span { font-size: 14px !important; line-height: 1.5 !important; }
+                    `}</style>
+                    <div dangerouslySetInnerHTML={{ __html: fullBodyHtml }} />
+                  </div>
+                ) : (
+                  <p className="text-sm whitespace-pre-wrap" style={{ color: "var(--pp-text-secondary)" }}>
+                    {fullBodyText ?? preview ?? t("messages.previewUnavailable")}
+                  </p>
+                )
+              ) : (
+                <p className="text-sm whitespace-pre-wrap" style={{ color: "var(--pp-text-secondary)" }}>
+                  {preview || t("messages.previewUnavailable")}
+                </p>
+              )}
+            </div>
+          </div>
         </div>
 
-
-        <div
-          className="px-3 py-2 grid grid-cols-3 gap-2"
-          style={{ borderTop: "1px solid var(--pp-bg-border)", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 8px)", flexShrink: 0 }}
-        >
-          <ToolbarBtn onClick={openReply} icon={<Reply className="w-4 h-4" />} label="Répondre" />
-          <ToolbarBtn onClick={openReplyAll} icon={<UsersRound className="w-4 h-4" />} label="Rép. tous" />
-          <ToolbarBtn onClick={openForward} icon={<Forward className="w-4 h-4" />} label="Transférer" />
+        <div className="px-4 py-3 flex items-center gap-2" style={{ borderTop: "1px solid var(--pp-bg-border)" }}>
+          <button
+            onClick={() => onReply({
+              to: fromAddr,
+              subject: subject.startsWith("Re:") ? subject : `Re: ${subject}`,
+              body: `\n\n---\nDe: ${from}\n${preview}`,
+            })}
+            className="flex-1 py-2.5 rounded-full text-white font-semibold text-sm flex items-center justify-center gap-2"
+            style={{ background: "linear-gradient(135deg, var(--pp-brand-accent), var(--pp-brand-accent-2))" }}
+          >
+            <Reply className="w-4 h-4" /> {t("messages.reply")}
+          </button>
+          <button
+            onClick={() => onForward({
+              to: "",
+              subject: subject.startsWith("Fw:") ? subject : `Fw: ${subject}`,
+              body: `\n\n---------- Message transféré ----------\nDe: ${from} <${fromAddr}>\nObjet: ${subject}\n\n${preview}`,
+            })}
+            title="Transférer"
+            className="w-11 h-11 rounded-full flex items-center justify-center"
+            style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
+          >
+            <Forward className="w-4 h-4" />
+          </button>
+          <button
+            onClick={() => runAction("archive", "archive_email", {}, "Archivé")}
+            disabled={busy === "archive"}
+            title="Archiver"
+            className="w-11 h-11 rounded-full flex items-center justify-center disabled:opacity-50"
+            style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
+          >
+            {busy === "archive" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Archive className="w-4 h-4" />}
+          </button>
+          <button
+            onClick={() => {
+              if (!confirm("Supprimer ce message ? (déplacé dans Éléments supprimés)")) return;
+              runAction("delete", "delete_email", {}, "Supprimé");
+            }}
+            disabled={busy === "delete"}
+            title="Supprimer"
+            className="w-11 h-11 rounded-full flex items-center justify-center disabled:opacity-50"
+            style={{ background: "rgba(239,68,68,0.10)", border: "1px solid rgba(239,68,68,0.30)", color: "#EF4444" }}
+          >
+            {busy === "delete" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+          </button>
         </div>
       </div>
 
@@ -1429,236 +1562,239 @@ function EmailDetailSheet({ email, onClose, onCompose, onChanged, onOptimisticRe
         open={sumOpen}
         source="email"
         title={subject}
-        content={`De: ${from} <${fromAddr}>\nObjet: ${subject}\n\n${merged.bodyPreview ?? ""}`}
+        content={`De: ${from} <${fromAddr}>\nObjet: ${subject}\n\n${preview}`}
         onClose={() => setSumOpen(false)}
-        onInsert={(text) => { setSumOpen(false); onCompose({ mode: "reply", message_id: email.id, to: fromAddr, subject: subject.startsWith("Re:") ? subject : `Re: ${subject}`, body: `${text}${buildQuote()}` }); }}
+        onInsert={(text) => {
+          setSumOpen(false);
+          onReply({
+            to: fromAddr,
+            subject: subject.startsWith("Re:") ? subject : `Re: ${subject}`,
+            body: `${text}\n\n---\nDe: ${from}\n${preview}`,
+          });
+        }}
       />
     </div>
   );
 }
 
-function IconAction({ children, onClick, title, busy }: { children: React.ReactNode; onClick: () => void; title: string; busy?: boolean }) {
-  return (
-    <button onClick={onClick} disabled={busy} title={title} aria-label={title}
-      className="p-1.5 rounded-full disabled:opacity-40 active:scale-95 transition"
-      style={{ color: "var(--pp-text-secondary)" }}>
-      {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : children}
-    </button>
-  );
-}
 
-function ToolbarBtn({ icon, label, onClick }: { icon: React.ReactNode; label: string; onClick: () => void }) {
-  return (
-    <button onClick={onClick}
-      className="py-2 rounded-full text-white font-semibold text-xs flex items-center justify-center gap-1.5 active:scale-95 transition"
-      style={{ background: "linear-gradient(135deg, var(--pp-brand-accent), var(--pp-brand-accent-2))" }}>
-      {icon} {label}
-    </button>
-  );
-}
-
-async function fileToBase64(file: File): Promise<{ name: string; contentType: string; contentBytes: string }> {
-  const buf = await file.arrayBuffer();
-  const bytes = new Uint8Array(buf);
-  let bin = "";
-  for (let i = 0; i < bytes.byteLength; i++) bin += String.fromCharCode(bytes[i]);
-  return { name: file.name, contentType: file.type || "application/octet-stream", contentBytes: btoa(bin) };
-}
-
-function EmailComposeSheet({ init, onClose, onSent }: { init: ComposeInit; onClose: () => void; onSent: () => void }) {
+function EmailComposeSheet({ init, onClose, onSent }: { init: { to?: string; subject?: string; body?: string }; onClose: () => void; onSent: () => void }) {
   const { t } = useMplanipretLang();
-  const mode = init.mode ?? "new";
   const [to, setTo] = useState(init.to ?? "");
-  const [cc, setCc] = useState(init.cc ?? "");
-  const [bcc, setBcc] = useState(init.bcc ?? "");
-  const [showCc, setShowCc] = useState(Boolean(init.cc || init.bcc));
+  const [cc, setCc] = useState("");
+  const [bcc, setBcc] = useState("");
+  const [showCc, setShowCc] = useState(false);
   const [subject, setSubject] = useState(init.subject ?? "");
   const [body, setBody] = useState(init.body ?? "");
-  const [attachments, setAttachments] = useState<Array<{ name: string; contentType: string; contentBytes: string; size: number }>>([]);
   const [sending, setSending] = useState(false);
-  const fileRef = useRef<HTMLInputElement>(null);
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiBusy, setAiBusy] = useState(false);
+  const aiRef = useRef<HTMLDivElement | null>(null);
+  const bodyRef = useRef<HTMLTextAreaElement | null>(null);
 
-  const MAX_ATTACHMENT_BYTES = 3 * 1024 * 1024; // 3 MB per file
-
-  const pickFiles = async (files: FileList | null) => {
-    if (!files?.length) return;
-    const arr = Array.from(files);
-    const tooBig = arr.filter((f) => f.size > MAX_ATTACHMENT_BYTES);
-    const ok = arr.filter((f) => f.size <= MAX_ATTACHMENT_BYTES);
-    if (tooBig.length) {
-      const names = tooBig.map((f) => `${f.name} (${(f.size / 1024 / 1024).toFixed(1)} Mo)`).join(", ");
-      toast.error(`Fichier > 3 Mo ignoré: ${names}`);
-    }
-    if (!ok.length) return;
-    const encoded = await Promise.all(ok.map(async (f) => ({ ...(await fileToBase64(f)), size: f.size })));
-    setAttachments((cur) => [...cur, ...encoded]);
-  };
-
-
-  const removeAttachment = (idx: number) => setAttachments((cur) => cur.filter((_, i) => i !== idx));
+  useEffect(() => {
+    const onDoc = (e: MouseEvent) => {
+      if (aiRef.current && !aiRef.current.contains(e.target as Node)) setAiOpen(false);
+    };
+    if (aiOpen) document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [aiOpen]);
 
   const send = async () => {
-    const isReply = mode === "reply" || mode === "reply_all";
-    const isForward = mode === "forward";
-    if (!isReply && !to.trim()) { toast.error(t("messages.recipientRequired")); return; }
-    if (isForward && !to.trim()) { toast.error(t("messages.recipientRequired")); return; }
+    if (!to.trim()) { toast.error(t("messages.recipientRequired")); return; }
     setSending(true);
-    let action = "send_email";
-    let payload: any = {};
-    const attachmentsPayload = attachments.map(({ name, contentType, contentBytes }) => ({ name, contentType, contentBytes }));
-    if (mode === "reply") {
-      action = "reply_email";
-      payload = { message_id: init.message_id, body, attachments: attachmentsPayload };
-    } else if (mode === "reply_all") {
-      action = "reply_all_email";
-      payload = { message_id: init.message_id, body, attachments: attachmentsPayload };
-    } else if (mode === "forward") {
-      action = "forward_email";
-      payload = {
-        message_id: init.message_id,
-        to: to.split(",").map((s) => s.trim()).filter(Boolean),
-        comment: body,
-        attachments: attachmentsPayload,
-      };
-    } else {
-      payload = {
-        to: to.split(",").map((s) => s.trim()).filter(Boolean),
-        cc: cc.split(",").map((s) => s.trim()).filter(Boolean),
-        bcc: bcc.split(",").map((s) => s.trim()).filter(Boolean),
-        subject, body,
-        attachments: attachmentsPayload,
-      };
-      // Duplicate detection (only for brand-new emails, not replies/forwards)
-      try {
-        const { data: dup } = await supabase.functions.invoke("ms365-actions", {
-          body: { action: "check_duplicate_email", payload: { to: payload.to, subject, body, since_days: 14 } },
-        });
-        if ((dup as any)?.duplicate && (dup as any)?.matches?.length) {
-          const m = (dup as any).matches[0];
-          const when = m?.sent_at ? new Date(m.sent_at).toLocaleString() : "";
-          const ok = window.confirm(`Un courriel identique a déjà été envoyé${when ? ` le ${when}` : ""}. Envoyer quand même ?`);
-          if (!ok) { setSending(false); return; }
-        }
-      } catch { /* non-blocking */ }
-    }
-    const { data, error } = await supabase.functions.invoke("ms365-actions", { body: { action, payload } });
+    const parseList = (s: string) => s.split(",").map((v) => v.trim()).filter(Boolean);
+    const { data, error } = await supabase.functions.invoke("ms365-actions", {
+      body: { action: "send_email", payload: {
+        to: parseList(to),
+        cc: cc.trim() ? parseList(cc) : undefined,
+        bcc: bcc.trim() ? parseList(bcc) : undefined,
+        subject,
+        body: body.replace(/\n/g, "<br/>"),
+      } },
+    });
     setSending(false);
     if (error || !(data as any)?.success) { toast.error(t("messages.emailSendFailed")); return; }
     toast.success(t("messages.emailSent"));
     onSent();
   };
 
-  const title = mode === "reply" ? "Répondre" : mode === "reply_all" ? "Répondre à tous" : mode === "forward" ? "Transférer" : t("messages.newEmail");
+  const runAi = async (action: "fix" | "improve" | "formal" | "shorter") => {
+    if (!body.trim()) return;
+    setAiBusy(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("ai-text-improve", {
+        body: { text: body, mode: "email", action },
+      });
+      if (error) throw error;
+      if ((data as any)?.success === false) throw new Error((data as any)?.error || "IA indisponible");
+      const result = (data as any)?.result;
+      if (typeof result === "string") setBody(result.trim());
+      else throw new Error("Réponse IA invalide");
+    } catch (e: any) {
+      toast.error("Erreur IA", { description: e?.message });
+    } finally {
+      setAiBusy(false);
+      setAiOpen(false);
+    }
+  };
+
+  const aiItems = [
+    { icon: "✓", label: "Corriger les fautes", action: "fix" as const },
+    { icon: "✨", label: "Améliorer le texte", action: "improve" as const },
+    { icon: "👔", label: "Rendre plus formel", action: "formal" as const },
+    { icon: "✂️", label: "Raccourcir", action: "shorter" as const },
+  ];
+
+  const fieldLabelStyle: React.CSSProperties = {
+    color: "var(--pp-text-muted)", fontSize: 11, fontWeight: 600, letterSpacing: "0.02em",
+    width: 44, textTransform: "uppercase",
+  };
+  const inlineInput: React.CSSProperties = {
+    flex: 1, background: "transparent", border: "none", outline: "none",
+    color: "var(--pp-text-primary)", fontSize: 14, padding: "10px 0",
+  };
+  const rowStyle: React.CSSProperties = {
+    display: "flex", alignItems: "center", gap: 8, padding: "0 16px",
+    borderBottom: "1px solid var(--pp-bg-border)",
+  };
 
   return (
-    <div className="fixed inset-0 z-[9999] flex flex-col" style={{ paddingTop: "env(safe-area-inset-top,0px)", paddingBottom: "env(safe-area-inset-bottom,0px)", background: "rgba(0,0,0,0.5)" }} onClick={onClose}>
+    <div className="fixed inset-0 z-[9999] flex flex-col" style={{ background: "#0078d4", color: "#201f1e" }}>
       <div
-        className="w-full rounded-t-3xl flex flex-col shadow-2xl"
-        style={{
-          background: "var(--pp-bg-base)",
-          border: "1px solid var(--pp-bg-border-2)",
-          height: "calc(100vh - env(safe-area-inset-top) - 24px)",
-          maxHeight: "calc(100dvh - 24px)",
-          paddingBottom: "env(safe-area-inset-bottom)",
-        }}
-        onClick={(e) => e.stopPropagation()}
+        className="w-full flex flex-col overflow-hidden h-full"
+        style={{ background: "#faf9f8", paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
       >
-        <div className="flex items-center justify-between px-4 pt-3 pb-2" style={{ borderBottom: "1px solid var(--pp-bg-border)" }}>
-          <button onClick={onClose} className="p-1.5 rounded-full" style={{ color: "var(--pp-text-secondary)" }}>
+        {/* Outlook-style top bar (extends into iOS safe area) */}
+        <div className="flex items-center justify-between px-3 py-2"
+          style={{ background: "#0078d4", color: "#fff", paddingTop: "calc(env(safe-area-inset-top, 0px) + 8px)" }}>
+          <button onClick={onClose} className="p-2 rounded-full active:opacity-70" aria-label="close">
             <X className="w-5 h-5" />
           </button>
-          <p className="text-xs uppercase tracking-wider" style={{ color: "var(--pp-text-muted)" }}>{title}</p>
+          <p className="text-[15px] font-semibold">{t("messages.newEmail") ?? "Nouveau message"}</p>
           <button
             onClick={send}
-            disabled={sending}
-            className="px-3 py-1 rounded-full text-white text-xs font-semibold flex items-center gap-1 disabled:opacity-50"
-            style={{ background: "linear-gradient(135deg, var(--pp-brand-accent), var(--pp-brand-accent-2))" }}
+            disabled={sending || !to.trim()}
+            className="px-3 py-1.5 rounded-md text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50"
+            style={{ background: "#fff", color: "#0078d4" }}
           >
-            {sending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Send className="w-3 h-3" />}
+            {sending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
             {t("common.send")}
           </button>
         </div>
-        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
-          {(mode === "new" || mode === "forward") && (
+
+        {/* Recipient rows */}
+        <div style={{ background: "#fff" }}>
+          <div style={rowStyle}>
+            <span style={fieldLabelStyle}>À</span>
+            <input value={to} onChange={(e) => setTo(e.target.value)}
+              placeholder="destinataire@exemple.com" style={inlineInput} />
+            {!showCc && (
+              <button onClick={() => setShowCc(true)} className="text-xs font-semibold px-2 py-1"
+                style={{ color: "#0078d4" }}>Cc/Cci</button>
+            )}
+          </div>
+          {showCc && (
             <>
-              <div className="flex items-start gap-2">
-                <div className="flex-1">
-                  <RecipientAutocomplete
-                    value={to} onChange={setTo} placeholder={t("messages.toPlaceholder")}
-                    className="w-full px-3 py-2 rounded-lg text-sm outline-none"
-                    style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
-                  />
-                </div>
-                {mode === "new" && (
-                  <button onClick={() => setShowCc((s) => !s)} className="text-[11px] px-2 py-2 rounded-lg shrink-0"
-                    style={{ color: "var(--pp-brand-accent)", background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)" }}>
-                    Cc/Cci
-                  </button>
-                )}
+              <div style={rowStyle}>
+                <span style={fieldLabelStyle}>Cc</span>
+                <input value={cc} onChange={(e) => setCc(e.target.value)} style={inlineInput} />
               </div>
-              {mode === "new" && showCc && (
-                <>
-                  <RecipientAutocomplete value={cc} onChange={setCc} placeholder="Cc"
-                    className="w-full px-3 py-2 rounded-lg text-sm outline-none"
-                    style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }} />
-                  <RecipientAutocomplete value={bcc} onChange={setBcc} placeholder="Cci"
-                    className="w-full px-3 py-2 rounded-lg text-sm outline-none"
-                    style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }} />
-                </>
-              )}
-              <input
-                value={subject} onChange={(e) => setSubject(e.target.value)} placeholder={t("messages.subject")}
-                className="w-full px-3 py-2 rounded-lg text-sm outline-none"
-                style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
-              />
+              <div style={rowStyle}>
+                <span style={fieldLabelStyle}>Cci</span>
+                <input value={bcc} onChange={(e) => setBcc(e.target.value)} style={inlineInput} />
+              </div>
             </>
           )}
-          <textarea
-            value={body} onChange={(e) => setBody(e.target.value)} placeholder={t("messages.yourMessage")}
-            rows={14}
-            className="w-full px-3 py-2 rounded-lg text-sm outline-none resize-none"
-            style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
-          />
-
-          {attachments.length > 0 && (
-            <ul className="space-y-1">
-              {attachments.map((a, i) => (
-                <li key={i} className="flex items-center justify-between text-xs px-3 py-2 rounded-lg"
-                    style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}>
-                  <span className="truncate flex items-center gap-2"><Paperclip className="w-3 h-3" /> {a.name} <span style={{ color: "var(--pp-text-muted)" }}>({Math.round(a.size / 1024)} Ko)</span></span>
-                  <button onClick={() => removeAttachment(i)} style={{ color: "var(--pp-text-muted)" }} aria-label="Retirer">
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
+          <div style={rowStyle}>
+            <span style={fieldLabelStyle}>Objet</span>
+            <input value={subject} onChange={(e) => setSubject(e.target.value)}
+              placeholder={t("messages.subject")} style={{ ...inlineInput, fontWeight: 600 }} />
+          </div>
         </div>
 
-        <div className="px-4 py-2 flex items-center gap-2" style={{ borderTop: "1px solid var(--pp-bg-border)" }}>
-          <input ref={fileRef} type="file" multiple hidden onChange={(e) => { pickFiles(e.target.files); e.target.value = ""; }} />
-          <button onClick={() => fileRef.current?.click()}
-            className="px-3 py-2 rounded-full text-xs flex items-center gap-1.5"
-            style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}>
-            <Paperclip className="w-3.5 h-3.5" /> Joindre
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto" style={{ background: "#fff" }}>
+          <textarea
+            ref={bodyRef}
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+            placeholder="Écrivez votre message…"
+            className="w-full h-full resize-none outline-none"
+            style={{
+              minHeight: 260, padding: "16px", border: "none",
+              fontSize: 14, lineHeight: 1.55, color: "#201f1e", background: "transparent",
+              fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif",
+            }}
+          />
+        </div>
+
+        {/* Outlook-style bottom toolbar */}
+        <div className="flex items-center gap-1 px-2 py-2"
+          style={{ background: "#f3f2f1", borderTop: "1px solid #edebe9" }}>
+          <ToolbarBtn label="B" title="Gras" bold onClick={() => {}} />
+          <ToolbarBtn label="I" title="Italique" italic onClick={() => {}} />
+          <ToolbarBtn label="U" title="Souligné" underline onClick={() => {}} />
+          <div style={{ width: 1, height: 20, background: "#e1dfdd", margin: "0 4px" }} />
+          <button className="p-2 rounded active:bg-black/5" title="Pièce jointe">
+            <Paperclip className="w-4 h-4" style={{ color: "#605e5c" }} />
           </button>
-          <AiImproveMenu text={body} mode="email" onResult={setBody} />
-          <span className="text-[10px]" style={{ color: "var(--pp-text-muted)" }}>Max 3 Mo par fichier</span>
+          <div className="flex-1" />
+          <div ref={aiRef} className="relative">
+            <button
+              onClick={() => setAiOpen((v) => !v)}
+              disabled={aiBusy || !body.trim()}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold text-white disabled:opacity-40 active:scale-95"
+              style={{ background: "linear-gradient(135deg,#7C3AED,#A855F7)" }}
+            >
+              {aiBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+              IA
+            </button>
+            {aiOpen && (
+              <div className="absolute bottom-10 right-0 z-[300] w-52 rounded-xl p-1.5 shadow-2xl"
+                style={{ background: "#fff", border: "1px solid #e1dfdd" }}>
+                {aiItems.map((it) => (
+                  <button key={it.action} onClick={() => runAi(it.action)}
+                    className="w-full text-left px-2.5 py-2 rounded-lg text-xs flex items-center gap-2 hover:bg-black/5"
+                    style={{ color: "#201f1e" }}>
+                    <span className="shrink-0">{it.icon}</span>
+                    <span>{it.label}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
+function ToolbarBtn({ label, title, bold, italic, underline, onClick }: {
+  label: string; title: string; bold?: boolean; italic?: boolean; underline?: boolean; onClick: () => void;
+}) {
+  return (
+    <button onClick={onClick} title={title}
+      className="w-8 h-8 rounded flex items-center justify-center active:bg-black/5"
+      style={{
+        color: "#201f1e",
+        fontWeight: bold ? 700 : 500,
+        fontStyle: italic ? "italic" : "normal",
+        textDecoration: underline ? "underline" : "none",
+        fontSize: 14,
+      }}
+    >{label}</button>
+  );
+}
 
 // ============================================================
 // SHARED PRIMITIVES
 // ============================================================
 function Composer({
-  text, setText, onSend, sending, placeholder, leftAction, extra, aiAction, accent = "brand", inputRef, autoFocus = false,
+  text, setText, onSend, sending, placeholder, leftAction, extra, accent = "brand", inputRef, autoFocus = false,
 }: {
   text: string; setText: (v: string) => void; onSend: () => void; sending: boolean;
-  placeholder?: string; leftAction?: React.ReactNode; extra?: React.ReactNode; aiAction?: React.ReactNode;
+  placeholder?: string; leftAction?: React.ReactNode; extra?: React.ReactNode;
   accent?: "brand" | "agent"; inputRef?: React.RefObject<HTMLInputElement>; autoFocus?: boolean;
 }) {
   const { t } = useMplanipretLang();
@@ -1673,7 +1809,6 @@ function Composer({
     >
       {extra}
       {leftAction}
-      {aiAction}
       <input
         data-sms-composer-input="true"
         ref={inputRef}
@@ -1697,80 +1832,6 @@ function Composer({
       >
         {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
       </button>
-    </div>
-  );
-}
-
-
-// ============================================================
-// AI IMPROVE MENU (Claude) — améliore SMS / courriel
-// ============================================================
-function AiImproveMenu({ text, mode, onResult }: { text: string; mode: "sms" | "email"; onResult: (v: string) => void }) {
-  const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState<null | string>(null);
-  const disabled = !text.trim() || !!busy;
-
-  const run = async (action: "fix" | "improve" | "formal" | "shorter") => {
-    setBusy(action);
-    try {
-      const { data, error } = await supabase.functions.invoke("ai-text-improve", {
-        body: { text, mode, action },
-      });
-      if (error) throw error;
-      if (!(data as any)?.success) throw new Error((data as any)?.error ?? "AI error");
-      const result = String((data as any).result ?? "").trim();
-      if (result) onResult(result);
-      setOpen(false);
-    } catch (e: any) {
-      toast.error(e?.message ?? "IA indisponible");
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const options: { key: "fix" | "improve" | "formal" | "shorter"; label: string; icon: string }[] = [
-    { key: "fix", label: "Corriger les fautes", icon: "✓" },
-    { key: "improve", label: "Améliorer le texte", icon: "✨" },
-    { key: "formal", label: "Rendre plus formel", icon: "👔" },
-    { key: "shorter", label: "Raccourcir", icon: "✂️" },
-  ];
-
-  return (
-    <div className="relative shrink-0">
-      <button
-        type="button"
-        onClick={() => !disabled && setOpen((o) => !o)}
-        disabled={disabled}
-        className="w-9 h-9 rounded-full flex items-center justify-center text-white disabled:opacity-40 shrink-0"
-        style={{ background: "linear-gradient(135deg, #7C3AED, #A855F7)", boxShadow: "0 2px 12px rgba(124,58,237,0.4)" }}
-        aria-label="Améliorer avec l'IA"
-        title="Améliorer avec l'IA"
-      >
-        {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-      </button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-[90]" onClick={() => setOpen(false)} />
-          <div
-            className="absolute bottom-11 left-0 z-[91] min-w-[200px] rounded-2xl overflow-hidden shadow-2xl"
-            style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)" }}
-          >
-            {options.map((o) => (
-              <button
-                key={o.key}
-                type="button"
-                onClick={() => run(o.key)}
-                disabled={!!busy}
-                className="w-full flex items-center gap-2 px-3 py-2.5 text-sm text-left hover:opacity-80 disabled:opacity-50"
-                style={{ color: "var(--pp-text-primary)", borderBottom: "1px solid var(--pp-bg-border)" }}
-              >
-                <span className="w-5 text-center">{busy === o.key ? <Loader2 className="w-3.5 h-3.5 animate-spin inline" /> : o.icon}</span>
-                <span>{o.label}</span>
-              </button>
-            ))}
-          </div>
-        </>
-      )}
     </div>
   );
 }
@@ -1977,19 +2038,12 @@ function isChatUnread(chat: any, reads: Record<string, string>): boolean {
   return new Date(chat.lastUpdated).getTime() > new Date(last).getTime();
 }
 
-const TEAMS_CACHE_KEY = "planipret.teams365.cache.v1";
-function loadTeamsCache(): any | null {
-  try { const raw = sessionStorage.getItem(TEAMS_CACHE_KEY); return raw ? JSON.parse(raw) : null; } catch { return null; }
-}
-function saveTeamsCache(payload: any) {
-  try { sessionStorage.setItem(TEAMS_CACHE_KEY, JSON.stringify({ ...payload, cachedAt: Date.now() })); } catch { /* */ }
-}
-
 function Teams365Panel({ profile }: { profile: any }) {
   const [innerTab, setInnerTab] = useState<Teams365SubTab>("active");
   const cached = loadTeamsCache();
   const [loading, setLoading] = useState(!cached);
   const [refreshing, setRefreshing] = useState(false);
+  const [auxLoading, setAuxLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [diag, setDiag] = useState<any>(cached?.diagnostics ?? {});
   const [chats, setChats] = useState<any[]>(cached?.chats ?? []);
@@ -2011,45 +2065,89 @@ function Teams365Panel({ profile }: { profile: any }) {
 
   const connected = !!profile?.ms365_access_token;
 
-  const load = async () => {
+  const applyPayload = (payload: any) => {
+    if (Array.isArray(payload.chats)) {
+      const nextChats = payload.chats;
+      const currentReads = loadTeamsReads();
+      const nowUnread = new Set<string>(nextChats.filter((c: any) => isChatUnread(c, currentReads)).map((c: any) => c.id));
+      const newly: any[] = [];
+      for (const c of nextChats) {
+        if (nowUnread.has(c.id) && !prevUnreadIds.current.has(c.id)) newly.push(c);
+      }
+      if (prevUnreadIds.current.size > 0 && newly.length > 0) {
+        const first = newly[0];
+        toast.message(`Nouveau message · ${first.topic}`, {
+          description: first.previewFrom ? `${first.previewFrom}: ${(first.preview || "").replace(/<[^>]*>/g, "").slice(0, 80)}` : undefined,
+        });
+      }
+      prevUnreadIds.current = nowUnread;
+      setChats(nextChats);
+      setReads(currentReads);
+    }
+    if (Array.isArray(payload.teams)) setTeams(payload.teams);
+    if (Array.isArray(payload.people)) setPeople(payload.people);
+    if (payload.diagnostics) setDiag((d: any) => ({ ...d, ...payload.diagnostics }));
+  };
+
+  const loadAuxiliary = async () => {
+    setAuxLoading(true);
+    const [teamsPayload, peoplePayload] = await Promise.allSettled([
+      fetchTeams365("teams"),
+      fetchTeams365("people"),
+    ]);
+    if (teamsPayload.status === "fulfilled") applyPayload(teamsPayload.value);
+    if (peoplePayload.status === "fulfilled") applyPayload(peoplePayload.value);
+    const cache = loadTeamsCache();
+    if (cache) {
+      setTeams(cache.teams);
+      setPeople(cache.people);
+      setDiag(cache.diagnostics);
+    }
+    setAuxLoading(false);
+  };
+
+  const load = async (opts: { force?: boolean } = {}) => {
     if (!connected) { setLoading(false); setRefreshing(false); setErr("ms365_not_connected"); return; }
     const hasData = chats.length > 0 || people.length > 0 || teams.length > 0;
+    // TTL: if cache is still fresh and we already have data, skip the network hit.
+    if (!opts.force && hasData && isTeamsCacheFresh()) {
+      setLoading(false); setRefreshing(false);
+      return;
+    }
     if (hasData) setRefreshing(true); else setLoading(true);
     setErr(null);
-    const { data, error } = await supabase.functions.invoke("ms365-teams-list", { body: {} });
-    setLoading(false); setRefreshing(false);
-    const payload = (data as any) ?? {};
-    if (error && !payload.chats) { setErr(error.message || "Erreur"); return; }
-    if (payload.connected === false || payload.error === "ms365_not_connected") { setErr("ms365_not_connected"); return; }
-    if (payload.error) { setErr(payload.error); return; }
-    const nextChats = payload.chats || [];
-    const currentReads = loadTeamsReads();
-    const nowUnread = new Set<string>(nextChats.filter((c: any) => isChatUnread(c, currentReads)).map((c: any) => c.id));
-    const newly: any[] = [];
-    for (const c of nextChats) {
-      if (nowUnread.has(c.id) && !prevUnreadIds.current.has(c.id)) newly.push(c);
+    let payload: any = {};
+    try {
+      payload = await fetchTeams365("summary");
+    } catch (e: any) {
+      if (!hasData) setErr(e?.message || "Erreur");
+      setLoading(false); setRefreshing(false);
+      return;
     }
-    if (prevUnreadIds.current.size > 0 && newly.length > 0) {
-      const first = newly[0];
-      toast.message(`Nouveau message · ${first.topic}`, {
-        description: first.previewFrom ? `${first.previewFrom}: ${(first.preview || "").replace(/<[^>]*>/g, "").slice(0, 80)}` : undefined,
-      });
-    }
-    prevUnreadIds.current = nowUnread;
-    setChats(nextChats);
-    setTeams(payload.teams || []);
-    setPeople(payload.people || []);
-    setDiag(payload.diagnostics || {});
-    setReads(currentReads);
-    saveTeamsCache({ chats: nextChats, teams: payload.teams || [], people: payload.people || [], diagnostics: payload.diagnostics || {} });
+    setLoading(false);
+    if (payload.connected === false || payload.error === "ms365_not_connected") { setRefreshing(false); setErr("ms365_not_connected"); return; }
+    if (payload.error) { setRefreshing(false); setErr(payload.error); return; }
+    applyPayload(payload);
+    saveTeamsCachePatch({
+      chats: Array.isArray(payload.chats) ? payload.chats : undefined,
+      diagnostics: payload.diagnostics ?? {},
+    });
+    setRefreshing(false);
+    void loadAuxiliary();
   };
   useEffect(() => {
-    // Guard: skip auto-sync when there is no active session to avoid 401.
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (!session) return;
-      load();
-    }); /* eslint-disable-next-line */
-    // Auto-refresh removed — use the manual refresh button instead.
+    // Instant: cache is already hydrated in initial state; only fetch when stale.
+    load();
+    if (!connected) return;
+    // Warm auxiliary (teams/people) in background if the cache is expired.
+    if (isTeamsCacheExpired()) prefetchTeams365Data();
+    // Periodic revalidation only fires when the soft TTL has elapsed.
+    const id = window.setInterval(() => { void revalidateTeams365IfStale("summary").then((p) => { if (p) applyPayload(p); }); }, TEAMS_TTL_MS);
+    // Refresh on tab focus so the user always sees recent chats when returning.
+    const onFocus = () => { void revalidateTeams365IfStale("summary").then((p) => { if (p) applyPayload(p); }); };
+    window.addEventListener("focus", onFocus);
+    return () => { window.clearInterval(id); window.removeEventListener("focus", onFocus); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected]);
 
   const startChatWith = async (userIds: string[], title: string, topicText?: string) => {
@@ -2062,7 +2160,7 @@ function Teams365Panel({ profile }: { profile: any }) {
     if (error || p?.error) { toast.error(p?.error || error?.message || "Impossible de créer le chat"); return; }
     openThread({ kind: "chat", id: p.chat_id, title });
     setGroupMode(false); setSelectedIds(new Set()); setGroupTopic("");
-    load();
+    load({ force: true });
   };
 
   const openThread = (t: NonNullable<typeof active>) => {
@@ -2076,7 +2174,7 @@ function Teams365Panel({ profile }: { profile: any }) {
     a === "Away" || a === "BeRightBack" ? "#f59e0b" :
     "#6b7280";
 
-  if (active) return <TeamsThreadView target={active} onClose={() => { setActive(null); load(); }} />;
+  if (active) return <TeamsThreadView target={active} onClose={() => { setActive(null); load({ force: true }); }} />;
 
   const filteredPeople = people.filter((p) => {
     const q = search.trim().toLowerCase();
@@ -2096,13 +2194,46 @@ function Teams365Panel({ profile }: { profile: any }) {
     { k: "teams", label: "Équipes", badge: 0 },
   ];
 
+  const anyLoading = loading || refreshing || auxLoading;
+  const cacheAgeSec = (() => { const c = loadTeamsCache(); return c ? Math.round((Date.now() - c.cachedAt) / 1000) : null; })();
+
   return (
-    <div className="h-full overflow-y-auto px-4 py-3 space-y-3">
+    <div className="h-full overflow-y-auto px-4 py-3 space-y-3 relative">
+      {/* Thin top progress bar during initial load / refresh / warm-up */}
+      {anyLoading && (
+        <div
+          aria-hidden
+          className="absolute left-0 right-0 top-0 h-[2px] overflow-hidden pointer-events-none"
+          style={{ background: "rgba(46,155,220,0.10)" }}
+        >
+          <div
+            className="h-full"
+            style={{
+              width: "40%",
+              background: "linear-gradient(90deg, transparent, var(--pp-brand-accent), transparent)",
+              animation: "pp-progress-slide 1.1s linear infinite",
+            }}
+          />
+        </div>
+      )}
+      <style>{`@keyframes pp-progress-slide { 0% { transform: translateX(-100%); } 100% { transform: translateX(350%); } }`}</style>
+
       <div className="flex items-center justify-between">
-        <h2 className="text-sm font-semibold" style={{ color: "var(--pp-text-primary)" }}>Microsoft Teams</h2>
-        <button onClick={load} className="text-xs px-2 py-1 rounded-full flex items-center gap-1"
+        <div className="flex items-center gap-2 min-w-0">
+          <h2 className="text-sm font-semibold" style={{ color: "var(--pp-text-primary)" }}>Microsoft Teams</h2>
+          {anyLoading ? (
+            <span className="text-[10px] px-1.5 py-0.5 rounded-full" style={{ background: "rgba(46,155,220,0.10)", color: "var(--pp-brand-accent)" }}>
+              {loading && !chats.length ? "Chargement…" : refreshing ? "Actualisation…" : "Préchauffage…"}
+            </span>
+          ) : cacheAgeSec !== null && cacheAgeSec < 3600 ? (
+            <span className="text-[10px]" style={{ color: "var(--pp-text-muted)" }}>
+              màj il y a {cacheAgeSec < 60 ? `${cacheAgeSec}s` : `${Math.floor(cacheAgeSec / 60)}min`}
+            </span>
+          ) : null}
+        </div>
+        <button onClick={() => load({ force: true })} disabled={anyLoading} className="text-xs px-2 py-1 rounded-full flex items-center gap-1 disabled:opacity-60"
           style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-muted)" }}>
-          <RefreshCw className={`w-3 h-3 ${loading ? "animate-spin" : ""}`} /> Recharger
+          <RefreshCw className={`w-3 h-3 ${anyLoading ? "animate-spin" : ""}`} /> Recharger
         </button>
       </div>
 
@@ -2159,7 +2290,7 @@ function Teams365Panel({ profile }: { profile: any }) {
                 className="w-full text-xs px-3 py-2 rounded-lg outline-none"
                 style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-primary)", border: "1px solid var(--pp-bg-border-2)" }} />
               {loading && !chats.length ? (
-                <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>Chargement…</div>
+                <TeamsListSkeleton />
               ) : filteredChats.length === 0 ? (
                 <div className="rounded-xl p-6 text-center" style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)" }}>
                   <MessageSquare className="w-8 h-8 mx-auto mb-2" style={{ color: "var(--pp-text-muted)" }} />
@@ -2234,8 +2365,8 @@ function Teams365Panel({ profile }: { profile: any }) {
               <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Rechercher un coéquipier…"
                 className="w-full text-xs px-3 py-2 rounded-lg outline-none"
                 style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-primary)", border: "1px solid var(--pp-bg-border-2)" }} />
-              {loading && !people.length ? (
-                <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>Chargement…</div>
+              {(loading || auxLoading) && !people.length ? (
+                <TeamsListSkeleton compact />
               ) : filteredPeople.length === 0 ? (
                 <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>Aucun coéquipier trouvé.</div>
               ) : (
@@ -2290,7 +2421,9 @@ function Teams365Panel({ profile }: { profile: any }) {
                 <span>Équipes & canaux ({teams.length})</span>
                 {diag.teams_error && <span style={{ color: "#dc2626" }}>Err: {String(diag.teams_error).slice(0, 40)}</span>}
               </div>
-              {teams.length === 0 ? (
+              {auxLoading && teams.length === 0 ? (
+                <TeamsListSkeleton compact />
+              ) : teams.length === 0 ? (
                 <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>Aucune équipe.</div>
               ) : (
                 <div className="space-y-2">
@@ -2315,6 +2448,23 @@ function Teams365Panel({ profile }: { profile: any }) {
           )}
         </>
       )}
+    </div>
+  );
+}
+
+function TeamsListSkeleton({ compact = false }: { compact?: boolean }) {
+  return (
+    <div className="space-y-1" aria-label="Chargement Teams">
+      {[0, 1, 2, 3].slice(0, compact ? 3 : 4).map((i) => (
+        <div key={i} className="w-full px-3 py-2.5 rounded-lg flex items-center gap-3 animate-pulse"
+          style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border)" }}>
+          <div className="w-10 h-10 rounded-full shrink-0" style={{ background: "var(--pp-bg-surface)" }} />
+          <div className="flex-1 space-y-2">
+            <div className="h-3 rounded-full w-2/3" style={{ background: "var(--pp-bg-surface)" }} />
+            <div className="h-2.5 rounded-full w-5/6" style={{ background: "var(--pp-bg-surface)" }} />
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -2362,13 +2512,10 @@ function TeamsThreadView({ target, onClose }: {
     setTimeout(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" }); }, 50);
   };
   useEffect(() => {
-    // Guard: skip auto-sync when there is no active session to avoid 401.
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (!session) return;
-      load();
-      if (target.kind === "chat") markChatRead(target.id);
-    });
-    // Auto-refresh removed — use the manual refresh button instead.
+    load();
+    if (target.kind === "chat") markChatRead(target.id);
+    const id = window.setInterval(() => load(), 15_000);
+    return () => window.clearInterval(id);
     /* eslint-disable-next-line */
   }, []);
 
