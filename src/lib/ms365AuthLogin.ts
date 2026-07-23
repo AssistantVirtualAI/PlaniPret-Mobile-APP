@@ -4,29 +4,50 @@ import { openMs365Authorize } from "@/lib/ms365OAuth";
 const INTENT_KEY = "pp_ms365_auth_intent";
 const NEXT_KEY = "pp_ms365_auth_next";
 
-export async function isMs365LoginConfigured(): Promise<boolean> {
-  const { data, error } = await supabase.functions.invoke("ms365-public-config", { body: {} });
-  return !error && Boolean((data as any)?.configured && (data as any)?.client_id);
+/**
+ * Fetches Microsoft SSO start configuration from the versioned
+ * `pp-ms-auth-start` edge function. Falls back to `ms365-public-config`
+ * for backward compatibility if the new function is not yet deployed.
+ */
+async function fetchStartConfig(): Promise<any | null> {
+  const start = await supabase.functions.invoke("pp-ms-auth-start", { body: {} });
+  if (!start.error && (start.data as any)?.configured) return start.data;
+  const legacy = await supabase.functions.invoke("ms365-public-config", { body: {} });
+  if (!legacy.error && (legacy.data as any)?.configured) return legacy.data;
+  return null;
 }
 
-export async function startMicrosoftSignIn(nextPath = "/mplanipret"): Promise<void> {
-  const { data, error } = await supabase.functions.invoke("ms365-public-config", { body: {} });
-  const cfg = data as any;
-  if (error || !cfg?.configured || !cfg?.client_id) {
+export async function isMs365LoginConfigured(): Promise<boolean> {
+  const cfg = await fetchStartConfig();
+  return Boolean(cfg?.configured && cfg?.client_id);
+}
+
+export async function startMicrosoftSignIn(
+  nextPath = "/post-login",
+  opts?: { loginHint?: string; prompt?: "select_account" | "consent" | "login" | "none" },
+): Promise<void> {
+  const cfg = await fetchStartConfig();
+  if (!cfg?.configured || !cfg?.client_id) {
     throw new Error("Microsoft SSO n'est pas configuré.");
   }
   try {
     localStorage.setItem(INTENT_KEY, "login");
     localStorage.setItem(NEXT_KEY, nextPath);
   } catch {}
-  await openMs365Authorize({ clientId: cfg.client_id, tenant: cfg.tenant_id || "common", state: "login" });
+  await openMs365Authorize({
+    clientId: cfg.client_id,
+    tenant: cfg.tenant_id || "common",
+    state: "login",
+    prompt: opts?.prompt,
+    loginHint: opts?.loginHint,
+  });
 }
 
 export function getMicrosoftSignInIntent(): string | null {
   try { return localStorage.getItem(INTENT_KEY); } catch { return null; }
 }
 
-export function getMicrosoftSignInNext(defaultPath = "/mplanipret"): string {
+export function getMicrosoftSignInNext(defaultPath = "/post-login"): string {
   try {
     const next = localStorage.getItem(NEXT_KEY) || defaultPath;
     return next.startsWith("/") && !next.startsWith("//") ? next : defaultPath;

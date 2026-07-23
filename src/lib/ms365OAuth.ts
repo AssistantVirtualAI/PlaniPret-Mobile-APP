@@ -73,8 +73,9 @@ export async function buildMs365AuthorizeUrl(cfg: {
   clientId: string;
   tenant?: string | null;
   state?: string | null;
-  prompt?: "select_account" | "consent" | "none";
+  prompt?: "select_account" | "consent" | "login" | "none";
   scopes?: string;
+  loginHint?: string;
 }): Promise<string> {
   const redirectUri = getMs365RedirectUri();
   rememberMs365RedirectUri(redirectUri);
@@ -93,6 +94,7 @@ export async function buildMs365AuthorizeUrl(cfg: {
     code_challenge: challenge,
     code_challenge_method: "S256",
   });
+  if (cfg.loginHint) params.set("login_hint", cfg.loginHint);
   params.set("state", oauthState);
   return `https://login.microsoftonline.com/${cfg.tenant || "common"}/oauth2/v2.0/authorize?${params.toString()}`;
 }
@@ -101,8 +103,9 @@ export async function openMs365Authorize(cfg: {
   clientId: string;
   tenant?: string | null;
   state?: string | null;
-  prompt?: "select_account" | "consent" | "none";
+  prompt?: "select_account" | "consent" | "login" | "none";
   scopes?: string;
+  loginHint?: string;
 }): Promise<void> {
   const url = await buildMs365AuthorizeUrl(cfg);
   try {

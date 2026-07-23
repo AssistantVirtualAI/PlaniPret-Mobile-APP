@@ -50,7 +50,12 @@ export default function MobileAuthScreen({ onLoggedIn }: { onLoggedIn: () => Pro
 
   const signInWithMicrosoft = async () => {
     setLoading(true);
-    try { await startMicrosoftSignIn("/mplanipret"); }
+    try {
+      await startMicrosoftSignIn("/mplanipret", {
+        loginHint: email.trim() || undefined,
+        prompt: "login",
+      });
+    }
     catch (error: any) { toast.error(error?.message || t("auth.msUnavailable")); }
     finally { setLoading(false); }
   };
@@ -160,18 +165,12 @@ export default function MobileAuthScreen({ onLoggedIn }: { onLoggedIn: () => Pro
         <button onClick={() => setShowLegal("privacy")} style={{ color: "var(--pp-brand-accent)", textDecoration: "underline" }}>{t("legal.privacy")}</button>.
       </p>
 
-      {/* Footer — visible both themes */}
-      <div className="h-[36px] flex items-center justify-center gap-1.5 pp-mobile-footer">
-        <span style={{ fontFamily: "Urbanist,sans-serif", fontSize: 9, color: "var(--pp-text-secondary)", letterSpacing: "0.14em", fontWeight: 600 }}>{t("footer.poweredBy")}</span>
-        <div style={{ position: "relative", width: 22, height: 22 }}>
-          <div style={{ position: "absolute", inset: 0, borderRadius: "50%", background: "conic-gradient(from 0deg, #7C3AED, #2E9BDC, #00D4AA, #7C3AED)", padding: 1.5 }}>
-            <div style={{ width: "100%", height: "100%", borderRadius: "50%", overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <img src={avaLogoAsset.url} alt="AVA" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-            </div>
-          </div>
-        </div>
-        <span style={{ fontFamily: "Urbanist,sans-serif", fontSize: 12, letterSpacing: "0.06em", fontWeight: 800, background: "linear-gradient(90deg,#7C3AED,#2E9BDC)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", backgroundClip: "text" }}>AVA</span>
-        <span style={{ fontSize: 8, color: "var(--pp-text-secondary)", letterSpacing: "0.1em" }}>· {t("footer.developedBy")}</span>
+      {/* Footer */}
+      <div className="h-[28px] flex items-center justify-center gap-2 pp-mobile-footer">
+        <span style={{ fontFamily: "Urbanist,sans-serif", fontSize: 9, color: "var(--pp-text-muted)", letterSpacing: "0.14em", fontWeight: 600 }}>{t("footer.poweredBy")}</span>
+        <div style={{ background: "#7C3AED", borderRadius: 4, padding: "2px 5px", color: "white", fontWeight: 700, fontSize: 8 }}>AVA</div>
+        <span style={{ fontFamily: "Urbanist,sans-serif", fontSize: 9, color: "var(--pp-brand-accent-2)", letterSpacing: "0.10em", fontWeight: 700 }}>AVA</span>
+        <span style={{ fontSize: 8.5, color: "var(--pp-text-faint)", letterSpacing: "0.1em" }}>· {t("footer.developedBy")}</span>
       </div>
 
       {showLegal && (

@@ -15,6 +15,8 @@ import { Capacitor } from "@capacitor/core";
 
 
 const Landing = lazyWithRetry(() => import("./pages/Landing"));
+const CaseStudyPlanipret = lazyWithRetry(() => import("./pages/CaseStudyPlanipret"));
+const CaseStudyLemtel = lazyWithRetry(() => import("./pages/CaseStudyLemtel"));
 const AuthPage = lazyWithRetry(() => import("./pages/Auth"));
 const AgencyHome = lazyWithRetry(() => import("./pages/AgencyHome"));
 const PostLoginRedirect = lazyWithRetry(() => import("./pages/PostLoginRedirect"));
@@ -426,8 +428,16 @@ function NativeDeepLinkBridge() {
 
         if (isMs365Callback) {
           localStorage.setItem('pp_ms365_callback_url', rawUrl);
+          // Dismiss the in-app browser (SFSafariViewController / Chrome Custom Tab)
+          // so the user is returned to the app after Microsoft consent.
+          import('@capacitor/browser')
+            .then(({ Browser }) => Browser.close().catch(() => {}))
+            .catch(() => {});
           navigate(`/auth/microsoft/callback${url.search}`, { replace: true });
         } else if (isMaestroCallback) {
+          import('@capacitor/browser')
+            .then(({ Browser }) => Browser.close().catch(() => {}))
+            .catch(() => {});
           navigate(`/auth/maestro/callback${url.search}`, { replace: true });
         }
       } catch {
@@ -451,11 +461,12 @@ function NativeDeepLinkBridge() {
     return () => unsubscribe?.();
   }, [navigate]);
 
+
   return null;
 }
 
 const RootErrorBoundary = ({ children }: { children: React.ReactNode }) => {
-  // AppErrorBoundary is now safe on iOS — it renders children normally for empty {} artefacts
+  if (Capacitor.isNativePlatform()) return <>{children}</>;
   return <AppErrorBoundary>{children}</AppErrorBoundary>;
 };
 
@@ -477,6 +488,8 @@ const App = () => (
               <Routes>
                 {/* Landing page on root */}
                 <Route path="/" element={<Landing />} />
+                <Route path="/case/planipret" element={<CaseStudyPlanipret />} />
+                <Route path="/case/lemtel" element={<CaseStudyLemtel />} />
 
                 {/* Public full feature list */}
                 <Route path="/features" element={<FeaturesPage />} />

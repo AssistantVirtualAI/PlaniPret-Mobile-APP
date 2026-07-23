@@ -162,9 +162,17 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
     });
     const j = r.data;
     const ok = r.httpOk && j?.success === true;
-    if (!ok) {
-      const reason = j?.error ?? j?.message ?? j?.body ?? `Erreur téléphone (${r.status})`;
-      return { success: false, error: reason, message: `Appel NON lancé vers ${contact_name ?? to_number} : ${reason}`, raw: j };
+    // Device not registered → fall back to opening the mobile dialer with the
+    // number prefilled so the courtier can trigger the call from the softphone UI.
+    if (!ok || j?.device_registered === false) {
+      await broadcastNav(ctx, "/mplanipret/calls", { open_dialer: { number: to_number, autoDial: true } });
+      return {
+        success: true,
+        fallback: "open_dialer",
+        destination: to_number,
+        message: `Aucun softphone Planiprêt enregistré — j'ai ouvert le clavier avec ${contact_name ?? to_number} pré-composé.`,
+        raw: j,
+      };
     }
     return {
       success: true,
@@ -174,6 +182,48 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
       message: j?.message ?? `Appel lancé vers ${contact_name ?? to_number}`,
       raw: j,
     };
+  },
+
+  async open_dialer(ctx, p) {
+    let number = firstText(p?.number, p?.to, p?.to_number, p?.phone, p?.phone_number);
+    let name = p?.contact_name;
+    if (!number && name) {
+      const hit = await resolveContact(ctx, name, "phone");
+      if (!hit) return { success: false, error: "contact_not_found", message: `Aucun numéro trouvé pour ${name}` };
+      number = hit.value; name = hit.name;
+    }
+    if (!number) return { success: false, error: "number_required" };
+    await broadcastNav(ctx, "/mplanipret/calls", { open_dialer: { number, autoDial: !!p?.auto_dial } });
+    return { success: true, message: `Clavier ouvert avec ${name ?? number}` };
+  },
+
+  async open_sms_composer(ctx, p) {
+    let number = firstText(p?.number, p?.to, p?.to_number, p?.phone, p?.phone_number);
+    let name = p?.contact_name;
+    if (!number && name) {
+      const hit = await resolveContact(ctx, name, "phone");
+      if (!hit) return { success: false, error: "contact_not_found", message: `Aucun numéro trouvé pour ${name}` };
+      number = hit.value; name = hit.name;
+    }
+    if (!number) return { success: false, error: "number_required" };
+    const body = firstText(p?.body, p?.message, p?.text);
+    await broadcastNav(ctx, "/mplanipret/messages", { open_sms_composer: { number, body } });
+    return { success: true, message: `Composeur SMS ouvert pour ${name ?? number}` };
+  },
+
+  async open_email_composer(ctx, p) {
+    let to = firstText(p?.to, p?.email, p?.address);
+    let name = p?.contact_name;
+    if (!to && name) {
+      const hit = await resolveContact(ctx, name, "email");
+      if (!hit) return { success: false, error: "contact_not_found", message: `Aucun courriel trouvé pour ${name}` };
+      to = hit.value; name = hit.name;
+    }
+    if (!to) return { success: false, error: "to_required" };
+    await broadcastNav(ctx, "/mplanipret/messages", {
+      open_email_composer: { to, subject: p?.subject, body: firstText(p?.body, p?.message, p?.text) },
+    });
+    return { success: true, message: `Composeur courriel ouvert pour ${name ?? to}` };
   },
 
   async get_active_calls(ctx) {
@@ -248,8 +298,20 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
     const ok = r.httpOk && (j?.ok === true || j?.success === true);
     if (!ok) {
       const reason = j?.error ?? j?.body ?? j?.message ?? `Erreur SMS (${r.status})`;
-      return { success: false, error: reason, message: `SMS NON envoyé à ${name ?? to} : ${reason}`, raw: j };
+      // Failure → open the composer with the message prefilled so the
+      // courtier can review/retry manually from the SMS screen.
+      await broadcastNav(ctx, "/mplanipret/messages", { open_sms_composer: { number: to, body: message } });
+      return {
+        success: false,
+        fallback: "open_sms_composer",
+        error: reason,
+        message: `SMS NON envoyé à ${name ?? to} : ${reason}. J'ai ouvert le composeur pour que tu puisses renvoyer manuellement.`,
+        raw: j,
+      };
     }
+    // Success → broadcast a navigate event so the mobile app opens the thread
+    // and the courtier can see the outbound message immediately.
+    await broadcastNav(ctx, `/mplanipret/messages?thread=${encodeURIComponent(j?.thread_id ?? "")}`);
     return {
       success: true,
       message: `SMS envoyé à ${name ?? j?.to ?? to}`,
@@ -785,7 +847,7 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
       "/mplanipret/home", "/mplanipret/calls", "/mplanipret/messages",
       "/mplanipret/contacts", "/mplanipret/voicemail", "/mplanipret/more",
       "/mplanipret/stats", "/mplanipret/pipeline", "/mplanipret/search",
-      "/mplanipret/notifications", "/mplanipret/extension-sync", "/mplanipret/ava",
+      "/mplanipret/notifications", "/mplanipret/extension-sync",
     ]);
     const base = (p.route ?? "").split("?")[0];
     if (!ALLOWED.has(base)) return { success: false, error: "route_not_allowed" };
@@ -993,70 +1055,81 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
     };
   },
 
-  // ===== ALIASES (pour compatibilité avec EXPECTED_TOOL_NAMES) =====
-  async search_contact(ctx, p) {
-    // Alias vers find_contact pour compatibilité
-    return await TOOLS.find_contact(ctx, p);
-  },
-
-  // ===== ALIASES M365 (pour compatibilité avec EXPECTED_TOOL_NAMES) =====
-  async update_calendar_event(ctx, p) {
-    return await msAction(ctx, "update_calendar_event", p);
-  },
-  async delete_calendar_event(ctx, p) {
-    return await msAction(ctx, "delete_calendar_event", { event_id: p.event_id });
-  },
+  // ===== ALIASES (naming harmonization with ava-tools.ts specs) =====
+  async update_calendar_event(ctx, p) { return TOOLS.move_calendar_event(ctx, { ...p, new_start: p.new_start ?? p.start, new_end: p.new_end ?? p.end, confirmed: p.confirmed ?? true }); },
+  async delete_calendar_event(ctx, p) { return TOOLS.cancel_calendar_event(ctx, p); },
   async search_ms365_contacts(ctx, p) {
-    const r = await msAction(ctx, "search_contact", { query: p.query });
-    return { success: !r?.error, contacts: r?.results ?? [], count: r?.results?.length ?? 0 };
+    const query = String(p?.query ?? "").trim();
+    if (!query) return { success: false, error: "query_required" };
+    const j = await msAction(ctx, "search_contact", { query });
+    const results = (j?.results ?? []).slice(0, 10);
+    return { success: !j?.error, count: results.length, contacts: results, message: results.length ? `${results.length} contact(s) M365` : "Aucun contact M365 trouvé", ...(j?.error ? { error: j.error } : {}) };
   },
 
-  // ===== PUSH MAESTRO =====
+  // ===== PUSH TO MAESTRO =====
   async push_call_summary(ctx, p) {
+    if (!p?.call_id) return { success: false, error: "call_id_required" };
+    // Récupère l'appel + client Maestro associé
+    const { data: call } = await ctx.admin.from("planipret_phone_calls")
+      .select("*").eq("id", p.call_id).maybeSingle();
+    if (!call) return { success: false, error: "call_not_found" };
+    const clientId = call.maestro_client_id ?? p.client_id;
+    if (!clientId) return { success: false, error: "no_maestro_client_linked", message: "Aucun client Maestro lié à cet appel." };
+    const noteBody = [
+      p.summary ? `**Résumé**\n${p.summary}` : null,
+      p.coaching ? `**Coaching**\n${p.coaching}` : null,
+      p.notes ? `**Notes**\n${p.notes}` : null,
+      p.next_steps ? `**Prochaines étapes**\n${p.next_steps}` : null,
+      p.sentiment ? `_Sentiment: ${p.sentiment}_` : null,
+    ].filter(Boolean).join("\n\n");
     try {
-      const { data: call } = await ctx.admin.from("planipret_phone_calls")
-        .select("contact_name, contact_number, duration_seconds, created_at")
-        .eq("id", p.call_id).maybeSingle();
-      const clientId = p.client_id ?? call?.maestro_client_id;
-      if (!clientId) return { success: false, error: "client_id_required", message: "Fournis un client_id Maestro pour pousser le résumé." };
-      const body = {
-        channel: "call",
-        direction: "outbound",
-        summary: p.summary,
-        coaching: p.coaching,
-        notes: p.notes,
-        sentiment: p.sentiment,
-        next_steps: p.next_steps,
-        duration_seconds: call?.duration_seconds,
-        occurred_at: call?.created_at ?? new Date().toISOString(),
-      };
-      const result = await maestroFetch(ctx, `/api/v1/clients/${clientId}/communications`, { method: "POST", body: JSON.stringify(body) });
-      return { success: true, communication_id: result?.id, message: "Résumé d'appel poussé dans Maestro" };
-    } catch (e) { return { success: false, error: String(e) }; }
+      const result = await maestroFetch(ctx, `/api/v1/clients/${clientId}/communications`, {
+        method: "POST",
+        body: JSON.stringify({
+          channel: "call",
+          direction: call.direction ?? "outbound",
+          summary: p.summary ?? "",
+          notes: noteBody,
+          sentiment: p.sentiment,
+          duration_seconds: call.duration_seconds,
+          occurred_at: call.created_at,
+          external_call_id: call.id,
+        }),
+      });
+      // Marque local pour éviter les doublons
+      await ctx.admin.from("planipret_phone_calls").update({ maestro_pushed_at: new Date().toISOString() }).eq("id", call.id).then(() => null).catch(() => null);
+      return { success: true, communication_id: result?.id, message: "Résumé poussé vers Maestro." };
+    } catch (e) { return { success: false, error: String(e), message: `Push Maestro échoué : ${e}` }; }
   },
 
   async push_client_note(ctx, p) {
+    if (!p?.client_id || !p?.note) return { success: false, error: "client_id_and_note_required" };
     try {
-      const body = { type: p.type ?? "general", content: p.note, occurred_at: new Date().toISOString() };
-      const result = await maestroFetch(ctx, `/api/v1/clients/${p.client_id}/notes`, { method: "POST", body: JSON.stringify(body) });
-      return { success: true, note_id: result?.id, message: "Note ajoutée dans Maestro" };
-    } catch (e) { return { success: false, error: String(e) }; }
+      const result = await maestroFetch(ctx, `/api/v1/clients/${p.client_id}/notes`, {
+        method: "POST",
+        body: JSON.stringify({ content: p.note, type: p.type ?? "general" }),
+      });
+      return { success: true, note_id: result?.id, message: "Note ajoutée dans Maestro." };
+    } catch (e) { return { success: false, error: String(e), message: `Push note Maestro échoué : ${e}` }; }
   },
 
   async push_communication_log(ctx, p) {
+    if (!p?.client_id) return { success: false, error: "client_id_required" };
+    const payload: any = {
+      channel: p.channel ?? "note",
+      direction: p.direction ?? "outbound",
+      summary: p.summary ?? "",
+      notes: p.notes ?? p.coaching ?? "",
+      duration_seconds: p.duration_seconds,
+      occurred_at: p.occurred_at ?? new Date().toISOString(),
+    };
     try {
-      const body = {
-        channel: p.channel ?? "call",
-        direction: p.direction ?? "outbound",
-        summary: p.summary,
-        coaching: p.coaching,
-        notes: p.notes,
-        duration_seconds: p.duration_seconds,
-        occurred_at: p.occurred_at ?? new Date().toISOString(),
-      };
-      const result = await maestroFetch(ctx, `/api/v1/clients/${p.client_id}/communications`, { method: "POST", body: JSON.stringify(body) });
-      return { success: true, communication_id: result?.id, message: "Communication enregistrée dans Maestro" };
-    } catch (e) { return { success: false, error: String(e) }; }
+      const result = await maestroFetch(ctx, `/api/v1/clients/${p.client_id}/communications`, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      return { success: true, communication_id: result?.id, message: `Communication ${payload.channel} enregistrée dans Maestro.` };
+    } catch (e) { return { success: false, error: String(e), message: `Push communication Maestro échoué : ${e}` }; }
   },
 };
 

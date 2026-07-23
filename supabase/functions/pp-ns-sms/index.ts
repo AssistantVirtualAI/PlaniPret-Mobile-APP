@@ -31,12 +31,15 @@ function normalizeE164(raw: unknown): string | null {
   // Strip all non-digit characters (including leading +)
   const digits = s.replace(/\D/g, "");
   if (!digits) return null;
+  // Reject clearly-invalid short numbers (extensions, half-typed inputs).
+  if (digits.length < 10) return null;
   // 10-digit North American number → always prefix with +1
   if (digits.length === 10) return `+1${digits}`;
   // 11-digit starting with 1 → standard NANP E.164
   if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
-  // Anything else: prepend + as-is
-  return `+${digits}`;
+  // International (>=11 digits, not NANP): return as +digits
+  if (digits.length >= 11 && digits.length <= 15) return `+${digits}`;
+  return null;
 }
 
 function pickSmsNumber(row: any): string | null {
@@ -300,6 +303,18 @@ Deno.serve(async (req) => {
         console.error("[pp-ns-sms] NS send failed", res.status, path, lastText);
         return jsonResponse(
           { ok: false, error: `Envoi SMS refusé (${res.status})`, status: res.status, body: lastText, from: fromNumber, to: destination, endpoint: path },
+          200,
+        );
+      }
+
+      // NS-API returns HTTP 200 even when the message failed downstream —
+      // inspect result body for explicit error/failure flags before claiming success.
+      const nsError = result?.error ?? result?.errorMessage ?? result?.error_message ?? result?.message?.error;
+      const nsStatus = String(result?.status ?? result?.state ?? "").toLowerCase();
+      if (nsError || nsStatus === "failed" || nsStatus === "error" || result?.ok === false || result?.success === false) {
+        console.error("[pp-ns-sms] NS send returned 200 with error body:", result);
+        return jsonResponse(
+          { ok: false, error: nsError ?? `NS-API a rejeté le SMS (status=${nsStatus || "unknown"})`, ns_result: result, from: fromNumber, to: destination },
           200,
         );
       }
