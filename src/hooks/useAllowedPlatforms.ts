@@ -18,10 +18,7 @@ export const useAllowedPlatforms = () => {
         .select('allowed_platforms')
         .eq('id', selectedOrgId!)
         .maybeSingle();
-      if (error) {
-        console.warn('[useAllowedPlatforms] Supabase query error (non-fatal):', error);
-        return null;
-      }
+      if (error) throw error;
       const list = (data as any)?.allowed_platforms as string[] | null;
       return list && list.length > 0 ? list : null;
     },

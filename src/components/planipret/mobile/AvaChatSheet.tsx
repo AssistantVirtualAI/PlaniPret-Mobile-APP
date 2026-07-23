@@ -2,9 +2,9 @@
 import { useEffect, useRef, useState } from "react";
 import { X, Send, Sparkles, Loader2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
-import { useAvaContext } from "@/hooks/useAvaContext";
 import ReactMarkdown from "react-markdown";
 import avaLogo from "@/assets/ava-statistics-logo.png.asset.json";
+import { useAvaContext } from "@/hooks/useAvaContext";
 
 type Msg = { role: "user" | "assistant"; content: string };
 

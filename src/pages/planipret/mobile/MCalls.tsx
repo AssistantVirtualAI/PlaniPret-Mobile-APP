@@ -347,23 +347,17 @@ export default function MCalls() {
   // are still missing audio or transcript, then relax to 60s once everything
   // is settled.
   useEffect(() => {
-    // Only poll when recordings tab is open AND some items are still pending.
-    // Start at 30s (not 5s) to avoid constant refreshes.
     if (tab !== "recordings" || !userId) return;
-    const allSettled = recordings.length > 0 && recordings.every((r: any) =>
-      (r.recording_url || r.has_recording) && (r.transcript || r.ai_summary)
-    );
-    if (allSettled) return; // nothing pending — no polling needed
     let cancelled = false;
     let timer: number | null = null;
-    let delay = 30_000; // start at 30s
+    let delay = 5_000;
     const tick = async () => {
       await loadRecordings(true);
       if (cancelled) return;
       const pending = recordings.some((r: any) =>
         !r.recording_url || !r.has_recording || (!r.transcript && !r.ai_summary)
       );
-      delay = pending ? Math.min(delay * 2, 120_000) : 120_000; // max 2min
+      delay = pending ? Math.min(delay * 2, 60_000) : 60_000;
       timer = window.setTimeout(tick, delay);
     };
     timer = window.setTimeout(tick, delay);
@@ -392,7 +386,7 @@ export default function MCalls() {
         callsRefreshDebounceRef.current = window.setTimeout(() => {
           void load();
           if (tab === "recordings") void loadRecordings();
-        }, 8_000); // debounce 8s — évite les refreshes trop fréquents
+        }, 1_000);
       })
       .subscribe();
     return () => {

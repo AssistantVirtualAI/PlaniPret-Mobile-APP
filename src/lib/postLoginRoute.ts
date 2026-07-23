@@ -62,11 +62,16 @@ export async function getPostLoginRoute(userId: string): Promise<string> {
       return '/dashboard';
     }
 
-    // Planipret org → unified dashboard with Planipret pre-selected
-    if (isPlanipretAdmin || isPlanipretMember) {
+    // Planipret org → go directly to the Planipret admin/member portal (scoped, no AVA/Lemtel access)
+    if (isPlanipretAdmin) {
       setActiveOrg(PLANIPRET_ORG_ID);
-      return '/dashboard';
+      return '/planipret/admin/overview';
     }
+    if (isPlanipretMember) {
+      setActiveOrg(PLANIPRET_ORG_ID);
+      return '/planipret';
+    }
+
 
     // Lemtel routing — admins go straight to the Lemtel portal, end users to /my
     if (isLemtelAdmin) { setActiveOrg(LEMTEL_ORG_ID); return '/lemtel/dashboard'; }

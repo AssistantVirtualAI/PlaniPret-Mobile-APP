@@ -12,7 +12,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
-import { Loader2 } from "lucide-react";
+import { Loader2, Plug, CheckCircle2, Clock, AlertTriangle, RefreshCw } from "lucide-react";
 import {
   IntegrationCard, IntegrationStatus, Field, TextInput, SecretInput,
   InfoBanner, CopyButton,
@@ -68,13 +68,40 @@ export default function PlanipretIntegrations() {
   }
 
   async function refreshBackendSecrets() {
-    const { data, error } = await supabase.functions.invoke("pp-backend-secrets-status", { body: {} });
-    if (!error && (data as any)?.secrets) setBackendSecrets((data as any).secrets);
+    const [{ data, error }, { data: saved }] = await Promise.all([
+      supabase.functions.invoke("pp-backend-secrets-status", { body: {} }),
+      supabase.functions.invoke("pp-integration-secrets"),
+    ]);
+    if (!error && (data as any)?.secrets) {
+      const next = { ...(data as any).secrets };
+      const microsoft = ((saved as any)?.items ?? []).find((i: any) => i.provider === "microsoft");
+      if (microsoft?.public_config) {
+        const existing = next.ms365 ?? { configured: false, present: [], missing: [] };
+        next.ms365 = {
+          ...existing,
+          configured: true,
+          present: Array.from(new Set([...(existing.present ?? []), ...(microsoft.has_keys ?? [])])),
+          values: { ...(existing.values ?? {}), ...microsoft.public_config },
+        };
+      }
+      setBackendSecrets(next);
+    }
+  }
+
+  async function autosync(runTests = false) {
+    const { data, error } = await supabase.functions.invoke("pp-integration-autosync", { body: { run_tests: runTests } });
+    if (error) { toast.error("Auto-sync: " + error.message); return; }
+    const configured = ((data as any)?.detected ?? []).filter((d: any) => d.is_configured).length;
+    toast.success(`Auto-sync · ${configured} intégration(s) configurée(s)${runTests ? " · testées" : ""}`);
+    refresh();
   }
 
   useEffect(() => {
     refresh();
     refreshBackendSecrets();
+    // Auto-sync on mount so is_configured reflects env secrets even if no admin
+    // ever pressed Save (e.g. NS_API_KEY set at project setup).
+    supabase.functions.invoke("pp-integration-autosync", { body: {} }).then(() => refresh()).catch(() => {});
     const channel = supabase
       .channel("pp-integration-config")
       .on("postgres_changes",
@@ -95,6 +122,11 @@ export default function PlanipretIntegrations() {
     };
   }, [rows]);
 
+  const backendKeyCount = useMemo(
+    () => Object.values(backendSecrets).reduce((n, s) => n + (s?.present?.length ?? 0), 0),
+    [backendSecrets],
+  );
+
   function getField(key: string, field: string, fallback = "") {
     const backendValues = (backendSecrets[key] as any)?.values as Record<string, string> | undefined;
     return draft[key]?.[field]
@@ -106,8 +138,23 @@ export default function PlanipretIntegrations() {
     setDraft((d) => ({ ...d, [key]: { ...(d[key] ?? {}), [field]: value } }));
   }
 
+  /**
+   * Does a given secret field already exist somewhere (DB row or backend secret)?
+   * Returns undefined when not saved anywhere so the input shows its normal empty state.
+   */
+  function secretState(key: string, field: string, backendSecretNames: string[] = []):
+    { hasSavedValue: boolean; savedSource?: "backend" | "db" | "both" } {
+    const inDb = !!rows[key]?.config_data?.[field];
+    const inBackend = backendSecretNames.some((n) => (backendSecrets[key]?.present ?? []).includes(n));
+    if (inDb && inBackend) return { hasSavedValue: true, savedSource: "both" };
+    if (inDb) return { hasSavedValue: true, savedSource: "db" };
+    if (inBackend) return { hasSavedValue: true, savedSource: "backend" };
+    return { hasSavedValue: false };
+  }
+
   async function save(key: string, requiredFields: string[]) {
-    const cfg = { ...(rows[key]?.config_data ?? {}), ...(draft[key] ?? {}) };
+    const backendValues = (backendSecrets[key] as any)?.values as Record<string, string> | undefined;
+    const cfg = { ...(backendValues ?? {}), ...(rows[key]?.config_data ?? {}), ...(draft[key] ?? {}) };
     for (const f of requiredFields) {
       if (!cfg[f]) { toast.error(`Champ requis: ${f}`); return; }
     }
@@ -145,28 +192,54 @@ export default function PlanipretIntegrations() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-20" style={{ color: "#4A7FA5" }}>
+      <div className="planipret-scope planipret-admin-scope flex items-center justify-center py-20" style={{ color: "var(--pp-text-secondary)" }}>
         <Loader2 className="w-5 h-5 animate-spin mr-2" /> Chargement des intégrations…
       </div>
     );
   }
 
+  const ACCENT = "#2E9BDC";
   return (
-    <div className="space-y-6">
-      {/* Header strip */}
+    <div className="planipret-scope planipret-admin-scope p-6 space-y-6">
+      {/* Header — aligned with other admin pages (PAMaestroSync) */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <p style={{ fontSize: 13, color: "#4A7FA5", maxWidth: 720 }}>
-            Configurez vos intégrations une seule fois — elles se synchronisent automatiquement
-            avec l'application mobile pour les 350 courtiers.
-          </p>
+        <div className="flex items-center gap-3">
+          <div className="w-11 h-11 rounded-xl flex items-center justify-center"
+            style={{ background: `${ACCENT}1A`, color: ACCENT, border: `1px solid ${ACCENT}33` }}>
+            <Plug className="w-5 h-5" />
+          </div>
+          <div>
+            <h1 style={{ fontSize: 22, fontWeight: 700, color: "var(--pp-text-primary)", letterSpacing: "-0.01em" }}>
+              Intégrations
+            </h1>
+            <p style={{ fontSize: 13, color: "var(--pp-text-secondary)", marginTop: 2, maxWidth: 640 }}>
+              Configurez chaque service une seule fois — la synchro vers l'app mobile de tous les courtiers est automatique.
+            </p>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <HealthPill color="#00D4AA" bg="#0D3D2A" border="#1A5A3F" label={`${health.connected} connectées`} />
-          <HealthPill color="#F5A623" bg="#2A1A00" border="#4A3000" label={`${health.pending} en attente`} />
-          <HealthPill color="#E84C4C" bg="#3D1010" border="#5A1A1A" label={`${health.errors} erreurs`} />
+        <div className="flex items-center gap-2 flex-wrap">
+          <HealthChip icon={<CheckCircle2 className="w-3.5 h-3.5" />} color="#00D4AA" label={`${health.connected} connectée${health.connected > 1 ? "s" : ""}`} />
+          <HealthChip icon={<Clock className="w-3.5 h-3.5" />} color="#F5A623" label={`${health.pending} en attente`} />
+          <HealthChip icon={<AlertTriangle className="w-3.5 h-3.5" />} color="#E84C4C" label={`${health.errors} erreur${health.errors > 1 ? "s" : ""}`} />
+          <button
+            onClick={() => autosync(true)}
+            className="pp-btn pp-btn-primary flex items-center gap-2"
+            style={{ padding: "8px 14px", fontSize: 13 }}
+            title="Re-détecte toutes les intégrations depuis les secrets et lance un ping live"
+          >
+            <RefreshCw className="w-4 h-4" /> Auto-sync + tests
+          </button>
         </div>
       </div>
+
+      {/* KPI strip */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <MiniKpi color="#00D4AA" label="Connectées" value={health.connected} />
+        <MiniKpi color="#F5A623" label="En attente" value={health.pending} />
+        <MiniKpi color="#E84C4C" label="Erreurs" value={health.errors} />
+        <MiniKpi color={ACCENT} label="Clés backend détectées" value={backendKeyCount} />
+      </div>
+
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* ───────── CARD 2 — NS-API ───────── */}
@@ -204,8 +277,9 @@ export default function PlanipretIntegrations() {
             <Field label="API Key" required hint="Format: nsr_XXXXXXXXXX — fournie par Keeny">
               <SecretInput value={draft.ns_api?.api_key ?? ""}
                 onChange={(v) => setField("ns_api", "api_key", v)}
-                hasSavedValue={!!rows.ns_api?.config_data?.api_key}
+                {...secretState("ns_api", "api_key", ["NS_API_KEY"])}
                 placeholder="nsr_••••••••••••••••••••••••••••••••" />
+
             </Field>
             <Field label="Domaine par défaut" required>
               <TextInput value={getField("ns_api", "domain", "planipret.ca")}
@@ -256,8 +330,9 @@ export default function PlanipretIntegrations() {
             <Field label="Anthropic API Key" required hint="console.anthropic.com → API Keys">
               <SecretInput value={draft.anthropic?.api_key ?? ""}
                 onChange={(v) => setField("anthropic", "api_key", v)}
-                hasSavedValue={!!rows.anthropic?.config_data?.api_key}
+                {...secretState("anthropic", "api_key", ["ANTHROPIC_API_KEY", "LOVABLE_API_KEY"])}
                 placeholder="sk-ant-••••••••••••••••••••••••" />
+
             </Field>
             <Field label="Modèle IA" hint="claude-sonnet-4-5 recommandé (rapide & intelligent)">
               <select
@@ -298,15 +373,9 @@ export default function PlanipretIntegrations() {
             rows.ms365?.config_data?.client_id ??
             backendValues?.client_id ??
             "";
-          const tenantVal =
-            draft.ms365?.tenant_id ??
-            rows.ms365?.config_data?.tenant_id ??
-            backendValues?.tenant_id ??
-            "";
           const clientSecretPresent =
             !!rows.ms365?.config_data?.client_secret ||
             (ms?.present ?? []).includes("MICROSOFT_CLIENT_SECRET");
-          const clientIdMissing = !clientIdVal;
           const supabaseUrl = (import.meta as any).env?.VITE_SUPABASE_URL ?? "";
           const edgeCallbackUrl = `${supabaseUrl}/functions/v1/ms365-auth-callback`;
           const origin = typeof window !== "undefined" ? window.location.origin : "";
@@ -325,29 +394,13 @@ export default function PlanipretIntegrations() {
           lastTestResult={rows.ms365?.last_test_result}
           lastTestSuccess={rows.ms365?.last_test_success}
           onToggleEnabled={(v) => toggleEnabled("ms365", v)}
-          onSave={() => save("ms365", ["tenant_id", "client_id"])}
+          onSave={() => save("ms365", [])}
           onTest={() => test("ms365")}
-          testDisabled={clientIdMissing}
-          testDisabledReason="Configuration incomplète — Client ID manquant"
         >
-          {clientIdMissing && (
-            <InfoBanner tone="warn">
-              <strong>Configuration incomplète — Client ID manquant.</strong>{" "}
-              Renseignez <code>MICROSOFT_CLIENT_ID</code> dans les secrets backend
-              ou saisissez-le ci-dessous pour activer le test de connexion.
-            </InfoBanner>
-          )}
           <InfoBanner>
-            Créez une App Registration dans Azure AD pour <strong>planipret.ca</strong>.
-            Permissions requises (Application): <code>Mail.ReadWrite</code>, <code>Mail.Send</code>,
-            <code>Calendars.ReadWrite</code>, <code>Chat.ReadWrite</code>, <code>Files.ReadWrite.All</code>, <code>User.Read.All</code>.
-            <div className="mt-2 flex items-center gap-2">
-              <a href="https://portal.azure.com" target="_blank" rel="noreferrer"
-                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium"
-                style={{ background: "#0D1F35", border: "1px solid #0E2A45", color: "#2E9BDC" }}>
-                Ouvrir Azure Portal →
-              </a>
-            </div>
+            Microsoft 365 utilise la configuration OAuth sécurisée déjà enregistrée côté backend.
+            Les courtiers se connectent avec leur compte Microsoft depuis l'app mobile; aucun Tenant ID,
+            Client ID ou secret n'est demandé dans l'app.
           </InfoBanner>
 
           {/* Read-only Redirect URIs to register in Azure AD */}
@@ -385,31 +438,10 @@ export default function PlanipretIntegrations() {
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <Field label="Tenant ID" required hint="Auto-rempli depuis MICROSOFT_TENANT_ID">
-              <TextInput value={tenantVal}
-                onChange={(e) => setField("ms365", "tenant_id", e.target.value)}
-                placeholder="00000000-0000-0000-0000-000000000000" />
+            <Field label="Statut OAuth" hint="Configuration chargée depuis le backend sécurisé">
+              <TextInput readOnly value={clientIdVal || clientSecretPresent ? "Configuration Microsoft détectée" : "Configuration backend non détectée"} />
             </Field>
-            <Field label="Client ID (Application ID)" required
-              hint={clientIdMissing ? "⚠️ À compléter — MICROSOFT_CLIENT_ID manquant" : "Auto-rempli depuis MICROSOFT_CLIENT_ID (modifiable)"}>
-              <div className="relative">
-                <TextInput value={clientIdVal}
-                  onChange={(e) => setField("ms365", "client_id", e.target.value)}
-                  placeholder="00000000-0000-0000-0000-000000000000" />
-                {clientIdMissing && (
-                  <span className="absolute right-2 top-1/2 -translate-y-1/2 px-2 py-0.5 rounded-full text-[10px] font-semibold"
-                    style={{ background: "rgba(245,166,35,0.15)", border: "1px solid #4A3000", color: "#F5A623" }}>
-                    À compléter
-                  </span>
-                )}
-              </div>
-            </Field>
-            <Field label="Client Secret" hint="Auto-détecté depuis MICROSOFT_CLIENT_SECRET · masqué">
-              <SecretInput value={draft.ms365?.client_secret ?? ""}
-                onChange={(v) => setField("ms365", "client_secret", v)}
-                hasSavedValue={clientSecretPresent} />
-            </Field>
-            <Field label="Redirect URI (frontend fallback)" hint="Route interne — non utilisée pour Azure">
+            <Field label="Redirect URI (frontend fallback)" hint="Route interne utilisée par l'app">
               <TextInput readOnly value={`${typeof window !== "undefined" ? window.location.origin : ""}/auth/ms365/callback`} />
             </Field>
           </div>
@@ -437,7 +469,7 @@ export default function PlanipretIntegrations() {
             })}
           </div>
 
-          <Ms365LiveTestPanel />
+          <Ms365LiveTestPanel onCompleted={() => { refresh(); refreshBackendSecrets(); }} />
         </IntegrationCard>
           );
         })()}
@@ -461,8 +493,9 @@ export default function PlanipretIntegrations() {
             <Field label="ElevenLabs API Key" required hint="elevenlabs.io → Profile → API Keys">
               <SecretInput value={draft.elevenlabs?.api_key ?? ""}
                 onChange={(v) => setField("elevenlabs", "api_key", v)}
-                hasSavedValue={!!rows.elevenlabs?.config_data?.api_key}
+                {...secretState("elevenlabs", "api_key", ["ELEVENLABS_API_KEY"])}
                 placeholder="sk_•••••••••••••••••••••••••••••" />
+
             </Field>
             <Field label="Agent ID par défaut" hint="ID de l'agent à utiliser pour les nouveaux courtiers">
               <TextInput value={getField("elevenlabs", "default_agent_id")}
@@ -507,12 +540,12 @@ export default function PlanipretIntegrations() {
             <Field label="API Key" required>
               <SecretInput value={draft.maestro?.api_key ?? ""}
                 onChange={(v) => setField("maestro", "api_key", v)}
-                hasSavedValue={!!rows.maestro?.config_data?.api_key} />
+                {...secretState("maestro", "api_key", ["MAESTRO_API_KEY"])} />
             </Field>
             <Field label="Webhook secret" hint="Pour vérifier les webhooks entrants Maestro">
               <SecretInput value={draft.maestro?.webhook_secret ?? ""}
                 onChange={(v) => setField("maestro", "webhook_secret", v)}
-                hasSavedValue={!!rows.maestro?.config_data?.webhook_secret} />
+                {...secretState("maestro", "webhook_secret", ["MAESTRO_WEBHOOK_SECRET"])} />
             </Field>
             <Field label="Pipeline par défaut (ID)">
               <TextInput value={getField("maestro", "default_pipeline_id")}
@@ -557,7 +590,7 @@ export default function PlanipretIntegrations() {
               <div className="flex gap-2">
                 <SecretInput value={draft.webhooks?.secret ?? ""}
                   onChange={(v) => setField("webhooks", "secret", v)}
-                  hasSavedValue={!!rows.webhooks?.config_data?.secret} />
+                  {...secretState("webhooks", "secret", ["NS_WEBHOOK_SECRET"])} />
                 <button type="button"
                   onClick={() => {
                     const buf = new Uint8Array(32);
@@ -644,7 +677,7 @@ export default function PlanipretIntegrations() {
             <Field label="Firebase Server Key (FCM)" hint="Notifications push Android">
               <SecretInput value={draft.mobile_app?.fcm_server_key ?? ""}
                 onChange={(v) => setField("mobile_app", "fcm_server_key", v)}
-                hasSavedValue={!!rows.mobile_app?.config_data?.fcm_server_key} />
+                {...secretState("mobile_app", "fcm_server_key")} />
             </Field>
             <Field label="APNs Key ID (iOS)" hint="Notifications push iOS">
               <TextInput value={getField("mobile_app", "apns_key_id")}
@@ -784,12 +817,24 @@ export default function PlanipretIntegrations() {
   );
 }
 
-function HealthPill({ color, bg, border, label }: { color: string; bg: string; border: string; label: string }) {
+
+
+function HealthChip({ icon, color, label }: { icon: React.ReactNode; color: string; label: string }) {
   return (
-    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold"
-      style={{ background: bg, border: `1px solid ${border}`, color }}>
-      <span className="w-1.5 h-1.5 rounded-full" style={{ background: color }} /> {label}
+    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full tabular-nums"
+      style={{ fontSize: 11, fontWeight: 600, color, background: `${color}14`, border: `1px solid ${color}44` }}>
+      {icon} {label}
     </span>
+  );
+}
+
+function MiniKpi({ color, label, value }: { color: string; label: string; value: number }) {
+  return (
+    <div className="pp-card relative overflow-hidden" style={{ padding: 14 }}>
+      <div aria-hidden className="absolute top-0 left-0 right-0 h-[2px]" style={{ background: `linear-gradient(90deg, ${color}, transparent)` }} />
+      <div style={{ fontSize: 22, fontWeight: 700, color, lineHeight: 1 }} className="tabular-nums">{value}</div>
+      <div style={{ fontSize: 11, color: "var(--pp-text-secondary)", marginTop: 6, fontWeight: 500 }}>{label}</div>
+    </div>
   );
 }
 

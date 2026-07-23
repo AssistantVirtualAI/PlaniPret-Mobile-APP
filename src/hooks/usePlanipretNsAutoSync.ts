@@ -25,6 +25,8 @@ export function usePlanipretNsAutoSync(opts: Options = {}) {
     const run = async () => {
       const now = Date.now();
       if (inFlight || now - lastRun < intervalMs) return;
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) return;
       const start = new Date(Date.now() - startDays * 24 * 60 * 60 * 1000).toISOString();
       inFlight = supabase.functions.invoke("pp-admin-ns-sync", { body: { start } })
         .then((res) => {

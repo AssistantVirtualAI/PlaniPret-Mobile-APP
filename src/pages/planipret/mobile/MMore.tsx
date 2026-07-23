@@ -10,7 +10,6 @@ import type { PlanipretMobileContext } from "../PlanipretMobile";
 import { usePlanipretPush } from "@/hooks/usePlanipretPush";
 
 import { Ms365ScopesCard } from "@/components/planipret/Ms365ScopesCard";
-import MaestroConnectCard from "@/components/planipret/mobile/MaestroConnectCard";
 import { SiriShortcutsCard } from "@/components/planipret/SiriShortcutsCard";
 import { safeEdgeFunction } from "@/lib/safeEdgeFunction";
 import MNetworkSection from "@/components/planipret/mobile/MNetworkSection";
@@ -20,9 +19,7 @@ import Ms365StatusBadge from "@/components/planipret/Ms365StatusBadge";
 import { openMs365Authorize } from "@/lib/ms365OAuth";
 import { useMplanipretSoftphone } from "@/hooks/useMplanipretSoftphone";
 import { ppSipProvider, type PpSipSnapshot } from "@/lib/planipret/sip/ppSipProvider";
-import { Radio, ShieldCheck } from "lucide-react";
-import { openAppSettings } from "@/lib/native/permissions/platform";
-import { markPrimerSkipped } from "@/lib/native/permissions/orchestrator";
+import { Radio } from "lucide-react";
 
 const initials = (name?: string) =>
   (name ?? "").split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0]?.toUpperCase()).join("") || "?";
@@ -162,7 +159,7 @@ export default function MMore() {
     if (!confirm(t("more.logoutConfirm"))) return;
     await supabase.auth.signOut();
     toast.success(t("more.logoutSuccess"));
-    navigate("/mplanipret", { replace: true });
+    navigate("/login", { replace: true });
   };
 
   return (
@@ -262,16 +259,6 @@ export default function MMore() {
           right={<span className="text-[10px] font-bold px-2 py-0.5 rounded-full" style={{ background: sipStatusColor[sipSnap.status], color: "#fff" }}>{sipSnap.status.toUpperCase()}</span>}
           chevron
         />
-        <Row
-          icon={<ShieldCheck className="w-4 h-4" style={{ color: "var(--pp-brand-accent)" }} />}
-          label={lang === "fr" ? "Autorisations (micro, contacts, notifs)" : "Permissions (mic, contacts, notifs)"}
-          sub={lang === "fr" ? "Ouvrir les réglages iOS/Android" : "Open iOS/Android settings"}
-          onClick={async () => {
-            await markPrimerSkipped().catch(() => {});
-            await openAppSettings();
-          }}
-          chevron
-        />
       </Section>
 
       <Section title={t("more.sections.availability")}>
@@ -331,7 +318,6 @@ export default function MMore() {
             <Ms365ScopesCard profile={profile} onReconnect={connectMs365} />
           </div>
         )}
-        <MaestroConnectCard />
       </Section>
 
       <div className="pp-card" style={{ padding: 4 }}>
@@ -418,7 +404,6 @@ export default function MMore() {
             ].join(" · ");
             ((data as any)?.coherent ? toast.success : toast.warning)(`${t("more.diagnostic")}: ${flags}`);
           }} chevron />
-        <Row icon={<SettingsIcon className="w-4 h-4" />} label="Audit des KPI Home" sub="Vérifier les sources et la dernière sync" onClick={() => navigate("/mplanipret/kpi-audit")} chevron />
         <Row icon={<Info className="w-4 h-4" />} label={t("more.appVersion")} right={<span style={{ fontSize: 12, color: "var(--pp-text-faint)" }}>v1.0.0 (build 1)</span>} />
       </Section>
 
@@ -561,46 +546,13 @@ function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void 
 }
 
 function NotificationsSection({ profile, reloadProfile }: { profile: any; reloadProfile: () => Promise<void> }) {
-  const { t, lang } = useMplanipretLang();
+  const { t } = useMplanipretLang();
   const { subscribe, sendTest, busy } = usePlanipretPush();
   const setPref = async (field: string, val: boolean) => {
     await (supabase.from("planipret_profiles") as any).update({ [field]: val }).eq("user_id", profile.user_id);
     await reloadProfile();
   };
   const enablePush = async () => {
-    // On native iOS/Android, use Capacitor PushNotifications (triggers the real native popup)
-    const isNativeApp = !!(window as any).Capacitor?.isNativePlatform?.();
-    if (isNativeApp) {
-      try {
-        const { PushNotifications } = await import("@capacitor/push-notifications");
-        const check = await PushNotifications.checkPermissions();
-        if (check.receive === "granted") {
-          await PushNotifications.register();
-          toast.success(lang === "fr" ? "Notifications déjà activées ✅" : "Notifications already enabled ✅");
-          await reloadProfile();
-          return;
-        }
-        const req = await PushNotifications.requestPermissions();
-        if (req.receive === "granted") {
-          await PushNotifications.register();
-          toast.success(lang === "fr" ? "Notifications activées ✅" : "Notifications enabled ✅");
-          await reloadProfile();
-        } else {
-          // Permission denied — open iOS Settings
-          const { openAppSettings } = await import("@/lib/native/permissions/platform");
-          toast.error(
-            lang === "fr"
-              ? "Permission refusée. Activez dans Réglages iOS."
-              : "Permission denied. Enable in iOS Settings.",
-          );
-          setTimeout(() => openAppSettings(), 1500);
-        }
-      } catch (e: any) {
-        toast.error(e?.message ?? "Erreur notifications");
-      }
-      return;
-    }
-    // Web fallback (VAPID)
     const ok = await subscribe(profile.user_id);
     if (ok) await reloadProfile();
   };

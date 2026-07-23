@@ -1,24 +1,12 @@
 import { useEffect, useState } from "react";
-import { Bell, Globe, Moon, Sun } from "lucide-react";
+import { Bell, Settings as SettingsIcon } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
-import { useMplanipretTheme } from "@/hooks/useMplanipretTheme";
 import { supabase } from "@/integrations/supabase/client";
-import planipretLogoAsset from "@/assets/planipret-logo.png.asset.json";
-import MobileProfileSheet from "./MobileProfileSheet";
 
-const STATUS_COLOR: Record<string, string> = {
-  available: "#10B981",
-  busy: "#EF4444",
-  break: "#F59E0B",
-  offline: "#94A3B8",
-};
-
-export default function MobileHeaderControls({ profile, reloadProfile }: { profile: any; reloadProfile: () => Promise<void> | void }) {
-  const { t, lang, toggle: toggleLang } = useMplanipretLang();
-  const { theme, toggle: toggleTheme } = useMplanipretTheme();
+export default function MobileHeaderControls({ profile: _profile, reloadProfile: _reloadProfile }: { profile: any; reloadProfile: () => Promise<void> | void }) {
+  const { t } = useMplanipretLang();
   const navigate = useNavigate();
-  const [open, setOpen] = useState(false);
   const [unread, setUnread] = useState(0);
 
   useEffect(() => {
@@ -36,66 +24,32 @@ export default function MobileHeaderControls({ profile, reloadProfile }: { profi
       } catch { /* noop */ }
     };
     load();
-    const t = setInterval(load, 30000);
-    return () => { cancelled = true; clearInterval(t); };
+    const timer = setInterval(load, 30000);
+    return () => { cancelled = true; clearInterval(timer); };
   }, []);
 
-  const initials = (profile?.full_name || profile?.email || "?")
-    .split(/\s+/).map((s: string) => s[0]).filter(Boolean).slice(0, 2).join("").toUpperCase();
-  const status = profile?.status ?? "available";
-
   return (
-    <>
-      <div className="ml-auto flex items-center gap-1.5">
-        <span aria-label="Planiprêt" style={{
-          width: 26, height: 26, borderRadius: 8, overflow: "hidden",
-          display: "inline-flex", alignItems: "center", justifyContent: "center",
-          background: "#fff", border: "1px solid var(--pp-bg-border-2)",
-        }}>
-          <img src={planipretLogoAsset.url} alt="Planiprêt" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
-        </span>
-        <button onClick={() => navigate("/mplanipret/notifications")}
-          className="relative flex items-center justify-center rounded-full"
-          style={{ width: 28, height: 28, background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
-          aria-label="Notifications">
-          <Bell className="w-3.5 h-3.5" />
-          {unread > 0 && (
-            <span style={{
-              position: "absolute", top: -3, right: -3, minWidth: 14, height: 14, padding: "0 3px",
-              borderRadius: 999, background: "#EF4444", color: "#fff", fontSize: 9, fontWeight: 800,
-              display: "inline-flex", alignItems: "center", justifyContent: "center",
-              border: "1.5px solid var(--pp-bg-surface)",
-            }}>{unread > 99 ? "99+" : unread}</span>
-          )}
-        </button>
-        <button onClick={toggleLang}
-          className="flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-bold"
-          style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
-          aria-label={t("header.lang")}>
-          <Globe className="w-3 h-3" />
-          <span>{lang.toUpperCase()}</span>
-        </button>
-        <button onClick={toggleTheme}
-          className="flex items-center justify-center rounded-full"
-          style={{ width: 28, height: 28, background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
-          aria-label={t("header.theme")}>
-          {theme === "light" ? <Moon className="w-3.5 h-3.5" /> : <Sun className="w-3.5 h-3.5" />}
-        </button>
-        <button onClick={() => setOpen(true)}
-          className="relative flex items-center justify-center rounded-full font-bold text-white"
-          style={{
-            width: 30, height: 30,
-            background: "linear-gradient(135deg, #1A4A8A, #2E9BDC)",
-            border: "1px solid var(--pp-bg-border-2)",
-            fontSize: 11,
-          }}
-          aria-label={t("header.profile")}>
-          {initials}
-          <span className="absolute -bottom-0.5 -right-0.5 rounded-full"
-            style={{ width: 9, height: 9, background: STATUS_COLOR[status], border: "1.5px solid var(--pp-bg-surface)" }} />
-        </button>
-      </div>
-      {open && <MobileProfileSheet profile={profile} reloadProfile={reloadProfile} onClose={() => setOpen(false)} />}
-    </>
+    <div className="ml-auto flex items-center gap-2">
+      <button onClick={() => navigate("/mplanipret/notifications")}
+        className="relative flex items-center justify-center rounded-full"
+        style={{ width: 34, height: 34, background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
+        aria-label="Notifications">
+        <Bell className="w-4 h-4" />
+        {unread > 0 && (
+          <span style={{
+            position: "absolute", top: -3, right: -3, minWidth: 16, height: 16, padding: "0 4px",
+            borderRadius: 999, background: "#EF4444", color: "#fff", fontSize: 10, fontWeight: 800,
+            display: "inline-flex", alignItems: "center", justifyContent: "center",
+            border: "1.5px solid var(--pp-bg-surface)",
+          }}>{unread > 99 ? "99+" : unread}</span>
+        )}
+      </button>
+      <button onClick={() => navigate("/mplanipret/more")}
+        className="flex items-center justify-center rounded-full"
+        style={{ width: 34, height: 34, background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
+        aria-label={t("header.profile")}>
+        <SettingsIcon className="w-4 h-4" />
+      </button>
+    </div>
   );
 }

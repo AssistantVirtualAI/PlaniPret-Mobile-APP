@@ -93,7 +93,7 @@ export function prefetchAllMobileTabs(): void {
 }
 
 /** Cancel any in-flight prefetch requests (no-op — prefetches are fire-and-forget). */
-export function cancelPendingPrefetches(): void {
+export function cancelPendingPrefetches(_pathname?: string): void {
   // Nothing to cancel — prefetches are microtask-based and non-cancellable.
   // This function exists to satisfy import contracts.
 }

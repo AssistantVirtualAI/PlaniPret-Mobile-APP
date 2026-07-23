@@ -12,12 +12,8 @@ function isEmptyNativeArtifact(raw: unknown): boolean {
 
   const obj = raw as Record<string, unknown>;
   const keys = new Set([...Object.keys(obj), ...Object.getOwnPropertyNames(obj)]);
-  const message = String(obj.message ?? Object.getOwnPropertyDescriptor(obj, 'message')?.value ?? '').trim();
-  const errorMessage = String(obj.errorMessage ?? Object.getOwnPropertyDescriptor(obj, 'errorMessage')?.value ?? '').trim();
-  const code = String(obj.code ?? Object.getOwnPropertyDescriptor(obj, 'code')?.value ?? '').trim();
-  if (code === 'UNIMPLEMENTED' && /not implemented/i.test(message || errorMessage)) return true;
   const hasOnlyGeneratedErrorFields = [...keys].every((key) =>
-    ['stack', 'name', 'message', 'errorMessage', 'code', 'data'].includes(key)
+    ['stack', 'name', 'message', 'errorMessage'].includes(key)
   );
   for (const key of ['message', 'errorMessage', 'code', 'details', 'hint', 'error']) {
     const value = obj[key] ?? Object.getOwnPropertyDescriptor(obj, key)?.value;

@@ -250,14 +250,32 @@ export async function requirePlanipretBroker(
   const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
   const token = authHeader.replace("Bearer ", "");
-  const { data: claimsData, error: claimsErr } = await userClient.auth.getClaims(token);
-  if (claimsErr || !claimsData?.claims) {
-    return new Response(JSON.stringify({ error: "Unauthorized" }), {
+  let userId: string | null = null;
+
+  // Server-to-server path used by AVA tools. The service token may only act for
+  // an explicit broker user id, then the normal Planiprêt membership/profile
+  // checks below still apply.
+  if (token === SUPABASE_SERVICE_ROLE_KEY) {
+    const body = await req.clone().json().catch(() => ({}));
+    userId = body?._user_id ?? body?.user_id ?? body?.broker_user_id ?? null;
+    if (userId) userId = String(userId);
+  } else {
+    const { data: claimsData, error: claimsErr } = await userClient.auth.getClaims(token);
+    if (claimsErr || !claimsData?.claims) {
+      return new Response(JSON.stringify({ error: "Unauthorized" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+    userId = claimsData.claims.sub as string;
+  }
+
+  if (!userId) {
+    return new Response(JSON.stringify({ error: "Unauthorized — broker user required" }), {
       status: 401,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
-  const userId = claimsData.claims.sub as string;
 
   // App-separation guard: block Lemtel-only users outright
   const { data: lemtelOnly } = await supabase.rpc("is_lemtel_only", { _user_id: userId });

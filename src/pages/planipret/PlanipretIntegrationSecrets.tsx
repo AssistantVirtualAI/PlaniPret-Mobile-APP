@@ -3,8 +3,10 @@ import { supabase } from "@/integrations/supabase/client";
 import { AVA_OWNER_USER_ID } from "@/lib/avaOwner";
 import { PlanipretLangSwitch } from "@/components/planipret/PlanipretLangSwitch";
 
+type Provider = "microsoft" | "maestro" | "maestro_telecom";
+
 type Item = {
-  provider: "microsoft" | "maestro";
+  provider: Provider;
   updated_at: string | null;
   config_masked: Record<string, string>;
   has_keys: string[];
@@ -14,11 +16,16 @@ const MS_FIELDS = [
   { key: "client_id", label: "Client ID" },
   { key: "client_secret", label: "Client Secret", secret: true },
   { key: "tenant_id", label: "Tenant ID" },
+  { key: "auth_mode", label: "Auth mode (auto, public, confidential)" },
   { key: "redirect_uri", label: "Redirect URI" },
 ];
 const MAESTRO_FIELDS = [
   { key: "api_url", label: "API URL" },
   { key: "api_key", label: "API Key", secret: true },
+];
+const MAESTRO_TELECOM_FIELDS = [
+  { key: "api_url", label: "API URL (ex : https://client-dev.planipret.com/telecom/api/v1)" },
+  { key: "api_key", label: "Machine API Key", secret: true },
 ];
 
 export default function PlanipretIntegrationSecrets() {
@@ -28,9 +35,11 @@ export default function PlanipretIntegrationSecrets() {
   const [form, setForm] = useState<Record<string, Record<string, string>>>({
     microsoft: {},
     maestro: {},
+    maestro_telecom: {},
   });
   const [savingFor, setSavingFor] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
+
 
   const reload = async () => {
     setLoading(true);
@@ -59,7 +68,7 @@ export default function PlanipretIntegrationSecrets() {
   }
   if (authorized === null) return null;
 
-  const save = async (provider: "microsoft" | "maestro") => {
+  const save = async (provider: Provider) => {
     setSavingFor(provider);
     setMsg(null);
     const { error } = await supabase.functions.invoke("pp-integration-secrets", {
@@ -75,7 +84,7 @@ export default function PlanipretIntegrationSecrets() {
   };
 
   const renderCard = (
-    provider: "microsoft" | "maestro",
+    provider: Provider,
     title: string,
     fields: { key: string; label: string; secret?: boolean }[]
   ) => {
@@ -153,6 +162,8 @@ export default function PlanipretIntegrationSecrets() {
           <>
             {renderCard("microsoft", "Microsoft 365", MS_FIELDS)}
             {renderCard("maestro", "Maestro", MAESTRO_FIELDS)}
+            {renderCard("maestro_telecom", "Maestro · API Télécom", MAESTRO_TELECOM_FIELDS)}
+
           </>
         )}
       </main>
