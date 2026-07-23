@@ -1299,14 +1299,16 @@ function EmailDetailSheet({ email, onClose, onCompose, onChanged, onOptimisticRe
         style={{
           background: "var(--pp-bg-base)",
           border: "1px solid var(--pp-bg-border-2)",
-          height: "calc(100vh - env(safe-area-inset-top) - 24px)",
+          // Use native safeArea.top (from Capacitor) instead of CSS env() which
+          // can return 0 inside a WebView until the viewport is fully laid out.
+          height: `calc(100vh - ${safeArea.top > 0 ? safeArea.top : 44}px - 24px)`,
           maxHeight: "calc(100dvh - 24px)",
         }}
         onClick={(e) => e.stopPropagation()}
       >
         <div
           className="flex items-center justify-between px-4 pt-3 pb-2"
-          style={{ borderBottom: "1px solid var(--pp-bg-border)", flexShrink: 0, paddingTop: Math.max(safeArea.top, 12) }}
+          style={{ borderBottom: "1px solid var(--pp-bg-border)", flexShrink: 0, paddingTop: Math.max(safeArea.top > 0 ? safeArea.top : 44, 12) }}
         >
           <button onClick={onClose} className="p-1.5 rounded-full" style={{ color: "var(--pp-text-secondary)" }}>
             <ArrowLeft className="w-5 h-5" />

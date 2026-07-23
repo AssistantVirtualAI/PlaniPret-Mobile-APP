@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
-import { Bell, Settings as SettingsIcon } from "lucide-react";
+import { Bell, Settings as SettingsIcon, Globe, Moon, Sun } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import { useMplanipretTheme } from "@/hooks/useMplanipretTheme";
 import { supabase } from "@/integrations/supabase/client";
 
-export default function MobileHeaderControls({ profile: _profile, reloadProfile: _reloadProfile }: { profile: any; reloadProfile: () => Promise<void> | void }) {
-  const { t } = useMplanipretLang();
+export default function MobileHeaderControls({ profile, reloadProfile }: { profile: any; reloadProfile: () => Promise<void> | void }) {
+  const { t, lang, toggle: toggleLang } = useMplanipretLang();
+  const { theme, toggle: toggleTheme } = useMplanipretTheme();
   const navigate = useNavigate();
   const [unread, setUnread] = useState(0);
 
@@ -28,12 +30,54 @@ export default function MobileHeaderControls({ profile: _profile, reloadProfile:
     return () => { cancelled = true; clearInterval(timer); };
   }, []);
 
+  const handleLangToggle = async () => {
+    toggleLang();
+    // Persist language change to profile if available
+    if (profile?.user_id) {
+      const newLang = lang === "fr" ? "en" : "fr";
+      try {
+        await supabase.from("planipret_profiles").update({ language: newLang }).eq("user_id", profile.user_id);
+        if (reloadProfile) await reloadProfile();
+      } catch { /* noop */ }
+    }
+  };
+
+  const btnStyle = {
+    width: 34, height: 34,
+    background: "var(--pp-bg-elevated)",
+    border: "1px solid var(--pp-bg-border-2)",
+    color: "var(--pp-text-secondary)",
+  };
+
   return (
-    <div className="ml-auto flex items-center gap-2">
-      <button onClick={() => navigate("/mplanipret/notifications")}
+    <div className="ml-auto flex items-center gap-1.5">
+      {/* Language toggle: FR / EN */}
+      <button
+        onClick={handleLangToggle}
+        className="flex items-center justify-center rounded-full text-[10px] font-bold"
+        style={btnStyle}
+        aria-label={t("header.lang")}
+      >
+        <Globe className="w-3.5 h-3.5" />
+      </button>
+
+      {/* Theme toggle: dark / light */}
+      <button
+        onClick={toggleTheme}
+        className="flex items-center justify-center rounded-full"
+        style={btnStyle}
+        aria-label={theme === "dark" ? "Mode clair" : "Mode sombre"}
+      >
+        {theme === "dark" ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
+      </button>
+
+      {/* Notifications */}
+      <button
+        onClick={() => navigate("/mplanipret/notifications")}
         className="relative flex items-center justify-center rounded-full"
-        style={{ width: 34, height: 34, background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
-        aria-label="Notifications">
+        style={btnStyle}
+        aria-label="Notifications"
+      >
         <Bell className="w-4 h-4" />
         {unread > 0 && (
           <span style={{
@@ -44,10 +88,14 @@ export default function MobileHeaderControls({ profile: _profile, reloadProfile:
           }}>{unread > 99 ? "99+" : unread}</span>
         )}
       </button>
-      <button onClick={() => navigate("/mplanipret/more")}
+
+      {/* Settings / More */}
+      <button
+        onClick={() => navigate("/mplanipret/more")}
         className="flex items-center justify-center rounded-full"
-        style={{ width: 34, height: 34, background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
-        aria-label={t("header.profile")}>
+        style={btnStyle}
+        aria-label={t("header.profile")}
+      >
         <SettingsIcon className="w-4 h-4" />
       </button>
     </div>

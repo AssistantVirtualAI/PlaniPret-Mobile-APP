@@ -10,6 +10,7 @@ import type { PlanipretMobileContext } from "../PlanipretMobile";
 import { usePlanipretPush } from "@/hooks/usePlanipretPush";
 
 import { Ms365ScopesCard } from "@/components/planipret/Ms365ScopesCard";
+import MaestroConnectCard from "@/components/planipret/mobile/MaestroConnectCard";
 import { SiriShortcutsCard } from "@/components/planipret/SiriShortcutsCard";
 import { safeEdgeFunction } from "@/lib/safeEdgeFunction";
 import MNetworkSection from "@/components/planipret/mobile/MNetworkSection";
@@ -159,7 +160,10 @@ export default function MMore() {
     if (!confirm(t("more.logoutConfirm"))) return;
     await supabase.auth.signOut();
     toast.success(t("more.logoutSuccess"));
-    navigate("/login", { replace: true });
+    // Stay inside /mplanipret — PlanipretMobile detects the lost session and
+    // renders MobileAuthScreen automatically. Never redirect to /login which
+    // triggers getPostLoginRoute and bounces the user to the web portal.
+    navigate("/mplanipret", { replace: true });
   };
 
   return (
@@ -318,6 +322,7 @@ export default function MMore() {
             <Ms365ScopesCard profile={profile} onReconnect={connectMs365} />
           </div>
         )}
+        <MaestroConnectCard />
       </Section>
 
       <div className="pp-card" style={{ padding: 4 }}>
