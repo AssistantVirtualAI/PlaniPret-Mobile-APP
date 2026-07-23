@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { Bell, Globe, Moon, Sun, Settings as SettingsIcon } from "lucide-react";
+import { Bell, Globe, Moon, Sun } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { useMplanipretTheme } from "@/hooks/useMplanipretTheme";
 import { supabase } from "@/integrations/supabase/client";
+import planipretLogoAsset from "@/assets/planipret-logo.png.asset.json";
 import MobileProfileSheet from "./MobileProfileSheet";
 
 const STATUS_COLOR: Record<string, string> = {
@@ -46,6 +47,13 @@ export default function MobileHeaderControls({ profile, reloadProfile }: { profi
   return (
     <>
       <div className="ml-auto flex items-center gap-1.5">
+        <span aria-label="Planiprêt" style={{
+          width: 26, height: 26, borderRadius: 8, overflow: "hidden",
+          display: "inline-flex", alignItems: "center", justifyContent: "center",
+          background: "#fff", border: "1px solid var(--pp-bg-border-2)",
+        }}>
+          <img src={planipretLogoAsset.url} alt="Planiprêt" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
+        </span>
         <button onClick={() => navigate("/mplanipret/notifications")}
           className="relative flex items-center justify-center rounded-full"
           style={{ width: 28, height: 28, background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
@@ -59,12 +67,6 @@ export default function MobileHeaderControls({ profile, reloadProfile }: { profi
               border: "1.5px solid var(--pp-bg-surface)",
             }}>{unread > 99 ? "99+" : unread}</span>
           )}
-        </button>
-        <button onClick={() => navigate("/mplanipret/more")}
-          className="flex items-center justify-center rounded-full"
-          style={{ width: 28, height: 28, background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
-          aria-label={t("header.profile")}>
-          <SettingsIcon className="w-3.5 h-3.5" />
         </button>
         <button onClick={toggleLang}
           className="flex items-center gap-1 px-2 py-1 rounded-full text-[10px] font-bold"

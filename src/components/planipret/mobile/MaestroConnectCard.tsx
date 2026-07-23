@@ -75,8 +75,15 @@ export default function MaestroConnectCard() {
       });
       if (error) throw error;
       const url = (res as any)?.authorize_url;
-      if (!url) throw new Error((res as any)?.error || "no_authorize_url");
-
+      const resError = (res as any)?.error;
+      if (!url) throw new Error(resError || "no_authorize_url");
+      // Validate URL before opening — prevents Safari "l'adresse n'est pas valide"
+      try {
+        const parsed = new URL(url);
+        if (parsed.protocol !== "https:") throw new Error(`URL doit être https, reçu: ${parsed.protocol}`);
+      } catch (urlErr: any) {
+        throw new Error(`URL Maestro invalide: ${urlErr?.message ?? url}`);
+      }
       if (isNative) {
         await Browser.open({ url, presentationStyle: "popover" });
       } else {

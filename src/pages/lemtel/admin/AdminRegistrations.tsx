@@ -8,7 +8,8 @@ import { supabase } from '@/integrations/supabase/client';
 import { AdminPageHeader } from '@/components/admin/AdminPageHeader';
 import { AdminSkeletonRows, AdminEmptyState } from '@/components/admin/AdminSkeletonRows';
 import { StatusBadge } from '@/components/admin/StatusBadge';
-import { Wifi, RefreshCw, Search } from 'lucide-react';
+import { Wifi, RefreshCw, Search, PhoneForwarded, Loader2 } from 'lucide-react';
+import { toast } from 'sonner';
 import { formatDistanceToNowStrict } from 'date-fns';
 
 type Reg = {
@@ -27,6 +28,7 @@ type Reg = {
 
 export default function AdminRegistrations() {
   const [q, setQ] = useState('');
+  const [repairing, setRepairing] = useState(false);
 
   const { data, isLoading, refetch, dataUpdatedAt, isFetching } = useQuery({
     queryKey: ['fpbx', 'registrations-live'],
@@ -50,6 +52,38 @@ export default function AdminRegistrations() {
     !q || `${r.extension ?? ''} ${r.user ?? ''} ${r.contact ?? ''} ${r.agent ?? ''} ${r.user_agent ?? ''} ${r.network_ip ?? ''} ${r.hostname ?? ''}`.toLowerCase().includes(q.toLowerCase())
   ), [rows, q]);
 
+  // Group by extension/user to see multi-device ring readiness
+  const perUser = useMemo(() => {
+    const map = new Map<string, Reg[]>();
+    for (const r of rows) {
+      const key = String(r.user || r.extension || '').split('@')[0];
+      if (!key) continue;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key)!.push(r);
+    }
+    return Array.from(map.entries())
+      .map(([user, regs]) => ({ user, regs, count: regs.length }))
+      .sort((a, b) => b.count - a.count);
+  }, [rows]);
+
+  const configureFork = async () => {
+    setRepairing(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('fusionpbx-proxy', {
+        body: { action: 'repair-all-extensions-verto' },
+      });
+      if (error) throw error;
+      const fixed = (data as any)?.fixed ?? 0;
+      const failed = (data as any)?.failed ?? 0;
+      toast.success(`Multi-device ring activé — ${fixed} extension(s) mises à jour${failed ? `, ${failed} échec(s)` : ''}`);
+      refetch();
+    } catch (e: any) {
+      toast.error(e?.message || 'Échec de la configuration');
+    } finally {
+      setRepairing(false);
+    }
+  };
+
   return (
     <div className="space-y-5 w-full min-w-0">
       <AdminPageHeader
@@ -57,11 +91,38 @@ export default function AdminRegistrations() {
         title="SIP Registrations"
         subtitle="Currently registered endpoints. Auto-refresh every 10s."
         actions={
-          <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching}>
-            <RefreshCw className={`w-4 h-4 mr-2 ${isFetching ? 'animate-spin' : ''}`} /> Refresh
-          </Button>
+          <div className="flex gap-2 flex-wrap">
+            <Button variant="default" size="sm" onClick={configureFork} disabled={repairing}>
+              {repairing ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <PhoneForwarded className="w-4 h-4 mr-2" />}
+              Activer sonnerie multi-appareils
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => refetch()} disabled={isFetching}>
+              <RefreshCw className={`w-4 h-4 mr-2 ${isFetching ? 'animate-spin' : ''}`} /> Refresh
+            </Button>
+          </div>
         }
       />
+
+      {perUser.length > 0 && (
+        <Card className="border-border/60 shadow-sm">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm text-muted-foreground">Appareils enregistrés par poste (fork simultané)</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex flex-wrap gap-2">
+              {perUser.map(({ user, count }) => (
+                <div key={user} className={`px-3 py-1.5 rounded-md text-xs border ${count > 1 ? 'border-green-500/40 bg-green-500/10 text-green-700 dark:text-green-300' : 'border-border bg-muted/40'}`}>
+                  <span className="font-mono font-semibold">{user}</span>
+                  <span className="ml-2 opacity-70">{count} appareil{count > 1 ? 's' : ''}</span>
+                </div>
+              ))}
+            </div>
+            <p className="text-xs text-muted-foreground mt-3">
+              Les postes avec plusieurs appareils sonneront simultanément sur mobile + desktop. Si un poste n'a qu'un seul appareil, cliquez sur "Activer sonnerie multi-appareils" pour réparer la configuration.
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       <Card className="border-border/60 shadow-sm">
         <CardHeader>

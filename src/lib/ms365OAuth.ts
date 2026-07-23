@@ -30,6 +30,40 @@ function createCodeVerifier(): string {
   return base64Url(bytes);
 }
 
+// ─── Capacitor Preferences helpers (native persistent storage) ───────────────
+// On iOS, localStorage/sessionStorage can be cleared when the app is suspended
+// and Safari closes. @capacitor/preferences writes to NSUserDefaults which
+// survives app suspension and SFSafariViewController closure.
+async function nativeSet(key: string, value: string): Promise<void> {
+  try {
+    if (Capacitor.isNativePlatform()) {
+      const { Preferences } = await import("@capacitor/preferences");
+      await Preferences.set({ key, value });
+    }
+  } catch { /* non-blocking */ }
+}
+
+async function nativeGet(key: string): Promise<string | null> {
+  try {
+    if (Capacitor.isNativePlatform()) {
+      const { Preferences } = await import("@capacitor/preferences");
+      const { value } = await Preferences.get({ key });
+      return value;
+    }
+  } catch { /* non-blocking */ }
+  return null;
+}
+
+async function nativeRemove(key: string): Promise<void> {
+  try {
+    if (Capacitor.isNativePlatform()) {
+      const { Preferences } = await import("@capacitor/preferences");
+      await Preferences.remove({ key });
+    }
+  } catch { /* non-blocking */ }
+}
+// ─────────────────────────────────────────────────────────────────────────────
+
 export function getMs365RedirectUri(): string {
   if (Capacitor.isNativePlatform()) return MS365_NATIVE_REDIRECT_URI;
   return `${window.location.origin}${MS365_WEB_CALLBACK_PATH}`;
@@ -38,6 +72,8 @@ export function getMs365RedirectUri(): string {
 export function rememberMs365RedirectUri(redirectUri: string): void {
   try { sessionStorage.setItem(REDIRECT_STORAGE_KEY, redirectUri); } catch {}
   try { localStorage.setItem(REDIRECT_STORAGE_KEY, redirectUri); } catch {}
+  // Also persist natively (fire-and-forget)
+  nativeSet(REDIRECT_STORAGE_KEY, redirectUri).catch(() => {});
 }
 
 export function getRememberedMs365RedirectUri(): string {
@@ -59,8 +95,39 @@ export function clearRememberedMs365RedirectUri(): void {
   try {
     Object.keys(localStorage).filter((k) => k.startsWith(`${VERIFIER_STORAGE_KEY}:`)).forEach((k) => localStorage.removeItem(k));
   } catch {}
+  // Clear native storage too
+  nativeRemove(REDIRECT_STORAGE_KEY).catch(() => {});
+  nativeRemove(VERIFIER_STORAGE_KEY).catch(() => {});
 }
 
+/**
+ * Retrieve the PKCE code_verifier.
+ * Priority: sessionStorage → localStorage → Capacitor Preferences (native).
+ * This is async to support the native fallback on iOS.
+ */
+export async function getRememberedMs365CodeVerifierAsync(state?: string | null): Promise<string | null> {
+  // 1. Try sessionStorage (fastest, web)
+  try {
+    const ss = sessionStorage.getItem(verifierKey(state)) || sessionStorage.getItem(VERIFIER_STORAGE_KEY);
+    if (ss) return ss;
+  } catch {}
+  // 2. Try localStorage
+  try {
+    const ls = localStorage.getItem(verifierKey(state)) || localStorage.getItem(VERIFIER_STORAGE_KEY);
+    if (ls) return ls;
+  } catch {}
+  // 3. Fallback to Capacitor Preferences (survives iOS app suspension)
+  const stateKey = state ? verifierKey(state) : null;
+  if (stateKey) {
+    const nv = await nativeGet(stateKey);
+    if (nv) return nv;
+  }
+  const nv = await nativeGet(VERIFIER_STORAGE_KEY);
+  if (nv) return nv;
+  return null;
+}
+
+/** Synchronous version kept for backward compatibility (web only) */
 export function getRememberedMs365CodeVerifier(state?: string | null): string | null {
   try {
     return sessionStorage.getItem(verifierKey(state)) || localStorage.getItem(verifierKey(state)) || sessionStorage.getItem(VERIFIER_STORAGE_KEY) || localStorage.getItem(VERIFIER_STORAGE_KEY);
@@ -82,8 +149,12 @@ export async function buildMs365AuthorizeUrl(cfg: {
   const oauthState = `${cfg.state ? `${cfg.state}:` : ""}${createCodeVerifier().slice(0, 18)}`;
   const verifier = createCodeVerifier();
   const challenge = await sha256Base64Url(verifier);
+  // Store in all available storages for maximum resilience
   try { sessionStorage.setItem(verifierKey(oauthState), verifier); sessionStorage.setItem(VERIFIER_STORAGE_KEY, verifier); } catch {}
   try { localStorage.setItem(verifierKey(oauthState), verifier); localStorage.setItem(VERIFIER_STORAGE_KEY, verifier); } catch {}
+  // Persist natively — this is the critical path for iOS (await to ensure it's written before Browser.open)
+  await nativeSet(verifierKey(oauthState), verifier).catch(() => {});
+  await nativeSet(VERIFIER_STORAGE_KEY, verifier).catch(() => {});
   const params = new URLSearchParams({
     client_id: cfg.clientId,
     response_type: "code",

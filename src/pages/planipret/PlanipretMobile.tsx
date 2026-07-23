@@ -849,66 +849,22 @@ export default function PlanipretMobile() {
       )}
       <div className="h-full flex flex-col relative overflow-hidden" style={{ background: "var(--pp-bg-base)" }}>
 
-        {/* Top brand header — AVA (left) · Planiprêt (center) · Settings (right) */}
+        {/* Top brand header — Planiprêt (left) · Controls (right) */}
         <header
           className="relative flex items-center px-4 pp-mobile-header"
           style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 6px)", paddingBottom: 6 }}
         >
+          {/* Planiprêt logo — left, grand */}
+          <span aria-label="Planiprêt" style={{
+            height: 38, maxWidth: 140, overflow: "hidden",
+            display: "inline-flex", alignItems: "center", justifyContent: "flex-start",
+            flexShrink: 0,
+          }}>
+            <img src={planipretLogoAsset.url} alt="Planiprêt" style={{ height: "100%", width: "auto", objectFit: "contain" }} />
+          </span>
 
-
-          {/* AVA icon — left */}
-          <div className="flex items-center gap-1.5">
-            <AvaBadge />
-            <span className="flex items-center gap-1.5">
-              <span className="pp-live-dot" />
-              <span style={{ fontSize: 9, color: "var(--pp-success)", fontWeight: 700, letterSpacing: "0.05em" }}>REST</span>
-            </span>
-          </div>
-
-          {/* Settings button — between AVA (left) and Planiprêt (center) */}
-          <button
-            type="button"
-            onClick={() => navigate("/mplanipret/more")}
-            aria-label="Paramètres"
-            className="ml-3 flex items-center justify-center active:scale-95 transition"
-            style={{
-              width: 32, height: 32, borderRadius: 10,
-              background: "var(--pp-bg-elevated)",
-              border: "1px solid var(--pp-bg-border-2)",
-              color: "var(--pp-text-secondary)",
-            }}
-          >
-            <SettingsIcon className="w-4 h-4" />
-          </button>
-
-          {/* Notifications bell — aggregate SMS + voicemail + AVA notifs */}
-          <button
-            type="button"
-            onClick={() => navigate("/mplanipret/notifications")}
-            aria-label={t("nav.notifications") || "Notifications"}
-            className="ml-2 relative flex items-center justify-center active:scale-95 transition"
-            style={{
-              width: 32, height: 32, borderRadius: 10,
-              background: "var(--pp-bg-elevated)",
-              border: "1px solid var(--pp-bg-border-2)",
-              color: totalUnread > 0 ? "var(--pp-brand-accent)" : "var(--pp-text-secondary)",
-            }}
-          >
-            <Bell className="w-4 h-4" />
-            {totalUnread > 0 && (
-              <span
-                className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full text-white text-[9px] font-bold flex items-center justify-center"
-                style={{ background: "var(--pp-danger, #E84C4C)" }}
-              >
-                {totalUnread > 9 ? "9+" : totalUnread}
-              </span>
-            )}
-          </button>
-
-
-          {/* Lang + theme + profile — right */}
+          {/* Controls (Bell, Lang, Theme, Avatar) — right via MobileHeaderControls */}
           <MobileHeaderControls profile={profile} reloadProfile={loadProfile} />
-
         </header>
 
         <UniversalSearchBar />
@@ -927,6 +883,8 @@ export default function PlanipretMobile() {
         )}
 
         {/* Right FAB — Keypad (bleu) ou raccrocher (rouge) si appel actif */}
+        {/* Visible seulement sur Home et Calls (pas sur Messages, Contacts, AVA) */}
+        {(activeCallId || location.pathname.includes("/home") || location.pathname.includes("/calls")) && (
         <button onClick={activeCallId ? hangupActive : () => setDialerOpen(true)}
           className="absolute z-20 rounded-full flex items-center justify-center text-white active:scale-95 transition"
           style={{
@@ -943,6 +901,7 @@ export default function PlanipretMobile() {
           aria-label={activeCallId ? t("dialer.hangup") : t("dialer.dialNumber")}>
           {activeCallId ? <PhoneOff className="w-5 h-5" /> : <PhoneIcon className="w-5 h-5" />}
         </button>
+        )}
 
 
         {/* Tab bar (5 tabs) */}
