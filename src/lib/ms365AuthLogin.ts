@@ -1,5 +1,6 @@
 import { supabase } from "@/integrations/supabase/client";
 import { openMs365Authorize } from "@/lib/ms365OAuth";
+import { markMs365Pending } from "@/lib/ms365Pending";
 
 const INTENT_KEY = "pp_ms365_auth_intent";
 const NEXT_KEY = "pp_ms365_auth_next";
@@ -34,6 +35,7 @@ export async function startMicrosoftSignIn(
     localStorage.setItem(INTENT_KEY, "login");
     localStorage.setItem(NEXT_KEY, nextPath);
   } catch {}
+  markMs365Pending();
   await openMs365Authorize({
     clientId: cfg.client_id,
     tenant: cfg.tenant_id || "common",

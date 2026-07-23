@@ -18,9 +18,11 @@ import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { useCallerNames } from "@/lib/planipret/callerLookup";
 import { connectMs365 } from "@/lib/ms365Connect";
 import { getPpContacts } from "@/lib/ppContactsCache";
+import RecipientAutocomplete from "@/components/planipret/mobile/RecipientAutocomplete";
+import EmailHistoryList from "@/components/planipret/mobile/EmailHistoryList";
 
 
-type SubTab = "sms" | "team" | "teams365" | "emails" | "roster";
+type SubTab = "sms" | "team" | "teams365" | "emails" | "history" | "roster";
 
 
 type Msg = {
@@ -55,7 +57,7 @@ const fmtTime = (iso: string, lang: "fr" | "en" = "fr", t?: (key: string) => str
 };
 
 export default function MMessages() {
-  const { t } = useMplanipretLang();
+  const { t, lang } = useMplanipretLang();
   const { profile, openDialer, registerRefresh } = useOutletContext<PlanipretMobileContext>();
   const [searchParams] = useSearchParams();
   const initialTab = ((): SubTab => {
@@ -99,6 +101,7 @@ export default function MMessages() {
             { k: "team" as SubTab, label: t("messages.tabs.team"), Icon: UsersRound },
             { k: "teams365" as SubTab, label: "Teams", Icon: Users },
             { k: "emails" as SubTab, label: t("messages.tabs.emails"), Icon: Mail },
+            { k: "history" as SubTab, label: lang === "fr" ? "Historique" : "History", Icon: Mail },
           ].map((item) => {
             const active = sub === item.k;
             return (
@@ -133,6 +136,7 @@ export default function MMessages() {
         {sub === "team" && <TeamChat profile={profile} />}
         {sub === "teams365" && <Teams365Panel profile={profile} />}
         {sub === "emails" && <EmailsList profile={profile} initialTo={qTo} initialName={qName} />}
+        {sub === "history" && <EmailHistoryList />}
       </div>
     </div>
   );
@@ -1522,6 +1526,18 @@ function EmailComposeSheet({ init, onClose, onSent }: { init: ComposeInit; onClo
         subject, body,
         attachments: attachmentsPayload,
       };
+      // Duplicate detection (only for brand-new emails, not replies/forwards)
+      try {
+        const { data: dup } = await supabase.functions.invoke("ms365-actions", {
+          body: { action: "check_duplicate_email", payload: { to: payload.to, subject, body, since_days: 14 } },
+        });
+        if ((dup as any)?.duplicate && (dup as any)?.matches?.length) {
+          const m = (dup as any).matches[0];
+          const when = m?.sent_at ? new Date(m.sent_at).toLocaleString() : "";
+          const ok = window.confirm(`Un courriel identique a déjà été envoyé${when ? ` le ${when}` : ""}. Envoyer quand même ?`);
+          if (!ok) { setSending(false); return; }
+        }
+      } catch { /* non-blocking */ }
     }
     const { data, error } = await supabase.functions.invoke("ms365-actions", { body: { action, payload } });
     setSending(false);
@@ -1563,14 +1579,16 @@ function EmailComposeSheet({ init, onClose, onSent }: { init: ComposeInit; onClo
         <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
           {(mode === "new" || mode === "forward") && (
             <>
-              <div className="flex items-center gap-2">
-                <input
-                  value={to} onChange={(e) => setTo(e.target.value)} placeholder={t("messages.toPlaceholder")}
-                  className="flex-1 px-3 py-2 rounded-lg text-sm outline-none"
-                  style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
-                />
+              <div className="flex items-start gap-2">
+                <div className="flex-1">
+                  <RecipientAutocomplete
+                    value={to} onChange={setTo} placeholder={t("messages.toPlaceholder")}
+                    className="w-full px-3 py-2 rounded-lg text-sm outline-none"
+                    style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
+                  />
+                </div>
                 {mode === "new" && (
-                  <button onClick={() => setShowCc((s) => !s)} className="text-[11px] px-2 py-1 rounded-lg"
+                  <button onClick={() => setShowCc((s) => !s)} className="text-[11px] px-2 py-2 rounded-lg shrink-0"
                     style={{ color: "var(--pp-brand-accent)", background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)" }}>
                     Cc/Cci
                   </button>
@@ -1578,10 +1596,10 @@ function EmailComposeSheet({ init, onClose, onSent }: { init: ComposeInit; onClo
               </div>
               {mode === "new" && showCc && (
                 <>
-                  <input value={cc} onChange={(e) => setCc(e.target.value)} placeholder="Cc"
+                  <RecipientAutocomplete value={cc} onChange={setCc} placeholder="Cc"
                     className="w-full px-3 py-2 rounded-lg text-sm outline-none"
                     style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }} />
-                  <input value={bcc} onChange={(e) => setBcc(e.target.value)} placeholder="Cci"
+                  <RecipientAutocomplete value={bcc} onChange={setBcc} placeholder="Cci"
                     className="w-full px-3 py-2 rounded-lg text-sm outline-none"
                     style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }} />
                 </>

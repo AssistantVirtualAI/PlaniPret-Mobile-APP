@@ -4,6 +4,11 @@ import { MS365_DELEGATED_SCOPES, refreshMicrosoftAccessToken } from "../_shared/
 
 const GRAPH = "https://graph.microsoft.com/v1.0";
 
+async function sha1(input: string): Promise<string> {
+  const buf = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(input));
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 async function refreshToken(admin: any, profile: any) {
   return await refreshMicrosoftAccessToken(admin, profile, MS365_DELEGATED_SCOPES);
 }
@@ -140,6 +145,23 @@ Deno.serve(async (req) => {
         const d = await r.json();
         return j({ success: r.ok, email: d }, r.ok ? 200 : 500);
       }
+      case "check_duplicate_email": {
+        const to = (Array.isArray(payload.to) ? payload.to : [payload.to]).filter(Boolean).map((e: string) => String(e).toLowerCase()).sort();
+        const subject = String(payload.subject ?? "").trim().toLowerCase();
+        const body = String(payload.body ?? "").trim().slice(0, 500).toLowerCase();
+        const hashBase = `${subject}|${to.join(",")}|${body}`;
+        const content_hash = await sha1(hashBase);
+        const sinceDays = Number(payload.since_days ?? 14);
+        const since = new Date(Date.now() - sinceDays * 86400000).toISOString();
+        const { data: matches } = await admin.from("planipret_email_messages")
+          .select("id, graph_id, subject, sent_at, to_recipients, from_email")
+          .eq("user_id", userId)
+          .eq("content_hash", content_hash)
+          .gte("sent_at", since)
+          .order("sent_at", { ascending: false })
+          .limit(5);
+        return j({ success: true, duplicate: (matches ?? []).length > 0, matches: matches ?? [], content_hash });
+      }
       case "send_email": {
         const to = Array.isArray(payload.to) ? payload.to : [payload.to].filter(Boolean);
         if (!to.length || !payload.subject || !payload.body) return j({ success: false, error: "to, subject, body requis" }, 400);
@@ -161,6 +183,33 @@ Deno.serve(async (req) => {
         if (attachments.length) message.attachments = attachments;
         const r = await graph(admin, profile, `/me/sendMail`, { method: "POST", body: JSON.stringify({ message, saveToSentItems: true }) });
         const txt = await r.text().catch(() => "");
+        if (r.ok) {
+          // Locally cache the sent email immediately (delta sync will backfill graph_id + internetMessageId)
+          try {
+            const toSorted = to.map((e: string) => String(e).toLowerCase()).sort();
+            const hashBase = `${String(payload.subject).trim().toLowerCase()}|${toSorted.join(",")}|${String(payload.body).trim().slice(0, 500).toLowerCase()}`;
+            const content_hash = await sha1(hashBase);
+            await admin.from("planipret_email_messages").insert({
+              user_id: userId,
+              graph_id: `local:${crypto.randomUUID()}`,
+              folder: "sent",
+              subject: payload.subject,
+              from_email: profile.ms365_email ?? null,
+              from_name: profile.full_name ?? null,
+              to_recipients: to.map((e: string) => ({ address: e })),
+              cc_recipients: cc.map((e: string) => ({ address: e })),
+              body_preview: String(payload.body).slice(0, 300),
+              body_html: message.body.content,
+              is_read: true,
+              is_sent_by_me: true,
+              has_attachments: attachments.length > 0,
+              sent_at: new Date().toISOString(),
+              content_hash,
+              locally_saved: true,
+              last_synced_at: new Date().toISOString(),
+            });
+          } catch (e) { console.warn("[send_email] local cache failed", e); }
+        }
         return j({ success: r.ok, error: r.ok ? null : txt, code: r.status }, r.ok ? 200 : 500);
       }
       case "reply_email":

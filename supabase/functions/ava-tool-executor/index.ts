@@ -2,6 +2,7 @@
 // Every tool the agent triggers passes through here. Logs each call into
 // planipret_ava_conversations.
 import { authBroker, corsHeaders, jsonResponse, nsBrokerFetch } from "../_shared/ns-broker.ts";
+import { normalizePhoneE164 } from "../_shared/phone-normalize.ts";
 
 const DOMAIN = "planipret.ca";
 
@@ -153,6 +154,7 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
       to_number = hit.value; contact_name = hit.name;
     }
     if (!to_number) return { success: false, error: "to_number_required" };
+    to_number = normalizePhoneE164(to_number) ?? to_number;
     const r = await callPlanipretFunction(ctx, "pp-ns-calls", {
       action: "start",
       to_number,
@@ -193,6 +195,7 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
       number = hit.value; name = hit.name;
     }
     if (!number) return { success: false, error: "number_required" };
+    number = normalizePhoneE164(number) ?? number;
     await broadcastNav(ctx, "/mplanipret/calls", { open_dialer: { number, autoDial: !!p?.auto_dial } });
     return { success: true, message: `Clavier ouvert avec ${name ?? number}` };
   },
@@ -206,6 +209,7 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
       number = hit.value; name = hit.name;
     }
     if (!number) return { success: false, error: "number_required" };
+    number = normalizePhoneE164(number) ?? number;
     const body = firstText(p?.body, p?.message, p?.text);
     await broadcastNav(ctx, "/mplanipret/messages", { open_sms_composer: { number, body } });
     return { success: true, message: `Composeur SMS ouvert pour ${name ?? number}` };
@@ -286,6 +290,7 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
     }
     const message = firstText(p?.message, p?.body, p?.text, p?.content);
     if (!to || !message) return { success: false, error: "to_and_message_required", message: "Il manque le numéro ou le contenu du SMS." };
+    to = normalizePhoneE164(to) ?? to;
     const r = await callPlanipretFunction(ctx, "pp-ns-sms", {
       action: "send",
       to,

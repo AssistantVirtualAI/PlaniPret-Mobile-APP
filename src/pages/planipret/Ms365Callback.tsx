@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
 import { clearRememberedMs365RedirectUri, getRememberedMs365CodeVerifier, getRememberedMs365RedirectUri } from "@/lib/ms365OAuth";
+import { clearMs365Pending } from "@/lib/ms365Pending";
 import { clearMicrosoftSignInIntent, getMicrosoftSignInIntent, getMicrosoftSignInNext } from "@/lib/ms365AuthLogin";
 
 async function getSessionWithRetry() {
@@ -27,6 +28,7 @@ export default function Ms365Callback() {
     if (ranRef.current) return;
     ranRef.current = true;
     (async () => {
+      clearMs365Pending();
       const code = params.get("code");
       const err = params.get("error_description") ?? params.get("error");
       if (err) { setStatus("error"); setError(err); return; }
@@ -84,6 +86,10 @@ export default function Ms365Callback() {
         void supabase.functions.invoke("maestro-telecom-link", {
           body: { action: "link", ms_access_token: msAccessToken },
         }).catch(() => {});
+      } catch {}
+      // Kick off full MS365 import in the background (contacts, mail, calendar, teams).
+      try {
+        void supabase.functions.invoke("ms365-full-import", { body: { mode: "initial" } }).catch(() => {});
       } catch {}
       setStatus("ok");
       setTimeout(() => navigate("/mplanipret/more?ms365=ok", { replace: true }), 1200);

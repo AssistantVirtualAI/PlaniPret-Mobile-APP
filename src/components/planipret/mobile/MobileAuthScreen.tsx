@@ -8,6 +8,7 @@ import { useSafeAreaInsets } from "@/hooks/useSafeAreaInsets";
 import avaLogoAsset from "@/assets/ava-statistics-logo.png.asset.json";
 import planipretLogoAsset from "@/assets/planipret-logo.png.asset.json";
 import { startMicrosoftSignIn } from "@/lib/ms365AuthLogin";
+import { Ms365PendingBanner } from "@/components/planipret/mobile/Ms365PendingBanner";
 
 const AvaBadge = ({ size = 44 }: { size?: number }) => (
   <img src={avaLogoAsset.url} alt="AVA" style={{ width: size, height: size, objectFit: "contain", borderRadius: 10 }} />
@@ -104,6 +105,7 @@ export default function MobileAuthScreen({ onLoggedIn }: { onLoggedIn: () => Pro
         </div>
 
         {/* Form */}
+        <Ms365PendingBanner onRetry={signInWithMicrosoft} />
         {/* Microsoft SSO (primary) */}
         <div className="px-6 mb-3">
           <button type="button" onClick={signInWithMicrosoft} disabled={loading}
