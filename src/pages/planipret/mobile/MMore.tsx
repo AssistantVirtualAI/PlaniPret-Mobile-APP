@@ -20,7 +20,9 @@ import Ms365StatusBadge from "@/components/planipret/Ms365StatusBadge";
 import { openMs365Authorize } from "@/lib/ms365OAuth";
 import { useMplanipretSoftphone } from "@/hooks/useMplanipretSoftphone";
 import { ppSipProvider, type PpSipSnapshot } from "@/lib/planipret/sip/ppSipProvider";
-import { Radio } from "lucide-react";
+import { Radio, ShieldCheck } from "lucide-react";
+import { openAppSettings } from "@/lib/native/permissions/platform";
+import { markPrimerSkipped } from "@/lib/native/permissions/orchestrator";
 
 const initials = (name?: string) =>
   (name ?? "").split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0]?.toUpperCase()).join("") || "?";
@@ -148,9 +150,47 @@ export default function MMore() {
   };
 
   const toggleNotif = async (on: boolean) => {
-    if (on && "Notification" in window) {
-      const perm = await Notification.requestPermission();
-      if (perm !== "granted") { toast.error(t("more.permissionDenied")); return; }
+    if (on) {
+      // On native iOS/Android, use Capacitor PushNotifications (triggers the real native popup)
+      const isNativeApp = !!(window as any).Capacitor?.isNativePlatform?.();
+      if (isNativeApp) {
+        try {
+          const { PushNotifications } = await import("@capacitor/push-notifications");
+          const check = await PushNotifications.checkPermissions();
+          if (check.receive === "granted") {
+            await PushNotifications.register();
+            toast.success(lang === "fr" ? "Notifications déjà activées ✅" : "Notifications already enabled ✅");
+            await reloadProfile();
+            setNotifEnabled(true);
+            localStorage.setItem("planipret_notif", "1");
+            return;
+          }
+          const req = await PushNotifications.requestPermissions();
+          if (req.receive === "granted") {
+            await PushNotifications.register();
+            toast.success(lang === "fr" ? "Notifications activées ✅" : "Notifications enabled ✅");
+            await reloadProfile();
+            setNotifEnabled(true);
+            localStorage.setItem("planipret_notif", "1");
+          } else {
+            // Permission denied — open iOS Settings
+            toast.error(
+              lang === "fr"
+                ? "Permission refusée. Activez dans Réglages iOS."
+                : "Permission denied. Enable in iOS Settings.",
+            );
+            setTimeout(() => openAppSettings(), 1500);
+          }
+        } catch (e: any) {
+          toast.error(e?.message ?? "Erreur notifications");
+        }
+        return;
+      }
+      // Web fallback (VAPID)
+      if ("Notification" in window) {
+        const perm = await Notification.requestPermission();
+        if (perm !== "granted") { toast.error(t("more.permissionDenied")); return; }
+      }
     }
     setNotifEnabled(on);
     localStorage.setItem("planipret_notif", on ? "1" : "0");
@@ -371,6 +411,16 @@ export default function MMore() {
               })}
             </div>
           }
+        />
+        <Row
+          icon={<ShieldCheck className="w-4 h-4" style={{ color: "var(--pp-brand-accent)" }} />}
+          label={lang === "fr" ? "Autorisations (micro, contacts, notifs)" : "Permissions (mic, contacts, notifs)"}
+          sub={lang === "fr" ? "Ouvrir les réglages iOS/Android" : "Open iOS/Android settings"}
+          onClick={async () => {
+            await markPrimerSkipped().catch(() => {});
+            await openAppSettings();
+          }}
+          chevron
         />
       </Section>
 

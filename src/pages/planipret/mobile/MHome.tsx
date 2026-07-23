@@ -1,12 +1,12 @@
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useOutletContext, useNavigate } from "react-router-dom";
 
 import { supabase } from "@/integrations/supabase/client";
 import {
   Phone, PhoneMissed, MessageSquare, Voicemail,
-  ArrowDownLeft, ArrowUpRight, X, Calendar, Headphones, Bot,
+  ArrowDownLeft, ArrowUpRight, X, Calendar, Headphones,
   BellOff, Flame, Sparkles, ChevronRight, ChevronLeft, Mail, Users as UsersIcon,
-  CheckSquare, RefreshCw, AlertCircle, Video, ExternalLink, Plus,
+  CheckSquare, RefreshCw, AlertCircle, Video, ExternalLink,
 } from "lucide-react";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
 import { toast } from "sonner";
@@ -16,6 +16,8 @@ import PermissionBanners from "@/components/planipret/mobile/PermissionBanners";
 import { TEMP_EMOJI } from "@/components/planipret/leadHelpers";
 import { useMaestroPipelineToasts } from "@/hooks/useMaestroPipelineToasts";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import { loadMHomeCache, saveMHomeCache, type SourceStatusMap } from "@/lib/mhomeCache";
+import PerformanceReportCard from "@/components/planipret/mobile/PerformanceReportCard";
 
 
 type Period = "day" | "week" | "month" | "shift";
@@ -72,16 +74,19 @@ export default function MHome() {
   });
   useEffect(() => { try { localStorage.setItem("pp.mobile.period.v2", period); } catch {} }, [period]);
 
-  const [stats, setStats] = useState({ calls: 0, missed: 0, sms: 0, voicemails: 0, meetings: 0, hotLeads: 0, tasks: 0, outbound: 0 });
-  const [recent, setRecent] = useState<any[]>([]);
-  const [hotLeads, setHotLeads] = useState<any[]>([]);
-  const [dueReminders, setDueReminders] = useState<any[]>([]);
-  const [meetings, setMeetings] = useState<any[]>([]);
-  const [msMeetings, setMsMeetings] = useState<any[]>([]);
+  const cached = useMemo(() => loadMHomeCache(profile?.user_id, period), [profile?.user_id, period]);
+  const [stats, setStats] = useState(() => cached?.stats ?? { calls: 0, missed: 0, sms: 0, voicemails: 0, meetings: 0, hotLeads: 0, tasks: 0, outbound: 0 });
+  const [recent, setRecent] = useState<any[]>(() => cached?.recent ?? []);
+  const [hotLeads, setHotLeads] = useState<any[]>(() => cached?.hotLeads ?? []);
+  const [dueReminders, setDueReminders] = useState<any[]>(() => cached?.dueReminders ?? []);
+  const [meetings, setMeetings] = useState<any[]>(() => cached?.meetings ?? []);
+  const [msMeetings, setMsMeetings] = useState<any[]>(() => cached?.msMeetings ?? []);
   const [msCalendarLoading, setMsCalendarLoading] = useState(false);
   const [msCalendarError, setMsCalendarError] = useState<string | null>(null);
-  const [statsLoading, setStatsLoading] = useState(true);
-  const [brief, setBrief] = useState<any | null>(null);
+  // statsLoading = cold render only. Background refreshes never toggle it.
+  const [statsLoading, setStatsLoading] = useState(!cached);
+  const [refreshing, setRefreshing] = useState(false);
+  const [brief, setBrief] = useState<any | null>(() => cached?.brief ?? null);
   const [briefLoading, setBriefLoading] = useState(false);
   const [briefErr, setBriefErr] = useState<string | null>(null);
 
@@ -101,7 +106,10 @@ export default function MHome() {
 
   const loadStats = async () => {
     if (!profile) return;
-    setStatsLoading(true);
+    // Only show cold skeleton when nothing is cached
+    const hasCached = !!loadMHomeCache(profile?.user_id, period);
+    if (!hasCached) setStatsLoading(true);
+    setRefreshing(true);
     try {
     const { sinceIso, untilIso } = periodRange(period);
     const nowIso = new Date().toISOString();
@@ -212,7 +220,7 @@ export default function MHome() {
     }
     setMsMeetings(microsoftEvents);
 
-    setStats({
+    const newStats = {
       calls: liveCallsInPeriod.length || callsRes.count || 0,
       missed: liveCallsInPeriod.length ? liveCallsInPeriod.filter((c: any) => nsCallDirection(c) === "missed").length : (missedRes.count ?? 0),
       sms: liveSmsThreads.length ? liveSmsThreads.reduce((sum: number, th: any) => sum + nsSmsUnread(th), 0) : (smsRes.count ?? 0),
@@ -221,15 +229,36 @@ export default function MHome() {
       hotLeads: hotCountRes.count ?? 0,
       tasks: tasksCountRes.count ?? 0,
       outbound: outboundRes.count ?? 0,
+    };
+    setStats(newStats);
+    const newRecent = liveRecent.length ? liveRecent : (recentRes.data ?? []);
+    const newHotLeads = hotRes.data ?? [];
+    const newDueReminders = remRes.data ?? [];
+    const newMeetings = meetingsRes.data ?? [];
+    setRecent(newRecent);
+    setHotLeads(newHotLeads);
+    setDueReminders(newDueReminders);
+    setMeetings(newMeetings);
+    // Persist to local cache for instant next render
+    const now = new Date().toISOString();
+    const sources: SourceStatusMap = {
+      maestro: { status: "ok", lastAt: now },
+      supabase: { status: "ok", lastAt: now },
+    };
+    saveMHomeCache(profile?.user_id, period, {
+      stats: newStats,
+      recent: newRecent,
+      hotLeads: newHotLeads,
+      dueReminders: newDueReminders,
+      meetings: newMeetings,
+      msMeetings: microsoftEvents,
+      sources,
     });
-    setRecent(liveRecent.length ? liveRecent : (recentRes.data ?? []));
-    setHotLeads(hotRes.data ?? []);
-    setDueReminders(remRes.data ?? []);
-    setMeetings(meetingsRes.data ?? []);
     } catch (e) {
       console.error("[MHome] loadStats failed", e);
     } finally {
       setStatsLoading(false);
+      setRefreshing(false);
     }
   };
 
@@ -297,10 +326,8 @@ export default function MHome() {
         )}
       </header>
 
-
-
-
-
+      {/* ===== RAPPORT DE PERFORMANCE (AVA/Claude) ===== */}
+      <PerformanceReportCard />
 
       {/* ===== PERIOD FILTER ===== */}
       <div className="flex items-center justify-between">
@@ -311,9 +338,16 @@ export default function MHome() {
             </button>
           ))}
         </div>
-        <span className="text-[11px]" style={{ color: "var(--pp-text-muted)" }}>
-          {totalComms} comms
-        </span>
+        <div className="flex items-center gap-2">
+          {refreshing && (
+            <span className="flex items-center gap-1 text-[10px]" style={{ color: "var(--pp-text-muted)" }}>
+              <RefreshCw className="w-3 h-3 animate-spin" /> {t("home.refreshing") ?? "Actualisation\u2026"}
+            </span>
+          )}
+          <span className="text-[11px]" style={{ color: "var(--pp-text-muted)" }}>
+            {totalComms} comms
+          </span>
+        </div>
       </div>
 
       {/* ===== DND BANNER ===== */}
@@ -481,9 +515,6 @@ export default function MHome() {
 
 
 
-      {/* ===== PERFORMANCE REPORT (Claude AI) ===== */}
-      <PerformanceReportSection profile={profile} period={period} lang={lang} />
-
       {/* ===== TASKS / REMINDERS ===== */}
       {dueReminders.length > 0 && (
         <section className="pp-card p-4">
@@ -574,138 +605,6 @@ export default function MHome() {
   );
 }
 
-// ============================================================
-// PERFORMANCE REPORT SECTION — powered by Claude via pp-ava-brief
-// ============================================================
-type ReportPeriod = "day" | "week" | "month";
-
-function PerformanceReportSection({ profile, period, lang }: { profile: any; period: string; lang: string }) {
-  const [reportPeriod, setReportPeriod] = useState<ReportPeriod>("day");
-  const [report, setReport] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [open, setOpen] = useState(false);
-
-  const generate = useCallback(async (p: ReportPeriod) => {
-    setLoading(true);
-    setError(null);
-    setReport(null);
-    try {
-      const { data, error: err } = await supabase.functions.invoke("pp-performance-report", {
-        body: { period: p, broker_id: profile?.id, user_id: profile?.user_id },
-      });
-      if (err || (data as any)?.error) {
-        setError((data as any)?.error ?? err?.message ?? "Rapport indisponible");
-        return;
-      }
-      setReport((data as any)?.report ?? (data as any)?.text ?? JSON.stringify(data, null, 2));
-    } catch (e: any) {
-      setError(e?.message ?? "Erreur lors de la génération du rapport");
-    } finally {
-      setLoading(false);
-    }
-  }, [profile?.id, profile?.user_id]);
-
-  const periodLabels: Record<ReportPeriod, string> = {
-    day: lang === "en" ? "Daily" : "Aujourd'hui",
-    week: lang === "en" ? "Weekly" : "Cette semaine",
-    month: lang === "en" ? "Monthly" : "Ce mois",
-  };
-
-  return (
-    <section className="pp-card p-4" style={{ background: "linear-gradient(135deg, rgba(108,92,231,0.06), rgba(46,155,220,0.04))" }}>
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <Bot className="w-4 h-4" style={{ color: "var(--pp-agent)" }} />
-          <span className="text-sm font-semibold" style={{ color: "var(--pp-text-primary)", fontFamily: "Urbanist,sans-serif" }}>
-            {lang === "en" ? "Performance Report" : "Rapport de performance"}
-          </span>
-        </div>
-        <span className="text-[10px] px-2 py-0.5 rounded-full font-bold" style={{ background: "rgba(108,92,231,0.12)", color: "var(--pp-agent)" }}>Claude AI</span>
-      </div>
-
-      {/* Period selector */}
-      <div className="flex gap-1.5 mb-3">
-        {(["day", "week", "month"] as ReportPeriod[]).map((p) => (
-          <button
-            key={p}
-            onClick={() => setReportPeriod(p)}
-            className="px-3 py-1.5 rounded-full text-xs font-semibold transition active:scale-95"
-            style={reportPeriod === p
-              ? { background: "linear-gradient(135deg, #6C5CE7, #2E9BDC)", color: "#fff", boxShadow: "0 2px 8px rgba(108,92,231,0.35)" }
-              : { background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }
-            }
-          >
-            {periodLabels[p]}
-          </button>
-        ))}
-      </div>
-
-      {/* Generate button */}
-      <button
-        onClick={() => { setOpen(true); generate(reportPeriod); }}
-        disabled={loading}
-        className="w-full py-2.5 rounded-xl font-semibold text-sm flex items-center justify-center gap-2 active:scale-[0.98] transition disabled:opacity-60"
-        style={{ background: "linear-gradient(135deg, #6C5CE7, #2E9BDC)", color: "#fff", boxShadow: "0 4px 14px rgba(108,92,231,0.35)" }}
-      >
-        {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-        {loading
-          ? (lang === "en" ? "Generating…" : "Génération en cours…")
-          : (lang === "en" ? `Generate ${periodLabels[reportPeriod]} Report` : `Générer le rapport ${periodLabels[reportPeriod].toLowerCase()}`)}
-      </button>
-
-      {/* Report modal */}
-      {open && (
-        <div className="fixed inset-0 z-[9999] flex items-end" style={{ background: "rgba(0,0,0,0.6)" }} onClick={() => setOpen(false)}>
-          <div
-            className="w-full rounded-t-3xl flex flex-col shadow-2xl"
-            style={{ background: "var(--pp-bg-base)", border: "1px solid var(--pp-bg-border-2)", maxHeight: "85vh" }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between px-4 py-3" style={{ borderBottom: "1px solid var(--pp-bg-border)" }}>
-              <div className="flex items-center gap-2">
-                <Bot className="w-4 h-4" style={{ color: "var(--pp-agent)" }} />
-                <span className="font-semibold text-sm" style={{ color: "var(--pp-text-primary)" }}>
-                  {lang === "en" ? `${periodLabels[reportPeriod]} Performance Report` : `Rapport de performance — ${periodLabels[reportPeriod]}`}
-                </span>
-              </div>
-              <button onClick={() => setOpen(false)} style={{ color: "var(--pp-text-muted)" }}>
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto p-4">
-              {loading ? (
-                <div className="space-y-3">
-                  {[0,1,2,3,4].map((i) => <Shimmer key={i} className={`h-4 ${i % 2 === 0 ? "w-full" : "w-3/4"}`} />)}
-                </div>
-              ) : error ? (
-                <div className="flex items-center gap-2 p-3 rounded-xl" style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.20)" }}>
-                  <AlertCircle className="w-4 h-4 flex-shrink-0" style={{ color: "var(--pp-danger)" }} />
-                  <p className="text-sm" style={{ color: "var(--pp-danger)" }}>{error}</p>
-                </div>
-              ) : report ? (
-                <div className="text-sm leading-relaxed whitespace-pre-wrap" style={{ color: "var(--pp-text-primary)", fontFamily: "DM Sans,sans-serif" }}>
-                  {report}
-                </div>
-              ) : null}
-            </div>
-            {report && (
-              <div className="px-4 pb-6 pt-2" style={{ borderTop: "1px solid var(--pp-bg-border)" }}>
-                <button
-                  onClick={() => generate(reportPeriod)}
-                  className="w-full py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5"
-                  style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
-                >
-                  <RefreshCw className="w-3.5 h-3.5" /> {lang === "en" ? "Regenerate" : "Régénérer"}
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-    </section>
-  );
-}
 
 function SectionHead({ icon, title, count }: { icon: React.ReactNode; title: string; count?: number }) {
   return (
