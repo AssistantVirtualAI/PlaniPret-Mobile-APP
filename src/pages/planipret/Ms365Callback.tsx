@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Capacitor } from "@capacitor/core";
 import { supabase } from "@/integrations/supabase/client";
 import { CheckCircle2, AlertCircle, Loader2 } from "lucide-react";
 import { clearRememberedMs365RedirectUri, getRememberedMs365CodeVerifier, getRememberedMs365RedirectUri } from "@/lib/ms365OAuth";
@@ -20,81 +19,50 @@ export default function Ms365Callback() {
   const navigate = useNavigate();
   const [status, setStatus] = useState<"loading" | "ok" | "error">("loading");
   const [error, setError] = useState<string | null>(null);
-  // Guard against React StrictMode double-invocation which would consume the
-  // OAuth code twice (first call succeeds, second call gets invalid_grant).
   const ranRef = useRef(false);
 
   useEffect(() => {
+    // Guard against StrictMode / re-render double-invocation. Microsoft
+    // authorization codes are single-use — a second call returns invalid_grant.
     if (ranRef.current) return;
     ranRef.current = true;
-
     (async () => {
-      // On iOS/Android: close the SFSafariViewController / Chrome Custom Tab immediately
-      // so the app comes back to the foreground before processing the OAuth code.
-      if (Capacitor.isNativePlatform()) {
-        try {
-          const { Browser } = await import("@capacitor/browser");
-          await Browser.close();
-        } catch { /* ignore on web */ }
-      }
       const code = params.get("code");
       const err = params.get("error_description") ?? params.get("error");
       if (err) { setStatus("error"); setError(err); return; }
       if (!code) { setStatus("error"); setError("Code OAuth manquant"); return; }
-
       // Must match the redirect URI registered in Azure App Registration.
       const redirect_uri = getRememberedMs365RedirectUri();
       const state = params.get("state");
       const code_verifier = getRememberedMs365CodeVerifier(state);
-
-      // Log for debugging redirect_uri mismatch with Azure
-      console.log("[ms365-callback] exchange", { redirect_uri, has_code_verifier: !!code_verifier, intent: getMicrosoftSignInIntent() });
-
       if (!code_verifier) {
         setStatus("error");
-        setError("PKCE code_verifier manquant — veuillez réessayer la connexion");
+        setError("Code verifier PKCE introuvable — recommencez la connexion sans changer de navigateur/onglet.");
         return;
       }
-
+      console.info("[ms365-callback] exchange", { redirect_uri, hasVerifier: Boolean(code_verifier), state });
       if (getMicrosoftSignInIntent() === "login") {
-        // Use raw fetch to capture the body even on non-2xx responses
-        let data: any = null;
-        let fetchErr: string | null = null;
-        try {
-          const { data: { session: currentSession } } = await supabase.auth.getSession();
-          const anonKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ?? "";
-          const supabaseUrl = import.meta.env.VITE_SUPABASE_URL ?? "";
-          const fnUrl = `${supabaseUrl}/functions/v1/ms365-auth-session`;
-          const headers: Record<string, string> = {
-            "Content-Type": "application/json",
-            "apikey": anonKey,
-          };
-          if (currentSession?.access_token) headers["Authorization"] = `Bearer ${currentSession.access_token}`;
-          const res = await fetch(fnUrl, { method: "POST", headers, body: JSON.stringify({ code, redirect_uri, code_verifier }) });
-          data = await res.json().catch(() => null);
-          if (!res.ok && !data) fetchErr = `HTTP ${res.status}`;
-        } catch (err: any) {
-          fetchErr = err?.message ?? "Réseau indisponible";
-        }
-        if (fetchErr || !data?.success) {
-          const details = data?.details;
-          const msg = data?.error ?? fetchErr ?? "Échec OAuth";
+        const { data, error: e } = await supabase.functions.invoke("pp-ms-auth-callback", {
+          body: { code, redirect_uri, code_verifier },
+        });
+        if (e || !(data as any)?.success) {
+          const details = (data as any)?.details;
+          const msg = (data as any)?.error ?? e?.message ?? "Échec OAuth";
           const full = details ? `${msg} — ${details.error_description ?? details.error ?? ""}`.trim() : msg;
-          console.error("ms365 auth failed", { data, fetchErr });
+          console.error("ms365 auth failed", { data, e, redirect_uri });
           setStatus("error"); setError(full);
           return;
         }
         const verify = await supabase.auth.verifyOtp({ type: "magiclink", token_hash: (data as any).token_hash });
         if (verify.error) { setStatus("error"); setError(verify.error.message); return; }
         clearRememberedMs365RedirectUri();
-        const next = getMicrosoftSignInNext("/mplanipret");
+        const next = getMicrosoftSignInNext("/post-login");
         clearMicrosoftSignInIntent();
         try { void import("@/lib/native/requestPermissionsAfterLogin").then(m => m.requestPermissionsAfterLogin()); } catch {}
         setStatus("ok");
         setTimeout(() => navigate(next, { replace: true }), 700);
         return;
       }
-
       const session = await getSessionWithRetry();
       if (!session) { setStatus("error"); setError("Session expirée — reconnectez-vous"); return; }
       const { data, error: e } = await supabase.functions.invoke("ms365-oauth-exchange", { body: { code, redirect_uri, code_verifier } });
@@ -108,14 +76,20 @@ export default function Ms365Callback() {
       }
       clearRememberedMs365RedirectUri();
       try { localStorage.removeItem("pp_ms365_callback_url"); } catch {}
-      // Active automatiquement l'abonnement AVA aux nouveaux courriels (non-bloquant)
       supabase.functions.invoke("ms365-mail-webhook-setup", { body: {} }).then(({ error }) => {
         if (error) console.warn("ms365 webhook setup skipped", error.message);
       }).catch((err) => console.warn("ms365 webhook setup skipped", err?.message ?? err));
+      const msAccessToken = (data as any)?.ms_access_token ?? null;
+      try {
+        void supabase.functions.invoke("maestro-telecom-link", {
+          body: { action: "link", ms_access_token: msAccessToken },
+        }).catch(() => {});
+      } catch {}
       setStatus("ok");
       setTimeout(() => navigate("/mplanipret/more?ms365=ok", { replace: true }), 1200);
     })();
   }, [params, navigate]);
+
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">

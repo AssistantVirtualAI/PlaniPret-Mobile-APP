@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { useAvaContext } from "@/hooks/useAvaContext";
 import { Button } from "@/components/ui/button";
 
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
@@ -10,6 +9,7 @@ import AvaVoiceAgent from "@/components/planipret/mobile/AvaVoiceAgent";
 import AvaOrb from "@/components/planipret/mobile/AvaOrb";
 import VoiceSettingsSheet from "@/components/planipret/mobile/VoiceSettingsSheet";
 import avaLogo from "@/assets/ava-statistics-logo.png.asset.json";
+import { useAvaContext } from "@/hooks/useAvaContext";
 
 type AvaSuggestion = { id: string; label: string; kind: string; payload?: Record<string, any> };
 type Msg = { id: string; role: "user" | "assistant"; message: string; created_at: string; suggestions?: AvaSuggestion[] };
@@ -33,13 +33,13 @@ export default function MAvaChat() {
   const [speakingId, setSpeakingId] = useState<string | null>(null);
   const [runningSuggestion, setRunningSuggestion] = useState<string | null>(null);
   const [pendingConfirm, setPendingConfirm] = useState<AvaSuggestion | null>(null);
-  const avaContext = useAvaContext();
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const suppressSessionLoadRef = useRef<string | null>(null);
   const mediaRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const avaContext = useAvaContext();
 
   const switchMode = (m: "chat" | "voice") => { setMode(m); localStorage.setItem("ava_mode", m); };
 

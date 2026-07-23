@@ -238,23 +238,30 @@ Deno.serve(async (req) => {
       const thread_id = pick("thread_id") as string | undefined;
       let from = pick("from") as string | undefined;
 
+      console.info("[pp-ns-sms] send request", {
+        userId: ctx.userId, extension: ctx.extension, domain: ctx.nsDomain,
+        to_raw: to, from_raw: from, thread_id, msg_len: message?.length ?? 0,
+      });
+
       if (!to || !message) {
-        return jsonResponse({ error: "to et message sont requis" }, 400);
+        return jsonResponse({ ok: false, error: "Paramètres manquants: 'to' et 'message' sont requis", missing: { to: !to, message: !message } }, 400);
       }
 
       // Auto-detect broker DID/SMS number if not provided.
       if (!from) {
         const first = (await getAssignedSmsNumbers(supabase, ctx))[0];
         from = pickSmsNumber(first) ?? undefined;
+        console.info("[pp-ns-sms] auto-detected from", from);
       }
 
       const destination = normalizeE164(to);
-      if (!destination) return jsonResponse({ error: "numéro destinataire invalide" }, 400);
+      if (!destination) return jsonResponse({ ok: false, error: `Numéro destinataire invalide: '${to}' (format E.164 requis, ex: +15145551234)` }, 400);
 
       const fromNumber = normalizeE164(from);
       if (!fromNumber) {
-        return jsonResponse({ ok: false, error: "Aucun numéro SMS (DID) assigné à ce courtier" }, 200);
+        return jsonResponse({ ok: false, error: "Aucun numéro SMS (DID) assigné à ce courtier — contactez un administrateur pour attribuer un DID." }, 200);
       }
+
 
       // NS-API v2 SMS: POST /users/{ext}/messagesessions/messages creates the
       // session (if needed) and sends the message in one shot. This is the

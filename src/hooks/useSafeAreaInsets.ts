@@ -38,13 +38,28 @@ export function useSafeAreaInsets() {
     // Re-read whenever the WebView regains focus/visibility. On iOS, Capacitor
     // may drop the previously-cached safe-area env() values while the app was
     // backgrounded, so we refresh on every resume path.
-    const readSoon = () => { read(); setTimeout(read, 120); setTimeout(read, 400); };
+    const readSoon = () => { read(); setTimeout(read, 120); setTimeout(read, 400); setTimeout(read, 900); };
     window.addEventListener("resize", read);
     window.addEventListener("orientationchange", readSoon);
     window.addEventListener("pageshow", readSoon);
     window.addEventListener("focus", readSoon);
     document.addEventListener("visibilitychange", readSoon);
     document.addEventListener("resume", readSoon as EventListener);
+
+    // Capacitor App plugin — fires reliably on iOS/Android when the app
+    // returns from background, even when visibilitychange doesn't.
+    let capCleanup: (() => void) | null = null;
+    (async () => {
+      try {
+        const mod = await import("@capacitor/app");
+        const sub1 = await mod.App.addListener("appStateChange", (state: any) => {
+          if (state?.isActive) readSoon();
+        });
+        const sub2 = await mod.App.addListener("resume", () => readSoon());
+        capCleanup = () => { sub1.remove?.(); sub2.remove?.(); };
+      } catch { /* not on native — ignore */ }
+    })();
+
     return () => {
       window.removeEventListener("resize", read);
       window.removeEventListener("orientationchange", readSoon);
@@ -52,9 +67,11 @@ export function useSafeAreaInsets() {
       window.removeEventListener("focus", readSoon);
       document.removeEventListener("visibilitychange", readSoon);
       document.removeEventListener("resume", readSoon as EventListener);
+      capCleanup?.();
       el.remove();
     };
   }, []);
 
   return insets;
 }
+
