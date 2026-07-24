@@ -54,7 +54,7 @@ export default function MobileAuthScreen({ onLoggedIn }: { onLoggedIn: () => Pro
     try {
       await startMicrosoftSignIn("/mplanipret", {
         loginHint: email.trim() || undefined,
-        prompt: "login",
+        prompt: "select_account",
       });
     }
     catch (error: any) { toast.error(error?.message || t("auth.msUnavailable")); }
