@@ -150,60 +150,26 @@ export default function MMore() {
   };
 
   const toggleNotif = async (on: boolean) => {
-    if (on) {
-      // On native iOS/Android, use Capacitor PushNotifications (triggers the real native popup)
-      const isNativeApp = !!(window as any).Capacitor?.isNativePlatform?.();
-      if (isNativeApp) {
-        try {
-          const { PushNotifications } = await import("@capacitor/push-notifications");
-          const check = await PushNotifications.checkPermissions();
-          if (check.receive === "granted") {
-            await PushNotifications.register();
-            toast.success(lang === "fr" ? "Notifications déjà activées ✅" : "Notifications already enabled ✅");
-            await reloadProfile();
-            setNotifEnabled(true);
-            localStorage.setItem("planipret_notif", "1");
-            return;
-          }
-          const req = await PushNotifications.requestPermissions();
-          if (req.receive === "granted") {
-            await PushNotifications.register();
-            toast.success(lang === "fr" ? "Notifications activées ✅" : "Notifications enabled ✅");
-            await reloadProfile();
-            setNotifEnabled(true);
-            localStorage.setItem("planipret_notif", "1");
-          } else {
-            // Permission denied — open iOS Settings
-            toast.error(
-              lang === "fr"
-                ? "Permission refusée. Activez dans Réglages iOS."
-                : "Permission denied. Enable in iOS Settings.",
-            );
-            setTimeout(() => openAppSettings(), 1500);
-          }
-        } catch (e: any) {
-          toast.error(e?.message ?? "Erreur notifications");
-        }
-        return;
-      }
-      // Web fallback (VAPID)
-      if ("Notification" in window) {
-        const perm = await Notification.requestPermission();
-        if (perm !== "granted") { toast.error(t("more.permissionDenied")); return; }
-      }
+    if (on && "Notification" in window) {
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") { toast.error(t("more.permissionDenied")); return; }
     }
     setNotifEnabled(on);
     localStorage.setItem("planipret_notif", on ? "1" : "0");
   };
 
   const logout = async () => {
-    if (!confirm(t("more.logoutConfirm"))) return;
-    await supabase.auth.signOut();
-    toast.success(t("more.logoutSuccess"));
-    // Stay inside /mplanipret — PlanipretMobile detects the lost session and
-    // renders MobileAuthScreen automatically. Never redirect to /login which
-    // triggers getPostLoginRoute and bounces the user to the web portal.
-    navigate("/mplanipret", { replace: true });
+    try {
+      const ok = typeof window !== "undefined" && typeof window.confirm === "function"
+        ? window.confirm(t("more.logoutConfirm"))
+        : true;
+      if (!ok) return;
+    } catch { /* ignore native confirm errors */ }
+    try { await supabase.auth.signOut(); } catch (e) { console.warn("[logout] signOut error", e); }
+    try { toast.success(t("more.logoutSuccess")); } catch {}
+    // Hard reload the mobile shell so any in-flight edge-function calls are aborted
+    // and the auth guard renders MobileAuthScreen with a clean state.
+    setTimeout(() => { window.location.replace("/mplanipret"); }, 50);
   };
 
   return (
@@ -301,6 +267,16 @@ export default function MMore() {
           sub={sipSnap.errorCause ? `${sipStatusLabel} — ${sipSnap.errorCause}` : sipStatusLabel}
           onClick={() => navigate("/mplanipret/sip-debug")}
           right={<span className="text-[10px] font-bold px-2 py-0.5 rounded-full" style={{ background: sipStatusColor[sipSnap.status], color: "#fff" }}>{sipSnap.status.toUpperCase()}</span>}
+          chevron
+        />
+        <Row
+          icon={<ShieldCheck className="w-4 h-4" style={{ color: "var(--pp-brand-accent)" }} />}
+          label={lang === "fr" ? "Autorisations (micro, contacts, notifs)" : "Permissions (mic, contacts, notifs)"}
+          sub={lang === "fr" ? "Ouvrir les réglages iOS/Android" : "Open iOS/Android settings"}
+          onClick={async () => {
+            await markPrimerSkipped().catch(() => {});
+            await openAppSettings();
+          }}
           chevron
         />
       </Section>
@@ -412,16 +388,6 @@ export default function MMore() {
             </div>
           }
         />
-        <Row
-          icon={<ShieldCheck className="w-4 h-4" style={{ color: "var(--pp-brand-accent)" }} />}
-          label={lang === "fr" ? "Autorisations (micro, contacts, notifs)" : "Permissions (mic, contacts, notifs)"}
-          sub={lang === "fr" ? "Ouvrir les réglages iOS/Android" : "Open iOS/Android settings"}
-          onClick={async () => {
-            await markPrimerSkipped().catch(() => {});
-            await openAppSettings();
-          }}
-          chevron
-        />
       </Section>
 
       <MNetworkSection />
@@ -459,6 +425,7 @@ export default function MMore() {
             ].join(" · ");
             ((data as any)?.coherent ? toast.success : toast.warning)(`${t("more.diagnostic")}: ${flags}`);
           }} chevron />
+        <Row icon={<SettingsIcon className="w-4 h-4" />} label="Audit des KPI Home" sub="Vérifier les sources et la dernière sync" onClick={() => navigate("/mplanipret/kpi-audit")} chevron />
         <Row icon={<Info className="w-4 h-4" />} label={t("more.appVersion")} right={<span style={{ fontSize: 12, color: "var(--pp-text-faint)" }}>v1.0.0 (build 1)</span>} />
       </Section>
 
@@ -601,13 +568,46 @@ function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void 
 }
 
 function NotificationsSection({ profile, reloadProfile }: { profile: any; reloadProfile: () => Promise<void> }) {
-  const { t } = useMplanipretLang();
+  const { t, lang } = useMplanipretLang();
   const { subscribe, sendTest, busy } = usePlanipretPush();
   const setPref = async (field: string, val: boolean) => {
     await (supabase.from("planipret_profiles") as any).update({ [field]: val }).eq("user_id", profile.user_id);
     await reloadProfile();
   };
   const enablePush = async () => {
+    // On native iOS/Android, use Capacitor PushNotifications (triggers the real native popup)
+    const isNativeApp = !!(window as any).Capacitor?.isNativePlatform?.();
+    if (isNativeApp) {
+      try {
+        const { PushNotifications } = await import("@capacitor/push-notifications");
+        const check = await PushNotifications.checkPermissions();
+        if (check.receive === "granted") {
+          await PushNotifications.register();
+          toast.success(lang === "fr" ? "Notifications déjà activées ✅" : "Notifications already enabled ✅");
+          await reloadProfile();
+          return;
+        }
+        const req = await PushNotifications.requestPermissions();
+        if (req.receive === "granted") {
+          await PushNotifications.register();
+          toast.success(lang === "fr" ? "Notifications activées ✅" : "Notifications enabled ✅");
+          await reloadProfile();
+        } else {
+          // Permission denied — open iOS Settings
+          const { openAppSettings } = await import("@/lib/native/permissions/platform");
+          toast.error(
+            lang === "fr"
+              ? "Permission refusée. Activez dans Réglages iOS."
+              : "Permission denied. Enable in iOS Settings.",
+          );
+          setTimeout(() => openAppSettings(), 1500);
+        }
+      } catch (e: any) {
+        toast.error(e?.message ?? "Erreur notifications");
+      }
+      return;
+    }
+    // Web fallback (VAPID)
     const ok = await subscribe(profile.user_id);
     if (ok) await reloadProfile();
   };

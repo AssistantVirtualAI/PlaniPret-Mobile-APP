@@ -9,13 +9,16 @@ import AvaVoiceAgent from "@/components/planipret/mobile/AvaVoiceAgent";
 import AvaOrb from "@/components/planipret/mobile/AvaOrb";
 import VoiceSettingsSheet from "@/components/planipret/mobile/VoiceSettingsSheet";
 import avaLogo from "@/assets/ava-statistics-logo.png.asset.json";
-import { useAvaContext } from "@/hooks/useAvaContext";
 
 type AvaSuggestion = { id: string; label: string; kind: string; payload?: Record<string, any> };
 type Msg = { id: string; role: "user" | "assistant"; message: string; created_at: string; suggestions?: AvaSuggestion[] };
 type Session = { id: string; title: string; last_message_at: string };
 
-const MUTATING_ACTIONS = new Set(["send_email", "create_calendar_event", "send_teams_message", "reply_teams_message"]);
+const MUTATING_ACTIONS = new Set(["send_email", "create_calendar_event", "update_calendar_event", "delete_calendar_event", "send_teams_message", "reply_teams_message"]);
+type PendingConfirm = { suggestion: AvaSuggestion; label: string } | null;
+
+const CONFIRM_RE = /^(oui|ok|okay|confirm[eé]?|confirm[eé] pour envoyer|j['’]?autorise|autorise|vas-y|go|envoie|envoyer|appelle|appel|cr[eé]e|supprime|delete|yes|yep|approved?|approuv[eé])\b/i;
+const CANCEL_RE = /^(non|annule|annuler|stop|cancel|cancelled?|no|n\b)/i;
 
 export default function MAvaChat() {
   const [userId, setUserId] = useState<string | null>(null);
@@ -32,14 +35,13 @@ export default function MAvaChat() {
   const [speakReplies, setSpeakReplies] = useState<boolean>(() => localStorage.getItem("ava_tts_on") === "1");
   const [speakingId, setSpeakingId] = useState<string | null>(null);
   const [runningSuggestion, setRunningSuggestion] = useState<string | null>(null);
-  const [pendingConfirm, setPendingConfirm] = useState<AvaSuggestion | null>(null);
+  const [pendingConfirm, setPendingConfirm] = useState<PendingConfirm>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const suppressSessionLoadRef = useRef<string | null>(null);
   const mediaRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const avaContext = useAvaContext();
 
   const switchMode = (m: "chat" | "voice") => { setMode(m); localStorage.setItem("ava_mode", m); };
 
@@ -84,9 +86,9 @@ export default function MAvaChat() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, busy]);
 
-  useEffect(() => {
-    if (!recording) inputRef.current?.focus();
-  }, [busy, recording, sessionId]);
+  // Do NOT auto-focus the textarea — it triggers the mobile keyboard + iOS
+  // viewport zoom which visually breaks the layout.
+
 
   const startNew = () => { setSessionId(null); setMessages([]); };
 
@@ -97,9 +99,18 @@ export default function MAvaChat() {
     const optimistic: Msg = { id: `tmp-${Date.now()}`, role: "user", message: text, created_at: new Date().toISOString() };
     setMessages((m) => [...m, optimistic]);
     try {
+      if (pendingConfirm && CONFIRM_RE.test(text)) {
+        await executeConfirmedAction(pendingConfirm.suggestion, { keepBusy: true });
+        return;
+      }
+      if (pendingConfirm && CANCEL_RE.test(text)) {
+        setPendingConfirm(null);
+        setMessages((m) => [...m, { id: `cancel-${Date.now()}`, role: "assistant", message: "Action annulée.", created_at: new Date().toISOString() }]);
+        return;
+      }
       const history = messages.slice(-8).map((m) => ({ role: m.role, content: m.message }));
       const { data, error } = await supabase.functions.invoke("pp-ava-chat", {
-        body: { mode: "chat", user_message: text, session_id: sessionId, history, context: avaContext },
+        body: { mode: "chat", user_message: text, session_id: sessionId, history },
       });
       if (error) throw error;
       const d = data as any;
@@ -110,32 +121,80 @@ export default function MAvaChat() {
         const { data: srow } = await supabase.from("planipret_ava_chat_sessions").select("id,title,last_message_at").eq("id", newSid).maybeSingle();
         if (srow) setSessions((s) => [srow as Session, ...s.filter((x) => x.id !== newSid)]);
       }
-      const replyText = String(d.reply ?? "…");
+      const parsedReply = parseAvaReply(String(d.reply ?? "…"), Array.isArray(d.suggestions) ? d.suggestions : []);
+      const immediate = parsedReply.suggestions.find((s) => {
+        const action = String(s.payload?.action ?? "");
+        return s.kind === "call" || s.kind === "sms" || MUTATING_ACTIONS.has(action);
+      });
+      const replyText = immediate?.kind === "call"
+        ? `Je peux lancer l’appel vers ${String(immediate.payload?.number ?? immediate.payload?.to ?? immediate.payload?.phone ?? "ce numéro")}. Réponds « Oui » pour confirmer.`
+        : immediate?.kind === "sms"
+          ? `Je peux envoyer ce texto à ${String(immediate.payload?.number ?? immediate.payload?.to ?? immediate.payload?.phone ?? "ce contact")}. Réponds « Oui » pour confirmer.`
+          : parsedReply.text;
       const replyId = `a-${Date.now()}`;
-      setMessages((m) => [...m, { id: replyId, role: "assistant", message: replyText, suggestions: Array.isArray(d.suggestions) ? d.suggestions : [], created_at: new Date().toISOString() }]);
+      setMessages((m) => [...m, { id: replyId, role: "assistant", message: replyText, suggestions: parsedReply.suggestions, created_at: new Date().toISOString() }]);
+      if (immediate) setPendingConfirm({ suggestion: immediate, label: immediate.label });
       if (speakReplies) speak(replyId, replyText);
     } catch (e: any) {
       toast.error(e?.message ?? "Erreur AVA");
     } finally { setBusy(false); }
   };
 
-  const runSuggestion = async (suggestion: AvaSuggestion, opts: { skipConfirm?: boolean } = {}) => {
+  const runSuggestion = async (suggestion: AvaSuggestion) => {
     const action = String(suggestion.payload?.action ?? "");
     const needsConfirm = suggestion.kind === "call" || suggestion.kind === "sms" || MUTATING_ACTIONS.has(action);
-    if (needsConfirm && !opts.skipConfirm) { setPendingConfirm(suggestion); return; }
+    if (needsConfirm) {
+      setPendingConfirm({ suggestion, label: suggestion.label });
+      setMessages((m) => [...m, {
+        id: `confirm-${Date.now()}`,
+        role: "assistant",
+        message: `Confirmation requise: ${suggestion.label}\nRéponds simplement « Oui » ou « Confirmé » pour exécuter, ou « Annuler » pour arrêter.`,
+        created_at: new Date().toISOString(),
+      }]);
+      return;
+    }
+    await executeConfirmedAction(suggestion);
+  };
+
+  const executeConfirmedAction = async (suggestion: AvaSuggestion, opts: { keepBusy?: boolean } = {}) => {
+    setPendingConfirm(null);
     setRunningSuggestion(suggestion.id);
     try {
+      if (suggestion.kind === "call") {
+        const number = String(suggestion.payload?.number ?? suggestion.payload?.to ?? suggestion.payload?.phone ?? "").trim();
+        if (!number) throw new Error("Numéro manquant");
+        window.dispatchEvent(new CustomEvent("ava:open-dialer", { detail: { number, autoDial: true } }));
+        setMessages((m) => [...m, { id: `dial-${Date.now()}`, role: "assistant", message: `J’ouvre le dialer avec ${number}.`, created_at: new Date().toISOString() }]);
+        toast.success("Dialer ouvert");
+        return;
+      }
+
+      if (suggestion.kind === "sms") {
+        const number = String(suggestion.payload?.number ?? suggestion.payload?.to ?? suggestion.payload?.phone ?? "").trim();
+        const body = String(suggestion.payload?.message ?? suggestion.payload?.text ?? suggestion.payload?.body ?? "").trim();
+        if (!number) throw new Error("Numéro manquant");
+        window.dispatchEvent(new CustomEvent("ava:open-sms-composer", { detail: { number, body, autoSend: true } }));
+        setMessages((m) => [...m, { id: `sms-${Date.now()}`, role: "assistant", message: `J’envoie le texto à ${number} depuis la page Texto.`, created_at: new Date().toISOString() }]);
+        toast.success("Texto préparé");
+        return;
+      }
+
       const { data, error } = await supabase.functions.invoke("pp-ava-chat", {
-        body: { mode: "chat", confirm_action: suggestion, approved: true, session_id: sessionId, context: avaContext },
+        body: { mode: "chat", confirm_action: suggestion, approved: true, session_id: sessionId },
       });
       if (error) throw error;
       const replyText = String((data as any)?.reply ?? "Action terminée.");
       setMessages((m) => [...m, { id: `act-${Date.now()}`, role: "assistant", message: replyText, created_at: new Date().toISOString() }]);
-      toast.success("Action AVA traitée");
+      if ((data as any)?.result?.ok === false || (data as any)?.result?.success === false) {
+        toast.error("Action échouée : " + ((data as any)?.result?.error ?? "Erreur inconnue"));
+      } else {
+        toast.success("Action AVA traitée");
+      }
     } catch (e: any) {
       toast.error(e?.message ?? "Action AVA impossible");
     } finally {
       setRunningSuggestion(null);
+      if (opts.keepBusy) setBusy(false);
     }
   };
 
@@ -209,7 +268,7 @@ export default function MAvaChat() {
   if (mode === "voice" && voiceAgentAllowed && userId) {
     return (
       <div className="relative min-h-full">
-        <AvaVoiceAgent userId={userId} onClose={() => switchMode("chat")} />
+        <AvaVoiceAgent userId={userId} onClose={() => switchMode("chat")} onFallbackToChat={() => switchMode("chat")} />
         <button
           onClick={() => setVoiceSettingsOpen(true)}
           className="absolute top-4 right-16 z-[70] w-9 h-9 rounded-full bg-white/5 text-white/80 flex items-center justify-center"
@@ -223,8 +282,9 @@ export default function MAvaChat() {
   }
 
   return (
-    <div className="flex flex-col" style={{ height: "calc(100dvh - 242px)", minHeight: 400, background: "var(--pp-bg-base)" }}>
-      <div className="sticky top-0 z-10 flex items-center gap-2 px-3 py-2.5 backdrop-blur-xl" style={{ background: "color-mix(in srgb, var(--pp-bg-surface) 78%, transparent)", borderBottom: "1px solid var(--pp-bg-border)" }}>
+    <div className="flex flex-col" style={{ background: "var(--pp-bg-base)", height: "calc(100dvh - 242px)", minHeight: 400 }}>
+      <div className="sticky top-0 z-10 flex items-center gap-2 px-3 py-1 backdrop-blur-xl" style={{ background: "color-mix(in srgb, var(--pp-bg-surface) 78%, transparent)", borderBottom: "1px solid var(--pp-bg-border)" }}>
+
         <Sheet>
           <SheetTrigger asChild>
             <Button variant="ghost" size="icon" className="rounded-full"><Menu className="w-5 h-5" /></Button>
@@ -278,8 +338,8 @@ export default function MAvaChat() {
 
 
 
-      <div className="flex-1 min-h-0 overflow-hidden">
-        <div ref={scrollRef} className="h-full overflow-y-auto px-4 py-4 pb-6 space-y-4 max-w-3xl w-full mx-auto">
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto">
+        <div className="px-4 py-4 pb-6 space-y-4 max-w-3xl w-full mx-auto">
           {messages.length === 0 && (
             <div className="flex flex-col items-center justify-center py-14 gap-4 text-center">
               <AvaOrb state="idle" size={140} />
@@ -364,7 +424,7 @@ export default function MAvaChat() {
         </div>
       </div>
 
-      <div className="sticky bottom-0 z-10 backdrop-blur-xl px-3 pb-3 pt-2" style={{ background: "color-mix(in srgb, var(--pp-bg-surface) 70%, transparent)", borderTop: "1px solid var(--pp-bg-border)" }}>
+      <div className="shrink-0 z-10 backdrop-blur-xl px-3 pt-2" style={{ background: "color-mix(in srgb, var(--pp-bg-surface) 70%, transparent)", borderTop: "1px solid var(--pp-bg-border)", transform: "translateZ(0)", paddingBottom: "max(12px, env(safe-area-inset-bottom, 12px))" }}>
        <div className="flex items-end gap-2 max-w-3xl w-full mx-auto rounded-full pl-2 pr-1.5 py-1.5" style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", boxShadow: "0 10px 30px -10px rgba(124,58,237,0.25)" }}>
         <button
           onClick={recording ? stopRec : startRec}
@@ -384,8 +444,9 @@ export default function MAvaChat() {
           onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
           disabled={busy || !userId || recording}
           rows={1}
-          className="flex-1 min-h-[36px] max-h-28 resize-none bg-transparent px-2 py-2 text-[14px] outline-none disabled:opacity-60 placeholder:opacity-60"
-          style={{ color: "var(--pp-text-primary)", caretColor: "var(--pp-agent)" }}
+          className="flex-1 min-h-[36px] max-h-28 resize-none bg-transparent px-2 py-2 outline-none disabled:opacity-60 placeholder:opacity-60"
+          style={{ color: "var(--pp-text-primary)", caretColor: "var(--pp-agent)", fontSize: 16 }}
+
         />
         <button
           onClick={send}
@@ -399,27 +460,53 @@ export default function MAvaChat() {
       </div>
       </div>
 
-      {pendingConfirm && (
-        <div className="sticky bottom-0 left-0 right-0 z-20 px-3 py-2 flex flex-col gap-2 backdrop-blur-xl" style={{ background: "color-mix(in srgb, var(--pp-bg-surface) 92%, transparent)", borderTop: "1px solid var(--pp-bg-border)" }}>
-          <div className="text-sm" style={{ color: "var(--pp-text-primary)" }}>Confirmer : {pendingConfirm.label}</div>
-          <div className="flex gap-2">
-            <Button variant="ghost" className="flex-1" onClick={() => setPendingConfirm(null)}>Annuler</Button>
-            <Button className="flex-1" onClick={() => { const s = pendingConfirm; setPendingConfirm(null); runSuggestion(s, { skipConfirm: true }); }}>Confirmer</Button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
 
 // Strip stray JSON arrays/objects the model sometimes appends after its reply.
+// Only removes JSON if it looks like a raw dump (starts with [ or { on its own line),
+// NOT if the text naturally contains brackets (e.g. lists, options).
 function cleanReply(raw: string): string {
   if (!raw) return "";
   let s = raw.trim();
   // Remove fenced ```json ... ``` blocks
   s = s.replace(/```(?:json)?\s*[\[{][\s\S]*?[\]}]\s*```/g, "").trim();
-  // Remove a trailing raw JSON array/object dump
-  const m = s.match(/^([\s\S]*?)\s*(\[[\s\S]*\]|\{[\s\S]*\})\s*$/);
+  // Only remove a trailing JSON dump if it starts on a new line after real text
+  // and the preceding text is substantial (>40 chars) — avoids cutting short replies
+  const m = s.match(/^([\s\S]{40,}?)\n+(\[[\s\S]*\]|\{[\s\S]*\})\s*$/);
   if (m && m[1].trim().length > 0) s = m[1].trim();
   return s;
+}
+
+function parseAvaReply(raw: string, suggestions: AvaSuggestion[]): { text: string; suggestions: AvaSuggestion[] } {
+  const found: AvaSuggestion[] = [];
+  const candidates: string[] = [];
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced?.[1]) candidates.push(fenced[1].trim());
+  const trailing = raw.match(/\n\s*(\[[\s\S]*\])\s*$/);
+  if (trailing?.[1]) candidates.push(trailing[1].trim());
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (!Array.isArray(parsed)) continue;
+      for (const item of parsed) {
+        if (!item || typeof item !== "object") continue;
+        const kind = String((item as any).kind ?? "");
+        if (!["call", "sms", "email", "reminder", "maestro_action", "ms365_action", "open_voice", "open_coach"].includes(kind)) continue;
+        found.push({
+          id: String((item as any).id ?? `${kind}-${Date.now()}-${found.length}`),
+          label: String((item as any).label ?? (kind === "call" ? "Appeler" : kind === "sms" ? "Texto" : "Action")),
+          kind,
+          payload: ((item as any).payload && typeof (item as any).payload === "object") ? (item as any).payload : {},
+        });
+      }
+    } catch {}
+  }
+
+  return {
+    text: cleanReply(raw),
+    suggestions: suggestions.length ? suggestions : found,
+  };
 }
