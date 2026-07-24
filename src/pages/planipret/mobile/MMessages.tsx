@@ -1418,7 +1418,7 @@ function EmailDetailSheet({ email, onClose, onReply, onForward, onChanged }: {
     <div className="fixed inset-0 z-[9999] flex flex-col" style={{ background: "rgba(0,0,0,0.5)" }}>
       <div
         className="w-full flex flex-col mt-auto"
-        style={{ background: "var(--pp-bg-base)", borderTop: "1px solid var(--pp-bg-border-2)", height: "100%", paddingTop: "env(safe-area-inset-top, 0px)", paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
+        style={{ background: "var(--pp-bg-base)", borderTop: "1px solid var(--pp-bg-border-2)", height: "100%", paddingTop: "max(env(safe-area-inset-top, 0px), 44px)", paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
       >
         <div className="flex items-center justify-between px-4 pt-3 pb-2" style={{ borderBottom: "1px solid var(--pp-bg-border)" }}>
           <button onClick={onClose} className="p-1.5 rounded-full" style={{ color: "var(--pp-text-secondary)" }}>
@@ -1513,7 +1513,9 @@ function EmailDetailSheet({ email, onClose, onReply, onForward, onChanged }: {
                       .email-body table { max-width: 100% !important; width: 100% !important; table-layout: fixed !important; word-break: break-word; }
                       .email-body td, .email-body th { word-break: break-word; }
                       .email-body a { word-break: break-all; }
-                      .email-body * { max-width: 100% !important; box-sizing: border-box; }
+                      .email-body * { max-width: 100% !important; box-sizing: border-box; overflow-wrap: break-word !important; }
+                      .email-body [style*="width"] { max-width: 100% !important; width: auto !important; }
+                      .email-body center { display: block; overflow: hidden; }
                       .email-body div, .email-body p, .email-body span { font-size: 14px !important; line-height: 1.5 !important; }
                     `}</style>
                     <div dangerouslySetInnerHTML={{ __html: fullBodyHtml }} />

@@ -327,7 +327,7 @@ export default function MHome() {
       </header>
 
       {/* ===== RAPPORT DE PERFORMANCE (AVA/Claude) ===== */}
-      <PerformanceReportCard />
+      <PerformanceReportCard stats={stats} lang={lang} />
 
       {/* ===== PERIOD FILTER ===== */}
       <div className="flex items-center justify-between">
