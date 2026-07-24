@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import {
@@ -40,6 +40,7 @@ export default function PerformanceReportCard({ stats, lang: propLang }: Props) 
   const [report, setReport] = useState<{ period: Period; markdown: string } | null>(null);
   const [speaking, setSpeaking] = useState(false);
   const [showChart, setShowChart] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const run = async (period: Period) => {
     setBusy(period);
@@ -58,13 +59,15 @@ export default function PerformanceReportCard({ stats, lang: propLang }: Props) 
     }
   };
 
-  const speak = useCallback(() => {
+  const speak = useCallback(async () => {
     if (!report?.markdown) return;
     if (speaking) {
-      window.speechSynthesis?.cancel();
+      audioRef.current?.pause();
+      audioRef.current = null;
       setSpeaking(false);
       return;
     }
+    // Strip Markdown to plain text for TTS
     const plain = report.markdown
       .replace(/#{1,6}\s/g, "")
       .replace(/\*\*/g, "")
@@ -72,13 +75,23 @@ export default function PerformanceReportCard({ stats, lang: propLang }: Props) 
       .replace(/`/g, "")
       .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
       .trim();
-    const utter = new SpeechSynthesisUtterance(plain);
-    utter.lang = lang === "en" ? "en-CA" : "fr-CA";
-    utter.rate = 0.95;
-    utter.onend = () => setSpeaking(false);
-    utter.onerror = () => setSpeaking(false);
-    window.speechSynthesis?.speak(utter);
     setSpeaking(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("pp-ava-tts", {
+        body: { text: plain, language: lang === "en" ? "en" : "fr" },
+      });
+      if (error) throw error;
+      const d = data as any;
+      if (!d?.audioContent) throw new Error("no_audio");
+      const audio = new Audio(`data:audio/mpeg;base64,${d.audioContent}`);
+      audioRef.current = audio;
+      audio.onended = () => { setSpeaking(false); audioRef.current = null; };
+      audio.onerror = () => { setSpeaking(false); audioRef.current = null; };
+      await audio.play();
+    } catch {
+      setSpeaking(false);
+      toast.error(lang === "en" ? "AVA voice unavailable" : "Voix AVA indisponible");
+    }
   }, [report, speaking, lang]);
 
   const chartData = stats
