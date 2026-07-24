@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { flushSync, createPortal } from "react-dom";
 import { useOutletContext, useSearchParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
@@ -995,9 +995,9 @@ function SwipeableEmailRow({
   onFlag: () => void;
   children: React.ReactNode;
 }) {
-  const startX = useRef(0);
-  const [offset, setOffset] = useState(0);
-  const [action, setAction] = useState<null | "delete" | "archive" | "flag">(null);
+  const startX = React.useRef(0);
+  const [offset, setOffset] = React.useState(0);
+  const [action, setAction] = React.useState<null | "delete" | "archive" | "flag">(null);
   const THRESHOLD = 80;
 
   const onTouchStart = (e: React.TouchEvent) => {
@@ -1331,6 +1331,67 @@ function SenderQuickActions({ email, name }: { email: string; name: string }) {
 
 
 
+function EmailBodyFrame({ html }: { html: string }) {
+  const ref = useRef<HTMLIFrameElement | null>(null);
+  const [height, setHeight] = useState(400);
+  const doc = useMemo(() => {
+    const isDark = typeof document !== "undefined" && document.documentElement.classList.contains("dark");
+    const fg = isDark ? "#E5E7EB" : "#111827";
+    const bg = isDark ? "#0B1220" : "#FFFFFF";
+    const link = isDark ? "#7DD3FC" : "#0369A1";
+    return `<!doctype html><html><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover"/>
+<base target="_blank"/>
+<style>
+  html,body{margin:0;padding:12px;background:${bg};color:${fg};font:15px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",Arial,sans-serif;-webkit-text-size-adjust:100%;word-wrap:break-word;overflow-wrap:anywhere;}
+  *{max-width:100%!important;box-sizing:border-box;}
+  img,video,iframe{max-width:100%!important;height:auto!important;}
+  table{max-width:100%!important;width:100%!important;table-layout:auto!important;border-collapse:collapse;}
+  td,th{word-break:break-word;padding:4px;}
+  pre,code{white-space:pre-wrap;word-break:break-word;}
+  a{color:${link};word-break:break-all;}
+  blockquote{margin:8px 0;padding-left:10px;border-left:3px solid ${isDark ? "#374151" : "#E5E7EB"};color:${isDark ? "#9CA3AF" : "#6B7280"};}
+</style></head><body>${html}<script>
+  (function(){
+    function post(){
+      var h=Math.max(document.body.scrollHeight,document.documentElement.scrollHeight);
+      parent.postMessage({__emailFrame:true,height:h},'*');
+    }
+    window.addEventListener('load',post);
+    setTimeout(post,50);setTimeout(post,300);setTimeout(post,1000);
+    var ro=new ResizeObserver(post);ro.observe(document.body);
+    document.addEventListener('click',function(e){
+      var a=e.target && e.target.closest && e.target.closest('a');
+      if(a && a.href){e.preventDefault();parent.postMessage({__emailFrame:true,openUrl:a.href},'*');}
+    });
+  })();
+<\/script></body></html>`;
+  }, [html]);
+
+  useEffect(() => {
+    const onMsg = (ev: MessageEvent) => {
+      const d: any = ev.data;
+      if (!d || !d.__emailFrame) return;
+      if (typeof d.height === "number") setHeight(Math.min(Math.max(d.height + 8, 200), 5000));
+      if (d.openUrl) {
+        try { window.open(d.openUrl, "_blank"); } catch {}
+      }
+    };
+    window.addEventListener("message", onMsg);
+    return () => window.removeEventListener("message", onMsg);
+  }, []);
+
+  return (
+    <iframe
+      ref={ref}
+      title="email"
+      srcDoc={doc}
+      sandbox="allow-same-origin allow-scripts allow-popups"
+      style={{ width: "100%", height, border: 0, background: "transparent", display: "block" }}
+    />
+  );
+}
+
 function EmailDetailSheet({ email, onClose, onReply, onForward, onChanged }: {
   email: any;
   onClose: () => void;
@@ -1418,7 +1479,7 @@ function EmailDetailSheet({ email, onClose, onReply, onForward, onChanged }: {
     <div className="fixed inset-0 z-[9999] flex flex-col" style={{ background: "rgba(0,0,0,0.5)" }}>
       <div
         className="w-full flex flex-col mt-auto"
-        style={{ background: "var(--pp-bg-base)", borderTop: "1px solid var(--pp-bg-border-2)", height: "100%", paddingTop: "max(env(safe-area-inset-top, 0px), 44px)", paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
+        style={{ background: "var(--pp-bg-base)", borderTop: "1px solid var(--pp-bg-border-2)", height: "100%", paddingTop: "env(safe-area-inset-top, 0px)", paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
       >
         <div className="flex items-center justify-between px-4 pt-3 pb-2" style={{ borderBottom: "1px solid var(--pp-bg-border)" }}>
           <button onClick={onClose} className="p-1.5 rounded-full" style={{ color: "var(--pp-text-secondary)" }}>
@@ -1499,34 +1560,19 @@ function EmailDetailSheet({ email, onClose, onReply, onForward, onChanged }: {
                 ✨ {t ? (t as any)("messages.aiSummary") ?? "Résumé AI" : "Résumé AI"}
               </button>
             </div>
-            <div className="p-3">
+            <div className="p-0">
               {!showAiSummary ? (
                 loadingBody ? (
                   <div className="flex items-center justify-center py-6"><Loader2 className="w-5 h-5 animate-spin" style={{ color: "var(--pp-brand-accent)" }} /></div>
                 ) : fullBodyHtml ? (
-                  <div
-                    className="text-sm email-body"
-                    style={{ color: "var(--pp-text-secondary)", maxWidth: "100%", overflowX: "hidden", wordBreak: "break-word" }}
-                  >
-                    <style>{`
-                      .email-body img { max-width: 100% !important; height: auto !important; }
-                      .email-body table { max-width: 100% !important; width: 100% !important; table-layout: fixed !important; word-break: break-word; }
-                      .email-body td, .email-body th { word-break: break-word; }
-                      .email-body a { word-break: break-all; }
-                      .email-body * { max-width: 100% !important; box-sizing: border-box; overflow-wrap: break-word !important; }
-                      .email-body [style*="width"] { max-width: 100% !important; width: auto !important; }
-                      .email-body center { display: block; overflow: hidden; }
-                      .email-body div, .email-body p, .email-body span { font-size: 14px !important; line-height: 1.5 !important; }
-                    `}</style>
-                    <div dangerouslySetInnerHTML={{ __html: fullBodyHtml }} />
-                  </div>
+                  <EmailBodyFrame html={fullBodyHtml} />
                 ) : (
-                  <p className="text-sm whitespace-pre-wrap" style={{ color: "var(--pp-text-secondary)" }}>
+                  <p className="text-sm whitespace-pre-wrap p-3" style={{ color: "var(--pp-text-secondary)" }}>
                     {fullBodyText ?? preview ?? t("messages.previewUnavailable")}
                   </p>
                 )
               ) : (
-                <p className="text-sm whitespace-pre-wrap" style={{ color: "var(--pp-text-secondary)" }}>
+                <p className="text-sm whitespace-pre-wrap p-3" style={{ color: "var(--pp-text-secondary)" }}>
                   {preview || t("messages.previewUnavailable")}
                 </p>
               )}

@@ -1,12 +1,12 @@
-import React, { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useOutletContext, useNavigate } from "react-router-dom";
 
 import { supabase } from "@/integrations/supabase/client";
 import {
   Phone, PhoneMissed, MessageSquare, Voicemail,
-  ArrowDownLeft, ArrowUpRight, X, Calendar, Headphones,
+  ArrowDownLeft, ArrowUpRight, X, Calendar, Headphones, Bot,
   BellOff, Flame, Sparkles, ChevronRight, ChevronLeft, Mail, Users as UsersIcon,
-  CheckSquare, RefreshCw, AlertCircle, Video, ExternalLink, Plus,
+  CheckSquare, RefreshCw, AlertCircle, Video, ExternalLink,
 } from "lucide-react";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
 import { toast } from "sonner";
@@ -83,7 +83,8 @@ export default function MHome() {
   const [msMeetings, setMsMeetings] = useState<any[]>(() => cached?.msMeetings ?? []);
   const [msCalendarLoading, setMsCalendarLoading] = useState(false);
   const [msCalendarError, setMsCalendarError] = useState<string | null>(null);
-  // statsLoading = cold render only. Background refreshes never toggle it.
+  // statsLoading = cold render only. Background refreshes never toggle it,
+  // so the cached view stays on-screen while KPIs refresh silently.
   const [statsLoading, setStatsLoading] = useState(!cached);
   const [refreshing, setRefreshing] = useState(false);
 
@@ -103,7 +104,8 @@ export default function MHome() {
 
   const loadStats = async () => {
     if (!profile) return;
-    // Only show cold skeleton when nothing is cached
+    // Only show the cold skeleton when we have nothing cached. Otherwise
+    // hydrate from cache and refresh silently in the background.
     const hasCached = !!loadMHomeCache(profile?.user_id, period);
     if (!hasCached) setStatsLoading(true);
     setRefreshing(true);
@@ -187,37 +189,39 @@ export default function MHome() {
     const liveVmItems = Array.isArray((nsVmLive.data as any)?.items) ? (nsVmLive.data as any).items : [];
     const liveVmUnread = liveVmItems.filter((v: any) => !(v.is_read ?? v.read ?? false)).length;
 
-    let microsoftEvents: any[] = [];
+    // Kick off Microsoft calendar fetch in PARALLEL with the main data load
+    // (previously it awaited after Promise.all, adding ~1-3s to Home render).
+    let msPromise: Promise<any[]> = Promise.resolve([]);
     setMsCalendarError(null);
     if (profile?.ms365_access_token) {
       setMsCalendarLoading(true);
-      try {
-        const calStart = new Date(); calStart.setDate(1); calStart.setHours(0,0,0,0);
-        const calEnd = new Date(calStart); calEnd.setMonth(calEnd.getMonth() + 2);
-        const { data: msData, error: msError } = await supabase.functions.invoke("ms365-actions", {
+      const calStart = new Date(); calStart.setDate(1); calStart.setHours(0,0,0,0);
+      const calEnd = new Date(calStart); calEnd.setMonth(calEnd.getMonth() + 2);
+      msPromise = supabase.functions
+        .invoke("ms365-actions", {
           body: { action: "list_calendar_events", payload: { start: calStart.toISOString(), end: calEnd.toISOString(), top: 200 } },
-        });
-        if (msError || (msData as any)?.success === false) {
-          const errMsg = (msData as any)?.error ?? msError?.message ?? "Calendrier Microsoft indisponible";
-          setMsCalendarError(errMsg);
-          if (/token|expir|unauthor|401|invalid_grant/i.test(errMsg)) {
-            const { startMs365Reconnect } = await import("@/lib/ms365E2E");
-            startMs365Reconnect("Erreur d'authentification sur le calendrier");
+        })
+        .then(({ data: msData, error: msError }) => {
+          if (msError || (msData as any)?.success === false) {
+            const errMsg = (msData as any)?.error ?? msError?.message ?? "Calendrier Microsoft indisponible";
+            setMsCalendarError(errMsg);
+            if (/token|expir|unauthor|401|invalid_grant/i.test(errMsg)) {
+              import("@/lib/ms365E2E").then((m) => m.startMs365Reconnect("Erreur d'authentification sur le calendrier")).catch(() => {});
+            }
+            return [];
           }
-        } else {
-          microsoftEvents = (msData as any)?.events ?? [];
-        }
-      } catch (e: any) {
-        setMsCalendarError(e?.message ?? "Calendrier Microsoft indisponible");
-      } finally {
-        setMsCalendarLoading(false);
-      }
+          return (msData as any)?.events ?? [];
+        })
+        .catch((e) => { setMsCalendarError(e?.message ?? "Calendrier Microsoft indisponible"); return []; })
+        .finally(() => setMsCalendarLoading(false));
     } else {
       setMsMeetings([]);
     }
+
+    const microsoftEvents = await msPromise;
     setMsMeetings(microsoftEvents);
 
-    const newStats = {
+    const nextStats = {
       calls: liveCallsInPeriod.length || callsRes.count || 0,
       missed: liveCallsInPeriod.length ? liveCallsInPeriod.filter((c: any) => nsCallDirection(c) === "missed").length : (missedRes.count ?? 0),
       sms: liveSmsThreads.length ? liveSmsThreads.reduce((sum: number, th: any) => sum + nsSmsUnread(th), 0) : (smsRes.count ?? 0),
@@ -227,28 +231,39 @@ export default function MHome() {
       tasks: tasksCountRes.count ?? 0,
       outbound: outboundRes.count ?? 0,
     };
-    setStats(newStats);
-    const newRecent = liveRecent.length ? liveRecent : (recentRes.data ?? []);
-    const newHotLeads = hotRes.data ?? [];
-    const newDueReminders = remRes.data ?? [];
-    const newMeetings = meetingsRes.data ?? [];
-    setRecent(newRecent);
-    setHotLeads(newHotLeads);
-    setDueReminders(newDueReminders);
-    setMeetings(newMeetings);
-    // Persist to local cache for instant next render
-    const now = new Date().toISOString();
+    const nextRecent = liveRecent.length ? liveRecent : (recentRes.data ?? []);
+    const nextHot = hotRes.data ?? [];
+    const nextRem = remRes.data ?? [];
+    const nextMeetings = meetingsRes.data ?? [];
+    setStats(nextStats);
+    setRecent(nextRecent);
+    setHotLeads(nextHot);
+    setDueReminders(nextRem);
+    setMeetings(nextMeetings);
+
+    // Per-source last-sync statuses feed the KPI Audit page.
+    const now = Date.now();
+    const mark = (ok: boolean, msg?: string | null) => ({ status: ok ? "ok" as const : "error" as const, lastAt: now, message: msg ?? null });
     const sources: SourceStatusMap = {
-      maestro: { status: "ok", lastAt: now },
-      supabase: { status: "ok", lastAt: now },
+      ns_cdr:         { status: (nsCallsLive as any)?.error ? "error" : (liveCalls.length ? "ok" : "empty"), lastAt: now, message: (nsCallsLive as any)?.error?.message ?? null },
+      ns_sms:         { status: (nsSmsLive as any)?.error ? "error" : (liveSmsThreads.length ? "ok" : "empty"), lastAt: now, message: (nsSmsLive as any)?.error?.message ?? null },
+      ns_voicemail:   { status: (nsVmLive as any)?.error ? "error" : (liveVmItems.length ? "ok" : "empty"), lastAt: now, message: (nsVmLive as any)?.error?.message ?? null },
+      sb_calls:       mark(true),
+      sb_missed:      mark(true),
+      sb_sms_unread:  mark(true),
+      sb_voicemails:  mark(true),
+      sb_hot_leads:   mark(true),
+      sb_tasks:       mark(true),
+      sb_outbound:    mark(true),
+      sb_appointments:mark(true),
+      ms365_calendar: profile?.ms365_access_token
+        ? { status: msCalendarError ? "error" : (microsoftEvents.length ? "ok" : "empty"), lastAt: now, message: msCalendarError }
+        : { status: "unknown", lastAt: null, message: "MS365 non connecté" },
     };
+
     saveMHomeCache(profile?.user_id, period, {
-      stats: newStats,
-      recent: newRecent,
-      hotLeads: newHotLeads,
-      dueReminders: newDueReminders,
-      meetings: newMeetings,
-      msMeetings: microsoftEvents,
+      stats: nextStats, recent: nextRecent, hotLeads: nextHot,
+      dueReminders: nextRem, meetings: nextMeetings, msMeetings: microsoftEvents,
       sources,
     });
     } catch (e) {
@@ -258,6 +273,8 @@ export default function MHome() {
       setRefreshing(false);
     }
   };
+
+
 
   useEffect(() => { loadStats(); /* eslint-disable-next-line */ }, [profile?.user_id, period]);
   useEffect(() => {
@@ -310,8 +327,12 @@ export default function MHome() {
         )}
       </header>
 
-      {/* ===== RAPPORT DE PERFORMANCE (AVA/Claude) ===== */}
-      <PerformanceReportCard stats={stats} lang={lang} />
+      <PerformanceReportCard />
+
+
+
+
+
 
       {/* ===== PERIOD FILTER ===== */}
       <div className="flex items-center justify-between">
@@ -325,12 +346,16 @@ export default function MHome() {
         <div className="flex items-center gap-2">
           {refreshing && (
             <span className="flex items-center gap-1 text-[10px]" style={{ color: "var(--pp-text-muted)" }}>
-              <RefreshCw className="w-3 h-3 animate-spin" /> {t("home.refreshing") ?? "Actualisation\u2026"}
+              <RefreshCw className="w-3 h-3 animate-spin" /> {t("home.refreshing") ?? "Actualisation…"}
             </span>
           )}
-          <span className="text-[11px]" style={{ color: "var(--pp-text-muted)" }}>
+          <button
+            onClick={() => navigate("/mplanipret/kpi-audit")}
+            className="text-[10px] underline decoration-dotted"
+            style={{ color: "var(--pp-text-muted)" }}
+          >
             {totalComms} comms
-          </span>
+          </button>
         </div>
       </div>
 
@@ -355,6 +380,8 @@ export default function MHome() {
           </button>
         </div>
       )}
+
+      {/* AVA Brief section removed — replaced by PerformanceReportCard above */}
 
       {/* ===== STATS GRID (6 KPI) ===== */}
       <section className="grid grid-cols-3 gap-2.5">
@@ -490,7 +517,6 @@ export default function MHome() {
   );
 }
 
-
 function SectionHead({ icon, title, count }: { icon: React.ReactNode; title: string; count?: number }) {
   return (
     <div className="flex items-center justify-between mb-3">
@@ -535,7 +561,6 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
   const today = new Date(); today.setHours(0,0,0,0);
   const [cursor, setCursor] = useState(() => { const d=new Date(); d.setDate(1); d.setHours(0,0,0,0); return d; });
   const [selected, setSelected] = useState<Date>(today);
-  const [showCreate, setShowCreate] = useState(false);
 
   const locale = lang === "en" ? "en-CA" : "fr-CA";
 
@@ -578,26 +603,8 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
         </h2>
         <div className="flex items-center gap-2">
           <span className="pp-eyebrow">{events.length}</span>
-          {profile?.ms365_access_token && (
-            <button
-              onClick={() => setShowCreate(true)}
-              className="w-8 h-8 rounded-lg flex items-center justify-center active:scale-95"
-              style={{ background: "var(--pp-brand-accent)", color: "#fff" }}
-              aria-label="Créer une réunion"
-              title="Créer une réunion"
-            >
-              <Plus className="w-4 h-4" />
-            </button>
-          )}
         </div>
       </div>
-      {showCreate && (
-        <NewMeetingSheet
-          initialDate={selected}
-          onClose={() => setShowCreate(false)}
-          onCreated={() => { setShowCreate(false); toast.success(lang === "en" ? "Meeting created" : "Réunion créée"); }}
-        />
-      )}
 
       {!profile?.ms365_access_token ? (
         <p className="text-xs text-center py-4" style={{ color: "var(--pp-text-muted)" }}>
@@ -734,314 +741,4 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
     </section>
   );
 }
-
-function NewMeetingSheet({
-  initialDate,
-  onClose,
-  onCreated,
-}: {
-  initialDate: Date;
-  onClose: () => void;
-  onCreated: () => void;
-}) {
-  const { t, lang } = useMplanipretLang();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const toLocalInput = (d: Date) =>
-    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-
-  const base = new Date(initialDate);
-  base.setHours(9, 0, 0, 0);
-  const endBase = new Date(base);
-  endBase.setMinutes(base.getMinutes() + 30);
-
-  const [subject, setSubject] = useState("");
-  const [start, setStart] = useState(toLocalInput(base));
-  const [end, setEnd] = useState(toLocalInput(endBase));
-  const [attendees, setAttendees] = useState("");
-  const [location, setLocation] = useState("");
-  const [teams, setTeams] = useState(true);
-  const [body, setBody] = useState("");
-  const [saving, setSaving] = useState(false);
-
-  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Toronto";
-
-  const submit = async () => {
-    if (!subject.trim()) { toast.error(lang === "en" ? "Title required" : "Titre requis"); return; }
-    setSaving(true);
-    try {
-      const { data, error } = await supabase.functions.invoke("ms365-actions", {
-        body: {
-          action: "create_calendar_event",
-          payload: {
-            subject: subject.trim(),
-            start: { dateTime: new Date(start).toISOString(), timeZone: tz },
-            end: { dateTime: new Date(end).toISOString(), timeZone: tz },
-            body,
-            attendees: attendees.split(",").map((s) => s.trim()).filter(Boolean),
-            isOnlineMeeting: teams,
-            onlineMeetingProvider: "teamsForBusiness",
-            ...(location ? { location: { displayName: location } } : {}),
-          },
-        },
-      });
-      if (error || (data as any)?.success === false) {
-        throw new Error((data as any)?.error || error?.message || "Échec");
-      }
-      onCreated();
-    } catch (e: any) {
-      toast.error(e?.message || (lang === "en" ? "Failed to create" : "Échec de création"));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  // Outlook blue palette
-  const OL_BLUE = "#0078D4";
-  const OL_BLUE_DARK = "#005A9E";
-  const OL_SURFACE = "#FFFFFF";
-  const OL_BORDER = "#D1D5DB";
-  const OL_MUTED = "#6B7280";
-  const OL_TEXT = "#111827";
-  const OL_BG_INPUT = "#F9FAFB";
-
-  const fieldStyle: React.CSSProperties = {
-    width: "100%",
-    padding: "11px 14px",
-    borderRadius: 8,
-    border: `1px solid ${OL_BORDER}`,
-    background: OL_BG_INPUT,
-    color: OL_TEXT,
-    fontSize: 14,
-    fontFamily: "Urbanist, -apple-system, sans-serif",
-    outline: "none",
-    boxSizing: "border-box" as const,
-  };
-
-  const labelStyle: React.CSSProperties = {
-    display: "block",
-    fontSize: 11,
-    fontWeight: 600,
-    color: OL_MUTED,
-    marginBottom: 4,
-    textTransform: "uppercase" as const,
-    letterSpacing: "0.06em",
-    fontFamily: "Urbanist, sans-serif",
-  };
-
-  return (
-    <div
-      onClick={onClose}
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.72)",
-        display: "flex",
-        alignItems: "flex-end",
-        justifyContent: "center",
-        zIndex: 9999,
-        backdropFilter: "blur(4px)",
-        WebkitBackdropFilter: "blur(4px)",
-      }}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          width: "100%",
-          maxWidth: 540,
-          borderRadius: "20px 20px 0 0",
-          maxHeight: "92dvh",
-          overflowY: "auto",
-          background: OL_SURFACE,
-          boxShadow: "0 -8px 40px rgba(0,0,0,0.28)",
-          display: "flex",
-          flexDirection: "column",
-        }}
-      >
-        {/* ── Outlook-style header ── */}
-        <div style={{
-          background: OL_BLUE,
-          padding: "16px 20px 14px",
-          borderRadius: "20px 20px 0 0",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          flexShrink: 0,
-        }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            {/* Microsoft calendar icon */}
-            <div style={{
-              width: 32, height: 32, borderRadius: 6,
-              background: "#fff",
-              display: "flex", alignItems: "center", justifyContent: "center",
-            }}>
-              <Calendar className="w-4 h-4" style={{ color: OL_BLUE }} />
-            </div>
-            <div>
-              <div style={{ color: "#fff", fontSize: 16, fontWeight: 700, fontFamily: "Urbanist, sans-serif", lineHeight: 1.2 }}>
-                {lang === "en" ? "New Event" : "Nouvel événement"}
-              </div>
-              <div style={{ color: "rgba(255,255,255,0.75)", fontSize: 11, fontFamily: "Urbanist, sans-serif" }}>
-                Microsoft Outlook
-              </div>
-            </div>
-          </div>
-          <button
-            onClick={onClose}
-            style={{
-              width: 32, height: 32, borderRadius: 8,
-              background: "rgba(255,255,255,0.18)",
-              border: "none",
-              display: "flex", alignItems: "center", justifyContent: "center",
-              cursor: "pointer",
-            }}
-          >
-            <X className="w-4 h-4" style={{ color: "#fff" }} />
-          </button>
-        </div>
-
-        {/* ── Body ── */}
-        <div style={{ padding: "20px 20px 24px", display: "flex", flexDirection: "column", gap: 16 }}>
-
-          {/* Title */}
-          <div>
-            <label style={labelStyle}>{lang === "en" ? "Title" : "Titre"}</label>
-            <input
-              value={subject}
-              onChange={(e) => setSubject(e.target.value)}
-              placeholder={lang === "en" ? "Add a title" : "Ajouter un titre"}
-              style={{ ...fieldStyle, fontSize: 16, fontWeight: 600, padding: "12px 14px" }}
-            />
-          </div>
-
-          {/* Date/time row */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <div>
-              <label style={labelStyle}>{lang === "en" ? "Start" : "Début"}</label>
-              <input
-                type="datetime-local"
-                value={start}
-                onChange={(e) => setStart(e.target.value)}
-                style={fieldStyle}
-              />
-            </div>
-            <div>
-              <label style={labelStyle}>{lang === "en" ? "End" : "Fin"}</label>
-              <input
-                type="datetime-local"
-                value={end}
-                onChange={(e) => setEnd(e.target.value)}
-                style={fieldStyle}
-              />
-            </div>
-          </div>
-
-          {/* Attendees */}
-          <div>
-            <label style={labelStyle}>{lang === "en" ? "Attendees" : "Participants"}</label>
-            <input
-              value={attendees}
-              onChange={(e) => setAttendees(e.target.value)}
-              placeholder={lang === "en" ? "Add attendees (emails, comma-separated)" : "Courriels séparés par des virgules"}
-              style={fieldStyle}
-            />
-          </div>
-
-          {/* Location */}
-          <div>
-            <label style={labelStyle}>{lang === "en" ? "Location" : "Lieu"}</label>
-            <input
-              value={location}
-              onChange={(e) => setLocation(e.target.value)}
-              placeholder={lang === "en" ? "Add a location (optional)" : "Lieu (optionnel)"}
-              style={fieldStyle}
-            />
-          </div>
-
-          {/* Notes */}
-          <div>
-            <label style={labelStyle}>{lang === "en" ? "Notes / Agenda" : "Notes / Ordre du jour"}</label>
-            <textarea
-              value={body}
-              onChange={(e) => setBody(e.target.value)}
-              placeholder={lang === "en" ? "Add notes or agenda…" : "Ajouter des notes ou l'ordre du jour…"}
-              rows={3}
-              style={{ ...fieldStyle, resize: "none" as const }}
-            />
-          </div>
-
-          {/* Teams toggle */}
-          <label style={{
-            display: "flex", alignItems: "center", gap: 10,
-            padding: "12px 14px",
-            borderRadius: 10,
-            background: teams ? "rgba(0,120,212,0.07)" : "#F9FAFB",
-            border: `1px solid ${teams ? "rgba(0,120,212,0.25)" : OL_BORDER}`,
-            cursor: "pointer",
-          }}>
-            <div style={{
-              width: 40, height: 22, borderRadius: 11,
-              background: teams ? OL_BLUE : "#D1D5DB",
-              position: "relative",
-              transition: "background 0.2s",
-              flexShrink: 0,
-            }}>
-              <div style={{
-                position: "absolute",
-                top: 2, left: teams ? 20 : 2,
-                width: 18, height: 18,
-                borderRadius: "50%",
-                background: "#fff",
-                boxShadow: "0 1px 4px rgba(0,0,0,0.2)",
-                transition: "left 0.2s",
-              }} />
-              <input
-                type="checkbox"
-                checked={teams}
-                onChange={(e) => setTeams(e.target.checked)}
-                style={{ position: "absolute", opacity: 0, width: 0, height: 0 }}
-              />
-            </div>
-            <div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: OL_TEXT, fontFamily: "Urbanist, sans-serif" }}>
-                {lang === "en" ? "Create Teams meeting" : "Créer une réunion Teams"}
-              </div>
-              <div style={{ fontSize: 11, color: OL_MUTED, fontFamily: "Urbanist, sans-serif" }}>
-                Microsoft Teams
-              </div>
-            </div>
-          </label>
-
-          {/* Submit */}
-          <button
-            onClick={submit}
-            disabled={saving}
-            style={{
-              width: "100%",
-              height: 48,
-              borderRadius: 10,
-              background: saving ? OL_BLUE_DARK : OL_BLUE,
-              color: "#fff",
-              fontSize: 15,
-              fontWeight: 700,
-              fontFamily: "Urbanist, sans-serif",
-              border: "none",
-              cursor: saving ? "not-allowed" : "pointer",
-              opacity: saving ? 0.75 : 1,
-              transition: "opacity 0.15s",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 8,
-            }}
-          >
-            {saving
-              ? (lang === "en" ? "Creating…" : "Création…")
-              : (lang === "en" ? "Create event" : "Créer l'événement")}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 

@@ -959,7 +959,7 @@ export default function PlanipretMobile() {
         {/* Top brand header — AVA (left) · Planiprêt (center) · Settings (right) */}
         <header
           className="relative flex items-center px-4 pp-mobile-header"
-          style={{ marginTop: "calc(env(safe-area-inset-top, 0px) * 0.35)", paddingTop: 2, paddingBottom: 4 }}
+          style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 4px)", paddingBottom: 4 }}
         >
 
 
