@@ -1,12 +1,16 @@
 // pp-ava-tts — Text to speech for AVA replies using ElevenLabs.
-import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { encode as base64Encode } from "https://deno.land/std@0.168.0/encoding/base64.ts";
 
+const cors = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+};
+
 const j = (b: unknown, s = 200) =>
-  new Response(JSON.stringify(b), { status: s, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+  new Response(JSON.stringify(b), { status: s, headers: { ...cors, "Content-Type": "application/json" } });
 
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+  if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   try {
     const { text, voiceId = "RCSF5YgDtAhZXpNZfGek", language = "fr" } = await req.json();
     if (!text || typeof text !== "string") return j({ error: "text_required" }, 400);
