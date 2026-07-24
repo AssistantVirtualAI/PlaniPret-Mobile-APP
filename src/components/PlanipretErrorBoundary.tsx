@@ -5,42 +5,40 @@ type State = { error: Error | null };
 function isEmptyNativeArtifact(raw: unknown): boolean {
   if (!raw || typeof raw !== 'object') return !raw;
 
-  // Capacitor iOS sometimes reports an internal React/router artifact as
-  // `Error {}` with only a generated stack. No message means no actionable
-  // render failure, so keep the mobile app mounted.
-  if (raw instanceof Error && !String(raw.message ?? '').trim()) return true;
-
   const obj = raw as Record<string, unknown>;
-  const keys = new Set([...Object.keys(obj), ...Object.getOwnPropertyNames(obj)]);
-  const hasOnlyGeneratedErrorFields = [...keys].every((key) =>
-    ['stack', 'name', 'message', 'errorMessage'].includes(key)
-  );
-  for (const key of ['message', 'errorMessage', 'code', 'details', 'hint', 'error']) {
-    const value = obj[key] ?? Object.getOwnPropertyDescriptor(obj, key)?.value;
-    if (value != null && String(value).trim()) return false;
-  }
-  return keys.size === 0 || hasOnlyGeneratedErrorFields;
+  const message = String(obj.message ?? Object.getOwnPropertyDescriptor(obj, 'message')?.value ?? '').trim();
+  const errorMessage = String(obj.errorMessage ?? Object.getOwnPropertyDescriptor(obj, 'errorMessage')?.value ?? '').trim();
+  const code = String(obj.code ?? Object.getOwnPropertyDescriptor(obj, 'code')?.value ?? '').trim();
+  if (code === 'UNIMPLEMENTED' && /not implemented/i.test(message || errorMessage)) return true;
+  return false;
 }
 
-export class PlanipretErrorBoundary extends React.Component<{ children: React.ReactNode }, State> {
-  state: State = { error: null };
+export class PlanipretErrorBoundary extends React.Component<{ children: React.ReactNode }, State & { retryKey: number }> {
+  state: State & { retryKey: number } = { error: null, retryKey: 0 };
   static getDerivedStateFromError(error: Error) {
-    if (isEmptyNativeArtifact(error)) return null;
+    if (isEmptyNativeArtifact(error)) return { error: null };
     return { error };
   }
   componentDidCatch(error: Error, info: any) {
-    if (isEmptyNativeArtifact(error)) return;
+    if (isEmptyNativeArtifact(error)) {
+      // Empty native startup artifact — swallow AND remount subtree so the
+      // app doesn't stay blank after React unmounts the failing tree.
+      this.setState((s) => ({ error: null, retryKey: s.retryKey + 1 }));
+      return;
+    }
     console.error("[PlanipretErrorBoundary]", error, info);
   }
   render() {
-    if (!this.state.error) return this.props.children;
+    if (!this.state.error) {
+      return <React.Fragment key={this.state.retryKey}>{this.props.children}</React.Fragment>;
+    }
     return (
       <div className="min-h-screen flex items-center justify-center bg-slate-100 p-6">
         <div className="max-w-md bg-white rounded-xl shadow-md p-6 text-center">
           <div className="text-3xl mb-2">⚠️</div>
           <h2 className="font-semibold text-lg mb-2">Une erreur est survenue</h2>
-          <p className="text-sm text-slate-600 mb-4">{this.state.error.message}</p>
-          <button onClick={() => { this.setState({ error: null }); location.reload(); }}
+          <p className="text-sm text-slate-600 mb-4">{this.state.error.message || "Le démarrage a été interrompu."}</p>
+          <button onClick={() => { this.setState({ error: null, retryKey: this.state.retryKey + 1 }); location.reload(); }}
             className="px-4 py-2 rounded-lg bg-slate-900 text-white text-sm">Recharger</button>
         </div>
       </div>
