@@ -66,6 +66,8 @@ export default function MaestroConnectCard() {
     try {
       const isNative = Capacitor.isNativePlatform();
       const platform = isNative ? "mobile" : "web";
+      // Maestro whitelists planipret://auth/maestro/callback for the mobile
+      // client and https://avastatistic.ca/auth/maestro/callback for web.
       const redirectUri = isNative
         ? "planipret://auth/maestro/callback"
         : `${window.location.origin}/auth/maestro/callback`;

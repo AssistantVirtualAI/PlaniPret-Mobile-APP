@@ -4,6 +4,9 @@ export const MS365_DELEGATED_SCOPES =
   "openid profile email offline_access User.Read User.ReadBasic.All User.Read.All Contacts.Read Contacts.ReadWrite People.Read Mail.ReadWrite Mail.Send MailboxSettings.Read Calendars.ReadWrite Chat.Read Chat.ReadBasic Chat.ReadWrite ChatMessage.Send Channel.ReadBasic.All ChannelMessage.Read.All ChannelMessage.Send Team.ReadBasic.All Presence.Read.All Files.ReadWrite Files.ReadWrite.All Sites.ReadWrite.All Organization.Read.All Application.Read.All";
 
 export const MS365_WEB_CALLBACK_PATH = "/auth/microsoft/callback";
+// Azure whitelists the Capacitor custom scheme for the mobile client so the
+// WebView intercepts the callback directly and the app never leaves in-app
+// Safari/Chrome. Keep in sync with Azure App Registration (Mobile/Desktop).
 export const MS365_NATIVE_REDIRECT_URI = "capacitor://localhost/auth/microsoft/callback";
 
 const REDIRECT_STORAGE_KEY = "pp_ms365_redirect_uri";

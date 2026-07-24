@@ -31,7 +31,7 @@ Deno.serve(async (req) => {
       authorize_endpoint: `https://login.microsoftonline.com/${cfg.tenant || "common"}/oauth2/v2.0/authorize`,
       redirect_uris: {
         web: ["/auth/microsoft/callback", "/auth/ms365/callback"],
-        native: ["capacitor://localhost/auth/microsoft/callback"],
+        native: ["https://avastatistic.ca/auth/microsoft/callback", "capacitor://localhost/auth/microsoft/callback"],
       },
     });
   } catch (error) {

@@ -2,18 +2,20 @@ import { useEffect, useState } from "react";
 import { Bell, Settings as SettingsIcon, Sun, Moon } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import { useMplanipretTheme } from "@/hooks/useMplanipretTheme";
 import { supabase } from "@/integrations/supabase/client";
 
 export default function MobileHeaderControls({ profile, reloadProfile: _reloadProfile }: { profile: any; reloadProfile: () => Promise<void> | void }) {
   const { lang, setLang } = useMplanipretLang();
+  const { theme, toggle: toggleTheme } = useMplanipretTheme();
   const navigate = useNavigate();
   const [unread, setUnread] = useState(0);
-  const [dark, setDark] = useState<boolean>(() => localStorage.getItem("planipret_dark") !== "0");
+  const dark = theme === "dark";
 
+  // Mirror the active theme on <html> so Tailwind `dark:` utilities react too.
   useEffect(() => {
     if (dark) document.documentElement.classList.add("dark");
     else document.documentElement.classList.remove("dark");
-    localStorage.setItem("planipret_dark", dark ? "1" : "0");
   }, [dark]);
 
   useEffect(() => {
@@ -61,7 +63,7 @@ export default function MobileHeaderControls({ profile, reloadProfile: _reloadPr
         {lang === "fr" ? "FR" : "EN"}
       </button>
       <button
-        onClick={() => setDark((d) => !d)}
+        onClick={toggleTheme}
         className="flex items-center justify-center rounded-full"
         style={pill}
         aria-label="Theme"
