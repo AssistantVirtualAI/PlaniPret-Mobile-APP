@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { flushSync, createPortal } from "react-dom";
 import { useOutletContext, useSearchParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
@@ -995,9 +995,9 @@ function SwipeableEmailRow({
   onFlag: () => void;
   children: React.ReactNode;
 }) {
-  const startX = React.useRef(0);
-  const [offset, setOffset] = React.useState(0);
-  const [action, setAction] = React.useState<null | "delete" | "archive" | "flag">(null);
+  const startX = useRef(0);
+  const [offset, setOffset] = useState(0);
+  const [action, setAction] = useState<null | "delete" | "archive" | "flag">(null);
   const THRESHOLD = 80;
 
   const onTouchStart = (e: React.TouchEvent) => {
