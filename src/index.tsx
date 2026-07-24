@@ -64,6 +64,14 @@ async function hideSplashSoon() {
   } catch {}
 }
 
+function buildAppTree() {
+  return (
+    <BrowserRouter>
+      <App />
+    </BrowserRouter>
+  );
+}
+
 async function bootstrap() {
   console.log('[PP] bootstrap:start', { native: Capacitor.isNativePlatform(), proto: window.location.protocol });
   // Hide splash immediately so a render error can never leave the user staring
@@ -74,20 +82,33 @@ async function bootstrap() {
     if (!container) throw new Error('Root element not found');
     (window as any).__PP_REACT_BOOT_ATTEMPTED__ = true;
     if (container.textContent?.trim() === 'Démarrage...') container.innerHTML = '';
-    const appTree = (
-      <BrowserRouter>
-        <App />
-      </BrowserRouter>
-    );
-
 
     // iOS Capacitor is crashing inside React 18's createRoot event bootstrap
     // before the first commit (vendor-react line in Xcode). Native shells do
     // not need concurrent rendering here, so use the React 17-compatible mount
     // path for Capacitor only and keep createRoot for web/dev preview.
     if (Capacitor.isNativePlatform() || window.location.protocol === 'capacitor:') {
-      legacyRender(appTree, container);
-      window.setTimeout(() => { (window as any).__PP_REACT_MOUNT_CALLED__ = true; }, 0);
+      console.log('[PP] bootstrap:legacyRender:before');
+      legacyRender(buildAppTree(), container);
+      console.log('[PP] bootstrap:legacyRender:after');
+
+      // After legacyRender(), verify the root actually has content.
+      // If an empty-error artifact wiped the tree, force a second render.
+      window.setTimeout(() => {
+        (window as any).__PP_REACT_MOUNT_CALLED__ = true;
+        const rootEl = document.getElementById('root');
+        const childCount = rootEl?.children.length ?? 0;
+        const hasContent = childCount > 0;
+        console.log('[PP] bootstrap:rootCheck', { childCount, hasContent });
+        if (!hasContent) {
+          console.warn('[PP] bootstrap:rootEmpty — forcing re-render');
+          try {
+            legacyRender(buildAppTree(), rootEl!);
+          } catch (e2) {
+            console.error('[PP] bootstrap:rerender failed:', e2);
+          }
+        }
+      }, 600);
       return;
     }
 
@@ -100,7 +121,7 @@ async function bootstrap() {
         console.error('[PP] React recoverable error:', error);
       },
     });
-    root.render(appTree);
+    root.render(buildAppTree());
     window.setTimeout(() => { (window as any).__PP_REACT_MOUNT_CALLED__ = true; }, 0);
   } catch (e) {
     console.error('[PP] Render failed:', e);
