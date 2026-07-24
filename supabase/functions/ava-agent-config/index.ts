@@ -4,7 +4,7 @@
 import { authBroker, corsHeaders, jsonResponse } from "../_shared/ns-broker.ts";
 
 const DEFAULT_AGENT_ID = Deno.env.get("ELEVENLABS_DEFAULT_AGENT_ID") ?? "";
-const DEFAULT_VOICE_ID = "EXAVITQu4vr4xnSDxMaL"; // Sarah – pro female
+const DEFAULT_VOICE_ID = "RCSF5YgDtAhZXpNZfGek"; // Andréa — voix québécoise multilingual v2
 
 const TOOL_NAMES = [
   // telephony

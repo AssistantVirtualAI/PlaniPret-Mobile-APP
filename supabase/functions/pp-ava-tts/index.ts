@@ -8,13 +8,15 @@ const j = (b: unknown, s = 200) =>
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   try {
-    const { text, voiceId = "EXAVITQu4vr4xnSDxMaL", language = "fr" } = await req.json();
+    // Andréa — voix québécoise ElevenLabs multilingual v2
+    const { text, voiceId = "RCSF5YgDtAhZXpNZfGek", language = "fr" } = await req.json();
     if (!text || typeof text !== "string") return j({ error: "text_required" }, 400);
     if (text.length > 4000) return j({ error: "text_too_long" }, 400);
     const key = Deno.env.get("ELEVENLABS_API_KEY");
     if (!key) return j({ error: "elevenlabs_not_configured" }, 500);
 
-    const model = language === "fr" ? "eleven_multilingual_v2" : "eleven_turbo_v2";
+    // Always use multilingual v2 — Andréa is a multilingual voice
+    const model = "eleven_multilingual_v2";
     const res = await fetch(
       `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}?output_format=mp3_44100_128`,
       {

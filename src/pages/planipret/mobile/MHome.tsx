@@ -86,9 +86,6 @@ export default function MHome() {
   // statsLoading = cold render only. Background refreshes never toggle it.
   const [statsLoading, setStatsLoading] = useState(!cached);
   const [refreshing, setRefreshing] = useState(false);
-  const [brief, setBrief] = useState<any | null>(() => cached?.brief ?? null);
-  const [briefLoading, setBriefLoading] = useState(false);
-  const [briefErr, setBriefErr] = useState<string | null>(null);
 
   useMaestroPipelineToasts(profile?.user_id);
 
@@ -262,22 +259,9 @@ export default function MHome() {
     }
   };
 
-
-  const loadBrief = async (force = false) => {
-    setBriefLoading(true);
-    setBriefErr(null);
-    const { data, error } = await supabase.functions.invoke("pp-ava-brief", { body: { period, force } });
-    setBriefLoading(false);
-    if (error || (data as any)?.error) {
-      setBriefErr((data as any)?.error || error?.message || "brief unavailable");
-      return;
-    }
-    setBrief(data);
-  };
-
-  useEffect(() => { loadStats(); loadBrief(false); /* eslint-disable-next-line */ }, [profile?.user_id, period]);
+  useEffect(() => { loadStats(); /* eslint-disable-next-line */ }, [profile?.user_id, period]);
   useEffect(() => {
-    registerRefresh(async () => { await Promise.all([loadStats(), loadBrief(true)]); });
+    registerRefresh(async () => { await loadStats(); });
     return () => registerRefresh(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile?.user_id, period]);
@@ -371,105 +355,6 @@ export default function MHome() {
           </button>
         </div>
       )}
-
-      {/* ===== AI BRIEF (Navy gradient) ===== */}
-      <section
-        className="rounded-2xl p-4 relative overflow-hidden pp-card"
-        style={{
-          background: "linear-gradient(135deg, #FFFFFF 0%, #F0F4F9 100%)",
-          borderColor: "var(--pp-bg-border)",
-        }}
-      >
-        <div
-          className="absolute -top-12 -right-12 w-40 h-40 rounded-full"
-          style={{ background: "radial-gradient(circle, rgba(59,111,160,0.18), transparent 70%)" }}
-        />
-        <div className="relative">
-          <div className="flex items-center justify-between mb-2">
-            <div className="flex items-center gap-2">
-              <Sparkles className="w-4 h-4" style={{ color: "var(--pp-brand-accent)" }} />
-              <span className="pp-eyebrow">{t("home.brief")} — {periodLabel[period]}</span>
-            </div>
-            <button
-              onClick={() => loadBrief(true)}
-              disabled={briefLoading}
-              className="text-[11px] px-2.5 py-1 rounded-full flex items-center gap-1 disabled:opacity-50"
-              style={{
-                background: "rgba(59,111,160,0.10)",
-                color: "var(--pp-brand-accent-2)",
-                border: "1px solid rgba(59,111,160,0.25)",
-                fontFamily: "Urbanist,sans-serif", fontWeight: 600,
-              }}>
-              <RefreshCw className={`w-3 h-3 ${briefLoading ? "animate-spin" : ""}`} />
-              {briefLoading ? "…" : t("home.regenerate")}
-            </button>
-          </div>
-
-          {briefLoading && !brief ? (
-            <div className="space-y-2">
-              <Shimmer className="h-4 w-3/4" />
-              <Shimmer className="h-3 w-full" />
-              <Shimmer className="h-3 w-2/3" />
-            </div>
-          ) : briefErr ? (
-            <div className="text-xs flex items-center gap-2" style={{ color: "var(--pp-danger)" }}>
-              <AlertCircle className="w-3.5 h-3.5" /> {briefErr}
-            </div>
-          ) : brief ? (
-            <>
-              <p className="text-[15px] font-semibold leading-snug" style={{ color: "var(--pp-text-primary)", fontFamily: "Urbanist,sans-serif" }}>
-                {brief.headline}
-              </p>
-              {brief.priorities?.length > 0 && (
-                <ol className="mt-3 space-y-1.5">
-                  {brief.priorities.slice(0, 5).map((p: string, i: number) => (
-                    <li key={i} className="flex items-start gap-2 text-[13px]" style={{ color: "var(--pp-text-secondary)" }}>
-                      <span
-                        className="mt-[2px] inline-flex items-center justify-center w-4 h-4 rounded-full text-[10px] font-bold flex-shrink-0"
-                        style={{ background: "var(--pp-brand-accent-2)", color: "#fff", fontFamily: "Urbanist,sans-serif" }}>
-                        {i + 1}
-                      </span>
-                      <span>{p}</span>
-                    </li>
-                  ))}
-                </ol>
-              )}
-              {brief.risks?.length > 0 && (
-                <div className="mt-3 flex flex-wrap gap-1.5">
-                  {brief.risks.map((r: string, i: number) => (
-                    <span key={i} className="pp-pill pp-pill-warning">⚠ {r}</span>
-                  ))}
-                </div>
-              )}
-              {brief.suggestions?.length > 0 && (
-                <div className="mt-3 flex flex-wrap gap-1.5">
-                  {brief.suggestions.map((s: any, i: number) => (
-                    <button key={i} onClick={() => handleSuggestion(s)}
-                      className="pp-pill pp-pill-accent active:scale-95 transition">
-                      {s.kind === "call" ? "📞" : s.kind === "sms" ? "💬" : s.kind === "email" ? "✉" : "⏰"} {s.label}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </>
-          ) : (
-            <p className="text-xs" style={{ color: "var(--pp-text-muted)" }}>{t("home.preparingBrief")}</p>
-          )}
-
-          {profile?.voice_agent_enabled && (
-            <button onClick={openAva}
-              className="mt-3 w-full py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5"
-              style={{
-                background: "rgba(108,92,231,0.10)",
-                border: "1px solid rgba(108,92,231,0.30)",
-                color: "var(--pp-agent)",
-                fontFamily: "Urbanist,sans-serif",
-              }}>
-              <Headphones className="w-3.5 h-3.5" /> {t("home.listenWithAva")}
-            </button>
-          )}
-        </div>
-      </section>
 
       {/* ===== STATS GRID (6 KPI) ===== */}
       <section className="grid grid-cols-3 gap-2.5">
