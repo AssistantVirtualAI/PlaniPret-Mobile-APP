@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useOutletContext, useNavigate } from "react-router-dom";
 
 import { supabase } from "@/integrations/supabase/client";
@@ -859,6 +859,7 @@ function NewMeetingSheet({
   onClose: () => void;
   onCreated: () => void;
 }) {
+  const { t, lang } = useMplanipretLang();
   const pad = (n: number) => String(n).padStart(2, "0");
   const toLocalInput = (d: Date) =>
     `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
@@ -880,7 +881,7 @@ function NewMeetingSheet({
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Toronto";
 
   const submit = async () => {
-    if (!subject.trim()) { toast.error("Titre requis"); return; }
+    if (!subject.trim()) { toast.error(lang === "en" ? "Title required" : "Titre requis"); return; }
     setSaving(true);
     try {
       const { data, error } = await supabase.functions.invoke("ms365-actions", {
@@ -903,72 +904,254 @@ function NewMeetingSheet({
       }
       onCreated();
     } catch (e: any) {
-      toast.error(e?.message || "Échec de création");
+      toast.error(e?.message || (lang === "en" ? "Failed to create" : "Échec de création"));
     } finally {
       setSaving(false);
     }
+  };
+
+  // Outlook blue palette
+  const OL_BLUE = "#0078D4";
+  const OL_BLUE_DARK = "#005A9E";
+  const OL_SURFACE = "#FFFFFF";
+  const OL_BORDER = "#D1D5DB";
+  const OL_MUTED = "#6B7280";
+  const OL_TEXT = "#111827";
+  const OL_BG_INPUT = "#F9FAFB";
+
+  const fieldStyle: React.CSSProperties = {
+    width: "100%",
+    padding: "11px 14px",
+    borderRadius: 8,
+    border: `1px solid ${OL_BORDER}`,
+    background: OL_BG_INPUT,
+    color: OL_TEXT,
+    fontSize: 14,
+    fontFamily: "Urbanist, -apple-system, sans-serif",
+    outline: "none",
+    boxSizing: "border-box" as const,
+  };
+
+  const labelStyle: React.CSSProperties = {
+    display: "block",
+    fontSize: 11,
+    fontWeight: 600,
+    color: OL_MUTED,
+    marginBottom: 4,
+    textTransform: "uppercase" as const,
+    letterSpacing: "0.06em",
+    fontFamily: "Urbanist, sans-serif",
   };
 
   return (
     <div
       onClick={onClose}
       style={{
-        position: "fixed", inset: 0, background: "rgba(4,10,25,0.55)",
-        display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 9999,
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.72)",
+        display: "flex",
+        alignItems: "flex-end",
+        justifyContent: "center",
+        zIndex: 9999,
+        backdropFilter: "blur(4px)",
+        WebkitBackdropFilter: "blur(4px)",
       }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="pp-card"
         style={{
-          width: "100%", maxWidth: 520, borderRadius: "16px 16px 0 0",
-          padding: 16, maxHeight: "90dvh", overflowY: "auto",
-          background: "var(--pp-bg-elevated, #fff)",
+          width: "100%",
+          maxWidth: 540,
+          borderRadius: "20px 20px 0 0",
+          maxHeight: "92dvh",
+          overflowY: "auto",
+          background: OL_SURFACE,
+          boxShadow: "0 -8px 40px rgba(0,0,0,0.28)",
+          display: "flex",
+          flexDirection: "column",
         }}
       >
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-base font-semibold pp-heading">Nouvelle réunion</h3>
-          <button onClick={onClose} className="w-8 h-8 rounded-lg flex items-center justify-center"
-            style={{ background: "rgba(0,0,0,0.06)" }}>
-            <X className="w-4 h-4" />
+        {/* ── Outlook-style header ── */}
+        <div style={{
+          background: OL_BLUE,
+          padding: "16px 20px 14px",
+          borderRadius: "20px 20px 0 0",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          flexShrink: 0,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {/* Microsoft calendar icon */}
+            <div style={{
+              width: 32, height: 32, borderRadius: 6,
+              background: "#fff",
+              display: "flex", alignItems: "center", justifyContent: "center",
+            }}>
+              <Calendar className="w-4 h-4" style={{ color: OL_BLUE }} />
+            </div>
+            <div>
+              <div style={{ color: "#fff", fontSize: 16, fontWeight: 700, fontFamily: "Urbanist, sans-serif", lineHeight: 1.2 }}>
+                {lang === "en" ? "New Event" : "Nouvel événement"}
+              </div>
+              <div style={{ color: "rgba(255,255,255,0.75)", fontSize: 11, fontFamily: "Urbanist, sans-serif" }}>
+                Microsoft Outlook
+              </div>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            style={{
+              width: 32, height: 32, borderRadius: 8,
+              background: "rgba(255,255,255,0.18)",
+              border: "none",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              cursor: "pointer",
+            }}
+          >
+            <X className="w-4 h-4" style={{ color: "#fff" }} />
           </button>
         </div>
-        <div className="space-y-3">
-          <input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Titre"
-            className="pp-input w-full" style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid var(--pp-bg-border)" }} />
-          <div className="grid grid-cols-2 gap-2">
-            <label className="text-xs" style={{ color: "var(--pp-text-muted)" }}>
-              Début
-              <input type="datetime-local" value={start} onChange={(e) => setStart(e.target.value)}
-                className="w-full mt-1" style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid var(--pp-bg-border)" }} />
-            </label>
-            <label className="text-xs" style={{ color: "var(--pp-text-muted)" }}>
-              Fin
-              <input type="datetime-local" value={end} onChange={(e) => setEnd(e.target.value)}
-                className="w-full mt-1" style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid var(--pp-bg-border)" }} />
-            </label>
+
+        {/* ── Body ── */}
+        <div style={{ padding: "20px 20px 24px", display: "flex", flexDirection: "column", gap: 16 }}>
+
+          {/* Title */}
+          <div>
+            <label style={labelStyle}>{lang === "en" ? "Title" : "Titre"}</label>
+            <input
+              value={subject}
+              onChange={(e) => setSubject(e.target.value)}
+              placeholder={lang === "en" ? "Add a title" : "Ajouter un titre"}
+              style={{ ...fieldStyle, fontSize: 16, fontWeight: 600, padding: "12px 14px" }}
+            />
           </div>
-          <input value={attendees} onChange={(e) => setAttendees(e.target.value)}
-            placeholder="Participants (courriels, séparés par des virgules)"
-            className="w-full" style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid var(--pp-bg-border)" }} />
-          <input value={location} onChange={(e) => setLocation(e.target.value)}
-            placeholder="Lieu (optionnel)"
-            className="w-full" style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid var(--pp-bg-border)" }} />
-          <textarea value={body} onChange={(e) => setBody(e.target.value)}
-            placeholder="Notes / ordre du jour"
-            rows={3}
-            className="w-full" style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid var(--pp-bg-border)" }} />
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={teams} onChange={(e) => setTeams(e.target.checked)} />
-            Créer une réunion Teams
+
+          {/* Date/time row */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div>
+              <label style={labelStyle}>{lang === "en" ? "Start" : "Début"}</label>
+              <input
+                type="datetime-local"
+                value={start}
+                onChange={(e) => setStart(e.target.value)}
+                style={fieldStyle}
+              />
+            </div>
+            <div>
+              <label style={labelStyle}>{lang === "en" ? "End" : "Fin"}</label>
+              <input
+                type="datetime-local"
+                value={end}
+                onChange={(e) => setEnd(e.target.value)}
+                style={fieldStyle}
+              />
+            </div>
+          </div>
+
+          {/* Attendees */}
+          <div>
+            <label style={labelStyle}>{lang === "en" ? "Attendees" : "Participants"}</label>
+            <input
+              value={attendees}
+              onChange={(e) => setAttendees(e.target.value)}
+              placeholder={lang === "en" ? "Add attendees (emails, comma-separated)" : "Courriels séparés par des virgules"}
+              style={fieldStyle}
+            />
+          </div>
+
+          {/* Location */}
+          <div>
+            <label style={labelStyle}>{lang === "en" ? "Location" : "Lieu"}</label>
+            <input
+              value={location}
+              onChange={(e) => setLocation(e.target.value)}
+              placeholder={lang === "en" ? "Add a location (optional)" : "Lieu (optionnel)"}
+              style={fieldStyle}
+            />
+          </div>
+
+          {/* Notes */}
+          <div>
+            <label style={labelStyle}>{lang === "en" ? "Notes / Agenda" : "Notes / Ordre du jour"}</label>
+            <textarea
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              placeholder={lang === "en" ? "Add notes or agenda…" : "Ajouter des notes ou l'ordre du jour…"}
+              rows={3}
+              style={{ ...fieldStyle, resize: "none" as const }}
+            />
+          </div>
+
+          {/* Teams toggle */}
+          <label style={{
+            display: "flex", alignItems: "center", gap: 10,
+            padding: "12px 14px",
+            borderRadius: 10,
+            background: teams ? "rgba(0,120,212,0.07)" : "#F9FAFB",
+            border: `1px solid ${teams ? "rgba(0,120,212,0.25)" : OL_BORDER}`,
+            cursor: "pointer",
+          }}>
+            <div style={{
+              width: 40, height: 22, borderRadius: 11,
+              background: teams ? OL_BLUE : "#D1D5DB",
+              position: "relative",
+              transition: "background 0.2s",
+              flexShrink: 0,
+            }}>
+              <div style={{
+                position: "absolute",
+                top: 2, left: teams ? 20 : 2,
+                width: 18, height: 18,
+                borderRadius: "50%",
+                background: "#fff",
+                boxShadow: "0 1px 4px rgba(0,0,0,0.2)",
+                transition: "left 0.2s",
+              }} />
+              <input
+                type="checkbox"
+                checked={teams}
+                onChange={(e) => setTeams(e.target.checked)}
+                style={{ position: "absolute", opacity: 0, width: 0, height: 0 }}
+              />
+            </div>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: OL_TEXT, fontFamily: "Urbanist, sans-serif" }}>
+                {lang === "en" ? "Create Teams meeting" : "Créer une réunion Teams"}
+              </div>
+              <div style={{ fontSize: 11, color: OL_MUTED, fontFamily: "Urbanist, sans-serif" }}>
+                Microsoft Teams
+              </div>
+            </div>
           </label>
+
+          {/* Submit */}
           <button
             onClick={submit}
             disabled={saving}
-            className="w-full h-11 rounded-xl font-semibold active:scale-[0.98]"
-            style={{ background: "var(--pp-brand-accent)", color: "#fff", opacity: saving ? 0.6 : 1 }}
+            style={{
+              width: "100%",
+              height: 48,
+              borderRadius: 10,
+              background: saving ? OL_BLUE_DARK : OL_BLUE,
+              color: "#fff",
+              fontSize: 15,
+              fontWeight: 700,
+              fontFamily: "Urbanist, sans-serif",
+              border: "none",
+              cursor: saving ? "not-allowed" : "pointer",
+              opacity: saving ? 0.75 : 1,
+              transition: "opacity 0.15s",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 8,
+            }}
           >
-            {saving ? "Création…" : "Créer la réunion"}
+            {saving
+              ? (lang === "en" ? "Creating…" : "Création…")
+              : (lang === "en" ? "Create event" : "Créer l'événement")}
           </button>
         </div>
       </div>
