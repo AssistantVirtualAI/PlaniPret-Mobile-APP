@@ -410,8 +410,18 @@ function NativeDeepLinkBridge() {
   }, []);
 
   useEffect(() => {
+    // Deduplicate OAuth deep-link handling.
+    // getLaunchUrl() AND appUrlOpen can both fire for the same callback URL on iOS,
+    // which would mount Ms365Callback / MaestroCallback twice and exhaust the
+    // single-use authorization code on the first call (→ HTTP 400 on the second).
+    let lastHandledCallbackUrl: string | null = null;
+    let lastHandledAt = 0;
+
     const routeFromUrl = (rawUrl?: string | null) => {
       if (!rawUrl) return;
+      // Ignore if we already routed this exact callback URL within the last 15 s.
+      const now = Date.now();
+      if (rawUrl === lastHandledCallbackUrl && now - lastHandledAt < 15_000) return;
       try {
         const url = new URL(rawUrl);
         const pathWithHost = `/${[url.hostname, url.pathname].filter(Boolean).join('/')}`.replace(/\/+/g, '/');
@@ -427,6 +437,8 @@ function NativeDeepLinkBridge() {
           url.protocol === 'planipret:';
 
         if (isMs365Callback) {
+          lastHandledCallbackUrl = rawUrl;
+          lastHandledAt = Date.now();
           localStorage.setItem('pp_ms365_callback_url', rawUrl);
           // Dismiss the in-app browser (SFSafariViewController / Chrome Custom Tab)
           // so the user is returned to the app after Microsoft consent.
@@ -435,6 +447,8 @@ function NativeDeepLinkBridge() {
             .catch(() => {});
           navigate(`/auth/microsoft/callback${url.search}`, { replace: true });
         } else if (isMaestroCallback) {
+          lastHandledCallbackUrl = rawUrl;
+          lastHandledAt = Date.now();
           import('@capacitor/browser')
             .then(({ Browser }) => Browser.close().catch(() => {}))
             .catch(() => {});
