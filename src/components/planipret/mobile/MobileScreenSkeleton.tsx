@@ -1,7 +1,7 @@
 /**
  * Full-screen skeleton shown while a lazy-loaded mobile screen chunk
- * is fetched. Matches the dark Planiprêt mobile shell so there's no
- * flash of white during navigation.
+ * is fetched. Matches the dark Planiprêt mobile shell to avoid the
+ * white/blank flash on slow networks.
  */
 export default function MobileScreenSkeleton({ rows = 6 }: { rows?: number }) {
   return (
@@ -51,7 +51,6 @@ export default function MobileScreenSkeleton({ rows = 6 }: { rows?: number }) {
 function Shimmer({ w, h, r = 4 }: { w: number | string; h: number; r?: number }) {
   return (
     <div
-      className="pp-skeleton"
       style={{
         width: w,
         height: h,

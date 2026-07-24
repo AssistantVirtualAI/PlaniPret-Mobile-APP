@@ -309,8 +309,6 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
           const { data, error } = await supabase.functions.invoke("pp-ava-webrtc-token", { body: { type: kind } });
           let d: any = data;
           if (error) {
-            // FunctionsHttpError carries the response body in .context — read it
-            // so we can surface actionable server-side codes (voice_agent_disabled…).
             try {
               const ctx = (error as any)?.context;
               if (ctx && typeof ctx.text === "function") {

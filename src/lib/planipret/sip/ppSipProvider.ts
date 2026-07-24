@@ -37,15 +37,7 @@ export interface PpSipSnapshot {
 }
 
 
-export interface PpSipEvent {
-  time: number;
-  level: "info" | "warn" | "error";
-  event: string;
-  detail?: string;
-}
-
 type Listener = (s: PpSipSnapshot) => void;
-type EventsListener = (e: PpSipEvent[]) => void;
 
 let sipParserGuardInstalled = false;
 
@@ -74,8 +66,6 @@ class PpSipProvider {
   private session: any = null;
   private cfg: PpSipConfig | null = null;
   private listeners = new Set<Listener>();
-  private eventListeners = new Set<EventsListener>();
-  private events: PpSipEvent[] = [];
   private snap: PpSipSnapshot = {
     status: "idle",
     callState: "idle",
@@ -100,17 +90,6 @@ class PpSipProvider {
   getSnapshot(): PpSipSnapshot { return this.snap; }
   getConfig(): PpSipConfig | null { return this.cfg; }
 
-  getEvents(): PpSipEvent[] { return this.events; }
-  subscribeEvents(fn: EventsListener): () => void {
-    this.eventListeners.add(fn);
-    fn(this.events);
-    return () => { this.eventListeners.delete(fn); };
-  }
-  clearEvents() {
-    this.events = [];
-    this.eventListeners.forEach((l) => { try { l(this.events); } catch {} });
-  }
-
   private update(patch: Partial<PpSipSnapshot>) {
     this.snap = { ...this.snap, ...patch };
     this.listeners.forEach((l) => { try { l(this.snap); } catch {} });
@@ -120,11 +99,6 @@ class PpSipProvider {
     const fn = level === "error" ? "error" : level === "warn" ? "warn" : "log";
     // eslint-disable-next-line no-console
     (console as any)[fn](`[pp-sip] ${msg}`, detail ?? "");
-    const detailStr = detail === undefined || detail === null || detail === ""
-      ? undefined
-      : typeof detail === "string" ? detail : (() => { try { return JSON.stringify(detail); } catch { return String(detail); } })();
-    this.events = [...this.events, { time: Date.now(), level, event: msg, detail: detailStr }].slice(-200);
-    this.eventListeners.forEach((l) => { try { l(this.events); } catch {} });
   }
 
   async init(cfg: PpSipConfig) {

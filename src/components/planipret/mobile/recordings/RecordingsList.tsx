@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
-import { getAiTranscriptSegments } from "@/lib/planipretTranscript";
 import {
   Play, Pause, Download, RotateCcw, RotateCw, Sparkles, FileText, Bot,
   Loader2, Search, Copy, Check, ChevronDown, Link2, User, Flame, Snowflake, Thermometer, ListChecks,
@@ -39,7 +38,6 @@ export type RecordingCall = {
   transcript_segments?: any;
   transcript_language?: string | null;
   ai_summary: string | null;
-  ai_analysis_json?: any;
   ai_coaching?: any;
   ai_key_points?: any;
   ai_client_insights?: any;
@@ -53,6 +51,8 @@ export type RecordingCall = {
   stream_via_proxy?: boolean | null;
   proxy_call_db_id?: string | null;
   proxy_ns_callid?: string | null;
+  analyzed_at?: string | null;
+  transcript_source?: string | null;
 };
 
 const fmtDate = (iso: string) => {
@@ -95,11 +95,7 @@ const recordingLookupBody = (c: RecordingCall) => ({
 });
 const applyCoachPayload = (call: RecordingCall, payload: any): RecordingCall => ({
   ...call,
-  transcript: payload?.transcript ?? call.transcript,
-  ai_analysis_json: payload?.ai_analysis_json ?? payload?.analysis ?? (payload?.corrected_transcript ? {
-    ...(call.ai_analysis_json ?? {}),
-    corrected_transcript: payload.corrected_transcript,
-  } : call.ai_analysis_json),
+  transcript: payload?.corrected_transcript ?? payload?.transcript ?? call.transcript,
   ai_summary: payload?.summary ?? payload?.ai_summary ?? call.ai_summary,
   ai_coaching: payload?.coaching ?? payload?.ai_coaching ?? call.ai_coaching,
   lead_score: payload?.score ?? call.lead_score,
@@ -404,7 +400,6 @@ function RecordingCard({
             ...call,
             transcript: n.transcript ?? call.transcript,
             transcript_segments: n.transcript_segments ?? call.transcript_segments,
-            ai_analysis_json: n.ai_analysis_json ?? call.ai_analysis_json,
             transcript_language: n.transcript_language ?? call.transcript_language,
             ai_summary: n.ai_summary ?? call.ai_summary,
             ai_coaching: n.ai_coaching ?? call.ai_coaching,
@@ -740,8 +735,10 @@ function TranscriptSection({ call, onUpdated }: { call: RecordingCall; onUpdated
   const [copied, setCopied] = useState(false);
 
   const segments: Array<{ speaker?: string; text: string; start?: number }> = useMemo(() => {
-    return getAiTranscriptSegments(call) as Array<{ speaker?: string; text: string; start?: number }>;
-  }, [call]);
+    if (Array.isArray(call.transcript_segments) && call.transcript_segments.length) return call.transcript_segments;
+    if (call.transcript) return [{ text: call.transcript }];
+    return [];
+  }, [call.transcript_segments, call.transcript]);
 
   const run = async () => {
     setLoading(true);
@@ -852,6 +849,28 @@ function Highlight({ text, q }: { text: string; q: string }) {
 }
 
 // ===================== AI =====================
+function AnalysisStatusBar({ call }: { call: RecordingCall }) {
+  const nsId = call.ns_callid ?? call.ns_orig_callid ?? call.ns_term_callid ?? call.ns_call_id ?? null;
+  const src = call.transcript_source ?? (call.transcript ? "ns-api" : null);
+  const analyzed = !!call.analyzed_at;
+  const synced = !!call.maestro_synced;
+  const status = synced ? "synced" : analyzed ? "analyzed" : "pending";
+  const label = status === "synced" ? "Synchronisé" : status === "analyzed" ? "Analysé" : "En attente";
+  const color = status === "synced" ? "#10b981" : status === "analyzed" ? "#2E9BDC" : "#f59e0b";
+  const ts = call.analyzed_at ? new Date(call.analyzed_at).toLocaleString("fr-CA", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : null;
+  return (
+    <div className="p-2.5 rounded-lg mb-2 flex flex-wrap items-center gap-2" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)" }}>
+      <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 999, background: `${color}22`, color, border: `1px solid ${color}55`, fontWeight: 700, letterSpacing: 0.4, textTransform: "uppercase" }}>● {label}</span>
+      {ts && <span style={{ fontSize: 10, color: "var(--pp-text-muted)" }}>{ts}</span>}
+      {nsId && (
+        <span style={{ fontSize: 10, color: "var(--pp-text-faint)", fontFamily: "monospace", marginLeft: "auto" }}>
+          src: {src ?? "—"} · NS {String(nsId).slice(0, 10)}
+        </span>
+      )}
+    </div>
+  );
+}
+
 function AISection({ call, onUpdated }: { call: RecordingCall; onUpdated: (c: RecordingCall) => void }) {
   const [loading, setLoading] = useState(false);
   const hasAI = !!call.ai_summary;
@@ -896,6 +915,7 @@ function AISection({ call, onUpdated }: { call: RecordingCall; onUpdated: (c: Re
   if (!hasAI) {
     return (
       <div className="mt-3 p-3 rounded-xl" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)" }}>
+        <AnalysisStatusBar call={call} />
         <button onClick={run} disabled={loading}
                 className="w-full py-2.5 rounded-lg text-sm font-semibold flex items-center justify-center gap-2"
                 style={{ background: "linear-gradient(135deg, var(--pp-agent), var(--pp-brand-accent-2))", color: "white" }}>
@@ -916,6 +936,7 @@ function AISection({ call, onUpdated }: { call: RecordingCall; onUpdated: (c: Re
 
   return (
     <div className="mt-3 space-y-2">
+      <AnalysisStatusBar call={call} />
       {/* Résumé */}
       <Block title="Résumé" icon={<Bot className="w-3.5 h-3.5" />}>
         <p className="text-xs leading-relaxed" style={{ color: "var(--pp-text-secondary)" }}>{call.ai_summary}</p>
@@ -1114,10 +1135,33 @@ function MaestroSyncSection({ call, onUpdated }: { call: RecordingCall; onUpdate
   const sync = async () => {
     setBusy("sync");
     try {
+      // Step 1: push CDR (call record)
       const { error } = await supabase.functions.invoke("maestro-cdr", { body: { call_id: call.id } });
       if (error) throw error;
+
+      // Step 2: push AI summary + coaching notes if available
+      if (call.ai_summary || call.ai_coaching) {
+        const aiPayload: Record<string, unknown> = { call_id: call.id };
+        if (call.ai_summary) aiPayload.ai_summary = call.ai_summary;
+        if (call.ai_coaching) {
+          // Build coaching notes text from coaching object
+          const coachingText = typeof call.ai_coaching === "string"
+            ? call.ai_coaching
+            : [
+                call.ai_coaching?.strengths?.length ? `Strengths: ${call.ai_coaching.strengths.join(", ")}` : null,
+                call.ai_coaching?.improvements?.length ? `Improvements: ${call.ai_coaching.improvements.join(", ")}` : null,
+                call.ai_coaching?.overall ? `Overall: ${call.ai_coaching.overall}` : null,
+              ].filter(Boolean).join("\n");
+          if (coachingText) aiPayload.notes = coachingText;
+        }
+        // Fire and forget — don't block the UI if AI sync fails
+        supabase.functions.invoke("maestro-ai-analysis", { body: aiPayload }).catch(() => {});
+      }
+
       onUpdated({ ...call, maestro_synced: true });
-      toast.success("Synchronisé avec Maestro");
+      toast.success("Synchronisé avec Maestro", {
+        description: call.ai_summary ? "CDR + résumé AI envoyés" : "CDR envoyé",
+      });
     } catch (e: any) {
       toast.error("Sync échouée", { description: e?.message });
     } finally {

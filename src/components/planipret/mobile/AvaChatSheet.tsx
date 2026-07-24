@@ -4,7 +4,6 @@ import { X, Send, Sparkles, Loader2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import ReactMarkdown from "react-markdown";
 import avaLogo from "@/assets/ava-statistics-logo.png.asset.json";
-import { useAvaContext } from "@/hooks/useAvaContext";
 
 type Msg = { role: "user" | "assistant"; content: string };
 
@@ -17,7 +16,6 @@ export default function AvaChatSheet({ userId, onClose }: { userId: string; onCl
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [lockedHeight, setLockedHeight] = useState<number | null>(null);
-  const avaContext = useAvaContext();
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -47,7 +45,7 @@ export default function AvaChatSheet({ userId, onClose }: { userId: string; onCl
     setLoading(true);
     try {
       const { data, error } = await supabase.functions.invoke("pp-ava-chat", {
-        body: { messages: next, user_id: userId, context: avaContext },
+        body: { messages: next, user_id: userId },
       });
       if (error) throw error;
       const reply = (data as any)?.reply ?? (data as any)?.message ?? "Désolée, je n'ai pas de réponse pour le moment.";

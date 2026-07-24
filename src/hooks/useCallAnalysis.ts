@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { getAiTranscriptSegments, getDisplayTranscript } from "@/lib/planipretTranscript";
 
 export interface CallAnalysisRow {
   id: string;
@@ -144,8 +143,8 @@ export function useCallAnalysis(callId: string | null) {
     error,
     analyze,
     reload: () => callId && loadCall(callId),
-    transcript: getDisplayTranscript(call),
-    transcriptSegments: getAiTranscriptSegments(call),
+    transcript: call?.transcript ?? "",
+    transcriptSegments: call?.transcript_segments ?? [],
     coaching: call?.ai_coaching,
     analysis: call?.ai_analysis_json,
     coachingScore: call?.coaching_score,

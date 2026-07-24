@@ -54,7 +54,6 @@ export default function PpActiveCallScreen({
   const [elapsed, setElapsed] = useState(0);
   const [view, setView] = useState<"main" | "keypad" | "transfer">("main");
   const [dtmfBuf, setDtmfBuf] = useState("");
-  const [lastDtmf, setLastDtmf] = useState<string | null>(null);
   const [transferQuery, setTransferQuery] = useState("");
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [loadingContacts, setLoadingContacts] = useState(false);
@@ -66,25 +65,10 @@ export default function PpActiveCallScreen({
   const active = snap.callState === "ringing-out" || snap.callState === "ringing-in"
     || snap.callState === "active" || snap.callState === "held";
 
-  // Reset transient state only when the call ends. Never reset on transitions
-  // between active sub-states (ringing-out → active, active → held, etc.) so
-  // the DTMF keypad stays visible right after the callee picks up.
+  // Reset transient state each new call
   useEffect(() => {
     if (!active) { setView("main"); setDtmfBuf(""); setTransferQuery(""); setElapsed(0); }
   }, [active]);
-
-  // Auto-open the DTMF keypad the moment the call is answered so brokers can
-  // navigate IVRs without an extra tap.
-  const openedKeypadRef = useRef(false);
-  useEffect(() => {
-    if (snap.callState === "active" && !openedKeypadRef.current) {
-      openedKeypadRef.current = true;
-      setView("keypad");
-    }
-    if (!active) openedKeypadRef.current = false;
-  }, [snap.callState, active]);
-
-
 
   // Duration timer for connected calls
   useEffect(() => {
@@ -137,16 +121,7 @@ export default function PpActiveCallScreen({
     }).slice(0, 60);
   }, [contacts, transferQuery]);
 
-  const pressDtmf = useCallback((k: string) => {
-    if (snap.callState !== "active") return;
-    setDtmfBuf((b) => (b + k).slice(-16));
-    setLastDtmf(k);
-    if (typeof navigator !== "undefined" && "vibrate" in navigator) {
-      try { (navigator as any).vibrate?.(15); } catch { /* noop */ }
-    }
-    sendDTMF(k);
-    window.setTimeout(() => setLastDtmf((cur) => (cur === k ? null : cur)), 450);
-  }, [sendDTMF, snap.callState]);
+  const pressDtmf = useCallback((k: string) => { setDtmfBuf((b) => (b + k).slice(-16)); sendDTMF(k); }, [sendDTMF]);
   const doTransfer = useCallback((target: string) => {
     const to = target.trim(); if (!to) return;
     transfer(to);
@@ -222,45 +197,15 @@ export default function PpActiveCallScreen({
         {/* Keypad view */}
         {view === "keypad" && (
           <div className="flex-1 flex flex-col items-center justify-center px-8">
-            {isHeld && (
-              <div
-                className="mb-3 text-[11px] px-3 py-1.5 rounded-full"
-                style={{ background: "rgba(245,158,11,0.15)", border: "1px solid rgba(245,158,11,0.4)", color: "#FCD34D" }}
-              >
-                {t("call.dtmfHeld") || "Reprenez l'appel pour envoyer des tonalités"}
-              </div>
-            )}
-            <div
-              className="text-lg mb-1 min-h-[24px] font-mono tracking-widest transition-colors"
-              style={{ color: lastDtmf ? "#2E9BDC" : "rgba(255,255,255,0.8)" }}
-            >
-              {dtmfBuf || "—"}
-            </div>
-            <div className="text-[10px] uppercase tracking-widest mb-3" style={{ color: "rgba(255,255,255,0.4)" }}>
-              {lastDtmf ? `${t("call.dtmfSent") || "Envoyé"} · ${lastDtmf}` : (t("call.dtmfHint") || "Touchez une touche pour envoyer")}
-            </div>
+            <div className="text-lg text-white/80 mb-4 min-h-[24px]">{dtmfBuf || "—"}</div>
             <div className="grid grid-cols-3 gap-4" style={{ maxWidth: 300 }}>
-              {KEYS.map((k) => {
-                const isFlash = lastDtmf === k;
-                const disabled = snap.callState !== "active";
-                return (
-                  <button
-                    key={k}
-                    onClick={() => pressDtmf(k)}
-                    disabled={disabled}
-                    aria-label={`DTMF ${k}`}
-                    className="w-20 h-20 rounded-full text-3xl font-semibold active:scale-95 transition mx-auto disabled:opacity-40 disabled:cursor-not-allowed"
-                    style={{
-                      background: isFlash ? "rgba(46,155,220,0.35)" : "rgba(255,255,255,0.08)",
-                      border: `1px solid ${isFlash ? "rgba(46,155,220,0.8)" : "rgba(255,255,255,0.15)"}`,
-                      boxShadow: isFlash ? "0 0 24px rgba(46,155,220,0.55)" : undefined,
-                      transform: isFlash ? "scale(0.94)" : undefined,
-                    }}
-                  >
-                    {k}
-                  </button>
-                );
-              })}
+              {KEYS.map((k) => (
+                <button key={k} onClick={() => pressDtmf(k)}
+                  className="w-20 h-20 rounded-full text-3xl font-semibold active:scale-95 transition mx-auto"
+                  style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)" }}>
+                  {k}
+                </button>
+              ))}
             </div>
           </div>
         )}

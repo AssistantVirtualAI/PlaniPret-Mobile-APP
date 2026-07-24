@@ -6,61 +6,56 @@ import { Browser } from "@capacitor/browser";
 import { supabase } from "@/integrations/supabase/client";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 
-type CardStatus = "loading" | "disconnected" | "connected" | "error" | "not_configured";
+type Status = "loading" | "disconnected" | "connected" | "error";
 
-interface StatusResponse {
-  /** "connected" | "pending" | "not_configured" | "disconnected" | "error" */
-  status?: string;
+interface StatusData {
+  connected?: boolean;
+  broker_id?: string | null;
+  email?: string | null;
+  scope?: string | null;
+  expires_at?: string | null;
+  error?: string | null;
   configured?: boolean;
-  maestro_broker_id?: string | null;
-  maestro_email?: string | null;
-  expires_in?: number | null;
-  last_error?: { message: string; at: string | null } | null;
-  last_connected_at?: string | null;
 }
 
 /**
  * Per-broker Maestro OAuth connect card for the mobile app.
  * Uses PKCE flow (mobile client_id=3) and returns via planipret:// deep link.
- * Reads the `status` field from maestro-oauth-status (not `connected`).
  */
 export default function MaestroConnectCard() {
-  const { lang } = useMplanipretLang();
-  const [cardStatus, setCardStatus] = useState<CardStatus>("loading");
-  const [data, setData] = useState<StatusResponse>({});
+  const { t, lang } = useMplanipretLang();
+  const [status, setStatus] = useState<Status>("loading");
+  const [data, setData] = useState<StatusData>({});
   const [busy, setBusy] = useState(false);
 
   const isFr = lang === "fr";
   const L = {
-    title: "Maestro",
+    title: isFr ? "Maestro" : "Maestro",
     sub: isFr ? "Connectez votre compte Maestro à AVA" : "Connect your Maestro account to AVA",
     connect: isFr ? "Se connecter à Maestro" : "Connect to Maestro",
     reconnect: isFr ? "Reconnecter" : "Reconnect",
     disconnect: isFr ? "Déconnecter" : "Disconnect",
     connected: isFr ? "Connecté" : "Connected",
     opening: isFr ? "Ouverture de Maestro…" : "Opening Maestro…",
-    error: isFr ? "Erreur de connexion" : "Connection error",
+    error: isFr ? "Erreur" : "Error",
     disconnected: isFr ? "Non connecté" : "Not connected",
     notConfigured: isFr ? "Maestro n'est pas configuré côté serveur" : "Maestro is not configured on the server",
     disconnectOk: isFr ? "Déconnecté de Maestro" : "Disconnected from Maestro",
-    pending: isFr ? "Connexion en attente…" : "Connection pending…",
   };
 
   const load = useCallback(async () => {
     try {
       const { data: res, error } = await supabase.functions.invoke("maestro-oauth-status", { body: {} });
       if (error) throw error;
-      const d = (res ?? {}) as StatusResponse;
+      const d = (res ?? {}) as StatusData;
       setData(d);
-      // maestro-oauth-status returns { status: "connected"|"disconnected"|"not_configured"|"error"|"pending" }
-      const s = d.status ?? "disconnected";
-      if (s === "connected") setCardStatus("connected");
-      else if (s === "not_configured" || d.configured === false) setCardStatus("not_configured");
-      else if (s === "error") setCardStatus("error");
-      else setCardStatus("disconnected");
+      if (d.configured === false) setStatus("error");
+      else if (d.connected) setStatus("connected");
+      else if (d.error) setStatus("error");
+      else setStatus("disconnected");
     } catch (e: any) {
-      setData({ last_error: { message: e?.message || "status_failed", at: null } });
-      setCardStatus("error");
+      setData({ error: e?.message || "status_failed" });
+      setStatus("error");
     }
   }, []);
 
@@ -80,16 +75,7 @@ export default function MaestroConnectCard() {
       });
       if (error) throw error;
       const url = (res as any)?.authorize_url;
-      const resError = (res as any)?.error;
-      if (!url) throw new Error(resError || "no_authorize_url");
-
-      // Validate URL before opening — prevents Safari "l'adresse n'est pas valide"
-      try {
-        const parsed = new URL(url);
-        if (parsed.protocol !== "https:") throw new Error(`URL doit être https, reçu: ${parsed.protocol}`);
-      } catch (urlErr: any) {
-        throw new Error(`URL Maestro invalide: ${urlErr?.message ?? url}`);
-      }
+      if (!url) throw new Error((res as any)?.error || "no_authorize_url");
 
       if (isNative) {
         await Browser.open({ url, presentationStyle: "popover" });
@@ -97,9 +83,8 @@ export default function MaestroConnectCard() {
         window.location.href = url;
       }
       toast.info(L.opening);
-      // Refresh status after callback completes
+      // Refresh status shortly after — the deep-link callback will complete auth
       setTimeout(() => { load(); }, 3000);
-      setTimeout(() => { load(); }, 8000);
     } catch (e: any) {
       toast.error(e?.message || L.error);
     } finally {
@@ -122,13 +107,9 @@ export default function MaestroConnectCard() {
   };
 
   const dot =
-    cardStatus === "connected" ? "#22c55e" :
-    cardStatus === "error" ? "#ef4444" :
-    cardStatus === "not_configured" ? "#6b7280" :
-    cardStatus === "loading" ? "#64748b" : "#f59e0b";
-
-  const isConnected = cardStatus === "connected";
-  const isNotConfigured = cardStatus === "not_configured";
+    status === "connected" ? "#22c55e" :
+    status === "error" ? "#ef4444" :
+    status === "loading" ? "#64748b" : "#f59e0b";
 
   return (
     <div style={{ padding: "0 12px 8px" }}>
@@ -142,48 +123,41 @@ export default function MaestroConnectCard() {
           <span style={{ width: 8, height: 8, borderRadius: 999, background: dot, display: "inline-block" }} />
         </div>
 
-        {cardStatus === "loading" && (
+        {status === "loading" && (
           <div className="flex items-center gap-2" style={{ fontSize: 11, color: "var(--pp-text-secondary)" }}>
             <Loader2 className="w-3 h-3 animate-spin" /> …
           </div>
         )}
 
-        {isConnected && (
+        {status === "connected" && (
           <div style={{ fontSize: 11, color: "var(--pp-text-secondary)", fontFamily: "monospace", lineHeight: 1.6 }}>
             <div className="flex items-center gap-1"><CheckCircle2 className="w-3 h-3" style={{ color: "#22c55e" }} /> {L.connected}</div>
-            {data.maestro_email && <div>✉ {data.maestro_email}</div>}
-            {data.maestro_broker_id && <div>ID: {data.maestro_broker_id}</div>}
-            {data.expires_in != null && <div>Expire dans: {Math.floor(data.expires_in / 3600)}h</div>}
+            {data.email && <div>✉ {data.email}</div>}
+            {data.broker_id && <div>ID: {data.broker_id}</div>}
+            {data.scope && <div>Scope: {data.scope}</div>}
           </div>
         )}
 
-        {cardStatus === "disconnected" && (
+        {status === "disconnected" && (
           <div style={{ fontSize: 11, color: "var(--pp-text-secondary)" }}>{L.disconnected}</div>
         )}
 
-        {isNotConfigured && (
-          <div className="flex items-start gap-1" style={{ fontSize: 11, color: "#6b7280" }}>
-            <AlertCircle className="w-3 h-3 mt-0.5 flex-shrink-0" />
-            <div>{L.notConfigured}</div>
-          </div>
-        )}
-
-        {cardStatus === "error" && (
+        {status === "error" && (
           <div className="flex items-start gap-1" style={{ fontSize: 11, color: "#ef4444" }}>
             <AlertCircle className="w-3 h-3 mt-0.5 flex-shrink-0" />
-            <div>{data.last_error?.message || L.error}</div>
+            <div>{data.configured === false ? L.notConfigured : (data.error || L.error)}</div>
           </div>
         )}
 
         <div className="flex gap-2 mt-3">
-          {!isConnected ? (
+          {status !== "connected" ? (
             <button
               onClick={startAuth}
-              disabled={busy || isNotConfigured}
+              disabled={busy || data.configured === false}
               className="flex items-center justify-center gap-1 flex-1 rounded-md"
               style={{
                 background: "#a855f7", color: "white", fontSize: 12, fontWeight: 600,
-                padding: "8px 10px", opacity: busy || isNotConfigured ? 0.5 : 1,
+                padding: "8px 10px", opacity: busy || data.configured === false ? 0.5 : 1,
               }}
             >
               {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Link2 className="w-3 h-3" />}

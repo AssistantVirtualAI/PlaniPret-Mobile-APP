@@ -29,11 +29,6 @@
   0%   { background-position: -200% center; }
   100% { background-position: 200% center; }
 }
-/* Page transition — fade + subtle upward slide (180ms) */
-@keyframes pp-page-enter {
-  from { opacity: 0; transform: translateY(6px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
 .planipret-scope .pp-skeleton {
   background: linear-gradient(90deg, #0A1E35 25%, #0E2A45 50%, #0A1E35 75%);
   background-size: 200% 100%;
@@ -924,8 +919,9 @@
   backdrop-filter: blur(14px);
   -webkit-backdrop-filter: blur(14px);
   border-bottom: 1px solid var(--pp-bg-border);
-  /* Safe area is handled by paddingTop in the React component — do NOT add margin-top here to avoid double-counting. */
-  padding-top: calc(env(safe-area-inset-top, 0px) + 6px) !important;
+  /* Respect iOS safe area — sit just below the status bar. */
+  margin-top: env(safe-area-inset-top, 0px) !important;
+  padding-top: 10px !important;
   padding-bottom: 10px !important;
 }
 .planipret-mobile-scope .pp-mobile-tabbar {
