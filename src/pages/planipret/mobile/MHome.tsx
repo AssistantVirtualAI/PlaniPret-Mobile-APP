@@ -7,7 +7,7 @@ import {
   Phone, PhoneMissed, MessageSquare, Voicemail,
   ArrowDownLeft, ArrowUpRight, X, Calendar, Headphones, Bot,
   BellOff, Flame, Sparkles, ChevronRight, ChevronLeft, Mail, Users as UsersIcon,
-  CheckSquare, RefreshCw, AlertCircle, Video, ExternalLink,
+  CheckSquare, RefreshCw, AlertCircle, Video, ExternalLink, CalendarPlus,
 } from "lucide-react";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
 import { toast } from "sonner";
@@ -604,6 +604,21 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
         </h2>
         <div className="flex items-center gap-2">
           <span className="pp-eyebrow">{events.length}</span>
+          {profile?.ms365_access_token && (
+            <button
+              onClick={() => {
+                const d = selected;
+                const iso = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+                const url = `https://outlook.office.com/calendar/deeplink/compose?startdt=${iso}T09:00:00&enddt=${iso}T10:00:00`;
+                window.open(url, '_blank', 'noopener,noreferrer');
+              }}
+              className="w-7 h-7 rounded-lg flex items-center justify-center active:scale-95"
+              style={{ background: 'rgba(46,155,220,0.12)', color: 'var(--pp-brand-accent)' }}
+              title={lang === 'en' ? 'New event' : 'Nouvel événement'}
+            >
+              <CalendarPlus className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
       </div>
 

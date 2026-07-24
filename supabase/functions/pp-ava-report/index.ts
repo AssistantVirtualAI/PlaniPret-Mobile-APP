@@ -21,6 +21,7 @@ Deno.serve(async (req) => {
 
     const body = await req.json().catch(() => ({}));
     const period: "day" | "week" | "month" = ["day", "week", "month"].includes(body?.period) ? body.period : "day";
+    const lang: "fr" | "en" = body?.lang === "en" ? "en" : "fr";
 
     const sb = createClient(
       Deno.env.get("SUPABASE_URL")!,
@@ -83,35 +84,46 @@ Deno.serve(async (req) => {
     if (!key) return json({ error: "ai_not_configured" }, 500);
     const gateway = createLovableAiGatewayProvider(key);
 
-    const periodLabel = period === "day" ? "de la journée" : period === "week" ? "de la semaine (7 jours)" : "du mois (30 jours)";
-    const prompt = `Tu es AVA, l'assistante d'un courtier hypothécaire au Québec. Génère un rapport de performance détaillé ${periodLabel} pour ${profile?.full_name ?? "le courtier"} (extension ${profile?.extension ?? "n/d"}).
-
+    let prompt: string;
+    if (lang === "en") {
+      const periodLabelEn = period === "day" ? "for today" : period === "week" ? "for this week (7 days)" : "for this month (30 days)";
+      prompt = `You are AVA, the assistant of a mortgage broker in Quebec. Generate a detailed performance report ${periodLabelEn} for ${profile?.full_name ?? "the broker"} (extension ${profile?.extension ?? "n/a"}).
+Aggregated statistics:
+${JSON.stringify(stats, null, 2)}
+Call sample (max 20):
+${JSON.stringify(calls.slice(0, 20), null, 2)}
+SMS sample (max 10):
+${JSON.stringify(sms.slice(0, 10), null, 2)}
+Voicemail (max 5):
+${JSON.stringify(voicemails.slice(0, 5), null, 2)}
+Write the report in plain English (no Markdown symbols like # or **), professional and actionable tone:
+Performance Report ${periodLabelEn}
+Overview: (3-4 lines: overall activity, trends, strengths/weaknesses)
+Phone Activity: (inbound/outbound volume, answer rate, missed calls, average duration)
+Hot Leads: (count, main opportunities from ai_summary)
+Client Follow-up: (SMS sent, unread voicemails, pending reminders)
+Recommendations: (3 to 5 concrete actions)
+Be precise, use numbers, do not fabricate data not in the provided stats.`;
+    } else {
+      const periodLabel = period === "day" ? "de la journée" : period === "week" ? "de la semaine (7 jours)" : "du mois (30 jours)";
+      prompt = `Tu es AVA, l'assistante d'un courtier hypothécaire au Québec. Génère un rapport de performance détaillé ${periodLabel} pour ${profile?.full_name ?? "le courtier"} (extension ${profile?.extension ?? "n/d"}).
 Statistiques agrégées:
 ${JSON.stringify(stats, null, 2)}
-
 Échantillon d'appels (max 20):
 ${JSON.stringify(calls.slice(0, 20), null, 2)}
-
 Échantillon de SMS (max 10):
 ${JSON.stringify(sms.slice(0, 10), null, 2)}
-
 Messagerie vocale (max 5):
 ${JSON.stringify(voicemails.slice(0, 5), null, 2)}
-
-Structure ATTENDUE en Markdown, en français, ton professionnel et actionnable:
-## 📊 Rapport ${periodLabel}
-### Vue d'ensemble
-(3-4 lignes: activité globale, tendances, points forts/faibles)
-### 📞 Téléphonie
-(volume entrant/sortant, taux de réponse, appels manqués, durée moyenne)
-### 🔥 Leads chauds
-(nombre, principales opportunités identifiées à partir des ai_summary)
-### 📩 Suivi client
-(SMS envoyés, messagerie vocale non traitée, rappels en attente)
-### ✅ Recommandations
-(3 à 5 actions concrètes à prendre)
-
+Écris le rapport en français simple (sans symboles Markdown comme # ou **), ton professionnel et actionnable:
+Rapport de performance ${periodLabel}
+Vue d'ensemble: (3-4 lignes: activité globale, tendances, points forts/faibles)
+Téléphonie: (volume entrant/sortant, taux de réponse, appels manqués, durée moyenne)
+Leads chauds: (nombre, principales opportunités identifiées)
+Suivi client: (SMS envoyés, messagerie vocale non traitée, rappels en attente)
+Recommandations: (3 à 5 actions concrètes à prendre)
 Sois précis, chiffré, et ne fabrique aucune donnée qui n'est pas dans les stats fournies.`;
+    }
 
     const { text } = await generateText({
       model: gateway("openai/gpt-5.5"),
