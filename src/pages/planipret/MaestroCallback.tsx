@@ -46,7 +46,7 @@ export default function MaestroCallback() {
     (async () => {
       try {
         const redirectUri = Capacitor.isNativePlatform()
-          ? "planipret://auth/maestro/callback"
+          ? "https://avastatistic.ca/auth/maestro/callback"
           : `${window.location.origin}/auth/maestro/callback`;
 
         const { data, error: fnErr } = await supabase.functions.invoke("maestro-oauth-callback", {

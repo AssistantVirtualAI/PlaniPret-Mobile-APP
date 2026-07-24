@@ -247,6 +247,10 @@ function buildSpecs(mk: (name: string, description: string, properties?: Record<
     }, ["content"]),
     mk("get_daily_briefing", "Brief quotidien: emails, rendez-vous, appels, leads chauds, tâches."),
     mk("get_my_stats", "Statistiques d'appels et performance.", { period: { type: "string", description: "today, week ou month" } }),
+    mk("get_performance_report", "Rapport de performance détaillé (Markdown) généré par IA pour la journée, la semaine ou le mois. Contient vue d'ensemble, téléphonie, leads chauds, suivi client et recommandations.", {
+      period: { type: "string", description: "day, week ou month (défaut day)" },
+      language: { type: "string", description: "fr ou en (défaut fr)" },
+    }),
     mk("generate_voicemail_greeting", "Génère un nouveau message de boîte vocale avec ElevenLabs. Demande confirmation.", {
       text: { type: "string", description: "Texte à générer" },
       voice_id: { type: "string", description: "ID voix (optionnel)" },
@@ -292,6 +296,6 @@ export const EXPECTED_TOOL_NAMES = [
   "search_ms365_contacts","find_contact",
   "list_teams_chats","create_teams_chat","send_teams_message",
   "navigate_to","show_client_in_app","open_call_detail",
-  "get_daily_briefing","get_my_stats","generate_voicemail_greeting","explain_feature","get_integration_status",
+  "get_daily_briefing","get_my_stats","get_performance_report","generate_voicemail_greeting","explain_feature","get_integration_status",
   "push_call_summary","push_client_note","push_communication_log",
 ];

@@ -8,6 +8,7 @@ export const MS365_NATIVE_REDIRECT_URI = "capacitor://localhost/auth/microsoft/c
 
 const REDIRECT_STORAGE_KEY = "pp_ms365_redirect_uri";
 const VERIFIER_STORAGE_KEY = "pp_ms365_code_verifier";
+const STATE_STORAGE_KEY = "pp_ms365_state";
 
 function verifierKey(state?: string | null): string {
   return state ? `${VERIFIER_STORAGE_KEY}:${state}` : VERIFIER_STORAGE_KEY;
@@ -81,8 +82,11 @@ export function clearRememberedMs365RedirectUri(): void {
   try { localStorage.removeItem(REDIRECT_STORAGE_KEY); } catch {}
   try { sessionStorage.removeItem(VERIFIER_STORAGE_KEY); } catch {}
   try { localStorage.removeItem(VERIFIER_STORAGE_KEY); } catch {}
+  try { sessionStorage.removeItem(STATE_STORAGE_KEY); } catch {}
+  try { localStorage.removeItem(STATE_STORAGE_KEY); } catch {}
   void removeNativeItem(REDIRECT_STORAGE_KEY);
   void removeNativeItem(VERIFIER_STORAGE_KEY);
+  void removeNativeItem(STATE_STORAGE_KEY);
   try {
     Object.keys(sessionStorage).filter((k) => k.startsWith(`${VERIFIER_STORAGE_KEY}:`)).forEach((k) => {
       sessionStorage.removeItem(k);
@@ -98,10 +102,22 @@ export function clearRememberedMs365RedirectUri(): void {
 }
 
 export async function getRememberedMs365CodeVerifier(state?: string | null): Promise<string | null> {
+  let rememberedState: string | null = null;
+  try { rememberedState = state || sessionStorage.getItem(STATE_STORAGE_KEY) || localStorage.getItem(STATE_STORAGE_KEY); } catch {}
   try {
-    return sessionStorage.getItem(verifierKey(state)) || localStorage.getItem(verifierKey(state)) || sessionStorage.getItem(VERIFIER_STORAGE_KEY) || localStorage.getItem(VERIFIER_STORAGE_KEY) || await getNativeItem(verifierKey(state)) || await getNativeItem(VERIFIER_STORAGE_KEY);
+    return sessionStorage.getItem(verifierKey(state)) ||
+      localStorage.getItem(verifierKey(state)) ||
+      (rememberedState ? sessionStorage.getItem(verifierKey(rememberedState)) : null) ||
+      (rememberedState ? localStorage.getItem(verifierKey(rememberedState)) : null) ||
+      sessionStorage.getItem(VERIFIER_STORAGE_KEY) ||
+      localStorage.getItem(VERIFIER_STORAGE_KEY) ||
+      (rememberedState ? await getNativeItem(verifierKey(rememberedState)) : null) ||
+      (state ? await getNativeItem(verifierKey(state)) : null) ||
+      await getNativeItem(VERIFIER_STORAGE_KEY);
   } catch {
-    return await getNativeItem(verifierKey(state)) || await getNativeItem(VERIFIER_STORAGE_KEY);
+    return (rememberedState ? await getNativeItem(verifierKey(rememberedState)) : null) ||
+      (state ? await getNativeItem(verifierKey(state)) : null) ||
+      await getNativeItem(VERIFIER_STORAGE_KEY);
   }
 }
 
@@ -111,6 +127,7 @@ export async function buildMs365AuthorizeUrl(cfg: {
   state?: string | null;
   prompt?: "select_account" | "consent" | "none";
   scopes?: string;
+  loginHint?: string;
 }): Promise<string> {
   const redirectUri = getMs365RedirectUri();
   rememberMs365RedirectUri(redirectUri);
@@ -119,6 +136,8 @@ export async function buildMs365AuthorizeUrl(cfg: {
   const challenge = await sha256Base64Url(verifier);
   try { sessionStorage.setItem(verifierKey(oauthState), verifier); sessionStorage.setItem(VERIFIER_STORAGE_KEY, verifier); } catch {}
   try { localStorage.setItem(verifierKey(oauthState), verifier); localStorage.setItem(VERIFIER_STORAGE_KEY, verifier); } catch {}
+  try { sessionStorage.setItem(STATE_STORAGE_KEY, oauthState); localStorage.setItem(STATE_STORAGE_KEY, oauthState); } catch {}
+  await setNativeItem(STATE_STORAGE_KEY, oauthState);
   await setNativeItem(verifierKey(oauthState), verifier);
   await setNativeItem(VERIFIER_STORAGE_KEY, verifier);
   const params = new URLSearchParams({
@@ -131,6 +150,7 @@ export async function buildMs365AuthorizeUrl(cfg: {
     code_challenge: challenge,
     code_challenge_method: "S256",
   });
+  if (cfg.loginHint) params.set("login_hint", cfg.loginHint);
   params.set("state", oauthState);
   return `https://login.microsoftonline.com/${cfg.tenant || "common"}/oauth2/v2.0/authorize?${params.toString()}`;
 }
@@ -141,6 +161,7 @@ export async function openMs365Authorize(cfg: {
   state?: string | null;
   prompt?: "select_account" | "consent" | "none";
   scopes?: string;
+  loginHint?: string;
 }): Promise<void> {
   const url = await buildMs365AuthorizeUrl(cfg);
   try {

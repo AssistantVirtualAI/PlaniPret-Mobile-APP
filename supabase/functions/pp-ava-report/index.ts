@@ -23,25 +23,35 @@ Deno.serve(async (req) => {
     const period: "day" | "week" | "month" = ["day", "week", "month"].includes(body?.period) ? body.period : "day";
     const language: "fr" | "en" = body?.language === "en" ? "en" : "fr";
 
-    const sb = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
-      { global: { headers: { Authorization: authHeader } } },
-    );
-    const { data: u } = await sb.auth.getUser();
-    if (!u?.user) return json({ error: "unauthorized" }, 401);
-
     const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+
+    // Mode service (voice agent / scheduler) : accepte broker_user_id via header/body si appelé avec service_role.
+    const serviceHeader = req.headers.get("x-ava-service");
+    let effectiveUserId: string | null = null;
+    if (serviceHeader) {
+      effectiveUserId = req.headers.get("x-broker-user-id") ?? body?.broker_user_id ?? body?._user_id ?? null;
+    } else {
+      const sb = createClient(
+        Deno.env.get("SUPABASE_URL")!,
+        Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+        { global: { headers: { Authorization: authHeader } } },
+      );
+      const { data: u } = await sb.auth.getUser();
+      if (!u?.user) return json({ error: "unauthorized" }, 401);
+      effectiveUserId = u.user.id;
+    }
+    if (!effectiveUserId) return json({ error: "no_user" }, 400);
+
     const { data: profile } = await admin.from("planipret_profiles")
       .select("id, user_id, full_name, extension")
-      .eq("user_id", u.user.id).maybeSingle();
+      .eq("user_id", effectiveUserId).maybeSingle();
 
     const daysBack = period === "day" ? 1 : period === "week" ? 7 : 30;
     const since = new Date(Date.now() - daysBack * 86400000).toISOString();
 
     const orgFilter = profile?.id
-      ? `user_id.eq.${profile.id},user_id.eq.${u.user.id}`
-      : `user_id.eq.${u.user.id}`;
+      ? `user_id.eq.${profile.id},user_id.eq.${effectiveUserId}`
+      : `user_id.eq.${effectiveUserId}`;
 
     const [callsRes, smsRes, vmRes, remRes] = await Promise.all([
       admin.from("planipret_phone_calls")
@@ -49,7 +59,7 @@ Deno.serve(async (req) => {
         .or(orgFilter).gte("started_at", since).order("started_at", { ascending: false }).limit(200),
       admin.from("planipret_phone_messages")
         .select("id, direction, from_number, to_number, body, created_at, read_at")
-        .eq("user_id", u.user.id).gte("created_at", since).order("created_at", { ascending: false }).limit(200),
+        .eq("user_id", effectiveUserId).gte("created_at", since).order("created_at", { ascending: false }).limit(200),
       admin.from("planipret_voicemails")
         .select("id, from_number, from_name, duration_seconds, transcript, is_read, created_at")
         .or(orgFilter).gte("created_at", since).order("created_at", { ascending: false }).limit(100),

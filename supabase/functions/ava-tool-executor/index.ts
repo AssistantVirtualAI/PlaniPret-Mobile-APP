@@ -53,28 +53,11 @@ async function maestroFetch(ctx: Ctx, path: string, init?: RequestInit) {
 
 async function broadcastNav(ctx: Ctx, route: string, extra?: any) {
   // Use Supabase Realtime broadcast so the mobile app can navigate live.
-  // IMPORTANT: must subscribe() before send() — Supabase Realtime requires it.
   try {
-    const channel = ctx.admin.channel(`ava-nav:${ctx.userId}`, {
-      config: { broadcast: { self: false } },
-    });
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error("subscribe_timeout")), 5000);
-      channel.subscribe((status: string) => {
-        if (status === "SUBSCRIBED") {
-          clearTimeout(timer);
-          resolve();
-        } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
-          clearTimeout(timer);
-          reject(new Error(`channel_${status}`));
-        }
-      });
-    });
+    const channel = ctx.admin.channel(`ava-nav:${ctx.userId}`);
     await channel.send({ type: "broadcast", event: "navigate", payload: { route, ...extra } });
-    // Small delay to ensure message is delivered before channel is removed
-    await new Promise((r) => setTimeout(r, 300));
     await ctx.admin.removeChannel(channel);
-  } catch (_) { /* noop — broadcast is best-effort */ }
+  } catch (_) { /* noop */ }
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────
@@ -1046,6 +1029,20 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
       avg_coaching_score: Math.round(avgScore * 10) / 10,
       hot_leads_generated: hot,
     };
+  },
+
+  async get_performance_report(ctx, p) {
+    try {
+      const period = ["day", "week", "month"].includes(p?.period) ? p.period : "day";
+      const language = p?.language === "en" ? "en" : "fr";
+      const r = await callPlanipretFunction(ctx, "pp-ava-report", { period, language }, {
+        "x-ava-service": "1",
+        "x-broker-user-id": ctx.userId,
+      });
+      const b = r.data;
+      if (!r.httpOk || b?.error) return { success: false, error: b?.error ?? `report_failed_${r.status}`, raw: b };
+      return { success: true, period, language, report: b?.report ?? "", stats: b?.stats ?? {} };
+    } catch (e) { return { success: false, error: String(e) }; }
   },
 
   // ===== HELP =====

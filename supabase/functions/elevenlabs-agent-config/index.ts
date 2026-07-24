@@ -17,7 +17,7 @@ Tu as accès aux fonctionnalités suivantes :
 - Créer des tâches et rendez-vous dans Maestro CRM (create_task, create_calendar_event)
 - Consulter l'historique des appels (get_call_history)
 - Chercher des contacts (search_contact)
-- Écouter ton brief du jour (get_daily_briefing)
+- Écouter ton brief du jour (get_daily_briefing) ou un rapport de performance détaillé jour/semaine/mois (get_performance_report)
 - Lire les voicemails non écoutés (read_voicemails)
 
 RÈGLES IMPORTANTES :
@@ -31,7 +31,7 @@ RÈGLES IMPORTANTES :
 
 const TOOLS = [
   "make_call", "send_sms", "send_email", "create_task", "create_calendar_event",
-  "get_daily_briefing", "search_contact", "read_emails", "get_call_history", "read_voicemails",
+  "get_daily_briefing", "get_performance_report", "search_contact", "read_emails", "get_call_history", "read_voicemails",
 ];
 
 Deno.serve(async (req) => {

@@ -4,7 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { AlertCircle, CheckCircle2, Loader2 } from "lucide-react";
 import { clearRememberedMs365RedirectUri, getRememberedMs365CodeVerifier, getRememberedMs365RedirectUri } from "@/lib/ms365OAuth";
 import { clearMs365Pending } from "@/lib/ms365Pending";
-import { clearMicrosoftSignInIntent, getMicrosoftSignInIntent, getMicrosoftSignInNext } from "@/lib/ms365AuthLogin";
+import { clearMicrosoftSignInIntentAsync, getMicrosoftSignInIntentAsync, getMicrosoftSignInNextAsync } from "@/lib/ms365AuthLogin";
 
 async function getSessionWithRetry() {
   for (let i = 0; i < 8; i += 1) {
@@ -21,6 +21,23 @@ export default function Ms365Callback() {
   const [status, setStatus] = useState<"loading" | "ok" | "error">("loading");
   const [error, setError] = useState<string | null>(null);
   const ranRef = useRef(false);
+
+  async function invokeAndParse(fn: string, body: unknown): Promise<{ data: any; errMsg: string | null }> {
+    const { data, error: e } = await supabase.functions.invoke(fn, { body: body as any });
+    if (!e) return { data, errMsg: null };
+    let parsed: any = null;
+    try {
+      const res = (e as any)?.context as Response | undefined;
+      if (res && typeof res.text === "function") {
+        const txt = await res.text();
+        try { parsed = JSON.parse(txt); } catch { parsed = { error: txt }; }
+      }
+    } catch {}
+    const details = parsed?.details;
+    const msg = parsed?.error ?? e.message ?? "Échec OAuth";
+    const full = details ? `${msg} — ${details.error_description ?? details.error ?? ""}`.trim() : msg;
+    return { data: parsed, errMsg: full };
+  }
 
   const goBack = () => {
     try { window.history.replaceState(null, "", "/mplanipret/more"); } catch {}
@@ -46,24 +63,22 @@ export default function Ms365Callback() {
       const code_verifier = await getRememberedMs365CodeVerifier(state);
       if (!code_verifier) {
         setStatus("error");
-        setError("Connexion Microsoft interrompue — appuyez sur Retour puis réessayez.");
+        setError("Connexion Microsoft interrompue — relancez la connexion depuis l'application.");
         return;
       }
-      if (getMicrosoftSignInIntent() === "login") {
-        const { data, error: e } = await supabase.functions.invoke("pp-ms-auth-callback", { body: { code, redirect_uri, code_verifier } });
-        if (e || !(data as any)?.success) {
-          const details = (data as any)?.details;
-          const msg = (data as any)?.error ?? e?.message ?? "Échec OAuth";
-          const full = details ? `${msg} — ${details.error_description ?? details.error ?? ""}`.trim() : msg;
-          console.error("ms365 auth failed", { data, e });
-          setStatus("error"); setError(full);
+      const isMicrosoftLogin = (await getMicrosoftSignInIntentAsync()) === "login" || Boolean(state?.startsWith("login:"));
+      if (isMicrosoftLogin) {
+        const { data, errMsg } = await invokeAndParse("pp-ms-auth-callback", { code, redirect_uri, code_verifier });
+        if (errMsg || !(data as any)?.success) {
+          console.error("ms365 auth failed", { data, errMsg, redirect_uri });
+          setStatus("error"); setError(errMsg ?? (data as any)?.error ?? "Échec OAuth");
           return;
         }
         const verify = await supabase.auth.verifyOtp({ type: "magiclink", token_hash: (data as any).token_hash });
         if (verify.error) { setStatus("error"); setError(verify.error.message); return; }
         clearRememberedMs365RedirectUri();
-        const next = getMicrosoftSignInNext("/mplanipret");
-        clearMicrosoftSignInIntent();
+        const next = await getMicrosoftSignInNextAsync("/mplanipret/home");
+        await clearMicrosoftSignInIntentAsync();
         try { void import("@/lib/native/requestPermissionsAfterLogin").then(m => m.requestPermissionsAfterLogin()); } catch {}
         setStatus("ok");
         setTimeout(() => navigate(next, { replace: true }), 700);
@@ -71,18 +86,11 @@ export default function Ms365Callback() {
       }
       const session = await getSessionWithRetry();
       if (!session) { setStatus("error"); setError("Session expirée — reconnectez-vous"); return; }
-      const { data, error: e } = await supabase.functions.invoke("pp-ms-auth-callback", { body: { code, redirect_uri, code_verifier } });
-      if (e || !(data as any)?.success) {
-        const details = (data as any)?.details;
-        const msg = (data as any)?.error ?? e?.message ?? "Échec OAuth";
-        const full = details ? `${msg} — ${details.error_description ?? details.error ?? ""}`.trim() : msg;
-        console.error("ms365 exchange failed", { data, e });
-        setStatus("error"); setError(full);
+      const { data, errMsg } = await invokeAndParse("ms365-oauth-exchange", { code, redirect_uri, code_verifier });
+      if (errMsg || !(data as any)?.success) {
+        console.error("ms365 exchange failed", { data, errMsg });
+        setStatus("error"); setError(errMsg ?? (data as any)?.error ?? "Échec OAuth");
         return;
-      }
-      if ((data as any)?.token_hash) {
-        const verify = await supabase.auth.verifyOtp({ type: "magiclink", token_hash: (data as any).token_hash });
-        if (verify.error) { setStatus("error"); setError(verify.error.message); return; }
       }
       clearRememberedMs365RedirectUri();
       try { localStorage.removeItem("pp_ms365_callback_url"); } catch {}
@@ -90,8 +98,9 @@ export default function Ms365Callback() {
       supabase.functions.invoke("ms365-mail-webhook-setup", { body: {} }).then(({ error }) => {
         if (error) console.warn("ms365 webhook setup skipped", error.message);
       }).catch((err) => console.warn("ms365 webhook setup skipped", err?.message ?? err));
+      try { void supabase.functions.invoke("ms365-full-import", { body: { mode: "initial" } }).catch(() => {}); } catch {}
       setStatus("ok");
-      setTimeout(() => navigate("/mplanipret/more?ms365=ok", { replace: true }), 1200);
+      setTimeout(() => navigate("/mplanipret/home?ms365=ok", { replace: true }), 1200);
     })();
   }, [params, navigate]);
 

@@ -4,7 +4,7 @@
 import { authBroker, corsHeaders, jsonResponse } from "../_shared/ns-broker.ts";
 
 const DEFAULT_AGENT_ID = Deno.env.get("ELEVENLABS_DEFAULT_AGENT_ID") ?? "";
-const DEFAULT_VOICE_ID = "EXAVITQu4vr4xnSDxMaL"; // Sarah — ElevenLabs (Andréa non disponible sur ce compte)
+const DEFAULT_VOICE_ID = "RCSF5YgDtAhZXpNZfGek"; // Andréa — voix québécoise multilingual v2
 
 const TOOL_NAMES = [
   // telephony
@@ -27,7 +27,7 @@ const TOOL_NAMES = [
   // navigation
   "navigate_to", "show_client_in_app", "open_call_detail",
   // stats
-  "get_daily_briefing", "get_my_stats",
+  "get_daily_briefing", "get_my_stats", "get_performance_report",
   // help
   "explain_feature", "get_integration_status",
 ];
@@ -105,7 +105,7 @@ RÈGLES D'ORCHESTRATION OBLIGATOIRES
    → send_teams_message { contact_email, content } (le tool crée le chat 1-1 automatiquement)
    Pour un canal existant : list_teams_chats puis send_teams_message avec team_id + channel_id.
 NAVIGATION: navigate_to, show_client_in_app, open_call_detail
-STATS: get_daily_briefing, get_my_stats
+STATS: get_daily_briefing, get_my_stats, get_performance_report (rapport IA détaillé day/week/month)
 AIDE: explain_feature, get_integration_status
 
 ═══════════════════════════════════
