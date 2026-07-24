@@ -3,6 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { Download, Flame } from "lucide-react";
 import { TEMP_COLORS, TEMP_EMOJI, TEMP_LABEL, type LeadTemp } from "@/components/planipret/leadHelpers";
 import { PPEmptyState, PPSkeleton } from "@/components/planipret/admin/PPPrimitives";
+import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 
 type Row = {
   id: string;
@@ -22,6 +23,7 @@ type Row = {
 const PAGE = 50;
 
 export default function PALeads() {
+  const { t, lang } = useMplanipretLang();
   const [rows, setRows] = useState<Row[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -79,7 +81,7 @@ export default function PALeads() {
       .limit(5000);
     if (filter !== "all") q = q.eq("lead_temperature", filter);
     const { data: all } = await q;
-    const header = ["Date", "Courtier", "Contact", "Numéro", "Direction", "Score", "Température", "Raison"];
+    const header = [t("adminPortal.leads.colDate"), t("adminPortal.leads.colBroker"), t("adminPortal.leads.colContact"), t("adminPortal.leads.colNumber"), t("adminPortal.calls.direction"), t("adminPortal.leads.colScore"), t("adminPortal.leads.colTemp"), t("adminPortal.leads.colReason")];
     const lines = [header.join(",")];
     (all ?? []).forEach((r: any) => {
       const contact = r.from_name ?? r.to_name ?? "";
@@ -105,21 +107,21 @@ export default function PALeads() {
       <div className="flex items-center justify-between">
         <div>
           <h2 style={{ fontFamily: "Inter,sans-serif", fontWeight: 700, fontSize: 18, color: "var(--pp-text-primary)" }}>
-            Leads & Pipeline
+            {t("adminPortal.leads.title")}
           </h2>
-          <p style={{ fontSize: 12, color: "var(--pp-text-muted)" }}>Scoring IA des appels entrants</p>
+          <p style={{ fontSize: 12, color: "var(--pp-text-muted)" }}>{t("adminPortal.leads.subtitle")}</p>
         </div>
         <button onClick={exportCsv} className="pp-btn-primary flex items-center gap-2 text-sm">
-          <Download className="w-4 h-4" /> Export CSV
+          <Download className="w-4 h-4" /> {t("adminPortal.leads.exportCsv")}
         </button>
       </div>
 
       <div className="flex flex-wrap gap-2">
         {([
-          ["all", "Tous", counts.all],
-          ["hot", "🔥 Chauds", counts.hot],
-          ["warm", "🌡️ Tièdes", counts.warm],
-          ["cold", "❄️ Froids", counts.cold],
+          ["all", t("adminPortal.leads.all"), counts.all],
+          ["hot", t("adminPortal.leads.hot"), counts.hot],
+          ["warm", t("adminPortal.leads.warm"), counts.warm],
+          ["cold", t("adminPortal.leads.cold"), counts.cold],
         ] as const).map(([k, l, n]) => {
           const active = filter === k;
           return (
@@ -141,12 +143,12 @@ export default function PALeads() {
           <table className="w-full text-sm">
             <thead style={{ background: "var(--pp-bg-deep)", color: "var(--pp-text-muted)" }}>
               <tr className="text-[11px] uppercase tracking-wider">
-                <th className="text-left px-4 py-3 font-medium">Date</th>
-                <th className="text-left px-4 py-3 font-medium">Courtier</th>
-                <th className="text-left px-4 py-3 font-medium">Contact</th>
-                <th className="text-left px-4 py-3 font-medium">Score</th>
-                <th className="text-left px-4 py-3 font-medium">Température</th>
-                <th className="text-left px-4 py-3 font-medium">Raison</th>
+                <th className="text-left px-4 py-3 font-medium">{t("adminPortal.leads.colDate")}</th>
+                <th className="text-left px-4 py-3 font-medium">{t("adminPortal.leads.colBroker")}</th>
+                <th className="text-left px-4 py-3 font-medium">{t("adminPortal.leads.colContact")}</th>
+                <th className="text-left px-4 py-3 font-medium">{t("adminPortal.leads.colScore")}</th>
+                <th className="text-left px-4 py-3 font-medium">{t("adminPortal.leads.colTemp")}</th>
+                <th className="text-left px-4 py-3 font-medium">{t("adminPortal.leads.colReason")}</th>
               </tr>
             </thead>
             <tbody>
@@ -160,8 +162,8 @@ export default function PALeads() {
                 ))
               ) : filtered.length === 0 ? (
                 <tr><td colSpan={6}>
-                  <PPEmptyState icon={<Flame className="w-6 h-6" />} title="Aucun lead noté"
-                    description="Les appels seront automatiquement scorés par l'IA dès qu'ils auront une transcription." />
+                  <PPEmptyState icon={<Flame className="w-6 h-6" />} title={t("adminPortal.leads.emptyTitle")}
+                    description={t("adminPortal.leads.emptyBody")} />
                 </td></tr>
               ) : filtered.map((r) => {
                 const contact = r.from_name ?? r.to_name ?? r.from_number ?? r.to_number ?? "—";
@@ -170,7 +172,7 @@ export default function PALeads() {
                 return (
                   <tr key={r.id} style={{ borderTop: "1px solid var(--pp-bg-border)", borderLeft: `3px solid ${c}` }}>
                     <td className="px-4 py-3 whitespace-nowrap text-xs" style={{ color: "var(--pp-text-muted)" }}>
-                      {new Date(r.started_at).toLocaleString("fr-CA", { dateStyle: "short", timeStyle: "short" })}
+                      {new Date(r.started_at).toLocaleString(lang === "en" ? "en-CA" : "fr-CA", { dateStyle: "short", timeStyle: "short" })}
                     </td>
                     <td className="px-4 py-3" style={{ color: "var(--pp-text-secondary)" }}>{r.planipret_profiles?.full_name ?? "—"}</td>
                     <td className="px-4 py-3 font-medium" style={{ color: "var(--pp-text-primary)" }}>{contact}</td>
@@ -191,7 +193,7 @@ export default function PALeads() {
           </table>
         </div>
         <div className="flex items-center justify-between px-4 py-3" style={{ borderTop: "1px solid var(--pp-bg-border-2)", fontSize: 11, color: "var(--pp-text-muted)" }}>
-          <span>{total === 0 ? 0 : (page - 1) * PAGE + 1}–{Math.min(page * PAGE, total)} sur {total}</span>
+          <span>{total === 0 ? 0 : (page - 1) * PAGE + 1}–{Math.min(page * PAGE, total)} {t("adminPortal.leads.pageOf")} {total}</span>
           <div className="flex gap-1">
             <button disabled={page === 1} onClick={() => setPage(page - 1)} className="px-2 py-1 rounded disabled:opacity-40" style={{ border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}>←</button>
             <span className="px-3 py-1">{page} / {Math.max(1, Math.ceil(total / PAGE))}</span>

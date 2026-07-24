@@ -26,7 +26,7 @@ export default function PAAvaAgent() {
             {t("adminPortal.pageTitles.avaAgent") || "Agent AVA — Vue complète"}
           </h1>
           <p style={{ fontSize: 12, color: "var(--pp-text-faint)" }} className="mt-0.5">
-            Santé ElevenLabs, courtiers, sessions et configuration de l'agent vocal.
+            {t("adminPortal.avaAgent.subtitle")}
           </p>
         </div>
       </div>

@@ -58,7 +58,6 @@ export default function Ms365LiveTestPanel({ onCompleted }: { onCompleted?: () =
   }>({ tenant_id: null, client_id: null, has_secret: false, auth_mode: null, loading: true });
 
   const expectedCallback = typeof window !== "undefined" ? `${window.location.origin}/auth/microsoft/callback` : "";
-  const expectedNativeCallback = "capacitor://localhost/auth/microsoft/callback";
 
   async function loadDetection() {
     setDetection((d) => ({ ...d, loading: true }));
@@ -269,9 +268,6 @@ export default function Ms365LiveTestPanel({ onCompleted }: { onCompleted?: () =
                     {key === "app_registration" && expectedCallback && (
                       <RedirectCheck result={r} expected={expectedCallback} />
                     )}
-                    {key === "app_registration" && (
-                      <RedirectCheck result={r} expected={expectedNativeCallback} label="App mobile iOS/Android (Capacitor)" />
-                    )}
                   </div>
                 )}
               </div>
@@ -308,21 +304,20 @@ function DetectionRow({ label, value, loading, mono }: { label: string; value: s
   );
 }
 
-function RedirectCheck({ result, expected, label }: { result: TestResult; expected: string; label?: string }) {
+function RedirectCheck({ result, expected }: { result: TestResult; expected: string }) {
   const all: string[] = [
     ...(result.redirect_uris_web ?? []),
     ...(result.redirect_uris_spa ?? []),
     ...(result.redirect_uris_public ?? []),
   ];
   const found = all.some((u) => u === expected);
-  const displayLabel = label ?? "Redirect URI Supabase";
   if (found) {
     return (
       <div
         className="mt-2 p-2 rounded text-[11px]"
         style={{ background: "rgba(46,220,120,0.08)", border: "1px solid #1a6b3a", color: "#2EDC78" }}
       >
-        ✅ {displayLabel} configurée dans Azure
+        ✅ Redirect URI Supabase configurée dans Azure
       </div>
     );
   }
@@ -331,7 +326,7 @@ function RedirectCheck({ result, expected, label }: { result: TestResult; expect
       className="mt-2 p-2 rounded text-[11px] flex items-center gap-2"
       style={{ background: "rgba(245,166,35,0.08)", border: "1px solid #4A3000", color: "#F5A623" }}
     >
-      <span>⚠️ {displayLabel} manquante — ajouter dans Azure (Mobile et applications de bureau):</span>
+      <span>⚠️ Redirect URI Supabase manquante — ajouter dans Azure:</span>
       <code
         style={{ background: "#040B16", padding: "2px 6px", borderRadius: 4, color: "#E8EDF5" }}
       >

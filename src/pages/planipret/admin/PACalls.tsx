@@ -10,6 +10,7 @@ import { getPlanipretBrokerDirectory } from "@/lib/planipret/adminDirectory";
 import { applyPlanipretCallFilters } from "@/lib/planipret/adminCounts";
 import { usePlanipretNsAutoSync } from "@/hooks/usePlanipretNsAutoSync";
 import NsSyncBar from "@/components/planipret/admin/NsSyncBar";
+import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 
 const ACCENT = "#2E9BDC";
 const SUCCESS = "#00D4AA";
@@ -17,6 +18,7 @@ const DANGER = "#E84C4C";
 const AGENT = "#9B7FE8";
 
 export default function PACalls() {
+  const { t, lang } = useMplanipretLang();
   const [params, setParams] = useSearchParams();
   const page = Math.max(1, parseInt(params.get("page") ?? "1", 10) || 1);
   const pageSizeRaw = parseInt(params.get("pageSize") ?? params.get("ps") ?? "25", 10);
@@ -112,7 +114,7 @@ export default function PACalls() {
   const exportCsv = async () => {
     const q = buildQuery().order("started_at", { ascending: false }).limit(5000);
     const { data: all } = await q;
-    const headers = ["Courtier", "Direction", "De", "Vers", "Durée", "Date"];
+    const headers = [t("adminPortal.calls.colBroker"), t("adminPortal.calls.direction"), t("adminPortal.calls.colFrom"), t("adminPortal.calls.colTo"), t("adminPortal.calls.colDuration"), t("adminPortal.calls.colDate")];
     const lines = [headers.join(",")].concat((all ?? []).map((r: any) =>
       [brokerName(r), r.direction, r.from_number, r.to_number, r.duration_seconds, r.started_at].map((v) => `"${v ?? ""}"`).join(",")
     ));
@@ -131,26 +133,26 @@ export default function PACalls() {
 
 
       <div className="pp-card p-4 flex flex-wrap items-end gap-2">
-        <Select label="Courtier" value={filters.broker} onChange={(v) => setFilterValue("broker", v)}
-          options={[{ v: "", l: "Tous" }, ...brokers.map((b) => ({ v: b.ns_only ? `ext:${b.extension}` : `user:${b.user_id}`, l: `${b.full_name}${b.extension ? ` · ${b.extension}` : ""}` }))]} />
-        <Input label="Date début" type="date" value={filters.from} onChange={(v) => setFilterValue("from", v)} />
-        <Input label="Date fin" type="date" value={filters.to} onChange={(v) => setFilterValue("to", v)} />
-        <Select label="Direction" value={filters.direction} onChange={(v) => setFilterValue("direction", v)}
-          options={[{ v: "", l: "Toutes" }, { v: "inbound", l: "Entrant" }, { v: "outbound", l: "Sortant" }, { v: "missed", l: "Manqué" }]} />
-        <Select label="Statut" value={filters.status} onChange={(v) => setFilterValue("status", v)}
-          options={[{ v: "", l: "Tous" }, { v: "completed", l: "Complété" }, { v: "active", l: "En cours" }, { v: "missed", l: "Manqué" }]} />
-        <Select label="Analyse IA" value={filters.ai} onChange={(v) => setFilterValue("ai", v)}
-          options={[{ v: "", l: "Tous" }, { v: "yes", l: "Analysé" }, { v: "no", l: "Non analysé" }]} />
-        <Input label="Recherche" placeholder="Numéro..." value={filters.search} onChange={(v) => setFilterValue("search", v)} />
+        <Select label={t("adminPortal.calls.broker")} value={filters.broker} onChange={(v: string) => setFilterValue("broker", v)}
+          options={[{ v: "", l: t("adminPortal.calls.all") }, ...brokers.map((b) => ({ v: b.ns_only ? `ext:${b.extension}` : `user:${b.user_id}`, l: `${b.full_name}${b.extension ? ` · ${b.extension}` : ""}` }))]} />
+        <Input label={t("adminPortal.calls.dateFrom")} type="date" value={filters.from} onChange={(v: string) => setFilterValue("from", v)} />
+        <Input label={t("adminPortal.calls.dateTo")} type="date" value={filters.to} onChange={(v: string) => setFilterValue("to", v)} />
+        <Select label={t("adminPortal.calls.direction")} value={filters.direction} onChange={(v: string) => setFilterValue("direction", v)}
+          options={[{ v: "", l: t("adminPortal.calls.allF") }, { v: "inbound", l: t("adminPortal.calls.inbound") }, { v: "outbound", l: t("adminPortal.calls.outbound") }, { v: "missed", l: t("adminPortal.calls.missed") }]} />
+        <Select label={t("adminPortal.calls.status")} value={filters.status} onChange={(v: string) => setFilterValue("status", v)}
+          options={[{ v: "", l: t("adminPortal.calls.all") }, { v: "completed", l: t("adminPortal.calls.completed") }, { v: "active", l: t("adminPortal.calls.active") }, { v: "missed", l: t("adminPortal.calls.missed") }]} />
+        <Select label={t("adminPortal.calls.aiAnalysis")} value={filters.ai} onChange={(v: string) => setFilterValue("ai", v)}
+          options={[{ v: "", l: t("adminPortal.calls.all") }, { v: "yes", l: t("adminPortal.calls.analyzed") }, { v: "no", l: t("adminPortal.calls.notAnalyzed") }]} />
+        <Input label={t("adminPortal.calls.search")} placeholder={t("adminPortal.calls.searchPh")} value={filters.search} onChange={(v: string) => setFilterValue("search", v)} />
         {hasFilters && (
           <button onClick={resetFilters} className="px-2 py-1.5 text-xs underline" style={{ color: "var(--pp-text-muted)" }}>
-            ✕ Réinitialiser ({activeFilterCount})
+            {t("adminPortal.calls.reset")} ({activeFilterCount})
           </button>
         )}
         <button onClick={exportCsv} className="ml-auto flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm"
 
           style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}>
-          <Download className="w-4 h-4" /> Exporter CSV
+          <Download className="w-4 h-4" /> {t("adminPortal.calls.exportCsv")}
         </button>
       </div>
 
@@ -160,7 +162,7 @@ export default function PACalls() {
         <table className="w-full text-sm">
           <thead style={{ background: "var(--pp-bg-elevated)" }}>
             <tr style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--pp-text-faint)" }} className="text-left">
-              <th className="p-3">Courtier</th><th>Dir.</th><th>De</th><th>Vers</th><th>Durée</th><th>Date</th><th>Enreg.</th><th>IA</th><th></th>
+              <th className="p-3">{t("adminPortal.calls.colBroker")}</th><th>{t("adminPortal.calls.colDir")}</th><th>{t("adminPortal.calls.colFrom")}</th><th>{t("adminPortal.calls.colTo")}</th><th>{t("adminPortal.calls.colDuration")}</th><th>{t("adminPortal.calls.colDate")}</th><th>{t("adminPortal.calls.colRec")}</th><th>{t("adminPortal.calls.colAi")}</th><th></th>
             </tr>
           </thead>
           <tbody>
@@ -176,17 +178,17 @@ export default function PACalls() {
               <tr><td colSpan={9}>
                 <TableEmptyState
                   icon="📞"
-                  title="Aucun appel trouvé"
+                  title={t("adminPortal.calls.emptyTitle")}
                   hint={hasFilters
-                    ? "Essayez d'élargir vos critères de recherche."
-                    : "Aucun appel enregistré. Synchronisation NS-API automatique. Vérifiez que le webhook NS-API est configuré dans Intégrations."}
+                    ? t("adminPortal.calls.emptyHintFiltered")
+                    : t("adminPortal.calls.emptyHint")}
                   action={hasFilters ? (
                     <button onClick={resetFilters} className="px-3 py-1.5 rounded-lg text-xs font-medium text-white" style={{ background: ACCENT }}>
-                      Réinitialiser les filtres
+                      {t("adminPortal.calls.resetFilters")}
                     </button>
                   ) : (
                     <Link to="/planipret/admin/integrations" className="px-3 py-1.5 rounded-lg text-xs font-medium" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}>
-                      Aller aux intégrations →
+                      {t("adminPortal.calls.goIntegrations")}
                     </Link>
                   )}
                 />
@@ -204,7 +206,7 @@ export default function PACalls() {
                   <td style={{ color: "var(--pp-text-secondary)" }}>{c.from_number ?? "—"}</td>
                   <td style={{ color: "var(--pp-text-secondary)" }}>{c.to_number ?? "—"}</td>
                   <td style={{ color: "var(--pp-text-muted)" }}>{c.duration_seconds ? `${Math.floor(c.duration_seconds / 60)}m${c.duration_seconds % 60}s` : "—"}</td>
-                  <td style={{ fontSize: 11, color: "var(--pp-text-faint)" }}>{c.started_at ? new Date(c.started_at).toLocaleString("fr-CA", { dateStyle: "short", timeStyle: "short" }) : ""}</td>
+                  <td style={{ fontSize: 11, color: "var(--pp-text-faint)" }}>{c.started_at ? new Date(c.started_at).toLocaleString(lang === "en" ? "en-CA" : "fr-CA", { dateStyle: "short", timeStyle: "short" }) : ""}</td>
                   <td>{c.recording_url && <Mic className="w-3.5 h-3.5" style={{ color: "var(--pp-text-muted)" }} />}</td>
                   <td>{c.ai_summary && <Sparkles className="w-3.5 h-3.5" style={{ color: AGENT }} />}</td>
                   <td><button className="p-1.5 rounded hover:bg-white/[0.05]"><Eye className="w-3.5 h-3.5" style={{ color: "var(--pp-text-muted)" }} /></button></td>
@@ -220,7 +222,7 @@ export default function PACalls() {
           loading={loading}
           onPageChange={setPage}
           onPageSizeChange={setPageSize}
-          unit="appels"
+          unit={t("adminPortal.calls.unitCalls")}
         />
       </div>
 
@@ -228,25 +230,25 @@ export default function PACalls() {
         <div className="fixed inset-0 z-50 bg-black/60 flex justify-end" onClick={() => setDetail(null)}>
           <div className="h-full w-full max-w-md overflow-y-auto p-5" style={{ background: "var(--pp-bg-surface)", borderLeft: "1px solid var(--pp-bg-border-2)" }} onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
-              <h3 style={{ fontWeight: 600, color: "var(--pp-text-primary)" }}>Détails de l'appel</h3>
+              <h3 style={{ fontWeight: 600, color: "var(--pp-text-primary)" }}>{t("adminPortal.calls.detailsTitle")}</h3>
               <button onClick={() => setDetail(null)}><X className="w-4 h-4" style={{ color: "var(--pp-text-muted)" }} /></button>
             </div>
             <div className="space-y-3 text-sm">
-              <Row k="Courtier" v={brokerName(detail)} />
-              <Row k="Extension" v={detail.extension} />
-              <Row k="Direction" v={detail.direction} />
-              <Row k="De" v={detail.from_number} />
-              <Row k="Vers" v={detail.to_number} />
-              <Row k="Durée" v={detail.duration_seconds ? `${detail.duration_seconds}s` : "—"} />
-              <Row k="Date" v={detail.started_at ? new Date(detail.started_at).toLocaleString("fr-CA") : ""} />
+              <Row k={t("adminPortal.calls.colBroker")} v={brokerName(detail)} />
+              <Row k={t("adminPortal.calls.extension")} v={detail.extension} />
+              <Row k={t("adminPortal.calls.direction")} v={detail.direction} />
+              <Row k={t("adminPortal.calls.colFrom")} v={detail.from_number} />
+              <Row k={t("adminPortal.calls.colTo")} v={detail.to_number} />
+              <Row k={t("adminPortal.calls.colDuration")} v={detail.duration_seconds ? `${detail.duration_seconds}s` : "—"} />
+              <Row k={t("adminPortal.calls.colDate")} v={detail.started_at ? new Date(detail.started_at).toLocaleString(lang === "en" ? "en-CA" : "fr-CA") : ""} />
               {detail.recording_url && (
-                <div><p style={{ fontSize: 11, color: "var(--pp-text-muted)", marginBottom: 4 }}>Enregistrement</p><audio src={detail.recording_url} controls className="w-full" /></div>
+                <div><p style={{ fontSize: 11, color: "var(--pp-text-muted)", marginBottom: 4 }}>{t("adminPortal.calls.recording")}</p><audio src={detail.recording_url} controls className="w-full" /></div>
               )}
               {detail.transcript && (
-                <div><p style={{ fontSize: 11, color: "var(--pp-text-muted)", marginBottom: 4 }}>Transcription</p><div className="p-3 rounded whitespace-pre-wrap" style={{ fontSize: 11, background: "var(--pp-bg-elevated)", color: "var(--pp-text-secondary)" }}>{detail.transcript}</div></div>
+                <div><p style={{ fontSize: 11, color: "var(--pp-text-muted)", marginBottom: 4 }}>{t("adminPortal.calls.transcript")}</p><div className="p-3 rounded whitespace-pre-wrap" style={{ fontSize: 11, background: "var(--pp-bg-elevated)", color: "var(--pp-text-secondary)" }}>{detail.transcript}</div></div>
               )}
               {detail.ai_summary && (
-                <div><p style={{ fontSize: 11, color: "var(--pp-text-muted)", marginBottom: 4 }}>Résumé IA</p><div className="p-3 rounded" style={{ fontSize: 11, background: "rgba(155,127,232,0.08)", border: `1px solid ${AGENT}33`, color: "var(--pp-text-primary)" }}>{detail.ai_summary}</div></div>
+                <div><p style={{ fontSize: 11, color: "var(--pp-text-muted)", marginBottom: 4 }}>{t("adminPortal.calls.aiSummary")}</p><div className="p-3 rounded" style={{ fontSize: 11, background: "rgba(155,127,232,0.08)", border: `1px solid ${AGENT}33`, color: "var(--pp-text-primary)" }}>{detail.ai_summary}</div></div>
               )}
             </div>
           </div>

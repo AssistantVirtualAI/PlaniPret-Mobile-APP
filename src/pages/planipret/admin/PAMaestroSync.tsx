@@ -1,12 +1,141 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { RefreshCw, CheckCircle2, XCircle, AlertTriangle, Activity, Server, Radio, Cable } from "lucide-react";
+import PAMaestroStatus from "./PAMaestroStatus";
+import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 
 const ACCENT = "#2E9BDC";
 const SUCCESS = "#00D4AA";
 const DANGER = "#E84C4C";
 const WARNING = "#F5A623";
 const AGENT = "#9B7FE8";
+
+const DICT = {
+  fr: {
+    pageTitle: "Synchronisation Maestro Télécom",
+    pageSubtitle: "Vue globale des appels & SMS mirrorés depuis NS-API vers Maestro.",
+    failuresOnly: "Échecs seulement",
+    resyncAnalyses: "Resync analyses (72h)",
+    mirrorEverything: "Mirror everything",
+    refresh: "Actualiser",
+    genericError: "erreur",
+    mirrorAllConfirm: "Mirror TOUS les appels avec résumé/analyse IA vers Maestro (depuis le début) ?",
+    mirrorGlobalResult: (n: number) => `Miroir global : ${n} appel(s) planifié(s).`,
+    mirrorAllError: (msg: string) => `Erreur mirror-all : ${msg}`,
+    resyncScheduled: (n: number) => `Resync planifié : ${n} analyse(s)`,
+    resyncError: (msg: string) => `Erreur resync : ${msg}`,
+    configuration: "Configuration",
+    active: "Active",
+    missing: "Manquante",
+    authPing: "Auth & Ping API",
+    ok: "OK",
+    errorLabel: "Erreur",
+    total24h: "24h · Total transféré",
+    failuresCount: (n: number) => `${n} échec(s) ·`,
+    successRate: (n: number) => `${n}% réussis`,
+    lastMirror: "Dernier miroir",
+    call: "Appel",
+    sms: "SMS",
+    aiAnalysis: "Analyse IA",
+    liveAnalytics: "Analytics live · miroir vers Maestro",
+    liveAnalyticsHint: "Cliquer sur une carte pour filtrer le journal détaillé ci-dessous. Rafraîchi toutes les 10 s.",
+    logWindow: (a: string, b: string) => `Fenêtre journal : ${a} → ${b}`,
+    eligible: "Éligibles",
+    eligibleSub: "résumé ou analyse",
+    withMaestroId: "Avec maestro_call_id",
+    withMaestroIdSub: "prêts à mirrorer",
+    transferredOk: "Transférés OK",
+    transferredOkSub: "voir dans le journal →",
+    transferredOkFilterLabel: "Transférés (call.analysis.summary OK)",
+    skipped: "Skipped",
+    skippedSub: "sans broker / maestro_id →",
+    skippedFilterLabel: "Skipped (call.analysis.skipped.*)",
+    errors: "Erreurs",
+    errorsSub: "échecs de transfert →",
+    errorsFilterLabel: "Erreurs (call.analysis.summary ✕)",
+    toPush: "À pousser",
+    toPushSub: "éligibles − OK",
+    byActionTitle: "Répartition par action",
+    byActionSubtitle: "Fenêtre glissante · 72 heures",
+    noRecentActivity: "Aucune activité récente.",
+    detailedLog: "Journal détaillé",
+    entriesCount: (n: number) => `${n} entrée(s) · cliquer pour voir requête/réponse`,
+    filterLabel: (l: string) => `Filtre : ${l}`,
+    reset: "Réinitialiser",
+    when: "Quand",
+    action: "Action",
+    endpoint: "Endpoint",
+    http: "HTTP",
+    ms: "ms",
+    status: "Statut",
+    request: "Requête",
+    response: "Réponse",
+    fail: "ÉCHEC",
+    noEntries: "Aucune entrée dans le journal.",
+  },
+  en: {
+    pageTitle: "Maestro Telecom Sync",
+    pageSubtitle: "Global view of calls & SMS mirrored from NS-API to Maestro.",
+    failuresOnly: "Failures only",
+    resyncAnalyses: "Resync analyses (72h)",
+    mirrorEverything: "Mirror everything",
+    refresh: "Refresh",
+    genericError: "error",
+    mirrorAllConfirm: "Mirror ALL calls with AI summary/analysis to Maestro (from the beginning)?",
+    mirrorGlobalResult: (n: number) => `Global mirror: ${n} call(s) scheduled.`,
+    mirrorAllError: (msg: string) => `Mirror-all error: ${msg}`,
+    resyncScheduled: (n: number) => `Resync scheduled: ${n} analysis(es)`,
+    resyncError: (msg: string) => `Resync error: ${msg}`,
+    configuration: "Configuration",
+    active: "Active",
+    missing: "Missing",
+    authPing: "Auth & API Ping",
+    ok: "OK",
+    errorLabel: "Error",
+    total24h: "24h · Total transferred",
+    failuresCount: (n: number) => `${n} failure(s) ·`,
+    successRate: (n: number) => `${n}% successful`,
+    lastMirror: "Last mirror",
+    call: "Call",
+    sms: "SMS",
+    aiAnalysis: "AI Analysis",
+    liveAnalytics: "Live analytics · mirror to Maestro",
+    liveAnalyticsHint: "Click a card to filter the detailed log below. Refreshed every 10s.",
+    logWindow: (a: string, b: string) => `Log window: ${a} → ${b}`,
+    eligible: "Eligible",
+    eligibleSub: "summary or analysis",
+    withMaestroId: "With maestro_call_id",
+    withMaestroIdSub: "ready to mirror",
+    transferredOk: "Transferred OK",
+    transferredOkSub: "see log →",
+    transferredOkFilterLabel: "Transferred (call.analysis.summary OK)",
+    skipped: "Skipped",
+    skippedSub: "no broker / maestro_id →",
+    skippedFilterLabel: "Skipped (call.analysis.skipped.*)",
+    errors: "Errors",
+    errorsSub: "transfer failures →",
+    errorsFilterLabel: "Errors (call.analysis.summary ✕)",
+    toPush: "To push",
+    toPushSub: "eligible − OK",
+    byActionTitle: "Breakdown by action",
+    byActionSubtitle: "Sliding window · 72 hours",
+    noRecentActivity: "No recent activity.",
+    detailedLog: "Detailed log",
+    entriesCount: (n: number) => `${n} entry(ies) · click to see request/response`,
+    filterLabel: (l: string) => `Filter: ${l}`,
+    reset: "Reset",
+    when: "When",
+    action: "Action",
+    endpoint: "Endpoint",
+    http: "HTTP",
+    ms: "ms",
+    status: "Status",
+    request: "Request",
+    response: "Response",
+    fail: "FAILED",
+    noEntries: "No entries in the log.",
+  },
+};
 
 type Status = {
   ok: boolean;
@@ -100,6 +229,8 @@ function KpiCard({
 }
 
 export default function PAMaestroSync() {
+  const { lang } = useMplanipretLang();
+  const t = DICT[lang];
   const [status, setStatus] = useState<Status | null>(null);
   const [mirror, setMirror] = useState<MirrorStatus | null>(null);
   const [logs, setLogs] = useState<LogRow[]>([]);
@@ -113,33 +244,46 @@ export default function PAMaestroSync() {
   const load = useCallback(async () => {
     setLoading(true);
     setErr(null);
+    const invokeAll = () => Promise.all([
+      supabase.functions.invoke("pp-maestro-admin", { body: { action: "status" } }),
+      supabase.functions.invoke("pp-maestro-admin", {
+        body: {
+          action: "sync-log", limit: 200, since_hours: 72,
+          only_failures: onlyFailures,
+          action_like: actionFilter?.like,
+          action_eq: actionFilter?.eq,
+        },
+      }),
+      supabase.functions.invoke("pp-maestro-admin", { body: { action: "mirror-status" } }),
+    ]);
+    const is401 = (e: any) =>
+      e?.context?.status === 401 || /\b401\b|unauthorized/i.test(e?.message || "");
     try {
-      const [s, l, m] = await Promise.all([
-        supabase.functions.invoke("pp-maestro-admin", { body: { action: "status" } }),
-        supabase.functions.invoke("pp-maestro-admin", {
-          body: {
-            action: "sync-log", limit: 200, since_hours: 72,
-            only_failures: onlyFailures,
-            action_like: actionFilter?.like,
-            action_eq: actionFilter?.eq,
-          },
-        }),
-        supabase.functions.invoke("pp-maestro-admin", { body: { action: "mirror-status" } }),
-      ]);
+      let [s, l, m] = await invokeAll();
+      // Stale/revoked session: try one refresh + retry, else sign out.
+      if (is401(s.error) || is401(l.error) || is401(m.error)) {
+        const { data: refreshed } = await supabase.auth.refreshSession();
+        if (!refreshed?.session) {
+          await supabase.auth.signOut().catch(() => {});
+          window.location.href = "/auth?redirect=/planipret/admin/maestro-sync";
+          return;
+        }
+        [s, l, m] = await invokeAll();
+      }
       if (s.error) throw new Error(s.error.message);
       if (l.error) throw new Error(l.error.message);
       setStatus(s.data as Status);
       setLogs(((l.data as any)?.entries ?? []) as LogRow[]);
       if (!m.error) setMirror(m.data as MirrorStatus);
     } catch (e: any) {
-      setErr(e?.message ?? "erreur");
+      setErr(e?.message ?? t.genericError);
     } finally {
       setLoading(false);
     }
-  }, [onlyFailures, actionFilter]);
+  }, [onlyFailures, actionFilter, t.genericError]);
 
   const mirrorAll = useCallback(async () => {
-    if (!confirm("Mirror TOUS les appels avec résumé/analyse IA vers Maestro (depuis le début) ?")) return;
+    if (!confirm(t.mirrorAllConfirm)) return;
     setMirroring(true);
     try {
       let cursor: string | null = null;
@@ -154,14 +298,14 @@ export default function PAMaestroSync() {
         if (!next || next === cursor) break;
         cursor = next;
       }
-      alert(`Miroir global : ${total} appel(s) planifié(s).`);
+      alert(t.mirrorGlobalResult(total));
       await load();
     } catch (e: any) {
-      alert(`Erreur mirror-all : ${e?.message ?? e}`);
+      alert(t.mirrorAllError(e?.message ?? e));
     } finally {
       setMirroring(false);
     }
-  }, [load]);
+  }, [load, t]);
 
   useEffect(() => {
     void load();
@@ -195,10 +339,10 @@ export default function PAMaestroSync() {
           </div>
           <div>
             <h1 style={{ fontSize: 22, fontWeight: 700, color: "var(--pp-text-primary)", letterSpacing: "-0.01em" }}>
-              Synchronisation Maestro Télécom
+              {t.pageTitle}
             </h1>
             <p style={{ fontSize: 13, color: "var(--pp-text-secondary)", marginTop: 2 }}>
-              Vue globale des appels &amp; SMS mirrorés depuis NS-API vers Maestro.
+              {t.pageSubtitle}
             </p>
           </div>
         </div>
@@ -211,7 +355,7 @@ export default function PAMaestroSync() {
               className="accent-current"
               style={{ accentColor: ACCENT }}
             />
-            <span style={{ color: "var(--pp-text-secondary)" }}>Échecs seulement</span>
+            <span style={{ color: "var(--pp-text-secondary)" }}>{t.failuresOnly}</span>
           </label>
           <button
             className="pp-btn flex items-center gap-2"
@@ -221,16 +365,16 @@ export default function PAMaestroSync() {
                   body: { action: "resync-analysis", since_hours: 72, limit: 200 },
                 });
                 if (error) throw error;
-                alert(`Resync planifié : ${data?.scheduled ?? 0} analyse(s)`);
+                alert(t.resyncScheduled((data as any)?.scheduled ?? 0));
                 await load();
               } catch (e: any) {
-                alert(`Erreur resync : ${e?.message ?? e}`);
+                alert(t.resyncError(e?.message ?? e));
               }
             }}
             disabled={loading}
             style={{ padding: "8px 14px", fontSize: 13 }}
           >
-            <Activity className="w-4 h-4" /> Resync analyses (72h)
+            <Activity className="w-4 h-4" /> {t.resyncAnalyses}
           </button>
           <button
             className="pp-btn flex items-center gap-2"
@@ -238,7 +382,7 @@ export default function PAMaestroSync() {
             disabled={mirroring || loading}
             style={{ padding: "8px 14px", fontSize: 13, borderColor: `${AGENT}55`, color: AGENT }}
           >
-            <Activity className={`w-4 h-4 ${mirroring ? "animate-spin" : ""}`} /> Mirror everything
+            <Activity className={`w-4 h-4 ${mirroring ? "animate-spin" : ""}`} /> {t.mirrorEverything}
           </button>
           <button
             className="pp-btn pp-btn-primary flex items-center gap-2"
@@ -246,10 +390,16 @@ export default function PAMaestroSync() {
             disabled={loading}
             style={{ padding: "8px 14px", fontSize: 13 }}
           >
-            <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} /> Actualiser
+            <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} /> {t.refresh}
           </button>
         </div>
       </div>
+
+      {/* Embedded OAuth broker connection flow (was /planipret/admin/maestro-status) */}
+      <div className="pp-card mb-5" style={{ padding: 0, overflow: "hidden" }}>
+        <PAMaestroStatus />
+      </div>
+
 
       {err && (
         <div className="pp-card mb-5" style={{ padding: 12, borderColor: `${DANGER}55`, background: `${DANGER}0D` }}>
@@ -264,15 +414,15 @@ export default function PAMaestroSync() {
         <KpiCard
           icon={<Server className="w-5 h-5" />}
           color={status?.configured ? SUCCESS : DANGER}
-          title="Configuration"
-          value={<Pill ok={!!status?.configured} label={status?.configured ? "Active" : "Manquante"} />}
+          title={t.configuration}
+          value={<Pill ok={!!status?.configured} label={status?.configured ? t.active : t.missing} />}
           subtitle={status?.base_url || "—"}
         />
         <KpiCard
           icon={<Radio className="w-5 h-5" />}
           color={status?.ping?.ok ? SUCCESS : DANGER}
-          title="Auth & Ping API"
-          value={<Pill ok={!!status?.ping?.ok} label={status?.ping?.ok ? `OK · ${status.ping.status}` : `Erreur · ${status?.ping?.status ?? 0}`} />}
+          title={t.authPing}
+          value={<Pill ok={!!status?.ping?.ok} label={status?.ping?.ok ? `${t.ok} · ${status.ping.status}` : `${t.errorLabel} · ${status?.ping?.status ?? 0}`} />}
           subtitle={
             <>
               {status?.ping?.ms ? `${status.ping.ms} ms` : "—"}
@@ -283,37 +433,37 @@ export default function PAMaestroSync() {
         <KpiCard
           icon={<Activity className="w-5 h-5" />}
           color={rateColor}
-          title="24h · Total transféré"
+          title={t.total24h}
           value={status?.stats24h?.total ?? 0}
           subtitle={
             <>
-              {status?.stats24h?.failed ?? 0} échec(s) ·{" "}
-              {successRate != null ? `${successRate}% réussis` : "—"}
+              {t.failuresCount(status?.stats24h?.failed ?? 0)}{" "}
+              {successRate != null ? t.successRate(successRate) : "—"}
             </>
           }
         />
         <KpiCard
           icon={<AlertTriangle className="w-5 h-5" />}
           color={AGENT}
-          title="Dernier miroir"
+          title={t.lastMirror}
           value={
             <div className="flex flex-col gap-1.5">
               <div className="flex items-center gap-2" style={{ fontSize: 12 }}>
-                <span style={{ color: "var(--pp-text-secondary)" }}>Appel</span>
+                <span style={{ color: "var(--pp-text-secondary)" }}>{t.call}</span>
                 <span className="tabular-nums" style={{ color: "var(--pp-text-primary)", fontWeight: 600 }}>
                   {fmtAgo(status?.last_call_mirror?.created_at)}
                 </span>
                 {status?.last_call_mirror && <Pill ok={!!status.last_call_mirror.success} label={String(status.last_call_mirror.response_status ?? 0)} />}
               </div>
               <div className="flex items-center gap-2" style={{ fontSize: 12 }}>
-                <span style={{ color: "var(--pp-text-secondary)" }}>SMS</span>
+                <span style={{ color: "var(--pp-text-secondary)" }}>{t.sms}</span>
                 <span className="tabular-nums" style={{ color: "var(--pp-text-primary)", fontWeight: 600 }}>
                   {fmtAgo(status?.last_sms_mirror?.created_at)}
                 </span>
                 {status?.last_sms_mirror && <Pill ok={!!status.last_sms_mirror.success} label={String(status.last_sms_mirror.response_status ?? 0)} />}
               </div>
               <div className="flex items-center gap-2" style={{ fontSize: 12 }}>
-                <span style={{ color: "var(--pp-text-secondary)" }}>Analyse IA</span>
+                <span style={{ color: "var(--pp-text-secondary)" }}>{t.aiAnalysis}</span>
                 <span className="tabular-nums" style={{ color: "var(--pp-text-primary)", fontWeight: 600 }}>
                   {fmtAgo(status?.last_analysis_mirror?.created_at)}
                 </span>
@@ -329,26 +479,26 @@ export default function PAMaestroSync() {
         <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
           <div>
             <h2 style={{ fontSize: 14, fontWeight: 600, color: "var(--pp-text-primary)" }}>
-              Analytics live · miroir vers Maestro
+              {t.liveAnalytics}
             </h2>
             <p style={{ fontSize: 11, color: "var(--pp-text-faint)", marginTop: 2 }}>
-              Cliquer sur une carte pour filtrer le journal détaillé ci-dessous. Rafraîchi toutes les 10 s.
+              {t.liveAnalyticsHint}
             </p>
           </div>
           {mirror && (
             <span style={{ fontSize: 11, color: "var(--pp-text-faint)" }}>
-              Fenêtre journal : {fmtAgo(mirror.window_first_log)} → {fmtAgo(mirror.window_last_log)}
+              {t.logWindow(fmtAgo(mirror.window_first_log), fmtAgo(mirror.window_last_log))}
             </span>
           )}
         </div>
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
           {([
-            { label: "Éligibles", value: mirror?.eligible ?? "—", color: ACCENT, sub: "résumé ou analyse", filter: null },
-            { label: "Avec maestro_call_id", value: mirror?.with_maestro_call_id ?? "—", color: AGENT, sub: "prêts à mirrorer", filter: null },
-            { label: "Transférés OK", value: mirror?.mirrored_ok ?? "—", color: SUCCESS, sub: "voir dans le journal →", filter: { eq: "call.analysis.summary", label: "Transférés (call.analysis.summary OK)", onlyFailures: false } },
-            { label: "Skipped", value: mirror?.skipped_total ?? "—", color: WARNING, sub: "sans broker / maestro_id →", filter: { like: "call.analysis.skipped.%", label: "Skipped (call.analysis.skipped.*)", onlyFailures: false } },
-            { label: "Erreurs", value: mirror?.errors_total ?? "—", color: DANGER, sub: "échecs de transfert →", filter: { eq: "call.analysis.summary", label: "Erreurs (call.analysis.summary ✕)", onlyFailures: true } },
-            { label: "À pousser", value: mirror?.pending ?? "—", color: AGENT, sub: "éligibles − OK", filter: null },
+            { label: t.eligible, value: mirror?.eligible ?? "—", color: ACCENT, sub: t.eligibleSub, filter: null },
+            { label: t.withMaestroId, value: mirror?.with_maestro_call_id ?? "—", color: AGENT, sub: t.withMaestroIdSub, filter: null },
+            { label: t.transferredOk, value: mirror?.mirrored_ok ?? "—", color: SUCCESS, sub: t.transferredOkSub, filter: { eq: "call.analysis.summary", label: t.transferredOkFilterLabel, onlyFailures: false } },
+            { label: t.skipped, value: mirror?.skipped_total ?? "—", color: WARNING, sub: t.skippedSub, filter: { like: "call.analysis.skipped.%", label: t.skippedFilterLabel, onlyFailures: false } },
+            { label: t.errors, value: mirror?.errors_total ?? "—", color: DANGER, sub: t.errorsSub, filter: { eq: "call.analysis.summary", label: t.errorsFilterLabel, onlyFailures: true } },
+            { label: t.toPush, value: mirror?.pending ?? "—", color: AGENT, sub: t.toPushSub, filter: null },
           ] as const).map((c) => {
             const isActive =
               !!c.filter &&
@@ -400,12 +550,12 @@ export default function PAMaestroSync() {
       <div className="pp-card mb-5" style={{ padding: 20 }}>
         <div className="flex items-center justify-between mb-3">
           <div>
-            <h2 style={{ fontSize: 14, fontWeight: 600, color: "var(--pp-text-primary)" }}>Répartition par action</h2>
-            <p style={{ fontSize: 11, color: "var(--pp-text-faint)", marginTop: 2 }}>Fenêtre glissante · 72 heures</p>
+            <h2 style={{ fontSize: 14, fontWeight: 600, color: "var(--pp-text-primary)" }}>{t.byActionTitle}</h2>
+            <p style={{ fontSize: 11, color: "var(--pp-text-faint)", marginTop: 2 }}>{t.byActionSubtitle}</p>
           </div>
         </div>
         {byAction.length === 0 ? (
-          <p style={{ fontSize: 13, color: "var(--pp-text-secondary)" }}>Aucune activité récente.</p>
+          <p style={{ fontSize: 13, color: "var(--pp-text-secondary)" }}>{t.noRecentActivity}</p>
         ) : (
           <div className="flex flex-wrap gap-2">
             {byAction.map(([k, v]) => {
@@ -437,19 +587,19 @@ export default function PAMaestroSync() {
       <div id="pp-maestro-journal" className="pp-card" style={{ padding: 0, overflow: "hidden", scrollMarginTop: 16 }}>
         <div className="flex items-center justify-between px-5 py-4 flex-wrap gap-2" style={{ borderBottom: "1px solid var(--pp-bg-border-2)" }}>
           <div>
-            <h2 style={{ fontSize: 14, fontWeight: 600, color: "var(--pp-text-primary)" }}>Journal détaillé</h2>
-            <p style={{ fontSize: 11, color: "var(--pp-text-faint)", marginTop: 2 }}>{logs.length} entrée(s) · cliquer pour voir requête/réponse</p>
+            <h2 style={{ fontSize: 14, fontWeight: 600, color: "var(--pp-text-primary)" }}>{t.detailedLog}</h2>
+            <p style={{ fontSize: 11, color: "var(--pp-text-faint)", marginTop: 2 }}>{t.entriesCount(logs.length)}</p>
           </div>
           {(actionFilter || onlyFailures) && (
             <div className="flex items-center gap-2 flex-wrap">
               {actionFilter?.label && (
                 <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md" style={{ fontSize: 11, color: ACCENT, background: `${ACCENT}14`, border: `1px solid ${ACCENT}44` }}>
-                  Filtre : {actionFilter.label}
+                  {t.filterLabel(actionFilter.label)}
                 </span>
               )}
               {onlyFailures && !actionFilter && (
                 <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md" style={{ fontSize: 11, color: DANGER, background: `${DANGER}14`, border: `1px solid ${DANGER}44` }}>
-                  Échecs seulement
+                  {t.failuresOnly}
                 </span>
               )}
               <button
@@ -458,7 +608,7 @@ export default function PAMaestroSync() {
                 onClick={() => { setActionFilter(null); setOnlyFailures(false); }}
                 style={{ padding: "4px 10px", fontSize: 11 }}
               >
-                Réinitialiser
+                {t.reset}
               </button>
             </div>
           )}
@@ -467,7 +617,7 @@ export default function PAMaestroSync() {
           <table className="w-full" style={{ fontSize: 12 }}>
             <thead>
               <tr style={{ background: "var(--pp-bg-deep)" }}>
-                {["Quand", "Action", "Endpoint", "HTTP", "ms", "Statut"].map((h, i) => (
+                {[t.when, t.action, t.endpoint, t.http, t.ms, t.status].map((h, i) => (
                   <th key={h}
                     className={i >= 3 && i <= 4 ? "text-right" : "text-left"}
                     style={{
@@ -499,7 +649,7 @@ export default function PAMaestroSync() {
                       {r.duration_ms ?? "—"}
                     </td>
                     <td style={{ padding: "10px 14px" }}>
-                      <Pill ok={!!r.success} label={r.success ? "OK" : "ÉCHEC"} />
+                      <Pill ok={!!r.success} label={r.success ? t.ok : t.fail} />
                     </td>
                   </tr>
                   {expanded === r.id && (
@@ -509,7 +659,7 @@ export default function PAMaestroSync() {
                           {["request_body", "response_body"].map((k) => (
                             <div key={k}>
                               <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", color: "var(--pp-text-faint)", marginBottom: 6 }}>
-                                {k === "request_body" ? "Requête" : "Réponse"}
+                                {k === "request_body" ? t.request : t.response}
                               </div>
                               <pre
                                 className="overflow-x-auto"
@@ -533,7 +683,7 @@ export default function PAMaestroSync() {
               {logs.length === 0 && !loading && (
                 <tr>
                   <td colSpan={6} style={{ padding: "40px 14px", textAlign: "center", color: "var(--pp-text-faint)", fontSize: 13 }}>
-                    Aucune entrée dans le journal.
+                    {t.noEntries}
                   </td>
                 </tr>
               )}

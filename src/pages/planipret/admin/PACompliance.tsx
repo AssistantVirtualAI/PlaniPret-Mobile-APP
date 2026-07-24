@@ -2,8 +2,105 @@ import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { CheckCircle2, AlertTriangle, XCircle, Play } from "lucide-react";
+import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+
+
+const DICT = {
+  fr: {
+    saved: "Sauvegardé",
+    save: "Sauvegarder",
+    runNow: "Exécuter maintenant",
+    days: "jours",
+    dashboardTitle: "{t.dashboardTitle}",
+    checks: [
+      "RLS activée sur toutes les tables",
+      "Audit log actif",
+      "Rétention données configurée",
+      "Consentement enregistrement activé",
+      "Politique de confidentialité publiée",
+      "Export RGPD disponible",
+      "SPF/DKIM Resend à configurer",
+      "Backup enregistrements (NS purge 90j)",
+      "DPO désigné (à compléter)",
+      "Formation courtiers (à documenter)",
+    ],
+    consentTitle: "{t.consentTitle}",
+    enableConsent: "{t.enableConsent}",
+    messageFr: "Message FR",
+    messageEn: "Message EN",
+    delayLabel: "Délai avant connexion (3-10 s)",
+    totalConsents: "Total consentements",
+    accepted: "Acceptés",
+    rate: "Taux",
+    sessionTitle: "{t.sessionTitle}",
+    enableTimeout: "{t.enableTimeout}",
+    timeoutAfter: "Expiration après (minutes)",
+    retentionTitle: "{t.retentionTitle}",
+    retentionRows: {
+      calls_retention_days: "Appels",
+      messages_retention_days: "Messages",
+      voicemails_retention_days: "Messages vocaux",
+      transcripts_retention_days: "Transcriptions",
+      ai_insights_retention_days: "Analyses IA",
+      audit_logs_retention_days: "Journal d'audit",
+      recordings_retention_days: "Enregistrements",
+    } as Record<string, string>,
+    lastRun: "Dernier nettoyage :",
+    cleanupRan: (n: number) => `Nettoyage exécuté — ${n} enregistrements supprimés`,
+    incidentsTitle: "{t.incidentsTitle}",
+    noIncidents: "Aucun incident signalé ✅",
+    incidentsNote: "{t.incidentsNote}",
+  },
+  en: {
+    saved: "Saved",
+    save: "Save",
+    runNow: "Run now",
+    days: "days",
+    dashboardTitle: "Compliance dashboard",
+    checks: [
+      "RLS enabled on all tables",
+      "Audit log active",
+      "Data retention configured",
+      "Recording consent enabled",
+      "Privacy policy published",
+      "GDPR export available",
+      "SPF/DKIM Resend to configure",
+      "Recording backup (NS 90-day purge)",
+      "DPO designated (to complete)",
+      "Broker training (to document)",
+    ],
+    consentTitle: "Recording consent",
+    enableConsent: "Enable consent message",
+    messageFr: "Message FR",
+    messageEn: "Message EN",
+    delayLabel: "Delay before connecting (3-10 s)",
+    totalConsents: "Total consents",
+    accepted: "Accepted",
+    rate: "Rate",
+    sessionTitle: "Session timeout",
+    enableTimeout: "Enable automatic timeout",
+    timeoutAfter: "Timeout after (minutes)",
+    retentionTitle: "Data retention",
+    retentionRows: {
+      calls_retention_days: "Calls",
+      messages_retention_days: "Messages",
+      voicemails_retention_days: "Voicemails",
+      transcripts_retention_days: "Transcripts",
+      ai_insights_retention_days: "AI insights",
+      audit_logs_retention_days: "Audit log",
+      recordings_retention_days: "Recordings",
+    } as Record<string, string>,
+    lastRun: "Last cleanup:",
+    cleanupRan: (n: number) => `Cleanup ran — ${n} records deleted`,
+    incidentsTitle: "Incidents & breaches",
+    noIncidents: "No incidents reported ✅",
+    incidentsNote: "⚠️ Bill 25 — any breach must be reported to the CAI within 72 hours.",
+  },
+};
 
 export default function PACompliance() {
+  const { lang } = useMplanipretLang();
+  const t = DICT[lang as "fr" | "en"];
   const [consent, setConsent] = useState<any>(null);
   const [retention, setRetention] = useState<any>(null);
   const [settings, setSettings] = useState<any>(null);
@@ -34,7 +131,7 @@ export default function PACompliance() {
       consent_delay_seconds: consent.consent_delay_seconds,
     }).eq("id", consent.id);
     setBusy(false);
-    if (error) toast.error(error.message); else toast.success("Sauvegardé");
+    if (error) toast.error(error.message); else toast.success(t.saved);
   };
 
   const saveRetention = async () => {
@@ -49,7 +146,7 @@ export default function PACompliance() {
       recordings_retention_days: retention.recordings_retention_days,
     }).eq("id", retention.id);
     setBusy(false);
-    if (error) toast.error(error.message); else toast.success("Sauvegardé");
+    if (error) toast.error(error.message); else toast.success(t.saved);
   };
 
   const saveSettings = async () => {
@@ -60,7 +157,7 @@ export default function PACompliance() {
       await supabase.from("planipret_settings").update(settings).eq("id", row.id);
     }
     setBusy(false);
-    toast.success("Sauvegardé");
+    toast.success(t.saved);
   };
 
   const runRetention = async () => {
@@ -68,23 +165,23 @@ export default function PACompliance() {
     const { data, error } = await supabase.functions.invoke("pp-data-retention", { body: {} });
     setBusy(false);
     if (error) toast.error(error.message); else {
-      toast.success(`Nettoyage exécuté — ${Object.values((data as any)?.deletions ?? {}).reduce((a: any, b: any) => a + (b > 0 ? b : 0), 0)} enregistrements supprimés`);
+      toast.success(t.cleanupRan(Object.values((data as any)?.deletions ?? {}).reduce<number>((a, b: any) => a + (typeof b === "number" && b > 0 ? b : 0), 0)));
       load();
     }
   };
 
   // Compliance score
   const checks = [
-    { ok: true, label: "RLS activée sur toutes les tables" },
-    { ok: true, label: "Audit log actif" },
-    { ok: !!retention, label: "Rétention données configurée" },
-    { ok: !!consent?.recording_consent_enabled, label: "Consentement enregistrement activé" },
-    { ok: true, label: "Politique de confidentialité publiée" },
-    { ok: true, label: "Export RGPD disponible" },
-    { ok: false, warn: true, label: "SPF/DKIM Resend à configurer" },
-    { ok: false, warn: true, label: "Backup enregistrements (NS purge 90j)" },
-    { ok: false, label: "DPO désigné (à compléter)" },
-    { ok: false, label: "Formation courtiers (à documenter)" },
+    { ok: true, label: t.checks[0] },
+    { ok: true, label: t.checks[1] },
+    { ok: !!retention, label: t.checks[2] },
+    { ok: !!consent?.recording_consent_enabled, label: t.checks[3] },
+    { ok: true, label: t.checks[4] },
+    { ok: true, label: t.checks[5] },
+    { ok: false, warn: true, label: t.checks[6] },
+    { ok: false, warn: true, label: t.checks[7] },
+    { ok: false, label: t.checks[8] },
+    { ok: false, label: t.checks[9] },
   ];
   const score = checks.filter((c) => c.ok).length;
   const scoreColor = score >= 8 ? "#10B981" : score >= 6 ? "#F5A623" : "#EF4444";
@@ -95,7 +192,7 @@ export default function PACompliance() {
       <div className="pp-card" style={{ padding: 20 }}>
         <div className="flex items-center justify-between mb-3">
           <h2 style={{ fontFamily: "Inter,sans-serif", fontSize: 16, fontWeight: 700, color: "var(--pp-text-primary)" }}>
-            Tableau de bord conformité
+            {t.dashboardTitle}
           </h2>
           <div style={{ fontSize: 28, fontWeight: 800, color: scoreColor, fontFamily: "Inter,sans-serif" }}>
             {score}/10
@@ -117,33 +214,33 @@ export default function PACompliance() {
       {consent && (
         <div className="pp-card" style={{ padding: 20 }}>
           <h3 style={{ fontFamily: "Inter,sans-serif", fontSize: 14, fontWeight: 700, color: "var(--pp-text-primary)", marginBottom: 12 }}>
-            Consentement d'enregistrement
+            {t.consentTitle}
           </h3>
           <label className="flex items-center gap-2 mb-3 text-sm" style={{ color: "var(--pp-text-secondary)" }}>
             <input type="checkbox" checked={consent.recording_consent_enabled}
               onChange={(e) => setConsent({ ...consent, recording_consent_enabled: e.target.checked })} />
-            Activer le message de consentement
+            {t.enableConsent}
           </label>
-          <label className="text-xs block mb-1" style={{ color: "var(--pp-text-muted)" }}>Message FR</label>
+          <label className="text-xs block mb-1" style={{ color: "var(--pp-text-muted)" }}>{t.messageFr}</label>
           <textarea value={consent.consent_message_fr} onChange={(e) => setConsent({ ...consent, consent_message_fr: e.target.value })}
             rows={3} className="w-full mb-3 p-2 rounded-lg text-sm"
             style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-primary)", border: "1px solid var(--pp-bg-border)" }} />
-          <label className="text-xs block mb-1" style={{ color: "var(--pp-text-muted)" }}>Message EN</label>
+          <label className="text-xs block mb-1" style={{ color: "var(--pp-text-muted)" }}>{t.messageEn}</label>
           <textarea value={consent.consent_message_en} onChange={(e) => setConsent({ ...consent, consent_message_en: e.target.value })}
             rows={3} className="w-full mb-3 p-2 rounded-lg text-sm"
             style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-primary)", border: "1px solid var(--pp-bg-border)" }} />
-          <label className="text-xs block mb-1" style={{ color: "var(--pp-text-muted)" }}>Délai avant connexion (3-10 s)</label>
+          <label className="text-xs block mb-1" style={{ color: "var(--pp-text-muted)" }}>{t.delayLabel}</label>
           <input type="number" min={3} max={10} value={consent.consent_delay_seconds}
             onChange={(e) => setConsent({ ...consent, consent_delay_seconds: Math.min(10, Math.max(3, Number(e.target.value))) })}
             className="w-24 mb-3 px-2 py-2 rounded-lg text-sm"
             style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-primary)", border: "1px solid var(--pp-bg-border)" }} />
           <div className="flex gap-2">
-            <button onClick={saveConsent} disabled={busy} className="pp-btn-primary">Sauvegarder</button>
+            <button onClick={saveConsent} disabled={busy} className="pp-btn-primary">{t.save}</button>
           </div>
           <div className="mt-4 grid grid-cols-3 gap-3 text-sm">
-            <Stat label="Total consentements" value={stats.total} />
-            <Stat label="Acceptés" value={stats.given} />
-            <Stat label="Taux" value={stats.total ? `${Math.round((stats.given / stats.total) * 100)}%` : "—"} />
+            <Stat label={t.totalConsents} value={stats.total} />
+            <Stat label={t.accepted} value={stats.given} />
+            <Stat label={t.rate} value={stats.total ? `${Math.round((stats.given / stats.total) * 100)}%` : "—"} />
           </div>
         </div>
       )}
@@ -152,14 +249,14 @@ export default function PACompliance() {
       {settings && (
         <div className="pp-card" style={{ padding: 20 }}>
           <h3 style={{ fontFamily: "Inter,sans-serif", fontSize: 14, fontWeight: 700, color: "var(--pp-text-primary)", marginBottom: 12 }}>
-            Expiration de session
+            {t.sessionTitle}
           </h3>
           <label className="flex items-center gap-2 mb-3 text-sm" style={{ color: "var(--pp-text-secondary)" }}>
             <input type="checkbox" checked={settings.session_timeout_enabled}
               onChange={(e) => setSettings({ ...settings, session_timeout_enabled: e.target.checked })} />
-            Activer l'expiration automatique
+            {t.enableTimeout}
           </label>
-          <label className="text-xs block mb-1" style={{ color: "var(--pp-text-muted)" }}>Expiration après (minutes)</label>
+          <label className="text-xs block mb-1" style={{ color: "var(--pp-text-muted)" }}>{t.timeoutAfter}</label>
           <select value={settings.session_timeout_minutes}
             onChange={(e) => setSettings({ ...settings, session_timeout_minutes: Number(e.target.value) })}
             className="mb-3 px-3 py-2 rounded-lg text-sm"
@@ -168,7 +265,7 @@ export default function PACompliance() {
             <option value={30}>30</option>
             <option value={60}>60</option>
           </select>
-          <div><button onClick={saveSettings} disabled={busy} className="pp-btn-primary">Sauvegarder</button></div>
+          <div><button onClick={saveSettings} disabled={busy} className="pp-btn-primary">{t.save}</button></div>
         </div>
       )}
 
@@ -177,33 +274,25 @@ export default function PACompliance() {
         <div className="pp-card" style={{ padding: 20 }}>
           <div className="flex items-center justify-between mb-3">
             <h3 style={{ fontFamily: "Inter,sans-serif", fontSize: 14, fontWeight: 700, color: "var(--pp-text-primary)" }}>
-              Rétention des données
+              {t.retentionTitle}
             </h3>
             <button onClick={runRetention} disabled={busy} className="pp-btn-secondary flex items-center gap-2 text-sm">
-              <Play className="w-3.5 h-3.5" /> Exécuter maintenant
+              <Play className="w-3.5 h-3.5" /> {t.runNow}
             </button>
           </div>
-          {[
-            ["calls_retention_days", "Appels"],
-            ["messages_retention_days", "Messages"],
-            ["voicemails_retention_days", "Messages vocaux"],
-            ["transcripts_retention_days", "Transcriptions"],
-            ["ai_insights_retention_days", "Analyses IA"],
-            ["audit_logs_retention_days", "Journal d'audit"],
-            ["recordings_retention_days", "Enregistrements"],
-          ].map(([k, lbl]) => (
+          {Object.entries(t.retentionRows).map(([k, lbl]) => (
             <div key={k} className="flex items-center gap-3 mb-2 text-sm" style={{ color: "var(--pp-text-secondary)" }}>
               <label className="flex-1">{lbl}</label>
               <input type="number" min={1} value={retention[k]} onChange={(e) => setRetention({ ...retention, [k]: Number(e.target.value) })}
                 className="w-24 px-2 py-1.5 rounded-lg text-sm"
                 style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-primary)", border: "1px solid var(--pp-bg-border)" }} />
-              <span className="text-xs w-12" style={{ color: "var(--pp-text-muted)" }}>jours</span>
+              <span className="text-xs w-12" style={{ color: "var(--pp-text-muted)" }}>{t.days}</span>
             </div>
           ))}
-          <button onClick={saveRetention} disabled={busy} className="pp-btn-primary mt-3">Sauvegarder</button>
+          <button onClick={saveRetention} disabled={busy} className="pp-btn-primary mt-3">{t.save}</button>
           {retention.last_run_at && (
             <p className="mt-2 text-[11px]" style={{ color: "var(--pp-text-muted)" }}>
-              Dernier nettoyage : {new Date(retention.last_run_at).toLocaleString("fr-CA")}
+              {t.lastRun} {new Date(retention.last_run_at).toLocaleString("fr-CA")}
             </p>
           )}
         </div>
@@ -212,11 +301,11 @@ export default function PACompliance() {
       {/* Incidents */}
       <div className="pp-card" style={{ padding: 20 }}>
         <h3 style={{ fontFamily: "Inter,sans-serif", fontSize: 14, fontWeight: 700, color: "var(--pp-text-primary)", marginBottom: 8 }}>
-          Incidents & violations
+          {t.incidentsTitle}
         </h3>
-        <p className="text-sm" style={{ color: "var(--pp-text-secondary)" }}>Aucun incident signalé ✅</p>
+        <p className="text-sm" style={{ color: "var(--pp-text-secondary)" }}>{t.noIncidents}</p>
         <p className="text-[11px] mt-2" style={{ color: "var(--pp-text-muted)" }}>
-          ⚠️ Loi 25 — toute violation doit être signalée à la CAI sous 72 h.
+          {t.incidentsNote}
         </p>
       </div>
     </div>

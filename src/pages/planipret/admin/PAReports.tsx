@@ -527,11 +527,11 @@ export default function PAReports() {
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-4">
           <div className="rounded-lg p-3" style={{ background: "var(--pp-bg-deep)", border: "1px solid var(--pp-bg-border-2)" }}>
-            <p style={{ fontSize: 10, color: "var(--pp-text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Revenu annuel projeté</p>
+            <p style={{ fontSize: 10, color: "var(--pp-text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>{t("reports.annualRevenue")}</p>
             <p className="tabular-nums" style={{ fontSize: 22, fontWeight: 700, color: ACCENT, marginTop: 4 }}>{fmtMoney(financeTotals.annualRevenue)}</p>
           </div>
           <div className="rounded-lg p-3" style={{ background: "var(--pp-bg-deep)", border: "1px solid var(--pp-bg-border-2)" }}>
-            <p style={{ fontSize: 10, color: "var(--pp-text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Profit annuel projeté</p>
+            <p style={{ fontSize: 10, color: "var(--pp-text-muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>{t("reports.annualProfit")}</p>
             <p className="tabular-nums" style={{ fontSize: 22, fontWeight: 700, color: SUCCESS, marginTop: 4 }}>{fmtMoney(financeTotals.annualProfit)}</p>
           </div>
         </div>

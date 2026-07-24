@@ -1,10 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
-import { CheckCircle2, XCircle, AlertTriangle, Loader2, MinusCircle, RefreshCw, FileDown, ChevronDown, ChevronRight, ShieldCheck, Zap, Clock, Copy, ExternalLink, ArrowRight } from "lucide-react";
+import {
+  CheckCircle2, XCircle, AlertTriangle, Loader2, MinusCircle,
+  RefreshCw, FileDown, ChevronDown, ChevronRight, ShieldCheck,
+  Zap, Clock, Copy, ExternalLink, ArrowRight,
+} from "lucide-react";
 import { toast } from "sonner";
 import { downloadPdfBlob } from "@/lib/pdf/downloadBlob";
 import { jsPDF } from "jspdf";
+import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 
 type Status = "pass" | "fail" | "warn" | "skip" | "running";
 type Item = { id: string; name: string; description?: string; status: Status; detail?: string; ms?: number };
@@ -19,52 +24,7 @@ type Report = {
 
 type Priority = "critical" | "high" | "medium" | "low";
 type QuickFix = { label: string; icon: string; action: () => void };
-
-// Manual / human-only checklist items (cannot be auto-tested).
 type ManualItem = { id: string; label: string; hint: string; instructions?: string[]; copyText?: string; copyLabel?: string; link?: { label: string; href: string } };
-const MANUAL_CHECKLIST: ManualItem[] = [
-  { id: "m-ns-webhook", label: "Webhook NS-API CDR enregistré dans voice.ava-telecom.ca",
-    hint: "Portail NS → Settings → Webhooks → URL pointant vers /functions/v1/ns-webhook-receiver",
-    instructions: [
-      "1. Aller sur https://voice.ava-telecom.ca/portal",
-      "2. Se connecter avec votre compte admin NetSapiens",
-      "3. Settings → Webhooks → Add Webhook",
-      "4. Event: call_cdr (ou CDR)",
-      "5. URL: voir le bouton « Copier l'URL » ci-dessous",
-      "6. Header: X-Webhook-Secret: {NS_WEBHOOK_SECRET}",
-      "7. Sauvegarder.",
-    ],
-    copyText: `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ns-webhook-receiver`,
-    copyLabel: "Copier l'URL du webhook" },
-  { id: "m-maestro-webhook", label: "Webhook Maestro configuré côté Kanguru",
-    hint: "Webhooks sortants vers /functions/v1/maestro-webhook-receiver",
-    copyText: `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/maestro-webhook-receiver`,
-    copyLabel: "Copier l'URL Maestro" },
-  { id: "m-el-mic", label: "Agent ElevenLabs testé avec un vrai microphone",
-    hint: "Tester sur /mplanipret avec un broker actif",
-    link: { label: "Configurer ElevenLabs", href: "/planipret/admin/integrations#elevenlabs" } },
-  { id: "m-outbound", label: "Test appel sortant réel passé",
-    hint: "Lancer un appel via le Dialer FAB et vérifier le CDR" },
-  { id: "m-sms", label: "Test SMS envoyé et reçu",
-    hint: "Envoyer un SMS via l'app et vérifier la réception" },
-  { id: "m-voicemail", label: "Test boîte vocale générée et activée",
-    hint: "Générer un greeting et vérifier sur l'extension NS" },
-  { id: "m-m365", label: "Test M365 OAuth flow complet",
-    hint: "Un broker connecte son compte Microsoft et vérifie emails/RDV" },
-  { id: "m-admin", label: "Premier admin Planiprêt créé",
-    hint: "Créer un compte admin dans /planipret/admin/users",
-    link: { label: "Créer un admin", href: "/planipret/admin/users" } },
-  { id: "m-pipeline", label: "Test pipeline complet appel → analyse → Maestro",
-    hint: "Appel 2+ min puis vérifier CDR, transcript, IA, coaching, Maestro" },
-  { id: "m-resend", label: "SPF / DKIM Resend configuré",
-    hint: "support@avastatistic.ca sur Resend" },
-  { id: "m-ios", label: "Test sur iPhone Safari réel",
-    hint: "Layout, micro, WebRTC, SIP" },
-  { id: "m-android", label: "Test sur Android Chrome réel", hint: "Même vérification" },
-  { id: "m-retention", label: "Politique de rétention définie",
-    hint: "/planipret/admin/compliance",
-    link: { label: "Conformité", href: "/planipret/admin/compliance" } },
-];
 
 const C = {
   bg: "#030810",
@@ -104,22 +64,8 @@ const PRIORITY_MAP: Record<string, { priority: Priority; eta: string }> = {
   "rt-planipret_voicemails": { priority: "high", eta: "1 min" },
 };
 
-const PRIORITY_LABEL: Record<Priority, string> = {
-  critical: "🔴 CRITIQUE",
-  high: "🟠 HAUTE",
-  medium: "🟡 MOYENNE",
-  low: "🟢 BASSE",
-};
 const PRIORITY_COLOR: Record<Priority, string> = {
   critical: C.critical, high: C.high, medium: C.medium, low: C.low,
-};
-
-const SECTION_ETA: Record<string, string> = {
-  db: "0 min — tout est OK",
-  realtime: "~1 min — bouton corrigé via migration",
-  secrets: "~20 min — formulaires d'intégration",
-  functions: "~5 min — redéploiement si besoin",
-  external: "~30 min — secrets + tests",
 };
 
 function StatusIcon({ s }: { s: Status }) {
@@ -143,7 +89,7 @@ function scoreColor(pct: number) {
   return C.fail;
 }
 
-function ScoreCircle({ pct }: { pct: number }) {
+function ScoreCircle({ pct, label }: { pct: number; label: string }) {
   const color = scoreColor(pct);
   return (
     <div
@@ -158,13 +104,195 @@ function ScoreCircle({ pct }: { pct: number }) {
         style={{ background: C.surface, border: `1px solid ${C.border}` }}
       >
         <div className="text-3xl font-bold" style={{ color: C.text, fontFamily: "Inter,sans-serif" }}>{pct}%</div>
-        <div className="text-[10px] uppercase tracking-wider" style={{ color: C.textMuted }}>Score global</div>
+        <div className="text-[10px] uppercase tracking-wider" style={{ color: C.textMuted }}>{label}</div>
       </div>
     </div>
   );
 }
 
+
+const DICT = {
+  fr: {
+    title: "Audit système",
+    subtitle: "Vérification automatisée de la configuration technique et de conformité du portail Planiprêt.",
+    scoreLabel: "Score global",
+    kpiCompleted: "Complétés",
+    kpiPartial: "Partiels",
+    kpiMissing: "Manquants",
+    kpiIgnored: "Ignorés",
+    running: "Audit en cours…",
+    runAudit: "Relancer l'audit",
+    exportPdf: "Exporter en PDF",
+    neverRun: "Jamais exécuté",
+    lastRun: (n: number) => `Dernière exécution il y a ${n} min`,
+    nextStepsTitle: "Prochaines étapes recommandées",
+    auditError: "Erreur d'audit : ",
+    scorePerfect: "Parfait",
+    scoreExcellent: "Excellent",
+    scoreAttention: "Attention",
+    scoreAction: "Action requise",
+    manualTitle: "Vérifications manuelles",
+    manualEta: "À faire avant mise en production",
+    markedDone: "Complété le",
+    hideInstructions: "Masquer les instructions",
+    showInstructions: "Voir les instructions",
+    priorityCritical: "Critique",
+    priorityHigh: "Élevée",
+    priorityMedium: "Moyenne",
+    priorityLow: "Faible",
+    sectionEtaDb: "Base de données",
+    sectionEtaRealtime: "Temps réel",
+    sectionEtaSecrets: "Secrets & clés API",
+    sectionEtaFunctions: "Fonctions edge",
+    sectionEtaExternal: "Services externes",
+    mcNsWebhookLabel: "Configurer le webhook NetSapiens",
+    mcNsWebhookHint: "Connecter NetSapiens pour recevoir les événements d'appel en temps réel.",
+    mcNsWebhookInstructions: [
+      "1. Connectez-vous au portail d'administration NetSapiens.",
+      "2. Accédez à Domaine > Configuration > Webhooks.",
+      "3. Ajoutez un nouveau webhook pour les événements d'appel.",
+      "4. Collez l'URL ci-dessous dans le champ de destination.",
+      "5. Sélectionnez les événements : début, fin et transfert d'appel.",
+      "6. Enregistrez la configuration.",
+      "7. Testez avec un appel entrant pour confirmer la réception.",
+    ],
+    mcNsWebhookCopyLabel: "Copier l'URL du webhook",
+    mcMaestroWebhookLabel: "Configurer le webhook Maestro",
+    mcMaestroWebhookHint: "Connecter Maestro CRM pour synchroniser les dossiers automatiquement.",
+    mcMaestroWebhookCopyLabel: "Copier l'URL du webhook",
+    mcElMicLabel: "Tester le micro ElevenLabs",
+    mcElMicHint: "Vérifier que l'agent vocal IA peut capter et traiter l'audio correctement.",
+    mcElMicLinkLabel: "Configurer ElevenLabs",
+    mcOutboundLabel: "Tester un appel sortant",
+    mcOutboundHint: "Effectuer un appel test depuis le portail pour valider la téléphonie.",
+    mcSmsLabel: "Tester l'envoi d'un SMS",
+    mcSmsHint: "Envoyer un SMS test pour valider l'intégration de messagerie.",
+    mcVoicemailLabel: "Tester la messagerie vocale",
+    mcVoicemailHint: "Laisser un message vocal test et vérifier sa réception et sa transcription.",
+    mcM365Label: "Valider l'intégration Microsoft 365",
+    mcM365Hint: "Confirmer la synchronisation du calendrier et des courriels.",
+    mcAdminUserLabel: "Créer un utilisateur administrateur",
+    mcAdminUserHint: "S'assurer qu'au moins un compte administrateur est actif.",
+    mcAdminUserLinkLabel: "Gérer les utilisateurs",
+    mcPipelineLabel: "Tester le pipeline complet",
+    mcPipelineHint: "Simuler un parcours client de bout en bout (appel, IA, suivi).",
+    mcResendLabel: "Configurer SPF/DKIM pour Resend",
+    mcResendHint: "Valider l'authentification du domaine d'envoi de courriels.",
+    mcIosLabel: "Tester l'application iOS",
+    mcIosHint: "Vérifier les notifications et la connexion sur un appareil iOS.",
+    mcAndroidLabel: "Tester l'application Android",
+    mcAndroidHint: "Vérifier les notifications et la connexion sur un appareil Android.",
+    mcRetentionLabel: "Configurer la rétention des données",
+    mcRetentionHint: "Définir les délais de conservation conformes à la Loi 25.",
+    mcRetentionLinkLabel: "Voir la conformité",
+    noPdfReport: "Aucun rapport à exporter",
+    pdfTitle: "Rapport d'audit Planiprêt",
+    pdfGeneratedAt: "Généré le",
+    pdfScoreLabel: "Score :",
+    pdfManualChecklist: "Vérifications manuelles",
+    pdfDownloaded: "PDF téléchargé",
+    pdfFailed: "Échec de l'export PDF : ",
+    configureAzure: "Configurer Azure",
+    emailKanguru: "Email Kanguru",
+    configureOpenAI: "Configurer OpenAI",
+    configureClaude: "Configurer Claude",
+    viewRealtime: "Voir Realtime",
+    copied: "Copié",
+    copyDefault: "Copier",
+  },
+  en: {
+    title: "System audit",
+    subtitle: "Automated check of the Planiprêt portal's technical configuration and compliance.",
+    scoreLabel: "Overall score",
+    kpiCompleted: "Completed",
+    kpiPartial: "Partial",
+    kpiMissing: "Missing",
+    kpiIgnored: "Skipped",
+    running: "Audit running…",
+    runAudit: "Re-run audit",
+    exportPdf: "Export as PDF",
+    neverRun: "Never run",
+    lastRun: (n: number) => `Last run ${n} min ago`,
+    nextStepsTitle: "Recommended next steps",
+    auditError: "Audit error: ",
+    scorePerfect: "Perfect",
+    scoreExcellent: "Excellent",
+    scoreAttention: "Attention",
+    scoreAction: "Action required",
+    manualTitle: "Manual checks",
+    manualEta: "To do before going live",
+    markedDone: "Completed on",
+    hideInstructions: "Hide instructions",
+    showInstructions: "Show instructions",
+    priorityCritical: "Critical",
+    priorityHigh: "High",
+    priorityMedium: "Medium",
+    priorityLow: "Low",
+    sectionEtaDb: "Database",
+    sectionEtaRealtime: "Realtime",
+    sectionEtaSecrets: "Secrets & API keys",
+    sectionEtaFunctions: "Edge functions",
+    sectionEtaExternal: "External services",
+    mcNsWebhookLabel: "Configure the NetSapiens webhook",
+    mcNsWebhookHint: "Connect NetSapiens to receive call events in real time.",
+    mcNsWebhookInstructions: [
+      "1. Log in to the NetSapiens admin portal.",
+      "2. Go to Domain > Configuration > Webhooks.",
+      "3. Add a new webhook for call events.",
+      "4. Paste the URL below into the destination field.",
+      "5. Select the events: call start, end, and transfer.",
+      "6. Save the configuration.",
+      "7. Test with an inbound call to confirm delivery.",
+    ],
+    mcNsWebhookCopyLabel: "Copy webhook URL",
+    mcMaestroWebhookLabel: "Configure the Maestro webhook",
+    mcMaestroWebhookHint: "Connect Maestro CRM to sync files automatically.",
+    mcMaestroWebhookCopyLabel: "Copy webhook URL",
+    mcElMicLabel: "Test the ElevenLabs microphone",
+    mcElMicHint: "Verify that the AI voice agent can capture and process audio correctly.",
+    mcElMicLinkLabel: "Configure ElevenLabs",
+    mcOutboundLabel: "Test an outbound call",
+    mcOutboundHint: "Make a test call from the portal to validate telephony.",
+    mcSmsLabel: "Test sending an SMS",
+    mcSmsHint: "Send a test SMS to validate the messaging integration.",
+    mcVoicemailLabel: "Test voicemail",
+    mcVoicemailHint: "Leave a test voicemail and verify its receipt and transcription.",
+    mcM365Label: "Validate the Microsoft 365 integration",
+    mcM365Hint: "Confirm calendar and email synchronization.",
+    mcAdminUserLabel: "Create an admin user",
+    mcAdminUserHint: "Ensure at least one admin account is active.",
+    mcAdminUserLinkLabel: "Manage users",
+    mcPipelineLabel: "Test the full pipeline",
+    mcPipelineHint: "Simulate an end-to-end client journey (call, AI, follow-up).",
+    mcResendLabel: "Configure SPF/DKIM for Resend",
+    mcResendHint: "Validate the authentication of the sending email domain.",
+    mcIosLabel: "Test the iOS app",
+    mcIosHint: "Check notifications and login on an iOS device.",
+    mcAndroidLabel: "Test the Android app",
+    mcAndroidHint: "Check notifications and login on an Android device.",
+    mcRetentionLabel: "Configure data retention",
+    mcRetentionHint: "Set retention periods compliant with Bill 25.",
+    mcRetentionLinkLabel: "View compliance",
+    noPdfReport: "No report to export",
+    pdfTitle: "Planiprêt audit report",
+    pdfGeneratedAt: "Generated on",
+    pdfScoreLabel: "Score:",
+    pdfManualChecklist: "Manual checks",
+    pdfDownloaded: "PDF downloaded",
+    pdfFailed: "PDF export failed: ",
+    configureAzure: "Configure Azure",
+    emailKanguru: "Email Kanguru",
+    configureOpenAI: "Configure OpenAI",
+    configureClaude: "Configure Claude",
+    viewRealtime: "View Realtime",
+    copied: "Copied",
+    copyDefault: "Copy",
+  },
+};
+
 export default function PAAuditChecklist() {
+  const { lang } = useMplanipretLang();
+  const t = DICT[lang as "fr" | "en"];
   const nav = useNavigate();
   const [report, setReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(false);
@@ -175,7 +303,6 @@ export default function PAAuditChecklist() {
       const raw = localStorage.getItem("pp-audit-manual");
       if (!raw) return {};
       const parsed = JSON.parse(raw);
-      // Migrate old boolean-only format
       const out: Record<string, { done: boolean; at?: string }> = {};
       for (const k of Object.keys(parsed)) {
         const v = parsed[k];
@@ -185,6 +312,50 @@ export default function PAAuditChecklist() {
     } catch { return {}; }
   });
   const [expandedManual, setExpandedManual] = useState<Record<string, boolean>>({});
+
+  const PRIORITY_LABEL: Record<Priority, string> = {
+    critical: t.priorityCritical,
+    high: t.priorityHigh,
+    medium: t.priorityMedium,
+    low: t.priorityLow,
+  };
+
+  const SECTION_ETA: Record<string, string> = {
+    db: t.sectionEtaDb,
+    realtime: t.sectionEtaRealtime,
+    secrets: t.sectionEtaSecrets,
+    functions: t.sectionEtaFunctions,
+    external: t.sectionEtaExternal,
+  };
+
+  const MANUAL_CHECKLIST: ManualItem[] = [
+    { id: "m-ns-webhook", label: t.mcNsWebhookLabel,
+      hint: t.mcNsWebhookHint,
+      instructions: t.mcNsWebhookInstructions as unknown as string[],
+      copyText: `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ns-webhook-receiver`,
+      copyLabel: t.mcNsWebhookCopyLabel },
+    { id: "m-maestro-webhook", label: t.mcMaestroWebhookLabel,
+      hint: t.mcMaestroWebhookHint,
+      copyText: `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/maestro-webhook-receiver`,
+      copyLabel: t.mcMaestroWebhookCopyLabel },
+    { id: "m-el-mic", label: t.mcElMicLabel,
+      hint: t.mcElMicHint,
+      link: { label: t.mcElMicLinkLabel, href: "/planipret/admin/integrations#elevenlabs" } },
+    { id: "m-outbound", label: t.mcOutboundLabel, hint: t.mcOutboundHint },
+    { id: "m-sms", label: t.mcSmsLabel, hint: t.mcSmsHint },
+    { id: "m-voicemail", label: t.mcVoicemailLabel, hint: t.mcVoicemailHint },
+    { id: "m-m365", label: t.mcM365Label, hint: t.mcM365Hint },
+    { id: "m-admin", label: t.mcAdminUserLabel,
+      hint: t.mcAdminUserHint,
+      link: { label: t.mcAdminUserLinkLabel, href: "/planipret/admin/users" } },
+    { id: "m-pipeline", label: t.mcPipelineLabel, hint: t.mcPipelineHint },
+    { id: "m-resend", label: t.mcResendLabel, hint: t.mcResendHint },
+    { id: "m-ios", label: t.mcIosLabel, hint: t.mcIosHint },
+    { id: "m-android", label: t.mcAndroidLabel, hint: t.mcAndroidHint },
+    { id: "m-retention", label: t.mcRetentionLabel,
+      hint: t.mcRetentionHint,
+      link: { label: t.mcRetentionLinkLabel, href: "/planipret/admin/compliance" } },
+  ];
 
   // Load persisted manual state from DB
   useEffect(() => {
@@ -226,7 +397,6 @@ export default function PAAuditChecklist() {
   };
 
   useEffect(() => {
-    // Hydrate from cache (5 min)
     try {
       const raw = sessionStorage.getItem("pp-audit-cache");
       if (raw) {
@@ -255,28 +425,28 @@ export default function PAAuditChecklist() {
   // Quick-fix dispatcher
   const quickFix = (itemId: string): QuickFix | null => {
     if (itemId === "secret-ELEVENLABS_DEFAULT_AGENT_ID") {
-      return { label: "Configurer ElevenLabs", icon: "🚀", action: () => nav("/planipret/admin/integrations#elevenlabs") };
+      return { label: t.mcElMicLinkLabel, icon: "🚀", action: () => nav("/planipret/admin/integrations#elevenlabs") };
     }
     if (itemId.startsWith("secret-MICROSOFT_")) {
-      return { label: "Configurer Azure", icon: "⚙️", action: () => nav("/planipret/admin/integrations#microsoft") };
+      return { label: t.configureAzure, icon: "⚙️", action: () => nav("/planipret/admin/integrations#microsoft") };
     }
     if (itemId.startsWith("secret-MAESTRO_")) {
       return {
-        label: "Email Kanguru", icon: "📧",
+        label: t.emailKanguru, icon: "📧",
         action: () => { window.location.href = "mailto:support@kanguru.ca?subject=Identifiants%20API%20Maestro%20pour%20Planipr%C3%AAt&body=Bonjour%2C%0A%0ANous%20avons%20besoin%20de%20MAESTRO_API_URL%20et%20MAESTRO_API_KEY%20pour%20activer%20l%27int%C3%A9gration%20Maestro%20dans%20notre%20portail%20Planipr%C3%AAt.%0A%0AMerci."; },
       };
     }
     if (itemId === "secret-OPENAI_API_KEY") {
-      return { label: "Configurer OpenAI", icon: "🔑", action: () => nav("/planipret/admin/integrations#nsapi") };
+      return { label: t.configureOpenAI, icon: "🔑", action: () => nav("/planipret/admin/integrations#nsapi") };
     }
     if (itemId === "secret-ELEVENLABS_AVA_VOICE_ID") {
-      return { label: "Définir voix par défaut", icon: "🎙️", action: () => nav("/planipret/admin/integrations#elevenlabs") };
+      return { label: t.mcElMicLinkLabel, icon: "🎙️", action: () => nav("/planipret/admin/integrations#elevenlabs") };
     }
     if (itemId === "claude" || itemId === "secret-ANTHROPIC_API_KEY") {
-      return { label: "Configurer Claude", icon: "🔧", action: () => nav("/planipret/admin/integrations#anthropic") };
+      return { label: t.configureClaude, icon: "🔧", action: () => nav("/planipret/admin/integrations#anthropic") };
     }
     if (itemId.startsWith("rt-")) {
-      return { label: "Voir Realtime", icon: "📡", action: () => toast.info("Realtime corrigé via migration. Relancez l'audit.") };
+      return { label: t.viewRealtime, icon: "📡", action: () => toast.info(t.sectionEtaRealtime) };
     }
     return null;
   };
@@ -287,10 +457,10 @@ export default function PAAuditChecklist() {
     const failed = report.sections.flatMap((s) => s.items).filter((i) => i.status === "fail");
     return failed
       .map((it) => {
-        const p = PRIORITY_MAP[it.id];
-        if (!p) return null;
+        const pr = PRIORITY_MAP[it.id];
+        if (!pr) return null;
         return {
-          id: it.id, label: it.name, priority: p.priority, eta: p.eta,
+          id: it.id, label: it.name, priority: pr.priority, eta: pr.eta,
           action: quickFix(it.id) ?? undefined,
         };
       })
@@ -303,7 +473,7 @@ export default function PAAuditChecklist() {
 
   const exportPdf = () => {
     if (!report) {
-      toast.error("Aucun rapport à exporter");
+      toast.error(t.noPdfReport);
       return;
     }
     try {
@@ -329,10 +499,10 @@ export default function PAAuditChecklist() {
         doc.setDrawColor(200); doc.line(margin, y, pageW - margin, y); y += 8;
       };
 
-      line("Audit Systeme - Planipret AI Portal", 18, true, [10, 30, 60]);
-      line(`Genere le ${new Date(report.generated_at).toLocaleString("fr-CA")}`, 9, false, [100, 100, 100]);
+      line(t.pdfTitle, 18, true, [10, 30, 60]);
+      line(`${t.pdfGeneratedAt} ${new Date(report.generated_at).toLocaleString("fr-CA")}`, 9, false, [100, 100, 100]);
       y += 6;
-      line(`Score global: ${report.score}%`, 14, true, [0, 100, 80]);
+      line(`${t.pdfScoreLabel} ${report.score}%`, 14, true, [0, 100, 80]);
       line(`[OK] ${report.totals.pass}   [!] ${report.totals.warn}   [X] ${report.totals.fail}   [-] ${report.totals.skip}   (Total ${report.totals.total})`, 10);
       hr();
 
@@ -352,7 +522,7 @@ export default function PAAuditChecklist() {
         hr();
       }
 
-      line("Checklist manuelle", 13, true, [10, 30, 60]);
+      line(t.pdfManualChecklist, 13, true, [10, 30, 60]);
       for (const m of MANUAL_CHECKLIST) {
         const done = manualState[m.id]?.done;
         line(`${done ? "[X]" : "[ ]"} ${m.label}`, 10, true, done ? [0, 130, 90] : [60, 60, 60]);
@@ -362,10 +532,10 @@ export default function PAAuditChecklist() {
       const filename = `audit-planipret-${new Date().toISOString().slice(0, 10)}.pdf`;
       const blob = doc.output("blob");
       downloadPdfBlob(blob, filename);
-      toast.success("PDF téléchargé");
+      toast.success(t.pdfDownloaded);
     } catch (e: any) {
       console.error("[audit] exportPdf error", e);
-      toast.error(`Échec export PDF: ${e?.message || e}`);
+      toast.error(`${t.pdfFailed}${e?.message || e}`);
     }
   };
 
@@ -374,10 +544,10 @@ export default function PAAuditChecklist() {
       {/* Header */}
       <div className="flex flex-col gap-2 mb-6">
         <h1 className="font-bold" style={{ fontFamily: "Inter,sans-serif", fontSize: 28, color: C.text }}>
-          Audit Système — Planiprêt AI Portal
+          {t.title}
         </h1>
         <p style={{ fontFamily: "DM Sans,sans-serif", fontSize: 14, color: C.textMuted }}>
-          Vérification complète de toutes les fonctionnalités et intégrations.
+          {t.subtitle}
         </p>
       </div>
 
@@ -388,13 +558,13 @@ export default function PAAuditChecklist() {
       >
         <div className="absolute inset-x-0 top-0 h-[2px]"
              style={{ background: "linear-gradient(90deg, transparent, #2E9BDC, #00D4AA, transparent)" }} />
-        <ScoreCircle pct={report?.score ?? 0} />
+        <ScoreCircle pct={report?.score ?? 0} label={t.scoreLabel} />
 
         <div className="flex-1 grid grid-cols-2 md:grid-cols-4 gap-3 w-full">
-          <Kpi label="Complété" value={report?.totals.pass ?? 0} color={C.pass} icon="✅" />
-          <Kpi label="Partiel" value={report?.totals.warn ?? 0} color={C.warn} icon="⚠️" />
-          <Kpi label="Manquant" value={report?.totals.fail ?? 0} color={C.fail} icon="❌" />
-          <Kpi label="Ignoré" value={report?.totals.skip ?? 0} color={C.skip} icon="⏭️" />
+          <Kpi label={t.kpiCompleted} value={report?.totals.pass ?? 0} color={C.pass} icon="✅" />
+          <Kpi label={t.kpiPartial} value={report?.totals.warn ?? 0} color={C.warn} icon="⚠️" />
+          <Kpi label={t.kpiMissing} value={report?.totals.fail ?? 0} color={C.fail} icon="❌" />
+          <Kpi label={t.kpiIgnored} value={report?.totals.skip ?? 0} color={C.skip} icon="⏭️" />
         </div>
 
         <div className="flex flex-col gap-2 md:items-end">
@@ -405,17 +575,17 @@ export default function PAAuditChecklist() {
             style={{ background: "linear-gradient(90deg,#2E9BDC,#00D4AA)", color: "#03101A" }}
           >
             {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-            {loading ? "Audit en cours..." : "Relancer l'audit"}
+            {loading ? t.running : t.runAudit}
           </button>
           <button
             onClick={exportPdf}
             className="px-4 py-2 rounded-xl text-xs flex items-center gap-2 border"
             style={{ borderColor: C.borderAccent, color: C.textSecondary, background: "transparent" }}
           >
-            <FileDown className="w-3.5 h-3.5" /> Exporter rapport PDF
+            <FileDown className="w-3.5 h-3.5" /> {t.exportPdf}
           </button>
           <div className="text-[11px]" style={{ color: C.textMuted }}>
-            {ageMin == null ? "Pas encore exécuté" : `Dernier audit: il y a ${ageMin} min`}
+            {ageMin == null ? t.neverRun : t.lastRun(ageMin)}
           </div>
         </div>
       </div>
@@ -453,7 +623,7 @@ export default function PAAuditChecklist() {
                       border: `1px solid ${C.borderAccent}` }}>
           <div className="flex items-center gap-2 mb-3">
             <Zap className="w-5 h-5" style={{ color: C.info }} />
-            <h3 className="font-semibold" style={{ color: C.text }}>📋 Prochaines étapes recommandées</h3>
+            <h3 className="font-semibold" style={{ color: C.text }}>{t.nextStepsTitle}</h3>
           </div>
           <div className="space-y-2">
             {nextSteps.slice(0, 8).map((s: any, idx: number) => (
@@ -461,8 +631,8 @@ export default function PAAuditChecklist() {
                    style={{ background: "rgba(3,8,16,0.4)" }}>
                 <span className="text-xs tabular-nums w-5" style={{ color: C.textMuted }}>{idx + 1}.</span>
                 <span className="text-[10px] px-2 py-0.5 rounded font-semibold whitespace-nowrap"
-                      style={{ background: `${PRIORITY_COLOR[s.priority]}22`, color: PRIORITY_COLOR[s.priority] }}>
-                  {PRIORITY_LABEL[s.priority]}
+                      style={{ background: `${PRIORITY_COLOR[s.priority as Priority]}22`, color: PRIORITY_COLOR[s.priority as Priority] }}>
+                  {PRIORITY_LABEL[s.priority as Priority]}
                 </span>
                 <span className="flex-1 text-sm truncate" style={{ color: C.text }}>{s.label}</span>
                 <span className="text-[11px] flex items-center gap-1" style={{ color: C.textMuted }}>
@@ -493,7 +663,7 @@ export default function PAAuditChecklist() {
       {error && (
         <div className="mb-4 rounded-xl p-4 text-sm"
              style={{ background: "rgba(232,76,76,0.08)", border: `1px solid rgba(232,76,76,0.25)`, color: "#FFB4B4" }}>
-          Erreur audit : {error}
+          {t.auditError}{error}
         </div>
       )}
 
@@ -519,7 +689,9 @@ export default function PAAuditChecklist() {
                     {sec.items.length} items
                   </span>
                 </div>
-                <ScoreBadge pct={score.pct} pass={score.pass} total={score.total} />
+                <ScoreBadge pct={score.pct} pass={score.pass} total={score.total}
+                  labelPerfect={t.scorePerfect} labelExcellent={t.scoreExcellent}
+                  labelAttention={t.scoreAttention} labelAction={t.scoreAction} />
               </button>
 
               {!isCollapsed && (
@@ -579,12 +751,12 @@ export default function PAAuditChecklist() {
              style={{ background: C.surface, border: `1px solid ${C.border}` }}>
           <div className="flex items-center gap-3 p-4 border-b" style={{ borderColor: C.border }}>
             <ShieldCheck className="w-5 h-5" style={{ color: C.info }} />
-            <span className="font-semibold" style={{ color: C.text }}>Vérifications manuelles</span>
+            <span className="font-semibold" style={{ color: C.text }}>{t.manualTitle}</span>
             <span className="text-xs px-2 py-0.5 rounded-full"
                   style={{ background: "rgba(255,255,255,0.04)", color: C.textMuted }}>
               {Object.values(manualState).filter((v) => v?.done).length}/{MANUAL_CHECKLIST.length}
             </span>
-            <span className="ml-auto text-[11px]" style={{ color: C.textMuted }}>~2h — tests physiques requis</span>
+            <span className="ml-auto text-[11px]" style={{ color: C.textMuted }}>{t.manualEta}</span>
           </div>
           {MANUAL_CHECKLIST.map((m) => {
             const checked = !!manualState[m.id]?.done;
@@ -606,7 +778,7 @@ export default function PAAuditChecklist() {
                     <div className="text-xs mt-0.5" style={{ color: C.textMuted }}>{m.hint}</div>
                     {doneAt && (
                       <div className="text-[10px] mt-1" style={{ color: C.pass }}>
-                        ✓ Marqué fait le {new Date(doneAt).toLocaleString("fr-CA")}
+                        {t.markedDone} {new Date(doneAt).toLocaleString("fr-CA")}
                       </div>
                     )}
                   </div>
@@ -614,7 +786,7 @@ export default function PAAuditChecklist() {
                     <button onClick={() => setExpandedManual((s) => ({ ...s, [m.id]: !s[m.id] }))}
                             className="text-[11px] px-2 py-1 rounded-md shrink-0 hover:bg-white/5"
                             style={{ color: C.textSecondary, border: `1px solid ${C.border}` }}>
-                      📋 {showInstr ? "Masquer" : "Instructions"}
+                      📋 {showInstr ? t.hideInstructions : t.showInstructions}
                     </button>
                   )}
                 </div>
@@ -626,10 +798,10 @@ export default function PAAuditChecklist() {
                     ))}
                     <div className="flex gap-2 flex-wrap pt-1">
                       {m.copyText && (
-                        <button onClick={() => { navigator.clipboard.writeText(m.copyText!); toast.success("Copié"); }}
+                        <button onClick={() => { navigator.clipboard.writeText(m.copyText!); toast.success(t.copied); }}
                                 className="text-[11px] px-2 py-1 rounded-md flex items-center gap-1 hover:bg-white/5"
                                 style={{ color: C.info, border: `1px solid ${C.borderAccent}` }}>
-                          <Copy className="w-3 h-3" /> {m.copyLabel ?? "Copier"}
+                          <Copy className="w-3 h-3" /> {m.copyLabel ?? t.copyDefault}
                         </button>
                       )}
                       {m.link && (
@@ -664,9 +836,9 @@ function Kpi({ label, value, color, icon }: { label: string; value: number; colo
   );
 }
 
-function ScoreBadge({ pct, pass, total }: { pct: number; pass: number; total: number }) {
+function ScoreBadge({ pct, pass, total, labelPerfect, labelExcellent, labelAttention, labelAction }: { pct: number; pass: number; total: number; labelPerfect: string; labelExcellent: string; labelAttention: string; labelAction: string }) {
   const color = pct === 100 ? C.pass : pct >= 80 ? C.info : pct >= 60 ? C.warn : C.fail;
-  const label = pct === 100 ? "Parfait" : pct >= 80 ? "Excellent" : pct >= 60 ? "Attention" : "Action requise";
+  const label = pct === 100 ? labelPerfect : pct >= 80 ? labelExcellent : pct >= 60 ? labelAttention : labelAction;
   return (
     <div className="flex items-center gap-2">
       <div className="text-xs font-semibold tabular-nums" style={{ color }}>{pass}/{total}</div>

@@ -13,6 +13,7 @@ import { readAdminReportFilters, writeAdminReportFilters, type AdminPeriod } fro
 import { usePlanipretNsAutoSync } from "@/hooks/usePlanipretNsAutoSync";
 import NsSyncBar from "@/components/planipret/admin/NsSyncBar";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import AvaElevenLabsOverviewCard from "@/components/planipret/admin/ava/AvaElevenLabsOverviewCard";
 
 const ACCENT = "#2E9BDC";
 const SUCCESS = "#00D4AA";
@@ -100,7 +101,7 @@ const TooltipDark = ({ active, payload, label }: any) => {
   );
 };
 
-function ActivityDailyChart({ data }: { data: Array<{ day: string; appels: number; sms: number }> }) {
+function ActivityDailyChart({ data, t }: { data: Array<{ day: string; appels: number; sms: number }>; t: (k: string) => string }) {
   const max = Math.max(1, ...data.map((d) => Math.max(d.appels, d.sms)));
   const plot = { x: 34, y: 16, w: 492, h: 142 };
   const point = (value: number, index: number) => {
@@ -115,7 +116,7 @@ function ActivityDailyChart({ data }: { data: Array<{ day: string; appels: numbe
 
   return (
     <div className="h-full w-full">
-      <svg viewBox="0 0 560 210" className="h-[180px] w-full overflow-visible" role="img" aria-label="Activité journalière">
+      <svg viewBox="0 0 560 210" className="h-[180px] w-full overflow-visible" role="img" aria-label={t("overview.ariaActivity")}>
         {[0, 0.25, 0.5, 0.75, 1].map((n) => (
           <g key={n}>
             <line x1={plot.x} x2={plot.x + plot.w} y1={plot.y + plot.h * n} y2={plot.y + plot.h * n} stroke="rgba(74,127,165,0.18)" strokeDasharray="4 5" />
@@ -140,21 +141,21 @@ function ActivityDailyChart({ data }: { data: Array<{ day: string; appels: numbe
         })}
       </svg>
       <div className="mt-1 flex items-center justify-center gap-4 text-[11px]" style={{ color: "var(--pp-text-muted)" }}>
-        <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ background: ACCENT }} /> Appels</span>
-        <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ background: WARNING }} /> SMS</span>
+        <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ background: ACCENT }} /> {t("overview.legendCalls")}</span>
+        <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full" style={{ background: WARNING }} /> {t("overview.legendSms")}</span>
       </div>
     </div>
   );
 }
 
-function DistributionDonut({ data }: { data: Array<{ name: string; value: number; color: string }> }) {
+function DistributionDonut({ data, t }: { data: Array<{ name: string; value: number; color: string }>; t: (k: string) => string }) {
   const total = data.reduce((s, d) => s + d.value, 0) || 1;
   let offset = 25;
   const radius = 44;
   const circumference = 2 * Math.PI * radius;
   return (
     <div className="grid h-full grid-cols-[130px_1fr] items-center gap-3">
-      <svg viewBox="0 0 120 120" className="h-[130px] w-[130px] -rotate-90" role="img" aria-label="Distribution des appels">
+      <svg viewBox="0 0 120 120" className="h-[130px] w-[130px] -rotate-90" role="img" aria-label={t("overview.ariaDistribution")}>
         <circle cx="60" cy="60" r={radius} fill="none" stroke="rgba(74,127,165,0.16)" strokeWidth="18" />
         {data.map((d) => {
           const dash = (d.value / total) * circumference;
@@ -577,7 +578,7 @@ export default function PAOverview() {
               {seriesData.length === 0 || seriesData.every((d) => d.appels === 0 && d.sms === 0) ? (
                 <p style={{ fontSize: 12, color: "var(--pp-text-faint)" }} className="text-center py-20">{t("overview.noData")}</p>
               ) : (
-                <ActivityDailyChart data={seriesData} />
+                <ActivityDailyChart data={seriesData} t={t} />
               )}
             </div>
           </ChartCard>
@@ -588,7 +589,7 @@ export default function PAOverview() {
             {directionDist.every((d) => d.value === 0) ? (
               <p style={{ fontSize: 12, color: "var(--pp-text-faint)" }} className="text-center py-20">{t("overview.noData")}</p>
             ) : (
-              <DistributionDonut data={directionDist} />
+              <DistributionDonut data={directionDist} t={t} />
             )}
           </div>
         </ChartCard>
@@ -631,6 +632,9 @@ export default function PAOverview() {
           )}
         </ChartCard>
       </div>
+
+      {/* ElevenLabs AVA voice-agent stats */}
+      <AvaElevenLabsOverviewCard />
 
       {/* Recent activity + Brokers online */}
       <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">

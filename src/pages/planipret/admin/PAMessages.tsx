@@ -9,11 +9,69 @@ import { TableErrorState, TableEmptyState } from "@/components/planipret/admin/T
 import { getPlanipretBrokerDirectory } from "@/lib/planipret/adminDirectory";
 import { usePlanipretNsAutoSync } from "@/hooks/usePlanipretNsAutoSync";
 import NsSyncBar from "@/components/planipret/admin/NsSyncBar";
+import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 
 const ACCENT = "#2E9BDC";
 const SUCCESS = "#00D4AA";
 
+const DICT = {
+  fr: {
+    allBrokers: "Tous courtiers",
+    allDirections: "Toutes directions",
+    received: "Reçu",
+    sent: "Envoyé",
+    allStatuses: "Tous statuts",
+    delivered: "Livré",
+    failed: "Échoué",
+    pending: "En attente",
+    reset: (n: number) => `✕ Réinitialiser (${n})`,
+    broker: "Courtier",
+    dir: "Dir.",
+    from: "De",
+    to: "Vers",
+    preview: "Aperçu",
+    date: "Date",
+    noMessagesFound: "Aucun message trouvé",
+    hintWiden: "Essayez d'élargir vos critères de recherche.",
+    hintNoSync: "Aucun message synchronisé. Synchronisation NS-API automatique. Vérifiez que le webhook NS-API est configuré dans Intégrations.",
+    resetFilters: "Réinitialiser les filtres",
+    goToIntegrations: "Aller aux intégrations →",
+    conversation: (peer: string) => `Conversation · ${peer}`,
+    syncing: "Synchronisation NS-API messages/appels…",
+    syncSuccess: (n: number) => `${n} extensions synchronisées · messages en arrière-plan`,
+    syncFailed: (msg: string) => `Échec: ${msg}`,
+  },
+  en: {
+    allBrokers: "All brokers",
+    allDirections: "All directions",
+    received: "Received",
+    sent: "Sent",
+    allStatuses: "All statuses",
+    delivered: "Delivered",
+    failed: "Failed",
+    pending: "Pending",
+    reset: (n: number) => `✕ Reset (${n})`,
+    broker: "Broker",
+    dir: "Dir.",
+    from: "From",
+    to: "To",
+    preview: "Preview",
+    date: "Date",
+    noMessagesFound: "No messages found",
+    hintWiden: "Try broadening your search criteria.",
+    hintNoSync: "No message synced yet. Automatic NS-API sync. Check that the NS-API webhook is configured in Integrations.",
+    resetFilters: "Reset filters",
+    goToIntegrations: "Go to integrations →",
+    conversation: (peer: string) => `Conversation · ${peer}`,
+    syncing: "Syncing NS-API messages/calls…",
+    syncSuccess: (n: number) => `${n} extensions synced · messages in background`,
+    syncFailed: (msg: string) => `Failed: ${msg}`,
+  },
+};
+
 export default function PAMessages() {
+  const { lang } = useMplanipretLang();
+  const t = DICT[lang];
   const [params, setParams] = useSearchParams();
   const page = Math.max(1, parseInt(params.get("page") ?? "1", 10) || 1);
   const pageSizeRaw = parseInt(params.get("pageSize") ?? params.get("ps") ?? "25", 10);
@@ -114,13 +172,13 @@ export default function PAMessages() {
 
   const syncAll = async () => {
     setSyncing(true);
-    const id = toast.loading("Synchronisation NS-API messages/appels…");
+    const id = toast.loading(t.syncing);
     try {
       const { data, error } = await supabase.functions.invoke("pp-admin-ns-sync", { body: {} });
       if (error) throw error;
-      toast.success(`${(data as any)?.extensions ?? (data as any)?.users_total ?? 0} extensions synchronisées · messages en arrière-plan`, { id });
+      toast.success(t.syncSuccess((data as any)?.extensions ?? (data as any)?.users_total ?? 0), { id });
       await load(1, pageSize);
-    } catch (e: any) { toast.error(`Échec: ${e.message ?? e}`, { id }); }
+    } catch (e: any) { toast.error(t.syncFailed(e.message ?? e), { id }); }
     finally { setSyncing(false); }
   };
 
@@ -136,27 +194,27 @@ export default function PAMessages() {
 
       <div className="pp-card p-4 flex flex-wrap items-end gap-2">
         <select value={broker} onChange={(e) => setFilterValue("broker", e.target.value)} className="px-3 py-1.5 rounded-lg text-sm" style={inputStyle}>
-          <option value="">Tous courtiers</option>
+          <option value="">{t.allBrokers}</option>
           {brokers.map((b: any) => (
             <option key={b.user_id} value={b.ns_only ? `ext:${b.extension}` : `user:${b.user_id}`}>{b.full_name}{b.extension ? ` · ${b.extension}` : ""}</option>
           ))}
         </select>
         <select value={direction} onChange={(e) => setFilterValue("direction", e.target.value)} className="px-3 py-1.5 rounded-lg text-sm" style={inputStyle}>
-          <option value="">Toutes directions</option>
-          <option value="inbound">Reçu</option>
-          <option value="outbound">Envoyé</option>
+          <option value="">{t.allDirections}</option>
+          <option value="inbound">{t.received}</option>
+          <option value="outbound">{t.sent}</option>
         </select>
         <select value={status} onChange={(e) => setFilterValue("status", e.target.value)} className="px-3 py-1.5 rounded-lg text-sm" style={inputStyle}>
-          <option value="">Tous statuts</option>
-          <option value="delivered">Livré</option>
-          <option value="failed">Échoué</option>
-          <option value="pending">En attente</option>
+          <option value="">{t.allStatuses}</option>
+          <option value="delivered">{t.delivered}</option>
+          <option value="failed">{t.failed}</option>
+          <option value="pending">{t.pending}</option>
         </select>
         <input type="date" value={from} onChange={(e) => setFilterValue("from", e.target.value)} className="px-3 py-1.5 rounded-lg text-sm" style={inputStyle} />
         <input type="date" value={to} onChange={(e) => setFilterValue("to", e.target.value)} className="px-3 py-1.5 rounded-lg text-sm" style={inputStyle} />
         {hasFilters && (
           <button onClick={resetFilters} className="ml-auto px-2 py-1.5 text-xs underline" style={{ color: "var(--pp-text-muted)" }}>
-            ✕ Réinitialiser ({activeFilterCount})
+            {t.reset(activeFilterCount)}
           </button>
         )}
       </div>
@@ -168,7 +226,7 @@ export default function PAMessages() {
         <table className="w-full text-sm">
           <thead style={{ background: "var(--pp-bg-elevated)" }}>
             <tr style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--pp-text-faint)" }} className="text-left">
-              <th className="p-3">Courtier</th><th>Dir.</th><th>De</th><th>Vers</th><th>Aperçu</th><th>Date</th>
+              <th className="p-3">{t.broker}</th><th>{t.dir}</th><th>{t.from}</th><th>{t.to}</th><th>{t.preview}</th><th>{t.date}</th>
             </tr>
           </thead>
           <tbody>
@@ -184,15 +242,15 @@ export default function PAMessages() {
               <tr><td colSpan={6}>
                 <TableEmptyState
                   icon="💬"
-                  title="Aucun message trouvé"
+                  title={t.noMessagesFound}
                   hint={hasFilters
-                    ? "Essayez d'élargir vos critères de recherche."
-                    : "Aucun message synchronisé. Synchronisation NS-API automatique. Vérifiez que le webhook NS-API est configuré dans Intégrations."}
+                    ? t.hintWiden
+                    : t.hintNoSync}
                   action={hasFilters ? (
-                    <button onClick={resetFilters} className="px-3 py-1.5 rounded-lg text-xs font-medium text-white" style={{ background: ACCENT }}>Réinitialiser les filtres</button>
+                    <button onClick={resetFilters} className="px-3 py-1.5 rounded-lg text-xs font-medium text-white" style={{ background: ACCENT }}>{t.resetFilters}</button>
                   ) : (
                     <Link to="/planipret/admin/integrations" className="px-3 py-1.5 rounded-lg text-xs font-medium" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}>
-                      Aller aux intégrations →
+                      {t.goToIntegrations}
                     </Link>
                   )}
                 />
@@ -228,7 +286,7 @@ export default function PAMessages() {
         <div className="fixed inset-0 z-50 bg-black/60 flex justify-end" onClick={() => setThread(null)}>
           <div className="h-full w-full max-w-md overflow-y-auto p-5" style={{ background: "var(--pp-bg-surface)", borderLeft: "1px solid var(--pp-bg-border-2)" }} onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-4">
-              <h3 style={{ fontWeight: 600, color: "var(--pp-text-primary)" }}>Conversation · {threadKey}</h3>
+              <h3 style={{ fontWeight: 600, color: "var(--pp-text-primary)" }}>{t.conversation(threadKey ?? "")}</h3>
               <button onClick={() => setThread(null)}><X className="w-4 h-4" style={{ color: "var(--pp-text-muted)" }} /></button>
             </div>
             <div className="space-y-2">
