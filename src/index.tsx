@@ -57,7 +57,18 @@ if (typeof document !== 'undefined') {
   });
 }
 
+async function hideSplashSoon() {
+  try {
+    const { SplashScreen } = await import('@capacitor/splash-screen');
+    await SplashScreen.hide({ fadeOutDuration: 200 });
+  } catch {}
+}
+
 async function bootstrap() {
+  console.log('[PP] bootstrap:start', { native: Capacitor.isNativePlatform(), proto: window.location.protocol });
+  // Hide splash immediately so a render error can never leave the user staring
+  // at the launch image with no signal.
+  void hideSplashSoon();
   try {
     const container = document.getElementById('root');
     if (!container) throw new Error('Root element not found');
@@ -68,6 +79,7 @@ async function bootstrap() {
         <App />
       </BrowserRouter>
     );
+
 
     // iOS Capacitor is crashing inside React 18's createRoot event bootstrap
     // before the first commit (vendor-react line in Xcode). Native shells do
