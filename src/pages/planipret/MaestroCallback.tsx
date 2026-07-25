@@ -13,6 +13,13 @@ import { supabase } from "@/integrations/supabase/client";
 import { Loader2 } from "lucide-react";
 import { logDeepLink } from "@/lib/deepLinkDebug";
 
+// Module-level dedupe: the OS may deliver the same deep link via BOTH
+// getLaunchUrl() (cold start) and appUrlOpen, which remounts this route
+// and would otherwise consume the same authorization code twice — Maestro
+// then returns invalid_grant on the second call.
+const inflightCodes = new Set<string>();
+const completedCodes = new Set<string>();
+
 export default function MaestroCallback() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
@@ -33,34 +40,35 @@ export default function MaestroCallback() {
       detail: `code=${code ? code.slice(0, 8) + "…" : "null"} state=${state ?? "null"} error=${error ?? "none"}`,
     });
 
-    // Close the SFSafariViewController if on native
     if (Capacitor.isNativePlatform()) {
       Browser.close().catch(() => {});
     }
 
-    // Debug test callback: don't hit the backend, just log & return.
     if (code === "TEST_DEBUG") {
-      logDeepLink({ kind: "handler", source: "MaestroCallback", detail: "TEST_DEBUG shortcut — no backend call" });
       toast.success("Deep link Maestro reçu (test)");
       navigate("/mplanipret/deep-link-debug", { replace: true });
       return;
     }
 
     if (error) {
-      logDeepLink({ kind: "error", source: "MaestroCallback", detail: error });
       toast.error(`Maestro: ${error}`);
       navigate("/mplanipret/more", { replace: true });
       return;
     }
 
     if (!code) {
-      logDeepLink({ kind: "error", source: "MaestroCallback", detail: "code manquant" });
-      toast.error("Maestro: code manquant");
-      navigate("/mplanipret/more", { replace: true });
+      // App resumed on a stale callback URL — silently return home.
+      navigate("/mplanipret/home", { replace: true });
       return;
     }
 
-    // Exchange the code
+    if (completedCodes.has(code) || inflightCodes.has(code)) {
+      logDeepLink({ kind: "handler", source: "MaestroCallback", detail: "duplicate deep link — skipping exchange" });
+      navigate("/mplanipret/more", { replace: true });
+      return;
+    }
+    inflightCodes.add(code);
+
     (async () => {
       try {
         const redirectUri = Capacitor.isNativePlatform()
@@ -74,12 +82,14 @@ export default function MaestroCallback() {
         if (fnErr) throw fnErr;
         if (!(data as any)?.success) throw new Error((data as any)?.error || "token_exchange_failed");
 
+        completedCodes.add(code);
         logDeepLink({ kind: "handler", source: "MaestroCallback", detail: "token exchange OK" });
         toast.success("Maestro connecté avec succès !");
       } catch (e: any) {
         logDeepLink({ kind: "error", source: "MaestroCallback", detail: e?.message || "exchange failed" });
         toast.error(`Maestro: ${e?.message || "Erreur de connexion"}`);
       } finally {
+        inflightCodes.delete(code);
         navigate("/mplanipret/more", { replace: true });
       }
     })();

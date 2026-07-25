@@ -104,8 +104,7 @@ export default function Ms365Callback() {
         await clearMicrosoftSignInIntentAsync();
         try { void import("@/lib/native/requestPermissionsAfterLogin").then(m => m.requestPermissionsAfterLogin()); } catch {}
         setStatus("ok");
-        try { window.history.replaceState(null, "", next); } catch {}
-        setTimeout(() => navigate(next, { replace: true }), 700);
+        navigate(next, { replace: true });
         return;
       }
       const session = await getSessionWithRetry();
@@ -124,8 +123,7 @@ export default function Ms365Callback() {
       }).catch((err) => console.warn("ms365 webhook setup skipped", err?.message ?? err));
       try { void supabase.functions.invoke("ms365-full-import", { body: { mode: "initial" } }).catch(() => {}); } catch {}
       setStatus("ok");
-      try { window.history.replaceState(null, "", "/mplanipret/home?ms365=ok"); } catch {}
-      setTimeout(() => navigate("/mplanipret/home?ms365=ok", { replace: true }), 1200);
+      navigate("/mplanipret/home?ms365=ok", { replace: true });
     })().catch((e) => {
       console.error("ms365 callback crashed", e);
       setStatus("error");
