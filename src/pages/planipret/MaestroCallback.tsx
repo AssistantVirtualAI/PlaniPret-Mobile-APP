@@ -143,13 +143,18 @@ export default function MaestroCallback() {
         try { window.dispatchEvent(new CustomEvent("maestro:connected")); } catch {}
         setMessage("Maestro connecté ! Retour à l'accueil…");
         toast.success("Maestro connecté avec succès !");
+        // Navigate immediately — don't wait for the finally block.
+        // This prevents the spinner from staying visible after success.
+        goBackToApp(200);
       } catch (e: any) {
         logDeepLink({ kind: "error", source: "MaestroCallback", detail: e?.message || "exchange failed" });
         setMessage(`Connexion interrompue : ${e?.message || "erreur"}. Retour à l'accueil…`);
         toast.error(`Maestro: ${e?.message || "Erreur de connexion"}`);
       } finally {
         inflightCodes.delete(code);
-        goBackToApp(900);
+        // goBackToApp is a no-op if already called in the try block (navigated.current guard).
+        // For errors, navigate after 1.5s so the user can read the error message.
+        goBackToApp(1500);
       }
     };
 

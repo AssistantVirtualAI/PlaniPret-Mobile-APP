@@ -171,6 +171,45 @@ Deno.serve(async (req) => {
         ns_linked_at: new Date().toISOString(),
       }).eq("id", broker.id ?? broker.user_id);
 
+      // After provisioning, automatically configure the NetSapiens answering rule
+      // so the {ext}_mobile device is in the simultaneous-ring list.
+      // This is the critical step that makes incoming calls ring on the app.
+      let answeringRuleResult: any = null;
+      try {
+        const rulesPath = `${NS_API_BASE_URL}/domains/${encodeURIComponent(domain)}/users/${encodeURIComponent(ext)}/answering_rules`;
+        const rulesRes = await fetch(rulesPath, { headers: nsHeaders });
+        const rulesData = rulesRes.ok ? await rulesRes.json().catch(() => []) : [];
+        const rules: any[] = Array.isArray(rulesData) ? rulesData : [];
+        const defaultRule = rules.find((r: any) =>
+          String(r?.["time-frame"] ?? r?.timeframe ?? "").toLowerCase() === "default" ||
+          r?.active === true || r?.active === "yes"
+        ) ?? rules[0] ?? null;
+        const rulePayload = {
+          "time-frame": "Default",
+          "active": "yes",
+          "ring-type": "simultaneous",
+          "ring-timeout": 25,
+          "cfwd-type": "voicemail",
+          "cfwd-no-answer-type": "voicemail",
+          "cfwd-no-answer-timeout": 25,
+          "simultaneous-ring": [{ "device": mobileId, "enabled": "yes" }],
+        };
+        if (defaultRule) {
+          const ruleId = defaultRule?.["answering-rule-id"] ?? defaultRule?.id ?? "Default";
+          const r = await fetch(`${rulesPath}/${encodeURIComponent(String(ruleId))}`, {
+            method: "PUT", headers: nsHeaders, body: JSON.stringify(rulePayload),
+          });
+          answeringRuleResult = { action: "updated", rule_id: ruleId, ok: r.ok, status: r.status };
+        } else {
+          const r = await fetch(rulesPath, {
+            method: "POST", headers: nsHeaders, body: JSON.stringify(rulePayload),
+          });
+          answeringRuleResult = { action: "created", ok: r.ok, status: r.status };
+        }
+      } catch (e: any) {
+        answeringRuleResult = { error: e?.message ?? "answering_rule_sync_failed" };
+      }
+
       return {
         broker_id: broker.id ?? broker.user_id,
         broker_name: broker.full_name,
@@ -179,6 +218,7 @@ Deno.serve(async (req) => {
         db_error: uErr?.message,
         ns_user: nsUser, mobile, widget,
         sip_credentials: { mobile_device_id: mobileId, widget_device_id: widgetId, password: sipPassword },
+        answering_rule: answeringRuleResult,
       };
     };
 

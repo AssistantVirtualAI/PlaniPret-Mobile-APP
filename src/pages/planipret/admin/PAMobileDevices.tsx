@@ -80,6 +80,9 @@ const DICT = {
     toastSyncDevicesError: "Sync appareils échouée",
     toastProvisionDevicesError: "Provisionnement appareils échoué",
     toastSyncDone: (succeeded: number, total: number) => `Sync terminée: ${succeeded}/${total} provisionnés`,
+    syncAnsweringRules: "Sync règles sonnerie",
+    toastSyncRulesSuccess: (ok: number, total: number) => `✅ Règles sonnerie: ${ok}/${total} configurées`,
+    toastSyncRulesError: "Échec sync règles sonnerie",
     triggering: "Déclenchement…",
     testCallError: "Appel test échoué",
     testCallFailed: (status?: string) => `Échec (${status ?? ""})`,
@@ -152,6 +155,9 @@ const DICT = {
     toastSyncDevicesError: "Device sync failed",
     toastProvisionDevicesError: "Device provisioning failed",
     toastSyncDone: (succeeded: number, total: number) => `Sync complete: ${succeeded}/${total} provisioned`,
+    syncAnsweringRules: "Sync ring rules",
+    toastSyncRulesSuccess: (ok: number, total: number) => `✅ Ring rules: ${ok}/${total} configured`,
+    toastSyncRulesError: "Ring rules sync failed",
     triggering: "Triggering…",
     testCallError: "Test call failed",
     testCallFailed: (status?: string) => `Failed (${status ?? ""})`,
@@ -215,6 +221,7 @@ export default function PAMobileDevices() {
   const [answeredBy, setAnsweredBy] = useState<string | null>(null);
   const [backfilling, setBackfilling] = useState(false);
   const [syncingDevices, setSyncingDevices] = useState(false);
+  const [syncingRules, setSyncingRules] = useState(false);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
 
@@ -288,6 +295,17 @@ export default function PAMobileDevices() {
       return;
     }
     toast.success(t.toastSyncDone((provision.data as any)?.succeeded ?? 0, (provision.data as any)?.total ?? 0));
+    refresh();
+  }, [refresh, t]);
+
+  const syncAnsweringRules = useCallback(async () => {
+    setSyncingRules(true);
+    const { data, error } = await supabase.functions.invoke("pp-sync-answering-rules", { body: { bulk: true } });
+    setSyncingRules(false);
+    if (error) { toast.error(t.toastSyncRulesError, { description: error.message }); return; }
+    const ok = (data as any)?.succeeded ?? 0;
+    const total = (data as any)?.total ?? 0;
+    toast.success(t.toastSyncRulesSuccess(ok, total));
     refresh();
   }, [refresh, t]);
 
@@ -367,6 +385,9 @@ export default function PAMobileDevices() {
           </button>
           <button onClick={backfill} disabled={backfilling} className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)", opacity: backfilling ? 0.65 : 1 }}>
             {backfilling ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />} {t.missingBtn}
+          </button>
+          <button onClick={syncAnsweringRules} disabled={syncingRules} className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium" style={{ background: "#0D2540", border: "1px solid #2E9BDC44", color: "#2E9BDC", opacity: syncingRules ? 0.65 : 1 }}>
+            {syncingRules ? <Loader2 className="h-4 w-4 animate-spin" /> : <PhoneCall className="h-4 w-4" />} {t.syncAnsweringRules}
           </button>
           <button onClick={provisionAppReview} className="rounded-lg px-3 py-2 text-sm font-medium" style={{ background: ACCENT, color: "#fff" }}>
             {t.appReviewUser}
