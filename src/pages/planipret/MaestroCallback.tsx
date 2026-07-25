@@ -19,6 +19,16 @@ import { logDeepLink } from "@/lib/deepLinkDebug";
 // then returns invalid_grant on the second call.
 const inflightCodes = new Set<string>();
 const completedCodes = new Set<string>();
+// Module-level guard so remounts of this route (e.g. iOS re-firing appUrlOpen
+// after Browser.close) never re-navigate — otherwise navigate({replace:true})
+// spams history.replaceState and WKWebView throws
+// "Attempt to use history.replaceState() more than 100 times per 10 seconds".
+let navigatedAway = false;
+function goHomeOnce(navigate: (p: string, o?: { replace?: boolean }) => void) {
+  if (navigatedAway) return;
+  navigatedAway = true;
+  navigate("/mplanipret/more", { replace: true });
+}
 
 export default function MaestroCallback() {
   const [searchParams] = useSearchParams();
@@ -52,19 +62,19 @@ export default function MaestroCallback() {
 
     if (error) {
       toast.error(`Maestro: ${error}`);
-      navigate("/mplanipret/more", { replace: true });
+      goHomeOnce(navigate);
       return;
     }
 
     if (!code) {
       // App resumed on a stale callback URL — silently return home.
-      navigate("/mplanipret/home", { replace: true });
+      goHomeOnce(navigate);
       return;
     }
 
     if (completedCodes.has(code) || inflightCodes.has(code)) {
       logDeepLink({ kind: "handler", source: "MaestroCallback", detail: "duplicate deep link — skipping exchange" });
-      navigate("/mplanipret/more", { replace: true });
+      goHomeOnce(navigate);
       return;
     }
     inflightCodes.add(code);
@@ -84,13 +94,14 @@ export default function MaestroCallback() {
 
         completedCodes.add(code);
         logDeepLink({ kind: "handler", source: "MaestroCallback", detail: "token exchange OK" });
+        try { window.dispatchEvent(new CustomEvent("maestro:connected")); } catch {}
         toast.success("Maestro connecté avec succès !");
       } catch (e: any) {
         logDeepLink({ kind: "error", source: "MaestroCallback", detail: e?.message || "exchange failed" });
         toast.error(`Maestro: ${e?.message || "Erreur de connexion"}`);
       } finally {
         inflightCodes.delete(code);
-        navigate("/mplanipret/more", { replace: true });
+        goHomeOnce(navigate);
       }
     })();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps

@@ -20,6 +20,15 @@ import { callQualitySampler, type CallQualitySnapshot } from "@/lib/planipret/au
 import { getAudioConstraints, type NCMode } from "@/lib/planipret/audio/audioConstraints";
 import { ensureMicPermission, type MicPermissionState } from "@/lib/planipret/audio/micPermission";
 import {
+  getPlanipretSipKeepAliveStatus,
+  onPlanipretNativeReregister,
+  onPlanipretSipKeepAliveStatus,
+  requestPlanipretBatteryOptimizationExemption,
+  startPlanipretSipKeepAlive,
+  triggerPlanipretNativeReregister,
+  type PpNativeSipStatus,
+} from "@/lib/planipret/sip/nativePpSipService";
+import {
   upsertRingingSession,
   claimCall,
   endSession,
@@ -96,6 +105,7 @@ export function useMplanipretSoftphone() {
   const [brokerId, setBrokerId] = useState<string | null>(null);
   const [answeredElsewhere, setAnsweredElsewhere] = useState<AnsweredBy | null>(null);
   const [restCall, setRestCall] = useState<RestCallAttachment | null>(null);
+  const [nativeStatus, setNativeStatus] = useState<PpNativeSipStatus | null>(null);
   const seenCallIds = useRef<Set<string>>(new Set());
 
   // Subscribe to the SIP snapshot.
@@ -153,7 +163,7 @@ export function useMplanipretSoftphone() {
           console.error("[softphone] invalid SIP WSS URL", { wssUrl, device_id: d.device_id });
           return;
         }
-        await ppSipProvider.init({
+        const sipConfig = {
           extension: String(d.sip_extension),
           sipUsername: String(d.sip_username || d.sip_extension),
           sipDomain: String(d.sip_domain),
@@ -162,7 +172,9 @@ export function useMplanipretSoftphone() {
           wssUrls,
           password: String(d.sip_password),
           displayName: String(d.display_name || d.sip_display_name || d.sip_extension),
-        });
+        };
+        void startPlanipretSipKeepAlive(sipConfig).then((s) => { if (s && !cancelled) setNativeStatus(s); });
+        await ppSipProvider.init(sipConfig);
         // Broadcast our registered device id so any UI can highlight it.
         try {
           window.dispatchEvent(new CustomEvent("pp:sip-registered", {
@@ -182,6 +194,34 @@ export function useMplanipretSoftphone() {
       cancelled = true;
       window.removeEventListener("pp:sip-ready", onReady as any);
       window.removeEventListener("pp:sip-force-reregister", onForce as any);
+    };
+  }, [user?.id]);
+
+  // Native guard: Android keeps a foreground keep-alive service with WakeLock / WifiLock;
+  // iOS receives native background refresh requests and re-registers as soon as execution resumes.
+  useEffect(() => {
+    if (!user) return;
+    let cleanupStatus: (() => void) | undefined;
+    let cleanupReregister: (() => void) | undefined;
+    let cancelled = false;
+    onPlanipretSipKeepAliveStatus((s) => { if (!cancelled) setNativeStatus(s); })
+      .then((fn) => { cleanupStatus = fn; })
+      .catch(() => undefined);
+    onPlanipretNativeReregister(() => {
+      try { ppSipProvider.forceReregister(); } catch {}
+      try { window.dispatchEvent(new CustomEvent("pp:sip-force-reregister")); } catch {}
+    }).then((fn) => { cleanupReregister = fn; }).catch(() => undefined);
+
+    const poll = window.setInterval(() => {
+      getPlanipretSipKeepAliveStatus().then((s) => { if (s && !cancelled) setNativeStatus(s); }).catch(() => undefined);
+    }, 15_000);
+    void getPlanipretSipKeepAliveStatus().then((s) => { if (s && !cancelled) setNativeStatus(s); });
+    void requestPlanipretBatteryOptimizationExemption();
+    return () => {
+      cancelled = true;
+      window.clearInterval(poll);
+      cleanupStatus?.();
+      cleanupReregister?.();
     };
   }, [user?.id]);
 
@@ -240,8 +280,12 @@ export function useMplanipretSoftphone() {
         if (AppPlugin?.addListener) {
           const p = AppPlugin.addListener("appStateChange", (state: { isActive: boolean }) => {
             if (state?.isActive) {
+              void triggerPlanipretNativeReregister();
               try { ppSipProvider.forceReregister(); } catch {}
               evaluate();
+            } else {
+              const cfg = ppSipProvider.getConfig();
+              if (cfg) void startPlanipretSipKeepAlive(cfg).then((s) => { if (s) setNativeStatus(s); });
             }
           });
           // addListener may return a Promise<PluginListenerHandle> or the handle directly.
@@ -456,6 +500,7 @@ export function useMplanipretSoftphone() {
     loading,
     net,
     quality,
+    nativeStatus,
     sipConnected,
     placeCall,
     answeredElsewhere,
@@ -473,6 +518,6 @@ export function useMplanipretSoftphone() {
     transfer: (t: string) => restCall?.id ? void restControl("transfer", { destination: t, target: t }) : ppSipProvider.transfer(t),
     setAudioEl: (el: HTMLAudioElement | null) => { ppSipProvider.audioEl = el; },
     forceHandover: () => handoverController.forceHandover(),
-  }), [effectiveSnap, loading, net, quality, sipConnected, placeCall, answer, hangup, answeredElsewhere, attachRestCall, restCall?.id, restControl]);
+  }), [effectiveSnap, loading, net, quality, nativeStatus, sipConnected, placeCall, answer, hangup, answeredElsewhere, attachRestCall, restCall?.id, restControl]);
 
 }

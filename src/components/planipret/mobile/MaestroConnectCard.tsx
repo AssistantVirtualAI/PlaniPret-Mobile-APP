@@ -63,6 +63,21 @@ export default function MaestroConnectCard() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Refresh whenever the OAuth callback finishes, the app resumes from the
+  // in-app browser, or the tab becomes visible again.
+  useEffect(() => {
+    const onConnected = () => load();
+    const onVisible = () => { if (document.visibilityState === "visible") load(); };
+    window.addEventListener("maestro:connected", onConnected);
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onConnected);
+    return () => {
+      window.removeEventListener("maestro:connected", onConnected);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onConnected);
+    };
+  }, [load]);
+
   const startAuth = async () => {
     setBusy(true);
     try {
