@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- PushKit VoIP — required for PKPushRegistry and background call wakeup -->
+	<key>com.apple.developer.pushkit.unrestricted-voip</key>
+	<true/>
+	<!-- APNs environment — use "development" for debug builds, "production" for App Store -->
+	<key>aps-environment</key>
+	<string>development</string>
+</dict>
+</plist>

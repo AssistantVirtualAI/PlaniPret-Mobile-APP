@@ -4,8 +4,16 @@ import UIKit
 import AVFoundation
 import CryptoKit
 import UserNotifications
+import PushKit
 
 // Planiprêt-only. DO NOT reuse in Lemtel (Verto stack).
+//
+// RFC 8599 — SIP Push Notification:
+// When a VoIP push token is available (via PpVoipCall / PKPushRegistry),
+// we embed pn-provider / pn-prid / pn-param in the SIP REGISTER Contact
+// header so NetSapiens can wake the app via APNs instead of relying on
+// a persistent WebSocket connection (which iOS kills in background).
+//
 @objc(PpSipKeepAlive)
 public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDelegate {
     public let identifier = "PpSipKeepAlive"; public let jsName = "PpSipKeepAlive"
@@ -15,6 +23,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       CAPPluginMethod(name: "getSipServiceStatus", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "triggerReregister", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "acknowledgeIncoming", returnType: CAPPluginReturnPromise),
+      CAPPluginMethod(name: "setVoipPushToken", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "addListener", returnType: CAPPluginReturnCallback),
       CAPPluginMethod(name: "removeAllListeners", returnType: CAPPluginReturnPromise)
     ]
@@ -28,23 +37,53 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private let callIdReg = UUID().uuidString + "@planipret-ios"
     private let fromTag = String(Int(Date().timeIntervalSince1970 * 1000), radix: 16)
 
+    // RFC 8599 push token — set by PpVoipCall or JS via setVoipPushToken
+    private var voipPushToken: String = ""
+    private var voipBundleId: String = ""
+
     public override func load() {
       NotificationCenter.default.addObserver(self, selector: #selector(onBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
       NotificationCenter.default.addObserver(self, selector: #selector(onForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
+      // Listen for VoIP token updates from PpVoipCall plugin
+      NotificationCenter.default.addObserver(self, selector: #selector(onVoipToken(_:)), name: NSNotification.Name("PpVoipPushToken"), object: nil)
       // Ask for notification permission so the incoming-call banner can ring.
       UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
     }
     deinit { NotificationCenter.default.removeObserver(self); timer?.invalidate(); socket?.cancel(with: .goingAway, reason: nil) }
 
+    @objc private func onVoipToken(_ notification: Notification) {
+      if let token = notification.userInfo?["token"] as? String, !token.isEmpty {
+        voipPushToken = token
+        voipBundleId = notification.userInfo?["bundleId"] as? String ?? Bundle.main.bundleIdentifier ?? ""
+        // Re-register with push params now that we have the token
+        if !login.isEmpty { sendRegister(challenge: nil) }
+      }
+    }
+
     @objc func startSipService(_ call: CAPPluginCall) {
       host = call.getString("host") ?? call.getString("domain") ?? ""; port = call.getInt("port") ?? 443; path = call.getString("path") ?? "/"
       login = call.getString("login") ?? call.getString("username") ?? call.getString("extension") ?? ""
       domain = call.getString("domain") ?? ""; displayName = call.getString("displayName") ?? login; password = call.getString("password") ?? ""
+      // Accept optional push token at start time
+      if let tok = call.getString("voipPushToken"), !tok.isEmpty { voipPushToken = tok }
+      if let bid = call.getString("bundleId"), !bid.isEmpty { voipBundleId = bid }
+      if voipBundleId.isEmpty { voipBundleId = Bundle.main.bundleIdentifier ?? "" }
       activateAudioSession(); connect(); scheduleRegister(); call.resolve(snapshot(ok: true))
     }
+
     @objc func stopSipService(_ call: CAPPluginCall) { timer?.invalidate(); socket?.cancel(with: .goingAway, reason: nil); socket = nil; endBackgroundTask(); setStatus("disconnected", "stopped"); call.resolve(snapshot(ok: true)) }
     @objc func getSipServiceStatus(_ call: CAPPluginCall) { call.resolve(snapshot(ok: true)) }
     @objc func triggerReregister(_ call: CAPPluginCall) { sendRegister(challenge: nil); notifyListeners("sipReregisterRequested", data: ["reason": "manual"]); call.resolve(snapshot(ok: true)) }
+
+    /// Allow JS to push the VoIP token into this plugin (called from useMplanipretSoftphone)
+    @objc func setVoipPushToken(_ call: CAPPluginCall) {
+      if let tok = call.getString("token"), !tok.isEmpty { voipPushToken = tok }
+      if let bid = call.getString("bundleId"), !bid.isEmpty { voipBundleId = bid }
+      if voipBundleId.isEmpty { voipBundleId = Bundle.main.bundleIdentifier ?? "" }
+      if !login.isEmpty { sendRegister(challenge: nil) }
+      call.resolve(["ok": true, "tokenSet": !voipPushToken.isEmpty])
+    }
+
     @objc func acknowledgeIncoming(_ call: CAPPluginCall) {
       UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["pp_incoming_call"])
       call.resolve(["ok": true])
@@ -117,12 +156,38 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
     }
 
+    // MARK: - SIP REGISTER with RFC 8599 push params
+
+    private func buildContactHeader() -> String {
+      // Unique instance ID per registration (required by RFC 8599 / outbound)
+      let instanceId = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+      var contact = "<sip:" + login + "@" + instanceId + ".invalid;transport=wss"
+
+      // RFC 8599 — embed push notification parameters so NetSapiens can
+      // wake the app via APNs VoIP push when the WebSocket is not connected.
+      if !voipPushToken.isEmpty {
+        let bundleId = voipBundleId.isEmpty ? (Bundle.main.bundleIdentifier ?? "com.planipret.mobile") : voipBundleId
+        // pn-provider: "apns.voip" for VoIP push (PushKit), "apns" for regular APNs
+        contact += ";pn-provider=apns.voip"
+        // pn-prid: the device push token
+        contact += ";pn-prid=" + voipPushToken
+        // pn-param: bundle ID (NetSapiens uses this to identify the APNs certificate)
+        contact += ";pn-param=" + bundleId
+        NSLog("[PpSipKeepAlive] REGISTER with RFC 8599 push params (token: \(voipPushToken.prefix(8))...)")
+      } else {
+        NSLog("[PpSipKeepAlive] REGISTER without push params (no VoIP token yet)")
+      }
+
+      contact += ">"
+      return contact
+    }
+
     private func sendRegister(challenge: String?) {
       if socket == nil { connect(); return }
       guard !login.isEmpty, !domain.isEmpty else { setStatus("error", "missing_credentials"); return }
       let seq = cseq; cseq += 1
       let branch = "z9hG4bK" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
-      let contact = "<sip:" + login + "@" + UUID().uuidString.replacingOccurrences(of: "-", with: "") + ".invalid;transport=wss>"
+      let contact = buildContactHeader()
       var sip = "REGISTER sip:" + domain + " SIP/2.0\r\n"
       sip += "Via: SIP/2.0/WSS planipret-ios.invalid;branch=" + branch + "\r\nMax-Forwards: 70\r\n"
       sip += "To: <sip:" + login + "@" + domain + ">\r\nFrom: \"" + displayName.replacingOccurrences(of: "\"", with: "") + "\" <sip:" + login + "@" + domain + ">;tag=" + fromTag + "\r\n"
@@ -141,5 +206,5 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private func beginBackgroundTask() { if bgTask != .invalid { return }; bgTask = UIApplication.shared.beginBackgroundTask(withName: "PlanipretSIPKeepAlive") { [weak self] in self?.endBackgroundTask(); self?.setStatus("protected", "background_task_expired") }; DispatchQueue.main.asyncAfter(deadline: .now() + 25) { [weak self] in self?.sendRegister(challenge: nil); self?.endBackgroundTask() } }
     private func endBackgroundTask() { if bgTask != .invalid { UIApplication.shared.endBackgroundTask(bgTask); bgTask = .invalid } }
     private func setStatus(_ next: String, _ nextReason: String) { status = next; reason = nextReason; updatedAt = Date().timeIntervalSince1970 * 1000; DispatchQueue.main.async { self.notifyListeners("sipServiceStatus", data: self.snapshot(ok: true)) } }
-    private func snapshot(ok: Bool) -> [String: Any] { ["ok": ok, "status": status, "reason": reason, "updatedAt": updatedAt, "backgroundTaskActive": bgTask != .invalid, "loggedIn": status == "registered" || status == "protected"] }
+    private func snapshot(ok: Bool) -> [String: Any] { ["ok": ok, "status": status, "reason": reason, "updatedAt": updatedAt, "backgroundTaskActive": bgTask != .invalid, "loggedIn": status == "registered" || status == "protected", "hasPushToken": !voipPushToken.isEmpty] }
 }

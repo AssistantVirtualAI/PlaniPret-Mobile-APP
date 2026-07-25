@@ -75,10 +75,18 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         guard type == .voIP else { return }
         let token = credentials.token.map { String(format: "%02x", $0) }.joined()
         self.voipToken = token
+        let bundleId = Bundle.main.bundleIdentifier ?? ""
         notifyListeners("voipPushToken", data: [
             "token": token,
-            "bundleId": Bundle.main.bundleIdentifier ?? ""
+            "bundleId": bundleId
         ])
+        // Notify PpSipKeepAlive so it can embed pn-* params in the next REGISTER (RFC 8599)
+        NotificationCenter.default.post(
+            name: NSNotification.Name("PpVoipPushToken"),
+            object: nil,
+            userInfo: ["token": token, "bundleId": bundleId]
+        )
+        NSLog("[PpVoipCall] VoIP push token obtained: \(token.prefix(8))... — notified PpSipKeepAlive")
     }
 
     public func pushRegistry(_ registry: PKPushRegistry, didInvalidatePushTokenFor type: PKPushType) {

@@ -38,6 +38,7 @@
 		79DE5EF1EF3EB5113E087253 /* PpSipKeepAlive.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = PpSipKeepAlive.m; sourceTree = "<group>"; };
 		EE6865237195268CA7C8FB10 /* PpVoipCall.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PpVoipCall.swift; sourceTree = "<group>"; };
 		80C02AA92B02E8CBBFABD68D /* PpVoipCall.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = PpVoipCall.m; sourceTree = "<group>"; };
+		EBBF3EA4B38EC3CFA8D421BB /* App.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = App.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -83,6 +84,7 @@
 			children = (
 				50379B222058CBB4000EE86E /* capacitor.config.json */,
 				504EC3071FED79650016851F /* AppDelegate.swift */,
+				EBBF3EA4B38EC3CFA8D421BB /* App.entitlements */,
 				A5093A54F6817220DAF5C49B /* Plugins */,
 				504EC30B1FED79650016851F /* Main.storyboard */,
 				504EC30E1FED79650016851F /* Assets.xcassets */,
@@ -393,6 +395,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = 64XSWWB49N;
 				CURRENT_PROJECT_VERSION = 1;
+				CODE_SIGN_ENTITLEMENTS = App/App.entitlements;
 				INFOPLIST_FILE = App/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 13.0;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
@@ -414,6 +417,7 @@
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = 64XSWWB49N;
 				CURRENT_PROJECT_VERSION = 1;
+				CODE_SIGN_ENTITLEMENTS = App/App.entitlements;
 				INFOPLIST_FILE = App/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 13.0;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
