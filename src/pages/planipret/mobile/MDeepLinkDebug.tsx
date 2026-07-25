@@ -38,9 +38,9 @@ export default function MDeepLinkDebug() {
     const list: Check[] = [
       { label: "Scheme planipret:// enregistré", state: "running" },
       { label: "Microsoft: config serveur (pp-ms-auth-start)", state: "idle" },
-      { label: "Microsoft: callback joignable (rejet code test attendu)", state: "idle" },
-      { label: "Maestro: authorize URL (maestro-oauth-start)", state: "idle" },
-      { label: "Maestro: callback joignable (rejet code test attendu)", state: "idle" },
+      { label: "Microsoft: callback route disponible", state: "idle" },
+      { label: "Maestro: session + route start", state: "idle" },
+      { label: "Maestro: callback route disponible", state: "idle" },
     ];
     setChecks([...list]);
     const set = (i: number, patch: Partial<Check>) => setChecks((prev) => prev.map((c, idx) => idx === i ? { ...c, ...patch } : c));
@@ -62,53 +62,82 @@ export default function MDeepLinkDebug() {
       else set(1, { state: "ok", detail: `client_id=${String(d.client_id).slice(0, 8)}… tenant=${d.tenant_id}` });
     } catch (e: any) { set(1, { state: "fail", detail: e?.message }); }
 
-    // 3. MS callback ping
-    set(2, { state: "running" });
-    try {
-      const { data } = await supabase.functions.invoke("pp-ms-auth-callback", {
-        body: { code: "PING_DEBUG", redirect_uri: "capacitor://localhost/auth/microsoft/callback", code_verifier: "x" },
-      });
-      const d = data as any;
-      // Success case: MS rejects the fake code -> success:false with AAD error is the expected healthy response.
-      const upstreamReached = d && d.success === false && typeof d.error === "string" && d.error.includes("AADSTS");
-      set(2, upstreamReached
-        ? { state: "ok", detail: "Azure a répondu (code rejeté = normal)" }
-        : { state: "fail", detail: d?.error || "réponse inattendue" });
-    } catch (e: any) { set(2, { state: "fail", detail: e?.message }); }
+    const fnUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
+    const anon = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string;
+    const { data: { session } } = await supabase.auth.getSession();
+    const authz = session?.access_token ? `Bearer ${session.access_token}` : `Bearer ${anon}`;
+    const rawInvoke = async (name: string, body: any) => {
+      try {
+        const res = await fetch(`${fnUrl}/${name}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", apikey: anon, Authorization: authz },
+          body: JSON.stringify(body),
+        });
+        const text = await res.text();
+        let data: any = null;
+        try { data = JSON.parse(text); } catch { data = { raw: text }; }
+        return { status: res.status, data };
+      } catch (e: any) {
+        return { status: 0, data: null, error: e };
+      }
+    };
+    const probeOptions = async (name: string) => {
+      try {
+        const res = await fetch(`${fnUrl}/${name}`, {
+          method: "OPTIONS",
+          headers: { apikey: anon, Authorization: authz },
+        });
+        await res.text();
+        return { ok: res.ok, status: res.status };
+      } catch (e: any) {
+        return { ok: false, status: 0, error: e?.message ?? "network error" };
+      }
+    };
 
-    // 4. Maestro start
+    // 3. MS callback route probe — no fake code, avoids Azure 400 runtime noise.
+    set(2, { state: "running" });
+    {
+      const probe = await probeOptions("pp-ms-auth-callback");
+      set(2, probe.ok
+        ? { state: "ok", detail: "Endpoint callback prêt (test sans échange OAuth réel)" }
+        : { state: "fail", detail: probe.error || `HTTP ${probe.status}` });
+    }
+
+    // 4. Maestro start — requires a real signed-in user. Never call it signed-out (401 is expected).
     set(3, { state: "running" });
-    try {
+    {
+      if (!session?.access_token) {
+        set(3, { state: "fail", detail: "Connecte-toi dans l'app puis relance ce test" });
+      } else {
       const isNative = Capacitor.isNativePlatform();
-      const { data, error } = await supabase.functions.invoke("maestro-oauth-start", {
-        body: {
-          platform: isNative ? "mobile" : "web",
-          redirect_uri: isNative ? "planipret://auth/maestro/callback" : `${window.location.origin}/auth/maestro/callback`,
-          origin: window.location.origin,
-        },
+      const { status, data } = await rawInvoke("maestro-oauth-start", {
+        platform: isNative ? "mobile" : "web",
+        redirect_uri: isNative ? "planipret://auth/maestro/callback" : `${window.location.origin}/auth/maestro/callback`,
+        origin: window.location.origin,
       });
       const d = data as any;
-      if (error || !d?.authorize_url) set(3, { state: "fail", detail: error?.message || d?.error || "no authorize_url" });
-      else {
+      if (!d?.authorize_url) {
+        const detail = status === 401 || d?.error === "unauthorized"
+          ? "requiert une session utilisateur (connecte-toi puis relance)"
+          : (d?.error || `HTTP ${status}`);
+        set(3, { state: "fail", detail });
+      } else {
         try {
           const u = new URL(d.authorize_url);
           set(3, { state: "ok", detail: `authorize host=${u.host}` });
         } catch { set(3, { state: "fail", detail: "authorize_url invalide" }); }
       }
-    } catch (e: any) { set(3, { state: "fail", detail: e?.message }); }
+      }
+    }
 
-    // 5. Maestro callback ping
+    // 5. Maestro callback route probe — no fake code, avoids provider token-exchange errors.
     set(4, { state: "running" });
-    try {
-      const { data } = await supabase.functions.invoke("maestro-oauth-callback", {
-        body: { code: "PING_DEBUG", state: "debug-ping", redirect_uri: "planipret://auth/maestro/callback" },
-      });
-      const d = data as any;
-      const upstreamReached = d && d.success === false && typeof d.error === "string" && d.error.length > 0;
-      set(4, upstreamReached
-        ? { state: "ok", detail: "Maestro a répondu (code rejeté = normal)" }
-        : { state: "fail", detail: d?.error || "réponse inattendue" });
-    } catch (e: any) { set(4, { state: "fail", detail: e?.message }); }
+    {
+      const probe = await probeOptions("maestro-oauth-callback");
+      set(4, probe.ok
+        ? { state: "ok", detail: "Endpoint callback prêt (test sans échange OAuth réel)" }
+        : { state: "fail", detail: probe.error || `HTTP ${probe.status}` });
+    }
 
     setRunning(false);
     toast.success("Validation terminée");
@@ -189,7 +218,7 @@ export default function MDeepLinkDebug() {
         <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
           {checks.length === 0 && (
             <div style={{ fontSize: 11, color: "var(--pp-text-muted)" }}>
-              Clique « Lancer » pour vérifier la config serveur, le scheme natif et les endpoints des deux connexions.
+              Clique « Lancer » pour vérifier la config serveur, le routage callback et les endpoints des deux connexions.
             </div>
           )}
           {checks.map((c, i) => (

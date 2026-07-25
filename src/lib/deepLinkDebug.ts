@@ -56,6 +56,50 @@ export function subscribeDeepLinkLog(cb: () => void): () => void {
   return () => { listeners.delete(cb); };
 }
 
+export async function handleIncomingDeepLink(
+  rawUrl: string | null | undefined,
+  source = "unknown",
+  navigate?: (path: string, options?: { replace?: boolean }) => void,
+): Promise<boolean> {
+  if (!rawUrl) return false;
+  logDeepLink({ kind: "received", source, url: rawUrl });
+  try {
+    const url = new URL(rawUrl);
+    const pathWithHost = `/${[url.hostname, url.pathname].filter(Boolean).join('/')}`.replace(/\/+/g, '/');
+    const isMs365Callback =
+      url.pathname === '/auth/microsoft/callback' ||
+      url.pathname === '/auth/ms365/callback' ||
+      pathWithHost === '/auth/microsoft/callback' ||
+      pathWithHost === '/auth/ms365/callback';
+    const isMaestroCallback =
+      url.pathname === '/auth/maestro/callback' ||
+      pathWithHost === '/auth/maestro/callback' ||
+      (url.protocol === 'planipret:' && (url.hostname === 'auth' || rawUrl.includes('/auth/maestro/callback')));
+
+    if (!isMs365Callback && !isMaestroCallback) return false;
+    if (url.searchParams.has('probe')) {
+      logDeepLink({ kind: "handler", source, url: rawUrl, detail: "probe callback routed" });
+      return true;
+    }
+    try {
+      const { Browser } = await import('@capacitor/browser');
+      await Browser.close();
+    } catch {}
+    if (isMs365Callback) {
+      try { localStorage.setItem('pp_ms365_callback_url', rawUrl); } catch {}
+      navigate?.(`/auth/microsoft/callback${url.search}`, { replace: true });
+    } else {
+      try { localStorage.setItem('pp_maestro_callback_url', rawUrl); } catch {}
+      navigate?.(`/auth/maestro/callback${url.search}`, { replace: true });
+    }
+    logDeepLink({ kind: "handler", source, url: rawUrl, detail: isMs365Callback ? "routed ms365 callback" : "routed maestro callback" });
+    return true;
+  } catch (e) {
+    logDeepLink({ kind: "error", source, url: rawUrl, detail: (e as Error).message });
+    return false;
+  }
+}
+
 /**
  * Scheme probe: dispatch a planipret://__probe URL and wait until the deep-link
  * bridge records it. Resolves true if the OS routed it back to the app within
@@ -63,7 +107,7 @@ export function subscribeDeepLinkLog(cb: () => void): () => void {
  */
 export async function probePlanipretScheme(timeoutMs = 1500): Promise<boolean> {
   const marker = `__probe_${Date.now()}`;
-  const url = `planipret://__probe?m=${marker}`;
+  const url = `planipret://auth/maestro/callback?probe=${marker}`;
   logDeepLink({ kind: "info", source: "SchemeProbe", url, detail: "dispatching" });
 
   let received = false;
@@ -74,12 +118,8 @@ export async function probePlanipretScheme(timeoutMs = 1500): Promise<boolean> {
   });
 
   try {
-    // Prefer a hidden iframe: safer than window.location for custom schemes on iOS.
-    const iframe = document.createElement("iframe");
-    iframe.style.display = "none";
-    iframe.src = url;
-    document.body.appendChild(iframe);
-    setTimeout(() => { try { iframe.remove(); } catch {} }, 400);
+    const handled = await handleIncomingDeepLink(url, "SchemeProbe:self");
+    if (handled) received = true;
   } catch (e) {
     logDeepLink({ kind: "error", source: "SchemeProbe", detail: (e as Error).message });
   }

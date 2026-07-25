@@ -3,7 +3,7 @@
  * Uses the exact same shell + routes + providers as /mplanipret on web.
  */
 import { Routes, Route, Navigate, useNavigate } from 'react-router-dom';
-import { logDeepLink } from '@/lib/deepLinkDebug';
+import { handleIncomingDeepLink } from '@/lib/deepLinkDebug';
 import { useEffect } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Toaster } from 'sonner';
@@ -62,48 +62,8 @@ function NativeDeepLinkBridge() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    const rememberCallbackUrl = (key: string, rawUrl: string) => {
-      try { localStorage.setItem(key, rawUrl); } catch {}
-    };
-
     const routeFromUrl = async (rawUrl?: string | null, source = "unknown") => {
-      if (!rawUrl) return;
-      logDeepLink({ kind: "received", source, url: rawUrl });
-      try {
-        const url = new URL(rawUrl);
-        const pathWithHost = `/${[url.hostname, url.pathname].filter(Boolean).join('/')}`.replace(/\/+/g, '/');
-        const isMs365Callback =
-          url.pathname === '/auth/microsoft/callback' ||
-          url.pathname === '/auth/ms365/callback' ||
-          pathWithHost === '/auth/microsoft/callback' ||
-          pathWithHost === '/auth/ms365/callback';
-
-        if (isMs365Callback) {
-          try {
-            const { Browser } = await import('@capacitor/browser');
-            await Browser.close();
-          } catch {}
-          rememberCallbackUrl('pp_ms365_callback_url', rawUrl);
-          navigate(`/auth/microsoft/callback${url.search}`, { replace: true });
-          return;
-        }
-
-        const isMaestroCallback =
-          url.pathname === '/auth/maestro/callback' ||
-          pathWithHost === '/auth/maestro/callback' ||
-          (url.protocol === 'planipret:' && (url.hostname === 'auth' || rawUrl.includes('/auth/maestro/callback')));
-        if (isMaestroCallback) {
-          try {
-            const { Browser } = await import('@capacitor/browser');
-            await Browser.close();
-          } catch {}
-          rememberCallbackUrl('pp_maestro_callback_url', rawUrl);
-          navigate(`/auth/maestro/callback${url.search}`, { replace: true });
-          return;
-        }
-      } catch (e) {
-        logDeepLink({ kind: "error", source, url: rawUrl, detail: (e as Error).message });
-      }
+      await handleIncomingDeepLink(rawUrl, source, navigate);
     };
 
 

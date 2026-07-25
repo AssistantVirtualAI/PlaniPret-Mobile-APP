@@ -56,14 +56,16 @@ export default function Ms365Callback() {
       const code = params.get("code");
       const err = params.get("error_description") ?? params.get("error");
       if (err) { setStatus("error"); setError(err); return; }
-      if (!code) { setStatus("error"); setError("Code OAuth manquant"); return; }
+      // If user re-opens the app and lands on the callback route without a fresh code,
+      // silently redirect to home instead of showing an error.
+      if (!code) { navigate("/mplanipret/home", { replace: true }); return; }
       // Must match the redirect URI registered in Azure App Registration.
       const redirect_uri = await getRememberedMs365RedirectUri();
       const state = params.get("state");
       const code_verifier = await getRememberedMs365CodeVerifier(state);
       if (!code_verifier) {
-        setStatus("error");
-        setError("Connexion Microsoft interrompue — relancez la connexion depuis l'application.");
+        // Verifier already consumed (successful previous exchange) or app resumed on stale URL.
+        navigate("/mplanipret/home", { replace: true });
         return;
       }
       const isMicrosoftLogin = (await getMicrosoftSignInIntentAsync()) === "login" || Boolean(state?.startsWith("login:"));
