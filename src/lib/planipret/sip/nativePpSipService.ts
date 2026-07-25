@@ -14,13 +14,39 @@ export type PpNativeSipStatus = {
 
 type ListenerHandle = { remove: () => Promise<void> | void };
 
+export type PpIncomingInvite = {
+  callId?: string;
+  from?: string;
+  fromUser?: string;
+  fromDisplay?: string;
+  /** Present only when user tapped Answer / Decline on the native notification. */
+  action?: "answer" | "decline";
+};
+
 type PpSipKeepAlivePlugin = {
   startSipService?: (opts: Record<string, unknown>) => Promise<PpNativeSipStatus>;
   stopSipService?: () => Promise<PpNativeSipStatus>;
   getSipServiceStatus?: () => Promise<PpNativeSipStatus>;
   requestBatteryOptimizationExemption?: () => Promise<PpNativeSipStatus>;
   triggerReregister?: () => Promise<PpNativeSipStatus>;
-  addListener?: (event: "sipServiceStatus" | "sipReregisterRequested", cb: (data: PpNativeSipStatus) => void) => Promise<ListenerHandle>;
+  acknowledgeIncoming?: () => Promise<{ ok: boolean }>;
+  addListener?: (
+    event: "sipServiceStatus" | "sipReregisterRequested" | "sipIncomingInvite",
+    cb: (data: any) => void,
+  ) => Promise<ListenerHandle>;
+};
+
+type PpVoipCallPlugin = {
+  getVoipPushToken?: () => Promise<{ token: string | null; platform: string; bundleId?: string }>;
+  reportCallEnded?: (opts: { callId?: string; reason?: string }) => Promise<{ ok: boolean }>;
+  addListener?: (
+    event:
+      | "voipPushToken"
+      | "incomingCallAnswered"
+      | "incomingCallRejected"
+      | "callKitReady",
+    cb: (data: any) => void,
+  ) => Promise<ListenerHandle>;
 };
 
 const isNative = () => {
@@ -34,6 +60,47 @@ const platform = () => {
 const NativePpSip: PpSipKeepAlivePlugin = isNative()
   ? registerPlugin<PpSipKeepAlivePlugin>("PpSipKeepAlive")
   : {};
+
+const NativePpVoipCall: PpVoipCallPlugin = isNative()
+  ? registerPlugin<PpVoipCallPlugin>("PpVoipCall")
+  : {};
+
+// ---------- CallKit + PushKit bridge (iOS only) ----------
+export async function getPlanipretVoipPushToken(): Promise<{ token: string | null; platform: string; bundleId?: string } | null> {
+  if (platform() !== "ios") return null;
+  try { return (await NativePpVoipCall.getVoipPushToken?.()) ?? null; }
+  catch (e) { console.warn("[pp-voip-call] getVoipPushToken failed", e); return null; }
+}
+
+export async function onPlanipretVoipPushToken(cb: (data: { token: string; bundleId?: string }) => void): Promise<() => void> {
+  if (platform() !== "ios" || !NativePpVoipCall.addListener) return () => undefined;
+  try {
+    const handle = await NativePpVoipCall.addListener("voipPushToken", (data: any) => cb(data ?? {}));
+    return () => { void handle?.remove?.(); };
+  } catch { return () => undefined; }
+}
+
+export async function onPlanipretIncomingCallAnswered(cb: (data: { callUUID: string; callId?: string }) => void): Promise<() => void> {
+  if (platform() !== "ios" || !NativePpVoipCall.addListener) return () => undefined;
+  try {
+    const handle = await NativePpVoipCall.addListener("incomingCallAnswered", (data: any) => cb(data ?? {}));
+    return () => { void handle?.remove?.(); };
+  } catch { return () => undefined; }
+}
+
+export async function onPlanipretIncomingCallRejected(cb: (data: { callUUID: string; callId?: string }) => void): Promise<() => void> {
+  if (platform() !== "ios" || !NativePpVoipCall.addListener) return () => undefined;
+  try {
+    const handle = await NativePpVoipCall.addListener("incomingCallRejected", (data: any) => cb(data ?? {}));
+    return () => { void handle?.remove?.(); };
+  } catch { return () => undefined; }
+}
+
+export async function reportPlanipretCallEnded(callId?: string, reason?: string): Promise<void> {
+  if (platform() !== "ios") return;
+  try { await NativePpVoipCall.reportCallEnded?.({ callId, reason }); }
+  catch { /* noop */ }
+}
 
 function parseWss(cfg: PpSipConfig) {
   try {
@@ -115,4 +182,24 @@ export async function onPlanipretNativeReregister(cb: () => void): Promise<() =>
   } catch {
     return () => undefined;
   }
+}
+
+/** Fires whenever the native SIP socket sees an INVITE while the WebView is
+ *  suspended, and again with `action: "answer" | "decline"` when the user taps
+ *  the corresponding button on the Android full-screen notification (iOS uses
+ *  the local notification banner + CallKit). Planiprêt-only. */
+export async function onPlanipretIncomingInvite(cb: (invite: PpIncomingInvite) => void): Promise<() => void> {
+  if (!isNative() || !NativePpSip.addListener) return () => undefined;
+  try {
+    const handle = await NativePpSip.addListener("sipIncomingInvite", (data: PpIncomingInvite) => cb(data ?? {}));
+    return () => { void handle?.remove?.(); };
+  } catch {
+    return () => undefined;
+  }
+}
+
+export async function acknowledgePlanipretIncoming(): Promise<void> {
+  if (!isNative()) return;
+  try { await NativePpSip.acknowledgeIncoming?.(); }
+  catch { /* noop */ }
 }

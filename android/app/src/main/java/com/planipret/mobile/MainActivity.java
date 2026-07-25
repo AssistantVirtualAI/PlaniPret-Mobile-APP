@@ -21,6 +21,7 @@ public class MainActivity extends BridgeActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        registerPlugin(PpSipKeepAlivePlugin.class);
         super.onCreate(savedInstanceState);
 
         audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);

@@ -220,6 +220,20 @@ class PpSipProvider {
       onHold: false,
     });
 
+    // If the user tapped "Répondre" on the native background notification
+    // before JsSIP had a chance to receive the INVITE, auto-answer as soon as
+    // the session arrives (within a 30s intent window).
+    if (incoming) {
+      try {
+        const pending = (typeof window !== "undefined") ? (window as any).__ppPendingAnswer : null;
+        if (pending && (Date.now() - (pending.ts || 0)) < 30_000) {
+          (window as any).__ppPendingAnswer = null;
+          setTimeout(() => { try { this.answer(); } catch {} }, 250);
+        }
+      } catch {}
+    }
+
+
     session.on("progress", () => { if (!incoming) this.update({ callState: "ringing-out" }); });
     session.on("confirmed", () => this.update({ callState: "active", startedAt: Date.now() }));
     session.on("failed", (e: any) => {

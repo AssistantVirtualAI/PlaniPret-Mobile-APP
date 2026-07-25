@@ -15,7 +15,11 @@
 		504EC3121FED79650016851F /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 504EC3101FED79650016851F /* LaunchScreen.storyboard */; };
 		50B271D11FEDC1A000F3C39B /* public in Resources */ = {isa = PBXBuildFile; fileRef = 50B271D01FEDC1A000F3C39B /* public */; };
 		A084ECDBA7D38E1E42DFC39D /* Pods_App.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AF277DCFFFF123FFC6DF26C7 /* Pods_App.framework */; };
-/* End PBXBuildFile section */
+		DF44B8C840C7B7F366842FA7 /* PpSipKeepAlive.swift in Sources */ = {isa = PBXBuildFile; fileRef = 412C1B2F7D8E45C9C02F3900 /* PpSipKeepAlive.swift */; };
+				959CA6D31269B6CBB23EC9E4 /* PpSipKeepAlive.m in Sources */ = {isa = PBXBuildFile; fileRef = 4C4FB40B4C19B5FE1F778999 /* PpSipKeepAlive.m */; };
+				EE7E2A11A0F77B71744437DF /* PpVoipCall.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A2638E44C4ECBB44CBEDF07 /* PpVoipCall.swift */; };
+				7EBE0166F8B074C946CAFEEC /* PpVoipCall.m in Sources */ = {isa = PBXBuildFile; fileRef = B9A6E78C3FD26531EF70481F /* PpVoipCall.m */; };
+		/* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		2FAD9762203C412B000D30F8 /* config.xml */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = config.xml; sourceTree = "<group>"; };
@@ -30,7 +34,11 @@
 		AF277DCFFFF123FFC6DF26C7 /* Pods_App.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_App.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		AF51FD2D460BCFE21FA515B2 /* Pods-App.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-App.release.xcconfig"; path = "Pods/Target Support Files/Pods-App/Pods-App.release.xcconfig"; sourceTree = "<group>"; };
 		FC68EB0AF532CFC21C3344DD /* Pods-App.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-App.debug.xcconfig"; path = "Pods/Target Support Files/Pods-App/Pods-App.debug.xcconfig"; sourceTree = "<group>"; };
-/* End PBXFileReference section */
+		412C1B2F7D8E45C9C02F3900 /* PpSipKeepAlive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "PpSipKeepAlive.swift"; sourceTree = "<group>"; };
+				4C4FB40B4C19B5FE1F778999 /* PpSipKeepAlive.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "PpSipKeepAlive.m"; sourceTree = "<group>"; };
+				1A2638E44C4ECBB44CBEDF07 /* PpVoipCall.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "PpVoipCall.swift"; sourceTree = "<group>"; };
+				B9A6E78C3FD26531EF70481F /* PpVoipCall.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = "PpVoipCall.m"; sourceTree = "<group>"; };
+		/* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		504EC3011FED79650016851F /* Frameworks */ = {
@@ -75,6 +83,10 @@
 			children = (
 				50379B222058CBB4000EE86E /* capacitor.config.json */,
 				504EC3071FED79650016851F /* AppDelegate.swift */,
+				B9A6E78C3FD26531EF70481F /* PpVoipCall.m */,
+				1A2638E44C4ECBB44CBEDF07 /* PpVoipCall.swift */,
+				4C4FB40B4C19B5FE1F778999 /* PpSipKeepAlive.m */,
+				412C1B2F7D8E45C9C02F3900 /* PpSipKeepAlive.swift */,
 				504EC30B1FED79650016851F /* Main.storyboard */,
 				504EC30E1FED79650016851F /* Assets.xcassets */,
 				504EC3101FED79650016851F /* LaunchScreen.storyboard */,
@@ -210,6 +222,10 @@
 			buildActionMask = 2147483647;
 			files = (
 				504EC3081FED79650016851F /* AppDelegate.swift in Sources */,
+				7EBE0166F8B074C946CAFEEC /* PpVoipCall.m in Sources */,
+				EE7E2A11A0F77B71744437DF /* PpVoipCall.swift in Sources */,
+				959CA6D31269B6CBB23EC9E4 /* PpSipKeepAlive.m in Sources */,
+				DF44B8C840C7B7F366842FA7 /* PpSipKeepAlive.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

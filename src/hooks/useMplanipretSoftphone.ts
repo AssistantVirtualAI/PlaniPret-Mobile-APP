@@ -20,9 +20,16 @@ import { callQualitySampler, type CallQualitySnapshot } from "@/lib/planipret/au
 import { getAudioConstraints, type NCMode } from "@/lib/planipret/audio/audioConstraints";
 import { ensureMicPermission, type MicPermissionState } from "@/lib/planipret/audio/micPermission";
 import {
+  acknowledgePlanipretIncoming,
   getPlanipretSipKeepAliveStatus,
+  getPlanipretVoipPushToken,
+  onPlanipretIncomingCallAnswered,
+  onPlanipretIncomingCallRejected,
+  onPlanipretIncomingInvite,
   onPlanipretNativeReregister,
   onPlanipretSipKeepAliveStatus,
+  onPlanipretVoipPushToken,
+  reportPlanipretCallEnded,
   requestPlanipretBatteryOptimizationExemption,
   startPlanipretSipKeepAlive,
   triggerPlanipretNativeReregister,
@@ -212,6 +219,61 @@ export function useMplanipretSoftphone() {
       try { window.dispatchEvent(new CustomEvent("pp:sip-force-reregister")); } catch {}
     }).then((fn) => { cleanupReregister = fn; }).catch(() => undefined);
 
+    // Native incoming INVITE (background/lockscreen). Wake JsSIP + broadcast so
+    // MActiveCall / MHome can pop the ringing sheet even if the WebView slept.
+    let cleanupInvite: (() => void) | undefined;
+    onPlanipretIncomingInvite((invite) => {
+      try { ppSipProvider.forceReregister(); } catch {}
+      try {
+        window.dispatchEvent(new CustomEvent("pp:sip-incoming-invite", { detail: invite }));
+      } catch {}
+      // If the user already tapped Answer on the notification, mark the intent
+      // so the softphone auto-answers the JsSIP-side INVITE as soon as it lands.
+      if (invite?.action === "answer") {
+        try { (window as any).__ppPendingAnswer = { callId: invite.callId, ts: Date.now() }; } catch {}
+      } else if (invite?.action === "decline") {
+        try { ppSipProvider.hangup(); } catch {}
+        void acknowledgePlanipretIncoming();
+      }
+    }).then((fn) => { cleanupInvite = fn; }).catch(() => undefined);
+
+
+
+    // iOS PushKit + CallKit: forward device token to the backend, and bridge
+    // the native answer/reject actions to the JsSIP session.
+    let cleanupVoipToken: (() => void) | undefined;
+    let cleanupVoipAnswer: (() => void) | undefined;
+    let cleanupVoipReject: (() => void) | undefined;
+    const uploadVoipToken = async (token: string, bundleId?: string) => {
+      if (!token) return;
+      try {
+        await supabase.functions.invoke("pp-voip-push-token", {
+          body: {
+            deviceToken: token,
+            platform: "ios",
+            bundleId,
+            extension: (ppSipProvider.getConfig?.() as any)?.extension ?? null,
+          },
+        });
+      } catch (e) { console.warn("[pp-voip] token upload failed", e); }
+    };
+    onPlanipretVoipPushToken(({ token, bundleId }) => { void uploadVoipToken(token, bundleId); })
+      .then((fn) => { cleanupVoipToken = fn; }).catch(() => undefined);
+    void getPlanipretVoipPushToken().then((t) => { if (t?.token) void uploadVoipToken(t.token, t.bundleId); });
+
+    onPlanipretIncomingCallAnswered((data) => {
+      try { (window as any).__ppPendingAnswer = { callId: data?.callId, ts: Date.now() }; } catch {}
+      try { ppSipProvider.forceReregister(); } catch {}
+      try { ppSipProvider.answer(); } catch {}
+      try { window.dispatchEvent(new CustomEvent("pp:sip-callkit-answered", { detail: data })); } catch {}
+    }).then((fn) => { cleanupVoipAnswer = fn; }).catch(() => undefined);
+
+    onPlanipretIncomingCallRejected((data) => {
+      try { ppSipProvider.hangup(); } catch {}
+      void acknowledgePlanipretIncoming();
+      try { window.dispatchEvent(new CustomEvent("pp:sip-callkit-rejected", { detail: data })); } catch {}
+    }).then((fn) => { cleanupVoipReject = fn; }).catch(() => undefined);
+
     const poll = window.setInterval(() => {
       getPlanipretSipKeepAliveStatus().then((s) => { if (s && !cancelled) setNativeStatus(s); }).catch(() => undefined);
     }, 15_000);
@@ -222,6 +284,10 @@ export function useMplanipretSoftphone() {
       window.clearInterval(poll);
       cleanupStatus?.();
       cleanupReregister?.();
+      cleanupInvite?.();
+      cleanupVoipToken?.();
+      cleanupVoipAnswer?.();
+      cleanupVoipReject?.();
     };
   }, [user?.id]);
 

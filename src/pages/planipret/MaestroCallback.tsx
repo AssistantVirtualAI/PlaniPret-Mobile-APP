@@ -4,7 +4,7 @@
  * Edge Function to exchange it for a token, then closes the Browser plugin
  * window and redirects back to the More page.
  */
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Capacitor } from "@capacitor/core";
 import { Browser } from "@capacitor/browser";
@@ -19,29 +19,34 @@ import { logDeepLink } from "@/lib/deepLinkDebug";
 // then returns invalid_grant on the second call.
 const inflightCodes = new Set<string>();
 const completedCodes = new Set<string>();
-// Module-level guard so remounts of this route (e.g. iOS re-firing appUrlOpen
-// after Browser.close) never re-navigate — otherwise navigate({replace:true})
-// spams history.replaceState and WKWebView throws
-// "Attempt to use history.replaceState() more than 100 times per 10 seconds".
-let navigatedAway = false;
-function goHomeOnce(navigate: (p: string, o?: { replace?: boolean }) => void) {
-  if (navigatedAway) return;
-  navigatedAway = true;
-  navigate("/mplanipret/more", { replace: true });
-}
-
 export default function MaestroCallback() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const ran = useRef(false);
+  const navigated = useRef(false);
+  const [message, setMessage] = useState("Connexion Maestro en cours…");
+
+  const goBackToApp = (delayMs = 0) => {
+    if (navigated.current) return;
+    navigated.current = true;
+    window.setTimeout(() => navigate("/mplanipret/home", { replace: true }), delayMs);
+  };
 
   useEffect(() => {
     if (ran.current) return;
     ran.current = true;
 
-    const code = searchParams.get("code");
-    const state = searchParams.get("state");
-    const error = searchParams.get("error");
+    const storedUrl = (() => {
+      try { return localStorage.getItem("pp_maestro_callback_url"); } catch { return null; }
+    })();
+    const storedParams = (() => {
+      if (!storedUrl) return null;
+      try { return new URL(storedUrl).searchParams; } catch { return null; }
+    })();
+
+    const code = searchParams.get("code") ?? storedParams?.get("code") ?? null;
+    const state = searchParams.get("state") ?? storedParams?.get("state") ?? null;
+    const error = searchParams.get("error") ?? storedParams?.get("error") ?? null;
 
     logDeepLink({
       kind: "handler",
@@ -61,20 +66,22 @@ export default function MaestroCallback() {
     }
 
     if (error) {
+      setMessage(`Maestro: ${error}`);
       toast.error(`Maestro: ${error}`);
-      goHomeOnce(navigate);
+      goBackToApp(1200);
       return;
     }
 
     if (!code) {
       // App resumed on a stale callback URL — silently return home.
-      goHomeOnce(navigate);
+      goBackToApp();
       return;
     }
 
     if (completedCodes.has(code) || inflightCodes.has(code)) {
       logDeepLink({ kind: "handler", source: "MaestroCallback", detail: "duplicate deep link — skipping exchange" });
-      goHomeOnce(navigate);
+      setMessage("Maestro déjà connecté. Retour à l’accueil…");
+      goBackToApp(600);
       return;
     }
     inflightCodes.add(code);
@@ -85,23 +92,30 @@ export default function MaestroCallback() {
           ? "planipret://auth/maestro/callback"
           : `${window.location.origin}/auth/maestro/callback`;
 
-        const { data, error: fnErr } = await supabase.functions.invoke("maestro-oauth-callback", {
+        const callbackPromise = supabase.functions.invoke("maestro-oauth-callback", {
           body: { code, state, redirect_uri: redirectUri },
         });
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          window.setTimeout(() => reject(new Error("timeout_maestro_callback")), 18_000);
+        });
+        const { data, error: fnErr } = await Promise.race([callbackPromise, timeoutPromise]);
 
         if (fnErr) throw fnErr;
         if (!(data as any)?.success) throw new Error((data as any)?.error || "token_exchange_failed");
 
         completedCodes.add(code);
         logDeepLink({ kind: "handler", source: "MaestroCallback", detail: "token exchange OK" });
+        try { localStorage.removeItem("pp_maestro_callback_url"); } catch {}
         try { window.dispatchEvent(new CustomEvent("maestro:connected")); } catch {}
+        setMessage("Maestro connecté. Retour à l’accueil…");
         toast.success("Maestro connecté avec succès !");
       } catch (e: any) {
         logDeepLink({ kind: "error", source: "MaestroCallback", detail: e?.message || "exchange failed" });
+        setMessage("Connexion Maestro interrompue. Retour à l’accueil…");
         toast.error(`Maestro: ${e?.message || "Erreur de connexion"}`);
       } finally {
         inflightCodes.delete(code);
-        goHomeOnce(navigate);
+        goBackToApp(900);
       }
     })();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -111,7 +125,7 @@ export default function MaestroCallback() {
       <div className="flex flex-col items-center gap-3">
         <Loader2 className="w-8 h-8 animate-spin" style={{ color: "#a855f7" }} />
         <p style={{ color: "var(--pp-text-secondary, #94a3b8)", fontSize: 14 }}>
-          Connexion Maestro en cours…
+          {message}
         </p>
       </div>
     </div>
