@@ -46,6 +46,8 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       NotificationCenter.default.addObserver(self, selector: #selector(onForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
       // Listen for VoIP token updates from PpVoipCall plugin
       NotificationCenter.default.addObserver(self, selector: #selector(onVoipToken(_:)), name: NSNotification.Name("PpVoipPushToken"), object: nil)
+      // Listen for BGTask-triggered SIP refresh (from AppDelegate BGProcessingTask)
+      NotificationCenter.default.addObserver(self, selector: #selector(onBgRefresh), name: NSNotification.Name("PpSipBgRefresh"), object: nil)
       // Ask for notification permission so the incoming-call banner can ring.
       UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
     }
@@ -91,6 +93,8 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
 
     @objc private func onBackground() { beginBackgroundTask(); activateAudioSession(); sendRegister(challenge: nil); notifyListeners("sipReregisterRequested", data: ["reason": "enter_background"]); setStatus("protected", "background_register_sent") }
     @objc private func onForeground() { connect(); sendRegister(challenge: nil); notifyListeners("sipReregisterRequested", data: ["reason": "enter_foreground"]); setStatus("registered", "foreground_refresh"); endBackgroundTask() }
+    /// Called by AppDelegate BGProcessingTask every ~15 min to keep SIP registration alive
+    @objc private func onBgRefresh() { if !login.isEmpty { connect(); sendRegister(challenge: nil); notifyListeners("sipReregisterRequested", data: ["reason": "bg_task_refresh"]); NSLog("[PpSipKeepAlive] BGTask refresh — REGISTER sent") } }
 
     private func activateAudioSession() { try? AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .allowBluetoothA2DP, .mixWithOthers]); try? AVAudioSession.sharedInstance().setActive(true) }
     private func connect() {

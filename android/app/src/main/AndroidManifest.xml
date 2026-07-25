@@ -66,13 +66,36 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths"></meta-data>
         </provider>
+        <!-- SERVICE SIP EN FOREGROUND — maintient la connexion WebSocket SIP en arrière-plan -->
+        <!-- stopWithTask="false" : le service survit même si l'utilisateur swipe l'app -->
         <service
             android:name=".PpSipKeepAliveService"
             android:foregroundServiceType="phoneCall"
-            android:exported="false" />
+            android:exported="false"
+            android:stopWithTask="false" />
+
+        <!-- BOOT RECEIVER — redémarre le service SIP après un reboot du téléphone -->
+        <receiver
+            android:name=".PpBootReceiver"
+            android:exported="true"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </receiver>
+
+        <!-- CALL ACTION RECEIVER — traite les boutons Répondre/Refuser des notifications -->
         <receiver
             android:name=".PpIncomingActionReceiver"
-            android:exported="false" />
+            android:exported="false"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="com.planipret.mobile.PP_INCOMING_ANSWER" />
+                <action android:name="com.planipret.mobile.PP_INCOMING_DECLINE" />
+            </intent-filter>
+        </receiver>
 
     </application>
 

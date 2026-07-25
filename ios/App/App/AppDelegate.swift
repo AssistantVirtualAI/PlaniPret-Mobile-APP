@@ -1,6 +1,7 @@
 import UIKit
 import Capacitor
 import AVFoundation
+import BackgroundTasks
 
 @UIApplicationMain
 class AppDelegate: UIResponder, UIApplicationDelegate {
@@ -14,6 +15,16 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // - The user must explicitly tap the speaker button to switch to loudspeaker
         // - allowBluetooth: enables Bluetooth headsets and AirPods
         configureAudioSession()
+
+        // Register BGProcessingTask for periodic SIP re-registration (parity with Android PpSipKeepAliveService)
+        // This ensures the SIP REGISTER is refreshed even when the app is in background/suspended.
+        if #available(iOS 13.0, *) {
+            BGTaskScheduler.shared.register(forTaskWithIdentifier: "com.planipret.mobile.sip-refresh", using: nil) { task in
+                self.handleSipRefreshTask(task as! BGProcessingTask)
+            }
+            scheduleSipRefreshTask()
+        }
+
         return true
     }
 
@@ -42,8 +53,29 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     }
 
     func applicationDidEnterBackground(_ application: UIApplication) {
-        // Use this method to release shared resources, save user data, invalidate timers, and store enough application state information to restore your application to its current state in case it is terminated later.
-        // If your application supports background execution, this method is called instead of applicationWillTerminate: when the user quits.
+        // Give the WebSocket SIP keep-alive up to ~25 seconds to finish any pending
+        // re-REGISTER before iOS suspends the process. Parity with Android WakeLock.
+        var bgTask: UIBackgroundTaskIdentifier = .invalid
+        bgTask = application.beginBackgroundTask(withName: "PlanipretSIPKeepAlive") {
+            NSLog("[SIP] Background task expired — WebSocket will be suspended")
+            if bgTask != .invalid {
+                application.endBackgroundTask(bgTask)
+                bgTask = .invalid
+            }
+        }
+        DispatchQueue.global(qos: .background).asyncAfter(deadline: .now() + 20) {
+            NSLog("[SIP] Background keep-alive: triggering re-REGISTER via JS")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                if bgTask != .invalid {
+                    application.endBackgroundTask(bgTask)
+                    bgTask = .invalid
+                }
+            }
+        }
+        // Schedule the next BGProcessingTask for SIP refresh in 15 minutes
+        if #available(iOS 13.0, *) {
+            scheduleSipRefreshTask()
+        }
     }
 
     func applicationWillEnterForeground(_ application: UIApplication) {
@@ -51,12 +83,47 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         try? AVAudioSession.sharedInstance().setActive(true)
     }
 
-    func applicationDidBecomeActive(_ application: UIApplication) {
-        // Restart any tasks that were paused (or not yet started) while the application was inactive. If the application was previously in the background, optionally refresh the user interface.
+    func applicationDidBecomeActive(_ application: UIApplication) {}
+
+    func applicationWillTerminate(_ application: UIApplication) {}
+
+    // MARK: - Background tasks (SIP registration refresh — iOS 13+)
+
+    @available(iOS 13.0, *)
+    private func scheduleSipRefreshTask() {
+        let request = BGProcessingTaskRequest(identifier: "com.planipret.mobile.sip-refresh")
+        request.requiresNetworkConnectivity = true
+        request.requiresExternalPower = false
+        // Schedule next refresh in 15 minutes (iOS may delay to a convenient time)
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
+        do {
+            try BGTaskScheduler.shared.submit(request)
+            NSLog("[BGTask] Scheduled sip-refresh in 15 min")
+        } catch {
+            NSLog("[BGTask] Failed to schedule sip-refresh: \(error)")
+        }
     }
 
-    func applicationWillTerminate(_ application: UIApplication) {
-        // Called when the application is about to terminate. Save data if appropriate. See also applicationDidEnterBackground:.
+    @available(iOS 13.0, *)
+    private func handleSipRefreshTask(_ task: BGProcessingTask) {
+        // Reschedule immediately so we always have a pending task
+        scheduleSipRefreshTask()
+
+        task.expirationHandler = {
+            NSLog("[BGTask] sip-refresh expired")
+            task.setTaskCompleted(success: false)
+        }
+
+        NSLog("[BGTask] sip-refresh running — triggering SIP re-REGISTER")
+        // PpSipKeepAlive plugin listens to this notification and sends a new REGISTER
+        NotificationCenter.default.post(
+            name: NSNotification.Name("PpSipBgRefresh"),
+            object: nil
+        )
+
+        DispatchQueue.global().asyncAfter(deadline: .now() + 5) {
+            task.setTaskCompleted(success: true)
+        }
     }
 
     // Allow all orientations so the app rotates when the device is rotated.

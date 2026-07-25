@@ -106,5 +106,15 @@
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Planiprêt peut utiliser la reconnaissance vocale pour l'assistant AVA.</string>
 
+	<!-- BGTask : re-registration SIP périodique même en background (iOS 13+) -->
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.planipret.mobile.sip-refresh</string>
+	</array>
+
+	<!-- Maintien de la connexion Wi-Fi active même en arrière-plan -->
+	<key>UIRequiresPersistentWiFi</key>
+	<true/>
+
 </dict>
 </plist>
