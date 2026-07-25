@@ -56,6 +56,7 @@
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>capacitor</string>
+				<string>planipret</string>
 			</array>
 		</dict>
 	</array>
