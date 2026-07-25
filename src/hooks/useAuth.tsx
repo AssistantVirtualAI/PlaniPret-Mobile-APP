@@ -145,7 +145,7 @@ export const useAuth = () => {
 
   const signInWithMicrosoft = async () => {
     try {
-      await startMicrosoftSignIn('/mplanipret');
+      await startMicrosoftSignIn('/mplanipret/home');
       return { error: null };
     } catch (error: any) {
       toast({

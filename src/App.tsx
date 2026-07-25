@@ -71,21 +71,17 @@ function NativeDeepLinkBridge() {
     (async () => {
       try {
         const { App: CapacitorApp } = await import('@capacitor/app');
+        // Only route on real deep links (appUrlOpen) and the initial launch URL.
+        // Do NOT re-route on appStateChange — iOS fires "active" every time the
+        // in-app Browser (SFSafariViewController) is presented/dismissed, which
+        // would replay a stale launchUrl or cached callback and close the
+        // Maestro/Microsoft login before the user finishes signing in.
         const launch = await CapacitorApp.getLaunchUrl();
         void routeFromUrl(launch?.url, "launchUrl");
-        const stateListener = await CapacitorApp.addListener('appStateChange', async (state: { isActive: boolean }) => {
-          if (!state.isActive) return;
-          try {
-            const latestLaunch = await CapacitorApp.getLaunchUrl();
-            void routeFromUrl(latestLaunch?.url, "appStateChange");
-          } catch {}
-          try { void routeFromUrl(localStorage.getItem('pp_ms365_callback_url'), "appStateChange:cached-ms365"); } catch {}
-          try { void routeFromUrl(localStorage.getItem('pp_maestro_callback_url'), "appStateChange:cached-maestro"); } catch {}
-        });
         const listener = await CapacitorApp.addListener('appUrlOpen', (event: { url: string }) => {
           void routeFromUrl(event.url, "appUrlOpen");
         });
-        unsubscribe = () => { try { listener.remove(); } catch {}; try { stateListener.remove(); } catch {} };
+        unsubscribe = () => { try { listener.remove(); } catch {} };
       } catch {
         // Web preview: no native deep links.
       }

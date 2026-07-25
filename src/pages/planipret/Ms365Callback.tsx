@@ -15,6 +15,26 @@ async function getSessionWithRetry() {
   return null;
 }
 
+function closeNativeBrowserSoon() {
+  void import("@capacitor/browser")
+    .then(({ Browser }) => Browser.close())
+    .catch(() => {});
+}
+
+async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timeout`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 export default function Ms365Callback() {
   const [params] = useSearchParams();
   const navigate = useNavigate();
@@ -23,7 +43,11 @@ export default function Ms365Callback() {
   const ranRef = useRef(false);
 
   async function invokeAndParse(fn: string, body: unknown): Promise<{ data: any; errMsg: string | null }> {
-    const { data, error: e } = await supabase.functions.invoke(fn, { body: body as any });
+    const { data, error: e } = await withTimeout(
+      supabase.functions.invoke(fn, { body: body as any }),
+      25000,
+      fn,
+    );
     if (!e) return { data, errMsg: null };
     let parsed: any = null;
     try {
@@ -48,10 +72,7 @@ export default function Ms365Callback() {
     if (ranRef.current) return;
     ranRef.current = true;
     (async () => {
-      try {
-        const { Browser } = await import("@capacitor/browser");
-        await Browser.close();
-      } catch {}
+      closeNativeBrowserSoon();
       clearMs365Pending();
       const code = params.get("code");
       const err = params.get("error_description") ?? params.get("error");
@@ -83,6 +104,7 @@ export default function Ms365Callback() {
         await clearMicrosoftSignInIntentAsync();
         try { void import("@/lib/native/requestPermissionsAfterLogin").then(m => m.requestPermissionsAfterLogin()); } catch {}
         setStatus("ok");
+        try { window.history.replaceState(null, "", next); } catch {}
         setTimeout(() => navigate(next, { replace: true }), 700);
         return;
       }
@@ -102,8 +124,13 @@ export default function Ms365Callback() {
       }).catch((err) => console.warn("ms365 webhook setup skipped", err?.message ?? err));
       try { void supabase.functions.invoke("ms365-full-import", { body: { mode: "initial" } }).catch(() => {}); } catch {}
       setStatus("ok");
+      try { window.history.replaceState(null, "", "/mplanipret/home?ms365=ok"); } catch {}
       setTimeout(() => navigate("/mplanipret/home?ms365=ok", { replace: true }), 1200);
-    })();
+    })().catch((e) => {
+      console.error("ms365 callback crashed", e);
+      setStatus("error");
+      setError(String(e?.message ?? e ?? "Échec OAuth"));
+    });
   }, [params, navigate]);
 
   return (
