@@ -146,13 +146,42 @@ class PpSipProvider {
         .filter((u) => /^wss?:\/\//i.test(u)))) as string[];
       if (!urls.length) throw new Error("No valid SIP WSS URL");
       const sockets = urls.map((u) => new (JsSIP as any).WebSocketInterface(u));
+
+      // Generate or restore a stable per-device UUID used as +sip.instance.
+      // NetSapiens uses this to route incoming INVITEs to the correct WebSocket
+      // connection even when multiple devices share the same AOR (e.g. 113_mobile).
+      // The UUID is persisted in localStorage so it survives page reloads.
+      const instanceKey = `pp_sip_instance_${cleanCfg.sipUsername}`;
+      let instanceId: string;
+      try {
+        instanceId = localStorage.getItem(instanceKey) || "";
+        if (!instanceId) {
+          instanceId = "urn:uuid:" + "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+            const r = Math.random() * 16 | 0;
+            return (c === "x" ? r : (r & 0x3 | 0x8)).toString(16);
+          });
+          localStorage.setItem(instanceKey, instanceId);
+        }
+      } catch {
+        instanceId = `urn:uuid:pp-${cleanCfg.sipUsername}-fallback`;
+      }
+
+      // Extract WSS host for the Contact URI ob parameter (outbound proxy hint).
+      // NetSapiens requires the Contact to carry ;ob so it knows to route
+      // the INVITE back through the WebSocket connection.
+      let wssHost = "";
+      try { wssHost = new URL(cleanCfg.wssUrl).host; } catch { wssHost = cleanCfg.sipProxy || cleanCfg.sipDomain; }
+
       const ua = new (JsSIP as any).UA({
         sockets,
         uri: `sip:${cleanCfg.sipUsername}@${cleanCfg.sipDomain}`,
         password: cleanCfg.password,
         authorization_user: cleanCfg.sipUsername,
         realm: cleanCfg.sipDomain,
-        contact_uri: `sip:${cleanCfg.sipUsername}@${cleanCfg.sipDomain};transport=wss`,
+        // Contact URI with ;ob (outbound) + +sip.instance for NetSapiens WebSocket routing.
+        // Without ;ob, NetSapiens cannot route incoming INVITEs back to this WebSocket client.
+        contact_uri: `sip:${cleanCfg.sipUsername}@${wssHost};transport=wss;ob`,
+        instance_id: instanceId,
         register: true,
         session_timers: false,
         // Longer expiry keeps the registration alive between the JsSIP
