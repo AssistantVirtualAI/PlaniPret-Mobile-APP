@@ -140,6 +140,7 @@ export async function buildMs365AuthorizeUrl(cfg: {
   try { sessionStorage.setItem(verifierKey(oauthState), verifier); sessionStorage.setItem(VERIFIER_STORAGE_KEY, verifier); } catch {}
   try { localStorage.setItem(verifierKey(oauthState), verifier); localStorage.setItem(VERIFIER_STORAGE_KEY, verifier); } catch {}
   try { sessionStorage.setItem(STATE_STORAGE_KEY, oauthState); localStorage.setItem(STATE_STORAGE_KEY, oauthState); } catch {}
+  await setNativeItem(REDIRECT_STORAGE_KEY, redirectUri);
   await setNativeItem(STATE_STORAGE_KEY, oauthState);
   await setNativeItem(verifierKey(oauthState), verifier);
   await setNativeItem(VERIFIER_STORAGE_KEY, verifier);

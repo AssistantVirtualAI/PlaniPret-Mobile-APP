@@ -1,10 +1,12 @@
 import { useEffect, useState, useCallback } from "react";
-import { Link2, CheckCircle2, AlertCircle, Loader2, RefreshCw, LogOut } from "lucide-react";
+import { Link2, CheckCircle2, AlertCircle, Loader2, RefreshCw, LogOut, Bug } from "lucide-react";
 import { toast } from "sonner";
 import { Capacitor } from "@capacitor/core";
 import { Browser } from "@capacitor/browser";
+import { Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import { probePlanipretScheme, logDeepLink } from "@/lib/deepLinkDebug";
 
 type Status = "loading" | "disconnected" | "connected" | "error";
 
@@ -65,9 +67,22 @@ export default function MaestroConnectCard() {
     setBusy(true);
     try {
       const isNative = Capacitor.isNativePlatform();
+
+      // iOS/Android: verify planipret:// is actually registered BEFORE opening
+      // Maestro. Otherwise Safari surfaces "adresse non valide" on redirect.
+      if (isNative) {
+        const ok = await probePlanipretScheme(1500);
+        if (!ok) {
+          logDeepLink({ kind: "error", source: "MaestroConnect", detail: "scheme planipret:// not registered — aborting" });
+          toast.error(isFr
+            ? "Le scheme planipret:// n'est pas enregistré. Rebuild l'app (npx cap sync) avant de réessayer."
+            : "The planipret:// scheme is not registered. Rebuild the app (npx cap sync) before retrying.");
+          setBusy(false);
+          return;
+        }
+      }
+
       const platform = isNative ? "mobile" : "web";
-      // Maestro whitelists planipret://auth/maestro/callback for the mobile
-      // client and https://avastatistic.ca/auth/maestro/callback for web.
       const redirectUri = isNative
         ? "planipret://auth/maestro/callback"
         : `${window.location.origin}/auth/maestro/callback`;
@@ -80,7 +95,8 @@ export default function MaestroConnectCard() {
       if (!url) throw new Error((res as any)?.error || "no_authorize_url");
 
       if (isNative) {
-        await Browser.open({ url, presentationStyle: "popover" });
+        await Browser.close().catch(() => {});
+        await Browser.open({ url, presentationStyle: "fullscreen" });
       } else {
         window.location.href = url;
       }
@@ -186,6 +202,14 @@ export default function MaestroConnectCard() {
             </>
           )}
         </div>
+
+        <Link
+          to="/mplanipret/deep-link-debug"
+          className="flex items-center gap-1 mt-2"
+          style={{ fontSize: 10, color: "var(--pp-text-muted)", textDecoration: "none" }}
+        >
+          <Bug className="w-3 h-3" /> {isFr ? "Debug deep links" : "Deep link debug"}
+        </Link>
       </div>
     </div>
   );

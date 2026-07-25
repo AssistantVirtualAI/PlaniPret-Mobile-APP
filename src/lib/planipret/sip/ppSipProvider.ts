@@ -61,11 +61,22 @@ function installSipParserGuard() {
   });
 }
 
+export interface PpSipEvent {
+  time: number;
+  level: "info" | "warn" | "error";
+  event: string;
+  detail?: string;
+}
+
+type EventsListener = (e: PpSipEvent[]) => void;
+
 class PpSipProvider {
   private ua: any = null;
   private session: any = null;
   private cfg: PpSipConfig | null = null;
   private listeners = new Set<Listener>();
+  private eventListeners = new Set<EventsListener>();
+  private events: PpSipEvent[] = [];
   private snap: PpSipSnapshot = {
     status: "idle",
     callState: "idle",
@@ -89,6 +100,17 @@ class PpSipProvider {
   }
   getSnapshot(): PpSipSnapshot { return this.snap; }
   getConfig(): PpSipConfig | null { return this.cfg; }
+
+  getEvents(): PpSipEvent[] { return this.events; }
+  subscribeEvents(fn: EventsListener): () => void {
+    this.eventListeners.add(fn);
+    fn(this.events);
+    return () => { this.eventListeners.delete(fn); };
+  }
+  clearEvents() {
+    this.events = [];
+    this.eventListeners.forEach((l) => { try { l(this.events); } catch {} });
+  }
 
   private update(patch: Partial<PpSipSnapshot>) {
     this.snap = { ...this.snap, ...patch };

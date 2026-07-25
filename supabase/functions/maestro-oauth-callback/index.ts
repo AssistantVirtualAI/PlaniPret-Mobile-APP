@@ -58,7 +58,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    const effectiveRedirect = redirect_uri ?? storedRedirect ?? "";
+    const effectiveRedirect = storedRedirect ?? redirect_uri ?? "";
     if (storedRedirect && redirect_uri && storedRedirect !== redirect_uri) {
       console.warn("[maestro-oauth-callback] redirect_uri mismatch", { stored: storedRedirect, received: redirect_uri });
     }
