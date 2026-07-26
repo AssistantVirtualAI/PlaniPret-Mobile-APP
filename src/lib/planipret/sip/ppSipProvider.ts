@@ -358,20 +358,17 @@ class PpSipProvider {
     }
     return false;
   }
-  async forceReregister(fullCycle = false) {
+  async forceReregister() {
     try {
       if (!this.ua) return;
-      // Give the initial WebSocket + REGISTER handshake room to finish.
+      // Never interrupt a connecting handshake — that was the cause of the
+      // endless "ws disconnected code:1001 → registration failed: Connection Error" loop.
       if (this.snap.status === "connecting" && Date.now() - this.connectingSince < 20_000) return;
-      // fullCycle=true is used on app foreground resume: unregister({all:true})
-      // forces NetSapiens to drop the stale contact (old WebSocket IP:port) and
-      // accept the new one from the re-established connection. Without this, NS
-      // keeps routing INVITEs to the dead socket → immediate voicemail.
-      if (fullCycle || this.snap.status === "registered") {
-        try { this.ua.unregister({ all: true }); } catch {}
-        setTimeout(() => { try { this.ua?.register(); } catch {} }, 500);
-        return;
-      }
+      // Simply send a fresh REGISTER. JsSIP will include the current WebSocket
+      // IP:port in the Contact header automatically, so NetSapiens will update
+      // its routing table without needing unregister({all:true}).
+      // NOTE: unregister({all:true}) was intentionally removed — it closes the
+      // WebSocket mid-handshake and causes code:1001 → Connection Error loops.
       try { this.ua.register(); } catch {}
     } catch {}
   }
