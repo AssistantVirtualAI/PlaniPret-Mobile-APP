@@ -6,7 +6,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
 } from "@/components/ui/dialog";
 import { toast } from "sonner";
-import { Loader2, RefreshCw, PhoneCall, CheckCircle2, AlertTriangle, XCircle, Zap, Search, Smartphone, MonitorSmartphone, ShieldCheck } from "lucide-react";
+import { Loader2, RefreshCw, PhoneCall, CheckCircle2, AlertTriangle, XCircle, Zap, Search, Smartphone, MonitorSmartphone, ShieldCheck, Stethoscope } from "lucide-react";
 import Pagination from "@/components/planipret/admin/Pagination";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 
@@ -90,6 +90,13 @@ const DICT = {
     testCallLaunched: "Appel test lancé",
     answeredByState: (who?: string) => `Répondu par ${who ?? "?"}`,
     endedState: (reason?: string) => `Terminé (${reason ?? "ok"})`,
+    diag: "Diag",
+    diagTitle: (name?: string | null) => `Diagnostic appels entrants — ${name ?? ""}`,
+    diagVerdict: "Verdict",
+    diagIssues: "Problèmes détectés",
+    diagNoIssue: "Aucun problème détecté côté routage NetSapiens.",
+    diagSummary: "Détails NetSapiens",
+    diagError: "Diagnostic échoué",
   },
   en: {
     pageTitle: "Mobile devices",
@@ -165,6 +172,13 @@ const DICT = {
     testCallLaunched: "Test call launched",
     answeredByState: (who?: string) => `Answered by ${who ?? "?"}`,
     endedState: (reason?: string) => `Ended (${reason ?? "ok"})`,
+    diag: "Diag",
+    diagTitle: (name?: string | null) => `Inbound call diagnostic — ${name ?? ""}`,
+    diagVerdict: "Verdict",
+    diagIssues: "Detected issues",
+    diagNoIssue: "No NetSapiens routing issue detected.",
+    diagSummary: "NetSapiens details",
+    diagError: "Diagnostic failed",
   },
 };
 
@@ -189,6 +203,42 @@ type Row = {
 
 type Stats = { total: number; ok: number; missing: number; error: number; partial: number };
 
+const EMPTY_STATS: Stats = { total: 0, ok: 0, missing: 0, error: 0, partial: 0 };
+
+const mobileDevicesCache: {
+  loaded: boolean;
+  rows: Row[];
+  stats: Stats;
+  inFlight: Promise<{ rows: Row[]; stats: Stats }> | null;
+} = {
+  loaded: false,
+  rows: [],
+  stats: EMPTY_STATS,
+  inFlight: null,
+};
+
+async function loadMobileDeviceStatus() {
+  if (mobileDevicesCache.inFlight) return mobileDevicesCache.inFlight;
+  mobileDevicesCache.inFlight = supabase.functions
+    .invoke("pp-mobile-device-status", { body: {} })
+    .then(({ data, error }) => {
+      if (error) throw error;
+      if (!data?.ok) throw new Error(data?.error || "Invalid report");
+      const next = {
+        rows: (data.rows ?? []) as Row[],
+        stats: (data.stats ?? EMPTY_STATS) as Stats,
+      };
+      mobileDevicesCache.loaded = true;
+      mobileDevicesCache.rows = next.rows;
+      mobileDevicesCache.stats = next.stats;
+      return next;
+    })
+    .finally(() => {
+      mobileDevicesCache.inFlight = null;
+    });
+  return mobileDevicesCache.inFlight;
+}
+
 function StatePill({ state, t }: { state: Row["state"]; t: (typeof DICT)["fr"] }) {
   const cfg = state === "ok"
     ? { label: "OK", color: SUCCESS, icon: CheckCircle2 }
@@ -210,8 +260,8 @@ export default function PAMobileDevices() {
   const t = DICT[lang];
   const dateLocale = lang === "en" ? "en-CA" : "fr-CA";
   const [loading, setLoading] = useState(false);
-  const [rows, setRows] = useState<Row[]>([]);
-  const [stats, setStats] = useState<Stats>({ total: 0, ok: 0, missing: 0, error: 0, partial: 0 });
+  const [rows, setRows] = useState<Row[]>(() => mobileDevicesCache.rows);
+  const [stats, setStats] = useState<Stats>(() => mobileDevicesCache.stats);
   const [filter, setFilter] = useState("");
   const [testBroker, setTestBroker] = useState<Row | null>(null);
   const [fromNumber, setFromNumber] = useState("");
@@ -227,15 +277,23 @@ export default function PAMobileDevices() {
 
   const refresh = useCallback(async () => {
     setLoading(true);
-    const { data, error } = await supabase.functions.invoke("pp-mobile-device-status", { body: {} });
-    setLoading(false);
-    if (error) { toast.error(t.toastReportError, { description: error.message }); return; }
-    if (!data?.ok) { toast.error(t.toastInvalidReport, { description: data?.error }); return; }
-    setRows(data.rows ?? []);
-    setStats(data.stats ?? { total: 0, ok: 0, missing: 0, error: 0, partial: 0 });
+    try {
+      const next = await loadMobileDeviceStatus();
+      setRows(next.rows);
+      setStats(next.stats);
+    } catch (error: any) {
+      toast.error(t.toastReportError, { description: error?.message });
+    } finally {
+      setLoading(false);
+    }
   }, [t]);
 
-  useEffect(() => { refresh(); }, [refresh]);
+  // Charge une seule fois par session navigateur. Revenir sur la page réutilise
+  // le cache mémoire; seul le bouton « Rafraîchir » relance la vérification.
+  useEffect(() => {
+    if (!mobileDevicesCache.loaded) refresh();
+  }, [refresh]);
+
 
   const backfill = useCallback(async () => {
     setBackfilling(true);
@@ -300,14 +358,46 @@ export default function PAMobileDevices() {
 
   const syncAnsweringRules = useCallback(async () => {
     setSyncingRules(true);
-    const { data, error } = await supabase.functions.invoke("pp-sync-answering-rules", { body: { bulk: true } });
+    let offset = 0;
+    let ok = 0;
+    let total = 0;
+    let lastError: string | null = null;
+    for (let page = 0; page < 20; page += 1) {
+      const { data, error } = await supabase.functions.invoke("pp-sync-answering-rules", {
+        body: { bulk: true, offset, limit: 50, batch_size: 10, include_results: false },
+      });
+      if (error) { lastError = error.message; break; }
+      ok += Number((data as any)?.succeeded ?? 0);
+      total += Number((data as any)?.processed ?? 0);
+      const next = (data as any)?.next_offset;
+      if (next === null || next === undefined) break;
+      offset = Number(next);
+    }
     setSyncingRules(false);
-    if (error) { toast.error(t.toastSyncRulesError, { description: error.message }); return; }
-    const ok = (data as any)?.succeeded ?? 0;
-    const total = (data as any)?.total ?? 0;
+    if (lastError && total === 0) { toast.error(t.toastSyncRulesError, { description: lastError }); return; }
     toast.success(t.toastSyncRulesSuccess(ok, total));
     refresh();
   }, [refresh, t]);
+
+  const [diagBroker, setDiagBroker] = useState<Row | null>(null);
+  const [diagLoading, setDiagLoading] = useState(false);
+  const [diagResult, setDiagResult] = useState<any>(null);
+
+  const runDiagnostic = useCallback(async (broker: Row) => {
+    setDiagBroker(broker);
+    setDiagResult(null);
+    setDiagLoading(true);
+    const { data, error } = await supabase.functions.invoke("pp-inbound-diagnostic", {
+      body: { broker_id: broker.broker_id, limit: 8 },
+    });
+    setDiagLoading(false);
+    if (error || !(data as any)?.ok) {
+      toast.error(t.diagError, { description: (data as any)?.error || error?.message });
+      setDiagResult({ error: (data as any)?.error || error?.message });
+      return;
+    }
+    setDiagResult(data);
+  }, [t]);
 
   const startTest = useCallback(async () => {
     if (!testBroker) return;
@@ -493,6 +583,10 @@ export default function PAMobileDevices() {
                       <button onClick={() => { setTestBroker(r); setTestSessionId(null); setTestState(null); setAnsweredBy(null); }} disabled={!r.ns_extension} className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}>
                         <PhoneCall className="h-3.5 w-3.5" /> {t.test}
                       </button>
+                      <button onClick={() => runDiagnostic(r)} disabled={!r.ns_extension || diagLoading} className="inline-flex items-center gap-1 rounded-lg px-2.5 py-1.5 text-xs font-medium" style={{ background: `${WARNING}16`, border: `1px solid ${WARNING}33`, color: WARNING, opacity: diagLoading ? 0.65 : 1 }}>
+                        {diagLoading && diagBroker?.broker_id === r.broker_id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Stethoscope className="h-3.5 w-3.5" />} {t.diag}
+                      </button>
+
                     </div>
                   </td>
                 </tr>
@@ -550,6 +644,47 @@ export default function PAMobileDevices() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={!!diagBroker} onOpenChange={(o) => { if (!o) { setDiagBroker(null); setDiagResult(null); } }}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>{t.diagTitle(diagBroker?.full_name)}</DialogTitle>
+          </DialogHeader>
+          <div className="max-h-[65vh] space-y-3 overflow-y-auto text-sm">
+            {diagLoading && <div className="flex items-center gap-2 text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" /> …</div>}
+            {diagResult?.verdict && (
+              <div className="rounded-md border bg-muted/40 p-3">
+                <div className="font-medium">{t.diagVerdict}: <code>{diagResult.verdict}</code></div>
+                <div className="mt-1 text-xs text-muted-foreground">ext {diagResult.extension} · {diagResult.domain}</div>
+              </div>
+            )}
+            {diagResult?.issues && (
+              <div>
+                <div className="mb-1 font-medium">{t.diagIssues}</div>
+                {diagResult.issues.length === 0
+                  ? <div className="text-xs text-muted-foreground">{t.diagNoIssue}</div>
+                  : <ul className="list-disc space-y-1 pl-5 text-xs">{diagResult.issues.map((i: string, k: number) => <li key={k}>{i}</li>)}</ul>}
+              </div>
+            )}
+            {diagResult && (
+              <div>
+                <div className="mb-1 font-medium">{t.diagSummary}</div>
+                <pre className="overflow-x-auto rounded-md bg-muted/40 p-3 text-[10px] leading-relaxed">
+                  {JSON.stringify(diagResult.summary ?? diagResult, null, 2)}
+                </pre>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => { setDiagBroker(null); setDiagResult(null); }}>{t.close}</Button>
+            <Button onClick={() => diagBroker && runDiagnostic(diagBroker)} disabled={diagLoading}>
+              {diagLoading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Stethoscope className="mr-2 h-4 w-4" />}
+              {t.diag}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
     </div>
   );
 }

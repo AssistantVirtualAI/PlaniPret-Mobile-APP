@@ -5,6 +5,23 @@ declare const EdgeRuntime: { waitUntil: (p: Promise<unknown>) => void };
 
 const ok = () => new Response(JSON.stringify({ received: true }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
+function b64url(input: ArrayBuffer | string) {
+  const bytes = typeof input === "string" ? new TextEncoder().encode(input) : new Uint8Array(input);
+  let binary = "";
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+async function apnsJwt(teamId: string, keyId: string, privateKeyPem: string) {
+  const header = b64url(JSON.stringify({ alg: "ES256", kid: keyId }));
+  const claims = b64url(JSON.stringify({ iss: teamId, iat: Math.floor(Date.now() / 1000) }));
+  const pem = privateKeyPem.replace(/-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----|\s/g, "");
+  const raw = Uint8Array.from(atob(pem), (c) => c.charCodeAt(0));
+  const key = await crypto.subtle.importKey("pkcs8", raw, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
+  const sig = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, new TextEncoder().encode(`${header}.${claims}`));
+  return `${header}.${claims}.${b64url(sig)}`;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
@@ -52,6 +69,47 @@ async function processEvent(event: any) {
       headers: { Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`, "Content-Type": "application/json" },
       body: JSON.stringify({ user_id: uid, ...payload }),
     }).catch(() => {});
+  };
+
+  const sendVoipPush = async (uid: string, payload: any) => {
+    const { data: tokens } = await admin
+      .from("planipret_voip_push_tokens")
+      .select("device_token,bundle_id,environment")
+      .eq("user_id", uid)
+      .eq("platform", "ios");
+    if (!tokens?.length) return;
+
+    const [{ data: cfg }, { data: secrets }] = await Promise.all([
+      admin.from("planipret_integration_config").select("config_data").eq("integration_key", "mobile_app").maybeSingle(),
+      admin.from("planipret_integration_secrets").select("config").eq("provider", "mobile_app").maybeSingle(),
+    ]);
+    const config = { ...((cfg?.config_data ?? {}) as Record<string, string>), ...((secrets?.config ?? {}) as Record<string, string>) };
+    const keyId = config.apns_key_id ?? Deno.env.get("APNS_KEY_ID");
+    const teamId = config.apns_team_id ?? Deno.env.get("APNS_TEAM_ID");
+    const privateKey = config.apns_private_key ?? Deno.env.get("APNS_PRIVATE_KEY");
+    if (!keyId || !teamId || !privateKey) {
+      console.warn("[ns-webhook] APNs VoIP not configured");
+      return;
+    }
+
+    const jwt = await apnsJwt(teamId, keyId, privateKey);
+    await Promise.allSettled(tokens.map(async (row: any) => {
+      const bundleId = row.bundle_id || config.ios_bundle_id || Deno.env.get("PLANIPRET_IOS_BUNDLE_ID");
+      if (!bundleId) return;
+      const host = row.environment === "sandbox" ? "api.sandbox.push.apple.com" : "api.push.apple.com";
+      const res = await fetch(`https://${host}/3/device/${row.device_token}`, {
+        method: "POST",
+        headers: {
+          authorization: `bearer ${jwt}`,
+          "apns-topic": `${bundleId}.voip`,
+          "apns-push-type": "voip",
+          "apns-priority": "10",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ aps: { "content-available": 1 }, ...payload }),
+      });
+      if (!res.ok) console.error("[ns-webhook] APNs VoIP failed", res.status, await res.text().catch(() => ""));
+    }));
   };
 
   function isDndActive(p: any): boolean {
@@ -107,16 +165,15 @@ async function processEvent(event: any) {
       }).catch(() => {});
 
       // Maestro pipeline: resolve uuid by ns_call_id, then push CDR → transcript → AI.
-      admin.from("planipret_phone_calls").select("id").eq("ns_call_id", String(callId)).maybeSingle()
+      void admin.from("planipret_phone_calls").select("id").eq("ns_call_id", String(callId)).maybeSingle()
         .then(({ data: row }) => {
           if (row?.id) {
-            fetch(`${SUPABASE_URL}/functions/v1/maestro-cdr`, {
+            void fetch(`${SUPABASE_URL}/functions/v1/maestro-cdr`, {
               method: "POST", headers: { Authorization: authH, "Content-Type": "application/json" },
               body: JSON.stringify({ call_id: row.id }),
             }).catch(() => {});
           }
-        })
-        .catch(() => {});
+        }, () => {});
     }
   } else if (type === "call.inbound") {
     const callId = data.call_id ?? data.id;
@@ -134,6 +191,12 @@ async function processEvent(event: any) {
         payload: { type: "inbound_call", call_id: callId, from_number: data.from_number ?? data.from, to_number: data.to_number ?? data.to },
       });
       if (brokerProfile?.notif_calls !== false) {
+        await sendVoipPush(userId, {
+          call_id: callId ? String(callId) : crypto.randomUUID(),
+          from_number: data.from_number ?? data.from ?? "Inconnu",
+          to_number: data.to_number ?? data.to ?? ext,
+          type: "incoming_call",
+        });
         sendPush(userId, {
           title: "📞 Appel entrant",
           body: data.from_number ?? data.from ?? "Inconnu",

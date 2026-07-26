@@ -39,7 +39,8 @@ export default function MSipDebug() {
   }, []);
 
   const cfg = ppSipProvider.getConfig();
-  const currentIdx = Math.max(0, STAGES.indexOf(snap.status as any));
+  const rawIdx = STAGES.indexOf(snap.status as any);
+  const currentIdx = rawIdx >= 0 ? rawIdx : 0;
   const isError = snap.status === "error";
 
   const copy = async () => {
@@ -90,7 +91,7 @@ export default function MSipDebug() {
 
         <div className="flex items-center gap-1">
           {STAGES.map((s, i) => (
-            <StageDot key={s} label={s} active={!isError && currentIdx === i} done={!isError && currentIdx > i} error={isError && i === Math.min(currentIdx, STAGES.length - 1)} />
+            <StageDot key={s} label={s} active={!isError && currentIdx === i && s !== "registered"} done={!isError && ((snap.status === "registered" && currentIdx >= i) || currentIdx > i)} error={isError && i === Math.min(currentIdx, STAGES.length - 1)} />
           ))}
         </div>
 

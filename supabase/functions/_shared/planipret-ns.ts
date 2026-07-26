@@ -202,6 +202,16 @@ export async function nsFetch(path: string, init: RequestInit = {}, opts: { func
   if (res.status >= 500) breakerRecordFailure(`HTTP ${res.status}`);
   else if (res.ok) breakerRecordSuccess();
 
+  // Log non-OK bodies (clone so callers can still read the body)
+  if (!res.ok) {
+    try {
+      const errText = await res.clone().text();
+      console.error(`[nsFetch] ${method} ${path} → ${res.status} ${errText.substring(0, 300)}`);
+    } catch { /* ignore */ }
+  }
+
+
+
   // Fire & forget log to planipret_ns_request_log
   try {
     const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -231,7 +241,7 @@ export async function nsFetch(path: string, init: RequestInit = {}, opts: { func
  */
 export async function requirePlanipretBroker(
   req: Request,
-): Promise<{ ctx: NsContext; supabase: ReturnType<typeof createClient>; userClient: ReturnType<typeof createClient> } | Response> {
+): Promise<{ ctx: NsContext; supabase: any; userClient: any } | Response> {
   const authHeader = req.headers.get("Authorization");
   if (!authHeader?.startsWith("Bearer ")) {
     return new Response(JSON.stringify({ error: "Unauthorized" }), {

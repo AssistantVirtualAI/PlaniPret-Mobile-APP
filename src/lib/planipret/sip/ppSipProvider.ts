@@ -37,7 +37,15 @@ export interface PpSipSnapshot {
 }
 
 
+export interface PpSipEvent {
+  time: number;
+  level: "info" | "warn" | "error";
+  event: string;
+  detail?: string;
+}
+
 type Listener = (s: PpSipSnapshot) => void;
+type EventsListener = (e: PpSipEvent[]) => void;
 
 let sipParserGuardInstalled = false;
 
@@ -61,15 +69,6 @@ function installSipParserGuard() {
   });
 }
 
-export interface PpSipEvent {
-  time: number;
-  level: "info" | "warn" | "error";
-  event: string;
-  detail?: string;
-}
-
-type EventsListener = (e: PpSipEvent[]) => void;
-
 class PpSipProvider {
   private ua: any = null;
   private session: any = null;
@@ -92,7 +91,10 @@ class PpSipProvider {
 
   audioEl: HTMLAudioElement | null = null;
   private lastSig = "";
-  private _keepaliveTimer: ReturnType<typeof setInterval> | null = null;
+  private lastStartAt = 0;
+  private connectingSince = 0;
+  private regRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private regFailures = 0;
 
   subscribe(fn: Listener): () => void {
     this.listeners.add(fn);
@@ -122,6 +124,11 @@ class PpSipProvider {
     const fn = level === "error" ? "error" : level === "warn" ? "warn" : "log";
     // eslint-disable-next-line no-console
     (console as any)[fn](`[pp-sip] ${msg}`, detail ?? "");
+    const detailStr = detail === undefined || detail === null || detail === ""
+      ? undefined
+      : typeof detail === "string" ? detail : (() => { try { return JSON.stringify(detail); } catch { return String(detail); } })();
+    this.events = [...this.events, { time: Date.now(), level, event: msg, detail: detailStr }].slice(-200);
+    this.eventListeners.forEach((l) => { try { l(this.events); } catch {} });
   }
 
   async init(cfg: PpSipConfig) {
@@ -136,9 +143,24 @@ class PpSipProvider {
     if (this.ua && sig === this.lastSig && (this.snap.status === "registered" || this.snap.status === "connected")) {
       return;
     }
+    // Never tear down a UA that is still in its initial connect/REGISTER
+    // handshake — doing so closed the WebSocket (code 1001) before NetSapiens
+    // could answer, which surfaced as an endless "registration failed:
+    // Connection Error" loop on iOS.
+    if (this.ua && sig === this.lastSig) {
+      const busyConnecting = this.snap.status === "connecting" && Date.now() - this.connectingSince < 20_000;
+      const tooSoon = Date.now() - this.lastStartAt < 15_000;
+      if (busyConnecting || tooSoon) {
+        try { this.ua.register(); } catch {}
+        return;
+      }
+    }
     if (this.ua) this.stop();
     this.cfg = cleanCfg;
     this.lastSig = sig;
+    this.connectingSince = Date.now();
+    this.lastStartAt = Date.now();
+    this.regFailures = 0;
     this.update({ status: "connecting", errorCause: undefined });
 
     try {
@@ -153,34 +175,28 @@ class PpSipProvider {
         password: cleanCfg.password,
         authorization_user: cleanCfg.sipUsername,
         realm: cleanCfg.sipDomain,
-        // Do NOT set contact_uri manually — JsSIP auto-generates it with the
-        // real WebSocket peer address (IP:port) which NetSapiens needs to route
-        // incoming INVITEs back to this WebSocket connection. A hardcoded
-        // domain-based contact_uri causes NetSapiens to mark the device as
-        // registered but fail to deliver incoming INVITEs (calls go to voicemail).
+        contact_uri: `sip:${cleanCfg.sipUsername}@${cleanCfg.sipDomain};transport=wss`,
         register: true,
-        session_timers: true,
-        // Longer expiry keeps the registration alive between the JsSIP
-        // auto re-REGISTER (fires around expiry/2). 120s caused visible
-        // dropouts on the diagnostic page whenever the network hiccuped
-        // between two re-REGISTERs.
-        register_expires: 600,
+        session_timers: false,
+        // Match the native keep-alive REGISTER expiry so NetSapiens does not
+        // expire one contact while the other still shows "registered" locally.
+        register_expires: 1800,
         connection_recovery_min_interval: 2,
         connection_recovery_max_interval: 30,
         user_agent: "Planipret Softphone 1.0",
       });
 
-      ua.on("connecting", () => this.update({ status: "connecting" }));
+      ua.on("connecting", () => { this.connectingSince = Date.now(); this.update({ status: "connecting" }); });
       ua.on("connected", () => this.update({ status: "connected" }));
       ua.on("disconnected", (e: any) => {
         this.log("warn", "ws disconnected", e);
-        this._stopKeepalive();
         this.update({ status: "disconnected", errorCause: e?.reason || "ws_disconnected" });
         // JsSIP retries the socket via connection_recovery_*; no manual work needed.
       });
       ua.on("registered", () => {
-        this.update({ status: "registered", errorCause: undefined, lastRegistrationAt: Date.now() });
-        this._startKeepalive();
+        this.regFailures = 0;
+        if (this.regRetryTimer) { clearTimeout(this.regRetryTimer); this.regRetryTimer = null; }
+        return this.update({ status: "registered", errorCause: undefined, lastRegistrationAt: Date.now() });
       });
       ua.on("unregistered", () => {
         this.log("warn", "unregistered - forcing re-register");
@@ -193,9 +209,14 @@ class PpSipProvider {
         const cause = e?.cause || e?.response?.reason_phrase || "registration_failed";
         this.log("error", `registration failed: ${cause}`);
         this.update({ status: "error", errorCause: cause });
-        // Retry once after a short backoff — most NS failures here are transient
-        // (429, 503, nonce reuse) and recover on a second attempt.
-        setTimeout(() => { try { this.ua?.register(); } catch {} }, 8000);
+        // Retry with exponential backoff and a single pending timer — stacking
+        // retries hammered NetSapiens and kept the socket in a failed state.
+        this.regFailures = Math.min(this.regFailures + 1, 6);
+        if (this.regRetryTimer) clearTimeout(this.regRetryTimer);
+        this.regRetryTimer = setTimeout(() => {
+          this.regRetryTimer = null;
+          try { this.ua?.register(); } catch {}
+        }, Math.min(60_000, 5_000 * this.regFailures));
       });
       ua.on("newRTCSession", (e: any) => this.attachSession(e.session, e.originator));
 
@@ -228,20 +249,6 @@ class PpSipProvider {
       muted: false,
       onHold: false,
     });
-
-    // If the user tapped "Répondre" on the native background notification
-    // before JsSIP had a chance to receive the INVITE, auto-answer as soon as
-    // the session arrives (within a 30s intent window).
-    if (incoming) {
-      try {
-        const pending = (typeof window !== "undefined") ? (window as any).__ppPendingAnswer : null;
-        if (pending && (Date.now() - (pending.ts || 0)) < 30_000) {
-          (window as any).__ppPendingAnswer = null;
-          setTimeout(() => { try { this.answer(); } catch {} }, 250);
-        }
-      } catch {}
-    }
-
 
     session.on("progress", () => { if (!incoming) this.update({ callState: "ringing-out" }); });
     session.on("confirmed", () => this.update({ callState: "active", startedAt: Date.now() }));
@@ -351,33 +358,21 @@ class PpSipProvider {
   async forceReregister() {
     try {
       if (!this.ua) return;
-      try { this.ua.unregister({ all: true }); } catch {}
-      setTimeout(() => { try { this.ua?.register(); } catch {} }, 250);
+      // Only cycle the registration when we actually hold one. Calling
+      // unregister({all:true}) while the UA is still connecting aborted the
+      // in-flight REGISTER and produced "Connection Error".
+      if (this.snap.status === "registered") {
+        try { this.ua.unregister({ all: true }); } catch {}
+        setTimeout(() => { try { this.ua?.register(); } catch {} }, 250);
+        return;
+      }
+      if (this.snap.status === "connecting" && Date.now() - this.connectingSince < 20_000) return;
+      try { this.ua.register(); } catch {}
     } catch {}
   }
 
-  private _startKeepalive() {
-    this._stopKeepalive();
-    this._keepaliveTimer = setInterval(() => {
-      try {
-        if (this.ua && (this.snap.status === "registered" || this.snap.status === "connected")) {
-          // Send SIP OPTIONS as WebSocket keep-alive to prevent NetSapiens
-          // from closing the connection after 60s of inactivity.
-          this.ua.sendOptions(this.cfg?.sipDomain ?? "planipret.ca", null, {});
-        }
-      } catch (e) {
-        this.log("warn", "keepalive OPTIONS failed", e);
-      }
-    }, 30000);
-  }
-  private _stopKeepalive() {
-    if (this._keepaliveTimer !== null) {
-      clearInterval(this._keepaliveTimer);
-      this._keepaliveTimer = null;
-    }
-  }
   stop() {
-    this._stopKeepalive();
+    if (this.regRetryTimer) { clearTimeout(this.regRetryTimer); this.regRetryTimer = null; }
     try { this.ua?.stop(); } catch {}
     this.ua = null;
     this.session = null;
