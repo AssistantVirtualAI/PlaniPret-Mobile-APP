@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Planiprêt</string>
+    <string name="title_activity_main">Planiprêt</string>
+    <string name="package_name">com.planipret.mobile</string>
+    <string name="custom_url_scheme">com.planipret.mobile</string>
+</resources>
