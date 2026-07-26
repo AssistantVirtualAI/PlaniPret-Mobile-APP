@@ -37,6 +37,17 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private let callIdReg = UUID().uuidString + "@planipret-ios"
     private let fromTag = String(Int(Date().timeIntervalSince1970 * 1000), radix: 16)
 
+    // FIX 1: instanceId stable par session — ne change pas entre les REGISTER
+    // Un UUID aléatoire à chaque REGISTER faisait croire à NS que c'était un
+    // nouvel appareil → NS fermait le WebSocket (code 1001) avant d'envoyer 200 OK
+    private let instanceId = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+
+    // FIX 3: throttle REGISTER — max 1 par 800ms pour éviter le flood
+    private var lastRegisterSent: Date = .distantPast
+    // FIX 4: backoff exponentiel pour la reconnexion WebSocket
+    private var reconnectDelay: Double = 2.0
+    private var wsReady = false  // true uniquement après urlSession(_:webSocketTask:didOpenWithProtocol:)
+
     // RFC 8599 push token — set by PpVoipCall or JS via setVoipPushToken
     private var voipPushToken: String = ""
     private var voipBundleId: String = ""
@@ -70,10 +81,11 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       if let tok = call.getString("voipPushToken"), !tok.isEmpty { voipPushToken = tok }
       if let bid = call.getString("bundleId"), !bid.isEmpty { voipBundleId = bid }
       if voipBundleId.isEmpty { voipBundleId = Bundle.main.bundleIdentifier ?? "" }
+      reconnectDelay = 2.0
       activateAudioSession(); connect(); scheduleRegister(); call.resolve(snapshot(ok: true))
     }
 
-    @objc func stopSipService(_ call: CAPPluginCall) { timer?.invalidate(); socket?.cancel(with: .goingAway, reason: nil); socket = nil; endBackgroundTask(); setStatus("disconnected", "stopped"); call.resolve(snapshot(ok: true)) }
+    @objc func stopSipService(_ call: CAPPluginCall) { timer?.invalidate(); socket?.cancel(with: .goingAway, reason: nil); socket = nil; wsReady = false; endBackgroundTask(); setStatus("disconnected", "stopped"); call.resolve(snapshot(ok: true)) }
     @objc func getSipServiceStatus(_ call: CAPPluginCall) { call.resolve(snapshot(ok: true)) }
     @objc func triggerReregister(_ call: CAPPluginCall) { sendRegister(challenge: nil); notifyListeners("sipReregisterRequested", data: ["reason": "manual"]); call.resolve(snapshot(ok: true)) }
 
@@ -97,21 +109,83 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     @objc private func onBgRefresh() { if !login.isEmpty { connect(); sendRegister(challenge: nil); notifyListeners("sipReregisterRequested", data: ["reason": "bg_task_refresh"]); NSLog("[PpSipKeepAlive] BGTask refresh — REGISTER sent") } }
 
     private func activateAudioSession() { try? AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .allowBluetoothA2DP, .mixWithOthers]); try? AVAudioSession.sharedInstance().setActive(true) }
+
     private func connect() {
       guard !host.isEmpty else { setStatus("error", "missing_host"); return }
       if socket != nil { return }
+      wsReady = false
       var comps = URLComponents(); comps.scheme = port == 80 ? "ws" : "wss"; comps.host = host; comps.port = port; comps.path = path.isEmpty ? "/" : path
       guard let url = comps.url else { setStatus("error", "bad_ws_url"); return }
       var req = URLRequest(url: url); req.setValue("sip", forHTTPHeaderField: "Sec-WebSocket-Protocol")
       socket = session.webSocketTask(with: req); socket?.resume(); setStatus("connecting", "ws_connecting"); receiveLoop()
-      DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in self?.sendRegister(challenge: nil) }
+      // FIX 4: Ne pas envoyer REGISTER immédiatement — attendre urlSession didOpen (wsReady = true)
+      // Le sendRegister sera déclenché par urlSession(_:webSocketTask:didOpenWithProtocol:)
     }
+
+    // FIX 4: URLSessionWebSocketDelegate — déclenche le premier REGISTER quand le WS est vraiment ouvert
+    public func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
+      DispatchQueue.main.async { [weak self] in
+        guard let self = self else { return }
+        self.wsReady = true
+        self.reconnectDelay = 2.0  // reset backoff après connexion réussie
+        NSLog("[PpSipKeepAlive] WS opened — sending initial REGISTER")
+        self.sendRegister(challenge: nil)
+      }
+    }
+
+    public func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
+      DispatchQueue.main.async { [weak self] in
+        guard let self = self else { return }
+        self.wsReady = false
+        self.socket = nil
+        let delay = self.reconnectDelay
+        self.reconnectDelay = min(self.reconnectDelay * 2, 30.0)  // backoff exponentiel max 30s
+        NSLog("[PpSipKeepAlive] WS closed (code \(closeCode.rawValue)) — reconnecting in \(delay)s")
+        self.setStatus("reconnecting", "ws_closed")
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in self?.connect() }
+      }
+    }
+
     private func scheduleRegister() { timer?.invalidate(); timer = Timer.scheduledTimer(withTimeInterval: 240, repeats: true) { [weak self] _ in self?.sendRegister(challenge: nil) }; RunLoop.main.add(timer!, forMode: .common) }
-    private func receiveLoop() { socket?.receive { [weak self] result in guard let self = self else { return }; switch result { case .success(let message): if case .string(let text) = message { self.handle(text) }; self.receiveLoop(); case .failure: self.socket = nil; self.setStatus("reconnecting", "ws_closed"); DispatchQueue.main.asyncAfter(deadline: .now() + 5) { self.connect() } } } }
+
+    private func receiveLoop() {
+      socket?.receive { [weak self] result in
+        guard let self = self else { return }
+        switch result {
+        case .success(let message):
+          if case .string(let text) = message { DispatchQueue.main.async { self.handle(text) } }
+          self.receiveLoop()
+        case .failure(let error):
+          DispatchQueue.main.async {
+            self.wsReady = false
+            self.socket = nil
+            let delay = self.reconnectDelay
+            self.reconnectDelay = min(self.reconnectDelay * 2, 30.0)
+            NSLog("[PpSipKeepAlive] receiveLoop error: \(error.localizedDescription) — reconnecting in \(delay)s")
+            self.setStatus("reconnecting", "ws_closed")
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in self?.connect() }
+          }
+        }
+      }
+    }
 
     private func handle(_ msg: String) {
-      if msg.hasPrefix("SIP/2.0 401") || msg.hasPrefix("SIP/2.0 407") { sendRegister(challenge: headerVal(msg, msg.hasPrefix("SIP/2.0 407") ? "Proxy-Authenticate" : "WWW-Authenticate")); return }
-      if msg.hasPrefix("SIP/2.0 200") && msg.uppercased().contains(" REGISTER") { setStatus("registered", "native_register_200"); return }
+      if msg.hasPrefix("SIP/2.0 401") || msg.hasPrefix("SIP/2.0 407") {
+        // Challenge reçu — répondre immédiatement (bypass throttle)
+        let hdrName = msg.hasPrefix("SIP/2.0 407") ? "Proxy-Authenticate" : "WWW-Authenticate"
+        sendRegisterForced(challenge: headerVal(msg, hdrName))
+        return
+      }
+      if msg.hasPrefix("SIP/2.0 200") && msg.uppercased().contains(" REGISTER") {
+        reconnectDelay = 2.0  // reset backoff après 200 OK
+        setStatus("registered", "native_register_200")
+        return
+      }
+      if msg.hasPrefix("SIP/2.0 403") || msg.hasPrefix("SIP/2.0 404") {
+        NSLog("[PpSipKeepAlive] REGISTER rejected (\(msg.prefix(15))) — stopping retries")
+        setStatus("error", "register_rejected")
+        return
+      }
       if msg.hasPrefix("INVITE ") {
         setStatus("registered", "incoming_invite")
         let fromHdr = headerVal(msg, "From") ?? ""
@@ -163,8 +237,9 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     // MARK: - SIP REGISTER with RFC 8599 push params
 
     private func buildContactHeader() -> String {
-      // Unique instance ID per registration (required by RFC 8599 / outbound)
-      let instanceId = UUID().uuidString.replacingOccurrences(of: "-", with: "")
+      // FIX 1: instanceId stable — même valeur pour toute la session
+      // Un UUID différent à chaque REGISTER faisait croire à NS que c'était
+      // un nouvel appareil → NS fermait le WS (code 1001) avant d'envoyer 200 OK
       var contact = "<sip:" + login + "@" + instanceId + ".invalid;transport=wss"
 
       // RFC 8599 — embed push notification parameters so NetSapiens can
@@ -186,8 +261,32 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       return contact
     }
 
+    // FIX 3: throttle — max 1 REGISTER non-challenge par 800ms
     private func sendRegister(challenge: String?) {
-      if socket == nil { connect(); return }
+      guard challenge != nil else {
+        // Non-challenge REGISTER: throttle
+        let now = Date()
+        guard now.timeIntervalSince(lastRegisterSent) >= 0.8 else { return }
+        lastRegisterSent = now
+        sendRegisterRaw(challenge: nil)
+        return
+      }
+      // Challenge response: envoyer immédiatement
+      sendRegisterForced(challenge: challenge)
+    }
+
+    // Envoie un REGISTER avec challenge sans throttle (réponse 401/407)
+    private func sendRegisterForced(challenge: String?) {
+      lastRegisterSent = Date()
+      sendRegisterRaw(challenge: challenge)
+    }
+
+    private func sendRegisterRaw(challenge: String?) {
+      // FIX 4: Ne pas envoyer si le WS n'est pas encore ouvert
+      guard wsReady, socket != nil else {
+        if socket == nil { connect() }
+        return
+      }
       guard !login.isEmpty, !domain.isEmpty else { setStatus("error", "missing_credentials"); return }
       let seq = cseq; cseq += 1
       let branch = "z9hG4bK" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
@@ -195,10 +294,21 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       var sip = "REGISTER sip:" + domain + " SIP/2.0\r\n"
       sip += "Via: SIP/2.0/WSS planipret-ios.invalid;branch=" + branch + "\r\nMax-Forwards: 70\r\n"
       sip += "To: <sip:" + login + "@" + domain + ">\r\nFrom: \"" + displayName.replacingOccurrences(of: "\"", with: "") + "\" <sip:" + login + "@" + domain + ">;tag=" + fromTag + "\r\n"
-      sip += "Call-ID: " + callIdReg + "\r\nCSeq: " + String(seq) + " REGISTER\r\nContact: " + contact + ";expires=600\r\nExpires: 600\r\nUser-Agent: Planipret iOS KeepAlive\r\nSupported: outbound,path,gruu\r\nAllow: INVITE,ACK,CANCEL,BYE,OPTIONS,MESSAGE,INFO,UPDATE,REGISTER\r\n"
+      sip += "Call-ID: " + callIdReg + "\r\nCSeq: " + String(seq) + " REGISTER\r\n"
+      sip += "Contact: " + contact + ";expires=600\r\nExpires: 600\r\n"
+      // FIX 2: Route header (use_preloaded_route équivalent natif)
+      // NS utilise ce Route pour router les INVITEs entrants via le WS établi
+      // au lieu d'essayer de contacter l'adresse .invalid du Contact
+      sip += "Route: <sip:" + host + ":" + String(port) + ";transport=wss;lr>\r\n"
+      sip += "User-Agent: Planipret iOS KeepAlive\r\nSupported: outbound,path,gruu\r\nAllow: INVITE,ACK,CANCEL,BYE,OPTIONS,MESSAGE,INFO,UPDATE,REGISTER\r\n"
       if let ch = challenge, !password.isEmpty { sip += "Authorization: " + digest(challenge: ch) + "\r\n" }
       sip += "Content-Length: 0\r\n\r\n"
-      socket?.send(.string(sip)) { [weak self] err in DispatchQueue.main.async { self?.setStatus(err == nil ? "connecting" : "error", err == nil ? (challenge == nil ? "register_sent" : "register_auth_sent") : "register_send_failed") } }
+      socket?.send(.string(sip)) { [weak self] err in
+        DispatchQueue.main.async {
+          self?.setStatus(err == nil ? "connecting" : "error",
+                          err == nil ? (challenge == nil ? "register_sent" : "register_auth_sent") : "register_send_failed")
+        }
+      }
     }
 
     private func digest(challenge: String) -> String { let m = parseDigest(challenge); let realm = m["realm"] ?? domain; let nonce = m["nonce"] ?? ""; let qop = m["qop"] ?? ""; let uri = "sip:" + domain; let nc = "00000001"; let cnonce = String(Int(Date().timeIntervalSince1970 * 1000), radix: 16); let ha1 = md5(login + ":" + realm + ":" + password); let ha2 = md5("REGISTER:" + uri); let response = qop.contains("auth") ? md5(ha1 + ":" + nonce + ":" + nc + ":" + cnonce + ":auth:" + ha2) : md5(ha1 + ":" + nonce + ":" + ha2); var out = "Digest username=\"" + login + "\", realm=\"" + realm + "\", nonce=\"" + nonce + "\", uri=\"" + uri + "\", response=\"" + response + "\", algorithm=MD5"; if qop.contains("auth") { out += ", qop=auth, nc=" + nc + ", cnonce=\"" + cnonce + "\"" }; if let opaque = m["opaque"] { out += ", opaque=\"" + opaque + "\"" }; return out }
