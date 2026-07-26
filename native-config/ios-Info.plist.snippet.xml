@@ -20,18 +20,31 @@
     <string>fetch</string>
 </array>
 
-<!-- Deep link scheme : planipret:// -->
+<!-- Deep link schemes:
+     - planipret://auth/maestro/callback for Maestro mobile OAuth
+     - capacitor://localhost/auth/microsoft/callback for Microsoft mobile OAuth
+-->
 <key>CFBundleURLTypes</key>
 <array>
     <dict>
         <key>CFBundleURLName</key>
-        <string>com.planipret.mobile</string>
+        <string>com.planipret.mobile.oauth</string>
         <key>CFBundleURLSchemes</key>
         <array>
             <string>planipret</string>
+            <string>capacitor</string>
         </array>
     </dict>
 </array>
+
+<!--
+  iOS Universal Links
+  Also add the "Associated Domains" capability in Xcode (Signing & Capabilities)
+  with the entry: applinks:avastatistic.ca
+  Requires public/.well-known/apple-app-site-association served as
+  application/json (no extension) at https://avastatistic.ca/.well-known/apple-app-site-association
+  with the correct TEAMID.com.planipret.mobile appID.
+-->
 
 <!-- Identifiant Bundle -->
 <key>CFBundleIdentifier</key>

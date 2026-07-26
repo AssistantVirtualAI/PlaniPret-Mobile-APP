@@ -6,7 +6,7 @@
 |---|---|
 | **App ID (iOS/Android)** | `com.planipret.mobile` |
 | **Nom d'affichage** | `Planiprêt` |
-| **Schéma deep link** | `planipret://` |
+| **Schémas deep link** | Maestro: `planipret://` · Microsoft: `capacitor://localhost` |
 | **Port de développement** | `5175` |
 | **App Lemtel (distinct)** | `com.lemtel.softphone` |
 
@@ -55,6 +55,7 @@ Les certificats APNs de Planiprêt sont **distincts** de ceux de Lemtel :
 - Push Notifications
 - Background Modes : Audio, VoIP, Remote notifications
 - App Groups (optionnel, pour partage de données avec extension)
+- URL Types : `planipret` et `capacitor`
 
 ---
 
@@ -81,6 +82,7 @@ android {
 - Icône principale : `assets/planipret-icon.png` (1024×1024)
 - Couleur de thème : `#1A4A8A` (bleu Planiprêt)
 - Splash screen : fond `#0A1425` (bleu nuit)
+- Deep links : ajouter les schemes `planipret` et `capacitor` dans l'activité principale
 
 ---
 

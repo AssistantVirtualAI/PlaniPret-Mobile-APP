@@ -24,13 +24,45 @@
     android:roundIcon="@mipmap/ic_launcher_planipret_round"
     android:theme="@style/AppTheme.Planipret">
 
-    <!-- Deep link handler : planipret:// -->
     <activity android:name=".MainActivity">
-        <intent-filter android:autoVerify="true">
+        <!-- Custom scheme deep links:
+             - planipret://auth/maestro/callback for Maestro mobile OAuth
+             - capacitor://localhost/auth/microsoft/callback for Microsoft mobile OAuth
+        -->
+        <intent-filter>
             <action android:name="android.intent.action.VIEW" />
             <category android:name="android.intent.category.DEFAULT" />
             <category android:name="android.intent.category.BROWSABLE" />
             <data android:scheme="planipret" />
+        </intent-filter>
+
+        <intent-filter>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="capacitor" android:host="localhost"
+                  android:pathPrefix="/auth/microsoft/callback" />
+            <data android:scheme="capacitor" android:host="localhost"
+                  android:pathPrefix="/auth/ms365/callback" />
+        </intent-filter>
+
+        <!--
+          Android App Links (https)
+          Requires public/.well-known/assetlinks.json served at
+          https://avastatistic.ca/.well-known/assetlinks.json
+          with the app's SHA256 signing certificate fingerprint.
+          autoVerify=true triggers Google to verify assetlinks.json on install.
+        -->
+        <intent-filter android:autoVerify="true">
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="https" android:host="avastatistic.ca"
+                  android:pathPrefix="/auth/maestro/callback" />
+            <data android:scheme="https" android:host="avastatistic.ca"
+                  android:pathPrefix="/auth/microsoft/callback" />
+            <data android:scheme="https" android:host="avastatistic.ca"
+                  android:pathPrefix="/auth/ms365/callback" />
         </intent-filter>
     </activity>
 

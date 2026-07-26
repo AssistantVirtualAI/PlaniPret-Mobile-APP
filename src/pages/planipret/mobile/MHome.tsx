@@ -1,4 +1,3 @@
-import React from "react";
 import { useEffect, useMemo, useState } from "react";
 import { useOutletContext, useNavigate } from "react-router-dom";
 
@@ -7,7 +6,7 @@ import {
   Phone, PhoneMissed, MessageSquare, Voicemail,
   ArrowDownLeft, ArrowUpRight, X, Calendar, Headphones, Bot,
   BellOff, Flame, Sparkles, ChevronRight, ChevronLeft, Mail, Users as UsersIcon,
-  CheckSquare, RefreshCw, AlertCircle, Video, ExternalLink, CalendarPlus,
+  CheckSquare, RefreshCw, AlertCircle, Video, ExternalLink,
 } from "lucide-react";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
 import { toast } from "sonner";
@@ -19,7 +18,6 @@ import { useMaestroPipelineToasts } from "@/hooks/useMaestroPipelineToasts";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { loadMHomeCache, saveMHomeCache, type SourceStatusMap } from "@/lib/mhomeCache";
 import PerformanceReportCard from "@/components/planipret/mobile/PerformanceReportCard";
-import NewMsEventSheet from "@/components/planipret/mobile/NewMsEventSheet";
 
 
 type Period = "day" | "week" | "month" | "shift";
@@ -563,7 +561,6 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
   const today = new Date(); today.setHours(0,0,0,0);
   const [cursor, setCursor] = useState(() => { const d=new Date(); d.setDate(1); d.setHours(0,0,0,0); return d; });
   const [selected, setSelected] = useState<Date>(today);
-  const [newEventOpen, setNewEventOpen] = useState(false);
 
   const locale = lang === "en" ? "en-CA" : "fr-CA";
 
@@ -606,16 +603,6 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
         </h2>
         <div className="flex items-center gap-2">
           <span className="pp-eyebrow">{events.length}</span>
-          {profile?.ms365_access_token && (
-            <button
-              onClick={() => setNewEventOpen(true)}
-              className="w-7 h-7 rounded-lg flex items-center justify-center active:scale-95"
-              style={{ background: 'rgba(46,155,220,0.12)', color: 'var(--pp-brand-accent)' }}
-              title={lang === 'en' ? 'New event' : 'Nouvel événement'}
-            >
-              <CalendarPlus className="w-3.5 h-3.5" />
-            </button>
-          )}
         </div>
       </div>
 
@@ -751,14 +738,6 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
       {error && (
         <p className="text-[11px] mt-2" style={{ color: "var(--pp-danger)" }}>{error}</p>
       )}
-
-      <NewMsEventSheet
-        open={newEventOpen}
-        onClose={() => setNewEventOpen(false)}
-        onCreated={() => { setNewEventOpen(false); }}
-        defaultDate={selected}
-        lang={lang}
-      />
     </section>
   );
 }
