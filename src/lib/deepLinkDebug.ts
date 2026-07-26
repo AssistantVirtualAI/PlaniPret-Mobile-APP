@@ -56,6 +56,11 @@ export function subscribeDeepLinkLog(cb: () => void): () => void {
   return () => { listeners.delete(cb); };
 }
 
+// Module-level dedup set: tracks codes already routed in this app session.
+// Prevents iOS from replaying the same OAuth callback via both appUrlOpen
+// AND getLaunchUrl simultaneously, which caused Maestro to loop.
+const _handledKeys = new Set<string>();
+
 export async function handleIncomingDeepLink(
   rawUrl: string | null | undefined,
   source = "unknown",
@@ -81,6 +86,18 @@ export async function handleIncomingDeepLink(
       logDeepLink({ kind: "handler", source, url: rawUrl, detail: "probe callback routed" });
       return true;
     }
+    // Dedup: build a key from the OAuth code (first 20 chars) + state.
+    // If we've already routed this exact callback, skip silently.
+    const code = url.searchParams.get('code');
+    const state = url.searchParams.get('state') ?? '';
+    const dedupKey = code ? `${code.substring(0, 20)}_${state}` : url.search;
+    if (_handledKeys.has(dedupKey)) {
+      logDeepLink({ kind: "handler", source, url: rawUrl, detail: "duplicate deep link — skipping (module guard)" });
+      return true;
+    }
+    _handledKeys.add(dedupKey);
+    // Auto-clear after 60s to allow legitimate re-auth flows.
+    setTimeout(() => _handledKeys.delete(dedupKey), 60_000);
     void import('@capacitor/browser')
       .then(({ Browser }) => Browser.close())
       .catch(() => {});
