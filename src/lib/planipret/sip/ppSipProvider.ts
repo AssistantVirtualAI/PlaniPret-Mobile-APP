@@ -179,6 +179,17 @@ class PpSipProvider {
         // contact with the real WebSocket IP:port so NetSapiens can deliver
         // incoming INVITEs. A hardcoded domain-based contact_uri causes NS to
         // register the device but fail to route calls → immediate voicemail.
+        //
+        // use_preloaded_route: true — CRITICAL for iOS WebKit:
+        // On iOS, JsSIP cannot determine the real IP of the WebSocket from the
+        // WKWebView sandbox, so it generates a contact like:
+        //   sip:random@1ifhb6v6fhq2.invalid;transport=ws
+        // NetSapiens cannot route INVITEs to a .invalid address.
+        // With use_preloaded_route=true, JsSIP adds a Route header pointing to
+        // the established WebSocket (sip:core1.cluster1.ucstack.io:9002;transport=ws;lr)
+        // in every outgoing request. NS then routes INVITEs back via that same
+        // WebSocket path, bypassing the unroutable .invalid contact entirely.
+        use_preloaded_route: true,
         register: true,
         session_timers: false,
         // Match the native keep-alive REGISTER expiry so NetSapiens does not

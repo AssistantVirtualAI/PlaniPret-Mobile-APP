@@ -26,11 +26,12 @@
     "audit:parity": "node scripts/audit-parity.mjs",
     "build:ios:dev": "vite build --mode development && cap copy ios && cap open ios",
     "precheck:build": "node scripts/precheck-build.mjs",
-    "ios:build-sync": "npm run build && npm run precheck:build && npx cap sync ios",
+    "ios:build-sync": "npm run build && npx cap sync ios && bash scripts/update-capacitor-config.sh",
     "android:build-sync": "npm run build && npm run precheck:build && npx cap sync android",
     "sync:ios:fast": "npm run build && cap copy ios",
     "watch": "bash watch.sh",
-    "watch:once": "bash watch.sh --once"
+    "watch:once": "bash watch.sh --once",
+    "cap:sync:ios": "npx cap sync ios && bash scripts/update-capacitor-config.sh"
   },
   "dependencies": {
     "@11labs/react": "^0.2.0",
