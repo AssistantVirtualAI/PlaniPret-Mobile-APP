@@ -1,0 +1,6 @@
+include ':app'
+
+def capacitorSettingsFile = new File(rootDir, 'capacitor.settings.gradle')
+if (capacitorSettingsFile.exists()) {
+    apply from: capacitorSettingsFile
+}
