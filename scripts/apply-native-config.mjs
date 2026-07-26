@@ -10,6 +10,7 @@
 // ------------------------------------------------------------------
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -296,7 +297,7 @@ public class PpSipKeepAliveService extends Service {
     heartbeat = executor.scheduleAtFixedRate(() -> {
       try { sendRegister(null); } catch (Exception e) { emitStatus("reconnecting", "register_retry"); connectAndRegister(); }
       requestReregister(this, "keepalive");
-    }, 240, 240, TimeUnit.SECONDS);
+    }, 60, 60, TimeUnit.SECONDS);
     return START_STICKY;
   }
 
@@ -313,7 +314,8 @@ public class PpSipKeepAliveService extends Service {
     String host = p.getString("host", ""); int port = p.getInt("port", 443); String path = p.getString("path", "/");
     if (host == null || host.length() == 0) { emitStatus("error", "missing_host"); return; }
     Socket raw = port == 443 ? SSLSocketFactory.getDefault().createSocket(host, port) : new Socket(host, port);
-    raw.setSoTimeout(65000);
+    raw.setKeepAlive(true);
+    raw.setSoTimeout(90000);
     wsSocket = raw; wsIn = raw.getInputStream(); wsOut = raw.getOutputStream();
     String key = websocketKey();
     String req = "GET " + (path == null || path.length() == 0 ? "/" : path) + " HTTP/1.1\r\nHost: " + host + ":" + port + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: " + key + "\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: sip\r\nOrigin: https://" + host + "\r\n\r\n";
@@ -329,7 +331,7 @@ public class PpSipKeepAliveService extends Service {
     while (wsSocket != null && wsSocket.isConnected() && !wsSocket.isClosed()) {
       String msg = readFrame(); if (msg == null) break; handleSipMessage(msg);
     }
-  } catch(Exception ignored) {} finally { readerRunning = false; emitStatus("reconnecting", "ws_reader_closed"); if (wsSocket != null && !wsSocket.isClosed()) executor.schedule(this::connectAndRegister, 5, TimeUnit.SECONDS); } }
+  } catch(Exception ignored) {} finally { readerRunning = false; emitStatus("reconnecting", "ws_reader_closed"); closeWs(); executor.schedule(this::connectAndRegister, 2, TimeUnit.SECONDS); } }
 
   private void handleSipMessage(String msg) throws Exception {
     if (msg.startsWith("SIP/2.0 401") || msg.startsWith("SIP/2.0 407")) {
@@ -389,7 +391,7 @@ public class PpSipKeepAliveService extends Service {
     sip.append("From: \"").append(display == null ? login : display.replace("\"", "")).append("\" <sip:").append(login).append("@").append(domain).append(">;tag=").append(fromTag).append("\r\n");
     sip.append("Call-ID: ").append(callId).append("\r\n");
     sip.append("CSeq: ").append(seq).append(" REGISTER\r\n");
-    sip.append("Contact: ").append(contact).append(";expires=600\r\nExpires: 600\r\nUser-Agent: Planipret Native KeepAlive\r\nSupported: outbound,path,gruu\r\nAllow: INVITE,ACK,CANCEL,BYE,OPTIONS,MESSAGE,INFO,UPDATE,REGISTER\r\n");
+    sip.append("Contact: ").append(contact).append(";expires=1800\r\nExpires: 1800\r\nUser-Agent: Planipret Native KeepAlive\r\nSupported: outbound,path,gruu\r\nAllow: INVITE,ACK,CANCEL,BYE,OPTIONS,MESSAGE,INFO,UPDATE,REGISTER\r\n");
     if (challenge != null && password != null && password.length() > 0) sip.append("Authorization: ").append(digestAuth(challenge, login, password, domain)).append("\r\n");
     sip.append("Content-Length: 0\r\n\r\n");
     sendFrame(sip.toString());
@@ -530,7 +532,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       socket = session.webSocketTask(with: req); socket?.resume(); setStatus("connecting", "ws_connecting"); receiveLoop()
       DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in self?.sendRegister(challenge: nil) }
     }
-    private func scheduleRegister() { timer?.invalidate(); timer = Timer.scheduledTimer(withTimeInterval: 240, repeats: true) { [weak self] _ in self?.sendRegister(challenge: nil) }; RunLoop.main.add(timer!, forMode: .common) }
+    private func scheduleRegister() { timer?.invalidate(); timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in self?.sendRegister(challenge: nil) }; RunLoop.main.add(timer!, forMode: .common) }
     private func receiveLoop() { socket?.receive { [weak self] result in guard let self = self else { return }; switch result { case .success(let message): if case .string(let text) = message { self.handle(text) }; self.receiveLoop(); case .failure: self.socket = nil; self.setStatus("reconnecting", "ws_closed"); DispatchQueue.main.asyncAfter(deadline: .now() + 5) { self.connect() } } } }
 
     private func handle(_ msg: String) {
@@ -589,7 +591,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       var sip = "REGISTER sip:" + domain + " SIP/2.0\\r\\n"
       sip += "Via: SIP/2.0/WSS planipret-ios.invalid;branch=" + branch + "\\r\\nMax-Forwards: 70\\r\\n"
       sip += "To: <sip:" + login + "@" + domain + ">\\r\\nFrom: \\"" + displayName.replacingOccurrences(of: "\\"", with: "") + "\\" <sip:" + login + "@" + domain + ">;tag=" + fromTag + "\\r\\n"
-      sip += "Call-ID: " + callIdReg + "\\r\\nCSeq: " + String(seq) + " REGISTER\\r\\nContact: " + contact + ";expires=600\\r\\nExpires: 600\\r\\nUser-Agent: Planipret iOS KeepAlive\\r\\nSupported: outbound,path,gruu\\r\\nAllow: INVITE,ACK,CANCEL,BYE,OPTIONS,MESSAGE,INFO,UPDATE,REGISTER\\r\\n"
+      sip += "Call-ID: " + callIdReg + "\\r\\nCSeq: " + String(seq) + " REGISTER\\r\\nContact: " + contact + ";expires=1800\\r\\nExpires: 1800\\r\\nUser-Agent: Planipret iOS KeepAlive\\r\\nSupported: outbound,path,gruu\\r\\nAllow: INVITE,ACK,CANCEL,BYE,OPTIONS,MESSAGE,INFO,UPDATE,REGISTER\\r\\n"
       if let ch = challenge, !password.isEmpty { sip += "Authorization: " + digest(challenge: ch) + "\\r\\n" }
       sip += "Content-Length: 0\\r\\n\\r\\n"
       socket?.send(.string(sip)) { [weak self] err in DispatchQueue.main.async { self?.setStatus(err == nil ? "connecting" : "error", err == nil ? (challenge == nil ? "register_sent" : "register_auth_sent") : "register_send_failed") } }
@@ -636,6 +638,14 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     private var activeCallUUID: UUID?
     private var activeCallId: String?
 
+    private func apnsEnvironment() -> String {
+        #if DEBUG
+        return "sandbox"
+        #else
+        return "production"
+        #endif
+    }
+
     public override func load() {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
@@ -670,7 +680,8 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         call.resolve([
             "token": voipToken ?? "",
             "platform": "ios",
-            "bundleId": Bundle.main.bundleIdentifier ?? ""
+            "bundleId": Bundle.main.bundleIdentifier ?? "",
+            "environment": apnsEnvironment()
         ])
     }
 
@@ -691,7 +702,8 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         self.voipToken = token
         notifyListeners("voipPushToken", data: [
             "token": token,
-            "bundleId": Bundle.main.bundleIdentifier ?? ""
+            "bundleId": Bundle.main.bundleIdentifier ?? "",
+            "environment": apnsEnvironment()
         ])
     }
 
@@ -703,8 +715,8 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         guard type == .voIP else { completion(); return }
         let dict = payload.dictionaryPayload
         let callId = (dict["callId"] as? String) ?? (dict["call_id"] as? String) ?? UUID().uuidString
-        let callerName = (dict["callerName"] as? String) ?? (dict["from"] as? String) ?? "Appel entrant"
-        let callerNumber = (dict["callerNumber"] as? String) ?? (dict["from_user"] as? String) ?? ""
+        let callerName = (dict["callerName"] as? String) ?? (dict["from_number"] as? String) ?? (dict["from"] as? String) ?? "Appel entrant"
+        let callerNumber = (dict["callerNumber"] as? String) ?? (dict["from_number"] as? String) ?? (dict["from_user"] as? String) ?? ""
 
         let uuid = UUID()
         activeCallUUID = uuid
@@ -810,6 +822,88 @@ function walk(dir, files = []) {
 
 function findFile(root, name) {
   return walk(root).find((file) => path.basename(file) === name);
+}
+
+function ensureSwiftImports(swift, imports) {
+  let next = swift;
+  for (const name of imports) {
+    if (!new RegExp(`^import\\s+${name}\\b`, "m").test(next)) {
+      next = `import ${name}\n${next}`;
+    }
+  }
+  return next;
+}
+
+function stripSwiftImports(swift) {
+  return swift.replace(/^import\s+[^\n]+\n/gm, "").trim();
+}
+
+function hasProjectReference(iosRoot, fileName) {
+  const pbx = path.join(iosRoot, "App.xcodeproj", "project.pbxproj");
+  if (!fs.existsSync(pbx)) return false;
+  return fs.readFileSync(pbx, "utf8").includes(fileName);
+}
+
+function xcodeId(seed) {
+  return crypto.createHash("sha1").update(`planipret:${seed}`).digest("hex").slice(0, 24).toUpperCase();
+}
+
+function ensureXcodeSourceFiles(iosRoot, relativeFiles) {
+  const pbx = path.join(iosRoot, "App.xcodeproj", "project.pbxproj");
+  if (!fs.existsSync(pbx)) return false;
+  let text = fs.readFileSync(pbx, "utf8");
+  const before = text;
+
+  for (const rel of relativeFiles) {
+    const fileName = path.basename(rel);
+    const buildName = `${fileName} in Sources`;
+    const fileRef = xcodeId(`file:${rel}`);
+    const buildRef = xcodeId(`build:${rel}`);
+    const fileType = rel.endsWith(".swift") ? "sourcecode.swift" : "sourcecode.c.objc";
+    const quotedRel = rel.includes(" ") ? `\"${rel}\"` : rel;
+
+    if (!text.includes(`${fileRef} /* ${fileName} */`)) {
+      const fileLine = `\t\t${fileRef} /* ${fileName} */ = {isa = PBXFileReference; lastKnownFileType = ${fileType}; path = ${quotedRel}; sourceTree = SOURCE_ROOT; };\n`;
+      text = text.replace(/(\/\* End PBXFileReference section \*\/)/, `${fileLine}$1`);
+    }
+    if (!text.includes(`${buildRef} /* ${buildName} */`)) {
+      const buildLine = `\t\t${buildRef} /* ${buildName} */ = {isa = PBXBuildFile; fileRef = ${fileRef} /* ${fileName} */; };\n`;
+      text = text.replace(/(\/\* End PBXBuildFile section \*\/)/, `${buildLine}$1`);
+    }
+    text = text.replace(/(isa = PBXSourcesBuildPhase;[\s\S]*?files = \(\n)([\s\S]*?)(\s*\);)/g, (match, start, files, end) => {
+      if (files.includes(buildRef) || files.includes(buildName)) return match;
+      return `${start}${files}\t\t\t\t${buildRef} /* ${buildName} */,\n${end}`;
+    });
+  }
+
+  if (text !== before) {
+    fs.writeFileSync(pbx, text);
+    console.log("[native-config] iOS Xcode project source build phase patched for Planiprêt plugins.");
+    return true;
+  }
+  return false;
+}
+
+function ensurePluginRegistration(swift) {
+  let next = swift;
+  const sipLine = "        bridge?.registerPluginInstance(PpSipKeepAlive())\n";
+  const voipLine = "        bridge?.registerPluginInstance(PpVoipCall())\n";
+  const needsSip = !next.includes("PpSipKeepAlive()");
+  const needsVoip = !next.includes("PpVoipCall()");
+  if (!needsSip && !needsVoip) return next;
+  const lines = `${needsSip ? sipLine : ""}${needsVoip ? voipLine : ""}`;
+  if (next.includes("registerPluginInstance")) {
+    return next.replace(/(bridge\?\.registerPluginInstance\([^\n]+\)\n)/, `$1${lines}`);
+  }
+  if (next.includes("override func capacitorDidLoad()")) {
+    return next.replace(/(override func capacitorDidLoad\(\)\s*\{\n)/, `$1${lines}`);
+  }
+  if (next.includes("CAPBridgeViewController")) {
+    const insert = `\n    override func capacitorDidLoad() {\n${lines}    }\n`;
+    const lastBrace = next.lastIndexOf("}");
+    if (lastBrace > -1) return `${next.slice(0, lastBrace)}${insert}${next.slice(lastBrace)}`;
+  }
+  return next;
 }
 
 function patchIosInfoPlist() {
@@ -931,20 +1025,26 @@ function patchIosNativeFiles() {
   writeIfChanged(path.join(iosApp, "Plugins", "PpSipKeepAlive", IOS_KEEPALIVE_BRIDGE_FILENAME), IOS_KEEPALIVE_BRIDGE);
   writeIfChanged(path.join(iosApp, "Plugins", "PpVoipCall", "PpVoipCall.swift"), IOS_VOIP_CALL_PLUGIN);
   writeIfChanged(path.join(iosApp, "Plugins", "PpVoipCall", "PpVoipCall.m"), IOS_VOIP_CALL_BRIDGE);
+  const iosRoot = path.join(appDir, "ios", "App");
+  ensureXcodeSourceFiles(iosRoot, [
+    "App/Plugins/PpSipKeepAlive/PpSipKeepAlive.swift",
+    "App/Plugins/PpSipKeepAlive/PpSipKeepAlive.m",
+    "App/Plugins/PpVoipCall/PpVoipCall.swift",
+    "App/Plugins/PpVoipCall/PpVoipCall.m",
+  ]);
+  const pluginFilesAreInProject = hasProjectReference(iosRoot, "PpSipKeepAlive.swift") && hasProjectReference(iosRoot, "PpVoipCall.swift");
   for (const controllerName of ["AppBridgeViewController.swift", "ViewController.swift"]) {
     const file = path.join(iosApp, controllerName);
     if (!fs.existsSync(file)) continue;
     let swift = fs.readFileSync(file, "utf8");
-    let mutated = false;
-    if (!swift.includes("PpSipKeepAlive()") && swift.includes("registerPluginInstance")) {
-      swift = swift.replace(/(bridge\?\.registerPluginInstance\([^\n]+\)\n)/, `$1        bridge?.registerPluginInstance(PpSipKeepAlive())\n`);
-      mutated = true;
+    const before = swift;
+    swift = ensurePluginRegistration(swift);
+    if (!pluginFilesAreInProject && !swift.includes("@objc(PpSipKeepAlive)")) {
+      swift = ensureSwiftImports(swift, ["Foundation", "Capacitor", "UIKit", "AVFoundation", "CryptoKit", "UserNotifications", "PushKit", "CallKit"]);
+      swift = `${swift.trim()}\n\n// MARK: - Inline Planiprêt native plugins\n${stripSwiftImports(IOS_PLUGIN)}\n\n${stripSwiftImports(IOS_VOIP_CALL_PLUGIN)}\n`;
+      console.log("[native-config] iOS native plugins embedded into existing ViewController target.");
     }
-    if (!swift.includes("PpVoipCall()") && swift.includes("registerPluginInstance")) {
-      swift = swift.replace(/(bridge\?\.registerPluginInstance\([^\n]+\)\n)/, `$1        bridge?.registerPluginInstance(PpVoipCall())\n`);
-      mutated = true;
-    }
-    if (mutated) writeIfChanged(file, swift);
+    if (swift !== before) writeIfChanged(file, swift);
   }
   console.log("[native-config] iOS PpSipKeepAlive + PpVoipCall plugins applied.");
 }

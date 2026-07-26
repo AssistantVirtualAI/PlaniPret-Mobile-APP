@@ -74,10 +74,13 @@ async function processEvent(event: any) {
   const sendVoipPush = async (uid: string, payload: any) => {
     const { data: tokens } = await admin
       .from("planipret_voip_push_tokens")
-      .select("device_token,bundle_id,environment")
+      .select("id,device_token,bundle_id,environment,updated_at,extension")
       .eq("user_id", uid)
       .eq("platform", "ios");
-    if (!tokens?.length) return;
+    if (!tokens?.length) {
+      console.warn("[ns-webhook] no iOS VoIP tokens for inbound call", { user_id: uid, call_id: payload?.call_id });
+      return;
+    }
 
     const [{ data: cfg }, { data: secrets }] = await Promise.all([
       admin.from("planipret_integration_config").select("config_data").eq("integration_key", "mobile_app").maybeSingle(),
@@ -93,9 +96,12 @@ async function processEvent(event: any) {
     }
 
     const jwt = await apnsJwt(teamId, keyId, privateKey);
-    await Promise.allSettled(tokens.map(async (row: any) => {
+    const results = await Promise.allSettled(tokens.map(async (row: any) => {
       const bundleId = row.bundle_id || config.ios_bundle_id || Deno.env.get("PLANIPRET_IOS_BUNDLE_ID");
-      if (!bundleId) return;
+      if (!bundleId) {
+        console.error("[ns-webhook] APNs VoIP missing bundle id", { token_id: row.id, call_id: payload?.call_id });
+        return { ok: false, skipped: "missing_bundle_id" };
+      }
       const host = row.environment === "sandbox" ? "api.sandbox.push.apple.com" : "api.push.apple.com";
       const res = await fetch(`https://${host}/3/device/${row.device_token}`, {
         method: "POST",
@@ -108,8 +114,19 @@ async function processEvent(event: any) {
         },
         body: JSON.stringify({ aps: { "content-available": 1 }, ...payload }),
       });
-      if (!res.ok) console.error("[ns-webhook] APNs VoIP failed", res.status, await res.text().catch(() => ""));
+      if (!res.ok) {
+        const body = await res.text().catch(() => "");
+        console.error("[ns-webhook] APNs VoIP failed", { status: res.status, body, token_id: row.id, env: row.environment, bundle_id: bundleId, call_id: payload?.call_id });
+        if (res.status === 410 || body.includes("BadDeviceToken") || body.includes("Unregistered")) {
+          await admin.from("planipret_voip_push_tokens").delete().eq("id", row.id);
+        }
+        return { ok: false, status: res.status };
+      }
+      console.log("[ns-webhook] APNs VoIP sent", { token_id: row.id, env: row.environment, bundle_id: bundleId, call_id: payload?.call_id });
+      return { ok: true };
     }));
+    const sent = results.filter((r) => r.status === "fulfilled" && (r.value as any)?.ok).length;
+    if (!sent) console.warn("[ns-webhook] APNs VoIP delivered to 0 tokens", { user_id: uid, call_id: payload?.call_id, token_count: tokens.length });
   };
 
   function isDndActive(p: any): boolean {
@@ -191,9 +208,15 @@ async function processEvent(event: any) {
         payload: { type: "inbound_call", call_id: callId, from_number: data.from_number ?? data.from, to_number: data.to_number ?? data.to },
       });
       if (brokerProfile?.notif_calls !== false) {
+        const inboundCallId = callId ? String(callId) : crypto.randomUUID();
         await sendVoipPush(userId, {
-          call_id: callId ? String(callId) : crypto.randomUUID(),
+          call_id: inboundCallId,
+          callId: inboundCallId,
           from_number: data.from_number ?? data.from ?? "Inconnu",
+          callerName: data.from_name ?? data.caller_name ?? data.from_number ?? data.from ?? "Appel entrant",
+          callerNumber: data.from_number ?? data.from ?? "",
+          from: data.from_number ?? data.from ?? "Inconnu",
+          from_user: data.from_number ?? data.from ?? "",
           to_number: data.to_number ?? data.to ?? ext,
           type: "incoming_call",
         });
