@@ -169,10 +169,15 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       }
     }
 
+    // FIX 5: tracker le type de challenge (401 → Authorization, 407 → Proxy-Authorization)
+    private var lastChallengeWas407 = false
+
     private func handle(_ msg: String) {
       if msg.hasPrefix("SIP/2.0 401") || msg.hasPrefix("SIP/2.0 407") {
         // Challenge reçu — répondre immédiatement (bypass throttle)
-        let hdrName = msg.hasPrefix("SIP/2.0 407") ? "Proxy-Authenticate" : "WWW-Authenticate"
+        let is407 = msg.hasPrefix("SIP/2.0 407")
+        lastChallengeWas407 = is407
+        let hdrName = is407 ? "Proxy-Authenticate" : "WWW-Authenticate"
         sendRegisterForced(challenge: headerVal(msg, hdrName))
         return
       }
@@ -301,7 +306,12 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       // au lieu d'essayer de contacter l'adresse .invalid du Contact
       sip += "Route: <sip:" + host + ":" + String(port) + ";transport=wss;lr>\r\n"
       sip += "User-Agent: Planipret iOS KeepAlive\r\nSupported: outbound,path,gruu\r\nAllow: INVITE,ACK,CANCEL,BYE,OPTIONS,MESSAGE,INFO,UPDATE,REGISTER\r\n"
-      if let ch = challenge, !password.isEmpty { sip += "Authorization: " + digest(challenge: ch) + "\r\n" }
+      if let ch = challenge, !password.isEmpty {
+        // RFC 3261: 407 → Proxy-Authorization, 401 → Authorization
+        let authHeader = lastChallengeWas407 ? "Proxy-Authorization" : "Authorization"
+        sip += authHeader + ": " + digest(challenge: ch) + "\r\n"
+        NSLog("[PpSipKeepAlive] Using %@ header (407=%@)", authHeader, lastChallengeWas407 ? "true" : "false")
+      }
       sip += "Content-Length: 0\r\n\r\n"
       socket?.send(.string(sip)) { [weak self] err in
         DispatchQueue.main.async {
