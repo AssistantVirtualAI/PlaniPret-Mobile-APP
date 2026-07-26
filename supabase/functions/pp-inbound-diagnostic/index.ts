@@ -59,6 +59,9 @@ Deno.serve(async (req) => {
 
   const input: any = await req.json().catch(() => ({}));
   const limit = Math.max(1, Math.min(20, Number(input?.limit ?? 5)));
+  const url = new URL(req.url);
+  const rawMode = isAdmin && (input?.raw === true || input?.raw === 1 || url.searchParams.get("raw") === "1");
+
 
   // Resolve target extension/domain
   let ext = input?.extension ? String(input.extension) : "";
@@ -293,9 +296,12 @@ Deno.serve(async (req) => {
     time: c?.["time-start"] ?? c?.["start-time"] ?? c?.time_start,
     from: c?.["call-orig-from-user"] ?? c?.["orig-from-user"] ?? c?.from,
     term_user: c?.["call-term-user"] ?? c?.["term-user"] ?? c?.["term-to-user"],
+    term_to_uri: c?.["call-term-to-uri"] ?? c?.["term-to-uri"] ?? c?.call_term_to_uri ?? null,
     disposition: c?.["call-disposition"] ?? c?.disposition,
     release_code: c?.["release-code"] ?? c?.["call-release-code"] ?? c?.["disconnect-reason"],
     ring_seconds: Number(c?.["time-ringing"] ?? c?.["ring-duration"] ?? c?.["duration-ringing"] ?? 0),
+    answer_time: c?.["call-answer-datetime"] ?? c?.["time-answer"] ?? null,
+    start_time: c?.["call-start-datetime"] ?? c?.["time-start"] ?? null,
     duration: Number(c?.["duration"] ?? c?.["time-talking"] ?? 0),
   }));
   const straightToVm = cdrSummary.filter(
@@ -305,6 +311,25 @@ Deno.serve(async (req) => {
     verdicts.push("ROUTING_TO_VOICEMAIL");
     issues.push(`${straightToVm.length} appel(s) entrant(s) récent(s) terminés en messagerie avec < 3s de sonnerie → problème de routage, pas de non-réponse.`);
   }
+
+  // Calls answered by a NS *application* (SpeakAccount, AA, VMail, Conference…)
+  // instead of a SIP device: term-to-uri is not a sip: AOR and answer == start.
+  const appTerminated = cdrSummary.filter((c) => {
+    const uri = String(c.term_to_uri ?? "").trim();
+    if (!uri) return false;
+    if (/^sip:/i.test(uri) || uri.includes("@")) return false;
+    const instant = (c.ring_seconds ?? 0) < 3 ||
+      (!!c.answer_time && !!c.start_time && String(c.answer_time) === String(c.start_time));
+    return instant;
+  });
+  if (appTerminated.length) {
+    const apps = [...new Set(appTerminated.map((c) => String(c.term_to_uri)))];
+    verdicts.unshift("TERMINATED_BY_APPLICATION");
+    issues.unshift(
+      `${appTerminated.length} appel(s) entrant(s) répondu(s) instantanément par une application NS (${apps.join(", ")}) — l'appel n'a jamais été forké vers un device SIP. Interception en amont des answering rules (DID / territoire).`,
+    );
+  }
+
   const unreachable = cdrSummary.filter((c) => {
     const rc = String(c.release_code ?? "");
     return /408|480|486|503|Temporarily Unavailable|Request Timeout/i.test(rc);
@@ -356,10 +381,29 @@ Deno.serve(async (req) => {
         status: phoneNumbers.status,
         probes: phoneNumbers.probes,
         count: numbers.length,
-        all: numbers.map((n) => ({ number: numOf(n), destination: destOf(n) })),
+        all: numbers.map((n) => ({
+          number: numOf(n),
+          destination: destOf(n),
+          application: n?.["dial-rule-application"] ?? n?.["dialrule-application"] ?? n?.application ?? null,
+          translation_destination:
+            n?.["dial-rule-translation-destination"] ?? n?.["dialrule-translation-destination"] ?? null,
+        })),
         matching: mine,
       },
       cdrs: { status: cdrs.status, count: cdrRows.length },
     },
+    // raw=1 → unfiltered NS payloads (admin only) for escalation evidence.
+    ns_raw: rawMode
+      ? {
+          user: user.data,
+          answering_rules: rules.data,
+          answering_rules_path: rules.path,
+          devices: devices.data,
+          registration_probes: regProbes.map((p) => ({ path: p.path, status: p.status, data: p.data })),
+          phonenumber_probes: didProbes.map((p) => ({ path: p.path, status: p.status, data: p.data })),
+          cdrs: cdrRows,
+        }
+      : undefined,
+
   });
 });
