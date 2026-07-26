@@ -3,6 +3,7 @@ package com.planipret.mobile;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.content.Context;
+import android.content.pm.PackageManager;
 import android.media.AudioAttributes;
 import android.media.AudioManager;
 import android.net.Uri;
@@ -13,10 +14,14 @@ import android.webkit.PermissionRequest;
 import android.webkit.WebChromeClient;
 import android.webkit.WebView;
 
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
+
 import com.getcapacitor.BridgeActivity;
 
 public class MainActivity extends BridgeActivity {
 
+    private static final int PERMISSION_REQUEST_CODE = 1001;
     private AudioManager audioManager;
 
     @Override
@@ -27,17 +32,16 @@ public class MainActivity extends BridgeActivity {
         audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
 
         // ── Configure audio mode for VoIP ──────────────────────────────────
-        // MODE_IN_COMMUNICATION = optimized for VoIP (echo cancellation, noise suppression)
         audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
-        // Do NOT force speaker — user must activate manually via button
         audioManager.setSpeakerphoneOn(false);
 
         // ── Create notification channels at startup (Android 8+) ──────────
         createNotificationChannels();
 
+        // ── Request runtime permissions (Android 6+) ──────────────────────
+        requestAppPermissions();
+
         // ── Allow WebView to request microphone/camera permissions ─────────
-        // We extend the existing Capacitor WebChromeClient to preserve all
-        // Capacitor functionality while adding WebRTC permission grant.
         WebView webView = getBridge().getWebView();
         WebChromeClient existingClient = webView.getWebChromeClient();
 
@@ -53,7 +57,6 @@ public class MainActivity extends BridgeActivity {
                 android.webkit.WebView webView2,
                 android.webkit.ValueCallback<Uri[]> filePathCallback,
                 FileChooserParams fileChooserParams) {
-                // Delegate file chooser to existing Capacitor client if available
                 if (existingClient != null) {
                     return existingClient.onShowFileChooser(webView2, filePathCallback, fileChooserParams);
                 }
@@ -62,10 +65,59 @@ public class MainActivity extends BridgeActivity {
         });
     }
 
+    /**
+     * Request all runtime permissions needed by the app.
+     * Android 6+ requires explicit user approval for dangerous permissions.
+     */
+    private void requestAppPermissions() {
+        java.util.List<String> permissionsToRequest = new java.util.ArrayList<>();
+
+        // Microphone — required for VoIP calls
+        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED) {
+            permissionsToRequest.add(android.Manifest.permission.RECORD_AUDIO);
+        }
+
+        // Camera — optional, for video calls
+        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.CAMERA)
+                != PackageManager.PERMISSION_GRANTED) {
+            permissionsToRequest.add(android.Manifest.permission.CAMERA);
+        }
+
+        // Contacts — optional, for contact lookup
+        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.READ_CONTACTS)
+                != PackageManager.PERMISSION_GRANTED) {
+            permissionsToRequest.add(android.Manifest.permission.READ_CONTACTS);
+        }
+
+        // Notifications — Android 13+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.POST_NOTIFICATIONS)
+                    != PackageManager.PERMISSION_GRANTED) {
+                permissionsToRequest.add(android.Manifest.permission.POST_NOTIFICATIONS);
+            }
+        }
+
+        // Bluetooth — Android 12+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.BLUETOOTH_CONNECT)
+                    != PackageManager.PERMISSION_GRANTED) {
+                permissionsToRequest.add(android.Manifest.permission.BLUETOOTH_CONNECT);
+            }
+        }
+
+        if (!permissionsToRequest.isEmpty()) {
+            ActivityCompat.requestPermissions(
+                this,
+                permissionsToRequest.toArray(new String[0]),
+                PERMISSION_REQUEST_CODE
+            );
+        }
+    }
+
     @Override
     public void onResume() {
         super.onResume();
-        // Restore communication mode when app comes to foreground
         if (audioManager != null) {
             audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
         }
@@ -74,7 +126,6 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onDestroy() {
         super.onDestroy();
-        // Release audio resources when app is destroyed
         if (audioManager != null) {
             audioManager.setMode(AudioManager.MODE_NORMAL);
         }
@@ -82,7 +133,6 @@ public class MainActivity extends BridgeActivity {
 
     /**
      * Create all notification channels required by the app.
-     * Must be called before any notification is shown (Android 8+).
      */
     private void createNotificationChannels() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
@@ -90,7 +140,6 @@ public class MainActivity extends BridgeActivity {
         NotificationManager nm = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
         if (nm == null) return;
 
-        // ── Incoming calls channel (max priority, ringtone) ───────────────
         if (nm.getNotificationChannel("incoming_calls") == null) {
             NotificationChannel callChannel = new NotificationChannel(
                 "incoming_calls",
@@ -103,7 +152,6 @@ public class MainActivity extends BridgeActivity {
             callChannel.enableLights(true);
             callChannel.setLightColor(0xFF0A84FF);
             callChannel.setShowBadge(true);
-            // Use system ringtone for incoming calls
             Uri ringtoneUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE);
             if (ringtoneUri != null) {
                 AudioAttributes audioAttributes = new AudioAttributes.Builder()
@@ -115,7 +163,6 @@ public class MainActivity extends BridgeActivity {
             nm.createNotificationChannel(callChannel);
         }
 
-        // ── General push notifications channel ────────────────────────────
         if (nm.getNotificationChannel("default") == null) {
             NotificationChannel defaultChannel = new NotificationChannel(
                 "default",
@@ -126,7 +173,6 @@ public class MainActivity extends BridgeActivity {
             nm.createNotificationChannel(defaultChannel);
         }
 
-        // ── Missed calls / voicemail channel ──────────────────────────────
         if (nm.getNotificationChannel("missed_calls") == null) {
             NotificationChannel missedChannel = new NotificationChannel(
                 "missed_calls",

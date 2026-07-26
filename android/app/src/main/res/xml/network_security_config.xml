@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Trust system CAs for all connections (includes Let's Encrypt, DigiCert, etc.) -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+    <!-- Explicit trust for NetSapiens WSS server -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">ucstack.io</domain>
+        <domain includeSubdomains="true">ava-telecom.ca</domain>
+        <domain includeSubdomains="true">planipret.ca</domain>
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </domain-config>
+</network-security-config>
