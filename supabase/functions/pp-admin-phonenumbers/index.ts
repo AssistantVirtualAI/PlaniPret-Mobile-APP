@@ -131,6 +131,29 @@ function normalizeAssignment(input: any, domain: string) {
   };
 }
 
+function buildToUserDidPayload(ext: string, domain: string) {
+  return {
+    "dest-application": "to-user",
+    "destination-application": "to-user",
+    "dial-rule-application": "to-user",
+    "dialrule-application": "to-user",
+    application: "to-user",
+    "to-user": `${ext}@${domain}`,
+    "dest-user": ext,
+    "destination-user": ext,
+    "dial-rule-destination": ext,
+    "dialrule-destination": ext,
+    "dial-rule-translation-destination": `sip:${ext}@${domain}`,
+    "dialrule-translation-destination": `sip:${ext}@${domain}`,
+    destination: ext,
+    dest: ext,
+    user: ext,
+    "dest-type": "user",
+    enable: "yes",
+    enabled: "yes",
+  };
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   try {
@@ -199,15 +222,7 @@ Deno.serve(async (req) => {
       }
       const pn = String(phone_number).replace(/[^\d]/g, "");
       const ext = String(extension);
-      const assignBody = {
-        "dest-application": "to-user",
-        application: "to-user",
-        "to-user": `${ext}@${domain}`,
-        "dest-user": ext,
-        dest: ext,
-        "dest-type": "user",
-        enable: "yes",
-      };
+      const assignBody = buildToUserDidPayload(ext, domain);
       const r = await nsFetchFirstOk([
         `/domains/${encodeURIComponent(domain)}/phonenumbers/${encodeURIComponent(pn)}`,
         `/domains/${encodeURIComponent(domain)}/phone-numbers/${encodeURIComponent(pn)}`,
