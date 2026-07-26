@@ -14,6 +14,68 @@ export type DeepLinkEvent = {
 const KEY = "pp_deep_link_debug_log";
 const MAX = 100;
 const listeners = new Set<() => void>();
+const routedRecently = new Map<string, number>();
+const COMPLETED_KEY = "pp_completed_oauth_callbacks";
+const ROUTED_KEY = "pp_routed_oauth_callbacks";
+const ROUTED_TTL_MS = 120_000;
+
+function callbackKey(kind: "ms365" | "maestro", url: URL): string {
+  const state = url.searchParams.get("state") || "no-state";
+  const code = url.searchParams.get("code") || url.searchParams.get("error") || url.search;
+  return `${kind}:${state}:${String(code).slice(0, 32)}`;
+}
+
+function readCompleted(): string[] {
+  try {
+    const raw = localStorage.getItem(COMPLETED_KEY);
+    return raw ? JSON.parse(raw) as string[] : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeCompleted(keys: string[]) {
+  try { localStorage.setItem(COMPLETED_KEY, JSON.stringify(keys.slice(-40))); } catch {}
+}
+
+function readRouted(): Array<{ key: string; ts: number }> {
+  try {
+    const raw = localStorage.getItem(ROUTED_KEY);
+    const list = raw ? JSON.parse(raw) as Array<{ key: string; ts: number }> : [];
+    const now = Date.now();
+    return list.filter((x) => x?.key && now - Number(x.ts || 0) < ROUTED_TTL_MS);
+  } catch {
+    return [];
+  }
+}
+
+function markRouted(key: string) {
+  const now = Date.now();
+  const list = readRouted().filter((x) => x.key !== key);
+  list.push({ key, ts: now });
+  try { localStorage.setItem(ROUTED_KEY, JSON.stringify(list.slice(-40))); } catch {}
+}
+
+function wasRoutedRecently(key: string): boolean {
+  return readRouted().some((x) => x.key === key);
+}
+
+function isCompleted(key: string): boolean {
+  return readCompleted().includes(key);
+}
+
+export function markOAuthCallbackCompleted(kind: "ms365" | "maestro", rawUrlOrSearch?: string | null) {
+  if (!rawUrlOrSearch) return;
+  try {
+    const url = rawUrlOrSearch.startsWith("?")
+      ? new URL(`${window.location.origin}/auth/${kind === "ms365" ? "microsoft" : "maestro"}/callback${rawUrlOrSearch}`)
+      : new URL(rawUrlOrSearch);
+    const key = callbackKey(kind, url);
+    const list = readCompleted().filter((k) => k !== key);
+    list.push(key);
+    writeCompleted(list);
+  } catch {}
+}
 
 function read(): DeepLinkEvent[] {
   try {
@@ -56,11 +118,6 @@ export function subscribeDeepLinkLog(cb: () => void): () => void {
   return () => { listeners.delete(cb); };
 }
 
-// Module-level dedup set: tracks codes already routed in this app session.
-// Prevents iOS from replaying the same OAuth callback via both appUrlOpen
-// AND getLaunchUrl simultaneously, which caused Maestro to loop.
-const _handledKeys = new Set<string>();
-
 export async function handleIncomingDeepLink(
   rawUrl: string | null | undefined,
   source = "unknown",
@@ -86,21 +143,27 @@ export async function handleIncomingDeepLink(
       logDeepLink({ kind: "handler", source, url: rawUrl, detail: "probe callback routed" });
       return true;
     }
-    // Dedup: build a key from the OAuth code (first 20 chars) + state.
-    // If we've already routed this exact callback, skip silently.
-    const code = url.searchParams.get('code');
-    const state = url.searchParams.get('state') ?? '';
-    const dedupKey = code ? `${code.substring(0, 20)}_${state}` : url.search;
-    if (_handledKeys.has(dedupKey)) {
-      logDeepLink({ kind: "handler", source, url: rawUrl, detail: "duplicate deep link — skipping (module guard)" });
+    const kind = isMs365Callback ? "ms365" : "maestro";
+    const key = callbackKey(kind, url);
+    const now = Date.now();
+    const lastRouted = routedRecently.get(key) ?? 0;
+    if (isCompleted(key)) {
+      logDeepLink({ kind: "handler", source, url: rawUrl, detail: `${kind} callback already completed — ignoring stale replay` });
+      try { localStorage.removeItem(kind === "ms365" ? "pp_ms365_callback_url" : "pp_maestro_callback_url"); } catch {}
+      navigate?.(kind === "maestro" ? "/mplanipret/more" : "/mplanipret/home", { replace: true });
       return true;
     }
-    _handledKeys.add(dedupKey);
-    // Auto-clear after 60s to allow legitimate re-auth flows.
-    setTimeout(() => _handledKeys.delete(dedupKey), 60_000);
-    void import('@capacitor/browser')
-      .then(({ Browser }) => Browser.close())
-      .catch(() => {});
+    if (now - lastRouted < 10_000 || wasRoutedRecently(key)) {
+      logDeepLink({ kind: "handler", source, url: rawUrl, detail: `${kind} callback duplicate delivery — already routed` });
+      return true;
+    }
+    routedRecently.set(key, now);
+    markRouted(key);
+    if (document.visibilityState === "hidden") {
+      void import('@capacitor/browser')
+        .then(({ Browser }) => Browser.close())
+        .catch(() => {});
+    }
     if (isMs365Callback) {
       try { localStorage.setItem('pp_ms365_callback_url', rawUrl); } catch {}
       navigate?.(`/auth/microsoft/callback${url.search}`, { replace: true });
