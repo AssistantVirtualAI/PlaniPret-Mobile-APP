@@ -268,7 +268,10 @@ export function useMplanipretSoftphone() {
     };
     const un = ppSipProvider.subscribe(() => evaluate());
     const onResume = () => {
-      try { ppSipProvider.forceReregister(); } catch {}
+      // fullCycle=true forces unregister({all:true}) + re-REGISTER so NetSapiens
+      // updates the contact with the new WebSocket IP:port after background resume.
+      // Without this, NS routes INVITEs to the stale socket → immediate voicemail.
+      try { ppSipProvider.forceReregister(true); } catch {}
       evaluate();
     };
     const onVis = () => { if (document.visibilityState === "visible") onResume(); };
@@ -287,7 +290,8 @@ export function useMplanipretSoftphone() {
           const p = AppPlugin.addListener("appStateChange", (state: { isActive: boolean }) => {
             if (state?.isActive) {
               void triggerPlanipretNativeReregister();
-              try { ppSipProvider.forceReregister(); } catch {}
+              // fullCycle=true: force NS to update the contact with the new WebSocket IP:port
+              try { ppSipProvider.forceReregister(true); } catch {}
               evaluate();
             } else {
               const cfg = ppSipProvider.getConfig();

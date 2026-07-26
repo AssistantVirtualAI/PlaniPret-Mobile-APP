@@ -175,7 +175,10 @@ class PpSipProvider {
         password: cleanCfg.password,
         authorization_user: cleanCfg.sipUsername,
         realm: cleanCfg.sipDomain,
-        contact_uri: `sip:${cleanCfg.sipUsername}@${cleanCfg.sipDomain};transport=wss`,
+        // contact_uri intentionally omitted — JsSIP auto-generates a routable
+        // contact with the real WebSocket IP:port so NetSapiens can deliver
+        // incoming INVITEs. A hardcoded domain-based contact_uri causes NS to
+        // register the device but fail to route calls → immediate voicemail.
         register: true,
         session_timers: false,
         // Match the native keep-alive REGISTER expiry so NetSapiens does not
@@ -355,18 +358,20 @@ class PpSipProvider {
     }
     return false;
   }
-  async forceReregister() {
+  async forceReregister(fullCycle = false) {
     try {
       if (!this.ua) return;
-      // Only cycle the registration when we actually hold one. Calling
-      // unregister({all:true}) while the UA is still connecting aborted the
-      // in-flight REGISTER and produced "Connection Error".
-      if (this.snap.status === "registered") {
+      // Give the initial WebSocket + REGISTER handshake room to finish.
+      if (this.snap.status === "connecting" && Date.now() - this.connectingSince < 20_000) return;
+      // fullCycle=true is used on app foreground resume: unregister({all:true})
+      // forces NetSapiens to drop the stale contact (old WebSocket IP:port) and
+      // accept the new one from the re-established connection. Without this, NS
+      // keeps routing INVITEs to the dead socket → immediate voicemail.
+      if (fullCycle || this.snap.status === "registered") {
         try { this.ua.unregister({ all: true }); } catch {}
-        setTimeout(() => { try { this.ua?.register(); } catch {} }, 250);
+        setTimeout(() => { try { this.ua?.register(); } catch {} }, 500);
         return;
       }
-      if (this.snap.status === "connecting" && Date.now() - this.connectingSince < 20_000) return;
       try { this.ua.register(); } catch {}
     } catch {}
   }

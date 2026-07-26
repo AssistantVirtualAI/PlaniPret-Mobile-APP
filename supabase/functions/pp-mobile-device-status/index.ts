@@ -22,11 +22,13 @@ const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const json = (b: unknown, s = 200) =>
   new Response(JSON.stringify(b), { status: s, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
-async function nsListDevices(domain: string, ext: string) {
+async function nsListDevices(domain: string, ext: string, timeoutMs = 6000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const res = await fetch(
       `${NS_API_BASE_URL}/domains/${encodeURIComponent(domain)}/users/${encodeURIComponent(ext)}/devices`,
-      { headers: { Authorization: `Bearer ${NS_API_KEY}`, Accept: "application/json" } },
+      { headers: { Authorization: `Bearer ${NS_API_KEY}`, Accept: "application/json" }, signal: ctrl.signal },
     );
     if (!res.ok) return { ok: false, status: res.status, ids: [] as string[] };
     const data = await res.json().catch(() => []);
@@ -36,6 +38,8 @@ async function nsListDevices(domain: string, ext: string) {
     return { ok: true, status: 200, ids };
   } catch (e) {
     return { ok: false, status: 0, ids: [] as string[], error: (e as Error).message };
+  } finally {
+    clearTimeout(t);
   }
 }
 
@@ -72,7 +76,7 @@ Deno.serve(async (req) => {
         .from("planipret_ns_migration_log")
         .select("broker_id,action,status,details,created_at")
         .in("broker_id", brokerIds)
-        .eq("action", "create_mobile_device")
+        .in("action", ["create_mobile_device", "provision_devices", "create_devices"])
         .order("created_at", { ascending: false })
     : { data: [] as any[] };
   const logsByBroker = new Map<string, any[]>();
@@ -85,7 +89,7 @@ Deno.serve(async (req) => {
   const stats = { total: 0, ok: 0, missing: 0, error: 0, partial: 0 };
 
   // Parallelize NS-API calls with bounded concurrency to keep the page fast.
-  const CONCURRENCY = 12;
+  const CONCURRENCY = Math.max(1, Math.min(32, Number(body?.concurrency) || 24));
   const list = profiles ?? [];
   const rows: any[] = new Array(list.length);
   let cursor = 0;
@@ -107,16 +111,15 @@ Deno.serve(async (req) => {
         const patch: Record<string, unknown> = { ns_linked: true, ns_linked_at: new Date().toISOString(), ns_domain: domain, ns_extension: ext };
         if (mobileFromNs && p.ns_mobile_device_id !== mobileFromNs) patch.ns_mobile_device_id = mobileFromNs;
         if (widgetFromNs && p.ns_widget_device_id !== widgetFromNs) patch.ns_widget_device_id = widgetFromNs;
-        if (Object.keys(patch).length > 4) {
-          await admin.from("planipret_profiles").update(patch).eq("id", p.id);
-        }
+        await admin.from("planipret_profiles").update(patch).eq("id", p.id);
       }
       const brokerLogs = logsByBroker.get(p.id) ?? [];
       const okLog = brokerLogs.find((l) => l.status === "ok");
       const errLog = brokerLogs.find((l) => l.status === "error");
       let state: "ok" | "missing" | "error" | "partial";
       if (nsMobileExists && p.ns_mobile_device_id && p.ns_sip_password_ref_mobile) state = "ok";
-      else if (!ns.ok || errLog) state = "error";
+      // 404 from NS = extension has no devices provisioned → "missing", not "error"
+      else if (!ns.ok && ns.status !== 404) state = "error";
       else if (!nsMobileExists) state = "missing";
       else state = "partial";
       rows[i] = {
@@ -129,7 +132,7 @@ Deno.serve(async (req) => {
         ns_widget_exists: nsWidgetExists,
         ns_reachable: ns.ok, ns_status: ns.status,
         has_vault_secret: !!p.ns_sip_password_ref_mobile,
-        provisioned_at: okLog?.created_at ?? null,
+        provisioned_at: okLog?.created_at ?? (p.ns_linked ? p.ns_linked_at : null) ?? null,
         last_error: errLog ? { at: errLog.created_at, details: errLog.details } : null,
         state,
       };

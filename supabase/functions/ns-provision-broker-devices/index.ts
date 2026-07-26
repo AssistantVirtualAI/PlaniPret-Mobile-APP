@@ -171,54 +171,30 @@ Deno.serve(async (req) => {
         ns_linked_at: new Date().toISOString(),
       }).eq("id", broker.id ?? broker.user_id);
 
-      // After provisioning, automatically configure the NetSapiens answering rule
-      // so the {ext}_mobile device is in the simultaneous-ring list.
-      // This is the critical step that makes incoming calls ring on the app.
-      let answeringRuleResult: any = null;
-      try {
-        const rulesPath = `${NS_API_BASE_URL}/domains/${encodeURIComponent(domain)}/users/${encodeURIComponent(ext)}/answering_rules`;
-        const rulesRes = await fetch(rulesPath, { headers: nsHeaders });
-        const rulesData = rulesRes.ok ? await rulesRes.json().catch(() => []) : [];
-        const rules: any[] = Array.isArray(rulesData) ? rulesData : [];
-        const defaultRule = rules.find((r: any) =>
-          String(r?.["time-frame"] ?? r?.timeframe ?? "").toLowerCase() === "default" ||
-          r?.active === true || r?.active === "yes"
-        ) ?? rules[0] ?? null;
-        const rulePayload = {
-          "time-frame": "Default",
-          "active": "yes",
-          "ring-type": "simultaneous",
-          "ring-timeout": 25,
-          "cfwd-type": "voicemail",
-          "cfwd-no-answer-type": "voicemail",
-          "cfwd-no-answer-timeout": 25,
-          "simultaneous-ring": [{ "device": mobileId, "enabled": "yes" }],
-        };
-        if (defaultRule) {
-          const ruleId = defaultRule?.["answering-rule-id"] ?? defaultRule?.id ?? "Default";
-          const r = await fetch(`${rulesPath}/${encodeURIComponent(String(ruleId))}`, {
-            method: "PUT", headers: nsHeaders, body: JSON.stringify(rulePayload),
-          });
-          answeringRuleResult = { action: "updated", rule_id: ruleId, ok: r.ok, status: r.status };
-        } else {
-          const r = await fetch(rulesPath, {
-            method: "POST", headers: nsHeaders, body: JSON.stringify(rulePayload),
-          });
-          answeringRuleResult = { action: "created", ok: r.ok, status: r.status };
-        }
-      } catch (e: any) {
-        answeringRuleResult = { error: e?.message ?? "answering_rule_sync_failed" };
-      }
+      const ok = !uErr && (mobile.created || mobile.existed) && (widget.created || widget.existed);
+
+      // Audit trail so the admin "Provisioning" column shows the real last run.
+      await admin.from("planipret_ns_migration_log").insert({
+        broker_id: broker.id ?? broker.user_id,
+        action: "create_mobile_device",
+        status: ok ? "ok" : "error",
+        details: {
+          extension: ext,
+          domain,
+          mobile: { id: mobileId, created: !!mobile.created, existed: !!mobile.existed, status: (mobile as any).status ?? null },
+          widget: { id: widgetId, created: !!widget.created, existed: !!widget.existed, status: (widget as any).status ?? null },
+          db_error: uErr?.message ?? null,
+        },
+      }).then(() => {}, () => {});
 
       return {
         broker_id: broker.id ?? broker.user_id,
         broker_name: broker.full_name,
         extension: ext,
-        success: !uErr && (mobile.created || mobile.existed) && (widget.created || widget.existed),
+        success: ok,
         db_error: uErr?.message,
         ns_user: nsUser, mobile, widget,
         sip_credentials: { mobile_device_id: mobileId, widget_device_id: widgetId, password: sipPassword },
-        answering_rule: answeringRuleResult,
       };
     };
 
@@ -234,12 +210,24 @@ Deno.serve(async (req) => {
 
     // Bulk mode
     if (bulk) {
-      const { data: brokers } = await admin.from("planipret_profiles")
+      // force:true re-provisions every broker with an extension (repairs devices
+      // that exist in the DB but are broken/missing in NetSapiens). Otherwise we
+      // only touch brokers that have never been provisioned.
+      const force: boolean = !!body?.force;
+      let q = admin.from("planipret_profiles")
         .select("id, user_id, full_name, email, extension, ns_extension, ns_domain, ns_mobile_device_id, ns_widget_device_id, ns_sip_password_ref_mobile")
-        .not("ns_extension", "is", null)
-        .or("ns_mobile_device_id.is.null,ns_widget_device_id.is.null,ns_sip_password_ref_mobile.is.null");
+        .not("ns_extension", "is", null);
+      if (!force) q = q.or("ns_mobile_device_id.is.null,ns_widget_device_id.is.null,ns_sip_password_ref_mobile.is.null");
+      const { data: brokers } = await q;
       const list = brokers ?? [];
-      if (list.length === 0) return json({ success: true, message: "Aucun courtier à provisionner", count: 0 });
+      if (list.length === 0) {
+        return json({
+          success: true,
+          message: "Aucun courtier à provisionner (tous déjà provisionnés — utilisez force:true pour re-provisionner)",
+          count: 0, total: 0, processed: 0, succeeded: 0, failed: 0, forced: force,
+        });
+      }
+
 
       const all: any[] = [];
       let succeeded = 0, failed = 0;

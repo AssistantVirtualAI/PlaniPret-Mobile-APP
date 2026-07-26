@@ -105,11 +105,46 @@ Deno.serve(async (req) => {
   }
 
   // 3) Devices / registrations
+  // NOTE: /users/{ext}/subscriptions returns SIP SUBSCRIBE (presence), NOT
+  // REGISTER bindings. Real registrations live under the device sub-resource
+  // and at domain level — probe all of them.
   const devices = await get(`/domains/${d}/users/${e}/devices`);
-  const registrations = await get(`/domains/${d}/users/${e}/subscriptions`);
+  const deviceIds = arrOf(devices.data)
+    .map((x: any) => String(x?.device ?? x?.aor ?? x?.name ?? "").replace(/^sip:/, "").split("@")[0])
+    .filter(Boolean);
+  const regProbes = [
+    await get(`/domains/${d}/users/${e}/registrations`),
+    await get(`/domains/${d}/registrations?user=${e}`),
+    ...(await Promise.all(
+      deviceIds.slice(0, 6).map((id) =>
+        get(`/domains/${d}/users/${e}/devices/${encodeURIComponent(id)}/registrations`)
+      ),
+    )),
+    await get(`/domains/${d}/users/${e}/subscriptions`),
+  ];
+  const registrations = {
+    path: regProbes.find((p) => p.ok && arrOf(p.data).length)?.path ?? regProbes[0].path,
+    status: regProbes.find((p) => p.ok && arrOf(p.data).length)?.status ?? regProbes[0].status,
+    ok: regProbes.some((p) => p.ok),
+    data: regProbes.flatMap((p) => (p.ok ? arrOf(p.data) : [])),
+    probes: regProbes.map((p) => ({ path: p.path, status: p.status, count: p.ok ? arrOf(p.data).length : 0 })),
+  } as any;
 
-  // 4) DID inventory
-  const phoneNumbers = await get(`/domains/${d}/phonenumbers`);
+
+  // 4) DID inventory — probe domain-wide AND user-scoped endpoints (NS v1/v2 variants)
+  const didProbes = [
+    await get(`/domains/${d}/phonenumbers`),
+    await get(`/domains/${d}/users/${e}/phonenumbers`),
+    await get(`/domains/${d}/phonenumbers?user=${e}`),
+  ];
+  const didRows = didProbes.flatMap((p) => (p.ok ? arrOf(p.data) : []));
+  const phoneNumbers = {
+    path: didProbes.find((p) => p.ok && arrOf(p.data).length)?.path ?? didProbes[0].path,
+    status: didProbes.find((p) => p.ok && arrOf(p.data).length)?.status ?? didProbes[0].status,
+    ok: didProbes.some((p) => p.ok),
+    data: didRows,
+    probes: didProbes.map((p) => ({ path: p.path, status: p.status, count: p.ok ? arrOf(p.data).length : 0 })),
+  } as any;
 
   // 5) Recent inbound CDRs
   const cdrs = await get(`/domains/${d}/users/${e}/cdrs?limit=${limit}`);
@@ -172,11 +207,22 @@ Deno.serve(async (req) => {
   const regList = arrOf(registrations.data).filter((x) => x && typeof x === "object");
   const registeredAors = new Set<string>();
   for (const r of [...deviceList, ...regList]) {
-    const aor = String(r?.aor ?? r?.["device"] ?? r?.["user"] ?? r?.name ?? "");
-    const exp = Number(r?.expires ?? r?.["registration-expires"] ?? 0);
-    const isReg = !!(r?.["registration-time"] ?? r?.["reg-time"] ?? r?.contact ?? r?.["registration-contact"]) || exp > 0;
+    const aor = String(
+      r?.aor ?? r?.["device"] ?? r?.["aor-user"] ?? r?.["sub-user"] ?? r?.["user"] ?? r?.name ?? "",
+    ).replace(/^sip:/, "");
+    const exp = Number(r?.expires ?? r?.["registration-expires"] ?? r?.["expires-seconds"] ?? 0);
+    const statusStr = String(
+      r?.["registration-status"] ?? r?.["device-registration-status"] ?? r?.status ?? "",
+    ).toLowerCase();
+    const isReg =
+      !!(r?.["registration-time"] ?? r?.["reg-time"] ?? r?.contact ?? r?.["registration-contact"] ??
+         r?.["contact-uri"] ?? r?.["device-sip-registration-uri"] ?? r?.["registration-ip"] ??
+         r?.["ip-address"] ?? r?.["user-agent"]) ||
+      exp > 0 ||
+      statusStr.includes("register") || statusStr.includes("online") || statusStr === "active";
     if (aor && isReg) registeredAors.add(aor.toLowerCase());
   }
+
   if (!registeredAors.size) {
     verdicts.push("NO_REGISTRATION_VISIBLE");
     issues.push("NS-API ne montre aucune registration active pour cette extension (endpoint devices/subscriptions).");
@@ -196,27 +242,45 @@ Deno.serve(async (req) => {
     issues.push(`La sonnerie simultanée ne cible pas ${ext}_mobile: ${simTargets.join(", ")}`);
   }
 
-  // DIDs pointing at this extension
-  const numbers = arrOf(phoneNumbers.data).filter((x) => x && typeof x === "object");
+  // DIDs pointing at this extension — dedupe by number, match on ANY destination-ish field
+  const numbersRaw = arrOf(phoneNumbers.data).filter((x) => x && typeof x === "object");
+  const numOf = (n: any) => String(
+    n?.["phonenumber"] ?? n?.["phone-number"] ?? n?.number ?? n?.did ?? "",
+  ).trim();
+  const seenNum = new Set<string>();
+  const numbers = numbersRaw.filter((n) => {
+    const k = numOf(n) || JSON.stringify(n);
+    if (seenNum.has(k)) return false;
+    seenNum.add(k);
+    return true;
+  });
+  const destFields = [
+    "destination", "dialrule-application", "dial-rule-application",
+    "dialrule-destination", "dial-rule-destination", "application",
+    "to-user", "users", "user", "dest-user", "destination-user",
+    "dialrule-translation-destination", "dial-rule-translation-destination",
+    "forward-destination", "owner",
+  ];
+  const extRe = new RegExp(`(^|[^0-9])${ext}([^0-9]|$)`);
+  const destOf = (n: any) =>
+    destFields.map((f) => String(n?.[f] ?? "")).filter(Boolean).join(" ");
   const mine = numbers.filter((n) => {
-    const t = String(
-      n?.["destination"] ?? n?.["dialrule-application"] ?? n?.["dial-rule-application"] ??
-      n?.["to-user"] ?? n?.["users"] ?? n?.user ?? "",
-    );
-    return t.includes(ext);
+    const t = destOf(n);
+    return extRe.test(t) || t.toLowerCase().includes(`${ext.toLowerCase()}@`);
   });
   const didsToVoicemail = mine.filter((n) => {
-    const t = String(n?.["destination"] ?? n?.["to-user"] ?? n?.user ?? "").toLowerCase();
+    const t = destOf(n).toLowerCase();
     return t.includes("vmail") || t.includes("voicemail");
   });
   if (didsToVoicemail.length) {
     verdicts.push("DID_ROUTED_TO_VOICEMAIL");
-    issues.push(`DID routé directement vers la messagerie: ${didsToVoicemail.map((n) => n?.["phonenumber"] ?? n?.number).join(", ")}`);
+    issues.push(`DID routé directement vers la messagerie: ${didsToVoicemail.map(numOf).join(", ")}`);
   }
   if (phoneNumbers.ok && numbers.length && !mine.length) {
     verdicts.push("NO_DID_POINTING_TO_EXT");
-    issues.push(`Aucun DID de l'inventaire ne pointe vers l'extension ${ext} (routage possible via file/AA).`);
+    issues.push(`Aucun DID de l'inventaire ne pointe vers l'extension ${ext} (routage possible via file/AA). DIDs lus: ${numbers.length}`);
   }
+
 
   // CDR analysis
   const cdrRows = arrOf(cdrs.data).filter((x) => x && typeof x === "object");
@@ -279,15 +343,22 @@ Deno.serve(async (req) => {
       ring_timeout: ringTimeout || null,
       registered_aors: [...registeredAors],
       mobile_registered: mobileRegistered,
-      dids_matching_extension: mine.map((n) => n?.["phonenumber"] ?? n?.number).filter(Boolean),
+      dids_total_read: numbers.length,
+      dids_matching_extension: mine.map(numOf).filter(Boolean),
       inbound_cdrs: cdrSummary,
     },
     raw: {
       user: { status: user.status, data: u ?? null },
       answering_rules: { path: rules.path, status: rules.status, data: rules.data },
       devices: { status: devices.status, data: devices.data },
-      registrations: { status: registrations.status, data: registrations.data },
-      phone_numbers: { status: phoneNumbers.status, count: numbers.length, matching: mine },
+      registrations: { status: registrations.status, probes: registrations.probes, data: registrations.data },
+      phone_numbers: {
+        status: phoneNumbers.status,
+        probes: phoneNumbers.probes,
+        count: numbers.length,
+        all: numbers.map((n) => ({ number: numOf(n), destination: destOf(n) })),
+        matching: mine,
+      },
       cdrs: { status: cdrs.status, count: cdrRows.length },
     },
   });

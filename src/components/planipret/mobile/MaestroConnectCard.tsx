@@ -1,23 +1,33 @@
-import { useEffect, useState, useCallback } from "react";
-import { Link2, CheckCircle2, AlertCircle, Loader2, RefreshCw, LogOut, Bug } from "lucide-react";
+import { useEffect, useRef, useState, useCallback } from "react";
+import { Link2, CheckCircle2, AlertCircle, Loader2, RefreshCw, LogOut, Bug, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
 import { Capacitor } from "@capacitor/core";
+import { App as CapApp } from "@capacitor/app";
 import { Browser } from "@capacitor/browser";
 import { Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { logDeepLink } from "@/lib/deepLinkDebug";
 
-type Status = "loading" | "disconnected" | "connected" | "error";
+type Status = "loading" | "disconnected" | "pending" | "connected" | "error";
+
 
 interface StatusData {
+  status?: "connected" | "pending" | "not_configured" | "disconnected" | "error";
   connected?: boolean;
   broker_id?: string | null;
+  maestro_broker_id?: string | null;
   email?: string | null;
+  maestro_email?: string | null;
   scope?: string | null;
   expires_at?: string | null;
   error?: string | null;
+  last_error?: { message?: string | null } | null;
   configured?: boolean;
+  reason?: string | null;
+  user_id?: string | null;
+  expires_in?: number | null;
+
 }
 
 /**
@@ -29,6 +39,9 @@ export default function MaestroConnectCard() {
   const [status, setStatus] = useState<Status>("loading");
   const [data, setData] = useState<StatusData>({});
   const [busy, setBusy] = useState(false);
+  const [lastFetch, setLastFetch] = useState<Date | null>(null);
+  const [showDetails, setShowDetails] = useState(false);
+  const pollTimers = useRef<number[]>([]);
 
   const isFr = lang === "fr";
   const L = {
@@ -41,42 +54,81 @@ export default function MaestroConnectCard() {
     opening: isFr ? "Ouverture de Maestro…" : "Opening Maestro…",
     error: isFr ? "Erreur" : "Error",
     disconnected: isFr ? "Non connecté" : "Not connected",
+    pending: isFr ? "Connexion en attente" : "Connection pending",
     notConfigured: isFr ? "Maestro n'est pas configuré côté serveur" : "Maestro is not configured on the server",
     disconnectOk: isFr ? "Déconnecté de Maestro" : "Disconnected from Maestro",
+    refresh: isFr ? "Rafraîchir" : "Refresh",
+    details: isFr ? "Détails techniques" : "Technical details",
+    checkedAt: isFr ? "Vérifié à" : "Checked at",
   };
 
   const load = useCallback(async () => {
     try {
-      const { data: res, error } = await supabase.functions.invoke("maestro-oauth-status", { body: {} });
+      const { data: { session } } = await supabase.auth.getSession();
+      const { data: res, error } = await supabase.functions.invoke("maestro-oauth-status", {
+        body: {},
+        headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : undefined,
+      });
       if (error) throw error;
       const d = (res ?? {}) as StatusData;
       setData(d);
-      if (d.configured === false) setStatus("error");
-      else if (d.connected) setStatus("connected");
-      else if (d.error) setStatus("error");
+      setLastFetch(new Date());
+      if (d.status === "connected" || d.connected) setStatus("connected");
+      else if (d.configured === false) setStatus("error");
+      else if (d.status === "pending") setStatus("pending");
+      else if (d.status === "error" || d.error || d.last_error) setStatus("error");
       else setStatus("disconnected");
+      return d;
     } catch (e: any) {
       setData({ error: e?.message || "status_failed" });
+      setLastFetch(new Date());
       setStatus("error");
+      return null;
     }
   }, []);
 
-  useEffect(() => { load(); }, [load]);
+  // Poll a few times so the UI catches up with the server write after OAuth.
+  const pollStatus = useCallback(() => {
+    pollTimers.current.forEach((t) => window.clearTimeout(t));
+    pollTimers.current = [0, 1500, 4000, 8000].map((delay) =>
+      window.setTimeout(async () => {
+        const d = await load();
+        if (d?.status === "connected" || d?.connected) {
+          try { localStorage.removeItem("pp_maestro_just_connected"); } catch {}
+        }
+      }, delay),
+    );
+  }, [load]);
+
+  useEffect(() => {
+    let justConnected = false;
+    try { justConnected = !!localStorage.getItem("pp_maestro_just_connected"); } catch {}
+    if (justConnected) pollStatus(); else load();
+    return () => pollTimers.current.forEach((t) => window.clearTimeout(t));
+  }, [load, pollStatus]);
 
   // Refresh whenever the OAuth callback finishes, the app resumes from the
   // in-app browser, or the tab becomes visible again.
   useEffect(() => {
-    const onConnected = () => load();
+    const onConnected = () => pollStatus();
     const onVisible = () => { if (document.visibilityState === "visible") load(); };
     window.addEventListener("maestro:connected", onConnected);
     document.addEventListener("visibilitychange", onVisible);
-    window.addEventListener("focus", onConnected);
+    window.addEventListener("focus", onVisible);
+    let remove: (() => void) | undefined;
+    if (Capacitor.isNativePlatform()) {
+      CapApp.addListener("appStateChange", ({ isActive }) => { if (isActive) load(); })
+        .then((h) => { remove = () => h.remove(); })
+        .catch(() => {});
+    }
     return () => {
       window.removeEventListener("maestro:connected", onConnected);
       document.removeEventListener("visibilitychange", onVisible);
-      window.removeEventListener("focus", onConnected);
+      window.removeEventListener("focus", onVisible);
+      remove?.();
     };
-  }, [load]);
+  }, [load, pollStatus]);
+
 
   const startAuth = async () => {
     setBusy(true);
@@ -97,14 +149,15 @@ export default function MaestroConnectCard() {
 
       if (isNative) {
         logDeepLink({ kind: "info", source: "MaestroConnect", detail: `opening Maestro with redirect_uri=${redirectUri}` });
-        await Browser.close().catch(() => {});
         await Browser.open({ url, presentationStyle: "fullscreen" });
       } else {
         window.location.href = url;
       }
       toast.info(L.opening);
+      try { localStorage.setItem("pp_maestro_just_connected", String(Date.now())); } catch {}
       // Refresh status shortly after — the deep-link callback will complete auth
-      setTimeout(() => { load(); }, 3000);
+      pollStatus();
+
     } catch (e: any) {
       toast.error(e?.message || L.error);
     } finally {
@@ -129,7 +182,11 @@ export default function MaestroConnectCard() {
   const dot =
     status === "connected" ? "#22c55e" :
     status === "error" ? "#ef4444" :
+    status === "pending" ? "#f59e0b" :
     status === "loading" ? "#64748b" : "#f59e0b";
+  const email = data.email ?? data.maestro_email;
+  const brokerId = data.broker_id ?? data.maestro_broker_id;
+  const errorMessage = data.error ?? data.last_error?.message ?? L.error;
 
   return (
     <div style={{ padding: "0 12px 8px" }}>
@@ -152,22 +209,49 @@ export default function MaestroConnectCard() {
         {status === "connected" && (
           <div style={{ fontSize: 11, color: "var(--pp-text-secondary)", fontFamily: "monospace", lineHeight: 1.6 }}>
             <div className="flex items-center gap-1"><CheckCircle2 className="w-3 h-3" style={{ color: "#22c55e" }} /> {L.connected}</div>
-            {data.email && <div>✉ {data.email}</div>}
-            {data.broker_id && <div>ID: {data.broker_id}</div>}
+            {email && <div>✉ {email}</div>}
+            {brokerId && <div>ID: {brokerId}</div>}
             {data.scope && <div>Scope: {data.scope}</div>}
           </div>
         )}
 
+        {status === "pending" && (
+          <div style={{ fontSize: 11, color: "var(--pp-text-secondary)" }}>{L.pending}</div>
+        )}
+
         {status === "disconnected" && (
-          <div style={{ fontSize: 11, color: "var(--pp-text-secondary)" }}>{L.disconnected}</div>
+          <div style={{ fontSize: 11, color: "var(--pp-text-secondary)" }}>
+            {L.disconnected}{data.reason ? ` (${data.reason})` : ""}
+          </div>
         )}
 
         {status === "error" && (
           <div className="flex items-start gap-1" style={{ fontSize: 11, color: "#ef4444" }}>
             <AlertCircle className="w-3 h-3 mt-0.5 flex-shrink-0" />
-            <div>{data.configured === false ? L.notConfigured : (data.error || L.error)}</div>
+            <div>{data.configured === false ? L.notConfigured : errorMessage}</div>
           </div>
         )}
+
+        <div className="flex items-center justify-between mt-2" style={{ fontSize: 10, color: "var(--pp-text-muted)" }}>
+          <button onClick={() => load()} className="flex items-center gap-1" style={{ background: "transparent", color: "var(--pp-text-muted)" }}>
+            <RefreshCw className="w-3 h-3" /> {L.refresh}
+          </button>
+          {lastFetch && <span>{L.checkedAt} {lastFetch.toLocaleTimeString()}</span>}
+        </div>
+
+        <button
+          onClick={() => setShowDetails((v) => !v)}
+          className="flex items-center gap-1 mt-1"
+          style={{ background: "transparent", fontSize: 10, color: "var(--pp-text-muted)" }}
+        >
+          <ChevronDown className="w-3 h-3" style={{ transform: showDetails ? "rotate(180deg)" : "none" }} /> {L.details}
+        </button>
+        {showDetails && (
+          <pre style={{ marginTop: 6, padding: 8, background: "var(--pp-bg-base)", border: "1px solid var(--pp-bg-border-2)", borderRadius: 6, fontSize: 9, overflowX: "auto", color: "var(--pp-text-secondary)" }}>
+            {JSON.stringify(data, null, 2)}
+          </pre>
+        )}
+
 
         <div className="flex gap-2 mt-3">
           {status !== "connected" ? (
