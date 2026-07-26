@@ -153,9 +153,13 @@ class PpSipProvider {
         password: cleanCfg.password,
         authorization_user: cleanCfg.sipUsername,
         realm: cleanCfg.sipDomain,
-        contact_uri: `sip:${cleanCfg.sipUsername}@${cleanCfg.sipDomain};transport=wss`,
+        // Do NOT set contact_uri manually — JsSIP auto-generates it with the
+        // real WebSocket peer address (IP:port) which NetSapiens needs to route
+        // incoming INVITEs back to this WebSocket connection. A hardcoded
+        // domain-based contact_uri causes NetSapiens to mark the device as
+        // registered but fail to deliver incoming INVITEs (calls go to voicemail).
         register: true,
-        session_timers: false,
+        session_timers: true,
         // Longer expiry keeps the registration alive between the JsSIP
         // auto re-REGISTER (fires around expiry/2). 120s caused visible
         // dropouts on the diagnostic page whenever the network hiccuped
