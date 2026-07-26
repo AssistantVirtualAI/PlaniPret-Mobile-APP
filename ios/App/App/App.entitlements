@@ -5,5 +5,11 @@
 	<!-- APNs push environment — "development" for debug/TestFlight, "production" for App Store -->
 	<key>aps-environment</key>
 	<string>development</string>
+	<!-- PushKit VoIP push — required for PKPushRegistry (PpVoipCall plugin) to receive
+	     a VoIP push token and for NetSapiens to wake the app via APNs VoIP push (RFC 8599).
+	     Without this entitlement, getVoipPushToken() returns UNIMPLEMENTED and the app
+	     cannot receive incoming calls when in background/locked. -->
+	<key>com.apple.developer.pushkit.unrestricted-voip</key>
+	<true/>
 </dict>
 </plist>
