@@ -31,14 +31,14 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private var bgTask: UIBackgroundTaskIdentifier = .invalid
     private var host = ""; private var port = 443; private var path = "/"; private var login = ""; private var domain = ""; private var displayName = ""; private var password = ""
     private var socket: URLSessionWebSocketTask?
-    // URLSession avec configuration background + voip pour survivre à la suspension iOS.
-    // iOS suspend les URLSession.default en arrière-plan — background config + voip mode
-    // permettent à la WebSocket SIP de rester active même quand l'app est suspendue.
+    // IMPORTANT: URLSession.background ne supporte PAS les WebSocket (NSGenericException fatal).
+    // On utilise URLSession.default avec shouldUseExtendedBackgroundIdleMode = true
+    // + networkServiceType = .voip pour maximiser la survie en arrière-plan.
     private lazy var session: URLSession = {
-      let cfg = URLSessionConfiguration.background(withIdentifier: "com.planipret.sip.keepalive")
-      cfg.waitsForConnectivity = true
+      let cfg = URLSessionConfiguration.default
       cfg.shouldUseExtendedBackgroundIdleMode = true
       cfg.networkServiceType = .voip
+      cfg.waitsForConnectivity = true
       return URLSession(configuration: cfg, delegate: self, delegateQueue: OperationQueue())
     }()
     private var timer: Timer?
@@ -131,18 +131,25 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     // ARCHITECTURE: le plugin natif gère l'enregistrement SIP UNIQUEMENT en arrière-plan.
     // En avant-plan, JsSIP (WebView) possède l'AOR. Le plugin libère le WS dès que
     // l'app revient en avant-plan pour éviter la collision de deux WebSockets SIP sur NS.
-    private func isForeground() -> Bool { UIApplication.shared.applicationState == .active }
+    //
+    // IMPORTANT: UIApplication.applicationState ne peut être appelé que sur le main thread.
+    // On track l'état via NotificationCenter (onBackground/onForeground) pour éviter
+    // le Main Thread Checker crash quand isForeground() est appelé depuis le bridge thread.
+    private var appIsInForeground: Bool = true  // conservateur: démarre en avant-plan
+    private func isForeground() -> Bool { return appIsInForeground }
     private func releaseRegistration(_ why: String) {
       timer?.invalidate(); timer = nil
       socket?.cancel(with: .goingAway, reason: nil); socket = nil
       wsReady = false; endBackgroundTask(); setStatus("idle", why)
     }
     @objc private func onBackground() {
+      appIsInForeground = false  // tracker l'état avant tout appel à isForeground()
       // Arrière-plan: le plugin natif prend l'AOR — ouvrir le WS et s'enregistrer
       beginBackgroundTask(); activateAudioSession(); connect(); scheduleRegister()
       sendRegister(challenge: nil); setStatus("protected", "background_register_sent")
     }
     @objc private func onForeground() {
+      appIsInForeground = true  // tracker l'état avant tout appel à isForeground()
       // Avant-plan: JsSIP reprend l'AOR — libérer le WS natif immédiatement
       releaseRegistration("foreground_js_owns")
       // Demander à JsSIP de se ré-enregistrer
