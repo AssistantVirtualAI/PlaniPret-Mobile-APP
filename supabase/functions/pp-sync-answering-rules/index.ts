@@ -128,8 +128,10 @@ Deno.serve(async (req) => {
           // tenant it can resolve to a terminating application (SpeakAccount /
           // voicemail) before the registered devices are forked.
           "include-user-extension": "no",
-          "ring-all-user-phones": "yes",
-          "parameters": ["<OwnDevices>"],
+          // Ring ONLY the mobile device AORs (never <OwnDevices>, which would
+          // also fork to {ext}_web and steal the call from the mobile app).
+          "ring-all-user-phones": "no",
+          "parameters": deviceAors,
           "destinations": destinations,
           "list": deviceAors,
         },
@@ -143,12 +145,13 @@ Deno.serve(async (req) => {
         "simultaneous-ring-enabled": "yes",
         "simultaneous-ring-confirm": "no",
         "simultaneous-ring-include-user-extension": "no",
-        "simultaneous-ring-all-user-phones": "yes",
-        "simultaneous-ring-parameters": ["<OwnDevices>"],
+        "simultaneous-ring-all-user-phones": "no",
+        "simultaneous-ring-parameters": deviceAors,
         "sim-ring-include-user-extension": "no",
-        "sim-ring-all-user-phones": "yes",
-        "sim-ring-parameters": ["<OwnDevices>"],
+        "sim-ring-all-user-phones": "no",
+        "sim-ring-parameters": deviceAors,
         "simultaneous-ring-list": deviceAors,
+
         "sim-ring-destinations": destinations,
         "ring-timeout": ring_timeout,
         "timeout": ring_timeout,
@@ -176,10 +179,15 @@ Deno.serve(async (req) => {
       return `sip:${id}@${domain}`;
     };
 
-    // Read the broker's real device AORs from NS. Registered devices are
-    // preferred, but provisioned device AORs are kept as a safe fallback so the
-    // rule never falls back to SpeakAccount / base-extension routing.
+    // Read the broker's real device AORs from NS and keep ONLY the mobile
+    // device ({ext}_mobile). Inbound calls must always ring the mobile app —
+    // never {ext}_web (desktop/browser), which would answer first and make the
+    // mobile app look silent.
+    const mobileOnly = (aors: string[], ext: string) =>
+      aors.filter((a) => a.toLowerCase().includes(`${String(ext).toLowerCase()}_mobile`));
+
     const fetchDeviceAors = async (ext: string, domain: string): Promise<{ aors: string[]; source: string; status: number; registered_aors: string[] }> => {
+      const fallback = [`sip:${ext}_mobile@${domain}`];
       try {
         const res = await nsFetch(
           `/domains/${encodeURIComponent(domain)}/users/${encodeURIComponent(ext)}/devices`,
@@ -188,32 +196,33 @@ Deno.serve(async (req) => {
         );
         const data: any = await readBody(res);
         const rows: any[] = Array.isArray(data) ? data : (data?.data ?? data?.items ?? []);
-        const provisioned = rows.map((r: any) => aorFromRow(r, ext, domain)).filter(Boolean);
-        const registered = rows.filter(isRegisteredDevice).map((r: any) => aorFromRow(r, ext, domain)).filter(Boolean);
+        const provisioned = mobileOnly(rows.map((r: any) => aorFromRow(r, ext, domain)).filter(Boolean), ext);
+        const registered = mobileOnly(rows.filter(isRegisteredDevice).map((r: any) => aorFromRow(r, ext, domain)).filter(Boolean), ext);
         const chosen = registered.length ? registered : provisioned;
         if (chosen.length) {
           return {
             aors: [...new Set(chosen)],
-            source: registered.length ? "ns_registered_devices" : "ns_provisioned_devices",
+            source: registered.length ? "ns_registered_mobile_device" : "ns_provisioned_mobile_device",
             status: res.status,
             registered_aors: [...new Set(registered)],
           };
         }
         return {
-          aors: [`sip:${ext}_mobile@${domain}`, `sip:${ext}_web@${domain}`],
-          source: "convention_fallback",
+          aors: fallback,
+          source: "convention_fallback_mobile",
           status: res.status,
           registered_aors: [],
         };
       } catch {
         return {
-          aors: [`sip:${ext}_mobile@${domain}`, `sip:${ext}_web@${domain}`],
-          source: "convention_fallback",
+          aors: fallback,
+          source: "convention_fallback_mobile",
           status: 0,
           registered_aors: [],
         };
       }
     };
+
 
     const normalizeDigits = (value: unknown) => {
       const digits = String(value ?? "").replace(/\D/g, "");
