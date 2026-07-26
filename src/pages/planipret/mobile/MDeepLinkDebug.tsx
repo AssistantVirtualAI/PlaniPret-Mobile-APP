@@ -1,3 +1,4 @@
+import React from "react";
 import { useEffect, useState } from "react";
 import { Capacitor } from "@capacitor/core";
 import { toast } from "sonner";

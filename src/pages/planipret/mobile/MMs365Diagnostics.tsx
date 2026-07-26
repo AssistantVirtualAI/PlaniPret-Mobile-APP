@@ -1,3 +1,4 @@
+import React from "react";
 /**
  * Microsoft 365 diagnostics — mobile-friendly (no admin panel).
  */

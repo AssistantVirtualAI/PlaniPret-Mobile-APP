@@ -1,3 +1,4 @@
+import React from "react";
 /**
  * Style / build diagnostics — confirms Tailwind is compiled and shows
  * native build info so the Xcode-rendered bundle can be matched to the
