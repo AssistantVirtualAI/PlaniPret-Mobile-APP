@@ -40,6 +40,10 @@ public class PpSipKeepAliveService extends Service {
   private int cseq = 1;
   private final String callId = UUID.randomUUID().toString() + "@planipret-mobile";
   private final String fromTag = Long.toHexString(System.nanoTime());
+  // instanceId STABLE: calculé une seule fois à la création du service.
+  // Un UUID aléatoire à chaque REGISTER ferait croire à NS qu'il s'agit d'un
+  // nouvel appareil → NS ferme le WS (code 1001) → boucle infinie.
+  private final String instanceId = UUID.randomUUID().toString().replace("-", "");
   private volatile boolean readerRunning = false;
 
   public static void start(Context c) { Intent i = new Intent(c, PpSipKeepAliveService.class); if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) c.startForegroundService(i); else c.startService(i); }
@@ -116,8 +120,8 @@ Origin: https://" + host + "
 
   private void handleSipMessage(String msg) throws Exception {
     if (msg.startsWith("SIP/2.0 401") || msg.startsWith("SIP/2.0 407")) {
-      String challenge = header(msg, msg.startsWith("SIP/2.0 407") ? "Proxy-Authenticate" : "WWW-Authenticate");
-      sendRegister(challenge); return;
+      // Passer le message complet à sendRegister pour détecter Proxy-Authenticate vs WWW-Authenticate
+      sendRegister(msg); return;
     }
     if (msg.startsWith("SIP/2.0 200") && msg.toLowerCase(Locale.US).contains("cseq:") && msg.toUpperCase(Locale.US).contains(" REGISTER")) {
       emitStatus("registered", "native_register_200"); return;
@@ -172,7 +176,12 @@ Origin: https://" + host + "
     if (login == null || login.length() == 0 || domain == null || domain.length() == 0) { emitStatus("error", "missing_credentials"); return; }
     int seq = cseq++;
     String branch = "z9hG4bK" + UUID.randomUUID().toString().replace("-", "");
-    String contact = "<sip:" + login + "@" + UUID.randomUUID().toString().replace("-", "") + ".invalid;transport=wss>";
+    // Contact STABLE avec instanceId fixe — pas de .invalid aléatoire à chaque REGISTER.
+    // Route header (use_preloaded_route RFC 3327): NS route les INVITEs entrants via
+    // le WebSocket établi au lieu d'essayer de contacter l'adresse .invalid.
+    String sipHost = p.getString("host", "core1.cluster1.ucstack.io");
+    int sipPort = p.getInt("port", 443);
+    String contact = "<sip:" + login + "@" + instanceId + ".planipret-mobile.invalid;transport=wss>";
     StringBuilder sip = new StringBuilder();
     sip.append("REGISTER sip:").append(domain).append(" SIP/2.0
 ");
@@ -194,8 +203,13 @@ User-Agent: Planipret Native KeepAlive
 Supported: outbound,path,gruu
 Allow: INVITE,ACK,CANCEL,BYE,OPTIONS,MESSAGE,INFO,UPDATE,REGISTER
 ");
-    if (challenge != null && password != null && password.length() > 0) sip.append("Authorization: ").append(digestAuth(challenge, login, password, domain)).append("
-");
+    if (challenge != null && password != null && password.length() > 0) {
+      sip.append("Route: <sip:").append(sipHost).append(":").append(sipPort).append(";transport=wss;lr>\n");
+      // RFC 3261 §22.3: NS proxy → 407 → Proxy-Authorization requis (pas Authorization)
+      boolean isProxy = challenge.toLowerCase().contains("proxy-authenticate:");
+      String authHeader = isProxy ? "Proxy-Authorization" : "Authorization";
+      sip.append(authHeader).append(": ").append(digestAuth(challenge, login, password, domain)).append("\n");
+    }
     sip.append("Content-Length: 0
 
 ");
@@ -210,8 +224,10 @@ Allow: INVITE,ACK,CANCEL,BYE,OPTIONS,MESSAGE,INFO,UPDATE,REGISTER
   private String parseUser(String header) { if (header == null) return null; int lt = header.indexOf('<'); String uri = lt >= 0 ? header.substring(lt + 1, Math.max(lt + 1, header.indexOf('>', lt))) : header; if (uri.startsWith("sip:")) uri = uri.substring(4); else if (uri.startsWith("sips:")) uri = uri.substring(5); int at = uri.indexOf('@'); if (at > 0) uri = uri.substring(0, at); int semi = uri.indexOf(';'); if (semi > 0) uri = uri.substring(0, semi); return uri; }
   private String md5(String s) throws Exception { MessageDigest md = MessageDigest.getInstance("MD5"); byte[] b = md.digest(s.getBytes(StandardCharsets.UTF_8)); StringBuilder sb = new StringBuilder(); for (byte x : b) sb.append(String.format(Locale.US, "%02x", x & 0xff)); return sb.toString(); }
   private String websocketKey() { byte[] b = new byte[16]; new SecureRandom().nextBytes(b); return Base64.encodeToString(b, Base64.NO_WRAP); }
-  private String readHttpHeaders() throws IOException { ByteArrayOutputStream b = new ByteArrayOutputStream(); int prev3 = -1, prev2 = -1, prev1 = -1, cur; while ((cur = wsIn.read()) != -1) { b.write(cur); if (prev3 == '' && prev2 == '
-' && prev1 == '' && cur == '
+  private String readHttpHeaders() throws IOException { ByteArrayOutputStream b = new ByteArrayOutputStream(); int prev3 = -1, prev2 = -1, prev1 = -1, cur; while ((cur = wsIn.read()) != -1) { b.write(cur); if (prev3 == '
+' && prev2 == '
+' && prev1 == '
+' && cur == '
 ') break; prev3 = prev2; prev2 = prev1; prev1 = cur; } return b.toString("UTF-8"); }
   private void sendFrame(String text) throws IOException { if (wsOut == null) throw new IOException("no_ws"); byte[] payload = text.getBytes(StandardCharsets.UTF_8); ByteArrayOutputStream f = new ByteArrayOutputStream(); f.write(0x81); int len = payload.length; if (len < 126) f.write(0x80 | len); else if (len <= 65535) { f.write(0x80 | 126); f.write((len >> 8) & 255); f.write(len & 255); } else throw new IOException("frame_too_large"); byte[] mask = new byte[4]; new SecureRandom().nextBytes(mask); f.write(mask); for (int i = 0; i < payload.length; i++) f.write(payload[i] ^ mask[i % 4]); wsOut.write(f.toByteArray()); wsOut.flush(); }
   private String readFrame() throws IOException { int b1 = wsIn.read(); if (b1 < 0) return null; int b2 = wsIn.read(); if (b2 < 0) return null; int opcode = b1 & 0x0f; boolean masked = (b2 & 0x80) != 0; long len = b2 & 0x7f; if (len == 126) len = (wsIn.read() << 8) | wsIn.read(); else if (len == 127) { len = 0; for (int i = 0; i < 8; i++) len = (len << 8) | wsIn.read(); } byte[] mask = new byte[4]; if (masked) readFully(mask); byte[] payload = new byte[(int)len]; readFully(payload); if (masked) for (int i = 0; i < payload.length; i++) payload[i] = (byte)(payload[i] ^ mask[i % 4]); if (opcode == 8) return null; if (opcode == 9) { sendPong(payload); return ""; } if (opcode != 1) return ""; return new String(payload, StandardCharsets.UTF_8); }
