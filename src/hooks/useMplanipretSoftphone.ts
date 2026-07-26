@@ -240,8 +240,11 @@ export function useMplanipretSoftphone() {
 
     // Native incoming INVITE (background/lockscreen). Wake JsSIP + broadcast so
     // MActiveCall / MHome can pop the ringing sheet even if the WebView slept.
+    // Sur iOS natif: activer JsSIP pour recevoir l'appel (mode call-only).
     let cleanupInvite: (() => void) | undefined;
     onPlanipretIncomingInvite((invite) => {
+      // Activer JsSIP pour recevoir l'INVITE entrant (iOS mode call-only)
+      void (ppSipProvider as any).activateForIncomingCall?.().catch(() => {});
       try { ppSipProvider.forceReregister(); } catch {}
       try {
         window.dispatchEvent(new CustomEvent("pp:sip-incoming-invite", { detail: invite }));
