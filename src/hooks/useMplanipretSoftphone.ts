@@ -32,7 +32,6 @@ import {
   reportPlanipretCallEnded,
   requestPlanipretBatteryOptimizationExemption,
   startPlanipretSipKeepAlive,
-  triggerPlanipretNativeReregister,
   type PpNativeSipStatus,
 } from "@/lib/planipret/sip/nativePpSipService";
 import {
@@ -240,11 +239,8 @@ export function useMplanipretSoftphone() {
 
     // Native incoming INVITE (background/lockscreen). Wake JsSIP + broadcast so
     // MActiveCall / MHome can pop the ringing sheet even if the WebView slept.
-    // Sur iOS natif: activer JsSIP pour recevoir l'appel (mode call-only).
     let cleanupInvite: (() => void) | undefined;
     onPlanipretIncomingInvite((invite) => {
-      // Activer JsSIP pour recevoir l'INVITE entrant (iOS mode call-only)
-      void (ppSipProvider as any).activateForIncomingCall?.().catch(() => {});
       try { ppSipProvider.forceReregister(); } catch {}
       try {
         window.dispatchEvent(new CustomEvent("pp:sip-incoming-invite", { detail: invite }));
@@ -359,7 +355,8 @@ export function useMplanipretSoftphone() {
         if (AppPlugin?.addListener) {
           const p = AppPlugin.addListener("appStateChange", (state: { isActive: boolean }) => {
             if (state?.isActive) {
-              void triggerPlanipretNativeReregister();
+              // Avant-plan: JsSIP possède l'AOR. Appeler triggerPlanipretNativeReregister
+              // ici déclenchait un REGISTER natif qui faisait fermer le WS JsSIP (code 1001).
               try { ppSipProvider.forceReregister(); } catch {}
               evaluate();
             } else {

@@ -142,10 +142,6 @@ class PpSipProvider {
     this.eventListeners.forEach((l) => { try { l(this.events); } catch {} });
   }
 
-  // Indique si JsSIP est en mode "call-only" (iOS natif): pas de WS permanent,
-  // JsSIP s'active uniquement pour les appels entrants/sortants.
-  private iosCallOnlyMode = false;
-
   async init(cfg: PpSipConfig) {
     installSipParserGuard();
     const wssUrl = String(cfg.wssUrl ?? "").trim();
@@ -154,19 +150,10 @@ class PpSipProvider {
       return;
     }
 
-    // Sur iOS natif: le plugin PpSipKeepAlive gère l'enregistrement SIP.
-    // JsSIP ne doit PAS ouvrir de WebSocket SIP en parallèle — NS ferme
-    // la connexion native (code 1001) dès que JsSIP ouvre la sienne.
-    // On stocke la config et on met le statut à "registered" (le plugin natif
-    // est enregistré), mais on ne démarre pas JsSIP maintenant.
-    if (isIosNative()) {
-      this.iosCallOnlyMode = true;
-      this.cfg = { ...cfg, wssUrl };
-      this.lastSig = `${cfg.extension}|${cfg.sipDomain}|${wssUrl}|${cfg.password}`;
-      // Marquer comme "registered" pour que le watchdog ne force pas de reconnexion
-      this.update({ status: "registered", errorCause: undefined, lastRegistrationAt: Date.now() });
-      return;
-    }
+    // Sur iOS natif: JsSIP gère l'enregistrement SIP en AVANT-PLAN.
+    // Le plugin PpSipKeepAlive prend le relève en ARRIÈRE-PLAN uniquement.
+    // Cette séparation est gérée par isForeground() dans PpSipKeepAlive.swift.
+    // JsSIP doit donc s'initialiser normalement ici.
     const cleanCfg = { ...cfg, wssUrl };
     const sig = `${cleanCfg.extension}|${cleanCfg.sipDomain}|${cleanCfg.wssUrl}|${cleanCfg.password}`;
     if (this.ua && sig === this.lastSig && (this.snap.status === "registered" || this.snap.status === "connected")) {
@@ -334,69 +321,8 @@ class PpSipProvider {
   }
 
 
-  // Active JsSIP pour un appel sortant sur iOS (mode call-only).
-  // Ouvre le WS, attend l'enregistrement, puis passe l'appel.
-  private async activateForCall(): Promise<void> {
-    if (!this.iosCallOnlyMode || !this.cfg) return;
-    if (this.ua && (this.snap.status === "registered" || this.snap.status === "connected")) return;
-    // Démarrer JsSIP normalement (le plugin natif sera temporairement en compétition
-    // mais JsSIP a besoin du WS pour l'INVITE/ICE)
-    const cfg = this.cfg;
-    const wssUrl = cfg.wssUrl;
-    const sig = `${cfg.extension}|${cfg.sipDomain}|${wssUrl}|${cfg.password}`;
-    this.lastSig = sig;
-    this.connectingSince = Date.now();
-    this.lastStartAt = Date.now();
-    this.regFailures = 0;
-    this.update({ status: "connecting", errorCause: undefined });
-    try {
-      const urls = Array.from(new Set([wssUrl, ...(cfg.wssUrls || [])]
-        .map((u) => String(u ?? "").trim())
-        .filter((u) => /^wss?:\/\//i.test(u)))) as string[];
-      const sockets = urls.map((u) => new (JsSIP as any).WebSocketInterface(u));
-      const ua = new (JsSIP as any).UA({
-        sockets,
-        uri: `sip:${cfg.sipUsername}@${cfg.sipDomain}`,
-        password: cfg.password,
-        authorization_user: cfg.sipUsername,
-        realm: cfg.sipDomain,
-        use_preloaded_route: true,
-        register: true,
-        session_timers: false,
-        register_expires: 60, // courte durée pour les appels
-        connection_recovery_min_interval: 2,
-        connection_recovery_max_interval: 10,
-        user_agent: "Planipret Softphone 1.0",
-      });
-      ua.on("connecting", () => { this.connectingSince = Date.now(); this.update({ status: "connecting" }); });
-      ua.on("connected", () => this.update({ status: "connected" }));
-      ua.on("disconnected", (e: any) => { this.log("warn", "ws disconnected", e); this.update({ status: "disconnected" }); });
-      ua.on("registered", () => { this.regFailures = 0; this.update({ status: "registered", errorCause: undefined, lastRegistrationAt: Date.now() }); });
-      ua.on("unregistered", () => { this.log("warn", "unregistered"); });
-      ua.on("registrationFailed", (e: any) => { this.log("error", `registration failed: ${e?.cause || "?"}`); this.update({ status: "error" }); });
-      ua.on("newRTCSession", (e: any) => this.attachSession(e.session, e.originator));
-      ua.start();
-      this.ua = ua;
-      // Attendre l'enregistrement (max 8s)
-      await new Promise<void>((resolve) => {
-        const t = setTimeout(() => resolve(), 8000);
-        const unsub = this.subscribe((s) => {
-          if (s.status === "registered" || s.status === "connected") {
-            clearTimeout(t); unsub(); resolve();
-          }
-        });
-      });
-    } catch (err: any) {
-      this.log("error", `activateForCall failed: ${err?.message || err}`);
-      this.update({ status: "error", errorCause: String(err?.message || err) });
-    }
-  }
-
   async call(number: string) {
-    if (!this.cfg) throw new Error("softphone_not_registered");
-    // Sur iOS natif: activer JsSIP à la demande pour l'appel sortant
-    if (this.iosCallOnlyMode) await this.activateForCall();
-    if (!this.ua) throw new Error("softphone_not_registered");
+    if (!this.cfg || !this.ua) throw new Error("softphone_not_registered");
     this.update({ callState: "ringing-out", remoteIdentity: number, remoteNumber: number, direction: "out", errorCause: undefined });
     try {
       const mediaStream = await navigator.mediaDevices.getUserMedia({
@@ -461,13 +387,6 @@ class PpSipProvider {
   }
   async forceReregister() {
     try {
-      // Sur iOS natif: le plugin PpSipKeepAlive gère le re-register
-      // Ne pas interférer avec le WS natif
-      if (this.iosCallOnlyMode) {
-        // Mettre à jour lastRegistrationAt pour que le watchdog reste calme
-        this.update({ status: "registered", errorCause: undefined, lastRegistrationAt: Date.now() });
-        return;
-      }
       if (!this.ua) return;
       // Never interrupt a connecting handshake — that was the cause of the
       // endless "ws disconnected code:1001 → registration failed: Connection Error" loop.
@@ -486,15 +405,7 @@ class PpSipProvider {
     try { this.ua?.stop(); } catch {}
     this.ua = null;
     this.session = null;
-    this.iosCallOnlyMode = false;
     this.update({ status: "disconnected", callState: "idle", direction: null, startedAt: null });
-  }
-
-  // Appelé par le plugin natif quand un INVITE entrant arrive via PushKit.
-  // Active JsSIP pour recevoir l'appel.
-  async activateForIncomingCall(): Promise<void> {
-    if (!this.iosCallOnlyMode) return;
-    await this.activateForCall();
   }
 }
 

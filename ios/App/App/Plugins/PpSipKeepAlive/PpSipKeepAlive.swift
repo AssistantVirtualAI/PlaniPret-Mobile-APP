@@ -82,12 +82,28 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       if let bid = call.getString("bundleId"), !bid.isEmpty { voipBundleId = bid }
       if voipBundleId.isEmpty { voipBundleId = Bundle.main.bundleIdentifier ?? "" }
       reconnectDelay = 2.0
-      activateAudioSession(); connect(); scheduleRegister(); call.resolve(snapshot(ok: true))
+      // En avant-plan: JsSIP possède l'AOR, ne pas ouvrir le WS natif
+      // En arrière-plan: ouvrir le WS et s'enregistrer
+      if !isForeground() {
+        activateAudioSession(); connect(); scheduleRegister()
+      } else {
+        setStatus("idle", "foreground_js_owns")
+      }
+      call.resolve(snapshot(ok: true))
     }
 
     @objc func stopSipService(_ call: CAPPluginCall) { timer?.invalidate(); socket?.cancel(with: .goingAway, reason: nil); socket = nil; wsReady = false; endBackgroundTask(); setStatus("disconnected", "stopped"); call.resolve(snapshot(ok: true)) }
     @objc func getSipServiceStatus(_ call: CAPPluginCall) { call.resolve(snapshot(ok: true)) }
-    @objc func triggerReregister(_ call: CAPPluginCall) { sendRegister(challenge: nil); notifyListeners("sipReregisterRequested", data: ["reason": "manual"]); call.resolve(snapshot(ok: true)) }
+    @objc func triggerReregister(_ call: CAPPluginCall) {
+      if isForeground() {
+        // En avant-plan: JsSIP gère le re-register, ne pas interférer
+        notifyListeners("sipReregisterRequested", data: ["reason": "manual"])
+      } else {
+        sendRegister(challenge: nil)
+        notifyListeners("sipReregisterRequested", data: ["reason": "manual"])
+      }
+      call.resolve(snapshot(ok: true))
+    }
 
     /// Allow JS to push the VoIP token into this plugin (called from useMplanipretSoftphone)
     @objc func setVoipPushToken(_ call: CAPPluginCall) {
@@ -103,8 +119,26 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       call.resolve(["ok": true])
     }
 
-    @objc private func onBackground() { beginBackgroundTask(); activateAudioSession(); sendRegister(challenge: nil); notifyListeners("sipReregisterRequested", data: ["reason": "enter_background"]); setStatus("protected", "background_register_sent") }
-    @objc private func onForeground() { connect(); sendRegister(challenge: nil); notifyListeners("sipReregisterRequested", data: ["reason": "enter_foreground"]); setStatus("registered", "foreground_refresh"); endBackgroundTask() }
+    // ARCHITECTURE: le plugin natif gère l'enregistrement SIP UNIQUEMENT en arrière-plan.
+    // En avant-plan, JsSIP (WebView) possède l'AOR. Le plugin libère le WS dès que
+    // l'app revient en avant-plan pour éviter la collision de deux WebSockets SIP sur NS.
+    private func isForeground() -> Bool { UIApplication.shared.applicationState == .active }
+    private func releaseRegistration(_ why: String) {
+      timer?.invalidate(); timer = nil
+      socket?.cancel(with: .goingAway, reason: nil); socket = nil
+      wsReady = false; endBackgroundTask(); setStatus("idle", why)
+    }
+    @objc private func onBackground() {
+      // Arrière-plan: le plugin natif prend l'AOR — ouvrir le WS et s'enregistrer
+      beginBackgroundTask(); activateAudioSession(); connect(); scheduleRegister()
+      sendRegister(challenge: nil); setStatus("protected", "background_register_sent")
+    }
+    @objc private func onForeground() {
+      // Avant-plan: JsSIP reprend l'AOR — libérer le WS natif immédiatement
+      releaseRegistration("foreground_js_owns")
+      // Demander à JsSIP de se ré-enregistrer
+      notifyListeners("sipReregisterRequested", data: ["reason": "enter_foreground"])
+    }
     /// Called by AppDelegate BGProcessingTask every ~15 min to keep SIP registration alive
     @objc private func onBgRefresh() { if !login.isEmpty { connect(); sendRegister(challenge: nil); notifyListeners("sipReregisterRequested", data: ["reason": "bg_task_refresh"]); NSLog("[PpSipKeepAlive] BGTask refresh — REGISTER sent") } }
 
@@ -112,6 +146,8 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
 
     private func connect() {
       guard !host.isEmpty else { setStatus("error", "missing_host"); return }
+      // Ne pas ouvrir le WS en avant-plan — JsSIP possède l'AOR
+      if isForeground() { return }
       if socket != nil { return }
       wsReady = false
       var comps = URLComponents(); comps.scheme = port == 80 ? "ws" : "wss"; comps.host = host; comps.port = port; comps.path = path.isEmpty ? "/" : path
@@ -138,6 +174,11 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         guard let self = self else { return }
         self.wsReady = false
         self.socket = nil
+        // Si l'app est en avant-plan, ne pas reconnecter — JsSIP possède l'AOR
+        if self.isForeground() {
+          self.setStatus("idle", "foreground_js_owns")
+          return
+        }
         let delay = self.reconnectDelay
         self.reconnectDelay = min(self.reconnectDelay * 2, 30.0)  // backoff exponentiel max 30s
         NSLog("[PpSipKeepAlive] WS closed (code \(closeCode.rawValue)) — reconnecting in \(delay)s")
@@ -159,6 +200,12 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
           DispatchQueue.main.async {
             self.wsReady = false
             self.socket = nil
+            // Si l'app est en avant-plan quand le WS se ferme, ne pas reconnecter
+            // (JsSIP possède l'AOR en avant-plan)
+            if self.isForeground() {
+              self.setStatus("idle", "foreground_js_owns")
+              return
+            }
             let delay = self.reconnectDelay
             self.reconnectDelay = min(self.reconnectDelay * 2, 30.0)
             NSLog("[PpSipKeepAlive] receiveLoop error: \(error.localizedDescription) — reconnecting in \(delay)s")
@@ -287,6 +334,8 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     }
 
     private func sendRegisterRaw(challenge: String?) {
+      // Ne pas s'enregistrer en avant-plan — JsSIP possède l'AOR
+      if isForeground() { releaseRegistration("foreground_js_owns"); return }
       // FIX 4: Ne pas envoyer si le WS n'est pas encore ouvert
       guard wsReady, socket != nil else {
         if socket == nil { connect() }
