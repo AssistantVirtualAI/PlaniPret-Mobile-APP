@@ -92,6 +92,7 @@ class PpSipProvider {
 
   audioEl: HTMLAudioElement | null = null;
   private lastSig = "";
+  private _keepaliveTimer: ReturnType<typeof setInterval> | null = null;
 
   subscribe(fn: Listener): () => void {
     this.listeners.add(fn);
@@ -169,10 +170,14 @@ class PpSipProvider {
       ua.on("connected", () => this.update({ status: "connected" }));
       ua.on("disconnected", (e: any) => {
         this.log("warn", "ws disconnected", e);
+        this._stopKeepalive();
         this.update({ status: "disconnected", errorCause: e?.reason || "ws_disconnected" });
         // JsSIP retries the socket via connection_recovery_*; no manual work needed.
       });
-      ua.on("registered", () => this.update({ status: "registered", errorCause: undefined, lastRegistrationAt: Date.now() }));
+      ua.on("registered", () => {
+        this.update({ status: "registered", errorCause: undefined, lastRegistrationAt: Date.now() });
+        this._startKeepalive();
+      });
       ua.on("unregistered", () => {
         this.log("warn", "unregistered - forcing re-register");
         this.update({ status: "connected", errorCause: "re_registering" });
@@ -347,7 +352,28 @@ class PpSipProvider {
     } catch {}
   }
 
+  private _startKeepalive() {
+    this._stopKeepalive();
+    this._keepaliveTimer = setInterval(() => {
+      try {
+        if (this.ua && (this.snap.status === "registered" || this.snap.status === "connected")) {
+          // Send SIP OPTIONS as WebSocket keep-alive to prevent NetSapiens
+          // from closing the connection after 60s of inactivity.
+          this.ua.sendOptions(this.cfg?.sipDomain ?? "planipret.ca", null, {});
+        }
+      } catch (e) {
+        this.log("warn", "keepalive OPTIONS failed", e);
+      }
+    }, 30000);
+  }
+  private _stopKeepalive() {
+    if (this._keepaliveTimer !== null) {
+      clearInterval(this._keepaliveTimer);
+      this._keepaliveTimer = null;
+    }
+  }
   stop() {
+    this._stopKeepalive();
     try { this.ua?.stop(); } catch {}
     this.ua = null;
     this.session = null;
