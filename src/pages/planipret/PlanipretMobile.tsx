@@ -191,7 +191,10 @@ function Dialer({ open, onClose, initial, autoDial, openMessages, softphone }: {
     }
     toast.success(t("dialer.callStarted"));
     setNumber("");
-    onClose();
+    // Delay closing the dialer so PpActiveCallScreen has time to mount
+    // (React state update for restCall / snap is async — closing immediately
+    // makes it look like the screen vanished).
+    window.setTimeout(() => onClose(), 300);
   };
 
   useEffect(() => {

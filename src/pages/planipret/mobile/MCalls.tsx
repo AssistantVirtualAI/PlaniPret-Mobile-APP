@@ -109,7 +109,15 @@ function fmtPhone(n: string | null): string | null {
 }
 
 const otherNumber = (c: Call) => cleanNumber(isOutbound(c) ? c.to_number : c.from_number) || "";
-const otherName = (c: Call) => (isOutbound(c) ? c.to_name : c.from_name) || "";
+// NS sometimes returns generic account names (SpeakAccount, Unknown, etc.) instead of real caller names.
+const NS_GENERIC_NAMES = new Set(["speakaccount", "unknown", "anonymous", "unavailable", "restricted", "private", "nms"]);
+function cleanNsName(name: string | null | undefined): string {
+  if (!name) return "";
+  const lower = name.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (NS_GENERIC_NAMES.has(lower)) return "";
+  return name.trim();
+}
+const otherName = (c: Call) => cleanNsName(isOutbound(c) ? c.to_name : c.from_name);
 // Label priority: NS caller_id_name → resolved (Maestro/MS/contacts) → phone
 // number → localized "Numéro non résolu" fallback.
 const UNRESOLVED_FR = "Numéro non résolu";

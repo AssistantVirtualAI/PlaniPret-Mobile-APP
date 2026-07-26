@@ -31,7 +31,16 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private var bgTask: UIBackgroundTaskIdentifier = .invalid
     private var host = ""; private var port = 443; private var path = "/"; private var login = ""; private var domain = ""; private var displayName = ""; private var password = ""
     private var socket: URLSessionWebSocketTask?
-    private lazy var session = URLSession(configuration: .default, delegate: self, delegateQueue: OperationQueue())
+    // URLSession avec configuration background + voip pour survivre à la suspension iOS.
+    // iOS suspend les URLSession.default en arrière-plan — background config + voip mode
+    // permettent à la WebSocket SIP de rester active même quand l'app est suspendue.
+    private lazy var session: URLSession = {
+      let cfg = URLSessionConfiguration.background(withIdentifier: "com.planipret.sip.keepalive")
+      cfg.waitsForConnectivity = true
+      cfg.shouldUseExtendedBackgroundIdleMode = true
+      cfg.networkServiceType = .voip
+      return URLSession(configuration: cfg, delegate: self, delegateQueue: OperationQueue())
+    }()
     private var timer: Timer?
     private var cseq = 1
     private let callIdReg = UUID().uuidString + "@planipret-ios"
@@ -376,7 +385,18 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private func parseDisplay(_ hdr: String) -> String { guard let lt = hdr.firstIndex(of: "<") else { return "" }; var d = String(hdr[..<lt]).trimmingCharacters(in: .whitespaces); if d.hasPrefix("\"") && d.hasSuffix("\"") { d.removeFirst(); d.removeLast() }; return d }
     private func parseUser(_ hdr: String) -> String { var uri = hdr; if let lt = hdr.firstIndex(of: "<"), let gt = hdr[lt...].firstIndex(of: ">") { uri = String(hdr[hdr.index(after: lt)..<gt]) }; if uri.hasPrefix("sip:") { uri = String(uri.dropFirst(4)) } else if uri.hasPrefix("sips:") { uri = String(uri.dropFirst(5)) }; if let at = uri.firstIndex(of: "@") { uri = String(uri[..<at]) }; if let semi = uri.firstIndex(of: ";") { uri = String(uri[..<semi]) }; return uri }
     private func md5(_ s: String) -> String { let d = Insecure.MD5.hash(data: Data(s.utf8)); return d.map { String(format: "%02hhx", $0) }.joined() }
-    private func beginBackgroundTask() { if bgTask != .invalid { return }; bgTask = UIApplication.shared.beginBackgroundTask(withName: "PlanipretSIPKeepAlive") { [weak self] in self?.endBackgroundTask(); self?.setStatus("protected", "background_task_expired") }; DispatchQueue.main.asyncAfter(deadline: .now() + 25) { [weak self] in self?.sendRegister(challenge: nil); self?.endBackgroundTask() } }
+    private func beginBackgroundTask() {
+      if bgTask != .invalid { return }
+      bgTask = UIApplication.shared.beginBackgroundTask(withName: "PlanipretSIPKeepAlive") { [weak self] in
+        // iOS expiry handler: envoyer un dernier REGISTER puis terminer proprement
+        self?.sendRegister(challenge: nil)
+        self?.endBackgroundTask()
+        self?.setStatus("protected", "background_task_expired")
+      }
+      // Ne pas terminer la tâche manuellement — laisser iOS la gérer via l'expiry handler.
+      // L'ancien code appelait endBackgroundTask() après 25s, ce qui suspendait l'app
+      // immédiatement et empêchait le timer de 240s de s'exécuter.
+    }
     private func endBackgroundTask() { if bgTask != .invalid { UIApplication.shared.endBackgroundTask(bgTask); bgTask = .invalid } }
     private func setStatus(_ next: String, _ nextReason: String) { status = next; reason = nextReason; updatedAt = Date().timeIntervalSince1970 * 1000; DispatchQueue.main.async { self.notifyListeners("sipServiceStatus", data: self.snapshot(ok: true)) } }
     private func snapshot(ok: Bool) -> [String: Any] { ["ok": ok, "status": status, "reason": reason, "updatedAt": updatedAt, "backgroundTaskActive": bgTask != .invalid, "loggedIn": status == "registered" || status == "protected", "hasPushToken": !voipPushToken.isEmpty] }
