@@ -441,6 +441,16 @@ Direction: ${row.direction ?? "?"} · Durée: ${row.duration_seconds ?? "?"}s`;
       });
     } catch (_) { /* best-effort */ }
 
+    // ── H2: push the whole call (recording + transcript + AI) to Maestro ──
+    try {
+      fetch(`${SUPABASE_URL}/functions/v1/maestro-sync-call`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${SERVICE_ROLE}` },
+        body: JSON.stringify({ call_id }),
+      }).catch(() => {});
+    } catch (_) { /* best-effort */ }
+
+
     return json({
       success: true, call_id,
       corrected_transcript: corrected,

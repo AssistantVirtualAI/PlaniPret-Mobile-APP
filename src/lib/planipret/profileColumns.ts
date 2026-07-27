@@ -1,0 +1,13 @@
+/**
+ * Columns of planipret_profiles that are safe to read from the client.
+ * Credential columns (OAuth tokens, SIP passwords) are service_role-only
+ * and must never be selected from the browser.
+ */
+export const PLANIPRET_PROFILE_SAFE_COLUMNS = "id, user_id, organization_id, full_name, email, phone, extension, ns_domain, ns_user_id, role, mobile_app_enabled, voice_agent_enabled, avatar_url, language, metadata, created_at, updated_at, elevenlabs_agent_id, ns_jwt_expires_at, privacy_accepted_at, privacy_version, recording_consent, dnd_enabled, dnd_start_time, dnd_end_time, dnd_auto_schedule, dnd_message_fr, notif_calls, notif_sms, notif_voicemails, notif_ai, notif_reminders, onboarding_completed, onboarding_step, first_login_at, notif_hot_leads, notif_appointment_reminder, notif_missed_call, notif_morning_brief, notif_eod_summary, last_morning_brief_at, last_eod_summary_at, maestro_broker_id, maestro_token_expires_at, maestro_connected, maestro_last_sync_at, voicemail_greeting_text, voicemail_greeting_voice_id, voicemail_greeting_audio_url, voicemail_greeting_updated_at, voicemail_greeting_active, ava_sessions_count, ava_last_session_at, ava_preferred_lang, ava_autonomy_mode, elevenlabs_session_count, elevenlabs_last_session, elevenlabs_agent_status, widget_enabled, status, ms365_token_expiry, ms365_email, ms365_display_name, ns_extension, ns_sip_username, ns_linked, ns_linked_at, sip_username, sip_domain, sip_proxy, ns_link_method, auth_method, login_email, onboarding_email_sent_at, ava_learned_preferences, ava_learned_updated_at, ms365_scopes, ns_mobile_device_id, ns_widget_device_id, ava_voice_id, ava_voice_stability, ava_voice_similarity, ava_voice_style, ava_voice_speed, ava_chat_mode, maestro_telecom_user_id, maestro_telecom_email, maestro_telecom_linked_at, maestro_scope, maestro_email, maestro_oauth_client";
+
+/**
+ * Minimal column set used to boot the mobile app. Kept small so the very
+ * first profile query stays fast on mobile networks; the full safe column
+ * set is fetched right after as a non-blocking refresh.
+ */
+export const PLANIPRET_PROFILE_BOOT_COLUMNS = "id, user_id, organization_id, full_name, email, phone, extension, ns_extension, ns_domain, sip_domain, sip_username, sip_proxy, ns_sip_username, ns_linked, ns_jwt_expires_at, ns_mobile_device_id, role, mobile_app_enabled, voice_agent_enabled, language, avatar_url, maestro_broker_id, maestro_connected, ms365_email, status, widget_enabled, dnd_enabled, dnd_auto_schedule, dnd_start_time, dnd_end_time, dnd_message_fr, notif_calls, notif_sms, notif_voicemails, notif_ai, onboarding_completed, onboarding_step, privacy_accepted_at, recording_consent, ava_autonomy_mode, ava_chat_mode, ava_voice_id, created_at, updated_at";

@@ -326,7 +326,7 @@ Deno.serve(async (req) => {
         ?? sessionId;
 
       try {
-        await supabase
+        const { data: logged } = await supabase
           .from("planipret_phone_messages")
           .insert({
             user_id: ctx.userId,
@@ -337,7 +337,19 @@ Deno.serve(async (req) => {
             type,
             ns_thread_id: resolvedThreadId,
             sent_at: new Date().toISOString(),
-          });
+          })
+          .select("id")
+          .maybeSingle();
+        if (logged?.id) {
+          fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/maestro-sync-message`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
+            },
+            body: JSON.stringify({ message_id: logged.id }),
+          }).catch(() => {});
+        }
       } catch (logErr) {
         console.warn("[pp-ns-sms] log insert failed (non-fatal):", logErr);
       }

@@ -83,7 +83,21 @@ interface CallOpts {
   body?: unknown;
   idempotencyKey?: string;
   accountId?: string;
+  brokerId?: string | null;
 }
+
+/**
+ * Rewrite `/api/v1/<rest>` into `/api/v1/users/<brokerId>/<rest>` so every
+ * push lands under the broker's own Maestro account.
+ */
+export function brokerScopedPath(brokerId: string | null | undefined, path: string): string {
+  if (!brokerId) return path;
+  if (path.includes("/users/")) return path;
+  const m = path.match(/^\/api\/v1\/(.*)$/);
+  if (!m) return path;
+  return `/api/v1/users/${encodeURIComponent(String(brokerId))}/${m[1]}`;
+}
+
 
 export async function maestroFetch(cfg: MaestroConfig, opts: CallOpts) {
   if (!cfg.url) throw new Error("MAESTRO_API_URL missing");
@@ -94,6 +108,7 @@ export async function maestroFetch(cfg: MaestroConfig, opts: CallOpts) {
   if (opts.accountId || cfg.accountId) {
     headers["X-Account-Id"] = opts.accountId ?? cfg.accountId;
   }
+  if (opts.brokerId) headers["X-Broker-Id"] = String(opts.brokerId);
   if (opts.idempotencyKey) headers["Idempotency-Key"] = opts.idempotencyKey;
 
   const res = await fetch(`${cfg.url}${opts.path}`, {
@@ -110,6 +125,25 @@ export async function maestroFetch(cfg: MaestroConfig, opts: CallOpts) {
   }
   return { ok: res.ok, status: res.status, data };
 }
+
+/**
+ * Broker-first call: hits `/api/v1/users/<brokerId>/...` and transparently
+ * falls back to the account-level path when Maestro doesn't expose the
+ * broker-scoped route (404/405).
+ */
+export async function maestroFetchScoped(
+  cfg: MaestroConfig,
+  opts: CallOpts & { brokerId?: string | null },
+) {
+  const scoped = brokerScopedPath(opts.brokerId, opts.path);
+  if (scoped !== opts.path) {
+    const r = await maestroFetch(cfg, { ...opts, path: scoped });
+    if (r.ok || (r.status !== 404 && r.status !== 405)) return { ...r, path: scoped };
+  }
+  const r = await maestroFetch(cfg, opts);
+  return { ...r, path: opts.path };
+}
+
 
 /** Update one step in the pipeline_state JSON column on planipret_phone_calls. */
 export async function setPipelineStep(

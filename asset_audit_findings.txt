@@ -1,0 +1,25 @@
+Constats audit assets Planiprêt — 2026-07-27
+
+1. Logo source demandé par l'utilisateur : /home/ubuntu/upload/pasted_file_LKXJ3D_image.png
+   - Contenu visuel confirmé : logo original Planiprêt avec maison, route argentée et texte Planiprêt.
+   - Dimensions : 564x531.
+
+2. Icône iOS actuelle : /home/ubuntu/planipret-build/ios/App/App/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png
+   - Contenu visuel confirmé : logo original Planiprêt.
+   - Donc le problème signalé par l'utilisateur est probablement côté déploiement/sync local, cache build, ou jeux d'assets incomplets/non régénérés sur toutes les tailles.
+
+3. Icône Android actuelle : /home/ubuntu/planipret-build/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+   - Contenu visuel confirmé : logo original Planiprêt.
+   - À régénérer malgré tout sur toutes les densités pour garantir cohérence complète.
+
+4. Splash iOS actuel : /home/ubuntu/planipret-build/ios/App/App/Assets.xcassets/Splash.imageset/splash-2732x2732.png
+   - Contenu visuel confirmé : robot bleu foncé Planiprêt.
+   - Contents.json référence : splash-2732x2732-2.png (1x), splash-2732x2732-1.png (2x), splash-2732x2732.png (3x).
+
+5. Splash Android actuel : /home/ubuntu/planipret-build/android/app/src/main/res/drawable/splash_robot.png
+   - Contenu visuel confirmé : robot bleu foncé Planiprêt.
+   - drawable/splash.xml pointe correctement vers @drawable/splash_robot avec fond #0A1425.
+
+Conclusion:
+- Les bons visuels existent dans le repo serveur.
+- Action requise : régénérer et redéployer explicitement tous les assets iOS/Android depuis les sources correctes, puis commit/push afin que le poste local récupère un ensemble d'assets cohérent.

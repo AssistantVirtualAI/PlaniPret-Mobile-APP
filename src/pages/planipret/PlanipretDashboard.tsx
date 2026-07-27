@@ -3,6 +3,7 @@ import { useNavigate, Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Plug, Users, BarChart3 } from "lucide-react";
 import { loginWithRedirect, ROUTES } from "@/lib/routes";
+import { PLANIPRET_PROFILE_SAFE_COLUMNS } from "@/lib/planipret/profileColumns";
 
 
 export default function PlanipretDashboard() {
@@ -19,7 +20,7 @@ export default function PlanipretDashboard() {
         .from("planipret_profiles").select("role").eq("user_id", user.id).maybeSingle();
       if (me?.role !== "admin") { navigate("/mplanipret", { replace: true }); return; }
       const { data } = await supabase
-        .from("planipret_profiles").select("*").order("created_at", { ascending: false });
+        .from("planipret_profiles").select(PLANIPRET_PROFILE_SAFE_COLUMNS).order("created_at", { ascending: false });
       setBrokers(data ?? []);
       setLoading(false);
       // Check missing integrations (nsapi is env-backed = always OK)

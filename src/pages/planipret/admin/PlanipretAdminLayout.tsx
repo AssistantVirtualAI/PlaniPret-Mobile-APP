@@ -4,7 +4,7 @@ import { PrefetchNavLink } from "@/components/PrefetchLink";
 import { supabase } from "@/integrations/supabase/client";
 import {
   LayoutDashboard, Users, Phone, MessageSquare, Mic, Plug,
-  BarChart3, LogOut, ShieldCheck, CheckSquare, Search, ChevronRight, Sparkles, Smartphone, PlugZap, Bot, Activity, Gauge, Zap,
+  BarChart3, LogOut, ShieldCheck, CheckSquare, Search, ChevronRight, Sparkles, Smartphone, PlugZap, Bot, Activity, Gauge, Zap, Music,
 } from "lucide-react";
 import SessionTimeoutModal from "@/components/planipret/SessionTimeoutModal";
 import { useAdminRealtime } from "@/hooks/useAdminRealtime";
@@ -20,11 +20,12 @@ import { useMplanipretSoftphone } from "@/hooks/useMplanipretSoftphone";
 import PpActiveCallScreen from "@/components/planipret/PpActiveCallScreen";
 import planipretLogo from "@/assets/planipret-logo.png.asset.json";
 import { toast } from "sonner";
+import { PLANIPRET_PROFILE_SAFE_COLUMNS } from "@/lib/planipret/profileColumns";
 
 type NavBadge = "brokers" | "missed" | "integrations" | "audit";
-type NavKey = "overview" | "reports" | "ava" | "avaAgent" | "avaLogs" | "avaToolsAudit" | "brokers" | "calls" | "messages" | "recordings" | "integrations" | "mobileDevices" | "sipDiagnostic" | "compliance" | "auditChecklist" | "diagnostics" | "maestroSync";
+type NavKey = "overview" | "reports" | "ava" | "avaAgent" | "avaLogs" | "avaToolsAudit" | "brokers" | "calls" | "messages" | "recordings" | "integrations" | "mobileDevices" | "holdMusic" | "sipDiagnostic" | "compliance" | "auditChecklist" | "diagnostics" | "maestroSync";
 type SectionKey = "pilotage" | "brokers" | "communications" | "system";
-type PageKey = "overview" | "users" | "calls" | "messages" | "recordings" | "integrations" | "reports" | "auditChecklist" | "compliance" | "ava" | "avaAgent" | "avaLogs" | "avaToolsAudit" | "mobileDevices" | "sipDiagnostic" | "diagnostics" | "maestroSync";
+type PageKey = "overview" | "users" | "calls" | "messages" | "recordings" | "integrations" | "reports" | "auditChecklist" | "compliance" | "ava" | "avaAgent" | "avaLogs" | "avaToolsAudit" | "mobileDevices" | "holdMusic" | "sipDiagnostic" | "diagnostics" | "maestroSync";
 
 const NAV: Array<{ sectionKey: SectionKey; items: Array<{ to: string; key: NavKey; Icon: any; badge?: NavBadge }> }> = [
   {
@@ -57,6 +58,7 @@ const NAV: Array<{ sectionKey: SectionKey; items: Array<{ to: string; key: NavKe
     items: [
       { to: "/planipret/admin/integrations",    key: "integrations",    Icon: Plug,        badge: "integrations" },
       { to: "/planipret/admin/mobile-devices",  key: "mobileDevices",   Icon: Smartphone },
+      { to: "/planipret/admin/hold-music",      key: "holdMusic",       Icon: Music },
       { to: "/planipret/admin/sip-diagnostic",  key: "sipDiagnostic",   Icon: PlugZap },
       { to: "/planipret/admin/diagnostics",     key: "diagnostics",     Icon: Gauge },
       { to: "/planipret/admin/maestro-sync",    key: "maestroSync",     Icon: Zap },
@@ -81,6 +83,7 @@ const PAGE_KEY_BY_PATH: Record<string, PageKey> = {
   "/planipret/admin/ava-logs": "avaLogs",
   "/planipret/admin/ava-tools-audit": "avaToolsAudit",
   "/planipret/admin/mobile-devices": "mobileDevices",
+  "/planipret/admin/hold-music": "holdMusic",
   "/planipret/admin/sip-diagnostic": "sipDiagnostic",
   "/planipret/admin/diagnostics": "diagnostics",
   "/planipret/admin/maestro-sync": "maestroSync",
@@ -143,7 +146,7 @@ export default function PlanipretAdminLayout() {
   useEffect(() => {
     let cancelled = false;
     const loadProfile = async (user: any) => {
-      const { data } = await supabase.from("planipret_profiles").select("*").eq("user_id", user.id).maybeSingle();
+      const { data } = await supabase.from("planipret_profiles").select(PLANIPRET_PROFILE_SAFE_COLUMNS).eq("user_id", user.id).maybeSingle();
       if (cancelled) return;
       if (data && data.role && data.role !== "admin") { navigate("/mplanipret", { replace: true }); return; }
       setProfile(data ?? { full_name: user.email, role: "admin" });

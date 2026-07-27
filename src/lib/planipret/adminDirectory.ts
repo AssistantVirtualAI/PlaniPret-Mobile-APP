@@ -1,4 +1,5 @@
 import { supabase } from "@/integrations/supabase/client";
+import { PLANIPRET_PROFILE_SAFE_COLUMNS } from "./profileColumns";
 
 export type PlanipretBrokerRow = {
   user_id: string;
@@ -36,7 +37,7 @@ export const isPlanipretActiveBroker = (row: Partial<PlanipretBrokerRow>) => {
 export async function getPlanipretBrokerDirectory() {
   const { data: localProfiles } = await supabase
     .from("planipret_profiles")
-    .select("*")
+    .select(PLANIPRET_PROFILE_SAFE_COLUMNS)
     .order("full_name", { ascending: true });
 
   const localList = ((localProfiles ?? []) as PlanipretBrokerRow[]).filter(isPlanipretActiveBroker);

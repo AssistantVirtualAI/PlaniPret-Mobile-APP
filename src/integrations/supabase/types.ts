@@ -8788,6 +8788,75 @@ export type Database = {
         }
         Relationships: []
       }
+      planipret_hold_music: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          duration_seconds: number | null
+          error_message: string | null
+          id: string
+          improved_text: string | null
+          is_default: boolean
+          language: string
+          music_style: string | null
+          music_volume: number
+          name: string
+          push_result: Json | null
+          push_scope: string | null
+          pushed_at: string | null
+          source_text: string | null
+          status: string
+          storage_path: string | null
+          updated_at: string
+          voice_id: string | null
+          voice_name: string | null
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          duration_seconds?: number | null
+          error_message?: string | null
+          id?: string
+          improved_text?: string | null
+          is_default?: boolean
+          language?: string
+          music_style?: string | null
+          music_volume?: number
+          name: string
+          push_result?: Json | null
+          push_scope?: string | null
+          pushed_at?: string | null
+          source_text?: string | null
+          status?: string
+          storage_path?: string | null
+          updated_at?: string
+          voice_id?: string | null
+          voice_name?: string | null
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          duration_seconds?: number | null
+          error_message?: string | null
+          id?: string
+          improved_text?: string | null
+          is_default?: boolean
+          language?: string
+          music_style?: string | null
+          music_volume?: number
+          name?: string
+          push_result?: Json | null
+          push_scope?: string | null
+          pushed_at?: string | null
+          source_text?: string | null
+          status?: string
+          storage_path?: string | null
+          updated_at?: string
+          voice_id?: string | null
+          voice_name?: string | null
+        }
+        Relationships: []
+      }
       planipret_integration_config: {
         Row: {
           config_data: Json
@@ -9453,6 +9522,7 @@ export type Database = {
           direction: string
           from_number: string | null
           id: string
+          maestro_synced: boolean
           media_urls: Json
           metadata: Json
           ns_message_id: string | null
@@ -9471,6 +9541,7 @@ export type Database = {
           direction: string
           from_number?: string | null
           id?: string
+          maestro_synced?: boolean
           media_urls?: Json
           metadata?: Json
           ns_message_id?: string | null
@@ -9489,6 +9560,7 @@ export type Database = {
           direction?: string
           from_number?: string | null
           id?: string
+          maestro_synced?: boolean
           media_urls?: Json
           metadata?: Json
           ns_message_id?: string | null

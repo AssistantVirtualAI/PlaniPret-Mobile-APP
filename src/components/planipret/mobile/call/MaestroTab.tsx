@@ -40,9 +40,18 @@ type MaestroCall = {
   ai_analysis_json?: any;
   next_actions?: any;
   metadata?: any;
+  pipeline_state?: any;
   transcript?: string | null;
   transcript_segments?: any;
 };
+
+const PIPELINE_ROWS: { key: string; fr: string; en: string }[] = [
+  { key: "cdr", fr: "CDR", en: "CDR" },
+  { key: "recording", fr: "Enregistrement", en: "Recording" },
+  { key: "transcript", fr: "Transcription", en: "Transcript" },
+  { key: "ai", fr: "Analyse IA", en: "AI analysis" },
+];
+
 
 function extractNextActions(call: MaestroCall): NextAction[] {
   const na = call.next_actions;
@@ -92,24 +101,6 @@ export default function MaestroTab({ call, onUpdated }: { call: MaestroCall; onU
 
   useEffect(() => { reloadLog(); }, [reloadLog]);
 
-  // Auto-push vers Maestro dès que l'analyse IA est prête et que la connexion est configurée.
-  // Ne se déclenche qu'une seule fois par appel (maestro_synced passe à true après le push).
-  useEffect(() => {
-    if (!configured || call.maestro_synced) return;
-    const hasAi = !!(call.ai_summary || call.ai_summary_short || call.ai_analysis_json);
-    if (!hasAi) return;
-    // Déclencher le push automatiquement sans confirmation
-    supabase.functions
-      .invoke("maestro-pipeline-orchestrator", { body: { call_id: call.id } })
-      .then(({ data, error }) => {
-        if (!error && (data as any)?.success !== false) {
-          onUpdated();
-          reloadLog();
-        }
-      })
-      .catch((e) => console.warn("[maestro-auto-push]", e?.message ?? e));
-  }, [configured, call.maestro_synced, call.ai_summary, call.ai_summary_short, call.ai_analysis_json, call.id, onUpdated, reloadLog]);
-
   useEffect(() => {
     if (!call.maestro_client_id) { setMaestroClient(null); return; }
     (async () => {
@@ -153,9 +144,10 @@ export default function MaestroTab({ call, onUpdated }: { call: MaestroCall; onU
     setConfirmOpen(false);
     setPushing(true);
     try {
-      const { data, error } = await supabase.functions.invoke("maestro-pipeline-orchestrator", {
-        body: { call_id: call.id, actions: nextActions },
+      const { data, error } = await supabase.functions.invoke("maestro-sync-call", {
+        body: { call_id: call.id, force: true },
       });
+
       if (error || (data as any)?.success === false) {
         toast.error(t("maestro.pushFailed"), { description: (data as any)?.error ?? error?.message });
       } else {
@@ -244,6 +236,43 @@ export default function MaestroTab({ call, onUpdated }: { call: MaestroCall; onU
         ) : (
           <div className="text-xs mt-2" style={{ color: "var(--pp-text-muted)" }}>{t("maestro.noLinkedClient")}</div>
         )}
+
+        {/* Auto-sync pipeline state */}
+        <div className="mt-3 rounded-lg p-2.5 space-y-1.5" style={{ background: "var(--pp-bg-elevated)" }}>
+          {PIPELINE_ROWS.map((row) => {
+            const st = (call.pipeline_state ?? {})[row.key]?.state as string | undefined;
+            const done = st === "done";
+            const failed = st === "error";
+            return (
+              <div key={row.key} className="flex items-center justify-between text-[11px]">
+                <span style={{ color: "var(--pp-text-secondary)" }}>{lang === "en" ? row.en : row.fr}</span>
+                <span
+                  className="inline-flex items-center gap-1 font-semibold"
+                  style={{ color: done ? "var(--pp-success)" : failed ? "var(--pp-danger)" : "var(--pp-text-muted)" }}
+                >
+                  {done ? <CheckCircle2 className="w-3 h-3" /> : failed ? <XCircle className="w-3 h-3" /> : <Clock className="w-3 h-3" />}
+                  {done
+                    ? (lang === "en" ? "Synced" : "Synchronisé")
+                    : failed
+                      ? (lang === "en" ? "Failed" : "Échec")
+                      : (lang === "en" ? "Pending" : "En attente")}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Manual resync (auto-sync already runs server-side after each call) */}
+        <button
+          onClick={doPush}
+          disabled={pushing}
+          className="mt-2 w-full py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 disabled:opacity-50"
+          style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-primary)", border: "1px solid var(--pp-border)" }}
+        >
+          {pushing
+            ? <><Loader2 className="w-3.5 h-3.5 animate-spin" /> {t("maestro.pushing")}</>
+            : <><RefreshCw className="w-3.5 h-3.5" /> {lang === "en" ? "Resync with Maestro" : "Resynchroniser avec Maestro"}</>}
+        </button>
 
         {/* AI generation CTA */}
         {!hasAiContent && (

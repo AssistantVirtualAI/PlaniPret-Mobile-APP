@@ -11,6 +11,7 @@ import {
   json,
   maestroAudit,
   maestroFetch,
+  maestroFetchScoped,
   normalizePhone,
   pipelineLog,
   setPipelineStep,
@@ -77,10 +78,11 @@ Deno.serve(async (req) => {
         await pipelineLog(admin, { call_id, user_id: call.user_id, step: "client_lookup", status: "success", payload: { source: "cache", client_id: maestroClientId } });
       } else {
         const t0 = Date.now();
-        const lookup = await maestroFetch(cfg, {
+        const lookup = await maestroFetchScoped(cfg, {
           method: "GET",
           path: `/api/v1/clients/lookup?phone=${encodeURIComponent(contactPhone)}`,
           token: auth.token,
+          brokerId: auth.brokerId,
         });
         await pipelineLog(admin, {
           call_id,
@@ -148,11 +150,12 @@ Deno.serve(async (req) => {
     };
 
     const t0 = Date.now();
-    const res = await maestroFetch(cfg, {
+    const res = await maestroFetchScoped(cfg, {
       method: "POST",
       path: "/api/v1/calls/cdr",
       token: auth.token,
-      body,
+      brokerId: auth.brokerId,
+      body: { ...body, maestro_broker_id: auth.brokerId },
       idempotencyKey: call.id,
     });
     const ms = Date.now() - t0;
