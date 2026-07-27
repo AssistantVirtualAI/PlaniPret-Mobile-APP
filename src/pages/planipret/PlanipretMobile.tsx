@@ -41,7 +41,10 @@ import { prefetchTeams365Data } from "@/lib/teams365Cache";
 
 
 const ACCENT = "#2E9BDC";
-const PROFILE_BOOT_TIMEOUT_MS = 4500;
+// Timeout for profile boot — 12s to handle slow connections and app resume from background.
+// On iOS, the first Supabase request after background can take 5-8s.
+const PROFILE_BOOT_TIMEOUT_MS = 12_000;
+const PROFILE_MAX_RETRIES = 3;
 
 function withTimeout<T>(promise: PromiseLike<T>, ms: number, label: string): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -800,7 +803,7 @@ export default function PlanipretMobile() {
     return () => { supabase.removeChannel(ch); };
   }, [profile?.user_id, location.pathname]);
 
-  const loadProfile = async () => {
+  const loadProfile = async (attempt = 0) => {
     try {
       const { data: { session } } = await withTimeout(supabase.auth.getSession(), PROFILE_BOOT_TIMEOUT_MS, "pp_session");
       const user = session?.user ?? null;
@@ -858,8 +861,16 @@ export default function PlanipretMobile() {
         } catch { /* non-blocking */ }
       }
     } catch (error) {
-      console.error("[PlanipretMobile] loadProfile failed", error);
-      recordRedirect(location.pathname, ROUTES.MPLANIPRET, "PlanipretMobile.loadProfile", "profile boot timeout/failure");
+      console.error("[PlanipretMobile] loadProfile failed (attempt", attempt, ")", error);
+      // Auto-retry with exponential backoff before showing the error screen.
+      // This handles iOS background resume where the first Supabase request often times out.
+      if (attempt < PROFILE_MAX_RETRIES) {
+        const backoff = Math.min(1000 * Math.pow(2, attempt), 8000); // 1s, 2s, 4s
+        console.log(`[PlanipretMobile] retrying in ${backoff}ms (attempt ${attempt + 1}/${PROFILE_MAX_RETRIES})`);
+        window.setTimeout(() => loadProfile(attempt + 1), backoff);
+        return; // Don't show error yet
+      }
+      recordRedirect(location.pathname, ROUTES.MPLANIPRET, "PlanipretMobile.loadProfile", "profile boot timeout/failure after retries");
       setAccessError("load_failed");
       setLoading(false);
     }
