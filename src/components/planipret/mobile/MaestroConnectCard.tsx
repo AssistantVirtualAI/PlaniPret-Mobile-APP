@@ -95,6 +95,24 @@ export default function MaestroConnectCard() {
         const d = await load();
         if (d?.status === "connected" || d?.connected) {
           try { localStorage.removeItem("pp_maestro_just_connected"); } catch {}
+          // If maestro_broker_id is missing or was never resolved, call maestro-telecom-link
+          // to resolve the real broker id from the OAuth token (avoids using Carlo's id=67).
+          const currentBrokerId = d?.broker_id ?? d?.maestro_broker_id;
+          if (!currentBrokerId) {
+            const { data: { session } } = await supabase.auth.getSession();
+            if (session?.access_token) {
+              supabase.functions.invoke("maestro-telecom-link", {
+                body: { action: "link" },
+                headers: { Authorization: `Bearer ${session.access_token}` },
+              }).then(({ data: linkData }) => {
+                if ((linkData as any)?.ok) {
+                  logDeepLink({ kind: "info", source: "MaestroConnectCard", detail: `maestro_broker_id resolved: ${(linkData as any)?.maestro_id}` });
+                  // Reload to show the correct broker id
+                  load();
+                }
+              }).catch(() => { /* fire-and-forget */ });
+            }
+          }
         }
       }, delay),
     );

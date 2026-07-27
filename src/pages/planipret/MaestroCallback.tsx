@@ -127,7 +127,26 @@ export default function MaestroCallback() {
         try { localStorage.removeItem("pp_maestro_callback_url"); } catch {}
         try { localStorage.setItem("pp_maestro_just_connected", String(Date.now())); } catch {}
         try { window.dispatchEvent(new CustomEvent("maestro:connected")); } catch {}
-        setMessage("Maestro connecté. Retour à l’accueil…");
+        setMessage("Maestro connecté. Résolution de votre profil…");
+
+        // Fire-and-forget: resolve the broker's real Maestro Telecom user id.
+        // This uses the OAuth token just stored to call GET /users/me?machine=1
+        // and persists the correct maestro_broker_id on the profile.
+        // Without this, the app uses the machine account id (Carlo, id=67).
+        supabase.functions.invoke("maestro-telecom-link", {
+          body: { action: "link" },
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        }).then(({ data: linkData }) => {
+          if ((linkData as any)?.ok) {
+            logDeepLink({ kind: "info", source: "MaestroCallback", detail: `maestro_broker_id resolved: ${(linkData as any)?.maestro_id}` });
+          } else {
+            logDeepLink({ kind: "info", source: "MaestroCallback", detail: `maestro-telecom-link: ${(linkData as any)?.error ?? "no_response"}` });
+          }
+        }).catch((err) => {
+          logDeepLink({ kind: "error", source: "MaestroCallback", detail: `maestro-telecom-link failed: ${err?.message}` });
+        });
+
+        setMessage("Maestro connecté. Retour à l'accueil…");
         toast.success("Maestro connecté avec succès !");
       } catch (e: any) {
         logDeepLink({ kind: "error", source: "MaestroCallback", detail: e?.message || "exchange failed" });
