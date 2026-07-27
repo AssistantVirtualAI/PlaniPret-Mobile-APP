@@ -804,6 +804,12 @@ export default function PlanipretMobile() {
   }, [profile?.user_id, location.pathname]);
 
   const loadProfile = async (attempt = 0) => {
+    // Toujours afficher le spinner et effacer l'erreur au premier essai (boot ou Retry manuel).
+    // Sans ce reset, le bouton Retry laisse l'écran d'erreur visible même si le chargement réussit.
+    if (attempt === 0) {
+      setLoading(true);
+      setAccessError(null);
+    }
     try {
       const { data: { session } } = await withTimeout(supabase.auth.getSession(), PROFILE_BOOT_TIMEOUT_MS, "pp_session");
       const user = session?.user ?? null;
@@ -829,13 +835,31 @@ export default function PlanipretMobile() {
         sessionStorage.setItem("pp_ms_captured", session.access_token);
       }
 
+      // Sélectionner uniquement les colonnes essentielles pour accélérer le chargement.
+      // Les colonnes volumineuses (tokens OAuth, tokens SIP, métadonnées) sont chargées
+      // en arrière-plan par les composants qui en ont besoin.
+      const MINIMAL_COLUMNS = [
+        "user_id", "id", "full_name", "email", "avatar_url", "language", "role",
+        "extension", "ns_extension", "ns_domain", "sip_domain", "organization_id",
+        "mobile_app_enabled", "ns_linked", "maestro_connected", "maestro_broker_id",
+        "voice_agent_enabled", "dnd_enabled", "dnd_auto_schedule", "dnd_start_time",
+        "dnd_end_time", "dnd_message_fr", "notif_calls", "notif_sms", "notif_voicemails",
+        "notif_ai", "onboarding_completed", "onboarding_step", "privacy_accepted_at",
+        "ms365_email", "ms365_access_token", "status", "widget_enabled",
+        "ava_autonomy_mode", "ava_chat_mode", "ava_voice_id", "recording_consent",
+        "ns_sip_username", "ns_sip_password_ref", "ns_sip_password_ref_mobile",
+        "sip_username", "sip_password", "sip_proxy", "ns_jwt", "ns_jwt_expires_at",
+        "ns_mobile_device_id", "created_at", "updated_at",
+      ].join(",");
+
       const { data, error } = await withTimeout(
-        supabase.from("planipret_profiles").select("*").eq("user_id", user.id).maybeSingle(),
+        supabase.from("planipret_profiles").select(MINIMAL_COLUMNS).eq("user_id", user.id).maybeSingle(),
         PROFILE_BOOT_TIMEOUT_MS,
         "pp_profile",
       );
       if (error) {
-        recordRedirect(location.pathname, ROUTES.MPLANIPRET, "PlanipretMobile.loadProfile", "profile load failed");
+        console.error("[PlanipretMobile] profile query error:", error.message, error.code);
+        recordRedirect(location.pathname, ROUTES.MPLANIPRET, "PlanipretMobile.loadProfile", `profile load failed: ${error.message}`);
         setAccessError("load_failed");
         setLoading(false);
         return;
@@ -862,13 +886,13 @@ export default function PlanipretMobile() {
       }
     } catch (error) {
       console.error("[PlanipretMobile] loadProfile failed (attempt", attempt, ")", error);
-      // Auto-retry with exponential backoff before showing the error screen.
-      // This handles iOS background resume where the first Supabase request often times out.
+      // Auto-retry avec backoff exponentiel avant d'afficher l'écran d'erreur.
+      // Gère les timeouts temporaires iOS après reprise depuis l'arrière-plan.
       if (attempt < PROFILE_MAX_RETRIES) {
         const backoff = Math.min(1000 * Math.pow(2, attempt), 8000); // 1s, 2s, 4s
         console.log(`[PlanipretMobile] retrying in ${backoff}ms (attempt ${attempt + 1}/${PROFILE_MAX_RETRIES})`);
         window.setTimeout(() => loadProfile(attempt + 1), backoff);
-        return; // Don't show error yet
+        return; // Ne pas afficher l'erreur encore
       }
       recordRedirect(location.pathname, ROUTES.MPLANIPRET, "PlanipretMobile.loadProfile", "profile boot timeout/failure after retries");
       setAccessError("load_failed");
