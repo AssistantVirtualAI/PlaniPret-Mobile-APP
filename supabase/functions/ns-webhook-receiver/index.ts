@@ -234,13 +234,30 @@ async function processEvent(event: any) {
       });
     }
   } else if (type === "message.inbound") {
-    await admin.from("planipret_phone_messages").insert({
+    const { data: insertedMsg } = await admin.from("planipret_phone_messages").insert({
       user_id: userId, direction: "inbound",
       from_number: data.from_number ?? data.from ?? null,
       to_number: data.to_number ?? data.to ?? null,
       body: data.body ?? data.message ?? "",
       type: "sms",
-    });
+    }).select("id").maybeSingle();
+    // Sync automatique vers Maestro Telecom sous le broker_id du courtier (fire-and-forget)
+    if (userId) {
+      const authH = `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`;
+      void fetch(`${SUPABASE_URL}/functions/v1/maestro-sync-message`, {
+        method: "POST",
+        headers: { Authorization: authH, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message_id: (insertedMsg as any)?.id ?? null,
+          user_id: userId,
+          direction: "inbound",
+          from_number: data.from_number ?? data.from ?? null,
+          to_number: data.to_number ?? data.to ?? null,
+          body: data.body ?? data.message ?? "",
+          type: "sms",
+        }),
+      }).catch((e: any) => console.warn("[ns-webhook] maestro-sync-message failed (non-fatal):", e?.message));
+    }
     if (userId) {
       await admin.channel(`messages:${userId}`).send({
         type: "broadcast", event: "inbound_message",
