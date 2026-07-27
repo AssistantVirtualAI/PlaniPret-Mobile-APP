@@ -6,8 +6,15 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST" && req.method !== "GET") return jsonResponse(405, { error: "Method not allowed" });
 
+  const rawAuth = req.headers.get("authorization") || req.headers.get("Authorization") || "";
+  console.log("[pp-mobile-profile] incoming", { method: req.method, hasAuth: !!rawAuth, authLen: rawAuth.length });
+
   const auth = await requireUser(req);
-  if ("error" in auth) return auth.error;
+  if ("error" in auth) {
+    console.warn("[pp-mobile-profile] unauthorized — token rejected");
+    return auth.error;
+  }
+  console.log("[pp-mobile-profile] user", auth.user.id);
 
   const userId = auth.user.id;
   const email = auth.user.email?.trim().toLowerCase() ?? null;
@@ -54,6 +61,9 @@ Deno.serve(async (req) => {
     }
   }
 
-  if (!profile) return jsonResponse(404, { error: "missing_profile" });
+  if (!profile) {
+    console.warn("[pp-mobile-profile] missing_profile for", userId, email);
+    return jsonResponse(404, { error: "missing_profile" });
+  }
   return jsonResponse(200, { profile, linked });
 });

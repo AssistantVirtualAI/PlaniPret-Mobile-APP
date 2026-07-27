@@ -720,31 +720,46 @@ export default function PlanipretMobile() {
         sessionStorage.setItem("pp_ms_captured", session.access_token);
       }
     } catch (_) { /* non-blocking */ }
-    const loadProfileViaFunction = async () => {
-      const { data: fallbackData, error: fallbackError } = await supabase.functions.invoke("pp-mobile-profile", {
+    const loadProfileViaFunction = async (): Promise<any> => {
+      let currentSession = session;
+      if (!currentSession?.access_token) {
+        const { data: refreshed } = await supabase.auth.refreshSession();
+        currentSession = refreshed?.session ?? null;
+      }
+      if (!currentSession?.access_token) throw new Error("no_session");
+
+      const { data: fnData, error: fnError } = await supabase.functions.invoke("pp-mobile-profile", {
         body: { fields: "safe" },
+        headers: { Authorization: `Bearer ${currentSession.access_token}` },
       });
-      if (fallbackError) throw fallbackError;
-      return (fallbackData as any)?.profile ?? null;
+      if (fnError) throw fnError;
+      const fnProfile = (fnData as any)?.profile ?? null;
+      if (!fnProfile) throw new Error((fnData as any)?.error ?? "missing_profile");
+      return fnProfile;
     };
 
-    let { data, error } = await supabase.from("planipret_profiles").select(PLANIPRET_PROFILE_BOOT_COLUMNS).eq("user_id", user.id).maybeSingle();
-    if (error) {
-      const retry = await supabase.from("planipret_profiles").select(PLANIPRET_PROFILE_BOOT_COLUMNS).eq("user_id", user.id).maybeSingle();
-      data = retry.data as any;
-      error = retry.error;
-    }
-    if (error || !data) {
-      try {
-        const fallbackProfile = await loadProfileViaFunction();
-        if (fallbackProfile) {
-          data = fallbackProfile;
-          error = null;
-        }
-      } catch (fallbackError: any) {
-        if (error) console.error("[PlanipretMobile] profile fallback error:", fallbackError?.message ?? fallbackError);
+    let data: any = null;
+    let error: any = null;
+
+    // 1) Backend-first: always works on native mobile even if direct grants are blocked.
+    try {
+      data = await loadProfileViaFunction();
+    } catch (fnErr: any) {
+      const msg = fnErr?.message ?? String(fnErr);
+      if (msg === "no_session") {
+        recordRedirect(location.pathname, ROUTES.MPLANIPRET, "PlanipretMobile.loadProfile", "no session for pp-mobile-profile");
+        setProfile(null);
+        setAccessError("unauthenticated");
+        setLoading(false);
+        return;
       }
+      console.error("[PlanipretMobile] pp-mobile-profile failed:", msg);
+      // 2) Fallback: direct select
+      const direct = await supabase.from("planipret_profiles").select(PLANIPRET_PROFILE_BOOT_COLUMNS).eq("user_id", user.id).maybeSingle();
+      data = direct.data as any;
+      error = direct.error ?? (direct.data ? null : { message: msg, code: "fn_failed" });
     }
+
     if (error) {
       console.error("[PlanipretMobile] profile query error:", error.message, (error as any).code);
       setProfileErrorDetail(error.message || "");

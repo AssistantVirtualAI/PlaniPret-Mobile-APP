@@ -1,0 +1,205 @@
+project_id = "gejxisrqtvxavbrfcoxz"
+
+[functions.generate-agent-advice]
+verify_jwt = true
+
+[api]
+enabled = true
+port = 54321
+max_rows = 1000
+
+[db]
+major_version = 15
+
+[db.pooler]
+enabled = true
+port = 54329
+pool_mode = "transaction"
+default_pool_size = 20
+max_client_conn = 100
+
+[auth]
+site_url = "http://localhost:5173"
+additional_redirect_urls = ["https://localhost:5173"]
+jwt_expiry = 3600
+enable_signup = true
+enable_anonymous_sign_ins = false
+
+[auth.external.google]
+enabled = false
+client_id = ""
+secret = ""
+
+[functions.elevenlabs-convai-analytics]
+verify_jwt = false
+
+[functions.elevenlabs-convai-conversations]
+verify_jwt = false
+
+[functions.elevenlabs-convai-knowledge-base]
+verify_jwt = false
+
+[functions.elevenlabs-convai-agent-config]
+verify_jwt = false
+
+[functions.elevenlabs-all-agents-conversations]
+verify_jwt = false
+
+[functions.elevenlabs-all-agents-analytics]
+verify_jwt = false
+
+[functions.test-integration]
+verify_jwt = true
+
+[functions.analyze-conversation]
+verify_jwt = false
+
+[functions.connector-test]
+verify_jwt = true
+
+[functions.connector-proxy]
+verify_jwt = true
+
+[functions.webhooks-router]
+verify_jwt = false
+
+[functions.elevenlabs-signed-url]
+verify_jwt = false
+
+[functions.send-otp-email]
+verify_jwt = true
+
+[functions.stripe-addon-checkout]
+verify_jwt = true
+
+[functions.send-webhook]
+verify_jwt = true
+
+[functions.export-user-data]
+verify_jwt = true
+
+[functions.delete-user-data]
+verify_jwt = true
+
+[functions.log-audit-event]
+verify_jwt = true
+
+[functions.analyze-topics]
+verify_jwt = true
+
+[functions.start-outbound-campaign]
+verify_jwt = true
+
+[functions.google-calendar-auth]
+verify_jwt = true
+
+[functions.book-appointment]
+verify_jwt = false
+
+[functions.generate-faq]
+verify_jwt = true
+
+[functions.calculate-performance-billing]
+verify_jwt = true
+
+[functions.simulate-agent]
+verify_jwt = true
+
+[functions.twilio-phone-numbers]
+verify_jwt = true
+
+[functions.request-handoff]
+verify_jwt = false
+
+[functions.notify-handoff]
+verify_jwt = false
+
+[functions.send-satisfaction-alert]
+verify_jwt = true
+
+[functions.send-weekly-report]
+verify_jwt = false
+
+[functions.generate-global-advice]
+verify_jwt = true
+
+[functions.sync-elevenlabs-conversations]
+verify_jwt = false
+
+[functions.client-auth]
+verify_jwt = false
+
+[functions.dashboard-insights]
+verify_jwt = true
+
+[functions.realtime-conversations]
+verify_jwt = false
+
+[functions.elevenlabs-phone-numbers]
+verify_jwt = false
+
+[functions.vapi-proxy]
+verify_jwt = false
+
+[functions.retell-proxy]
+verify_jwt = false
+
+[functions.send-contact-sales]
+verify_jwt = false
+
+[functions.mcp-proxy]
+verify_jwt = true
+
+[functions.improve-prompt]
+verify_jwt = false
+
+[functions.twilio-proxy]
+verify_jwt = true
+
+[functions.twilio-voice-webhook]
+verify_jwt = false
+
+[functions.twilio-status-callback]
+verify_jwt = false
+
+[functions.twilio-recording-proxy]
+verify_jwt = true
+
+[functions.manage-org-roles]
+verify_jwt = false
+
+[functions.export-org-data]
+verify_jwt = false
+
+[functions.security-audit-run]
+verify_jwt = false
+
+[functions.elevenlabs-api-proxy]
+verify_jwt = false
+
+[functions.notify-admin-signup]
+verify_jwt = false
+
+[functions.stripe-webhook]
+verify_jwt = false
+
+[functions.send-contact-form]
+verify_jwt = false
+
+[functions.landing-chatbot]
+verify_jwt = false
+
+[functions.provision-app-user]
+verify_jwt = false
+
+[functions.realtime-stt-relay]
+verify_jwt = false
+
+[functions.extension-manage]
+verify_jwt = true
+
+[functions.ms365-mail-webhook-receiver]
+verify_jwt = false
+
+[functions.pp-mobile-profile]
+verify_jwt = false

@@ -156,7 +156,7 @@ export default function PAAuditLog() {
   const actions = Array.from(new Set(rows.map((r) => r.action))).sort();
 
   return (
-    <div className="space-y-4">
+    <div className="pa-page space-y-5">
       <div className="flex flex-wrap items-end gap-3 pp-card" style={{ padding: 16 }}>
         <div>
           <label className="text-[11px] block mb-1" style={{ color: "var(--pp-text-muted)" }}>{t.user}</label>

@@ -146,7 +146,7 @@ export default function PADiagnostics() {
     r === "good" ? t.ratingGood : r === "needs-improvement" ? t.ratingImprove : t.ratingPoor;
 
   return (
-    <div className="planipret-scope planipret-admin-scope p-6" key={tick}>
+    <div className="planipret-scope planipret-admin-scope pa-page space-y-5" key={tick}>
       <div className="flex items-center justify-between mb-5">
         <div>
           <div className="pp-eyebrow flex items-center gap-2">

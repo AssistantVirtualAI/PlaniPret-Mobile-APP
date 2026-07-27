@@ -415,7 +415,7 @@ export default function PAOverview() {
   const mobileAdoptionPct = stats.brokersTotal > 0 ? Math.round((serviceCounts.mobile / stats.brokersTotal) * 100) : 0;
 
   return (
-    <div className="space-y-5">
+    <div className="pa-page space-y-5">
       <NsSyncBar features={["cdrs", "messages", "recordings"]} onReload={load} />
 
       {/* Header with period selector */}

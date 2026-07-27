@@ -263,7 +263,7 @@ export default function PAAva() {
   const showGuidedEmpty = !loading && totals.analyses === 0 && (microsoft?.connected_brokers ?? 0) === 0 && (dataHealth?.ms_graph_mode ?? "none") === "none";
 
   return (
-    <div className="space-y-5">
+    <div className="pa-page space-y-5">
       {/* Header */}
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>

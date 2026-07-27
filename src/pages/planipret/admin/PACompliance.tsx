@@ -187,7 +187,7 @@ export default function PACompliance() {
   const scoreColor = score >= 8 ? "#10B981" : score >= 6 ? "#F5A623" : "#EF4444";
 
   return (
-    <div className="space-y-6">
+    <div className="pa-page space-y-5">
       {/* Score */}
       <div className="pp-card" style={{ padding: 20 }}>
         <div className="flex items-center justify-between mb-3">

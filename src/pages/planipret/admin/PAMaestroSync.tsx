@@ -329,7 +329,7 @@ export default function PAMaestroSync() {
   const rateColor = successRate == null ? AGENT : successRate >= 95 ? SUCCESS : successRate >= 80 ? WARNING : DANGER;
 
   return (
-    <div className="planipret-scope planipret-admin-scope p-6">
+    <div className="planipret-scope planipret-admin-scope pa-page space-y-5">
       {/* Header */}
       <div className="flex items-start justify-between gap-4 flex-wrap mb-5">
         <div className="flex items-center gap-3">

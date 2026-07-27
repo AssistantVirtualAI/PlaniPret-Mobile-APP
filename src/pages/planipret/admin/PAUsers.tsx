@@ -807,7 +807,7 @@ export default function PAUsers() {
 
   const adminCount = rows.length;
   return (
-    <div className="space-y-4">
+    <div className="pa-page space-y-5">
       {!loading && adminCount <= 1 && (
         <div className="rounded-xl p-4 flex items-start gap-3" style={{ background: `${ACCENT}10`, border: `1px solid ${ACCENT}33` }}>
           <div style={{ color: ACCENT, fontSize: 20, lineHeight: 1 }}>ℹ️</div>
@@ -826,7 +826,7 @@ export default function PAUsers() {
       {/* Header */}
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-3">
-          <h2 style={{ fontSize: 18, fontWeight: 600, color: "var(--pp-text-primary)" }}>{t.brokers}</h2>
+          <h1 className="pa-title" style={{ fontSize: 18, fontWeight: 600, color: "var(--pp-text-primary)" }}>{t.brokers}</h1>
           <span className="px-2 py-1 rounded-full" style={{ fontSize: 11, background: "var(--pp-bg-elevated)", color: "var(--pp-text-secondary)", border: "1px solid var(--pp-bg-border-2)" }}>
             {t.brokerCount(rows.length)}
           </span>

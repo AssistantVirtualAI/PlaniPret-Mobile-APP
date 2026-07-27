@@ -540,7 +540,7 @@ export default function PAAuditChecklist() {
   };
 
   return (
-    <div className="min-h-full p-6 md:p-8" style={{ background: C.bg, color: C.text }}>
+    <div className="pa-page space-y-5 min-h-full" style={{ background: C.bg, color: C.text }}>
       {/* Header */}
       <div className="flex flex-col gap-2 mb-6">
         <h1 className="font-bold" style={{ fontFamily: "Inter,sans-serif", fontSize: 28, color: C.text }}>

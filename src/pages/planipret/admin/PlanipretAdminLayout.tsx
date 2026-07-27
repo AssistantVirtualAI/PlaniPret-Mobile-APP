@@ -373,24 +373,24 @@ export default function PlanipretAdminLayout() {
       </aside>
 
       {/* Main */}
-      <div className="hidden md:flex flex-1 flex-col ml-[248px]">
-        <header className="pp-app-header sticky top-0 flex items-center justify-between px-7 z-30" style={{ height: 64 }}>
+      <div className="hidden md:flex flex-1 min-w-0 flex-col ml-[248px]">
+        <header className="pp-app-header sticky top-0 flex items-center justify-between gap-4 px-5 xl:px-7 z-30 overflow-hidden" style={{ height: 64 }}>
           <div className="flex items-center gap-2 min-w-0">
             <span className="pp-eyebrow">{sectionLabel}</span>
             <ChevronRight className="w-3.5 h-3.5" style={{ color: "var(--pp-text-faint)" }} />
             <h1 className="pp-heading truncate" style={{ fontWeight: 700, fontSize: 18 }}>{title}</h1>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 min-w-0 shrink">
             <button onClick={() => setPaletteOpen(true)}
-              className="pp-search-bar flex items-center gap-2 px-3 h-9 text-xs"
-              style={{ minWidth: 280, fontFamily: "'Epilogue', sans-serif" }}>
+              className="pp-search-bar hidden 2xl:flex items-center gap-2 px-3 h-9 text-xs shrink"
+              style={{ minWidth: 200, fontFamily: "'Epilogue', sans-serif" }}>
               <Search className="w-3.5 h-3.5" />
               <span className="flex-1 text-left">Rechercher courtiers, appels, intégrations…</span>
               <kbd className="pp-kbd">⌘K</kbd>
             </button>
 
-            <div className="flex items-center gap-1.5"
+            <div className="hidden md:flex items-center gap-1.5 shrink-0"
               style={{
                 background: realtimeOk ? "rgba(13,122,95,0.10)" : "#F0F4F9",
                 border: `1px solid ${realtimeOk ? "rgba(13,122,95,0.25)" : "var(--pp-bg-border)"}`,
@@ -406,7 +406,7 @@ export default function PlanipretAdminLayout() {
 
             <form
               onSubmit={(e) => { e.preventDefault(); void startWebCall(); }}
-              className="flex items-center gap-1.5 rounded-full px-2 py-1"
+              className="hidden lg:flex items-center gap-1.5 rounded-full px-2 py-1"
               style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)" }}
             >
               <Phone className="h-3.5 w-3.5" style={{ color: "var(--pp-brand-accent-2)" }} />
@@ -436,14 +436,14 @@ export default function PlanipretAdminLayout() {
 
 
 
-            <div className="hidden lg:flex flex-col items-end" style={{ paddingLeft: 4, borderLeft: "1px solid var(--pp-bg-border)", paddingInline: "12px 0", marginLeft: 4 }}>
+            <div className="hidden 2xl:flex flex-col items-end" style={{ paddingLeft: 4, borderLeft: "1px solid var(--pp-bg-border)", paddingInline: "12px 0", marginLeft: 4 }}>
               <span className="capitalize" style={{ fontSize: 10.5, color: "var(--pp-text-muted)", fontFamily: "'Urbanist', sans-serif", fontWeight: 500, letterSpacing: "0.02em" }}>
                 {dateLabel}
               </span>
             </div>
           </div>
         </header>
-        <main className="flex-1 p-7 overflow-y-auto">
+        <main className="pa-main flex-1 min-w-0 p-5 md:p-7 overflow-y-auto overflow-x-hidden">
           <Outlet context={{ profile, softphone }} />
         </main>
       </div>

@@ -456,10 +456,10 @@ export default function PAMobileDevices() {
 
 
   return (
-    <div className="space-y-4">
+    <div className="pa-page space-y-5">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex items-center gap-3">
-          <h2 style={{ fontSize: 18, fontWeight: 600, color: "var(--pp-text-primary)" }}>{t.pageTitle}</h2>
+          <h1 className="pa-title" style={{ fontSize: 18, fontWeight: 600, color: "var(--pp-text-primary)" }}>{t.pageTitle}</h1>
           <span className="rounded-full px-2 py-1" style={{ fontSize: 11, background: "var(--pp-bg-elevated)", color: "var(--pp-text-secondary)", border: "1px solid var(--pp-bg-border-2)" }}>
             {t.brokerCount(stats.total)}
           </span>

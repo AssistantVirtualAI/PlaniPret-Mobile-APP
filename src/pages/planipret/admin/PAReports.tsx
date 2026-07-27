@@ -269,7 +269,7 @@ export default function PAReports() {
   };
 
   return (
-    <div className="space-y-4">
+    <div className="pa-page space-y-5">
       <NsSyncBar features={["cdrs", "messages", "recordings"]} onReload={() => setRefreshTick((t) => t + 1)} />
       <div className="flex flex-wrap items-center justify-between gap-2">
 
@@ -438,7 +438,7 @@ export default function PAReports() {
             <Download className="w-3.5 h-3.5" /> {t("reports.exportCsv")}
           </button>
         </div>
-        <table className="w-full text-sm">
+        <div className="pa-scroll"><table className="w-full text-sm">
           <thead>
             <tr style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--pp-text-faint)", borderBottom: "1px solid var(--pp-bg-border-2)" }} className="text-left">
               <th className="py-2">{t("overview.thBroker")}</th><th>{t("reports.thCalls")}</th><th>{t("reports.thIn")}</th><th>{t("reports.thOut")}</th><th>{t("reports.thMissed")}</th><th>{t("reports.thAvgDur")}</th>
@@ -458,7 +458,7 @@ export default function PAReports() {
               </tr>
             ))}
           </tbody>
-        </table>
+        </table></div>
       </div>
 
       {/* ───────── Financier — même source que Vue d'ensemble ───────── */}

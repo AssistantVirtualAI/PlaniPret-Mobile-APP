@@ -185,7 +185,7 @@ export default function PAMessages() {
   const inputStyle = { background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" };
 
   return (
-    <div className="space-y-4">
+    <div className="pa-page space-y-5">
       <DebugPanel entries={debug} />
 
       <NsSyncBar features={["messages", "cdrs"]} onReload={() => load(page, pageSize)} />
@@ -221,7 +221,7 @@ export default function PAMessages() {
 
 
 
-      <div className="pp-card overflow-hidden">
+      <div className="pp-card pa-scroll">
         {loadError && <TableErrorState message={loadError} onRetry={() => load(page, pageSize)} />}
         <table className="w-full text-sm">
           <thead style={{ background: "var(--pp-bg-elevated)" }}>

@@ -172,7 +172,7 @@ export default function PAHoldMusic() {
   };
 
   return (
-    <div className="space-y-5">
+    <div className="pa-page space-y-5">
       <div>
         <h1 className="flex items-center gap-2" style={{ fontFamily: "Inter,sans-serif", fontWeight: 700, fontSize: 22, color: "var(--pp-text-primary)" }}>
           <Music className="w-5 h-5" style={{ color: "#6C3CE1" }} />

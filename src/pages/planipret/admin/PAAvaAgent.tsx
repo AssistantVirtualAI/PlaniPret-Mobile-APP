@@ -18,7 +18,7 @@ export default function PAAvaAgent() {
   }, []);
 
   return (
-    <div className="space-y-5">
+    <div className="pa-page space-y-5">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <h1 style={{ fontFamily: "Inter,sans-serif", fontWeight: 700, fontSize: 22, color: "var(--pp-text-primary)" }} className="flex items-center gap-2">

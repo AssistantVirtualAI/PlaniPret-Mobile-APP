@@ -103,12 +103,12 @@ export default function PALeads() {
 
 
   return (
-    <div className="space-y-4">
+    <div className="pa-page space-y-5">
       <div className="flex items-center justify-between">
         <div>
-          <h2 style={{ fontFamily: "Inter,sans-serif", fontWeight: 700, fontSize: 18, color: "var(--pp-text-primary)" }}>
+          <h1 className="pa-title" style={{ fontFamily: "Inter,sans-serif", fontWeight: 700, fontSize: 18, color: "var(--pp-text-primary)" }}>
             {t("adminPortal.leads.title")}
-          </h2>
+          </h1>
           <p style={{ fontSize: 12, color: "var(--pp-text-muted)" }}>{t("adminPortal.leads.subtitle")}</p>
         </div>
         <button onClick={exportCsv} className="pp-btn-primary flex items-center gap-2 text-sm">
