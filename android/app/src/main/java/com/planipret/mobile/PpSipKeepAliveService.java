@@ -74,7 +74,7 @@ public class PpSipKeepAliveService extends Service {
     heartbeat = executor.scheduleAtFixedRate(() -> {
       try { sendRegister(null); } catch (Exception e) { emitStatus("reconnecting", "register_retry"); connectAndRegister(); }
       requestReregister(this, "keepalive");
-    }, 240, 240, TimeUnit.SECONDS);
+    }, 600, 600, TimeUnit.SECONDS);
     return START_STICKY;
   }
 
@@ -176,8 +176,8 @@ public class PpSipKeepAliveService extends Service {
     sip.append("From: \"").append(safeDisplay).append("\" <sip:").append(login).append("@").append(domain).append(">;tag=").append(fromTag).append("\r\n");
     sip.append("Call-ID: ").append(callId).append("\r\n");
     sip.append("CSeq: ").append(seq).append(" REGISTER\r\n");
-    sip.append("Contact: ").append(contact).append(";expires=600\r\n");
-    sip.append("Expires: 600\r\n");
+    sip.append("Contact: ").append(contact).append(";expires=1800\r\n");
+    sip.append("Expires: 1800\r\n");
     sip.append("User-Agent: Planipret Native KeepAlive\r\n");
     sip.append("Supported: outbound,path,gruu\r\n");
     sip.append("Allow: INVITE,ACK,CANCEL,BYE,OPTIONS,MESSAGE,INFO,UPDATE,REGISTER\r\n");

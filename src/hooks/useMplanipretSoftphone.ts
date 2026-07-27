@@ -426,9 +426,20 @@ export function useMplanipretSoftphone() {
   }, [snap.callId, snap.callState, snap.direction, snap.remoteNumber, brokerId]);
 
   // Mark session ended when local call ends.
+  // Also trigger the Maestro pipeline (CDR + transcript + AI) 5s after call ends
+  // so NS has time to finalize the recording before we push the CDR.
   useEffect(() => {
     if (snap.callState !== "ended" || !snap.callId) return;
-    void endSession(snap.callId, snap.errorCause || "hangup");
+    const callId = snap.callId;
+    void endSession(callId, snap.errorCause || "hangup");
+    // Fire-and-forget: auto-sync Maestro pipeline after call ends.
+    // The 5s delay gives NetSapiens time to finalize the CDR and recording.
+    const timer = window.setTimeout(() => {
+      supabase.functions
+        .invoke("maestro-pipeline-orchestrator", { body: { call_id: callId } })
+        .catch((e) => console.warn("[maestro-auto-sync]", e?.message ?? e));
+    }, 5_000);
+    return () => window.clearTimeout(timer);
   }, [snap.callState, snap.callId, snap.errorCause]);
 
   const registered = snap.status === "registered";
