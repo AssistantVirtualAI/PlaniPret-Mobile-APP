@@ -55,11 +55,11 @@ export interface MaestroCallUpdate {
 export const updateCall = (callId: string, body: MaestroCallUpdate) =>
   call(`/users/{me}/calls/${encodeURIComponent(callId)}`, { method: "PUT", body });
 
-// Scott (Maestro) confirmed: ai_summary and notes use PUT /calls/{call_id} — no /users/{me}/ prefix
+// API Maestro Telecom: PUT /users/{id}/calls/{callId} — ai_summary and notes included
 export const updateCallAiSummary = (callId: string, ai_summary: string) =>
-  call(`/calls/${encodeURIComponent(callId)}`, { method: "PUT", body: { ai_summary } });
+  call(`/users/{me}/calls/${encodeURIComponent(callId)}`, { method: "PUT", body: { ai_summary } });
 export const updateCallNotes = (callId: string, notes: string) =>
-  call(`/calls/${encodeURIComponent(callId)}`, { method: "PUT", body: { notes } });
+  call(`/users/{me}/calls/${encodeURIComponent(callId)}`, { method: "PUT", body: { notes } });
 
 export const getRecording = (callId: string) =>
   call(`/users/{me}/call/${encodeURIComponent(callId)}/recording`);

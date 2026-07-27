@@ -184,23 +184,25 @@ Deno.serve(async (req) => {
       })
       .eq("id", call.id);
 
-    // 4. Push to Maestro
+    // 4. Push transcript preview to Maestro Telecom API
+    // The Telecom API does not have a POST /transcript endpoint.
+    // We store the transcript in Supabase and pass a short preview as notes
+    // via PUT /users/{brokerId}/calls/{callId} so brokers can see it in Maestro.
     try {
       const cfg = await getMaestroConfig(admin);
       if (cfg.url && cfg.key) {
         const auth = await getBrokerAuth(admin, call.user_id);
+        const brokerId = auth.brokerId;
         const mId = call.maestro_call_id ?? call.ns_call_id ?? call.id;
-        await maestroFetch(cfg, {
-          method: "POST",
-          path: `/api/v1/calls/${encodeURIComponent(mId)}/transcript`,
-          token: auth.token,
-          body: {
-            language: "fr-CA",
-            text: result.text,
-            segments: result.segments,
-            confidence: 0.95,
-          },
-        });
+        if (brokerId && mId) {
+          const preview = result.text.slice(0, 500);
+          await maestroFetch(cfg, {
+            method: "PUT",
+            path: `/api/v1/users/${encodeURIComponent(brokerId)}/calls/${encodeURIComponent(mId)}`,
+            token: auth.token,
+            body: { notes: `[Transcription] ${preview}${result.text.length > 500 ? "..." : ""}` },
+          });
+        }
       }
     } catch (e) {
       console.warn("push transcript to maestro failed", e);
