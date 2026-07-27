@@ -92,6 +92,24 @@ export default function MaestroTab({ call, onUpdated }: { call: MaestroCall; onU
 
   useEffect(() => { reloadLog(); }, [reloadLog]);
 
+  // Auto-push vers Maestro dès que l'analyse IA est prête et que la connexion est configurée.
+  // Ne se déclenche qu'une seule fois par appel (maestro_synced passe à true après le push).
+  useEffect(() => {
+    if (!configured || call.maestro_synced) return;
+    const hasAi = !!(call.ai_summary || call.ai_summary_short || call.ai_analysis_json);
+    if (!hasAi) return;
+    // Déclencher le push automatiquement sans confirmation
+    supabase.functions
+      .invoke("maestro-pipeline-orchestrator", { body: { call_id: call.id } })
+      .then(({ data, error }) => {
+        if (!error && (data as any)?.success !== false) {
+          onUpdated();
+          reloadLog();
+        }
+      })
+      .catch((e) => console.warn("[maestro-auto-push]", e?.message ?? e));
+  }, [configured, call.maestro_synced, call.ai_summary, call.ai_summary_short, call.ai_analysis_json, call.id, onUpdated, reloadLog]);
+
   useEffect(() => {
     if (!call.maestro_client_id) { setMaestroClient(null); return; }
     (async () => {

@@ -390,18 +390,28 @@ export default function MCalls() {
 
 
   // Realtime updates on phone_calls (for new entries + auto-refresh recordings)
+  // On UPDATE: merge the changed row directly into state without a full reload.
+  // On INSERT: trigger a full reload (debounced 2s).
   useEffect(() => {
     if (!userId) return;
     const ch = supabase
       .channel(`planipret-calls:${userId}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "planipret_phone_calls" }, (payload: any) => {
-        const row = payload?.new ?? payload?.old ?? {};
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "planipret_phone_calls" }, (payload: any) => {
+        const row = payload?.new ?? {};
+        if (!row.id) return;
+        if (row.user_id && row.user_id !== userId && row.user_id !== profileAuthId && row.extension !== profileExtension) return;
+        // Merge updated fields directly into state — no full reload needed.
+        setCalls((prev) => prev.map((c) => c.id === row.id ? { ...c, ...row } as any : c));
+        setRecordings((prev) => prev.map((c) => c.id === row.id ? { ...c, ...row } as any : c));
+      })
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "planipret_phone_calls" }, (payload: any) => {
+        const row = payload?.new ?? {};
         if (row.user_id && row.user_id !== userId && row.user_id !== profileAuthId && row.extension !== profileExtension) return;
         if (callsRefreshDebounceRef.current) window.clearTimeout(callsRefreshDebounceRef.current);
         callsRefreshDebounceRef.current = window.setTimeout(() => {
           void load();
           if (tab === "recordings") void loadRecordings();
-        }, 8_000); // debounce 8s — évite les refreshes trop fréquents
+        }, 2_000); // debounce 2s pour les nouveaux appels
       })
       .subscribe();
     return () => {

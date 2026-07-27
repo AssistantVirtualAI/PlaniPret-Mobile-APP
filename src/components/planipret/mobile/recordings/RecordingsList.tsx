@@ -238,9 +238,16 @@ export default function RecordingsList({
         if (cancelled) break;
         const who = otherLabel(call);
 
-        // 1) Audio : cache signé côté serveur, silencieux.
+        // 1) Audio : utiliser l'URL déjà en cache mémoire ou l'URL Supabase stockée en DB.
+        // Ne jamais re-télécharger si déjà disponible.
+        const cachedUrl = audioBlobCacheRef.current.get(call.id);
         const alreadyBlob = !!call.recording_url && /^blob:/i.test(String(call.recording_url));
-        if (!audioBlobCacheRef.current.has(call.id) && !alreadyBlob) {
+        const alreadyHttpUrl = !!call.recording_url && /^https?:/i.test(String(call.recording_url));
+        if (cachedUrl || alreadyBlob || alreadyHttpUrl) {
+          // Déjà disponible — marquer comme uploaded sans re-télécharger.
+          if (!cachedUrl && alreadyHttpUrl) audioBlobCacheRef.current.set(call.id, call.recording_url!);
+          setStatus(call.id, "uploaded");
+        } else if (!audioBlobCacheRef.current.has(call.id)) {
           setStatus(call.id, "uploading");
           try {
             const url = await fetchAudioUrl(call, { signal: controller.signal });
@@ -251,15 +258,16 @@ export default function RecordingsList({
           } catch (e: any) {
             if (!cancelled) {
               setStatus(call.id, "error");
-              console.warn("[RecordingsList] auto-upload failed", who, e?.message);
+              console.warn("[RecordingsList] auto-load failed", who, e?.message);
             }
           }
-        } else if (alreadyBlob || audioBlobCacheRef.current.has(call.id)) {
-          setStatus(call.id, "uploaded");
         }
 
         // 2) Transcript + 3) IA — pipeline complet, indépendant de l'audio.
-        if (!autoPipelineDoneRef.current.has(call.id) && (!call.transcript || !call.ai_summary)) {
+        // Ne déclencher que si les données ne sont pas déjà présentes en DB.
+        // Évite de brûler des tokens sur des appels déjà analysés.
+        const alreadyAnalyzed = !!(call.transcript && call.ai_summary);
+        if (!autoPipelineDoneRef.current.has(call.id) && !alreadyAnalyzed) {
           autoPipelineDoneRef.current.add(call.id);
           try {
             let working = call;
@@ -274,6 +282,9 @@ export default function RecordingsList({
             autoPipelineDoneRef.current.delete(call.id);
             console.warn("[RecordingsList] background pipeline failed", who, e?.message);
           }
+        } else if (alreadyAnalyzed) {
+          // Déjà analysé en DB — marquer comme fait pour éviter tout re-traitement.
+          autoPipelineDoneRef.current.add(call.id);
         }
 
         await sleep(400);

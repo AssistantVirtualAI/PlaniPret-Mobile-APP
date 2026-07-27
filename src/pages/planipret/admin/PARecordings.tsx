@@ -298,22 +298,29 @@ export default function PARecordings() {
 
   useEffect(() => { load(page, pageSize); /* eslint-disable-next-line */ }, [page, pageSize, search, broker, from, to, withTranscript]);
 
-  // Realtime: throttled reload (max once per 30s) to avoid flicker on our own AI writes
+  // Realtime: merge UPDATE en place (transcript, ai_summary, maestro_synced, analyzed_at)
+  // et throttled reload sur INSERT (max une fois par 10s).
   useEffect(() => {
     let last = 0;
     let pending: ReturnType<typeof setTimeout> | null = null;
-    const trigger = () => {
+    const triggerReload = () => {
       const now = Date.now();
-      const wait = Math.max(0, 30_000 - (now - last));
+      const wait = Math.max(0, 10_000 - (now - last));
       if (pending) return;
       pending = setTimeout(() => { last = Date.now(); pending = null; load(page, pageSize); }, wait);
     };
     const ch = supabase.channel("admin-recordings")
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "planipret_phone_calls" }, trigger)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "planipret_phone_calls" }, triggerReload)
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "planipret_phone_calls" }, (payload: any) => {
+        const row = payload?.new;
+        if (!row?.id) return;
+        // Merger les champs mis à jour directement dans la liste sans recharger
+        setRows((prev) => prev.map((r) => r.id === row.id ? { ...r, ...row } : r));
+      })
       .subscribe();
     return () => { if (pending) clearTimeout(pending); supabase.removeChannel(ch); };
     // eslint-disable-next-line
-  }, []);
+  }, [page, pageSize]);
 
   const syncAll = async () => {
     setSyncing(true);
