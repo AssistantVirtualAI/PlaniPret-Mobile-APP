@@ -19,6 +19,7 @@ import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { ms365Connected } from "@/lib/planipret/ms365Connected";
 import { Ms365ConnectionNotice } from "@/components/planipret/mobile/Ms365ConnectionNotice";
 import { useMs365Status } from "@/hooks/useMs365Status";
+import BriefListenButton from "@/components/planipret/mobile/BriefListenButton";
 
 
 type Period = "day" | "week" | "month" | "shift";
@@ -425,9 +426,20 @@ export default function MHome() {
             <p className="text-xs" style={{ color: "var(--pp-text-muted)" }}>{t("home.preparingBrief")}</p>
           )}
 
+          {brief && (
+            <BriefListenButton
+              language={lang}
+              text={[
+                brief.headline,
+                ...(brief.priorities ?? []).map((p: string, i: number) => `${i + 1}. ${p}`),
+                ...(brief.risks ?? []).map((r: string) => (lang === "en" ? `Risk: ${r}` : `Risque : ${r}`)),
+              ].filter(Boolean).join(". ")}
+            />
+          )}
+
           {profile?.voice_agent_enabled && (
             <button onClick={openAva}
-              className="mt-3 w-full py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5"
+              className="mt-2 w-full py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5"
               style={{
                 background: "rgba(108,92,231,0.10)",
                 border: "1px solid rgba(108,92,231,0.30)",

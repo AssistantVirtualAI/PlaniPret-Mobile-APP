@@ -37,7 +37,15 @@ export interface PpSipSnapshot {
 }
 
 
+export interface PpSipEvent {
+  time: number;
+  level: "info" | "warn" | "error";
+  event: string;
+  detail?: string;
+}
+
 type Listener = (s: PpSipSnapshot) => void;
+type EventsListener = (e: PpSipEvent[]) => void;
 
 let sipParserGuardInstalled = false;
 
@@ -60,15 +68,6 @@ function installSipParserGuard() {
     event.preventDefault();
   });
 }
-
-export interface PpSipEvent {
-  time: number;
-  level: "info" | "warn" | "error";
-  event: string;
-  detail?: string;
-}
-
-type EventsListener = (e: PpSipEvent[]) => void;
 
 class PpSipProvider {
   private ua: any = null;
@@ -126,6 +125,11 @@ class PpSipProvider {
     const fn = level === "error" ? "error" : level === "warn" ? "warn" : "log";
     // eslint-disable-next-line no-console
     (console as any)[fn](`[pp-sip] ${msg}`, detail ?? "");
+    const detailStr = detail === undefined || detail === null || detail === ""
+      ? undefined
+      : typeof detail === "string" ? detail : (() => { try { return JSON.stringify(detail); } catch { return String(detail); } })();
+    this.events = [...this.events, { time: Date.now(), level, event: msg, detail: detailStr }].slice(-200);
+    this.eventListeners.forEach((l) => { try { l(this.events); } catch {} });
   }
 
   async init(cfg: PpSipConfig) {
@@ -248,20 +252,6 @@ class PpSipProvider {
       muted: false,
       onHold: false,
     });
-
-    // If the user tapped "Répondre" on the native background notification
-    // before JsSIP had a chance to receive the INVITE, auto-answer as soon as
-    // the session arrives (within a 30s intent window).
-    if (incoming) {
-      try {
-        const pending = (typeof window !== "undefined") ? (window as any).__ppPendingAnswer : null;
-        if (pending && (Date.now() - (pending.ts || 0)) < 30_000) {
-          (window as any).__ppPendingAnswer = null;
-          setTimeout(() => { try { this.answer(); } catch {} }, 250);
-        }
-      } catch {}
-    }
-
 
     session.on("progress", () => { if (!incoming) this.update({ callState: "ringing-out" }); });
     session.on("confirmed", () => this.update({ callState: "active", startedAt: Date.now() }));
