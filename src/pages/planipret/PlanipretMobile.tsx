@@ -138,9 +138,9 @@ const PlanipretBadge = () => (
   <div
     aria-label="Planiprêt"
     style={{
-      width: 28,
-      height: 28,
-      borderRadius: 8,
+      width: 44,
+      height: 44,
+      borderRadius: 10,
       overflow: "hidden",
       display: "inline-flex",
       alignItems: "center",

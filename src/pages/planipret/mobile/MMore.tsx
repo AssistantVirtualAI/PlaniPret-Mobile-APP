@@ -16,6 +16,7 @@ import MNetworkSection from "@/components/planipret/mobile/MNetworkSection";
 import MCallAudioSettings from "@/components/planipret/mobile/MCallAudioSettings";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import Ms365StatusBadge from "@/components/planipret/Ms365StatusBadge";
+import MaestroConnectCard from "@/components/planipret/mobile/MaestroConnectCard";
 import { openMs365Authorize } from "@/lib/ms365OAuth";
 import { useMplanipretSoftphone } from "@/hooks/useMplanipretSoftphone";
 import { ppSipProvider, type PpSipSnapshot } from "@/lib/planipret/sip/ppSipProvider";
@@ -322,6 +323,9 @@ export default function MMore() {
             <Ms365ScopesCard profile={profile} onReconnect={connectMs365} />
           </div>
         )}
+        <div style={{ padding: 8 }}>
+          <MaestroConnectCard />
+        </div>
       </Section>
 
       <div className="pp-card" style={{ padding: 4 }}>
