@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useOutletContext } from "react-router-dom";
+import type { PlanipretMobileContext } from "../PlanipretMobile";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
 
@@ -15,7 +17,9 @@ type AvaSuggestion = { id: string; label: string; kind: string; payload?: Record
 type Msg = { id: string; role: "user" | "assistant"; message: string; created_at: string; suggestions?: AvaSuggestion[] };
 type Session = { id: string; title: string; last_message_at: string };
 
-const MUTATING_ACTIONS = new Set(["send_email", "create_calendar_event", "send_teams_message", "reply_teams_message"]);
+const MUTATING_ACTIONS = new Set(["send_email", "create_calendar_event", "update_calendar_event", "delete_calendar_event", "send_teams_message", "reply_teams_message"]);
+const CONFIRM_RE = /^(oui|ok|okay|confirm[eé]?|confirm[eé] pour envoyer|j['’]?autorise|autorise|vas-y|go|envoie|envoyer|appelle|appel|cr[eé]e|supprime|delete|yes|yep|approved?|approuv[eé])\b/i;
+const CANCEL_RE = /^(non|annule|annuler|stop|cancel|cancelled?|no|n\b)/i;
 
 export default function MAvaChat() {
   const [userId, setUserId] = useState<string | null>(null);
@@ -40,6 +44,7 @@ export default function MAvaChat() {
   const chunksRef = useRef<Blob[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const avaContext = useAvaContext();
+  const outlet = useOutletContext<PlanipretMobileContext>() as any;
 
   const switchMode = (m: "chat" | "voice") => { setMode(m); localStorage.setItem("ava_mode", m); };
 
@@ -97,6 +102,15 @@ export default function MAvaChat() {
     const optimistic: Msg = { id: `tmp-${Date.now()}`, role: "user", message: text, created_at: new Date().toISOString() };
     setMessages((m) => [...m, optimistic]);
     try {
+      if (pendingConfirm && CONFIRM_RE.test(text)) {
+        await executeConfirmedAction(pendingConfirm, { keepBusy: true });
+        return;
+      }
+      if (pendingConfirm && CANCEL_RE.test(text)) {
+        setPendingConfirm(null);
+        setMessages((m) => [...m, { id: `cancel-${Date.now()}`, role: "assistant", message: "Action annulée.", created_at: new Date().toISOString() }]);
+        return;
+      }
       const history = messages.slice(-8).map((m) => ({ role: m.role, content: m.message }));
       const { data, error } = await supabase.functions.invoke("pp-ava-chat", {
         body: { mode: "chat", user_message: text, session_id: sessionId, history, context: avaContext },
@@ -110,9 +124,19 @@ export default function MAvaChat() {
         const { data: srow } = await supabase.from("planipret_ava_chat_sessions").select("id,title,last_message_at").eq("id", newSid).maybeSingle();
         if (srow) setSessions((s) => [srow as Session, ...s.filter((x) => x.id !== newSid)]);
       }
-      const replyText = String(d.reply ?? "…");
+      const parsedReply = parseAvaReply(String(d.reply ?? "…"), Array.isArray(d.suggestions) ? d.suggestions : []);
+      const immediate = parsedReply.suggestions.find((s) => {
+        const action = String(s.payload?.action ?? "");
+        return s.kind === "call" || s.kind === "sms" || MUTATING_ACTIONS.has(action);
+      });
+      const replyText = immediate?.kind === "call"
+        ? `Je peux lancer l’appel vers ${String(immediate.payload?.number ?? immediate.payload?.to ?? immediate.payload?.phone ?? "ce numéro")}. Réponds « Oui » pour confirmer.`
+        : immediate?.kind === "sms"
+          ? `Je peux envoyer ce texto à ${String(immediate.payload?.number ?? immediate.payload?.to ?? immediate.payload?.phone ?? "ce contact")}. Réponds « Oui » pour confirmer.`
+          : parsedReply.text;
       const replyId = `a-${Date.now()}`;
-      setMessages((m) => [...m, { id: replyId, role: "assistant", message: replyText, suggestions: Array.isArray(d.suggestions) ? d.suggestions : [], created_at: new Date().toISOString() }]);
+      setMessages((m) => [...m, { id: replyId, role: "assistant", message: replyText, suggestions: parsedReply.suggestions, created_at: new Date().toISOString() }]);
+      if (immediate) setPendingConfirm(immediate);
       if (speakReplies) speak(replyId, replyText);
     } catch (e: any) {
       toast.error(e?.message ?? "Erreur AVA");
@@ -122,20 +146,88 @@ export default function MAvaChat() {
   const runSuggestion = async (suggestion: AvaSuggestion, opts: { skipConfirm?: boolean } = {}) => {
     const action = String(suggestion.payload?.action ?? "");
     const needsConfirm = suggestion.kind === "call" || suggestion.kind === "sms" || MUTATING_ACTIONS.has(action);
-    if (needsConfirm && !opts.skipConfirm) { setPendingConfirm(suggestion); return; }
+    if (needsConfirm && !opts.skipConfirm) {
+      setPendingConfirm(suggestion);
+      setMessages((m) => [...m, {
+        id: `confirm-${Date.now()}`,
+        role: "assistant",
+        message: `Confirmation requise: ${suggestion.label}\nRéponds simplement « Oui » ou « Confirmé » pour exécuter, ou « Annuler » pour arrêter.`,
+        created_at: new Date().toISOString(),
+      }]);
+      return;
+    }
+    await executeConfirmedAction(suggestion);
+  };
+
+  const executeConfirmedAction = async (suggestion: AvaSuggestion, opts: { keepBusy?: boolean } = {}) => {
+    setPendingConfirm(null);
     setRunningSuggestion(suggestion.id);
     try {
+      if (suggestion.kind === "call") {
+        const number = String(suggestion.payload?.number ?? suggestion.payload?.to ?? suggestion.payload?.phone ?? "").trim();
+        if (!number) throw new Error("Numéro manquant");
+        // 1) Ouvre le dialer avec le numéro déjà rempli (auto-dial)
+        if (typeof outlet?.openDialer === "function") outlet.openDialer(number, true);
+        else window.dispatchEvent(new CustomEvent("ava:open-dialer", { detail: { number, autoDial: true } }));
+        // 2) Filet de sécurité : déclenche l'appel via l'API native si le dialer n'a pas composé
+        window.setTimeout(() => {
+          try {
+            const sp: any = outlet?.softphone;
+            const st = String(sp?.snap?.status ?? "");
+            const inCall = ["dialing", "ringing-out", "ringing", "active", "connected", "in-call", "held"].includes(st);
+            if (!inCall && typeof sp?.placeCall === "function") void sp.placeCall(number);
+          } catch { /* noop */ }
+        }, 2200);
+        setMessages((m) => [...m, { id: `dial-${Date.now()}`, role: "assistant", message: `J’ouvre le dialer avec ${number} et je lance l’appel.`, created_at: new Date().toISOString() }]);
+        toast.success("Appel en cours…");
+        return;
+      }
+
+      if (suggestion.kind === "sms") {
+        const number = String(suggestion.payload?.number ?? suggestion.payload?.to ?? suggestion.payload?.phone ?? "").trim();
+        const body = String(suggestion.payload?.message ?? suggestion.payload?.text ?? suggestion.payload?.body ?? "").trim();
+        if (!number) throw new Error("Numéro manquant");
+        // 1) Ouvre la page Texto avec le message pré-rempli et envoi automatique
+        window.dispatchEvent(new CustomEvent("ava:open-sms-composer", { detail: { number, body, autoSend: true } }));
+        // 2) Filet de sécurité : si aucun accusé d'envoi, envoyer directement via pp-ns-sms
+        if (body) {
+          let acked = false;
+          const onSent = () => { acked = true; };
+          window.addEventListener("ava:sms-sent", onSent, { once: true });
+          window.setTimeout(async () => {
+            window.removeEventListener("ava:sms-sent", onSent);
+            if (acked) return;
+            try {
+              const { data, error } = await supabase.functions.invoke("pp-ns-sms", { body: { action: "send", to: number, message: body } });
+              if (error) throw error;
+              if ((data as any)?.ok === false || (data as any)?.error) throw new Error(String((data as any)?.error ?? "SMS refusé"));
+              toast.success("Texto envoyé");
+            } catch (err: any) {
+              toast.error(err?.message ?? "Envoi du texto impossible");
+            }
+          }, 4000);
+        }
+        setMessages((m) => [...m, { id: `sms-${Date.now()}`, role: "assistant", message: `J’envoie le texto à ${number}.`, created_at: new Date().toISOString() }]);
+        toast.success("Envoi du texto…");
+        return;
+      }
+
       const { data, error } = await supabase.functions.invoke("pp-ava-chat", {
         body: { mode: "chat", confirm_action: suggestion, approved: true, session_id: sessionId, context: avaContext },
       });
       if (error) throw error;
       const replyText = String((data as any)?.reply ?? "Action terminée.");
       setMessages((m) => [...m, { id: `act-${Date.now()}`, role: "assistant", message: replyText, created_at: new Date().toISOString() }]);
-      toast.success("Action AVA traitée");
+      if ((data as any)?.result?.ok === false || (data as any)?.result?.success === false) {
+        toast.error("Action échouée : " + ((data as any)?.result?.error ?? "Erreur inconnue"));
+      } else {
+        toast.success("Action AVA traitée");
+      }
     } catch (e: any) {
       toast.error(e?.message ?? "Action AVA impossible");
     } finally {
       setRunningSuggestion(null);
+      if (opts.keepBusy) setBusy(false);
     }
   };
 
@@ -422,4 +514,36 @@ function cleanReply(raw: string): string {
   const m = s.match(/^([\s\S]*?)\s*(\[[\s\S]*\]|\{[\s\S]*\})\s*$/);
   if (m && m[1].trim().length > 0) s = m[1].trim();
   return s;
+}
+
+function parseAvaReply(raw: string, suggestions: AvaSuggestion[]): { text: string; suggestions: AvaSuggestion[] } {
+  const found: AvaSuggestion[] = [];
+  const candidates: string[] = [];
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced?.[1]) candidates.push(fenced[1].trim());
+  const trailing = raw.match(/\n\s*(\[[\s\S]*\])\s*$/);
+  if (trailing?.[1]) candidates.push(trailing[1].trim());
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (!Array.isArray(parsed)) continue;
+      for (const item of parsed) {
+        if (!item || typeof item !== "object") continue;
+        const kind = String((item as any).kind ?? "");
+        if (!["call", "sms", "email", "reminder", "maestro_action", "ms365_action", "open_voice", "open_coach"].includes(kind)) continue;
+        found.push({
+          id: String((item as any).id ?? `${kind}-${Date.now()}-${found.length}`),
+          label: String((item as any).label ?? (kind === "call" ? "Appeler" : kind === "sms" ? "Texto" : "Action")),
+          kind,
+          payload: ((item as any).payload && typeof (item as any).payload === "object") ? (item as any).payload : {},
+        });
+      }
+    } catch {}
+  }
+
+  return {
+    text: cleanReply(raw),
+    suggestions: suggestions.length ? suggestions : found,
+  };
 }

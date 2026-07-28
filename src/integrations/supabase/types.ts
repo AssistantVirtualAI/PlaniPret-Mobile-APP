@@ -10034,6 +10034,59 @@ export type Database = {
           },
         ]
       }
+      planipret_recording_uploads: {
+        Row: {
+          bytes: number | null
+          call_id: string
+          content_hash: string | null
+          created_at: string
+          error_message: string | null
+          id: string
+          maestro_call_id: string | null
+          media_id: string | null
+          status: string
+          updated_at: string
+          uploaded_at: string | null
+          user_id: string | null
+        }
+        Insert: {
+          bytes?: number | null
+          call_id: string
+          content_hash?: string | null
+          created_at?: string
+          error_message?: string | null
+          id?: string
+          maestro_call_id?: string | null
+          media_id?: string | null
+          status?: string
+          updated_at?: string
+          uploaded_at?: string | null
+          user_id?: string | null
+        }
+        Update: {
+          bytes?: number | null
+          call_id?: string
+          content_hash?: string | null
+          created_at?: string
+          error_message?: string | null
+          id?: string
+          maestro_call_id?: string | null
+          media_id?: string | null
+          status?: string
+          updated_at?: string
+          uploaded_at?: string | null
+          user_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "planipret_recording_uploads_call_id_fkey"
+            columns: ["call_id"]
+            isOneToOne: true
+            referencedRelation: "planipret_phone_calls"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       planipret_reminders: {
         Row: {
           ai_suggested: boolean

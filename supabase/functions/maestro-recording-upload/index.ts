@@ -91,9 +91,52 @@ Deno.serve(async (req) => {
     if (!call) return json({ success: false, error: "call_not_found" }, 404);
 
     const meta = (call.metadata ?? {}) as Record<string, unknown>;
-    if (meta.maestro_recording_uploaded_at && !force) {
+
+    // --- Persistent dedup ledger, keyed by call id -------------------------
+    const { data: ledger } = await admin
+      .from("planipret_recording_uploads")
+      .select("call_id, status, uploaded_at, bytes, media_id, maestro_call_id, updated_at")
+      .eq("call_id", call_id)
+      .maybeSingle();
+
+    if (!force && ledger?.status === "uploaded") {
+      return json({
+        success: true,
+        skipped: "already_uploaded",
+        at: ledger.uploaded_at,
+        bytes: ledger.bytes,
+        maestro_call_id: ledger.maestro_call_id,
+      });
+    }
+    // Another invocation is currently uploading the same call (< 5 min old)
+    if (
+      !force && ledger?.status === "uploading" &&
+      Date.now() - new Date(ledger.updated_at as string).getTime() < 5 * 60_000
+    ) {
+      return json({ success: true, skipped: "upload_in_progress" });
+    }
+    if (!force && meta.maestro_recording_uploaded_at) {
+      // Legacy marker: backfill the ledger then skip.
+      await admin.from("planipret_recording_uploads").upsert({
+        call_id,
+        user_id: call.user_id,
+        status: "uploaded",
+        uploaded_at: meta.maestro_recording_uploaded_at as string,
+        bytes: (meta.maestro_recording_bytes as number) ?? null,
+        media_id: (meta.maestro_recording_media_id as string) ?? null,
+      }, { onConflict: "call_id" });
       return json({ success: true, skipped: "already_uploaded", at: meta.maestro_recording_uploaded_at });
     }
+
+    // Claim the upload slot (atomic on the unique call_id constraint).
+    await admin.from("planipret_recording_uploads").upsert({
+      call_id,
+      user_id: call.user_id,
+      status: "uploading",
+      error_message: null,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "call_id" });
+
 
     const cfg = await getMaestroConfig(admin);
     if (!cfg.url || !cfg.key) return json({ success: false, error: "maestro_not_configured" }, 200);
@@ -109,6 +152,10 @@ Deno.serve(async (req) => {
         call_id, user_id: call.user_id, step: "recording_upload", status: "skipped",
         duration_ms: Date.now() - t0, payload: { reason: "no_audio_available" },
       });
+      await admin.from("planipret_recording_uploads").upsert({
+        call_id, user_id: call.user_id, status: "failed",
+        error_message: "no_audio_available", updated_at: new Date().toISOString(),
+      }, { onConflict: "call_id" });
       return json({ success: false, error: "no_audio_available" }, 200);
     }
 
@@ -159,6 +206,10 @@ Deno.serve(async (req) => {
         call_id, user_id: call.user_id, step: "recording_upload", status: "error",
         duration_ms: ms, error_message: `status_${res.status}`,
       });
+      await admin.from("planipret_recording_uploads").upsert({
+        call_id, user_id: call.user_id, status: "failed",
+        error_message: `status_${res.status}`, updated_at: new Date().toISOString(),
+      }, { onConflict: "call_id" });
       return json({ success: false, status: res.status, details: data }, 200);
     }
 
@@ -173,6 +224,18 @@ Deno.serve(async (req) => {
         },
       })
       .eq("id", call_id);
+
+    await admin.from("planipret_recording_uploads").upsert({
+      call_id,
+      user_id: call.user_id,
+      status: "uploaded",
+      maestro_call_id: String(mId),
+      bytes: audio.bytes.byteLength,
+      media_id: data?.id ?? data?.media_id ?? null,
+      uploaded_at: new Date().toISOString(),
+      error_message: null,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: "call_id" });
 
     await setPipelineStep(admin, call_id, "recording" as any, "done", { bytes: audio.bytes.byteLength });
     await pipelineLog(admin, {

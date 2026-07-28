@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { retryWithBackoff } from "@/lib/planipret/retryBackoff";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { getAiTranscriptSegments } from "@/lib/planipretTranscript";
@@ -167,8 +168,32 @@ export default function RecordingsList({
     [calls]
   );
   const autoPipelineDoneRef = useRef<Set<string>>(new Set());
+  const autoCrmSyncDoneRef = useRef<Set<string>>(new Set());
   const audioBlobCacheRef = useRef<Map<string, string>>(new Map());
   const [audioStatus, setAudioStatus] = useState<Record<string, AudioStatus>>({});
+  const [uploadLedger, setUploadLedger] = useState<Record<string, string>>({});
+
+  // Statut d'upload persistant (déduplication par call_id) — source de vérité serveur.
+  const ledgerKey = useMemo(() => withRec.map((c) => c.id).join(","), [withRec]);
+  useEffect(() => {
+    const ids = ledgerKey ? ledgerKey.split(",") : [];
+    if (!ids.length) return;
+    let cancelled = false;
+    (async () => {
+      const { data } = await supabase
+        .from("planipret_recording_uploads")
+        .select("call_id, status")
+        .in("call_id", ids.slice(0, 200));
+      if (cancelled || !data) return;
+      const next: Record<string, string> = {};
+      for (const r of data as any[]) next[r.call_id] = r.status;
+      setUploadLedger((prev) => ({ ...prev, ...next }));
+    })();
+    return () => { cancelled = true; };
+  }, [ledgerKey]);
+
+  const setLedger = (id: string, status: string) =>
+    setUploadLedger((prev) => (prev[id] === status ? prev : { ...prev, [id]: status }));
 
   const setStatus = (id: string, s: AudioStatus) =>
     setAudioStatus((prev) => (prev[id] === s ? prev : { ...prev, [id]: s }));
@@ -243,8 +268,8 @@ export default function RecordingsList({
         const who = otherLabel(call);
 
         // 1) Audio : cache signé côté serveur, silencieux.
-        const alreadyBlob = !!call.recording_url && /^blob:/i.test(String(call.recording_url));
-        if (!audioBlobCacheRef.current.has(call.id) && !alreadyBlob) {
+        const alreadyResolved = !!call.recording_url && (call.stream_via_proxy === false || /^(blob:|data:|https?:)/i.test(String(call.recording_url)));
+        if (!audioBlobCacheRef.current.has(call.id) && !alreadyResolved) {
           setStatus(call.id, "uploading");
           try {
             const url = await fetchAudioUrl(call, { signal: controller.signal });
@@ -258,7 +283,7 @@ export default function RecordingsList({
               console.warn("[RecordingsList] auto-upload failed", who, e?.message);
             }
           }
-        } else if (alreadyBlob || audioBlobCacheRef.current.has(call.id)) {
+        } else if (alreadyResolved || audioBlobCacheRef.current.has(call.id)) {
           setStatus(call.id, "uploaded");
         }
 
@@ -278,6 +303,38 @@ export default function RecordingsList({
             autoPipelineDoneRef.current.delete(call.id);
             console.warn("[RecordingsList] background pipeline failed", who, e?.message);
           }
+        }
+
+        // 4) CRM Maestro : sync automatique et idempotent (CDR + recording + transcript + AI).
+        if (!call.maestro_synced && !autoCrmSyncDoneRef.current.has(call.id)) {
+          autoCrmSyncDoneRef.current.add(call.id);
+          setLedger(call.id, "uploading");
+          // Retry automatique avec backoff exponentiel (3s → 9s → 27s → 81s).
+          retryWithBackoff(async () => {
+            const { data, error } = await supabase.functions.invoke("maestro-sync-call", {
+              body: { call_id: call.id, force: false },
+            });
+            if (error) throw error;
+            if ((data as any)?.success === false) throw new Error((data as any)?.error ?? "sync_failed");
+            return data;
+          }, {
+            attempts: 4,
+            baseDelayMs: 3000,
+            signal: controller.signal,
+            onRetry: ({ attempt, delayMs }) =>
+              console.warn(`[RecordingsList] Maestro sync retry ${attempt} dans ${delayMs}ms`, who),
+          })
+            .then(() => {
+              if (cancelled) return;
+              setLedger(call.id, "uploaded");
+              onUpdated({ ...call, maestro_synced: true });
+            })
+            .catch((e: any) => {
+              autoCrmSyncDoneRef.current.delete(call.id);
+              if (cancelled) return;
+              setLedger(call.id, "failed");
+              console.warn("[RecordingsList] auto Maestro sync failed", who, e?.message);
+            });
         }
 
         await sleep(400);
@@ -340,6 +397,33 @@ export default function RecordingsList({
     );
   }
 
+  const retrySync = async (call: RecordingCall) => {
+    setLedger(call.id, "uploading");
+    autoCrmSyncDoneRef.current.add(call.id);
+    try {
+      await retryWithBackoff(async () => {
+        const { data, error } = await supabase.functions.invoke("maestro-sync-call", {
+          body: { call_id: call.id, force: true },
+        });
+        if (error) throw error;
+        if ((data as any)?.success === false) throw new Error((data as any)?.error ?? "sync_failed");
+        return data;
+      }, { attempts: 3, baseDelayMs: 2000, maxDelayMs: 20_000 });
+      setLedger(call.id, "uploaded");
+      onUpdated({ ...call, maestro_synced: true });
+      toast.success("Synchronisation relancée avec succès");
+    } catch (e: any) {
+      autoCrmSyncDoneRef.current.delete(call.id);
+      setLedger(call.id, "failed");
+      toast.error("Échec de la synchronisation", { description: e?.message });
+    }
+  };
+
+  const retryAll = async (call: RecordingCall) => {
+    if ((audioStatus[call.id] ?? "idle") === "error") await retryAudio(call);
+    await retrySync(call);
+  };
+
   const retryAudio = async (call: RecordingCall) => {
     setStatus(call.id, "uploading");
     try {
@@ -366,8 +450,9 @@ export default function RecordingsList({
           call={c}
           onUpdated={onUpdated}
           audioStatus={audioStatus[c.id] ?? "idle"}
+          ledgerStatus={uploadLedger[c.id] ?? null}
           cachedAudioUrl={audioBlobCacheRef.current.get(c.id) ?? null}
-          onRetryAudio={() => retryAudio(c)}
+          onRetryAudio={() => retryAll(c)}
         />
       ))}
     </ul>
@@ -378,11 +463,12 @@ export default function RecordingsList({
 
 // ===================== Card =====================
 function RecordingCard({
-  call, onUpdated, audioStatus, cachedAudioUrl, onRetryAudio,
+  call, onUpdated, audioStatus, ledgerStatus, cachedAudioUrl, onRetryAudio,
 }: {
   call: RecordingCall;
   onUpdated: (c: RecordingCall) => void;
   audioStatus: AudioStatus;
+  ledgerStatus?: string | null;
   cachedAudioUrl: string | null;
   onRetryAudio: () => void;
 }) {
@@ -443,7 +529,11 @@ function RecordingCard({
           </div>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
-          <AudioStatusBadge status={audioStatus} onRetry={onRetryAudio} />
+          <SyncStatusBadge
+            stage={computeSyncStage(call, audioStatus, ledgerStatus)}
+            busy={audioStatus === "uploading" || ledgerStatus === "uploading"}
+            onRetry={onRetryAudio}
+          />
           {temp && (
             <span
               className="text-[10px] font-semibold px-2 py-1 rounded-full flex items-center gap-1"
@@ -534,6 +624,46 @@ function Pill({
       {icon}
       <span>{label}</span>
       {hasData && !active && <Check className="w-3 h-3" style={{ color: "var(--pp-success)" }} />}
+    </button>
+  );
+}
+
+
+type SyncStage = "pending" | "uploaded" | "synced" | "failed";
+
+function computeSyncStage(
+  call: RecordingCall,
+  audioStatus: AudioStatus,
+  ledger?: string | null,
+): SyncStage {
+  if (call.maestro_synced) return "synced";
+  if (ledger === "uploaded") return "uploaded";
+  if (ledger === "failed" || audioStatus === "error") return "failed";
+  if (audioStatus === "uploaded") return "uploaded";
+  return "pending";
+}
+
+function SyncStatusBadge({
+  stage, busy, onRetry,
+}: { stage: SyncStage; busy: boolean; onRetry: () => void }) {
+  const map: Record<SyncStage, { label: string; bg: string; color: string; Icon: any }> = {
+    pending: { label: "En attente", bg: "var(--pp-bg-elevated)", color: "var(--pp-text-muted)", Icon: Loader2 },
+    uploaded: { label: "Uploadé", bg: "rgba(46,155,220,0.14)", color: "var(--pp-brand-accent)", Icon: CheckCircle2 },
+    synced: { label: "Transmis à Maestro", bg: "rgba(34,197,94,0.14)", color: "var(--pp-success)", Icon: CheckCircle2 },
+    failed: { label: "En échec", bg: "rgba(239,68,68,0.14)", color: "var(--pp-danger)", Icon: CloudOff },
+  };
+  const s = map[stage];
+  const Icon = busy ? Loader2 : s.Icon;
+  return (
+    <button
+      onClick={stage === "failed" ? onRetry : undefined}
+      disabled={stage !== "failed"}
+      title={stage === "failed" ? "Réessayer la synchronisation" : s.label}
+      className="text-[10px] font-semibold px-2 py-1 rounded-full flex items-center gap-1 max-w-[132px]"
+      style={{ background: s.bg, color: s.color }}
+    >
+      <Icon className={`w-3 h-3 ${busy || (stage === "pending" && !busy) ? "" : ""} ${busy ? "animate-spin" : ""}`} />
+      <span className="truncate">{busy ? "En cours…" : s.label}</span>
     </button>
   );
 }
@@ -1114,10 +1244,11 @@ function MaestroSyncSection({ call, onUpdated }: { call: RecordingCall; onUpdate
   const sync = async () => {
     setBusy("sync");
     try {
-      const { error } = await supabase.functions.invoke("maestro-cdr", { body: { call_id: call.id } });
+      const { data, error } = await supabase.functions.invoke("maestro-sync-call", { body: { call_id: call.id, force: true } });
       if (error) throw error;
+      if ((data as any)?.success === false) throw new Error((data as any)?.error || "Sync Maestro partielle");
       onUpdated({ ...call, maestro_synced: true });
-      toast.success("Synchronisé avec Maestro");
+      toast.success("Synchronisé avec Maestro", { description: "CDR + enregistrement + transcription + résumé AI envoyés" });
     } catch (e: any) {
       toast.error("Sync échouée", { description: e?.message });
     } finally {
