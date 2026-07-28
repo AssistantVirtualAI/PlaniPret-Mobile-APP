@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { Play, Pause, Sparkles, Mic, RotateCw, Check, Settings2, ChevronDown, ChevronUp } from "lucide-react";
@@ -287,7 +287,9 @@ export default function GreetingStudio({ profile, onProfileChange }: { profile: 
                   style={{
                     background: selectedVoice === v.voice_id ? "#0D2A4A" : TOKENS.card,
                     border: `1px solid ${selectedVoice === v.voice_id ? TOKENS.borderActive : TOKENS.border}`,
-                  }}>
+                    touchAction: "manipulation",
+                    WebkitTapHighlightColor: "transparent",
+                  } as React.CSSProperties}>
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-[13px] font-semibold" style={{ color: TOKENS.text }}>
                       {v.gender === "F" ? "👩" : "👨"} {v.name}

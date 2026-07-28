@@ -1,11 +1,10 @@
 // pp-ava-brief: structured daily/weekly/monthly brief for the Planipret mobile home.
-// Aggregates real broker data (calls, missed, sms, voicemails, leads, meetings, tasks)
-// and asks Lovable AI Gateway for a French, actionable summary.
-// Cached 30 min per (user, period) in `planipret_ai_insights`.
+// Aggregates real broker data (calls, missed, sms, voicemails, leads, meetings, tasks, emails)
+// and asks Claude (primary) or Lovable AI Gateway (fallback) for a French, actionable summary.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
-import { generateText, Output } from "npm:ai";
 import { z } from "npm:zod";
 import { createLovableAiGatewayProvider } from "../_shared/ai-gateway.ts";
+import { generateText, Output } from "npm:ai";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -36,6 +35,41 @@ function periodRange(period: Period): { since: Date; until: Date; label: string 
   else if (period === "month") { since.setMonth(since.getMonth() - 1); }
   else if (period === "shift") { since.setHours(Math.max(0, now.getHours() - 4), 0, 0, 0); }
   return { since, until, label: period };
+}
+
+/** Call Claude API directly with the Anthropic key. Returns parsed JSON or null. */
+async function callClaude(system: string, userPrompt: string): Promise<any | null> {
+  const claudeKey = Deno.env.get("ANTHROPIC_API_KEY") ?? Deno.env.get("CLAUDE_API_KEY");
+  try {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "x-api-key": claudeKey,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "claude-3-5-haiku-20241022",
+        max_tokens: 1024,
+        system,
+        messages: [{ role: "user", content: userPrompt }],
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      console.error("[pp-ava-brief] Claude API error", res.status, err.slice(0, 200));
+      return null;
+    }
+    const d = await res.json();
+    const raw = d?.content?.[0]?.text ?? "";
+    // Extract JSON from the response (Claude may wrap it in markdown)
+    const jsonMatch = raw.match(/```json\s*([\s\S]*?)```/) ?? raw.match(/(\{[\s\S]*\})/);
+    const jsonStr = jsonMatch ? jsonMatch[1] : raw;
+    return JSON.parse(jsonStr.trim());
+  } catch (e) {
+    console.error("[pp-ava-brief] Claude call failed", e);
+    return null;
+  }
 }
 
 Deno.serve(async (req) => {
@@ -69,7 +103,7 @@ Deno.serve(async (req) => {
     if (!effectiveUserId) return json({ error: "no_user" }, 400);
 
     const { data: profile } = await admin.from("planipret_profiles")
-      .select("id, user_id, full_name, extension, organization_id")
+      .select("id, user_id, full_name, extension, organization_id, ms365_access_token")
       .eq("user_id", effectiveUserId).maybeSingle();
     if (!profile) return json({ error: "no_profile" }, 404);
 
@@ -80,6 +114,7 @@ Deno.serve(async (req) => {
     const sinceIso = since.toISOString();
     const untilIso = until.toISOString();
 
+    // Fetch all data in parallel including M365 emails for day period
     const [calls, missed, smsUnread, voicemails, hot, meetings, tasks] = await Promise.all([
       admin.from("planipret_phone_calls").select("id", { count: "exact", head: true })
         .eq("user_id", profile.user_id).gte("started_at", sinceIso).lte("started_at", untilIso),
@@ -101,6 +136,29 @@ Deno.serve(async (req) => {
         .order("scheduled_at", { ascending: true }).limit(10),
     ]);
 
+    // Fetch M365 emails for day period (non-blocking)
+    let recentEmails: any[] = [];
+    if (profile.ms365_access_token && period === "day") {
+      try {
+        const emailRes = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/ms365-actions`, {
+          method: "POST",
+          headers: { Authorization: authHeader, "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "read_emails", payload: { top: 10, skip: 0, folder: "inbox" } }),
+        });
+        if (emailRes.ok) {
+          const emailData = await emailRes.json();
+          recentEmails = (emailData?.emails ?? []).slice(0, 5).map((e: any) => ({
+            subject: e.subject,
+            from: e.from?.emailAddress?.address ?? e.from?.emailAddress?.name ?? "?",
+            isRead: e.isRead,
+            receivedAt: e.receivedDateTime,
+          }));
+        }
+      } catch (e) {
+        console.warn("[pp-ava-brief] M365 emails fetch failed", e);
+      }
+    }
+
     const stats = {
       period,
       calls_total: calls.count ?? 0,
@@ -111,53 +169,82 @@ Deno.serve(async (req) => {
       hot_leads: hot.data || [],
       meetings: meetings.data || [],
       tasks_pending: tasks.data || [],
+      recent_emails: recentEmails,
+      emails_unread: recentEmails.filter((e: any) => !e.isRead).length,
     };
 
-    const lovableKey = Deno.env.get("LOVABLE_API_KEY");
-    if (!lovableKey) {
-      // Graceful fallback
-      const fallback = {
-        headline: `${stats.calls_total} appels · ${stats.hot_leads.length} leads chauds · ${stats.tasks_pending.length} tâches`,
+    const periodLabel = period === "day" ? "la journée" : period === "week" ? "la semaine" : period === "month" ? "le mois" : "votre quart";
+    const systemPrompt = `Tu es AVA, l'assistante IA d'un courtier hypothécaire au Québec. Tu reçois les statistiques réelles du courtier ${profile.full_name ?? ""} pour ${periodLabel}.
+Génère un brief court, professionnel, en français du Québec.
+Réponds UNIQUEMENT avec un objet JSON valide (sans markdown, sans texte avant ou après) avec cette structure exacte:
+{
+  "headline": "1 phrase percutante avec les chiffres clés",
+  "priorities": ["action 1 (max 12 mots)", "action 2", "action 3"],
+  "risks": ["risque 1", "risque 2"],
+  "suggestions": [
+    {"label": "Rappeler Jean", "kind": "call", "number": "5141234567"},
+    {"label": "SMS à Marie", "kind": "sms", "number": "5149876543"},
+    {"label": "Rappel demain", "kind": "reminder"}
+  ]
+}
+Règles:
+- headline: 1 phrase avec les chiffres clés (appels, leads, tâches, emails)
+- priorities: 3 actions concrètes ordonnées par urgence
+- risks: jusqu'à 2 risques ou points d'attention (omets si aucun)
+- suggestions: jusqu'à 3 actions cliquables avec numéro si disponible dans les données`;
+
+    const userPrompt = `Données du courtier:\n${JSON.stringify(stats).slice(0, 5000)}`;
+
+    let result: any;
+
+    // 1) Essayer Claude en premier
+    const claudeResult = await callClaude(systemPrompt, userPrompt);
+    if (claudeResult && claudeResult.headline) {
+      try {
+        result = BriefSchema.parse(claudeResult);
+      } catch (e) {
+        console.warn("[pp-ava-brief] Claude result failed schema validation", e);
+        result = null;
+      }
+    }
+
+    // 2) Fallback: Lovable AI Gateway (Gemini)
+    if (!result) {
+      const lovableKey = Deno.env.get("LOVABLE_API_KEY");
+      if (lovableKey) {
+        try {
+          const gateway = createLovableAiGatewayProvider(lovableKey);
+          const r = await generateText({
+            model: gateway("google/gemini-2.5-flash"),
+            system: systemPrompt,
+            prompt: userPrompt,
+            experimental_output: Output.object({ schema: BriefSchema }),
+          });
+          const out = (r as any).experimental_output ?? (r as any).output;
+          result = BriefSchema.parse(out);
+        } catch (e) {
+          console.error("[pp-ava-brief] Gemini fallback failed", e);
+        }
+      }
+    }
+
+    // 3) Fallback statique si tout échoue
+    if (!result) {
+      result = {
+        headline: `${stats.calls_total} appels · ${stats.hot_leads.length} leads chauds · ${stats.tasks_pending.length} tâches · ${stats.emails_unread} emails non lus`,
         priorities: [
           stats.tasks_pending[0] ? `Rappeler ${stats.tasks_pending[0].contact_name || stats.tasks_pending[0].contact_number}` : null,
           stats.hot_leads[0] ? `Recontacter ${stats.hot_leads[0].from_name || stats.hot_leads[0].from_number} (score ${stats.hot_leads[0].lead_score})` : null,
           stats.meetings[0] ? `Préparer RDV: ${stats.meetings[0].title}` : null,
+          stats.missed_count > 0 ? `Retourner ${stats.missed_count} appels manqués` : null,
         ].filter(Boolean) as string[],
-        risks: stats.missed_count > 0 ? [`${stats.missed_count} appels manqués à traiter`] : [],
-        suggestions: [],
-      };
-      return json({ ...fallback, stats, cached: false, degraded: true });
-    }
-
-    const gateway = createLovableAiGatewayProvider(lovableKey);
-    const periodLabel = period === "day" ? "la journée" : period === "week" ? "la semaine" : period === "month" ? "le mois" : "votre quart";
-    const system = `Tu es AVA, l'assistante d'un courtier hypothécaire au Québec. Tu reçois les statistiques réelles du courtier ${profile.full_name ?? ""} pour ${periodLabel}.
-Génère un brief court, professionnel, en français du Québec.
-- headline: 1 phrase percutante avec les chiffres clés.
-- priorities: 3 actions concrètes ordonnées par urgence (max 12 mots chacune).
-- risks: jusqu'à 2 risques ou points d'attention.
-- suggestions: jusqu'à 3 actions cliquables (call/sms/reminder) avec si pertinent un numéro extrait des données.`;
-
-    let result: any;
-    try {
-      const r = await generateText({
-        model: gateway("google/gemini-3-flash-preview"),
-        system,
-        prompt: `Données:\n${JSON.stringify(stats).slice(0, 6000)}`,
-        experimental_output: Output.object({ schema: BriefSchema }),
-      });
-      const out = (r as any).experimental_output ?? (r as any).output;
-      result = BriefSchema.parse(out);
-    } catch (e) {
-      console.error("pp-ava-brief AI failed", e);
-      result = {
-        headline: `${stats.calls_total} appels · ${stats.hot_leads.length} leads chauds`,
-        priorities: [],
-        risks: [],
+        risks: [
+          stats.missed_count > 0 ? `${stats.missed_count} appels manqués à traiter` : null,
+          stats.voicemails_unread > 0 ? `${stats.voicemails_unread} voicemails non écoutés` : null,
+        ].filter(Boolean) as string[],
         suggestions: [],
       };
     }
-
 
     return json({ ...result, stats, cached: false });
   } catch (e) {

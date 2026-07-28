@@ -299,7 +299,8 @@ export default function MCalls() {
     });
     try {
       const end = new Date().toISOString();
-      const start = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+      // 90-day window to ensure all recent recordings are visible
+      const start = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
       let localQuery: any = supabase
         .from("planipret_phone_calls")
         .select("*")
@@ -309,7 +310,7 @@ export default function MCalls() {
         .gte("started_at", start)
         .lte("started_at", end)
         .order("started_at", { ascending: false })
-        .limit(50);
+        .limit(100);
       if (phoneCallScopeFilter) localQuery = localQuery.or(phoneCallScopeFilter);
       const { data: local } = await localQuery;
       const freshData = (local ?? []).filter((r: any) => r.has_recording || r.recording_url || r.ns_callid || r.ns_orig_callid || r.ns_term_callid || r.ns_call_id).map((r: any) => ({
@@ -336,8 +337,9 @@ export default function MCalls() {
     recordingsSyncingRef.current = true;
     try {
       const end = new Date().toISOString();
-      const start = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-      await supabase.functions.invoke("pp-ns-cdr", { body: { action: "sync", start, end, limit: 25 } });
+      // 90-day window to match loadRecordingsFromCache
+      const start = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+      await supabase.functions.invoke("pp-ns-cdr", { body: { action: "sync", start, end, limit: 50 } });
       await loadRecordingsFromCache(true);
     } catch (e) {
       console.warn("[MCalls] recordings sync failed", e);
