@@ -44,11 +44,20 @@ function classify(rtt: number | null, loss: number, connected: boolean): NetQual
 }
 
 async function probeRtt(url: string, n = 3): Promise<{ rtt: number | null; loss: number }> {
+  // The probe targets the backend auth health endpoint, which rejects
+  // anonymous requests with 401 and floods the console. Sending the
+  // publishable key keeps the latency measurement but returns 200.
+  const apikey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ?? "";
   let total = 0; let ok = 0;
   for (let i = 0; i < n; i++) {
     const t = performance.now();
     try {
-      await fetch(`${url}?t=${Date.now()}`, { method: "HEAD", cache: "no-store" });
+      const res = await fetch(`${url}?t=${Date.now()}`, {
+        method: "GET",
+        cache: "no-store",
+        headers: apikey ? { apikey, Authorization: `Bearer ${apikey}` } : undefined,
+      });
+      if (!res.ok && res.status >= 500) throw new Error(String(res.status));
       total += performance.now() - t;
       ok++;
     } catch { /* lost */ }

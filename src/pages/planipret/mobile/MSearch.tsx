@@ -15,6 +15,16 @@ type Result = {
   dir_visible: number;
 };
 
+
+/** Graph/DB email senders come as a string OR { emailAddress: { name, address } }. */
+function emailSender(e: any): string {
+  const raw = e?.from ?? e?.from_address ?? e?.sender;
+  if (!raw) return "";
+  if (typeof raw === "string") return raw;
+  const ea = raw.emailAddress ?? raw;
+  return ea?.name || ea?.address || "";
+}
+
 const PAGE_SIZE = 20;
 const DIR_PAGE = 20;
 const emptyHasMore = (): HasMore => ({ calls: false, messages: false, voicemails: false, insights: false, contacts: false, emails: false });
@@ -333,7 +343,7 @@ export default function MSearch() {
               {data.emails.map((e: any, i: number) => (
                 <div key={i} className="p-3 bg-white rounded-lg text-sm">
                   <div className="font-medium truncate">{e.subject ?? t("searchPage.noSubject")}</div>
-                  <div className="text-xs text-slate-400 truncate">{e.from ?? ""}</div>
+                  <div className="text-xs text-slate-400 truncate">{emailSender(e)}</div>
                 </div>
               ))}
               {renderLoadMore("emails", data.has_more.emails)}

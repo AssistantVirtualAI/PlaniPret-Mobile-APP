@@ -29,12 +29,21 @@ async function invokeJson<T = any>(
           .map(([k, v]) => [k, String(v)]),
       ).toString()
     : "";
-  const { data, error } = await supabase.functions.invoke(`${fn}${qs}`, {
-    method: opts.method ?? "GET",
-    body: opts.body,
-  });
-  if (error) throw new Error(error.message || `${fn} failed`);
-  return data as T;
+  // Transport-level failures (suspended WebView, route change aborting the
+  // request) are transient — retry once before surfacing an error.
+  const transient = /failed to send a request|failed to fetch|networkerror|aborted|load failed/i;
+  let lastErr: Error | null = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const { data, error } = await supabase.functions.invoke(`${fn}${qs}`, {
+      method: opts.method ?? "GET",
+      body: opts.body,
+    });
+    if (!error) return data as T;
+    lastErr = new Error(error.message || `${fn} failed`);
+    if (!transient.test(lastErr.message)) break;
+    await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+  }
+  throw lastErr ?? new Error(`${fn} failed`);
 }
 
 /* ============================================================
@@ -122,15 +131,22 @@ export const recordingsApi = {
         Authorization: `Bearer ${token}`,
         apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string,
       },
-      body: JSON.stringify({ call_db_id: callId, ns_callid: callId }),
+      body: JSON.stringify({ call_db_id: callId, prefer_url: true }),
     });
     const ct = res.headers.get("content-type") ?? "";
     // Edge function returns 200 + JSON when NS reports the recording is missing/forbidden.
     if (ct.includes("application/json")) {
-      const err = await res.json().catch(() => ({} as any));
-      if (err?.attempts) console.warn("Recording fetch attempts:", err.attempts);
-      const msg = err?.error ?? "Enregistrement indisponible";
-      const hint = err?.hint ?? (err?.ns_status ? `NS-API HTTP ${err.ns_status}` : "");
+      const payload = await res.json().catch(() => ({} as any));
+      if ((payload?.available || payload?.success) && (payload?.url || payload?.recording_url)) {
+        const signed = await fetch(payload.url ?? payload.recording_url);
+        if (!signed.ok) throw new Error(`Recording fetch failed (HTTP ${signed.status})`);
+        const blob = await signed.blob();
+        if (blob.size < 128) throw new Error("Fichier audio vide reçu");
+        return blob;
+      }
+      if (payload?.attempts) console.warn("Recording fetch attempts:", payload.attempts);
+      const msg = payload?.message ?? payload?.error ?? payload?.reason ?? "Enregistrement en préparation";
+      const hint = payload?.hint ?? (payload?.ns_status ? `NS-API HTTP ${payload.ns_status}` : "");
       throw new Error(hint ? `${msg} — ${hint}` : msg);
     }
     if (!res.ok) throw new Error(`Recording fetch failed (HTTP ${res.status})`);

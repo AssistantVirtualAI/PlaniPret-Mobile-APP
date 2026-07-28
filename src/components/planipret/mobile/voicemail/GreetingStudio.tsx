@@ -240,10 +240,19 @@ export default function GreetingStudio({ profile, onProfileChange }: { profile: 
             return <div className="text-[12px] p-3 rounded-xl text-center" style={{ background: TOKENS.card, color: TOKENS.muted, border: `1px solid ${TOKENS.border}` }}>Aucune voix ne correspond à ces filtres.</div>;
           }
           return (
-          <div className="grid grid-cols-2 gap-2 max-h-72 overflow-y-auto pr-1">
+          <div className="grid grid-cols-2 gap-2 max-h-72 overflow-y-auto pr-1" role="radiogroup" aria-label={t("greeting.selectVoice")}>
             {filtered.map((v) => (
-              <button key={v.voice_id} onClick={() => setSelectedVoice(v.voice_id)}
-                className="text-left p-3 rounded-xl transition"
+              <div
+                key={v.voice_id}
+                role="radio"
+                aria-checked={selectedVoice === v.voice_id}
+                aria-label={`${t("greeting.selectVoice")} ${v.name}`}
+                tabIndex={0}
+                onClick={() => setSelectedVoice(v.voice_id)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSelectedVoice(v.voice_id); }
+                }}
+                className="text-left p-3 rounded-xl transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
                 style={{
                   background: selectedVoice === v.voice_id ? "#0D2A4A" : TOKENS.card,
                   border: `1px solid ${selectedVoice === v.voice_id ? TOKENS.borderActive : TOKENS.border}`,
@@ -264,14 +273,16 @@ export default function GreetingStudio({ profile, onProfileChange }: { profile: 
                     {v.category === "professional" ? "Pro" : v.category === "natural" ? t("greeting.natural") : t("greeting.custom")}
                   </span>
                   {v.preview_url && (
-                    <button onClick={(e) => { e.stopPropagation(); playVoicePreview(v); }}
-                      className="text-[10px] px-2 py-0.5 rounded flex items-center gap-1"
+                    <button type="button"
+                      aria-label={`${t("greeting.preview")} ${v.name}`}
+                      onClick={(e) => { e.stopPropagation(); playVoicePreview(v); }}
+                      className="text-[10px] px-2 py-0.5 rounded flex items-center gap-1 min-h-[28px]"
                       style={{ background: "rgba(255,255,255,0.05)", color: TOKENS.text }}>
                       {previewing === v.voice_id ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />} {t("greeting.preview")}
                     </button>
                   )}
                 </div>
-              </button>
+              </div>
             ))}
           </div>
           );

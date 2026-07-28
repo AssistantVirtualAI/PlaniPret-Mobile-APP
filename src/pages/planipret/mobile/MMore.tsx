@@ -4,13 +4,12 @@ import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import {
   User, Lock, Phone, Info, Mail, Bell, Moon, HelpCircle, MessageCircle,
-  LogOut, ChevronRight, Bot, Sparkles, X, Download, Shield, BellOff, Settings as SettingsIcon, BarChart3, Voicemail, Edit3, Languages,
+  LogOut, Trash2, ChevronRight, Bot, Sparkles, X, Download, Shield, BellOff, Settings as SettingsIcon, BarChart3, Voicemail, Edit3, Languages,
 } from "lucide-react";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
 import { usePlanipretPush } from "@/hooks/usePlanipretPush";
 
 import { Ms365ScopesCard } from "@/components/planipret/Ms365ScopesCard";
-import MaestroConnectCard from "@/components/planipret/mobile/MaestroConnectCard";
 import { SiriShortcutsCard } from "@/components/planipret/SiriShortcutsCard";
 import { safeEdgeFunction } from "@/lib/safeEdgeFunction";
 import MNetworkSection from "@/components/planipret/mobile/MNetworkSection";
@@ -20,9 +19,7 @@ import Ms365StatusBadge from "@/components/planipret/Ms365StatusBadge";
 import { openMs365Authorize } from "@/lib/ms365OAuth";
 import { useMplanipretSoftphone } from "@/hooks/useMplanipretSoftphone";
 import { ppSipProvider, type PpSipSnapshot } from "@/lib/planipret/sip/ppSipProvider";
-import { Radio, ShieldCheck } from "lucide-react";
-import { openAppSettings } from "@/lib/native/permissions/platform";
-import { markPrimerSkipped } from "@/lib/native/permissions/orchestrator";
+import { Radio } from "lucide-react";
 import { ms365Connected } from "@/lib/planipret/ms365Connected";
 
 const initials = (name?: string) =>
@@ -61,9 +58,9 @@ export default function MMore() {
   useEffect(() => {
     if (params.get("ms365") === "ok") {
       toast.success(t("more.msConnected"));
-      void reloadProfile();
+      reloadProfile();
     }
-  }, [params, t]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [params, t, reloadProfile]);
 
   useEffect(() => {
     if (darkMode) document.documentElement.classList.add("dark");
@@ -164,18 +161,14 @@ export default function MMore() {
     localStorage.setItem("planipret_notif", on ? "1" : "0");
   };
 
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
   const logout = async () => {
-    try {
-      const ok = typeof window !== "undefined" && typeof window.confirm === "function"
-        ? window.confirm(t("more.logoutConfirm"))
-        : true;
-      if (!ok) return;
-    } catch { /* ignore native confirm errors */ }
-    try { await supabase.auth.signOut(); } catch (e) { console.warn("[logout] signOut error", e); }
-    try { toast.success(t("more.logoutSuccess")); } catch {}
-    // Hard reload the mobile shell so any in-flight edge-function calls are aborted
-    // and the auth guard renders MobileAuthScreen with a clean state.
-    setTimeout(() => { window.location.replace("/mplanipret"); }, 50);
+    if (!confirm(t("more.logoutConfirm"))) return;
+    await supabase.auth.signOut();
+    toast.success(t("more.logoutSuccess"));
+    navigate("/login", { replace: true });
   };
 
   return (
@@ -275,16 +268,6 @@ export default function MMore() {
           right={<span className="text-[10px] font-bold px-2 py-0.5 rounded-full" style={{ background: sipStatusColor[sipSnap.status], color: "#fff" }}>{sipSnap.status.toUpperCase()}</span>}
           chevron
         />
-        <Row
-          icon={<ShieldCheck className="w-4 h-4" style={{ color: "var(--pp-brand-accent)" }} />}
-          label={lang === "fr" ? "Autorisations (micro, contacts, notifs)" : "Permissions (mic, contacts, notifs)"}
-          sub={lang === "fr" ? "Ouvrir les réglages iOS/Android" : "Open iOS/Android settings"}
-          onClick={async () => {
-            await markPrimerSkipped().catch(() => {});
-            await openAppSettings();
-          }}
-          chevron
-        />
       </Section>
 
       <Section title={t("more.sections.availability")}>
@@ -344,7 +327,6 @@ export default function MMore() {
             <Ms365ScopesCard profile={profile} onReconnect={connectMs365} />
           </div>
         )}
-        <MaestroConnectCard />
       </Section>
 
       <div className="pp-card" style={{ padding: 4 }}>
@@ -431,7 +413,6 @@ export default function MMore() {
             ].join(" · ");
             ((data as any)?.coherent ? toast.success : toast.warning)(`${t("more.diagnostic")}: ${flags}`);
           }} chevron />
-        <Row icon={<SettingsIcon className="w-4 h-4" />} label="Audit des KPI Home" sub="Vérifier les sources et la dernière sync" onClick={() => navigate("/mplanipret/kpi-audit")} chevron />
         <Row icon={<Info className="w-4 h-4" />} label={t("more.appVersion")} right={<span style={{ fontSize: 12, color: "var(--pp-text-faint)" }}>v1.0.0 (build 1)</span>} />
       </Section>
 
@@ -447,7 +428,69 @@ export default function MMore() {
         <LogOut className="w-4 h-4" /> {t("common.logout")}
       </button>
 
+      {/* App Store guideline 5.1.1(v) / Play data-deletion policy: in-app account deletion. */}
+      <button
+        onClick={() => setDeleteOpen(true)}
+        className="w-full flex items-center justify-center gap-2 active:scale-[0.99] transition"
+        style={{
+          padding: "12px 16px", borderRadius: 14, background: "transparent",
+          border: "1px solid rgba(232,76,76,0.18)",
+          color: "var(--pp-color-danger)", fontFamily: "Inter,sans-serif", fontWeight: 600, fontSize: 13,
+        }}
+      >
+        <Trash2 className="w-4 h-4" /> {t("more.deleteAccount")}
+      </button>
+
+      {deleteOpen && (
+        <div
+          className="fixed inset-0 z-[100] flex items-end justify-center"
+          style={{ background: "rgba(0,0,0,0.55)" }}
+          onClick={() => !deleting && setDeleteOpen(false)}
+        >
+          <div
+            className="w-full pp-card"
+            style={{ margin: 12, padding: 18, maxWidth: 520 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 style={{ fontWeight: 700, fontSize: 16, marginBottom: 6 }}>{t("more.deleteAccount")}</h3>
+            <p style={{ fontSize: 13, color: "var(--pp-text-faint)", marginBottom: 16 }}>
+              {t("more.deleteAccountWarning")}
+            </p>
+            <div className="flex gap-8">
+              <button
+                onClick={() => setDeleteOpen(false)}
+                disabled={deleting}
+                className="flex-1"
+                style={{ padding: "12px", borderRadius: 12, border: "1px solid var(--pp-border)", fontWeight: 600, fontSize: 14 }}
+              >
+                {t("common.cancel")}
+              </button>
+              <button
+                onClick={async () => {
+                  setDeleting(true);
+                  const { error } = await supabase.functions.invoke("mobile-delete-account", { body: {} });
+                  setDeleting(false);
+                  if (error) { toast.error(error.message ?? t("more.deleteAccountFailed")); return; }
+                  toast.success(t("more.deleteAccountDone"));
+                  await supabase.auth.signOut();
+                  navigate("/login", { replace: true });
+                }}
+                disabled={deleting}
+                className="flex-1"
+                style={{
+                  padding: "12px", borderRadius: 12, border: "1px solid rgba(232,76,76,0.35)",
+                  background: "rgba(232,76,76,0.12)", color: "var(--pp-color-danger)", fontWeight: 700, fontSize: 14,
+                }}
+              >
+                {deleting ? "…" : t("more.deleteAccountConfirm")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div style={{ height: 16 }} />
+
 
       {editOpen && <EditProfileSheet profile={profile} onClose={() => setEditOpen(false)} onSaved={reloadProfile} />}
       {helpOpen && <HelpSheet onClose={() => setHelpOpen(false)} />}
@@ -574,46 +617,13 @@ function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void 
 }
 
 function NotificationsSection({ profile, reloadProfile }: { profile: any; reloadProfile: () => Promise<void> }) {
-  const { t, lang } = useMplanipretLang();
+  const { t } = useMplanipretLang();
   const { subscribe, sendTest, busy } = usePlanipretPush();
   const setPref = async (field: string, val: boolean) => {
     await (supabase.from("planipret_profiles") as any).update({ [field]: val }).eq("user_id", profile.user_id);
     await reloadProfile();
   };
   const enablePush = async () => {
-    // On native iOS/Android, use Capacitor PushNotifications (triggers the real native popup)
-    const isNativeApp = !!(window as any).Capacitor?.isNativePlatform?.();
-    if (isNativeApp) {
-      try {
-        const { PushNotifications } = await import("@capacitor/push-notifications");
-        const check = await PushNotifications.checkPermissions();
-        if (check.receive === "granted") {
-          await PushNotifications.register();
-          toast.success(lang === "fr" ? "Notifications déjà activées ✅" : "Notifications already enabled ✅");
-          await reloadProfile();
-          return;
-        }
-        const req = await PushNotifications.requestPermissions();
-        if (req.receive === "granted") {
-          await PushNotifications.register();
-          toast.success(lang === "fr" ? "Notifications activées ✅" : "Notifications enabled ✅");
-          await reloadProfile();
-        } else {
-          // Permission denied — open iOS Settings
-          const { openAppSettings } = await import("@/lib/native/permissions/platform");
-          toast.error(
-            lang === "fr"
-              ? "Permission refusée. Activez dans Réglages iOS."
-              : "Permission denied. Enable in iOS Settings.",
-          );
-          setTimeout(() => openAppSettings(), 1500);
-        }
-      } catch (e: any) {
-        toast.error(e?.message ?? "Erreur notifications");
-      }
-      return;
-    }
-    // Web fallback (VAPID)
     const ok = await subscribe(profile.user_id);
     if (ok) await reloadProfile();
   };

@@ -63,3 +63,17 @@
 <array>
     <string>UIInterfaceOrientationPortrait</string>
 </array>
+
+<!-- Export compliance: standard HTTPS/TLS + SRTP only -->
+<key>ITSAppUsesNonExemptEncryption</key>
+<false/>
+
+<!-- Additional purpose strings required by App Review -->
+<key>NSCameraUsageDescription</key>
+<string>Planiprêt utilise l'appareil photo pour définir votre photo de profil.</string>
+<key>NSPhotoLibraryUsageDescription</key>
+<string>Planiprêt accède à vos photos pour définir votre photo de profil.</string>
+<key>NSLocalNetworkUsageDescription</key>
+<string>Planiprêt utilise le réseau local pour établir l'audio des appels VoIP.</string>
+<key>NSSpeechRecognitionUsageDescription</key>
+<string>Planiprêt transcrit vos appels enregistrés lorsque vous activez la transcription.</string>

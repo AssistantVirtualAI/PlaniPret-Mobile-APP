@@ -44,9 +44,16 @@ export async function getMaestroTelecomConfig(admin: SupabaseClient): Promise<Ma
   } catch { /* fall through to env */ }
 
   const cfg: MaestroTelecomConfig = {
-    url: (apiUrl || Deno.env.get("MAESTRO_TELECOM_BASE_URL") || Deno.env.get("MAESTRO_TELECOM_API_URL") || "").replace(/\/$/, ""),
-    key: apiKey || Deno.env.get("MAESTRO_TELECOM_API_KEY") || "",
+    url: (apiUrl
+      || Deno.env.get("MAESTRO_TELECOM_BASE_URL")
+      || Deno.env.get("MAESTRO_TELECOM_API_URL")
+      || "https://client-dev.planipret.com/telecom/api/v1").replace(/\/$/, ""),
+    key: apiKey
+      || Deno.env.get("MAESTRO_MACHINE_API_KEY")
+      || Deno.env.get("MAESTRO_TELECOM_API_KEY")
+      || "",
   };
+
   cachedConfig = { at: Date.now(), cfg };
   return cfg;
 }

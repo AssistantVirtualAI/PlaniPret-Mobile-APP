@@ -509,22 +509,43 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       host = call.getString("host") ?? call.getString("domain") ?? ""; port = call.getInt("port") ?? 443; path = call.getString("path") ?? "/"
       login = call.getString("login") ?? call.getString("username") ?? call.getString("extension") ?? ""
       domain = call.getString("domain") ?? ""; displayName = call.getString("displayName") ?? login; password = call.getString("password") ?? ""
-      activateAudioSession(); connect(); scheduleRegister(); call.resolve(snapshot(ok: true))
+      activateAudioSession()
+      // Only ONE SIP registration per AOR: while the app is in the foreground the
+      // JsSIP web layer owns the registration. Registering natively at the same
+      // time made NetSapiens close the JsSIP socket (1001), producing an endless
+      // disconnect/reconnect loop. Store the credentials and stay idle instead.
+      if isForeground() { releaseRegistration("foreground_js_owns") } else { connect(); scheduleRegister() }
+      call.resolve(snapshot(ok: true))
     }
-    @objc func stopSipService(_ call: CAPPluginCall) { timer?.invalidate(); socket?.cancel(with: .goingAway, reason: nil); socket = nil; endBackgroundTask(); setStatus("disconnected", "stopped"); call.resolve(snapshot(ok: true)) }
+    @objc func stopSipService(_ call: CAPPluginCall) { releaseRegistration("stopped"); call.resolve(snapshot(ok: true)) }
     @objc func getSipServiceStatus(_ call: CAPPluginCall) { call.resolve(snapshot(ok: true)) }
-    @objc func triggerReregister(_ call: CAPPluginCall) { sendRegister(challenge: nil); notifyListeners("sipReregisterRequested", data: ["reason": "manual"]); call.resolve(snapshot(ok: true)) }
+    @objc func triggerReregister(_ call: CAPPluginCall) {
+      if isForeground() { releaseRegistration("foreground_js_owns") } else { sendRegister(challenge: nil); notifyListeners("sipReregisterRequested", data: ["reason": "manual"]) }
+      call.resolve(snapshot(ok: true))
+    }
     @objc func acknowledgeIncoming(_ call: CAPPluginCall) {
       UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["pp_incoming_call"])
       call.resolve(["ok": true])
     }
 
-    @objc private func onBackground() { beginBackgroundTask(); activateAudioSession(); sendRegister(challenge: nil); notifyListeners("sipReregisterRequested", data: ["reason": "enter_background"]); setStatus("protected", "background_register_sent") }
-    @objc private func onForeground() { connect(); sendRegister(challenge: nil); notifyListeners("sipReregisterRequested", data: ["reason": "enter_foreground"]); setStatus("registered", "foreground_refresh"); endBackgroundTask() }
+    private func isForeground() -> Bool { UIApplication.shared.applicationState == .active }
+    private func releaseRegistration(_ why: String) {
+      timer?.invalidate(); timer = nil
+      socket?.cancel(with: .goingAway, reason: nil); socket = nil
+      endBackgroundTask(); setStatus("idle", why)
+    }
+
+    @objc private func onBackground() { beginBackgroundTask(); activateAudioSession(); connect(); scheduleRegister(); sendRegister(challenge: nil); setStatus("protected", "background_register_sent") }
+    @objc private func onForeground() {
+      // Hand the AOR back to JsSIP and ask the web layer to re-REGISTER.
+      releaseRegistration("foreground_js_owns")
+      notifyListeners("sipReregisterRequested", data: ["reason": "enter_foreground"])
+    }
 
     private func activateAudioSession() { try? AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .allowBluetoothA2DP, .mixWithOthers]); try? AVAudioSession.sharedInstance().setActive(true) }
     private func connect() {
       guard !host.isEmpty else { setStatus("error", "missing_host"); return }
+      if isForeground() { return }
       if socket != nil { return }
       var comps = URLComponents(); comps.scheme = port == 80 ? "ws" : "wss"; comps.host = host; comps.port = port; comps.path = path.isEmpty ? "/" : path
       guard let url = comps.url else { setStatus("error", "bad_ws_url"); return }
@@ -533,7 +554,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in self?.sendRegister(challenge: nil) }
     }
     private func scheduleRegister() { timer?.invalidate(); timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in self?.sendRegister(challenge: nil) }; RunLoop.main.add(timer!, forMode: .common) }
-    private func receiveLoop() { socket?.receive { [weak self] result in guard let self = self else { return }; switch result { case .success(let message): if case .string(let text) = message { self.handle(text) }; self.receiveLoop(); case .failure: self.socket = nil; self.setStatus("reconnecting", "ws_closed"); DispatchQueue.main.asyncAfter(deadline: .now() + 5) { self.connect() } } } }
+    private func receiveLoop() { socket?.receive { [weak self] result in guard let self = self else { return }; switch result { case .success(let message): if case .string(let text) = message { self.handle(text) }; self.receiveLoop(); case .failure: self.socket = nil; if self.isForeground() { self.setStatus("idle", "foreground_js_owns") } else { self.setStatus("reconnecting", "ws_closed"); DispatchQueue.main.asyncAfter(deadline: .now() + 5) { self.connect() } } } } }
 
     private func handle(_ msg: String) {
       if msg.hasPrefix("SIP/2.0 401") || msg.hasPrefix("SIP/2.0 407") { sendRegister(challenge: headerVal(msg, msg.hasPrefix("SIP/2.0 407") ? "Proxy-Authenticate" : "WWW-Authenticate")); return }
@@ -583,6 +604,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     }
 
     private func sendRegister(challenge: String?) {
+      if isForeground() { releaseRegistration("foreground_js_owns"); return }
       if socket == nil { connect(); return }
       guard !login.isEmpty, !domain.isEmpty else { setStatus("error", "missing_credentials"); return }
       let seq = cseq; cseq += 1
@@ -935,6 +957,24 @@ function patchIosInfoPlist() {
     xml = xml.includes("<key>UIBackgroundModes</key>")
       ? xml.replace(/<key>UIBackgroundModes<\/key>\s*<array>[\s\S]*?<\/array>/, modes.trim())
       : xml.replace(/\n<\/dict>\s*\n<\/plist>\s*$/, `${modes}\n</dict>\n</plist>\n`);
+  }
+
+  // App Review compliance keys: purpose strings + encryption export declaration.
+  const REQUIRED_PLIST_STRINGS = [
+    ["NSMicrophoneUsageDescription", "Planipret uses the microphone to place and receive VoIP business calls."],
+    ["NSContactsUsageDescription", "Planipret accesses your contacts so you can call and message your clients."],
+    ["NSCameraUsageDescription", "Planipret uses the camera so you can set a profile photo."],
+    ["NSPhotoLibraryUsageDescription", "Planipret accesses your photo library so you can pick a profile photo."],
+    ["NSLocalNetworkUsageDescription", "Planipret uses the local network to establish VoIP call audio."],
+    ["NSSpeechRecognitionUsageDescription", "Planipret transcribes your recorded calls when you enable transcription."],
+  ];
+  for (const [key, value] of REQUIRED_PLIST_STRINGS) {
+    if (!xml.includes(`<key>${key}</key>`)) {
+      xml = xml.replace(/\n<\/dict>\s*\n<\/plist>\s*$/, `\n\t<key>${key}</key>\n\t<string>${value}</string>\n</dict>\n</plist>\n`);
+    }
+  }
+  if (!xml.includes("<key>ITSAppUsesNonExemptEncryption</key>")) {
+    xml = xml.replace(/\n<\/dict>\s*\n<\/plist>\s*$/, "\n\t<key>ITSAppUsesNonExemptEncryption</key>\n\t<false/>\n</dict>\n</plist>\n");
   }
 
   writeIfChanged(file, xml);

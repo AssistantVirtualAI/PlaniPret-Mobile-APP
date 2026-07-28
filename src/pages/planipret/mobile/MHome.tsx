@@ -85,7 +85,7 @@ export default function MHome() {
   const [msCalendarError, setMsCalendarError] = useState<string | null>(null);
   const [statsLoading, setStatsLoading] = useState(true);
   const [brief, setBrief] = useState<any | null>(null);
-  const [briefLoading, setBriefLoading] = useState(false);
+  const [briefLoading, setBriefLoading] = useState(true);
   const [briefErr, setBriefErr] = useState<string | null>(null);
 
   useMaestroPipelineToasts(profile?.user_id);
@@ -876,66 +876,94 @@ function NewMeetingSheet({
     }
   };
 
+  const inputStyle: React.CSSProperties = {
+    padding: "10px 12px",
+    borderRadius: 8,
+    border: "1px solid #D0D7DE",
+    background: "#FFFFFF",
+    color: "#1F2328",
+    fontSize: 14,
+    width: "100%",
+    outline: "none",
+  };
   return (
     <div
       onClick={onClose}
       style={{
-        position: "fixed", inset: 0, background: "rgba(4,10,25,0.55)",
+        position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)",
         display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 9999,
       }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="pp-card"
         style={{
-          width: "100%", maxWidth: 520, borderRadius: "16px 16px 0 0",
-          padding: 16, maxHeight: "90dvh", overflowY: "auto",
-          background: "var(--pp-bg-elevated, #fff)",
+          width: "100%", maxWidth: 520, borderRadius: "20px 20px 0 0",
+          padding: "20px 16px 32px", maxHeight: "92dvh", overflowY: "auto",
+          background: "#FFFFFF",
+          WebkitOverflowScrolling: "touch" as any,
+          boxShadow: "0 -4px 32px rgba(0,0,0,0.18)",
         }}
       >
-        <div className="flex items-center justify-between mb-3">
-          <h3 className="text-base font-semibold pp-heading">Nouvelle réunion</h3>
-          <button onClick={onClose} className="w-8 h-8 rounded-lg flex items-center justify-center"
-            style={{ background: "rgba(0,0,0,0.06)" }}>
-            <X className="w-4 h-4" />
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ width: 32, height: 32, borderRadius: 8, background: "#0078D4", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <Calendar className="w-4 h-4" style={{ color: "#fff" }} />
+            </div>
+            <h3 style={{ fontSize: 17, fontWeight: 700, color: "#1F2328", margin: 0 }}>Nouvel événement</h3>
+          </div>
+          <button onClick={onClose}
+            style={{ width: 32, height: 32, borderRadius: 8, background: "#F6F8FA", border: "1px solid #D0D7DE", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
+            <X className="w-4 h-4" style={{ color: "#656D76" }} />
           </button>
         </div>
-        <div className="space-y-3">
-          <input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Titre"
-            className="pp-input w-full" style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid var(--pp-bg-border)" }} />
-          <div className="grid grid-cols-2 gap-2">
-            <label className="text-xs" style={{ color: "var(--pp-text-muted)" }}>
-              Début
-              <input type="datetime-local" value={start} onChange={(e) => setStart(e.target.value)}
-                className="w-full mt-1" style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid var(--pp-bg-border)" }} />
-            </label>
-            <label className="text-xs" style={{ color: "var(--pp-text-muted)" }}>
-              Fin
-              <input type="datetime-local" value={end} onChange={(e) => setEnd(e.target.value)}
-                className="w-full mt-1" style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid var(--pp-bg-border)" }} />
-            </label>
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#656D76", display: "block", marginBottom: 4 }}>TITRE</label>
+            <input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Ajouter un titre"
+              style={{ ...inputStyle, fontSize: 16, fontWeight: 600, borderColor: subject ? "#0078D4" : "#D0D7DE" }} />
           </div>
-          <input value={attendees} onChange={(e) => setAttendees(e.target.value)}
-            placeholder="Participants (courriels, séparés par des virgules)"
-            className="w-full" style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid var(--pp-bg-border)" }} />
-          <input value={location} onChange={(e) => setLocation(e.target.value)}
-            placeholder="Lieu (optionnel)"
-            className="w-full" style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid var(--pp-bg-border)" }} />
-          <textarea value={body} onChange={(e) => setBody(e.target.value)}
-            placeholder="Notes / ordre du jour"
-            rows={3}
-            className="w-full" style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid var(--pp-bg-border)" }} />
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={teams} onChange={(e) => setTeams(e.target.checked)} />
-            Créer une réunion Teams
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div>
+              <label style={{ fontSize: 12, fontWeight: 600, color: "#656D76", display: "block", marginBottom: 4 }}>DÉBUT</label>
+              <input type="datetime-local" value={start} onChange={(e) => setStart(e.target.value)} style={inputStyle} />
+            </div>
+            <div>
+              <label style={{ fontSize: 12, fontWeight: 600, color: "#656D76", display: "block", marginBottom: 4 }}>FIN</label>
+              <input type="datetime-local" value={end} onChange={(e) => setEnd(e.target.value)} style={inputStyle} />
+            </div>
+          </div>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#656D76", display: "block", marginBottom: 4 }}>PARTICIPANTS</label>
+            <input value={attendees} onChange={(e) => setAttendees(e.target.value)}
+              placeholder="Courriels séparés par des virgules" style={inputStyle} />
+          </div>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#656D76", display: "block", marginBottom: 4 }}>LIEU (optionnel)</label>
+            <input value={location} onChange={(e) => setLocation(e.target.value)}
+              placeholder="Ajouter un lieu" style={inputStyle} />
+          </div>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#656D76", display: "block", marginBottom: 4 }}>NOTES</label>
+            <textarea value={body} onChange={(e) => setBody(e.target.value)}
+              placeholder="Ordre du jour ou notes" rows={3}
+              style={{ ...inputStyle, resize: "vertical", lineHeight: 1.5 }} />
+          </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", padding: "10px 12px", borderRadius: 8, background: teams ? "#EBF3FB" : "#F6F8FA", border: `1px solid ${teams ? "#0078D4" : "#D0D7DE"}` }}>
+            <input type="checkbox" checked={teams} onChange={(e) => setTeams(e.target.checked)} style={{ width: 16, height: 16, accentColor: "#0078D4" }} />
+            <span style={{ fontSize: 14, color: "#1F2328", fontWeight: 500 }}>Créer une réunion Teams</span>
+            {teams && <span style={{ marginLeft: "auto", fontSize: 11, color: "#0078D4", fontWeight: 600 }}>✓ Teams</span>}
           </label>
           <button
             onClick={submit}
-            disabled={saving}
-            className="w-full h-11 rounded-xl font-semibold active:scale-[0.98]"
-            style={{ background: "var(--pp-brand-accent)", color: "#fff", opacity: saving ? 0.6 : 1 }}
+            disabled={saving || !subject.trim()}
+            style={{
+              width: "100%", height: 48, borderRadius: 10, fontWeight: 700, fontSize: 15,
+              background: saving || !subject.trim() ? "#B0C4D8" : "#0078D4",
+              color: "#fff", border: "none", cursor: saving || !subject.trim() ? "not-allowed" : "pointer",
+              display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+            }}
           >
-            {saving ? "Création…" : "Créer la réunion"}
+            {saving ? "Création en cours…" : "Créer l'événement"}
           </button>
         </div>
       </div>
