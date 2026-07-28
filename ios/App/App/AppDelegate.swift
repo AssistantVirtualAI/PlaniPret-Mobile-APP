@@ -126,10 +126,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         }
     }
 
-    // Allow all orientations so the app rotates when the device is rotated.
-    // Without this, WKWebView (Capacitor) can get stuck in landscape after launch.
+    // Portrait-only: matches Info.plist UIInterfaceOrientation restrictions.
+    // Returning .all previously overrode the plist and allowed landscape rotation.
     func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
-        return .all
+        return .portrait
     }
 
     func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {

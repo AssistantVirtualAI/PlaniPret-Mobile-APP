@@ -96,6 +96,7 @@ class PpSipProvider {
   private connectingSince = 0;
   private regRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private regFailures = 0;
+  private pingTimer: ReturnType<typeof setInterval> | null = null;
 
   subscribe(fn: Listener): () => void {
     this.listeners.add(fn);
@@ -176,17 +177,33 @@ class PpSipProvider {
         session_timers: false,
         // Match the native keep-alive REGISTER expiry so NetSapiens does not
         // expire one contact while the other still shows "registered" locally.
-        register_expires: 1800,
+        // 300s expiry keeps the REGISTER alive well within the 60s NAT/WebSocket
+        // idle timeout observed on ucstack.io — prevents the code-1001 disconnect loop.
+        register_expires: 300,
         connection_recovery_min_interval: 2,
         connection_recovery_max_interval: 30,
         user_agent: "Planipret Softphone 1.0",
       });
 
       ua.on("connecting", () => { this.connectingSince = Date.now(); this.update({ status: "connecting" }); });
-      ua.on("connected", () => this.update({ status: "connected" }));
+      ua.on("connected", () => {
+        this.update({ status: "connected" });
+        // Ping SIP OPTIONS every 25 s to keep the WebSocket alive through NAT/firewall
+        // idle timeouts (same interval as the native PpSipKeepAlive WS ping).
+        if (this.pingTimer) clearInterval(this.pingTimer);
+        this.pingTimer = setInterval(() => {
+          try {
+            if (this.ua && (this.snap.status === "connected" || this.snap.status === "registered")) {
+              this.ua.sendOptions?.(`sip:${this.cfg?.sipDomain}`, null, {});
+            }
+          } catch { /* ignore — UA may not support sendOptions in all JsSIP builds */ }
+        }, 25_000);
+      });
       ua.on("disconnected", (e: any) => {
         this.log("warn", "ws disconnected", e);
         this.update({ status: "disconnected", errorCause: e?.reason || "ws_disconnected" });
+        // Stop the OPTIONS ping — it will restart on next "connected" event.
+        if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null; }
         // JsSIP retries the socket via connection_recovery_*; no manual work needed.
       });
       ua.on("registered", () => {
@@ -383,6 +400,7 @@ class PpSipProvider {
 
   stop() {
     if (this.regRetryTimer) { clearTimeout(this.regRetryTimer); this.regRetryTimer = null; }
+    if (this.pingTimer) { clearInterval(this.pingTimer); this.pingTimer = null; }
     try { this.ua?.stop(); } catch {}
     this.ua = null;
     this.session = null;
