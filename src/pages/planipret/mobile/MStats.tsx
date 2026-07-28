@@ -24,6 +24,7 @@ export default function MStats() {
   const [period, setPeriod] = useState<Period>("week");
   const [calls, setCalls] = useState<any[]>([]);
   const [leads, setLeads] = useState<any[]>([]);
+  const [smsCount, setSmsCount] = useState<number>(0);
   const [loading, setLoading] = useState(true);
   const [coachOpen, setCoachOpen] = useState(false);
   const [coachLoading, setCoachLoading] = useState(false);
@@ -36,13 +37,15 @@ export default function MStats() {
       setLoading(true);
       const days = period === "week" ? 7 : period === "month" ? 30 : 90;
       const since = new Date(Date.now() - days * 86400000).toISOString();
-      const [cRes, lRes] = await Promise.all([
+      const [cRes, lRes, smsRes] = await Promise.all([
         supabase.from("planipret_phone_calls").select("id,direction,status,duration_seconds,lead_score,created_at,started_at")
           .eq("user_id", profile.user_id).gte("created_at", since).order("created_at", { ascending: false }),
         supabase.from("planipret_pipeline").select("id,stage,created_at")
           .eq("user_id", profile.user_id).gte("created_at", since),
+        supabase.from("planipret_phone_messages").select("id", { count: "exact", head: true })
+          .eq("user_id", profile.user_id).gte("created_at", since),
       ]);
-      setCalls(cRes.data ?? []); setLeads(lRes.data ?? []); setLoading(false);
+      setCalls(cRes.data ?? []); setLeads(lRes.data ?? []); setSmsCount(smsRes.count ?? 0); setLoading(false);
     })();
   }, [profile?.user_id, period]);
 
@@ -142,6 +145,7 @@ export default function MStats() {
         <Kpi label={t("stats.responseRate")} value={`${kpi.response}%`} icon={<TrendingUp className="w-4 h-4" />} />
         <Kpi label={t("stats.avgDuration")} value={`${Math.floor(kpi.avgDur / 60)}m${kpi.avgDur % 60}s`} />
         <Kpi label={t("stats.avgScore")} value={String(kpi.avgScore)} />
+        <Kpi label={t("stats.sms")} value={smsCount} icon={<span className="text-[13px]">💬</span>} />
       </div>
 
       <Ms365StatsCard days={period === "week" ? 7 : period === "month" ? 30 : 90} />

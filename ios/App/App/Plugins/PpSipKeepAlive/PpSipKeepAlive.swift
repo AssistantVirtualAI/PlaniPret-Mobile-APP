@@ -171,6 +171,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private func isForeground() -> Bool { return appIsInForeground }
     private func releaseRegistration(_ why: String) {
       timer?.invalidate(); timer = nil
+      pingTimer?.invalidate(); pingTimer = nil
       socket?.cancel(with: .goingAway, reason: nil); socket = nil
       wsReady = false; endBackgroundTask(); setStatus("idle", why)
     }
@@ -235,9 +236,24 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       }
     }
 
-    // Timer toutes les 120s (2 min) — bien avant l'expiration du REGISTER (1800s)
-    // Garantit que le SIP reste enregistré en permanence, même en arrière-plan iOS
-    private func scheduleRegister() { timer?.invalidate(); timer = Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in self?.sendRegister(challenge: nil) }; RunLoop.main.add(timer!, forMode: .common) }
+    // Timer toutes les 60s (1 min) — bien avant l'expiration du REGISTER (1800s)
+    // Réduit de 120s à 60s pour maintenir le WebSocket actif plus longtemps en arrière-plan iOS
+    // Un ping WebSocket est envoyé toutes les 25s pour éviter que le NAT ferme la connexion
+    private var pingTimer: Timer?
+    private func scheduleRegister() {
+      timer?.invalidate()
+      timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in self?.sendRegister(challenge: nil) }
+      RunLoop.main.add(timer!, forMode: .common)
+      // Ping WebSocket toutes les 25s pour maintenir la connexion NAT active
+      pingTimer?.invalidate()
+      pingTimer = Timer.scheduledTimer(withTimeInterval: 25, repeats: true) { [weak self] in
+        guard let self = self, self.wsReady, !self.isForeground() else { return }
+        self.socket?.sendPing { err in
+          if let err = err { NSLog("[PpSipKeepAlive] WS ping failed: \(err.localizedDescription)") }
+        }
+      }
+      RunLoop.main.add(pingTimer!, forMode: .common)
+    }
 
     private func receiveLoop() {
       socket?.receive { [weak self] result in

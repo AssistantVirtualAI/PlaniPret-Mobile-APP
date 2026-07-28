@@ -9,7 +9,7 @@ android {
         minSdk rootProject.ext.minSdkVersion
         targetSdk rootProject.ext.targetSdkVersion
         versionCode 1
-        versionName "1.0"
+        versionName "1.0.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate
@@ -19,13 +19,31 @@ android {
     }
     signingConfigs {
         release {
-            // See: https://developer.android.com/studio/publish/app-signing
+            // Keystore de signature pour la soumission Google Play (Phase 4.3 du plan)
+            // Créer le keystore avec la commande :
+            //   keytool -genkey -v -keystore planipret-release.keystore -alias planipret \
+            //     -keyalg RSA -keysize 2048 -validity 10000 \
+            //     -dname "CN=Planipret, OU=Mobile, O=Planipret Inc, L=Montreal, ST=QC, C=CA"
+            // Puis définir dans ~/.gradle/gradle.properties :
+            //   PLANIPRET_KEYSTORE_FILE=/chemin/vers/planipret-release.keystore
+            //   PLANIPRET_KEYSTORE_PASSWORD=votre_mot_de_passe
+            //   PLANIPRET_KEY_ALIAS=planipret
+            //   PLANIPRET_KEY_PASSWORD=votre_mot_de_passe
+            if (project.hasProperty('PLANIPRET_KEYSTORE_FILE')) {
+                storeFile file(PLANIPRET_KEYSTORE_FILE)
+                storePassword PLANIPRET_KEYSTORE_PASSWORD
+                keyAlias PLANIPRET_KEY_ALIAS
+                keyPassword PLANIPRET_KEY_PASSWORD
+            }
         }
     }
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            if (project.hasProperty('PLANIPRET_KEYSTORE_FILE')) {
+                signingConfig signingConfigs.release
+            }
         }
     }
     compileOptions {

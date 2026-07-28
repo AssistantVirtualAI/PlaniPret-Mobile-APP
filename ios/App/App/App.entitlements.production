@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+<!-- APNs push environment — PRODUCTION pour soumission App Store finale -->
+<!-- IMPORTANT: Copier ce fichier vers App.entitlements avant d'archiver pour l'App Store -->
+<!-- Garder "development" dans App.entitlements pour TestFlight -->
+<key>aps-environment</key>
+<string>production</string>
+</dict>
+</plist>

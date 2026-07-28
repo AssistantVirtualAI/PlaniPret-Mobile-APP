@@ -60,7 +60,7 @@ export async function getMaestroConfig(admin: SupabaseClient): Promise<MaestroCo
       Deno.env.get("MAESTRO_TELECOM_BASE_URL") ??
       Deno.env.get("MAESTRO_API_BASE_URL") ??
       Deno.env.get("MAESTRO_API_URL") ??
-      "https://client-dev.planipret.com/telecom/api/v1";
+      "https://client-dev.planipret.com/telecom";
   }
   if (!apiKey) {
     apiKey =

@@ -7,6 +7,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, Legend } from "recharts";
 import { Mail, Calendar, Send, Inbox, Sparkles, Video, ExternalLink, Loader2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 
 type Payload = {
   connected?: boolean;
@@ -20,6 +21,7 @@ type Payload = {
 
 export default function Ms365StatsCard({ days }: { days: number }) {
   const nav = useNavigate();
+  const { t, lang } = useMplanipretLang();
   const [data, setData] = useState<Payload | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
@@ -39,14 +41,14 @@ export default function Ms365StatsCard({ days }: { days: number }) {
   if (loading) {
     return (
       <div className="bg-white rounded-2xl p-4 mb-4 shadow-sm flex items-center gap-2 text-sm text-slate-500">
-        <Loader2 className="w-4 h-4 animate-spin" /> Chargement des données Microsoft 365…
+        <Loader2 className="w-4 h-4 animate-spin" /> {t("stats.ms365Loading")}
       </div>
     );
   }
   if (err || !data) {
     return (
       <div className="bg-white rounded-2xl p-4 mb-4 shadow-sm text-sm text-red-600">
-        Erreur Microsoft 365: {err ?? "inconnue"}
+        {t("stats.ms365Error")}: {err ?? (lang === "fr" ? "inconnue" : "unknown")}
       </div>
     );
   }
@@ -54,34 +56,35 @@ export default function Ms365StatsCard({ days }: { days: number }) {
     return (
       <div className="bg-white rounded-2xl p-4 mb-4 shadow-sm">
         <div className="flex items-center gap-2 mb-2 text-sm font-semibold text-slate-700">
-          <Mail className="w-4 h-4 text-blue-500" /> Microsoft 365 non connecté
+          <Mail className="w-4 h-4 text-blue-500" /> {t("stats.ms365NotConnected")}
         </div>
-        <p className="text-xs text-slate-500 mb-3">Connectez votre compte pour voir emails et réunions.</p>
+        <p className="text-xs text-slate-500 mb-3">{t("stats.ms365NotConnectedDesc")}</p>
         <button onClick={() => nav("/mplanipret/ms365-diagnostics")} className="px-3 py-2 rounded-lg text-xs font-semibold text-white" style={{ background: "#0078D4" }}>
-          Connecter Microsoft
+          {t("stats.ms365Connect")}
         </button>
       </div>
     );
   }
 
-  const t = data.totals!;
+  const tot = data.totals!;
   const daily = data.daily ?? [];
+  const locale = lang === "en" ? "en-CA" : "fr-CA";
 
   return (
     <div className="mb-4">
       <div className="flex items-center gap-1.5 mb-2 text-xs font-bold uppercase tracking-wider text-slate-500">
-        <Mail className="w-3.5 h-3.5 text-blue-500" /> Microsoft 365 · {data.days}j
+        <Mail className="w-3.5 h-3.5 text-blue-500" /> {t("stats.ms365Title")} · {data.days}{lang === "fr" ? "j" : "d"}
       </div>
 
       <div className="grid grid-cols-2 gap-2 mb-3">
-        <Kpi label="Emails reçus" value={t.emails_received} icon={<Inbox className="w-4 h-4 text-blue-500" />} sub={`${t.emails_unread} non lus`} />
-        <Kpi label="Emails envoyés" value={t.emails_sent} icon={<Send className="w-4 h-4 text-emerald-500" />} />
-        <Kpi label="Réunions" value={t.meetings} icon={<Calendar className="w-4 h-4 text-purple-500" />} sub={`${Math.round(t.meeting_minutes / 60)}h totales`} />
-        <Kpi label="Moy./jour" value={(t.emails_received / Math.max(1, data.days!)).toFixed(1)} icon={<Mail className="w-4 h-4 text-orange-500" />} sub="emails reçus" />
+        <Kpi label={t("stats.ms365EmailsReceived")} value={tot.emails_received} icon={<Inbox className="w-4 h-4 text-blue-500" />} sub={`${tot.emails_unread} ${t("stats.ms365Unread")}`} />
+        <Kpi label={t("stats.ms365EmailsSent")} value={tot.emails_sent} icon={<Send className="w-4 h-4 text-emerald-500" />} />
+        <Kpi label={t("stats.ms365Meetings")} value={tot.meetings} icon={<Calendar className="w-4 h-4 text-purple-500" />} sub={`${Math.round(tot.meeting_minutes / 60)}${t("stats.ms365HoursTotal")}`} />
+        <Kpi label={t("stats.ms365AvgPerDay")} value={(tot.emails_received / Math.max(1, data.days!)).toFixed(1)} icon={<Mail className="w-4 h-4 text-orange-500" />} sub={t("stats.ms365EmailsReceived").toLowerCase()} />
       </div>
 
       <div className="bg-white rounded-2xl p-3 mb-3 shadow-sm">
-        <div className="text-xs font-semibold text-slate-500 mb-2">Emails par jour</div>
+        <div className="text-xs font-semibold text-slate-500 mb-2">{t("stats.ms365EmailsPerDay")}</div>
         <div style={{ width: "100%", height: 180 }}>
           <ResponsiveContainer>
             <BarChart data={daily}>
@@ -89,9 +92,9 @@ export default function Ms365StatsCard({ days }: { days: number }) {
               <YAxis tick={{ fontSize: 10 }} />
               <Tooltip />
               <Legend wrapperStyle={{ fontSize: 10 }} />
-              <Bar dataKey="emails_received" name="Reçus" fill="#3B82F6" />
-              <Bar dataKey="emails_sent" name="Envoyés" fill="#10B981" />
-              <Bar dataKey="meetings" name="Réunions" fill="#8B5CF6" />
+              <Bar dataKey="emails_received" name={t("stats.ms365Received")} fill="#3B82F6" />
+              <Bar dataKey="emails_sent" name={t("stats.ms365Sent")} fill="#10B981" />
+              <Bar dataKey="meetings" name={t("stats.ms365Meetings")} fill="#8B5CF6" />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -100,18 +103,18 @@ export default function Ms365StatsCard({ days }: { days: number }) {
       {(data.upcomingMeetings?.length ?? 0) > 0 && (
         <div className="bg-white rounded-2xl p-3 mb-3 shadow-sm">
           <div className="text-xs font-semibold text-slate-500 mb-2 flex items-center gap-1.5">
-            <Calendar className="w-3.5 h-3.5" /> Prochaines réunions
+            <Calendar className="w-3.5 h-3.5" /> {t("stats.ms365UpcomingMeetings")}
           </div>
           <ul className="space-y-2">
             {data.upcomingMeetings!.slice(0, 5).map((m, i) => (
               <li key={i} className="flex items-start gap-2 text-xs">
                 <div className="flex-1 min-w-0">
                   <div className="font-semibold text-slate-800 truncate">{m.subject}</div>
-                  <div className="text-slate-500">{new Date(m.start).toLocaleString("fr-CA", { weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })} · {m.attendees} participant(s)</div>
+                  <div className="text-slate-500">{new Date(m.start).toLocaleString(locale, { weekday: "short", day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" })} · {m.attendees} {t("stats.ms365Attendees")}</div>
                 </div>
                 {m.is_online && m.join_url && (
                   <a href={m.join_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 px-2 py-1 rounded text-[10px] font-semibold" style={{ background: "#EEF2FF", color: "#4F46E5" }}>
-                    <Video className="w-3 h-3" /> Rejoindre <ExternalLink className="w-2.5 h-2.5" />
+                    <Video className="w-3 h-3" /> {t("stats.ms365Join")} <ExternalLink className="w-2.5 h-2.5" />
                   </a>
                 )}
               </li>
@@ -122,7 +125,7 @@ export default function Ms365StatsCard({ days }: { days: number }) {
 
       {(data.topSenders?.length ?? 0) > 0 && (
         <div className="bg-white rounded-2xl p-3 mb-3 shadow-sm">
-          <div className="text-xs font-semibold text-slate-500 mb-2">Top expéditeurs</div>
+          <div className="text-xs font-semibold text-slate-500 mb-2">{t("stats.ms365TopSenders")}</div>
           <ul className="space-y-1">
             {data.topSenders!.map((s, i) => (
               <li key={i} className="flex justify-between text-xs">
@@ -137,7 +140,8 @@ export default function Ms365StatsCard({ days }: { days: number }) {
       {(data.insights?.length ?? 0) > 0 && (
         <div className="rounded-2xl p-3 mb-3 shadow-sm" style={{ background: "linear-gradient(135deg,#F5F3FF,#EEF2FF)", border: "1px solid #E0E7FF" }}>
           <div className="text-xs font-semibold mb-2 flex items-center gap-1.5" style={{ color: "#6D28D9" }}>
-            <Sparkles className="w-3.5 h-3.5" /> Insights AVA
+            <Sparkles className="w-3.5 h-3.5" /> {t("stats.ms365Insights")}
+
           </div>
           <ul className="space-y-1.5">
             {data.insights!.map((s, i) => (

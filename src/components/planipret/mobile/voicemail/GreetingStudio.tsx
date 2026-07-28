@@ -81,6 +81,21 @@ export default function GreetingStudio({ profile, onProfileChange }: { profile: 
     });
   }, []);
 
+  // Auto-select template matching app language if no custom text exists yet.
+  // When the user switches language (FR ↔ EN), the template is updated automatically
+  // only if the current text is still a template body (not custom-edited).
+  useEffect(() => {
+    const defaultKey = lang === "en" ? "pro_en" : "pro_fr";
+    const tpl = TEMPLATES.find((x) => x.key === defaultKey);
+    if (!tpl) return;
+    // Only auto-fill when: (a) text is empty, or (b) the current text matches any template body
+    const isTemplateText = TEMPLATES.some((x) => x.body(fullName) === text || x.body(profile.full_name ?? "") === text);
+    if (!text || text.trim().length === 0 || isTemplateText) {
+      setText(tpl.body(fullName));
+      setActiveTemplate(defaultKey);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lang]);
   // Sign current greeting URL if it's a storage path
   useEffect(() => {
     const path = profile.voicemail_greeting_audio_url;
@@ -218,7 +233,7 @@ export default function GreetingStudio({ profile, onProfileChange }: { profile: 
             ["professional", "Pro"],
             ["natural", t("greeting.natural")],
             ["custom", t("greeting.custom")],
-            ["all", "Tous"],
+            ["all", lang === "en" ? "All" : "Tous"],
           ] as const).map(([k, label]) => (
             <button key={k} onClick={() => setCategoryFilter(k as any)}
               className="text-[10px] px-2.5 py-1 rounded-full font-semibold transition"
@@ -230,9 +245,9 @@ export default function GreetingStudio({ profile, onProfileChange }: { profile: 
           ))}
           <span className="mx-1" style={{ color: TOKENS.border }}>·</span>
           {([
-            ["all", "Tous"],
-            ["F", "👩 Femme"],
-            ["M", "👨 Homme"],
+            ["all", lang === "en" ? "All" : "Tous"],
+            ["F", lang === "en" ? "👩 Female" : "👩 Femme"],
+            ["M", lang === "en" ? "👨 Male" : "👨 Homme"],
           ] as const).map(([k, label]) => (
             <button key={k} onClick={() => setGenderFilter(k as any)}
               className="text-[10px] px-2.5 py-1 rounded-full font-semibold transition"
@@ -253,7 +268,7 @@ export default function GreetingStudio({ profile, onProfileChange }: { profile: 
         {voices && (
           filteredVoices.length === 0 ? (
             <div className="text-[12px] p-3 rounded-xl text-center" style={{ background: TOKENS.card, color: TOKENS.muted, border: `1px solid ${TOKENS.border}` }}>
-              Aucune voix ne correspond à ces filtres.
+              {lang === "en" ? "No voices match these filters." : "Aucune voix ne correspond à ces filtres."}
             </div>
           ) : (
             // iOS fix: NO overflow-y-auto here — flat grid, no nested scroll.
