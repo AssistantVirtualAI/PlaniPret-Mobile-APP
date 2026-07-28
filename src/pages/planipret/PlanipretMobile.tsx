@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { supabase } from "@/integrations/supabase/client";
 import { Home, Phone, MessageSquare, Users, Bot, Phone as PhoneIcon, X, Delete, Plus, Lock, PhoneOff, Search as SearchIcon, MessageCircle, Loader2 } from "lucide-react";
 import { toast } from "sonner";
+import { runAvaE2ECheckThrottled, recoverConnection } from "@/lib/planipret/connectionRecovery";
 import { usePullToRefresh, PullIndicator } from "@/hooks/usePullToRefresh";
 import { useRealtimeManager } from "@/hooks/useRealtimeManager";
 import InboundCallOverlay, { type InboundCall } from "@/components/InboundCallOverlay";
@@ -532,6 +533,35 @@ export default function PlanipretMobile() {
     document.addEventListener("visibilitychange", onVis);
     const iv = setInterval(ping, 20 * 60 * 1000);
     return () => { document.removeEventListener("visibilitychange", onVis); clearInterval(iv); };
+  }, [profile?.user_id]);
+
+  // Startup end-to-end check of AVA tool routing + silent recovery of a broken
+  // Maestro link (backoff, then a toast asking for a full re-auth).
+  useEffect(() => {
+    if (!profile?.user_id) return;
+    let cancelled = false;
+    (async () => {
+      const res = await runAvaE2ECheckThrottled();
+      if (cancelled || !res || res.healthy) return;
+      if (res.missing.includes("maestro")) {
+        const rec = await recoverConnection("maestro");
+        if (!cancelled && !rec.ok && rec.needsReauth) {
+          toast.error("Maestro déconnecté", {
+            description: "Reconnectez votre compte pour reprendre la synchronisation.",
+            action: { label: "Connexions", onClick: () => navigate("/mplanipret/connections") },
+          });
+          return;
+        }
+        if (rec.ok) return;
+      }
+      if (!cancelled) {
+        toast.warning(`AVA: ${res.missing.length} liaison(s) manquante(s)`, {
+          description: "Ouvrir le diagnostic des connexions.",
+          action: { label: "Voir", onClick: () => navigate("/mplanipret/connections") },
+        });
+      }
+    })();
+    return () => { cancelled = true; };
   }, [profile?.user_id]);
 
   const isDismissed = (id?: string | null) => {

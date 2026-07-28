@@ -281,6 +281,12 @@ export default function MMore() {
       </Section>
 
       <Section title={t("more.sections.integrations")}>
+        <Row icon={<Info className="w-4 h-4" style={{ color: "#5EC2FF" }} />} label="Connexions & diagnostic AVA"
+          sub="Microsoft 365 · Maestro · ElevenLabs"
+          onClick={() => navigate("/mplanipret/connections")} chevron />
+        <Row icon={<Info className="w-4 h-4" style={{ color: "#F5A623" }} />} label="Historique Maestro Sync"
+          sub="Appels, enregistrements, résumés IA, SMS"
+          onClick={() => navigate("/mplanipret/maestro-sync")} chevron />
         <div className="px-3 pb-2 flex items-center justify-between gap-2">
           <Ms365StatusBadge />
           <div className="flex items-center gap-3">
