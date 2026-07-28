@@ -15,7 +15,7 @@ export function useAvaNavigation(userId: string | undefined | null) {
   useEffect(() => {
     if (!userId) return;
     const ch = supabase
-      .channel(`ava-nav:${userId}`)
+      .channel(`ava-nav:${userId}:${Math.random().toString(36).slice(2, 8)}`)
       .on("broadcast", { event: "navigate" }, (msg) => {
         const payload = (msg as any)?.payload ?? {};
         const route: string | undefined = payload.route;

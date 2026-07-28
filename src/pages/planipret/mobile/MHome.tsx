@@ -18,6 +18,7 @@ import { useMaestroPipelineToasts } from "@/hooks/useMaestroPipelineToasts";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { loadMHomeCache, saveMHomeCache, type SourceStatusMap } from "@/lib/mhomeCache";
 import PerformanceReportCard from "@/components/planipret/mobile/PerformanceReportCard";
+import { ms365Connected } from "@/lib/planipret/ms365Connected";
 
 
 type Period = "day" | "week" | "month" | "shift";
@@ -193,7 +194,7 @@ export default function MHome() {
     // (previously it awaited after Promise.all, adding ~1-3s to Home render).
     let msPromise: Promise<any[]> = Promise.resolve([]);
     setMsCalendarError(null);
-    if (profile?.ms365_access_token) {
+    if (ms365Connected(profile)) {
       setMsCalendarLoading(true);
       const calStart = new Date(); calStart.setDate(1); calStart.setHours(0,0,0,0);
       const calEnd = new Date(calStart); calEnd.setMonth(calEnd.getMonth() + 2);
@@ -256,7 +257,7 @@ export default function MHome() {
       sb_tasks:       mark(true),
       sb_outbound:    mark(true),
       sb_appointments:mark(true),
-      ms365_calendar: profile?.ms365_access_token
+      ms365_calendar: ms365Connected(profile)
         ? { status: msCalendarError ? "error" : (microsoftEvents.length ? "ok" : "empty"), lastAt: now, message: msCalendarError }
         : { status: "unknown", lastAt: null, message: "MS365 non connecté" },
     };
@@ -606,7 +607,7 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
         </div>
       </div>
 
-      {!profile?.ms365_access_token ? (
+      {!ms365Connected(profile) ? (
         <p className="text-xs text-center py-4" style={{ color: "var(--pp-text-muted)" }}>
           Connectez Microsoft 365 dans « Plus » pour afficher votre calendrier ici.
         </p>

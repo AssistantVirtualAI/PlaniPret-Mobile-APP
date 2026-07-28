@@ -7,7 +7,7 @@ export function useMaestroPipelineToasts(userId: string | undefined | null) {
   useEffect(() => {
     if (!userId) return;
     const ch = supabase
-      .channel(`ai-insights:${userId}`)
+      .channel(`ai-insights:${userId}:${Math.random().toString(36).slice(2, 8)}`)
       .on("broadcast", { event: "pipeline_step" }, ({ payload }: any) => {
         if (payload?.label) toast.success(payload.label, { duration: 3500 });
       })

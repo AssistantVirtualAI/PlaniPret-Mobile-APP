@@ -3,6 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { Link2, CheckCircle2, AlertCircle, Phone, Mail } from "lucide-react";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import { ms365Connected } from "@/lib/planipret/ms365Connected";
 
 type Profile = {
   full_name?: string | null;
@@ -26,7 +27,7 @@ export default function IdentityCard({ profile, onLinked }: { profile: Profile |
 
   if (!profile) return null;
 
-  const msConnected = !!profile.ms365_access_token;
+  const msConnected = ms365Connected(profile);
   const nsLinked = !!profile.ns_linked && !!(profile.ns_extension || profile.extension);
   const ext = profile.ns_extension || profile.extension;
   const displayName = profile.ns_display_name || profile.extension_name || profile.display_name || profile.full_name || profile.ms365_display_name || profile.ms365_email || "—";

@@ -70,7 +70,7 @@ export default function MAvaNotifications() {
       userId = u.user?.id ?? null;
       if (!userId) return;
       channel = supabase
-        .channel(`ava-notif-${userId}`)
+        .channel(`ava-notif-${userId}-${Math.random().toString(36).slice(2, 8)}`)
         .on("postgres_changes", { event: "INSERT", schema: "public", table: "planipret_ava_notifications", filter: `user_id=eq.${userId}` }, (payload: any) => {
           setItems((prev) => [payload.new as Notif, ...prev].slice(0, 200));
         })

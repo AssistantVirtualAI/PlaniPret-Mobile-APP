@@ -20,14 +20,9 @@ import MobileScreenSkeleton from "@/components/planipret/mobile/MobileScreenSkel
 import { prefetchRoute, scheduleIdlePrefetch, CORE_MOBILE_TAB_PATHS, prefetchAllMobileTabs, cancelPendingPrefetches } from "@/lib/routePrefetch";
 import { useQueryClient } from "@tanstack/react-query";
 import AvaChatSheet from "@/components/planipret/mobile/AvaChatSheet";
-// Logos embarqués localement dans le bundle mobile (évite le carré blanc si le réseau tarde)
-import avaLogoLocal from "@/assets/ava-statistics-logo.png";
-import planipretLogoLocal from "@/assets/planipret-logo.png";
 import avaLogoAsset from "@/assets/ava-statistics-logo.png.asset.json";
 import planipretLogoAsset from "@/assets/planipret-logo.png.asset.json";
-// Résolution : logo local en priorité, CDN en fallback
-const avaLogoSrc: string = avaLogoLocal || avaLogoAsset.url;
-const planipretLogoSrc: string = planipretLogoLocal || planipretLogoAsset.url;
+import planipretLogoSrc from "@/assets/planipret-logo.png";
 import MobileAuthScreen from "@/components/planipret/mobile/MobileAuthScreen";
 import MobileHeaderControls from "@/components/planipret/mobile/MobileHeaderControls";
 import PpActiveCallScreen from "@/components/planipret/PpActiveCallScreen";
@@ -45,6 +40,7 @@ import { tokenize, matchAllTokens } from "@/lib/textNormalize";
 import { prefetchPpContacts } from "@/lib/ppContactsCache";
 import { prefetchTeams365Data } from "@/lib/teams365Cache";
 import { PLANIPRET_PROFILE_SAFE_COLUMNS, PLANIPRET_PROFILE_BOOT_COLUMNS } from "@/lib/planipret/profileColumns";
+import { ms365Connected } from "@/lib/planipret/ms365Connected";
 
 
 const ACCENT = "#2E9BDC";
@@ -134,7 +130,7 @@ const AvaBadge = ({ compact = false, circle = false }: { compact?: boolean; circ
         boxShadow: compact ? undefined : "0 0 12px rgba(124,58,237,0.35)",
       }}
     >
-      <img src={avaLogoSrc} alt="AVA" decoding="async" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={(e) => { (e.target as HTMLImageElement).src = avaLogoAsset.url; }} />
+      <img src={avaLogoAsset.url} alt="AVA" decoding="async" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
     </div>
   );
 };
@@ -819,7 +815,7 @@ export default function PlanipretMobile() {
     };
     refreshActive();
     const ch = supabase
-      .channel("mplanipret-active-call")
+      .channel(`mplanipret-active-call-${Math.random().toString(36).slice(2, 8)}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "planipret_phone_calls" }, refreshActive)
       .subscribe();
     return () => { supabase.removeChannel(ch); };
@@ -858,7 +854,7 @@ export default function PlanipretMobile() {
     };
     refreshCounts();
     const ch = supabase
-      .channel("mplanipret-badges")
+      .channel(`mplanipret-badges-${Math.random().toString(36).slice(2, 8)}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "planipret_phone_messages", filter: `user_id=eq.${profile.user_id}` }, refreshCounts)
       .on("postgres_changes", { event: "*", schema: "public", table: "planipret_voicemails", filter: `user_id=eq.${profile.user_id}` }, refreshCounts)
       .subscribe();
@@ -1060,9 +1056,9 @@ export default function PlanipretMobile() {
     // Warm the directory/personal/shared caches in parallel so Directory,
     // Teams and the dialer render from memory instead of blocking on network.
     prefetchPpContacts(["list", "shared", "directory"]);
-    if (profile?.ms365_access_token) prefetchTeams365Data();
+    if (ms365Connected(profile)) prefetchTeams365Data();
     window.setTimeout(() => prefetchAllMobileTabs(), 900);
-  }, [profile?.user_id, profile?.ns_extension, profile?.extension, profile?.ms365_access_token]);
+  }, [profile?.user_id, profile?.ns_extension, profile?.extension, ms365Connected(profile)]);
 
 
   if (loading) return <div className="min-h-screen flex items-center justify-center" style={{ background: "#0A1425", color: "#2E9BDC", fontFamily: "Urbanist,sans-serif" }}>{t("common.loading")}</div>;
@@ -1233,7 +1229,7 @@ export default function PlanipretMobile() {
               <div className="absolute inset-0 rounded-full" style={{ background: "radial-gradient(circle, rgba(124,58,237,0.45) 0%, rgba(46,155,220,0.18) 50%, transparent 75%)", filter: "blur(4px)", animation: "ava-footer-pulse 3s ease-in-out infinite" }} />
               <div className="absolute inset-0 rounded-full flex items-center justify-center overflow-hidden" style={{ background: "conic-gradient(from 0deg, #7C3AED, #2E9BDC, #00D4AA, #7C3AED)", padding: 1.5, animation: "ava-footer-spin 6s linear infinite" }}>
                 <div className="w-full h-full rounded-full overflow-hidden flex items-center justify-center">
-                  <img src={avaLogoSrc} alt="AVA" style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={(e) => { (e.target as HTMLImageElement).src = avaLogoAsset.url; }} />
+                  <img src={avaLogoAsset.url} alt="AVA" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
                 </div>
               </div>
             </div>

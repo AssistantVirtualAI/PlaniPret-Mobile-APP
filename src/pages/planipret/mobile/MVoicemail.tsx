@@ -117,7 +117,7 @@ export default function MVoicemail() {
   useEffect(() => {
     if (!profile?.user_id) return;
     const ch = supabase
-      .channel("mplanipret-vm")
+      .channel(`mplanipret-vm-${Math.random().toString(36).slice(2, 8)}`)
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "planipret_voicemails", filter: `user_id=eq.${profile.user_id}` }, (payload) => {
         const v = payload.new as VM;
         setItems((p) => [v, ...p]);

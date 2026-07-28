@@ -63,7 +63,7 @@ export function useCallAnalysis(callId: string | null) {
     }
 
     const dbSub = supabase
-      .channel(`call-row-${callId}`)
+      .channel(`call-row-${callId}-${Math.random().toString(36).slice(2, 8)}`)
       .on(
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "planipret_phone_calls", filter: `id=eq.${callId}` },
@@ -83,7 +83,7 @@ export function useCallAnalysis(callId: string | null) {
       .subscribe();
 
     const broadcastSub = supabase
-      .channel("call-analysis")
+      .channel(`call-analysis-${Math.random().toString(36).slice(2, 8)}`)
       .on("broadcast", { event: "analysis_started" }, ({ payload }: any) => {
         if (payload?.call_id === callId) {
           setAnalyzing(true); setLocked(true); setLockedBy(payload.locked_by);

@@ -1,4 +1,5 @@
 import { CheckCircle2, AlertTriangle, RefreshCw } from "lucide-react";
+import { ms365Connected } from "@/lib/planipret/ms365Connected";
 
 type Profile = { ms365_access_token?: string | null; ms365_scopes?: string | null } & Record<string, any>;
 
@@ -21,7 +22,7 @@ const REQUIRED: { scope: string; label: string; purpose: string }[] = [
 ];
 
 export function Ms365ScopesCard({ profile, onReconnect }: { profile: Profile | null; onReconnect: () => void }) {
-  const connected = !!profile?.ms365_access_token;
+  const connected = ms365Connected(profile);
   const granted = (profile?.ms365_scopes ?? "").toLowerCase().split(/\s+/).filter(Boolean);
   const has = (s: string) => granted.includes(s.toLowerCase());
   const missing = REQUIRED.filter((r) => !has(r.scope));

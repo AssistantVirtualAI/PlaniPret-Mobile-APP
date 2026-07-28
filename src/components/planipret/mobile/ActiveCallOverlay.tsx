@@ -53,7 +53,7 @@ export default function ActiveCallOverlay({ callId, onClosed }: { callId: string
       if (!cancelled) setCall(data as Call | null);
     })();
     const ch = supabase
-      .channel(`mplanipret-call-${callId}`)
+      .channel(`mplanipret-call-${callId}-${Math.random().toString(36).slice(2, 8)}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "planipret_phone_calls", filter: `id=eq.${callId}` }, (payload) => {
         const row = (payload.new ?? payload.old) as Call;
         setCall(row);

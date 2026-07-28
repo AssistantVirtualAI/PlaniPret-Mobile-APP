@@ -353,7 +353,7 @@ export default function RecordingsList({
   useEffect(() => {
     if (!userId) return;
     const ch = supabase
-      .channel(`ai-insights:${userId}`)
+      .channel(`ai-insights:${userId}:${Math.random().toString(36).slice(2, 8)}`)
       .on("broadcast", { event: "analysis_ready" }, ({ payload }) => {
         const score = payload?.lead_score;
         const temp = payload?.lead_temperature;
@@ -475,7 +475,7 @@ function RecordingCard({
   // sur la MÊME ligne que la carte, comme le portail admin (`pa-call-${id}`).
   useEffect(() => {
     const ch = supabase
-      .channel(`pp-mobile-call-${call.id}`)
+      .channel(`pp-mobile-call-${call.id}-${Math.random().toString(36).slice(2, 8)}`)
       .on(
         "postgres_changes",
         { event: "UPDATE", schema: "public", table: "planipret_phone_calls", filter: `id=eq.${call.id}` },

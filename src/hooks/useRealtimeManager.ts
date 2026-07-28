@@ -20,7 +20,7 @@ export function useRealtimeManager(userId: string | undefined, handlers: Handler
   useEffect(() => {
     if (!userId) return;
     const ch = supabase
-      .channel(`pp-rt:${userId}`)
+      .channel(`pp-rt:${userId}:${Math.random().toString(36).slice(2, 8)}`)
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "planipret_phone_calls", filter: `user_id=eq.${userId}` },

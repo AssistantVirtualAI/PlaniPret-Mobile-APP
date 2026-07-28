@@ -21,6 +21,7 @@ import { connectMs365 } from "@/lib/ms365Connect";
 import { getPpContacts } from "@/lib/ppContactsCache";
 import * as maestroTelecom from "@/lib/planipret/maestroTelecom";
 import { fetchTeams365, loadTeamsCache, prefetchTeams365Data, saveTeamsCachePatch, isTeamsCacheFresh, isTeamsCacheExpired, revalidateTeams365IfStale, TEAMS_TTL_MS } from "@/lib/teams365Cache";
+import { ms365Connected } from "@/lib/planipret/ms365Connected";
 
 
 type SubTab = "sms" | "team" | "teams365" | "emails" | "roster";
@@ -1099,7 +1100,7 @@ function EmailsList({ profile }: { profile: any }) {
   }, [searchParams]);
 
   const load = async () => {
-    if (!profile?.ms365_access_token) { setState("no_m365"); return; }
+    if (!ms365Connected(profile)) { setState("no_m365"); return; }
     setState((s) => (s === "ready" ? s : "loading"));
     const { data, error } = await supabase.functions.invoke("ms365-actions", {
       body: { action: "read_emails", payload: { top: 25, folder: "inbox" } },
@@ -1115,7 +1116,7 @@ function EmailsList({ profile }: { profile: any }) {
 
   useEffect(() => {
     load(); /* eslint-disable-next-line */
-    if (!profile?.ms365_access_token) return;
+    if (!ms365Connected(profile)) return;
     // Poll every 60s but skip if a sheet (compose or detail) is currently open
     const id = window.setInterval(() => {
       if (!composeOpen && !active) load();
@@ -1126,7 +1127,7 @@ function EmailsList({ profile }: { profile: any }) {
     };
     document.addEventListener("visibilitychange", onVis);
     return () => { window.clearInterval(id); document.removeEventListener("visibilitychange", onVis); };
-  }, [profile?.ms365_access_token]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [profile?.ms365_email, profile?.ms365_token_expiry]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="relative flex flex-col" style={{ height: "calc(100dvh - 242px)", minHeight: 400 }}>
@@ -2060,7 +2061,7 @@ function TeamRoster({ profile, openDialer, onSwitchTab }: { profile: any; openDi
                   <ActionPill
                     Icon={Mail}
                     label="Email"
-                    disabled={!m.email || !profile?.ms365_access_token}
+                    disabled={!m.email || !ms365Connected(profile)}
                     onClick={() => { setComposeInit({ to: m.email ?? "" }); setComposeOpen(true); }}
                   />
                   <ActionPill Icon={Users} label="@Mention" onClick={() => sendMention(m)} />
@@ -2148,7 +2149,7 @@ function Teams365Panel({ profile }: { profile: any }) {
     | null
   >(null);
 
-  const connected = !!profile?.ms365_access_token;
+  const connected = ms365Connected(profile);
 
   const applyPayload = (payload: any) => {
     if (Array.isArray(payload.chats)) {
