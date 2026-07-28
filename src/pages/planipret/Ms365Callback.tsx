@@ -5,10 +5,15 @@ import { AlertCircle, CheckCircle2, Loader2 } from "lucide-react";
 import { clearRememberedMs365RedirectUri, getRememberedMs365CodeVerifier, getRememberedMs365RedirectUri } from "@/lib/ms365OAuth";
 import { clearMs365Pending } from "@/lib/ms365Pending";
 import { clearMicrosoftSignInIntentAsync, getMicrosoftSignInIntentAsync, getMicrosoftSignInNextAsync } from "@/lib/ms365AuthLogin";
+import { markOAuthCallbackCompleted } from "@/lib/deepLinkDebug";
 
 async function getSessionWithRetry() {
   for (let i = 0; i < 8; i += 1) {
-    const { data: { session } } = await supabase.auth.getSession();
+    const sessionResult = await Promise.race([
+      supabase.auth.getSession(),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 900)),
+    ]);
+    const session = sessionResult && "data" in sessionResult ? sessionResult.data.session : null;
     if (session) return session;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
@@ -41,6 +46,13 @@ export default function Ms365Callback() {
   const [status, setStatus] = useState<"loading" | "ok" | "error">("loading");
   const [error, setError] = useState<string | null>(null);
   const ranRef = useRef(false);
+  const lastCodeRef = useRef<string | null>(null);
+  // Reset ranRef when a new OAuth code arrives so the exchange always runs
+  const currentCode = params.get("code");
+  if (currentCode && currentCode !== lastCodeRef.current) {
+    ranRef.current = false;
+    lastCodeRef.current = currentCode;
+  }
 
   async function invokeAndParse(fn: string, body: unknown): Promise<{ data: any; errMsg: string | null }> {
     const { data, error: e } = await withTimeout(
@@ -85,8 +97,9 @@ export default function Ms365Callback() {
       const state = params.get("state");
       const code_verifier = await getRememberedMs365CodeVerifier(state);
       if (!code_verifier) {
-        // Verifier already consumed (successful previous exchange) or app resumed on stale URL.
-        navigate("/mplanipret/home", { replace: true });
+        // Verifier not found — show a clear error so the user can retry instead of silently failing
+        setStatus("error");
+        setError("Session expirée — veuillez réessayer la connexion Microsoft depuis Paramètres");
         return;
       }
       const isMicrosoftLogin = (await getMicrosoftSignInIntentAsync()) === "login" || Boolean(state?.startsWith("login:"));
@@ -99,7 +112,11 @@ export default function Ms365Callback() {
         }
         const verify = await supabase.auth.verifyOtp({ type: "magiclink", token_hash: (data as any).token_hash });
         if (verify.error) { setStatus("error"); setError(verify.error.message); return; }
+        const hydratedSession = verify.data?.session ?? await getSessionWithRetry();
+        if (!hydratedSession?.access_token) { setStatus("error"); setError("Session Microsoft non finalisée — reconnectez-vous"); return; }
         clearRememberedMs365RedirectUri();
+        markOAuthCallbackCompleted("ms365", window.location.search);
+        try { localStorage.removeItem("pp_ms365_callback_url"); } catch {}
         const next = await getMicrosoftSignInNextAsync("/mplanipret/home");
         await clearMicrosoftSignInIntentAsync();
         try { void import("@/lib/native/requestPermissionsAfterLogin").then(m => m.requestPermissionsAfterLogin()); } catch {}
@@ -109,13 +126,22 @@ export default function Ms365Callback() {
       }
       const session = await getSessionWithRetry();
       if (!session) { setStatus("error"); setError("Session expirée — reconnectez-vous"); return; }
-      const { data, errMsg } = await invokeAndParse("ms365-oauth-exchange", { code, redirect_uri, code_verifier });
+      const { data, error: exchangeError } = await withTimeout(
+        supabase.functions.invoke("ms365-oauth-exchange", {
+          body: { code, redirect_uri, code_verifier },
+          headers: { Authorization: `Bearer ${session.access_token}` },
+        }),
+        25000,
+        "ms365-oauth-exchange",
+      );
+      const errMsg = exchangeError?.message ?? null;
       if (errMsg || !(data as any)?.success) {
         console.error("ms365 exchange failed", { data, errMsg });
         setStatus("error"); setError(errMsg ?? (data as any)?.error ?? "Échec OAuth");
         return;
       }
       clearRememberedMs365RedirectUri();
+      markOAuthCallbackCompleted("ms365", window.location.search);
       try { localStorage.removeItem("pp_ms365_callback_url"); } catch {}
       // Active automatiquement l'abonnement AVA aux nouveaux courriels (non-bloquant)
       supabase.functions.invoke("ms365-mail-webhook-setup", { body: {} }).then(({ error }) => {

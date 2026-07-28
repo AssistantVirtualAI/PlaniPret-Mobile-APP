@@ -1,22 +1,28 @@
 import { useEffect, useState } from "react";
-import { Bell, Settings as SettingsIcon, Sun, Moon } from "lucide-react";
+import { Bell, Settings as SettingsIcon } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { useMplanipretTheme } from "@/hooks/useMplanipretTheme";
 import { supabase } from "@/integrations/supabase/client";
+import MobileProfileSheet from "./MobileProfileSheet";
 
-export default function MobileHeaderControls({ profile, reloadProfile: _reloadProfile }: { profile: any; reloadProfile: () => Promise<void> | void }) {
-  const { lang, setLang } = useMplanipretLang();
-  const { theme, toggle: toggleTheme } = useMplanipretTheme();
+const STATUS_COLOR: Record<string, string> = {
+  available: "#10B981",
+  busy: "#EF4444",
+  break: "#F59E0B",
+  offline: "#94A3B8",
+};
+
+export default function MobileHeaderControls({ profile, reloadProfile }: { profile: any; reloadProfile: () => Promise<void> | void }) {
+  const { theme } = useMplanipretTheme();
   const navigate = useNavigate();
+  const [open, setOpen] = useState(false);
   const [unread, setUnread] = useState(0);
-  const dark = theme === "dark";
 
   // Mirror the active theme on <html> so Tailwind `dark:` utilities react too.
   useEffect(() => {
-    if (dark) document.documentElement.classList.add("dark");
+    if (theme === "dark") document.documentElement.classList.add("dark");
     else document.documentElement.classList.remove("dark");
-  }, [dark]);
+  }, [theme]);
 
   useEffect(() => {
     let cancelled = false;
@@ -37,59 +43,73 @@ export default function MobileHeaderControls({ profile, reloadProfile: _reloadPr
     return () => { cancelled = true; clearInterval(timer); };
   }, []);
 
-  const toggleLang = async () => {
-    const next = lang === "fr" ? "en" : "fr";
-    setLang(next);
-    if (profile?.user_id) {
-      try {
-        await supabase.from("planipret_profiles").update({ language: next }).eq("user_id", profile.user_id);
-      } catch { /* noop */ }
-    }
-  };
+  const initials = (profile?.full_name || profile?.email || "?")
+    .split(/\s+/).map((s: string) => s[0]).filter(Boolean).slice(0, 2).join("").toUpperCase();
+  const status = profile?.status ?? "available";
 
-  const pill: React.CSSProperties = {
-    width: 34, height: 34, background: "var(--pp-bg-elevated)",
-    border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)",
+  const btn: React.CSSProperties = {
+    width: 34, height: 34,
+    background: "var(--pp-bg-elevated)",
+    border: "1px solid var(--pp-bg-border-2)",
+    color: "var(--pp-text-secondary)",
+    borderRadius: "50%",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
   };
 
   return (
-    <div className="ml-auto flex items-center gap-2">
-      <button
-        onClick={toggleLang}
-        className="flex items-center justify-center rounded-full text-[11px] font-bold"
-        style={pill}
-        aria-label="Language"
-      >
-        {lang === "fr" ? "FR" : "EN"}
-      </button>
-      <button
-        onClick={toggleTheme}
-        className="flex items-center justify-center rounded-full"
-        style={pill}
-        aria-label="Theme"
-      >
-        {dark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-      </button>
-      <button onClick={() => navigate("/mplanipret/notifications")}
-        className="relative flex items-center justify-center rounded-full"
-        style={pill}
-        aria-label="Notifications">
-        <Bell className="w-4 h-4" />
-        {unread > 0 && (
-          <span style={{
-            position: "absolute", top: -3, right: -3, minWidth: 16, height: 16, padding: "0 4px",
-            borderRadius: 999, background: "#EF4444", color: "#fff", fontSize: 10, fontWeight: 800,
-            display: "inline-flex", alignItems: "center", justifyContent: "center",
-            border: "1.5px solid var(--pp-bg-surface)",
-          }}>{unread > 99 ? "99+" : unread}</span>
-        )}
-      </button>
-      <button onClick={() => navigate("/mplanipret/more")}
-        className="flex items-center justify-center rounded-full"
-        style={pill}
-        aria-label="Settings">
-        <SettingsIcon className="w-4 h-4" />
-      </button>
-    </div>
+    <>
+      <div className="ml-auto flex items-center gap-2">
+        {/* Settings */}
+        <button
+          onClick={() => navigate("/mplanipret/more")}
+          style={btn}
+          aria-label="Settings"
+        >
+          <SettingsIcon className="w-4 h-4" />
+        </button>
+
+        {/* Bell */}
+        <button
+          onClick={() => navigate("/mplanipret/notifications")}
+          className="relative"
+          style={btn}
+          aria-label="Notifications"
+        >
+          <Bell className="w-4 h-4" />
+          {unread > 0 && (
+            <span style={{
+              position: "absolute", top: -3, right: -3, minWidth: 14, height: 14, padding: "0 3px",
+              borderRadius: 999, background: "#EF4444", color: "#fff", fontSize: 9, fontWeight: 800,
+              display: "inline-flex", alignItems: "center", justifyContent: "center",
+              border: "1.5px solid var(--pp-bg-surface)",
+            }}>{unread > 99 ? "99+" : unread}</span>
+          )}
+        </button>
+
+        {/* Avatar initiales + status dot */}
+        <button
+          onClick={() => setOpen(true)}
+          className="relative flex items-center justify-center rounded-full font-bold text-white"
+          style={{
+            width: 34, height: 34,
+            background: "linear-gradient(135deg, #1A4A8A, #2E9BDC)",
+            border: "1px solid var(--pp-bg-border-2)",
+            fontSize: 12,
+            flexShrink: 0,
+          }}
+          aria-label="Profile"
+        >
+          {initials}
+          <span
+            className="absolute -bottom-0.5 -right-0.5 rounded-full"
+            style={{ width: 9, height: 9, background: STATUS_COLOR[status], border: "1.5px solid var(--pp-bg-surface)" }}
+          />
+        </button>
+      </div>
+      {open && <MobileProfileSheet profile={profile} reloadProfile={reloadProfile} onClose={() => setOpen(false)} />}
+    </>
   );
 }
