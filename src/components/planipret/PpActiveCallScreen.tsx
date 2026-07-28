@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import type { useMplanipretSoftphone } from "@/hooks/useMplanipretSoftphone";
+import { audioRouter } from "@/lib/planipret/audio/audioRouter";
 import PpCallDiagnosticPanel from "./PpCallDiagnosticPanel";
 
 type Contact = {
@@ -54,29 +55,37 @@ export default function PpActiveCallScreen({
   const [elapsed, setElapsed] = useState(0);
   const [view, setView] = useState<"main" | "keypad" | "transfer">("main");
   const [dtmfBuf, setDtmfBuf] = useState("");
+  const [lastDtmf, setLastDtmf] = useState<string | null>(null);
   const [transferQuery, setTransferQuery] = useState("");
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [loadingContacts, setLoadingContacts] = useState(false);
   const [diagOpen, setDiagOpen] = useState(false);
   const [speakerOn, setSpeakerOn] = useState(false);
-  const toggleSpeaker = async () => {
-    const next = !speakerOn;
-    setSpeakerOn(next);
-    try {
-      const { audioRouter } = await import("@/lib/planipret/audio/audioRouter");
-      await audioRouter.setRoute(next ? "speaker" : "earpiece");
-    } catch { /* ignore on web */ }
-  };
 
   useEffect(() => { setAudioEl(audioRef.current); return () => setAudioEl(null); }, [setAudioEl]);
 
   const active = snap.callState === "ringing-out" || snap.callState === "ringing-in"
     || snap.callState === "active" || snap.callState === "held";
 
-  // Reset transient state each new call
+  // Reset transient state only when the call ends. Never reset on transitions
+  // between active sub-states (ringing-out → active, active → held, etc.) so
+  // the DTMF keypad stays visible right after the callee picks up.
   useEffect(() => {
     if (!active) { setView("main"); setDtmfBuf(""); setTransferQuery(""); setElapsed(0); }
   }, [active]);
+
+  // Auto-open the DTMF keypad the moment the call is answered so brokers can
+  // navigate IVRs without an extra tap.
+  const openedKeypadRef = useRef(false);
+  useEffect(() => {
+    if (snap.callState === "active" && !openedKeypadRef.current) {
+      openedKeypadRef.current = true;
+      setView("keypad");
+    }
+    if (!active) openedKeypadRef.current = false;
+  }, [snap.callState, active]);
+
+
 
   // Duration timer for connected calls
   useEffect(() => {
@@ -129,7 +138,16 @@ export default function PpActiveCallScreen({
     }).slice(0, 60);
   }, [contacts, transferQuery]);
 
-  const pressDtmf = useCallback((k: string) => { setDtmfBuf((b) => (b + k).slice(-16)); sendDTMF(k); }, [sendDTMF]);
+  const pressDtmf = useCallback((k: string) => {
+    if (snap.callState !== "active") return;
+    setDtmfBuf((b) => (b + k).slice(-16));
+    setLastDtmf(k);
+    if (typeof navigator !== "undefined" && "vibrate" in navigator) {
+      try { (navigator as any).vibrate?.(15); } catch { /* noop */ }
+    }
+    sendDTMF(k);
+    window.setTimeout(() => setLastDtmf((cur) => (cur === k ? null : cur)), 450);
+  }, [sendDTMF, snap.callState]);
   const doTransfer = useCallback((target: string) => {
     const to = target.trim(); if (!to) return;
     transfer(to);
@@ -205,15 +223,45 @@ export default function PpActiveCallScreen({
         {/* Keypad view */}
         {view === "keypad" && (
           <div className="flex-1 flex flex-col items-center justify-center px-8">
-            <div className="text-lg text-white/80 mb-4 min-h-[24px]">{dtmfBuf || "—"}</div>
+            {isHeld && (
+              <div
+                className="mb-3 text-[11px] px-3 py-1.5 rounded-full"
+                style={{ background: "rgba(245,158,11,0.15)", border: "1px solid rgba(245,158,11,0.4)", color: "#FCD34D" }}
+              >
+                {t("call.dtmfHeld") || "Reprenez l'appel pour envoyer des tonalités"}
+              </div>
+            )}
+            <div
+              className="text-lg mb-1 min-h-[24px] font-mono tracking-widest transition-colors"
+              style={{ color: lastDtmf ? "#2E9BDC" : "rgba(255,255,255,0.8)" }}
+            >
+              {dtmfBuf || "—"}
+            </div>
+            <div className="text-[10px] uppercase tracking-widest mb-3" style={{ color: "rgba(255,255,255,0.4)" }}>
+              {lastDtmf ? `${t("call.dtmfSent") || "Envoyé"} · ${lastDtmf}` : (t("call.dtmfHint") || "Touchez une touche pour envoyer")}
+            </div>
             <div className="grid grid-cols-3 gap-4" style={{ maxWidth: 300 }}>
-              {KEYS.map((k) => (
-                <button key={k} onClick={() => pressDtmf(k)}
-                  className="w-20 h-20 rounded-full text-3xl font-semibold active:scale-95 transition mx-auto"
-                  style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)" }}>
-                  {k}
-                </button>
-              ))}
+              {KEYS.map((k) => {
+                const isFlash = lastDtmf === k;
+                const disabled = snap.callState !== "active";
+                return (
+                  <button
+                    key={k}
+                    onClick={() => pressDtmf(k)}
+                    disabled={disabled}
+                    aria-label={`DTMF ${k}`}
+                    className="w-20 h-20 rounded-full text-3xl font-semibold active:scale-95 transition mx-auto disabled:opacity-40 disabled:cursor-not-allowed"
+                    style={{
+                      background: isFlash ? "rgba(46,155,220,0.35)" : "rgba(255,255,255,0.08)",
+                      border: `1px solid ${isFlash ? "rgba(46,155,220,0.8)" : "rgba(255,255,255,0.15)"}`,
+                      boxShadow: isFlash ? "0 0 24px rgba(46,155,220,0.55)" : undefined,
+                      transform: isFlash ? "scale(0.94)" : undefined,
+                    }}
+                  >
+                    {k}
+                  </button>
+                );
+              })}
             </div>
           </div>
         )}
@@ -291,7 +339,11 @@ export default function PpActiveCallScreen({
               style={{ background: "rgba(3,10,22,0.72)", border: "1px solid rgba(255,255,255,0.10)", boxShadow: "0 18px 48px rgba(0,0,0,0.42)", backdropFilter: "blur(18px)" }}
             >
               <CallBtn active={snap.muted} onClick={() => (snap.muted ? unmute() : mute())} icon={snap.muted ? <MicOff /> : <Mic />} label={snap.muted ? "Activer" : "Muet"} />
-              <CallBtn active={speakerOn} onClick={() => void toggleSpeaker()} icon={speakerOn ? <Volume2 /> : <VolumeX />} label="H.-parleur" />
+              <CallBtn active={speakerOn} onClick={() => {
+                const next = !speakerOn;
+                setSpeakerOn(next);
+                audioRouter.setRoute(next ? "speaker" : "earpiece").catch(() => {});
+              }} icon={speakerOn ? <Volume2 /> : <VolumeX />} label="H.-parleur" />
               <CallBtn active={isHeld} onClick={() => (isHeld ? unhold() : hold())} icon={isHeld ? <Play /> : <Pause />} label={isHeld ? "Reprendre" : "Attente"} />
               <CallBtn onClick={() => setView("transfer")} icon={<PhoneForwarded />} label="Transférer" />
               <CallBtn onClick={() => setView("keypad")} icon={<Grid3X3 />} label="Clavier" />

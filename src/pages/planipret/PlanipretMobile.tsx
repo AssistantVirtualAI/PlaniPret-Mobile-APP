@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useRef, useState, useCallback, lazy, Suspense } f
 import { useNavigate, NavLink, Outlet, useLocation } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { supabase } from "@/integrations/supabase/client";
-import { Home, Phone, MessageSquare, Users, Bot, Phone as PhoneIcon, X, Delete, Plus, Lock, PhoneOff, Settings as SettingsIcon, Search as SearchIcon, MessageCircle, Loader2, Bell } from "lucide-react";
+import { Home, Phone, MessageSquare, Users, Bot, Phone as PhoneIcon, X, Delete, Plus, Lock, PhoneOff, Search as SearchIcon, MessageCircle, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import { usePullToRefresh, PullIndicator } from "@/hooks/usePullToRefresh";
 import { useRealtimeManager } from "@/hooks/useRealtimeManager";
@@ -483,7 +483,6 @@ export default function PlanipretMobile() {
   const [unreadMsg, setUnreadMsg] = useState(0);
   const [unreadVm, setUnreadVm] = useState(0);
   const [unreadNotif, setUnreadNotif] = useState(0);
-  const totalUnread = unreadMsg + unreadVm + unreadNotif;
   const [inbound, setInbound] = useState<InboundCall>(null);
   const [avaOpen, setAvaOpen] = useState(false);
   const [avaMode, setAvaMode] = useState<"voice" | "chat">("voice");
@@ -949,48 +948,7 @@ export default function PlanipretMobile() {
             </span>
           </div>
 
-          {/* Settings button — between AVA (left) and Planiprêt (center) */}
-          <button
-            type="button"
-            onClick={() => navigate("/mplanipret/more")}
-            aria-label="Paramètres"
-            className="ml-3 flex items-center justify-center active:scale-95 transition"
-            style={{
-              width: 32, height: 32, borderRadius: 10,
-              background: "var(--pp-bg-elevated)",
-              border: "1px solid var(--pp-bg-border-2)",
-              color: "var(--pp-text-secondary)",
-            }}
-          >
-            <SettingsIcon className="w-4 h-4" />
-          </button>
-
-          {/* Notifications bell — aggregate SMS + voicemail + AVA notifs */}
-          <button
-            type="button"
-            onClick={() => navigate("/mplanipret/notifications")}
-            aria-label={t("nav.notifications") || "Notifications"}
-            className="ml-2 relative flex items-center justify-center active:scale-95 transition"
-            style={{
-              width: 32, height: 32, borderRadius: 10,
-              background: "var(--pp-bg-elevated)",
-              border: "1px solid var(--pp-bg-border-2)",
-              color: totalUnread > 0 ? "var(--pp-brand-accent)" : "var(--pp-text-secondary)",
-            }}
-          >
-            <Bell className="w-4 h-4" />
-            {totalUnread > 0 && (
-              <span
-                className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full text-white text-[9px] font-bold flex items-center justify-center"
-                style={{ background: "var(--pp-danger, #E84C4C)" }}
-              >
-                {totalUnread > 9 ? "9+" : totalUnread}
-              </span>
-            )}
-          </button>
-
-
-          {/* Lang + theme + profile — right */}
+          {/* Settings + notifications + profile — right */}
           <MobileHeaderControls profile={profile} reloadProfile={loadProfile} />
 
         </header>
@@ -998,7 +956,7 @@ export default function PlanipretMobile() {
         <UniversalSearchBar />
         <div ref={scrollRef} className="flex-1 overflow-y-auto pb-[130px]">
           <PullIndicator pullDist={pullDist} refreshing={refreshing} threshold={threshold} color={ACCENT} />
-          <PlanipretErrorBoundary key={location.pathname.startsWith('/auth/') ? '/auth/callback' : location.pathname}>
+          <PlanipretErrorBoundary key={location.pathname}>
             <Suspense fallback={<MobileScreenSkeleton />}>
               <Outlet context={{ profile, reloadProfile: loadProfile, openDialer, openAva, registerRefresh, softphone } satisfies PlanipretMobileContext} />
             </Suspense>

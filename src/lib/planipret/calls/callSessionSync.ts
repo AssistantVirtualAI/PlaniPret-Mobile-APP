@@ -86,8 +86,9 @@ export function subscribeToCall(
   onUpdate: (row: CallSessionRow) => void,
 ): () => void {
   if (!callId) return () => {};
+  const topic = `pp-call-${callId}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const channel: RealtimeChannel = supabase
-    .channel(`pp-call-${callId}`)
+    .channel(topic)
     .on(
       "postgres_changes",
       {
@@ -101,5 +102,8 @@ export function subscribeToCall(
       },
     )
     .subscribe();
-  return () => { try { supabase.removeChannel(channel); } catch {} };
+  return () => {
+    try { void channel.unsubscribe(); } catch {}
+    try { supabase.removeChannel(channel); } catch {}
+  };
 }

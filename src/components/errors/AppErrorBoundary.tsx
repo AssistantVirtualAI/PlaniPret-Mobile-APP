@@ -97,7 +97,7 @@ export class AppErrorBoundary extends Component<Props, State> {
   public componentDidCatch(raw: unknown, errorInfo: ErrorInfo) {
     if (isEmptyNativeArtifact(raw)) {
       console.warn('[ErrorBoundary] Ignored empty native React artifact');
-      this.setState((state) => ({ hasError: false, error: null, errorInfo: null, retryKey: Math.min(state.retryKey + 1, 3) }));
+      this.setState((state) => ({ hasError: false, error: null, errorInfo: null, retryKey: state.retryKey + 1 }));
       return;
     }
     const error = normaliseError(raw);

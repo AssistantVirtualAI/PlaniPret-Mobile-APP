@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type CSSProperties } from "react";
 import { Bell, Settings as SettingsIcon } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useMplanipretTheme } from "@/hooks/useMplanipretTheme";
@@ -47,7 +47,7 @@ export default function MobileHeaderControls({ profile, reloadProfile }: { profi
     .split(/\s+/).map((s: string) => s[0]).filter(Boolean).slice(0, 2).join("").toUpperCase();
   const status = profile?.status ?? "available";
 
-  const btn: React.CSSProperties = {
+  const btn: CSSProperties = {
     width: 34, height: 34,
     background: "var(--pp-bg-elevated)",
     border: "1px solid var(--pp-bg-border-2)",

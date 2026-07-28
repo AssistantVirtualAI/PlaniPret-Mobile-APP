@@ -5,9 +5,8 @@
 export type AudioRoute = "earpiece" | "speaker" | "bluetooth";
 
 function bridge(): any {
-  // PpSipKeepAlive is the native Capacitor plugin that exposes setAudioRoute/getAudioRoute.
-  // CapacitorSip does not exist in this project — using PpSipKeepAlive instead.
-  return (window as any)?.Capacitor?.Plugins?.PpSipKeepAlive ?? null;
+  const plugins = (window as any)?.Capacitor?.Plugins;
+  return plugins?.PpSipKeepAlive ?? plugins?.CapacitorSip ?? null;
 }
 
 export const audioRouter = {
