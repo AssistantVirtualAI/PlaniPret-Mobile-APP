@@ -162,6 +162,11 @@ const statusInfo = (c: Call, lang: "fr" | "en") => {
 };
 
 
+// Cache module-level : survit aux remontages du composant (changements d'onglet)
+// Les enregistrements restent en mémoire et s'affichent instantanément à chaque retour sur l'onglet
+const _recordingsCache: { data: any[]; userId: string | null; ts: number } = { data: [], userId: null, ts: 0 };
+const RECORDINGS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes avant refresh forcé
+
 // ---------- main ----------
 export default function MCalls() {
   const { t, lang } = useMplanipretLang();
@@ -173,7 +178,10 @@ export default function MCalls() {
 
   );
   const [calls, setCalls] = useState<Call[]>([]);
-  const [recordings, setRecordings] = useState<Call[]>([]);
+  // Initialiser depuis le cache module-level pour affichage instantané au remontage
+  const [recordings, setRecordings] = useState<Call[]>(() =>
+    _recordingsCache.userId === (profile?.id ?? profile?.user_id) ? _recordingsCache.data as Call[] : []
+  );
   const [loading, setLoading] = useState(true);
   const [recordingsLoading, setRecordingsLoading] = useState(false);
   const [search, setSearch] = useState("");
@@ -299,13 +307,18 @@ export default function MCalls() {
         .limit(50);
       if (phoneCallScopeFilter) localQuery = localQuery.or(phoneCallScopeFilter);
       const { data: local } = await localQuery;
-      setRecordings((local ?? []).filter((r: any) => r.has_recording || r.recording_url || r.ns_callid || r.ns_orig_callid || r.ns_term_callid || r.ns_call_id).map((r: any) => ({
+      const freshData = (local ?? []).filter((r: any) => r.has_recording || r.recording_url || r.ns_callid || r.ns_orig_callid || r.ns_term_callid || r.ns_call_id).map((r: any) => ({
         ...r,
         stream_via_proxy: true,
         proxy_call_db_id: r.id,
         proxy_ns_callid: r.ns_callid ?? r.ns_orig_callid ?? r.ns_term_callid ?? r.ns_call_id ?? null,
         has_recording: !!(r.has_recording || r.recording_url || r.ns_callid || r.ns_orig_callid || r.ns_term_callid || r.ns_call_id),
-      })) as Call[]);
+      })) as Call[];
+      // Mettre à jour le cache module-level pour affichage instantané au prochain remontage
+      _recordingsCache.data = freshData;
+      _recordingsCache.userId = userId;
+      _recordingsCache.ts = Date.now();
+      setRecordings(freshData);
     } catch (e) {
       console.warn("[MCalls] recordings load failed", e);
     } finally {

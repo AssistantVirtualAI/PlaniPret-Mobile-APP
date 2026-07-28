@@ -4,10 +4,12 @@
  * Lightweight helpers to trigger / dismiss the native Android incoming-call
  * notification (fullscreen intent + ringtone) from the JsSIP path.
  *
- * IMPORTANT: uses a STATIC import of AndroidSipServicePlugin to avoid the
- * "CapacitorPjsip.then() is not implemented on android" error that occurs
- * when using a dynamic import() — Capacitor intercepts Promise chains on
- * plugin objects and throws when .then() is not a registered plugin method.
+ * Uses the AndroidSipServicePlugin instance already registered in
+ * nativeSipProvider.ts — no registerPlugin() call here to avoid
+ * "already registered" errors.
+ *
+ * The real Kotlin implementation lives in CapacitorPjsip.kt —
+ * showIncomingCallNotif / dismissIncomingCallNotif methods.
  */
 
 import { Capacitor } from '@capacitor/core';

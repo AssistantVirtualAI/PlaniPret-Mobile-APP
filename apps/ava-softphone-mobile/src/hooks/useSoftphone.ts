@@ -82,7 +82,6 @@ export function useSoftphoneJsSip(
   const [sipStatus, setSipStatusState] = useState<SIPStatus>('idle');
   const [sipError, setSipErrorState] = useState('');
   const [callState, setCallState] = useState<CallState>('idle');
-  const callStateRef = useRef<CallState>('idle');
   const [callTimer, setCallTimer] = useState(0);
   const [isMuted, setIsMuted] = useState(false);
   const [isOnHold, setIsOnHold] = useState(false);
@@ -108,6 +107,7 @@ export function useSoftphoneJsSip(
   const currentBitrateRef = useRef<number>(PROFILE_OPUS.auto.hardCapBitrate);
   const reRegisterTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const registrationWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const answeringRef = useRef(false);
   /** Last quality alert level shown, and when — used to throttle toasts. */
   const lastAlertRef = useRef<{ level: number; at: number }>({ level: 4, at: 0 });
 
@@ -338,35 +338,17 @@ export function useSoftphoneJsSip(
           ua.on('newRTCSession', (data: any) => {
             const session = data.session;
             sessionRef.current = session;
+            answeringRef.current = false;
             const remoteNumber = session.remote_identity?.uri?.user || 'Unknown';
             setActiveCallNumber(remoteNumber);
             log('session.new', `${session.direction} ${remoteNumber}`);
             if (session.direction === 'incoming') {
-              callStateRef.current = 'ringing-in'; setCallState('ringing-in');
-              // Pre-warm ICE servers immediately on incoming so answer() has
-              // them cached and doesn't block on a network fetch (2-4 s delay).
-              fetchIceServers().catch(() => {});
+              setCallState('ringing-in');
               // Trigger native Android ringing + fullscreen notification
               if (Capacitor.getPlatform() === 'android') {
                 const callerName = session.remote_identity?.display_name || '';
                 showAndroidIncomingCallNotif(remoteNumber, callerName);
               }
-            }
-            // Android WebView: ICE gathering can take 3-10 s on outgoing calls.
-            // JsSIP waits for iceGatheringState=complete before sending the INVITE SDP.
-            // FusionPBX cancels the INVITE after ~15 s if no SDP is received.
-            // Fix: force ICE ready() after 2 s so the INVITE SDP is sent immediately
-            // with whatever candidates are already collected.
-            if (session.direction === 'outgoing' && Capacitor.getPlatform() === 'android') {
-              let outIceTimer: ReturnType<typeof setTimeout> | null = null;
-              const outIceCandidateHandler = ({ ready }: { candidate: RTCIceCandidate | null; ready: () => void }) => {
-                if (outIceTimer) return;
-                outIceTimer = setTimeout(() => {
-                  log('call.iceForced', 'forcing ICE ready after 2s timeout on Android (outgoing)');
-                  try { ready(); } catch {}
-                }, 2000);
-              };
-              session.once('icecandidate', outIceCandidateHandler);
             }
             session.on('peerconnection', (e: any) => {
               const pc: RTCPeerConnection | undefined = e?.peerconnection;
@@ -422,14 +404,6 @@ export function useSoftphoneJsSip(
               log('call.establishment-failed', `${res.reason} ice=${res.iceState}`, 'error');
               try { showMobileToast(msg, 'error'); } catch {}
 
-              // IMPORTANT: ne jamais raccrocher un appel déjà actif.
-              // Sur Android avec ICE forcé, la session peut être confirmée mais ICE
-              // reste en 'checking' — l'audio fonctionne quand même.
-              if (callStateRef.current === 'active') {
-                log('call.establishment-ok-active', 'call already active, ignoring watchCallEstablishment timeout', 'warn');
-                return;
-              }
-
               // Auto-retry en SDP PCMU sécurisé si le 1er essai timeoute
               // (PBX qui refuse silencieusement Opus/DTLS-SRTP en WebRTC).
               if (
@@ -446,7 +420,8 @@ export function useSoftphoneJsSip(
               }
             });
             session.on('confirmed', () => {
-              callStateRef.current = 'active'; setCallState('active');
+              answeringRef.current = false;
+              setCallState('active');
               log('session.confirmed', remoteNumber);
               console.log('[SIP][info] session.confirmed — call connected');
               // Force Android into MODE_IN_COMMUNICATION via earpiece route so
@@ -538,13 +513,13 @@ export function useSoftphoneJsSip(
               samplerStateRef.current = {};
             };
             session.on('ended', () => {
-              callStateRef.current = 'ended'; setCallState('ended');
+              answeringRef.current = false;
+              setCallState('ended');
               log('session.ended', remoteNumber);
               // Always dismiss the native Android incoming-call notification and
               // ringtone when the session ends (covers the case where the remote
               // party cancels before we answer).
               dismissIncomingNotif();
-              answeringRef.current = false;
               if (timerRef.current) clearInterval(timerRef.current);
               stopStats();
               setTimeout(() => {
@@ -556,6 +531,7 @@ export function useSoftphoneJsSip(
               }, 2000);
             });
             session.on('failed', (e: any) => {
+              answeringRef.current = false;
               const code = e?.message?.status_code;
               const msg = classifySipFailure({
                 cause: e?.cause,
@@ -566,8 +542,7 @@ export function useSoftphoneJsSip(
               // Dismiss native Android notification/ringtone on failure (CANCEL,
               // timeout, busy, etc.) so the phone stops ringing.
               dismissIncomingNotif();
-              answeringRef.current = false;
-              callStateRef.current = 'idle'; setCallState('idle');
+              setCallState('idle');
               if (timerRef.current) clearInterval(timerRef.current);
               stopStats();
               setActiveCallNumber('');
@@ -783,7 +758,7 @@ export function useSoftphoneJsSip(
   const placeCallInternal = async (number: string, forcePcmu = false): Promise<boolean> => {
     if (!uaRef.current || !config) return false;
     setActiveCallNumber(number);
-    callStateRef.current = 'ringing'; setCallState('ringing');
+    setCallState('ringing');
     setOfferedCodecs([]);
     setNegotiatedCodec(null);
     lastCallNumberRef.current = number;
@@ -800,7 +775,7 @@ export function useSoftphoneJsSip(
       } catch (e: any) {
         console.error('[SIP] microphone permission denied', e);
         setSipError('Microphone permission denied — please allow microphone access');
-        callStateRef.current = 'idle'; setCallState('idle');
+        setCallState('idle');
         setActiveCallNumber('');
         return false;
       }
@@ -824,9 +799,6 @@ export function useSoftphoneJsSip(
           iceTransportPolicy: 'all',
           bundlePolicy: 'balanced',
         },
-        // On Android WebView, ICE gathering can take 3-10 s. Cap it at 2.5 s
-        // so the INVITE SDP is sent before FusionPBX's session timer fires.
-        ...(Capacitor.getPlatform() === 'android' ? { iceGatheringTimeout: 2500 } : {}),
       };
       if (forcePcmu) log('call.fallback', 'secure PCMU-only SDP rewrite armed');
       sipDebug('placeCallInternal pcConfig', PC_CONFIG);
@@ -836,7 +808,7 @@ export function useSoftphoneJsSip(
       return true;
     } catch (err: any) {
       console.error('[AVA keypad] SIP call exception', err);
-      callStateRef.current = 'idle'; setCallState('idle');
+      setCallState('idle');
       setActiveCallNumber('');
       setSipError(classifySipFailure({ cause: err?.message }));
       return false;
@@ -856,68 +828,59 @@ export function useSoftphoneJsSip(
   };
   const hangup = () => {
     dismissIncomingNotif();
-    // Disable auto-retry so watchCallEstablishment does not re-dial after
-    // a manual hangup (callAttemptRef === 1 would trigger placeCallInternal retry).
-    callAttemptRef.current = 0;
-    try { sessionRef.current?.terminate(); } catch {}
+    const session = sessionRef.current;
+    try {
+      if (session && callState === 'ringing-in' && session.direction === 'incoming') {
+        // Reject an unanswered inbound leg as a global decline so the PBX does
+        // not treat it as a busy/no-answer path and send the caller to voicemail.
+        session.terminate({ status_code: 603, reason_phrase: 'Decline' });
+      } else {
+        session?.terminate();
+      }
+    } catch (e: any) {
+      log('hangup.error', e?.message || String(e), 'warn');
+    }
     sessionRef.current = null;
-    callStateRef.current = 'idle'; setCallState('idle');
+    answeringRef.current = false;
+    setCallState('idle');
     if (timerRef.current) clearInterval(timerRef.current);
     setCallTimer(0);
     setActiveCallNumber('');
     // Après un raccroché manuel, vérifier l'UA (re-REGISTER si besoin).
     ensureRegisteredThenRestore('hangup');
   };
-  // Guard: prevents answer() from being called more than once per incoming session.
-  // Without this, the sipCallAction listener fires multiple times (Android re-broadcasts
-  // the event on each MainActivity resume) causing JsSIP "Invalid status: 5" errors.
-  const answeringRef = useRef(false);
   const answer = async () => {
-    log('answer.called', `sessionRef=${sessionRef.current ? 'ok' : 'NULL'} callState=${callState} answering=${answeringRef.current}`);
+    log('answer.called', `sessionRef=${sessionRef.current ? 'ok' : 'NULL'} callState=${callState}`);
     if (answeringRef.current) {
-      log('answer.skipped', 'already answering — ignoring duplicate call', 'warn');
+      log('answer.ignored', 'answer already in progress');
+      return;
+    }
+    if (callState !== 'ringing-in') {
+      log('answer.ignored', `not ringing-in (state=${callState})`);
+      return;
+    }
+    if (!sessionRef.current) {
+      log('answer.failed', 'sessionRef is null — cannot answer', 'error');
       return;
     }
     answeringRef.current = true;
     dismissIncomingNotif();
-    if (!sessionRef.current) {
-      log('answer.failed', 'sessionRef is null — cannot answer', 'error');
-      answeringRef.current = false;
-      return;
-    }
     const iceServers = await fetchIceServers().catch(() => FALLBACK_ICE_SERVERS);
     log('answer.iceServers', `count=${iceServers.length}`);
-    // On Android WebView, ICE gathering can take 3-10 s. JsSIP has no built-in
-    // timeout — it waits for iceGatheringState=complete or a null candidate.
-    // FusionPBX cancels the call after ~4 s if it hasn't received the 200 OK SDP.
-    // Fix: listen to session 'icecandidate' events and call ready() after 2 s
-    // so JsSIP sends the 200 OK with whatever candidates are available.
-    const isAndroid = Capacitor.getPlatform() === 'android';
-    if (isAndroid && sessionRef.current) {
-      let iceTimer: ReturnType<typeof setTimeout> | null = null;
-      const iceCandidateHandler = ({ ready }: { candidate: RTCIceCandidate | null; ready: () => void }) => {
-        if (iceTimer) return; // already armed
-        iceTimer = setTimeout(() => {
-          log('answer.iceForced', 'forcing ICE ready after 2s timeout on Android');
-          ready();
-        }, 2000);
-      };
-      sessionRef.current.once('icecandidate', iceCandidateHandler);
-    }
     try {
-      sessionRef.current?.answer({
-        mediaConstraints: HD_AUDIO_CONSTRAINTS,
-        sessionDescriptionHandlerModifiers: [sdpModifier],
-        pcConfig: {
-          iceServers,
-          iceTransportPolicy: 'all',
-          bundlePolicy: 'balanced',
-        },
-      });
-      log('answer.sent', 'session.answer() called successfully');
+    sessionRef.current?.answer({
+      mediaConstraints: HD_AUDIO_CONSTRAINTS,
+      sessionDescriptionHandlerModifiers: [sdpModifier],
+      pcConfig: {
+        iceServers,
+        iceTransportPolicy: 'all',
+        bundlePolicy: 'balanced',
+      },
+    });
+    log('answer.sent', 'session.answer() called successfully');
     } catch (e: any) {
-      log('answer.error', e?.message || String(e), 'error');
       answeringRef.current = false;
+      log('answer.error', e?.message || String(e), 'error');
     }
   };
   const mute = () => { sessionRef.current?.mute({ audio: true }); setIsMuted(true); };
@@ -952,9 +915,8 @@ export function useSoftphoneJsSip(
 // the JsSIP UA must never be instantiated (it would steal the mic and
 // trigger WebRTC restarts that fight the native socket).
 // ---------------------------------------------------------------------------
-import { NATIVE_SIP_ENABLED, startAndroidSipService, stopAndroidSipService } from '../lib/sip/nativeSipProvider';
+import { NATIVE_SIP_ENABLED, startAndroidSipService } from '../lib/sip/nativeSipProvider';
 import { useSoftphoneNative } from './useSoftphoneNative';
-import { useSoftphoneVerto } from './useSoftphoneVerto';
 import { notifySipDispatcherLoaded } from '../lib/sip/bootSipGuard';
 export function useSoftphone(
   config: SIPConfig | null,

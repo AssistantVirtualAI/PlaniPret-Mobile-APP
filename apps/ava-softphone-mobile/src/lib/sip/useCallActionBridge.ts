@@ -7,6 +7,8 @@ import { AndroidSipServicePlugin } from './nativeSipProvider';
 
 type CallAction = 'answer' | 'decline' | 'hangup' | 'hold' | 'resume' | 'mute';
 
+let lastGlobalAction: { action: CallAction; at: number } | null = null;
+
 interface Handlers {
   onAnswer?: () => void;
   onDecline?: () => void;
@@ -29,6 +31,12 @@ export function useCallActionBridge(handlers: Handlers, enabled: boolean = true)
     const cleanups: Array<() => void> = [];
 
     const dispatch = (action: CallAction) => {
+      const now = Date.now();
+      const duplicateWindowMs = action === 'answer' ? 8000 : 1500;
+      if (lastGlobalAction?.action === action && now - lastGlobalAction.at < duplicateWindowMs) {
+        return;
+      }
+      lastGlobalAction = { action, at: now };
       switch (action) {
         case 'answer':  handlers.onAnswer?.(); break;
         case 'decline': (handlers.onDecline ?? handlers.onHangup)?.(); break;
@@ -47,13 +55,20 @@ export function useCallActionBridge(handlers: Handlers, enabled: boolean = true)
       // ACTION_CALL_ACTION_EVENT broadcast → JS `sipCallAction` event.
       const plugin = AndroidSipServicePlugin as any;
       if (typeof plugin?.addListener === 'function') {
+        let disposed = false;
         plugin.addListener('sipCallAction', (evt: { action: CallAction }) => {
           if (evt?.action) dispatch(evt.action);
         }).then((handle: any) => {
-          if (handle?.remove) cleanups.push(() => handle.remove());
+          if (!handle?.remove) return;
+          if (disposed) {
+            try { handle.remove(); } catch {}
+            return;
+          }
+          cleanups.push(() => handle.remove());
         }).catch((e: any) => {
           console.warn('[useCallActionBridge] android addListener failed:', e);
         });
+        cleanups.push(() => { disposed = true; });
       }
     }
 

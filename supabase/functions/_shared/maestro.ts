@@ -29,17 +29,33 @@ export interface MaestroConfig {
 }
 
 export async function getMaestroConfig(admin: SupabaseClient): Promise<MaestroConfig> {
-  const { data } = await admin
+  // Primary source: planipret_integration_config (written by pp-save-integration)
+  const { data: cfg1 } = await admin
+    .from("planipret_integration_config")
+    .select("config_data")
+    .eq("integration_key", "maestro")
+    .maybeSingle();
+  const c1 = (cfg1?.config_data ?? {}) as Record<string, string>;
+
+  // Fallback source: planipret_integration_secrets (legacy table)
+  const { data: cfg2 } = await admin
     .from("planipret_integration_secrets")
     .select("config")
     .eq("provider", "maestro")
     .maybeSingle();
-  const c = (data?.config ?? {}) as Record<string, string>;
+  const c2 = (cfg2?.config ?? {}) as Record<string, string>;
+
+  // Merge: planipret_integration_config takes priority
+  const apiUrl = c1.api_url ?? c2.api_url ?? Deno.env.get("MAESTRO_API_URL") ?? "";
+  const apiKey = c1.api_key ?? c2.api_key ?? Deno.env.get("MAESTRO_API_KEY") ?? "";
+  const accountId = c1.account_id ?? c2.account_id ?? Deno.env.get("MAESTRO_ACCOUNT_ID") ?? "";
+  const webhookSecret = c1.webhook_secret ?? c2.webhook_secret ?? Deno.env.get("MAESTRO_WEBHOOK_SECRET") ?? "";
+
   return {
-    url: (c.api_url ?? Deno.env.get("MAESTRO_API_URL") ?? "").replace(/\/$/, ""),
-    key: c.api_key ?? Deno.env.get("MAESTRO_API_KEY") ?? "",
-    accountId: c.account_id ?? Deno.env.get("MAESTRO_ACCOUNT_ID") ?? "",
-    webhookSecret: c.webhook_secret ?? Deno.env.get("MAESTRO_WEBHOOK_SECRET") ?? "",
+    url: apiUrl.replace(/\/$/, ""),
+    key: apiKey,
+    accountId,
+    webhookSecret,
   };
 }
 

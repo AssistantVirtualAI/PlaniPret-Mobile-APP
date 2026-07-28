@@ -215,7 +215,8 @@ export default defineConfig(({ mode }) => {
   },
   build: {
     minify: "esbuild",
-    target: "chrome120",
+    // safari14 + es2019 = compatible WKWebView iOS 14+ (chrome120 cassait le vendor chunk sur iOS)
+    target: ["es2019", "safari14"],
     sourcemap: false,
     chunkSizeWarningLimit: 900,
     reportCompressedSize: false,

@@ -57,7 +57,14 @@ export default function MMore() {
   };
   useEffect(() => { loadMs365Detection(); }, []);
 
-  useEffect(() => { if (params.get("ms365") === "ok") toast.success(t("more.msConnected")); }, [params, t]);
+  useEffect(() => {
+    if (params.get("ms365") === "ok") {
+      toast.success(t("more.msConnected"));
+      // Forcer le rechargement du profil pour que ms365Connected reflète le nouveau token
+      reloadProfile().catch(() => {});
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params, t]);
 
   useEffect(() => {
     if (darkMode) document.documentElement.classList.add("dark");
