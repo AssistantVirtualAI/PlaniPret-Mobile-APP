@@ -4,31 +4,116 @@
 import React from 'react';
 import { render as legacyRender } from 'react-dom';
 import { createRoot } from 'react-dom/client';
+import { BrowserRouter } from 'react-router-dom';
 import { Capacitor } from '@capacitor/core';
 import App from './App';
 import './styles.css';
 
+type BootWindow = Window & {
+  __PP_REACT_BOOTED__?: boolean;
+  __PP_REACT_BOOT_ATTEMPTED__?: boolean;
+  __PP_REACT_MOUNT_CALLED__?: boolean;
+  __PP_MARK_BOOT_READY__?: () => void;
+  __PP_SHOW_BOOT_FALLBACK__?: (message?: string) => void;
+};
+
 function isIgnorableNativeStartupError(raw: unknown): boolean {
+  if (typeof raw === 'string') return /multi_header\.length|multi_header/i.test(raw);
   const rawText = String(raw instanceof Error ? raw.message : raw ?? '');
   if (/multi_header\.length|multi_header/i.test(rawText)) return true;
-  if (!raw || typeof raw !== 'object') return !raw;
+  if (!raw || typeof raw !== 'object') return false;
   const obj = raw as Record<string, unknown>;
   const message = String(obj.message ?? obj.errorMessage ?? '').trim();
   const code = String(obj.code ?? '').trim();
   if (/multi_header\.length|multi_header/i.test(message)) return true;
+  if (!message && !code && Object.keys(obj).length === 0) return true;
   return code === 'UNIMPLEMENTED' && /not implemented/i.test(message);
 }
 
+function showNativeBootFallback(message?: string) {
+  try {
+    ((window as BootWindow).__PP_SHOW_BOOT_FALLBACK__ ?? (() => undefined))(message);
+  } catch {}
+}
+
+function markBootReady() {
+  try {
+    const win = window as BootWindow;
+    win.__PP_REACT_BOOTED__ = true;
+    const fallback = document.getElementById('pp-native-boot-fallback');
+    if (fallback) fallback.style.display = 'none';
+  } catch {}
+}
+
+function NativeBootErrorFallback({ message, onRetry }: { message?: string; onRetry: () => void }) {
+  return (
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0A1425', color: '#E2E8F0', fontFamily: 'system-ui,-apple-system,BlinkMacSystemFont,sans-serif', padding: 24, textAlign: 'center' }}>
+      <div style={{ maxWidth: 340 }}>
+        <div style={{ width: 58, height: 58, borderRadius: 18, background: '#fff', margin: '0 auto 16px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#1A4A8A', fontWeight: 800, fontSize: 20 }}>PP</div>
+        <div style={{ fontWeight: 800, fontSize: 18, marginBottom: 8 }}>Planiprêt Mobile</div>
+        <div style={{ fontSize: 13, lineHeight: 1.45, opacity: 0.82, marginBottom: 18, wordBreak: 'break-word' }}>{message || "Le démarrage a été interrompu. Relancez l’application."}</div>
+        <button onClick={onRetry} style={{ border: 0, borderRadius: 12, background: '#2E9BDC', color: 'white', fontWeight: 800, padding: '12px 18px' }}>Relancer</button>
+      </div>
+    </div>
+  );
+}
+
+class NativeRootRecoveryBoundary extends React.Component<{ children: React.ReactNode }, { error: Error | null; retryKey: number }> {
+  state: { error: Error | null; retryKey: number } = { error: null, retryKey: 0 };
+
+  static getDerivedStateFromError(error: Error) {
+    if (isIgnorableNativeStartupError(error)) return { error: null };
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: React.ErrorInfo) {
+    if (isIgnorableNativeStartupError(error)) {
+      console.warn('[PP] native startup artifact swallowed; remounting root');
+      this.setState((state) => {
+        const nextRetryKey = state.retryKey + 1;
+        if (nextRetryKey > 3) {
+          showNativeBootFallback('Le démarrage natif a été interrompu plusieurs fois. Relancez l’application.');
+          return { error: null, retryKey: state.retryKey };
+        }
+        return { error: null, retryKey: nextRetryKey };
+      });
+      return;
+    }
+    console.error('[PP] root render failed:', error, info);
+  }
+
+  private retry = () => {
+    this.setState((state) => ({ error: null, retryKey: state.retryKey + 1 }));
+  };
+
+  render() {
+    if (this.state.error) {
+      const message = this.state.error.message || 'Erreur de démarrage inconnue.';
+      return <NativeBootErrorFallback message={message} onRetry={this.retry} />;
+    }
+    return <React.Fragment key={this.state.retryKey}>{this.props.children}</React.Fragment>;
+  }
+}
+
 if (typeof window !== 'undefined') {
+  (window as BootWindow).__PP_MARK_BOOT_READY__ = markBootReady;
   window.addEventListener('error', (event) => {
     if (!isIgnorableNativeStartupError((event as ErrorEvent).error) && !isIgnorableNativeStartupError((event as ErrorEvent).message)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
+    window.setTimeout(() => {
+      const root = document.getElementById('root');
+      if (root && !root.textContent?.trim()) showNativeBootFallback('Le démarrage natif a été interrompu avant le premier écran.');
+    }, 250);
   }, true);
   window.addEventListener('unhandledrejection', (event) => {
     if (!isIgnorableNativeStartupError(event.reason)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
+    window.setTimeout(() => {
+      const root = document.getElementById('root');
+      if (root && !root.textContent?.trim()) showNativeBootFallback('Le démarrage natif a été interrompu avant le premier écran.');
+    }, 250);
   }, true);
 }
 
@@ -71,10 +156,14 @@ async function bootstrap() {
   try {
     const container = document.getElementById('root');
     if (!container) throw new Error('Root element not found');
-    (window as any).__PP_REACT_BOOT_ATTEMPTED__ = true;
+    (window as BootWindow).__PP_REACT_BOOT_ATTEMPTED__ = true;
     if (container.textContent?.trim() === 'Démarrage...') container.innerHTML = '';
     const appTree = (
-      <App />
+      <NativeRootRecoveryBoundary>
+        <BrowserRouter>
+          <App />
+        </BrowserRouter>
+      </NativeRootRecoveryBoundary>
     );
 
 
@@ -84,7 +173,7 @@ async function bootstrap() {
     // path for Capacitor only and keep createRoot for web/dev preview.
     if (Capacitor.isNativePlatform() || window.location.protocol === 'capacitor:') {
       legacyRender(appTree, container);
-      window.setTimeout(() => { (window as any).__PP_REACT_MOUNT_CALLED__ = true; }, 0);
+      window.setTimeout(() => { (window as BootWindow).__PP_REACT_MOUNT_CALLED__ = true; }, 0);
       return;
     }
 
@@ -98,7 +187,7 @@ async function bootstrap() {
       },
     });
     root.render(appTree);
-    window.setTimeout(() => { (window as any).__PP_REACT_MOUNT_CALLED__ = true; }, 0);
+    window.setTimeout(() => { (window as BootWindow).__PP_REACT_MOUNT_CALLED__ = true; }, 0);
   } catch (e) {
     console.error('[PP] Render failed:', e);
     const el = document.getElementById('root');

@@ -62,7 +62,6 @@ export default function MDeepLinkDebug() {
       else set(1, { state: "ok", detail: `client_id=${String(d.client_id).slice(0, 8)}… tenant=${d.tenant_id}` });
     } catch (e: any) { set(1, { state: "fail", detail: e?.message }); }
 
-    // Direct fetch — bypasses supabase-js internal error logging that surfaces as RUNTIME_ERROR.
     const fnUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
     const anon = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string;
     const { data: { session } } = await supabase.auth.getSession();
@@ -82,7 +81,6 @@ export default function MDeepLinkDebug() {
         return { status: 0, data: null, error: e };
       }
     };
-
     const probeOptions = async (name: string) => {
       try {
         const res = await fetch(`${fnUrl}/${name}`, {
@@ -140,8 +138,6 @@ export default function MDeepLinkDebug() {
         ? { state: "ok", detail: "Endpoint callback prêt (test sans échange OAuth réel)" }
         : { state: "fail", detail: probe.error || `HTTP ${probe.status}` });
     }
-
-
 
     setRunning(false);
     toast.success("Validation terminée");

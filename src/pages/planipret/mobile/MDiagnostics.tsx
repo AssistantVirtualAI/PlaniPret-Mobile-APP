@@ -1,4 +1,3 @@
-import React from "react";
 import { useEffect, useState, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { ArrowLeft, RefreshCw, Copy, CheckCircle2, XCircle, AlertTriangle, Loader2 } from "lucide-react";

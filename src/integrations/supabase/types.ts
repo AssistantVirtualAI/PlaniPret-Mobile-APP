@@ -3180,47 +3180,6 @@ export type Database = {
         }
         Relationships: []
       }
-      org_chat_channel_member_audit: {
-        Row: {
-          action: string
-          actor_id: string | null
-          channel_id: string
-          channel_type: string | null
-          created_at: string
-          id: string
-          organization_id: string
-          target_user_id: string
-        }
-        Insert: {
-          action: string
-          actor_id?: string | null
-          channel_id: string
-          channel_type?: string | null
-          created_at?: string
-          id?: string
-          organization_id: string
-          target_user_id: string
-        }
-        Update: {
-          action?: string
-          actor_id?: string | null
-          channel_id?: string
-          channel_type?: string | null
-          created_at?: string
-          id?: string
-          organization_id?: string
-          target_user_id?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "org_chat_channel_member_audit_channel_id_fkey"
-            columns: ["channel_id"]
-            isOneToOne: false
-            referencedRelation: "org_chat_channels"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
       org_chat_channels: {
         Row: {
           archived_at: string | null
@@ -8255,114 +8214,6 @@ export type Database = {
         }
         Relationships: []
       }
-      planipret_ava_sessions: {
-        Row: {
-          agent_id: string | null
-          connection_type: string
-          created_at: string
-          disconnect_reason: string | null
-          duration_ms: number | null
-          ended_at: string | null
-          error_code: string | null
-          error_message: string | null
-          id: string
-          metadata: Json | null
-          session_id: string
-          started_at: string
-          user_id: string
-        }
-        Insert: {
-          agent_id?: string | null
-          connection_type?: string
-          created_at?: string
-          disconnect_reason?: string | null
-          duration_ms?: number | null
-          ended_at?: string | null
-          error_code?: string | null
-          error_message?: string | null
-          id?: string
-          metadata?: Json | null
-          session_id: string
-          started_at?: string
-          user_id: string
-        }
-        Update: {
-          agent_id?: string | null
-          connection_type?: string
-          created_at?: string
-          disconnect_reason?: string | null
-          duration_ms?: number | null
-          ended_at?: string | null
-          error_code?: string | null
-          error_message?: string | null
-          id?: string
-          metadata?: Json | null
-          session_id?: string
-          started_at?: string
-          user_id?: string
-        }
-        Relationships: []
-      }
-      planipret_calendar_events: {
-        Row: {
-          attendees: Json
-          body_preview: string | null
-          created_at: string
-          deleted_at: string | null
-          ends_at: string | null
-          graph_id: string
-          id: string
-          is_all_day: boolean | null
-          is_deleted: boolean | null
-          is_online_meeting: boolean | null
-          join_url: string | null
-          last_synced_at: string
-          location: string | null
-          organizer_email: string | null
-          starts_at: string | null
-          subject: string | null
-          user_id: string
-        }
-        Insert: {
-          attendees?: Json
-          body_preview?: string | null
-          created_at?: string
-          deleted_at?: string | null
-          ends_at?: string | null
-          graph_id: string
-          id?: string
-          is_all_day?: boolean | null
-          is_deleted?: boolean | null
-          is_online_meeting?: boolean | null
-          join_url?: string | null
-          last_synced_at?: string
-          location?: string | null
-          organizer_email?: string | null
-          starts_at?: string | null
-          subject?: string | null
-          user_id: string
-        }
-        Update: {
-          attendees?: Json
-          body_preview?: string | null
-          created_at?: string
-          deleted_at?: string | null
-          ends_at?: string | null
-          graph_id?: string
-          id?: string
-          is_all_day?: boolean | null
-          is_deleted?: boolean | null
-          is_online_meeting?: boolean | null
-          join_url?: string | null
-          last_synced_at?: string
-          location?: string | null
-          organizer_email?: string | null
-          starts_at?: string | null
-          subject?: string | null
-          user_id?: string
-        }
-        Relationships: []
-      }
       planipret_calendar_sync: {
         Row: {
           created_at: string
@@ -8617,39 +8468,6 @@ export type Database = {
         }
         Relationships: []
       }
-      planipret_did_assignments: {
-        Row: {
-          callerid_name: string | null
-          created_at: string
-          domain: string
-          extension: string
-          phone_number_digits: string
-          phone_number_e164: string
-          source: string
-          updated_at: string
-        }
-        Insert: {
-          callerid_name?: string | null
-          created_at?: string
-          domain?: string
-          extension: string
-          phone_number_digits: string
-          phone_number_e164: string
-          source?: string
-          updated_at?: string
-        }
-        Update: {
-          callerid_name?: string | null
-          created_at?: string
-          domain?: string
-          extension?: string
-          phone_number_digits?: string
-          phone_number_e164?: string
-          source?: string
-          updated_at?: string
-        }
-        Relationships: []
-      }
       planipret_edge_function_runs: {
         Row: {
           created_at: string
@@ -8707,153 +8525,6 @@ export type Database = {
           updated_at?: string
           updated_by?: string | null
           value?: string | null
-        }
-        Relationships: []
-      }
-      planipret_email_messages: {
-        Row: {
-          body_html: string | null
-          body_preview: string | null
-          cc_recipients: Json
-          content_hash: string | null
-          conversation_id: string | null
-          created_at: string
-          folder: string | null
-          from_email: string | null
-          from_name: string | null
-          graph_id: string
-          has_attachments: boolean | null
-          id: string
-          importance: string | null
-          internet_message_id: string | null
-          is_read: boolean | null
-          is_sent_by_me: boolean | null
-          last_synced_at: string
-          locally_saved: boolean | null
-          received_at: string | null
-          sent_at: string | null
-          subject: string | null
-          to_recipients: Json
-          user_id: string
-        }
-        Insert: {
-          body_html?: string | null
-          body_preview?: string | null
-          cc_recipients?: Json
-          content_hash?: string | null
-          conversation_id?: string | null
-          created_at?: string
-          folder?: string | null
-          from_email?: string | null
-          from_name?: string | null
-          graph_id: string
-          has_attachments?: boolean | null
-          id?: string
-          importance?: string | null
-          internet_message_id?: string | null
-          is_read?: boolean | null
-          is_sent_by_me?: boolean | null
-          last_synced_at?: string
-          locally_saved?: boolean | null
-          received_at?: string | null
-          sent_at?: string | null
-          subject?: string | null
-          to_recipients?: Json
-          user_id: string
-        }
-        Update: {
-          body_html?: string | null
-          body_preview?: string | null
-          cc_recipients?: Json
-          content_hash?: string | null
-          conversation_id?: string | null
-          created_at?: string
-          folder?: string | null
-          from_email?: string | null
-          from_name?: string | null
-          graph_id?: string
-          has_attachments?: boolean | null
-          id?: string
-          importance?: string | null
-          internet_message_id?: string | null
-          is_read?: boolean | null
-          is_sent_by_me?: boolean | null
-          last_synced_at?: string
-          locally_saved?: boolean | null
-          received_at?: string | null
-          sent_at?: string | null
-          subject?: string | null
-          to_recipients?: Json
-          user_id?: string
-        }
-        Relationships: []
-      }
-      planipret_hold_music: {
-        Row: {
-          created_at: string
-          created_by: string | null
-          duration_seconds: number | null
-          error_message: string | null
-          id: string
-          improved_text: string | null
-          is_default: boolean
-          language: string
-          music_style: string | null
-          music_volume: number
-          name: string
-          push_result: Json | null
-          push_scope: string | null
-          pushed_at: string | null
-          source_text: string | null
-          status: string
-          storage_path: string | null
-          updated_at: string
-          voice_id: string | null
-          voice_name: string | null
-        }
-        Insert: {
-          created_at?: string
-          created_by?: string | null
-          duration_seconds?: number | null
-          error_message?: string | null
-          id?: string
-          improved_text?: string | null
-          is_default?: boolean
-          language?: string
-          music_style?: string | null
-          music_volume?: number
-          name: string
-          push_result?: Json | null
-          push_scope?: string | null
-          pushed_at?: string | null
-          source_text?: string | null
-          status?: string
-          storage_path?: string | null
-          updated_at?: string
-          voice_id?: string | null
-          voice_name?: string | null
-        }
-        Update: {
-          created_at?: string
-          created_by?: string | null
-          duration_seconds?: number | null
-          error_message?: string | null
-          id?: string
-          improved_text?: string | null
-          is_default?: boolean
-          language?: string
-          music_style?: string | null
-          music_volume?: number
-          name?: string
-          push_result?: Json | null
-          push_scope?: string | null
-          pushed_at?: string | null
-          source_text?: string | null
-          status?: string
-          storage_path?: string | null
-          updated_at?: string
-          voice_id?: string | null
-          voice_name?: string | null
         }
         Relationships: []
       }
@@ -8983,33 +8654,6 @@ export type Database = {
         }
         Relationships: []
       }
-      planipret_maestro_oauth_states: {
-        Row: {
-          code_verifier: string | null
-          created_at: string
-          expires_at: string
-          redirect_uri: string | null
-          state: string
-          user_id: string
-        }
-        Insert: {
-          code_verifier?: string | null
-          created_at?: string
-          expires_at?: string
-          redirect_uri?: string | null
-          state: string
-          user_id: string
-        }
-        Update: {
-          code_verifier?: string | null
-          created_at?: string
-          expires_at?: string
-          redirect_uri?: string | null
-          state?: string
-          user_id?: string
-        }
-        Relationships: []
-      }
       planipret_maestro_sync_log: {
         Row: {
           action: string | null
@@ -9046,105 +8690,6 @@ export type Database = {
           response_status?: number | null
           success?: boolean | null
           user_id?: string | null
-        }
-        Relationships: []
-      }
-      planipret_ms_contacts: {
-        Row: {
-          company: string | null
-          created_at: string
-          dedup_key: string | null
-          display_name: string | null
-          emails: Json
-          given_name: string | null
-          graph_id: string
-          id: string
-          job_title: string | null
-          last_synced_at: string
-          phones: Json
-          source: string | null
-          source_account_email: string | null
-          source_tenant_id: string | null
-          surname: string | null
-          updated_at: string
-          user_id: string
-        }
-        Insert: {
-          company?: string | null
-          created_at?: string
-          dedup_key?: string | null
-          display_name?: string | null
-          emails?: Json
-          given_name?: string | null
-          graph_id: string
-          id?: string
-          job_title?: string | null
-          last_synced_at?: string
-          phones?: Json
-          source?: string | null
-          source_account_email?: string | null
-          source_tenant_id?: string | null
-          surname?: string | null
-          updated_at?: string
-          user_id: string
-        }
-        Update: {
-          company?: string | null
-          created_at?: string
-          dedup_key?: string | null
-          display_name?: string | null
-          emails?: Json
-          given_name?: string | null
-          graph_id?: string
-          id?: string
-          job_title?: string | null
-          last_synced_at?: string
-          phones?: Json
-          source?: string | null
-          source_account_email?: string | null
-          source_tenant_id?: string | null
-          surname?: string | null
-          updated_at?: string
-          user_id?: string
-        }
-        Relationships: []
-      }
-      planipret_ms_sync_state: {
-        Row: {
-          delta_link: string | null
-          id: string
-          items_synced: number | null
-          last_delta_sync_at: string | null
-          last_error: string | null
-          last_full_sync_at: string | null
-          resource: string
-          status: string | null
-          updated_at: string
-          user_id: string
-        }
-        Insert: {
-          delta_link?: string | null
-          id?: string
-          items_synced?: number | null
-          last_delta_sync_at?: string | null
-          last_error?: string | null
-          last_full_sync_at?: string | null
-          resource: string
-          status?: string | null
-          updated_at?: string
-          user_id: string
-        }
-        Update: {
-          delta_link?: string | null
-          id?: string
-          items_synced?: number | null
-          last_delta_sync_at?: string | null
-          last_error?: string | null
-          last_full_sync_at?: string | null
-          resource?: string
-          status?: string | null
-          updated_at?: string
-          user_id?: string
         }
         Relationships: []
       }
@@ -9284,14 +8829,12 @@ export type Database = {
       }
       planipret_phone_calls: {
         Row: {
-          ai_action_items: Json | null
           ai_analysis_json: Json | null
           ai_client_insights: Json | null
           ai_coaching: Json | null
           ai_key_points: Json | null
           ai_summary: string | null
           ai_summary_short: string | null
-          ai_topics: Json | null
           analysis_in_progress: boolean | null
           analysis_locked_at: string | null
           analysis_locked_by: string | null
@@ -9335,9 +8878,6 @@ export type Database = {
           pipeline_started_at: string | null
           pipeline_state: Json
           pipeline_step: string | null
-          recording_bytes: number | null
-          recording_cached_at: string | null
-          recording_storage_path: string | null
           recording_url: string | null
           started_at: string | null
           status: string | null
@@ -9345,12 +8885,9 @@ export type Database = {
           to_name: string | null
           to_number: string | null
           transcript: string | null
-          transcript_attempts: number
           transcript_confidence: number | null
           transcript_fetched_at: string | null
           transcript_language: string | null
-          transcript_last_attempt_at: string | null
-          transcript_pending: boolean
           transcript_raw: string | null
           transcript_segments: Json | null
           transcript_source: string | null
@@ -9358,14 +8895,12 @@ export type Database = {
           user_id: string | null
         }
         Insert: {
-          ai_action_items?: Json | null
           ai_analysis_json?: Json | null
           ai_client_insights?: Json | null
           ai_coaching?: Json | null
           ai_key_points?: Json | null
           ai_summary?: string | null
           ai_summary_short?: string | null
-          ai_topics?: Json | null
           analysis_in_progress?: boolean | null
           analysis_locked_at?: string | null
           analysis_locked_by?: string | null
@@ -9409,9 +8944,6 @@ export type Database = {
           pipeline_started_at?: string | null
           pipeline_state?: Json
           pipeline_step?: string | null
-          recording_bytes?: number | null
-          recording_cached_at?: string | null
-          recording_storage_path?: string | null
           recording_url?: string | null
           started_at?: string | null
           status?: string | null
@@ -9419,12 +8951,9 @@ export type Database = {
           to_name?: string | null
           to_number?: string | null
           transcript?: string | null
-          transcript_attempts?: number
           transcript_confidence?: number | null
           transcript_fetched_at?: string | null
           transcript_language?: string | null
-          transcript_last_attempt_at?: string | null
-          transcript_pending?: boolean
           transcript_raw?: string | null
           transcript_segments?: Json | null
           transcript_source?: string | null
@@ -9432,14 +8961,12 @@ export type Database = {
           user_id?: string | null
         }
         Update: {
-          ai_action_items?: Json | null
           ai_analysis_json?: Json | null
           ai_client_insights?: Json | null
           ai_coaching?: Json | null
           ai_key_points?: Json | null
           ai_summary?: string | null
           ai_summary_short?: string | null
-          ai_topics?: Json | null
           analysis_in_progress?: boolean | null
           analysis_locked_at?: string | null
           analysis_locked_by?: string | null
@@ -9483,9 +9010,6 @@ export type Database = {
           pipeline_started_at?: string | null
           pipeline_state?: Json
           pipeline_step?: string | null
-          recording_bytes?: number | null
-          recording_cached_at?: string | null
-          recording_storage_path?: string | null
           recording_url?: string | null
           started_at?: string | null
           status?: string | null
@@ -9493,12 +9017,9 @@ export type Database = {
           to_name?: string | null
           to_number?: string | null
           transcript?: string | null
-          transcript_attempts?: number
           transcript_confidence?: number | null
           transcript_fetched_at?: string | null
           transcript_language?: string | null
-          transcript_last_attempt_at?: string | null
-          transcript_pending?: boolean
           transcript_raw?: string | null
           transcript_segments?: Json | null
           transcript_source?: string | null
@@ -9522,7 +9043,6 @@ export type Database = {
           direction: string
           from_number: string | null
           id: string
-          maestro_synced: boolean
           media_urls: Json
           metadata: Json
           ns_message_id: string | null
@@ -9541,7 +9061,6 @@ export type Database = {
           direction: string
           from_number?: string | null
           id?: string
-          maestro_synced?: boolean
           media_urls?: Json
           metadata?: Json
           ns_message_id?: string | null
@@ -9560,7 +9079,6 @@ export type Database = {
           direction?: string
           from_number?: string | null
           id?: string
-          maestro_synced?: boolean
           media_urls?: Json
           metadata?: Json
           ns_message_id?: string | null
@@ -9691,17 +9209,11 @@ export type Database = {
         Row: {
           auth_method: string | null
           ava_autonomy_mode: string
-          ava_chat_mode: string
           ava_last_session_at: string | null
           ava_learned_preferences: string | null
           ava_learned_updated_at: string | null
           ava_preferred_lang: string
           ava_sessions_count: number
-          ava_voice_id: string | null
-          ava_voice_similarity: number | null
-          ava_voice_speed: number | null
-          ava_voice_stability: number | null
-          ava_voice_style: number | null
           avatar_url: string | null
           created_at: string
           dnd_auto_schedule: boolean
@@ -9725,14 +9237,7 @@ export type Database = {
           maestro_broker_id: string | null
           maestro_broker_token: string | null
           maestro_connected: boolean
-          maestro_email: string | null
           maestro_last_sync_at: string | null
-          maestro_oauth_client: string | null
-          maestro_refresh_token: string | null
-          maestro_scope: string | null
-          maestro_telecom_email: string | null
-          maestro_telecom_linked_at: string | null
-          maestro_telecom_user_id: string | null
           maestro_token_expires_at: string | null
           metadata: Json
           mobile_app_enabled: boolean
@@ -9793,17 +9298,11 @@ export type Database = {
         Insert: {
           auth_method?: string | null
           ava_autonomy_mode?: string
-          ava_chat_mode?: string
           ava_last_session_at?: string | null
           ava_learned_preferences?: string | null
           ava_learned_updated_at?: string | null
           ava_preferred_lang?: string
           ava_sessions_count?: number
-          ava_voice_id?: string | null
-          ava_voice_similarity?: number | null
-          ava_voice_speed?: number | null
-          ava_voice_stability?: number | null
-          ava_voice_style?: number | null
           avatar_url?: string | null
           created_at?: string
           dnd_auto_schedule?: boolean
@@ -9827,14 +9326,7 @@ export type Database = {
           maestro_broker_id?: string | null
           maestro_broker_token?: string | null
           maestro_connected?: boolean
-          maestro_email?: string | null
           maestro_last_sync_at?: string | null
-          maestro_oauth_client?: string | null
-          maestro_refresh_token?: string | null
-          maestro_scope?: string | null
-          maestro_telecom_email?: string | null
-          maestro_telecom_linked_at?: string | null
-          maestro_telecom_user_id?: string | null
           maestro_token_expires_at?: string | null
           metadata?: Json
           mobile_app_enabled?: boolean
@@ -9895,17 +9387,11 @@ export type Database = {
         Update: {
           auth_method?: string | null
           ava_autonomy_mode?: string
-          ava_chat_mode?: string
           ava_last_session_at?: string | null
           ava_learned_preferences?: string | null
           ava_learned_updated_at?: string | null
           ava_preferred_lang?: string
           ava_sessions_count?: number
-          ava_voice_id?: string | null
-          ava_voice_similarity?: number | null
-          ava_voice_speed?: number | null
-          ava_voice_stability?: number | null
-          ava_voice_style?: number | null
           avatar_url?: string | null
           created_at?: string
           dnd_auto_schedule?: boolean
@@ -9929,14 +9415,7 @@ export type Database = {
           maestro_broker_id?: string | null
           maestro_broker_token?: string | null
           maestro_connected?: boolean
-          maestro_email?: string | null
           maestro_last_sync_at?: string | null
-          maestro_oauth_client?: string | null
-          maestro_refresh_token?: string | null
-          maestro_scope?: string | null
-          maestro_telecom_email?: string | null
-          maestro_telecom_linked_at?: string | null
-          maestro_telecom_user_id?: string | null
           maestro_token_expires_at?: string | null
           metadata?: Json
           mobile_app_enabled?: boolean
@@ -10030,59 +9509,6 @@ export type Database = {
             columns: ["user_id"]
             isOneToOne: false
             referencedRelation: "planipret_profiles"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      planipret_recording_uploads: {
-        Row: {
-          bytes: number | null
-          call_id: string
-          content_hash: string | null
-          created_at: string
-          error_message: string | null
-          id: string
-          maestro_call_id: string | null
-          media_id: string | null
-          status: string
-          updated_at: string
-          uploaded_at: string | null
-          user_id: string | null
-        }
-        Insert: {
-          bytes?: number | null
-          call_id: string
-          content_hash?: string | null
-          created_at?: string
-          error_message?: string | null
-          id?: string
-          maestro_call_id?: string | null
-          media_id?: string | null
-          status?: string
-          updated_at?: string
-          uploaded_at?: string | null
-          user_id?: string | null
-        }
-        Update: {
-          bytes?: number | null
-          call_id?: string
-          content_hash?: string | null
-          created_at?: string
-          error_message?: string | null
-          id?: string
-          maestro_call_id?: string | null
-          media_id?: string | null
-          status?: string
-          updated_at?: string
-          uploaded_at?: string | null
-          user_id?: string | null
-        }
-        Relationships: [
-          {
-            foreignKeyName: "planipret_recording_uploads_call_id_fkey"
-            columns: ["call_id"]
-            isOneToOne: true
-            referencedRelation: "planipret_phone_calls"
             referencedColumns: ["id"]
           },
         ]
@@ -10406,81 +9832,6 @@ export type Database = {
           },
         ]
       }
-      planipret_teams_conversations: {
-        Row: {
-          chat_id: string
-          chat_type: string | null
-          created_at: string
-          id: string
-          last_message_at: string | null
-          last_message_preview: string | null
-          last_synced_at: string
-          members: Json
-          topic: string | null
-          user_id: string
-        }
-        Insert: {
-          chat_id: string
-          chat_type?: string | null
-          created_at?: string
-          id?: string
-          last_message_at?: string | null
-          last_message_preview?: string | null
-          last_synced_at?: string
-          members?: Json
-          topic?: string | null
-          user_id: string
-        }
-        Update: {
-          chat_id?: string
-          chat_type?: string | null
-          created_at?: string
-          id?: string
-          last_message_at?: string | null
-          last_message_preview?: string | null
-          last_synced_at?: string
-          members?: Json
-          topic?: string | null
-          user_id?: string
-        }
-        Relationships: []
-      }
-      planipret_teams_messages: {
-        Row: {
-          chat_id: string
-          content: string | null
-          created_at: string
-          from_email: string | null
-          from_name: string | null
-          graph_id: string
-          id: string
-          sent_at: string | null
-          user_id: string
-        }
-        Insert: {
-          chat_id: string
-          content?: string | null
-          created_at?: string
-          from_email?: string | null
-          from_name?: string | null
-          graph_id: string
-          id?: string
-          sent_at?: string | null
-          user_id: string
-        }
-        Update: {
-          chat_id?: string
-          content?: string | null
-          created_at?: string
-          from_email?: string | null
-          from_name?: string | null
-          graph_id?: string
-          id?: string
-          sent_at?: string | null
-          user_id?: string
-        }
-        Relationships: []
-      }
       planipret_voicemails: {
         Row: {
           audio_url: string | null
@@ -10542,42 +9893,6 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
-      }
-      planipret_voip_push_tokens: {
-        Row: {
-          bundle_id: string | null
-          created_at: string
-          device_token: string
-          environment: string | null
-          extension: string | null
-          id: string
-          platform: string
-          updated_at: string
-          user_id: string
-        }
-        Insert: {
-          bundle_id?: string | null
-          created_at?: string
-          device_token: string
-          environment?: string | null
-          extension?: string | null
-          id?: string
-          platform?: string
-          updated_at?: string
-          user_id: string
-        }
-        Update: {
-          bundle_id?: string | null
-          created_at?: string
-          device_token?: string
-          environment?: string | null
-          extension?: string | null
-          id?: string
-          platform?: string
-          updated_at?: string
-          user_id?: string
-        }
-        Relationships: []
       }
       platform_branding: {
         Row: {
@@ -14041,7 +13356,6 @@ export type Database = {
         Args: { _org_id: string; _user_id: string }
         Returns: boolean
       }
-      cleanup_expired_maestro_oauth_states: { Args: never; Returns: undefined }
       create_group_chat: {
         Args: { _member_ids: string[]; _name: string }
         Returns: {
@@ -14237,7 +13551,6 @@ export type Database = {
       }
       pin_chat_message: { Args: { _message_id: string }; Returns: undefined }
       planipret_ava_org_id: { Args: never; Returns: string }
-      planipret_broker_ids: { Args: { _uid: string }; Returns: string[] }
       pp_audit_realtime_check: { Args: never; Returns: Json }
       pp_claim_call: {
         Args: { _answered_by: string; _call_id: string }

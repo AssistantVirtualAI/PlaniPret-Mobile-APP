@@ -9,25 +9,11 @@ import { ArrowLeft, RefreshCw, LogIn, Copy, Loader2, CheckCircle2, XCircle, Aler
 import { toast } from "sonner";
 import { buildMs365AuthorizeUrl, getMs365RedirectUri } from "@/lib/ms365OAuth";
 
+
 export default function MMs365Diagnostics() {
   const nav = useNavigate();
   const { data, loading, refresh } = useMs365Status(30_000);
   const [teamsCheck, setTeamsCheck] = useState<{ loading: boolean; ok: boolean | null; message: string; sample?: any[] }>({ loading: false, ok: null, message: "" });
-  const [importState, setImportState] = useState<{ loading: boolean; ok: boolean | null; message: string }>({ loading: false, ok: null, message: "" });
-
-  async function runImport(mode: "initial" | "delta" | "manual") {
-    setImportState({ loading: true, ok: null, message: "" });
-    try {
-      const { data: res, error } = await supabase.functions.invoke("ms365-full-import", { body: { mode } });
-      if (error) throw error;
-      const summary = (res as any)?.summary ?? res;
-      setImportState({ loading: false, ok: true, message: `Import ${mode} terminé (${JSON.stringify(summary)})` });
-      toast.success("Synchronisation Microsoft 365 lancée");
-    } catch (e: any) {
-      setImportState({ loading: false, ok: false, message: e?.message ?? String(e) });
-      toast.error("Échec de synchronisation");
-    }
-  }
 
   const callbackUrl = getMs365RedirectUri();
 
@@ -74,6 +60,7 @@ export default function MMs365Diagnostics() {
             <h1 className="text-lg font-bold">Diagnostics Microsoft 365</h1>
             <p className="text-xs" style={{ color: "#8FA8C0" }}>Triage rapide des erreurs de connexion</p>
           </div>
+          
           <button onClick={refresh} className="p-2 rounded-lg" style={{ background: "#0A1628", border: "1px solid #0E2A45" }}>
             <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
           </button>
@@ -142,30 +129,6 @@ export default function MMs365Diagnostics() {
               </span>
             )}
           </div>
-        </Card>
-
-        <Card title="Synchronisation complète (Contacts · Courriels · Calendrier · Teams)">
-          <div className="flex items-center gap-2 flex-wrap mb-2">
-            <button onClick={() => runImport("initial")} disabled={importState.loading}
-              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold disabled:opacity-60"
-              style={{ background: "#0078D4", color: "white" }}>
-              {importState.loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
-              Import initial complet
-            </button>
-            <button onClick={() => runImport("delta")} disabled={importState.loading}
-              className="inline-flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold disabled:opacity-60"
-              style={{ background: "#0D1F35", border: "1px solid #0E2A45", color: "#2E9BDC" }}>
-              Delta (nouveautés)
-            </button>
-            {importState.ok !== null && (
-              <span className="text-xs" style={{ color: importState.ok ? "#2EDC78" : "#E84C4C" }}>
-                {importState.ok ? "✅" : "❌"} {importState.message}
-              </span>
-            )}
-          </div>
-          <p className="text-[11px]" style={{ color: "#8FA8C0" }}>
-            Importe et met en cache localement les contacts, courriels (delta), rendez-vous et chats Teams pour un affichage instantané et de meilleures suggestions AVA.
-          </p>
         </Card>
       </div>
     </div>

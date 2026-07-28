@@ -104,8 +104,8 @@ export default function InboundCallOverlay({ call, onClose }: { call: InboundCal
   const initials = displayName.split(/\s+/).slice(0, 2).map((w) => w[0]).join("").toUpperCase();
 
   return (
-    <div className="absolute inset-0 z-[60] flex flex-col items-center justify-between py-10" style={{ background: "linear-gradient(180deg,#0A1628 0%,#020610 100%)" }}>
-      <button onClick={handleClose} className="absolute top-4 right-4 text-slate-400 hover:text-white text-xs flex items-center gap-1 px-3 py-2 rounded-full" style={{ background: "rgba(255,255,255,0.05)" }}>
+    <div className="absolute inset-0 z-[60] flex flex-col items-center justify-between" style={{ background: "linear-gradient(180deg,#0A1628 0%,#020610 100%)", paddingTop: "calc(env(safe-area-inset-top, 0px) + 24px)", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 24px)" }}>
+      <button onClick={handleClose} className="absolute right-4 text-slate-400 hover:text-white text-xs flex items-center gap-1 px-3 py-2 rounded-full" style={{ background: "rgba(255,255,255,0.05)", top: "calc(env(safe-area-inset-top, 0px) + 16px)" }}>
         <X className="w-4 h-4" /> Ignorer
       </button>
 

@@ -1,5 +1,5 @@
 // Inline denial banners for mic / notifications / contacts.
-import { useEffect, useState } from "react";
+import { useEffect, useCallback, useState } from "react";
 import { Bell, Mic, Users } from "lucide-react";
 import { getPermissionStatuses } from "@/lib/native/permissions/orchestrator";
 import { openAppSettings, isNative } from "@/lib/native/permissions/platform";
@@ -25,17 +25,41 @@ export default function PermissionBanners() {
   const { lang } = useMplanipretLang();
   const [denied, setDenied] = useState<Kind[]>([]);
 
-  useEffect(() => {
-    (async () => {
-      if (!(await isNative())) return;
-      const s = await getPermissionStatuses();
-      const list: Kind[] = [];
-      if (s.notifications === "denied") list.push("notifications");
-      if (s.microphone === "denied") list.push("microphone");
-      if (s.contacts === "denied") list.push("contacts");
-      setDenied(list);
-    })();
+  // Interroge l'API système réelle (pas le cache) — corrige le bug où les
+  // bannières restaient affichées après que l'utilisateur accordait la permission
+  const checkPermissions = useCallback(async () => {
+    if (!(await isNative())) return;
+    const s = await getPermissionStatuses();
+    const list: Kind[] = [];
+    if (s.notifications === "denied") list.push("notifications");
+    if (s.microphone === "denied") list.push("microphone");
+    if (s.contacts === "denied") list.push("contacts");
+    setDenied(list);
   }, []);
+
+  useEffect(() => {
+    // Vérification initiale
+    checkPermissions();
+
+    // Re-vérifier quand l'app revient au premier plan (après réglages iOS/Android)
+    const onVisible = () => { if (document.visibilityState === "visible") checkPermissions(); };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+
+    // Re-vérifier via Capacitor appStateChange (iOS/Android)
+    let removeListener: (() => void) | undefined;
+    import("@capacitor/app").then(({ App }) => {
+      App.addListener("appStateChange", ({ isActive }) => {
+        if (isActive) checkPermissions();
+      }).then((h) => { removeListener = () => h.remove(); }).catch(() => {});
+    }).catch(() => {});
+
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+      removeListener?.();
+    };
+  }, [checkPermissions]);
 
   if (!denied.length) return null;
   const key = lang === "en" ? "en" : "fr";
