@@ -41,9 +41,15 @@ export async function openAppSettings() {
     if (platform === "ios") {
       window.open("app-settings:", "_system");
     } else if (platform === "android") {
-      const { App } = await import("@capacitor/app");
-      const info = await App.getInfo();
-      window.open(`package:${info.id}`, "_system");
+      try {
+        const { App } = await import("@capacitor/app");
+        const info = await App.getInfo();
+        // Intent standard Android pour ouvrir les réglages de l'app
+        window.open(`android.settings.APPLICATION_DETAILS_SETTINGS?package=${info.id}`, "_system");
+      } catch {
+        // Fallback: ouvre les réglages généraux
+        window.open("android.settings.SETTINGS", "_system");
+      }
     }
   } catch { /* ignore */ }
 }

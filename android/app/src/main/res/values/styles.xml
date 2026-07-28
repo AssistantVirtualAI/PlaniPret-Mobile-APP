@@ -1,10 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Base application theme -->
-    <style name="AppTheme" parent="Theme.AppCompat.Light.DarkActionBar">
+    <!-- Base application theme — edge-to-edge, status bar transparente -->
+    <!-- windowTranslucentStatus=true active safe-area-inset-top dans la WebView -->
+    <!-- Le header React utilise env(safe-area-inset-top) comme sur iOS -->
+    <style name="AppTheme" parent="Theme.AppCompat.Light.NoActionBar">
         <item name="colorPrimary">@color/colorPrimary</item>
         <item name="colorPrimaryDark">@color/colorPrimaryDark</item>
         <item name="colorAccent">@color/colorAccent</item>
+        <!-- Status bar transparente — le contenu passe dessous (edge-to-edge) -->
+        <item name="android:windowTranslucentStatus">true</item>
+        <!-- Navigation bar transparente -->
+        <item name="android:windowTranslucentNavigation">true</item>
+        <!-- Pas d'ActionBar native -->
+        <item name="windowNoTitle">true</item>
+        <item name="windowActionBar">false</item>
     </style>
 
     <!-- Theme for launch screen (no action bar, full screen) -->

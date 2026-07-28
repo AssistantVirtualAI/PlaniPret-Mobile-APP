@@ -203,7 +203,9 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       }
     }
 
-    private func scheduleRegister() { timer?.invalidate(); timer = Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in self?.sendRegister(challenge: nil) }; RunLoop.main.add(timer!, forMode: .common) }
+    // Timer toutes les 120s (2 min) — bien avant l'expiration du REGISTER (1800s)
+    // Garantit que le SIP reste enregistré en permanence, même en arrière-plan iOS
+    private func scheduleRegister() { timer?.invalidate(); timer = Timer.scheduledTimer(withTimeInterval: 120, repeats: true) { [weak self] _ in self?.sendRegister(challenge: nil) }; RunLoop.main.add(timer!, forMode: .common) }
 
     private func receiveLoop() {
       socket?.receive { [weak self] result in

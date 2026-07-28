@@ -71,10 +71,19 @@ public class PpSipKeepAliveService extends Service {
     requestReregister(this, "service_start");
     executor.execute(this::connectAndRegister);
     if (heartbeat != null) heartbeat.cancel(false);
+    // Heartbeat toutes les 120s (2 min) — bien avant l'expiration du REGISTER (1800s)
+    // Garantit que le SIP reste enregistré en permanence, même en arrière-plan
     heartbeat = executor.scheduleAtFixedRate(() -> {
-      try { sendRegister(null); } catch (Exception e) { emitStatus("reconnecting", "register_retry"); connectAndRegister(); }
+      try {
+        if (wsSocket == null || wsSocket.isClosed() || !wsSocket.isConnected()) {
+          emitStatus("reconnecting", "ws_closed_reconnecting");
+          connectAndRegister();
+        } else {
+          sendRegister(null);
+        }
+      } catch (Exception e) { emitStatus("reconnecting", "register_retry"); connectAndRegister(); }
       requestReregister(this, "keepalive");
-    }, 600, 600, TimeUnit.SECONDS);
+    }, 120, 120, TimeUnit.SECONDS);
     return START_STICKY;
   }
 

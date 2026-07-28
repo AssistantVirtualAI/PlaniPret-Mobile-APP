@@ -30,7 +30,10 @@ const config: CapacitorConfig = {
     },
     StatusBar: {
       style: 'light',
-      backgroundColor: '#1A4A8A',   // Bleu Planiprêt
+      // Transparent + overlaysWebView: la WebView passe sous la status bar
+      // Le header React gère env(safe-area-inset-top) comme sur iOS
+      backgroundColor: '#00000000',
+      overlaysWebView: true,
     },
     PushNotifications: {
       presentationOptions: ['badge', 'sound', 'alert'],
