@@ -1,6 +1,7 @@
 // pp-ava-brief: structured daily/weekly/monthly brief for the Planipret mobile home.
 // Aggregates real broker data (calls, missed, sms, voicemails, leads, meetings, tasks, emails)
-// and asks Claude (primary) or Lovable AI Gateway (fallback) for a French, actionable summary.
+// and asks Claude (primary) or Lovable AI Gateway (fallback) for an actionable summary.
+// Supports FR and EN via the `lang` body parameter.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { z } from "npm:zod";
 import { createLovableAiGatewayProvider } from "../_shared/ai-gateway.ts";
@@ -40,6 +41,7 @@ function periodRange(period: Period): { since: Date; until: Date; label: string 
 /** Call Claude API directly with the Anthropic key. Returns parsed JSON or null. */
 async function callClaude(system: string, userPrompt: string): Promise<any | null> {
   const claudeKey = Deno.env.get("ANTHROPIC_API_KEY") ?? Deno.env.get("CLAUDE_API_KEY");
+  if (!claudeKey) return null;
   try {
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
@@ -72,6 +74,82 @@ async function callClaude(system: string, userPrompt: string): Promise<any | nul
   }
 }
 
+function buildSystemPrompt(lang: string, brokerName: string, period: Period): string {
+  const isEn = lang === "en";
+  const periodLabel = isEn
+    ? (period === "day" ? "today" : period === "week" ? "this week" : period === "month" ? "this month" : "your shift")
+    : (period === "day" ? "la journée" : period === "week" ? "la semaine" : period === "month" ? "le mois" : "votre quart");
+
+  if (isEn) {
+    return `You are AVA, the AI assistant for a Quebec mortgage broker. You receive real statistics for broker ${brokerName || ""} for ${periodLabel}.
+Generate a short, professional brief in English.
+Reply ONLY with a valid JSON object (no markdown, no text before or after) with this exact structure:
+{
+  "headline": "1 punchy sentence with key numbers",
+  "priorities": ["action 1 (max 12 words)", "action 2", "action 3"],
+  "risks": ["risk 1", "risk 2"],
+  "suggestions": [
+    {"label": "Call John back", "kind": "call", "number": "5141234567"},
+    {"label": "SMS to Marie", "kind": "sms", "number": "5149876543"},
+    {"label": "Reminder tomorrow", "kind": "reminder"}
+  ]
+}
+Rules:
+- headline: 1 sentence with key numbers (calls, leads, tasks, emails)
+- priorities: 3 concrete actions ordered by urgency
+- risks: up to 2 risks or attention points (omit if none)
+- suggestions: up to 3 clickable actions with number if available in the data`;
+  }
+
+  return `Tu es AVA, l'assistante IA d'un courtier hypothécaire au Québec. Tu reçois les statistiques réelles du courtier ${brokerName || ""} pour ${periodLabel}.
+Génère un brief court, professionnel, en français du Québec.
+Réponds UNIQUEMENT avec un objet JSON valide (sans markdown, sans texte avant ou après) avec cette structure exacte:
+{
+  "headline": "1 phrase percutante avec les chiffres clés",
+  "priorities": ["action 1 (max 12 mots)", "action 2", "action 3"],
+  "risks": ["risque 1", "risque 2"],
+  "suggestions": [
+    {"label": "Rappeler Jean", "kind": "call", "number": "5141234567"},
+    {"label": "SMS à Marie", "kind": "sms", "number": "5149876543"},
+    {"label": "Rappel demain", "kind": "reminder"}
+  ]
+}
+Règles:
+- headline: 1 phrase avec les chiffres clés (appels, leads, tâches, emails)
+- priorities: 3 actions concrètes ordonnées par urgence
+- risks: jusqu'à 2 risques ou points d'attention (omets si aucun)
+- suggestions: jusqu'à 3 actions cliquables avec numéro si disponible dans les données`;
+}
+
+function buildStaticFallback(stats: any, lang: string): any {
+  const isEn = lang === "en";
+  return {
+    headline: isEn
+      ? `${stats.calls_total} calls · ${stats.hot_leads.length} hot leads · ${stats.tasks_pending.length} tasks · ${stats.emails_unread} unread emails`
+      : `${stats.calls_total} appels · ${stats.hot_leads.length} leads chauds · ${stats.tasks_pending.length} tâches · ${stats.emails_unread} emails non lus`,
+    priorities: [
+      stats.tasks_pending[0]
+        ? (isEn ? `Call back ${stats.tasks_pending[0].contact_name || stats.tasks_pending[0].contact_number}` : `Rappeler ${stats.tasks_pending[0].contact_name || stats.tasks_pending[0].contact_number}`)
+        : null,
+      stats.hot_leads[0]
+        ? (isEn ? `Re-contact ${stats.hot_leads[0].from_name || stats.hot_leads[0].from_number} (score ${stats.hot_leads[0].lead_score})` : `Recontacter ${stats.hot_leads[0].from_name || stats.hot_leads[0].from_number} (score ${stats.hot_leads[0].lead_score})`)
+        : null,
+      stats.missed_count > 0
+        ? (isEn ? `Return ${stats.missed_count} missed calls` : `Retourner ${stats.missed_count} appels manqués`)
+        : null,
+    ].filter(Boolean) as string[],
+    risks: [
+      stats.missed_count > 0
+        ? (isEn ? `${stats.missed_count} missed calls to handle` : `${stats.missed_count} appels manqués à traiter`)
+        : null,
+      stats.voicemails_unread > 0
+        ? (isEn ? `${stats.voicemails_unread} unheard voicemails` : `${stats.voicemails_unread} voicemails non écoutés`)
+        : null,
+    ].filter(Boolean) as string[],
+    suggestions: [],
+  };
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: cors });
   if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405);
@@ -82,6 +160,7 @@ Deno.serve(async (req) => {
     const body = await req.json().catch(() => ({}));
     const period: Period = (["day","week","month","shift"].includes(body?.period) ? body.period : "day") as Period;
     const force = !!body?.force;
+    const lang: string = (body?.lang === "en" || body?.lang === "fr") ? body.lang : "fr";
 
     const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
@@ -173,27 +252,8 @@ Deno.serve(async (req) => {
       emails_unread: recentEmails.filter((e: any) => !e.isRead).length,
     };
 
-    const periodLabel = period === "day" ? "la journée" : period === "week" ? "la semaine" : period === "month" ? "le mois" : "votre quart";
-    const systemPrompt = `Tu es AVA, l'assistante IA d'un courtier hypothécaire au Québec. Tu reçois les statistiques réelles du courtier ${profile.full_name ?? ""} pour ${periodLabel}.
-Génère un brief court, professionnel, en français du Québec.
-Réponds UNIQUEMENT avec un objet JSON valide (sans markdown, sans texte avant ou après) avec cette structure exacte:
-{
-  "headline": "1 phrase percutante avec les chiffres clés",
-  "priorities": ["action 1 (max 12 mots)", "action 2", "action 3"],
-  "risks": ["risque 1", "risque 2"],
-  "suggestions": [
-    {"label": "Rappeler Jean", "kind": "call", "number": "5141234567"},
-    {"label": "SMS à Marie", "kind": "sms", "number": "5149876543"},
-    {"label": "Rappel demain", "kind": "reminder"}
-  ]
-}
-Règles:
-- headline: 1 phrase avec les chiffres clés (appels, leads, tâches, emails)
-- priorities: 3 actions concrètes ordonnées par urgence
-- risks: jusqu'à 2 risques ou points d'attention (omets si aucun)
-- suggestions: jusqu'à 3 actions cliquables avec numéro si disponible dans les données`;
-
-    const userPrompt = `Données du courtier:\n${JSON.stringify(stats).slice(0, 5000)}`;
+    const systemPrompt = buildSystemPrompt(lang, profile.full_name ?? "", period);
+    const userPrompt = `${lang === "en" ? "Broker data" : "Données du courtier"}:\n${JSON.stringify(stats).slice(0, 5000)}`;
 
     let result: any;
 
@@ -230,23 +290,10 @@ Règles:
 
     // 3) Fallback statique si tout échoue
     if (!result) {
-      result = {
-        headline: `${stats.calls_total} appels · ${stats.hot_leads.length} leads chauds · ${stats.tasks_pending.length} tâches · ${stats.emails_unread} emails non lus`,
-        priorities: [
-          stats.tasks_pending[0] ? `Rappeler ${stats.tasks_pending[0].contact_name || stats.tasks_pending[0].contact_number}` : null,
-          stats.hot_leads[0] ? `Recontacter ${stats.hot_leads[0].from_name || stats.hot_leads[0].from_number} (score ${stats.hot_leads[0].lead_score})` : null,
-          stats.meetings[0] ? `Préparer RDV: ${stats.meetings[0].title}` : null,
-          stats.missed_count > 0 ? `Retourner ${stats.missed_count} appels manqués` : null,
-        ].filter(Boolean) as string[],
-        risks: [
-          stats.missed_count > 0 ? `${stats.missed_count} appels manqués à traiter` : null,
-          stats.voicemails_unread > 0 ? `${stats.voicemails_unread} voicemails non écoutés` : null,
-        ].filter(Boolean) as string[],
-        suggestions: [],
-      };
+      result = buildStaticFallback(stats, lang);
     }
 
-    return json({ ...result, stats, cached: false });
+    return json({ ...result, stats, cached: false, lang });
   } catch (e) {
     console.error("pp-ava-brief error", e);
     return json({ error: String(e) }, 500);

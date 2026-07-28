@@ -245,7 +245,7 @@ export default function MHome() {
   const loadBrief = async (force = false) => {
     setBriefLoading(true);
     setBriefErr(null);
-    const { data, error } = await supabase.functions.invoke("pp-ava-brief", { body: { period, force } });
+    const { data, error } = await supabase.functions.invoke("pp-ava-brief", { body: { period, force, lang } });
     setBriefLoading(false);
     if (error || (data as any)?.error) {
       setBriefErr((data as any)?.error || error?.message || "brief unavailable");
@@ -283,18 +283,21 @@ export default function MHome() {
   };
 
   // Build a prose text from the structured brief for TTS
-  const buildBriefText = (b: any): string => [
-    b?.headline,
-    ...(Array.isArray(b?.priorities) && b.priorities.length
-      ? ["Priorités : " + b.priorities.join(". ")]
-      : []),
-    ...(Array.isArray(b?.risks) && b.risks.length
-      ? ["Points d'attention : " + b.risks.join(". ")]
-      : []),
-    ...(Array.isArray(b?.suggestions) && b.suggestions.length
-      ? ["Suggestions : " + b.suggestions.map((s: any) => s.label ?? s).join(". ")]
-      : []),
-  ].filter(Boolean).join("\n");
+  const buildBriefText = (b: any): string => {
+    const isEn = lang === "en";
+    return [
+      b?.headline,
+      ...(Array.isArray(b?.priorities) && b.priorities.length
+        ? [(isEn ? "Priorities: " : "Priorités : ") + b.priorities.join(". ")]
+        : []),
+      ...(Array.isArray(b?.risks) && b.risks.length
+        ? [(isEn ? "Attention points: " : "Points d'attention : ") + b.risks.join(". ")]
+        : []),
+      ...(Array.isArray(b?.suggestions) && b.suggestions.length
+        ? [(isEn ? "Suggestions: " : "Suggestions : ") + b.suggestions.map((s: any) => s.label ?? s).join(". ")]
+        : []),
+    ].filter(Boolean).join("\n");
+  };
 
   const toggleBriefTts = async () => {
     // If already playing, pause
@@ -318,7 +321,7 @@ export default function MHome() {
     try {
       // ElevenLabs voice: Sarah (multilingual) — same voice as GreetingStudio default
       const { data, error } = await supabase.functions.invoke("pp-ava-tts", {
-        body: { text: text.slice(0, 3800), voiceId: "EXAVITQu4vr4xnSDxMaL", language: lang },
+        body: { text: text.slice(0, 3800), language: lang },
       });
       if (error || !(data as any)?.audioContent) throw new Error(error?.message ?? "no_audio");
       const audio = new Audio(`data:audio/mpeg;base64,${(data as any).audioContent}`);

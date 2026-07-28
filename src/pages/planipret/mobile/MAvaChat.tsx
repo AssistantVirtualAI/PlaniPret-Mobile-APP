@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useOutletContext } from "react-router-dom";
+import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -45,7 +46,7 @@ export default function MAvaChat() {
   const chunksRef = useRef<Blob[]>([]);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const outlet = useOutletContext<PlanipretMobileContext>() as any;
-
+  const { lang } = useMplanipretLang();
   const switchMode = (m: "chat" | "voice") => { setMode(m); localStorage.setItem("ava_mode", m); };
 
   useEffect(() => {
@@ -113,7 +114,7 @@ export default function MAvaChat() {
       }
       const history = messages.slice(-8).map((m) => ({ role: m.role, content: m.message }));
       const { data, error } = await supabase.functions.invoke("pp-ava-chat", {
-        body: { mode: "chat", user_message: text, session_id: sessionId, history },
+        body: { mode: "chat", user_message: text, session_id: sessionId, history, lang },
       });
       if (error) throw error;
       const d = data as any;
@@ -213,7 +214,7 @@ export default function MAvaChat() {
       }
 
       const { data, error } = await supabase.functions.invoke("pp-ava-chat", {
-        body: { mode: "chat", confirm_action: suggestion, approved: true, session_id: sessionId },
+        body: { mode: "chat", confirm_action: suggestion, approved: true, session_id: sessionId, lang },
       });
       if (error) throw error;
       const replyText = String((data as any)?.reply ?? "Action terminée.");
@@ -235,7 +236,7 @@ export default function MAvaChat() {
     try {
       audioRef.current?.pause();
       setSpeakingId(id);
-      const { data, error } = await supabase.functions.invoke("pp-ava-tts", { body: { text, language: "fr" } });
+      const { data, error } = await supabase.functions.invoke("pp-ava-tts", { body: { text, language: lang } });
       if (error) throw error;
       const d = data as any;
       if (!d?.audioContent) throw new Error("no_audio");
