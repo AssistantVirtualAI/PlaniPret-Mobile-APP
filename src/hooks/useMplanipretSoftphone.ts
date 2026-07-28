@@ -32,6 +32,7 @@ import {
   reportPlanipretCallEnded,
   requestPlanipretBatteryOptimizationExemption,
   startPlanipretSipKeepAlive,
+  stopPlanipretSipKeepAlive,
   type PpNativeSipStatus,
 } from "@/lib/planipret/sip/nativePpSipService";
 import {
@@ -355,9 +356,7 @@ export function useMplanipretSoftphone(enabled = true) {
         if (AppPlugin?.addListener) {
           const p = AppPlugin.addListener("appStateChange", (state: { isActive: boolean }) => {
             if (state?.isActive) {
-              // Foreground: JsSIP owns the single SIP registration. Triggering the
-              // native REGISTER here made the PBX close the JsSIP socket (1001) and
-              // caused an endless disconnect/reconnect loop.
+              void stopPlanipretSipKeepAlive().catch(() => undefined);
               try { ppSipProvider.forceReregister(); } catch {}
               evaluate();
             } else {
@@ -377,7 +376,14 @@ export function useMplanipretSoftphone(enabled = true) {
     // Heartbeat: SIP transport can go silent without emitting a status event
     // (background tab, radio switch, NS keepalive drop). Poll every 15s so the
     // watchdog escalates to forceReregister even without a subscribe callback.
-    const heartbeat = window.setInterval(evaluate, 15_000);
+    const heartbeat = window.setInterval(() => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        const cfg = ppSipProvider.getConfig();
+        if (cfg) void startPlanipretSipKeepAlive(cfg).then((s) => { if (s) setNativeStatus(s); });
+        return;
+      }
+      evaluate();
+    }, 15_000);
     // Initial evaluation — don't wait for the first SIP event.
     evaluate();
     return () => {

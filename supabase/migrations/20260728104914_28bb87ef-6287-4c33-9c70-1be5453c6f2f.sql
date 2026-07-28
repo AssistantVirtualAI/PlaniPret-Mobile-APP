@@ -1,0 +1,14 @@
+GRANT ALL ON public.planipret_phone_calls TO service_role;
+GRANT ALL ON public.planipret_integration_secrets TO service_role;
+GRANT ALL ON public.planipret_profiles TO service_role;
+GRANT ALL ON public.planipret_recording_uploads TO service_role;
+GRANT ALL ON public.planipret_maestro_sync_log TO service_role;
+GRANT ALL ON public.planipret_phone_messages TO service_role;
+GRANT ALL ON public.planipret_pipeline TO service_role;
+GRANT ALL ON public.planipret_pipeline_logs TO service_role;
+GRANT ALL ON public.planipret_push_subscriptions TO service_role;
+GRANT ALL ON public.planipret_ava_notifications TO service_role;
+GRANT SELECT, INSERT, UPDATE ON public.planipret_phone_calls TO authenticated;
+GRANT SELECT, INSERT, UPDATE ON public.planipret_recording_uploads TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.planipret_push_subscriptions TO authenticated;
+GRANT SELECT, INSERT, UPDATE ON public.planipret_ava_notifications TO authenticated;

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useOutletContext, useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
-import { ArrowLeft, Phone, TrendingUp, Award, Flame, Sparkles } from "lucide-react";
+import { ArrowLeft, Phone, TrendingUp, Award, Flame, Sparkles, MessageSquare, Voicemail, Loader2, RefreshCw, AlertCircle } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, PieChart, Pie, Cell, Legend } from "recharts";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
 import CoachOverlay from "@/components/planipret/ava/CoachOverlay";
@@ -23,9 +23,12 @@ export default function MStats() {
   const navigate = useNavigate();
   const [period, setPeriod] = useState<Period>("week");
   const [calls, setCalls] = useState<any[]>([]);
+  const [messages, setMessages] = useState<any[]>([]);
+  const [voicemails, setVoicemails] = useState<any[]>([]);
   const [leads, setLeads] = useState<any[]>([]);
-  const [smsCount, setSmsCount] = useState<number>(0);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [refreshTick, setRefreshTick] = useState(0);
   const [coachOpen, setCoachOpen] = useState(false);
   const [coachLoading, setCoachLoading] = useState(false);
   const [coachReply, setCoachReply] = useState("");
@@ -33,29 +36,48 @@ export default function MStats() {
 
   useEffect(() => {
     if (!profile?.user_id) return;
+    let cancelled = false;
     (async () => {
       setLoading(true);
+      setLoadError(null);
       const days = period === "week" ? 7 : period === "month" ? 30 : 90;
       const since = new Date(Date.now() - days * 86400000).toISOString();
-      const [cRes, lRes, smsRes] = await Promise.all([
-        supabase.from("planipret_phone_calls").select("id,direction,status,duration_seconds,lead_score,created_at,started_at")
-          .eq("user_id", profile.user_id).gte("created_at", since).order("created_at", { ascending: false }),
-        supabase.from("planipret_pipeline").select("id,stage,created_at")
-          .eq("user_id", profile.user_id).gte("created_at", since),
-        supabase.from("planipret_phone_messages").select("id", { count: "exact", head: true })
-          .eq("user_id", profile.user_id).gte("created_at", since),
-      ]);
-      setCalls(cRes.data ?? []); setLeads(lRes.data ?? []); setSmsCount(smsRes.count ?? 0); setLoading(false);
+      const profileIds = Array.from(new Set([profile.user_id, profile.id].filter(Boolean)));
+      try {
+        const [cRes, mRes, vRes, lRes] = await Promise.all([
+          supabase.from("planipret_phone_calls").select("id,direction,status,duration_seconds,lead_score,lead_temperature,coaching_score,created_at,started_at,has_recording,analyzed_at")
+            .in("user_id", profileIds).gte("started_at", since).order("started_at", { ascending: false }),
+          supabase.from("planipret_phone_messages").select("id,direction,created_at,read_at")
+            .in("user_id", profileIds).gte("created_at", since),
+          supabase.from("planipret_voicemails").select("id,is_read,created_at,duration_seconds")
+            .in("user_id", profileIds).gte("created_at", since),
+          supabase.from("planipret_pipeline").select("id,stage,created_at")
+            .in("user_id", profileIds).gte("created_at", since),
+        ]);
+        if (cancelled) return;
+        if (cRes.error) throw cRes.error;
+        setCalls(cRes.data ?? []);
+        setMessages(mRes.data ?? []);
+        setVoicemails(vRes.data ?? []);
+        setLeads(lRes.data ?? []);
+      } catch (e: any) {
+        if (!cancelled) setLoadError(e?.message ?? "performance_unavailable");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
     })();
-  }, [profile?.user_id, period]);
+    return () => { cancelled = true; };
+  }, [profile?.user_id, profile?.id, period, refreshTick]);
 
   const kpi = useMemo(() => {
     const total = calls.length;
     const answered = calls.filter((c) => c.status !== "missed" && (c.duration_seconds ?? 0) > 0).length;
     const avgDur = total ? Math.round(calls.reduce((s, c) => s + (c.duration_seconds ?? 0), 0) / total) : 0;
     const scored = calls.filter((c) => c.lead_score != null);
+    const coach = calls.filter((c) => typeof c.coaching_score === "number");
     const avgScore = scored.length ? (scored.reduce((s, c) => s + c.lead_score, 0) / scored.length).toFixed(1) : "—";
-    return { total, response: total ? Math.round((answered / total) * 100) : 0, avgDur, avgScore };
+    const avgCoach = coach.length ? Math.round(coach.reduce((s, c) => s + c.coaching_score, 0) / coach.length) : 0;
+    return { total, response: total ? Math.round((answered / total) * 100) : 0, avgDur, avgScore, avgCoach };
   }, [calls]);
 
   const dailyData = useMemo(() => {
@@ -65,7 +87,7 @@ export default function MStats() {
       return { label: d.toLocaleDateString(lang === "en" ? "en-CA" : "fr-CA", { weekday: "short", day: "2-digit" }), out: 0, in: 0, missed: 0, date: d.toDateString() };
     });
     for (const c of calls) {
-      const dStr = new Date(c.created_at).toDateString();
+      const dStr = new Date(c.started_at ?? c.created_at).toDateString();
       const b = buckets.find((x) => x.date === dStr); if (!b) continue;
       if (c.status === "missed" || (c.duration_seconds ?? 0) === 0) b.missed++;
       else if (c.direction === "outbound") b.out++; else b.in++;
@@ -81,7 +103,7 @@ export default function MStats() {
   }, [calls, t]);
 
   const funnel = useMemo(() => {
-    const qualified = leads.length;
+    const qualified = Math.max(leads.length, calls.filter((c) => (c.lead_score ?? 0) >= 6).length);
     const inPipe = leads.filter((l) => ["proposition", "negotiation", "discovery"].includes(l.stage)).length;
     const approved = leads.filter((l) => l.stage === "won" || l.stage === "approved").length;
     return [{ label: t("home.kpi.calls"), value: kpi.total }, { label: t("stats.qualifiedLeads"), value: qualified }, { label: t("stats.inPipeline"), value: inPipe }, { label: t("stats.approved"), value: approved }];
@@ -93,13 +115,16 @@ export default function MStats() {
   }, [dailyData]);
 
   return (
-    <div className="p-4">
+    <div className="p-4 pb-[calc(2rem+env(safe-area-inset-bottom))] min-h-dvh overflow-y-auto">
       <header className="flex items-center gap-2 mb-4">
         <button onClick={() => navigate(-1)} className="p-1.5 rounded-full hover:bg-slate-100"><ArrowLeft className="w-5 h-5" /></button>
         <div>
           <h1 className="text-xl font-bold" style={{ color: "var(--pp-text-primary)" }}>{t("stats.title")}</h1>
-          <p className="text-xs text-slate-400">{profile?.full_name ?? ""} · {new Date().toLocaleDateString(lang === "en" ? "en-CA" : "fr-CA", { month: "long", year: "numeric" })}</p>
+          <p className="text-xs text-slate-400">{profile?.full_name ?? ""} · {profile?.extension ? `Ext. ${profile.extension}` : new Date().toLocaleDateString(lang === "en" ? "en-CA" : "fr-CA", { month: "long", year: "numeric" })}</p>
         </div>
+        <button onClick={() => setRefreshTick((n) => n + 1)} className="ml-auto p-2 rounded-full" style={{ background: "var(--pp-bg-elevated)", color: PRIMARY }} aria-label="Refresh">
+          <RefreshCw className="w-4 h-4" />
+        </button>
       </header>
 
       <div className="flex gap-1.5 mb-4 bg-slate-100 rounded-full p-1 text-xs">
@@ -138,14 +163,24 @@ export default function MStats() {
       >
         <Sparkles className="w-4 h-4" /> {t("stats.coachButton")}
       </button>
-
+      {loading && (
+        <div className="mb-4 rounded-2xl p-3 flex items-center gap-2 text-xs" style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-secondary)" }}>
+          <Loader2 className="w-4 h-4 animate-spin" /> Chargement de la performance…
+        </div>
+      )}
+      {loadError && (
+        <div className="mb-4 rounded-2xl p-3 flex items-center gap-2 text-xs" style={{ background: "rgba(239,68,68,0.12)", color: "var(--pp-danger)" }}>
+          <AlertCircle className="w-4 h-4" /> {loadError}
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-2 mb-4">
         <Kpi label={t("stats.totalCalls")} value={kpi.total} icon={<Phone className="w-4 h-4" />} />
         <Kpi label={t("stats.responseRate")} value={`${kpi.response}%`} icon={<TrendingUp className="w-4 h-4" />} />
         <Kpi label={t("stats.avgDuration")} value={`${Math.floor(kpi.avgDur / 60)}m${kpi.avgDur % 60}s`} />
         <Kpi label={t("stats.avgScore")} value={String(kpi.avgScore)} />
-        <Kpi label={t("stats.sms")} value={smsCount} icon={<span className="text-[13px]">💬</span>} />
+        <Kpi label="Textos" value={`${messages.filter((m) => m.direction === "outbound").length}/${messages.filter((m) => m.direction === "inbound").length}`} icon={<MessageSquare className="w-4 h-4" />} />
+        <Kpi label="Voicemail" value={voicemails.length} icon={<Voicemail className="w-4 h-4" />} />
       </div>
 
       <Ms365StatsCard days={period === "week" ? 7 : period === "month" ? 30 : 90} />

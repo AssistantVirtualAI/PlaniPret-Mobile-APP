@@ -162,11 +162,6 @@ const statusInfo = (c: Call, lang: "fr" | "en") => {
 };
 
 
-// Cache module-level : survit aux remontages du composant (changements d'onglet)
-// Les enregistrements restent en mémoire et s'affichent instantanément à chaque retour sur l'onglet
-const _recordingsCache: { data: any[]; userId: string | null; ts: number } = { data: [], userId: null, ts: 0 };
-const RECORDINGS_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes avant refresh forcé
-
 // ---------- main ----------
 export default function MCalls() {
   const { t, lang } = useMplanipretLang();
@@ -178,13 +173,7 @@ export default function MCalls() {
 
   );
   const [calls, setCalls] = useState<Call[]>([]);
-  // Initialiser depuis le cache module-level pour affichage instantané au remontage
-  const _cachedUid = profile?.id ?? profile?.user_id ?? null;
-  const [recordings, setRecordings] = useState<Call[]>(() =>
-    _cachedUid && _recordingsCache.userId === _cachedUid && _recordingsCache.data.length > 0
-      ? _recordingsCache.data as Call[]
-      : []
-  );
+  const [recordings, setRecordings] = useState<Call[]>([]);
   const [loading, setLoading] = useState(true);
   const [recordingsLoading, setRecordingsLoading] = useState(false);
   const [search, setSearch] = useState("");
@@ -292,15 +281,12 @@ export default function MCalls() {
     // Only show the spinner when we have nothing to display yet — otherwise
     // refresh silently in the background so opening the tab feels instant.
     setRecordings((prev) => {
-      // Ne montrer le spinner que si le cache module-level ET le state sont vides
-      const cacheEmpty = _recordingsCache.data.length === 0;
-      if (!silent && prev.length === 0 && cacheEmpty) setRecordingsLoading(true);
+      if (!silent && prev.length === 0) setRecordingsLoading(true);
       return prev;
     });
     try {
       const end = new Date().toISOString();
-      // 90-day window to ensure all recent recordings are visible
-      const start = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+      const start = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
       let localQuery: any = supabase
         .from("planipret_phone_calls")
         .select("*")
@@ -310,21 +296,16 @@ export default function MCalls() {
         .gte("started_at", start)
         .lte("started_at", end)
         .order("started_at", { ascending: false })
-        .limit(100);
+        .limit(50);
       if (phoneCallScopeFilter) localQuery = localQuery.or(phoneCallScopeFilter);
       const { data: local } = await localQuery;
-      const freshData = (local ?? []).filter((r: any) => r.has_recording || r.recording_url || r.ns_callid || r.ns_orig_callid || r.ns_term_callid || r.ns_call_id).map((r: any) => ({
+      setRecordings((local ?? []).filter((r: any) => r.has_recording || r.recording_url || r.ns_callid || r.ns_orig_callid || r.ns_term_callid || r.ns_call_id).map((r: any) => ({
         ...r,
         stream_via_proxy: true,
         proxy_call_db_id: r.id,
         proxy_ns_callid: r.ns_callid ?? r.ns_orig_callid ?? r.ns_term_callid ?? r.ns_call_id ?? null,
         has_recording: !!(r.has_recording || r.recording_url || r.ns_callid || r.ns_orig_callid || r.ns_term_callid || r.ns_call_id),
-      })) as Call[];
-      // Mettre à jour le cache module-level pour affichage instantané au prochain remontage
-      _recordingsCache.data = freshData;
-      _recordingsCache.userId = userId;
-      _recordingsCache.ts = Date.now();
-      setRecordings(freshData);
+      })) as Call[]);
     } catch (e) {
       console.warn("[MCalls] recordings load failed", e);
     } finally {
@@ -337,9 +318,8 @@ export default function MCalls() {
     recordingsSyncingRef.current = true;
     try {
       const end = new Date().toISOString();
-      // 90-day window to match loadRecordingsFromCache
-      const start = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
-      await supabase.functions.invoke("pp-ns-cdr", { body: { action: "sync", start, end, limit: 50 } });
+      const start = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+      await supabase.functions.invoke("pp-ns-cdr", { body: { action: "sync", start, end, limit: 25 } });
       await loadRecordingsFromCache(true);
     } catch (e) {
       console.warn("[MCalls] recordings sync failed", e);
@@ -551,7 +531,7 @@ export default function MCalls() {
       </div>
 
       {/* Body */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
         {tab === "recordings" ? (
 
           <>
@@ -568,12 +548,7 @@ export default function MCalls() {
               calls={recordings as any}
               loading={recordingsLoading}
               userId={userId}
-              onUpdated={(c) => setRecordings((prev) => {
-                const next = prev.map((p) => (p.id === c.id ? { ...p, ...c } as any : p));
-                // Sync module-level cache so remounts don't rehydrate stale data
-                _recordingsCache.data = next;
-                return next;
-              })}
+              onUpdated={(c) => setRecordings((prev) => prev.map((p) => (p.id === c.id ? { ...p, ...c } as any : p)))}
             />
           </>
         ) : tab === "voicemails" ? (
@@ -1972,7 +1947,7 @@ function VoicemailsTab({
     <div className="px-3 pt-3 pb-4">
       {/* ElevenLabs Greeting Studio — text → voice → push to voicemail box */}
       {profile && (
-        <div className="mb-3 rounded-2xl overflow-hidden"
+        <div className={`mb-3 rounded-2xl ${studioOpen ? "overflow-visible" : "overflow-hidden"}`}
           style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)" }}>
           <button
             onClick={() => setStudioOpen((v) => !v)}
@@ -1993,7 +1968,7 @@ function VoicemailsTab({
             <div style={{ color: "var(--pp-text-muted)", fontSize: 18 }}>{studioOpen ? "−" : "+"}</div>
           </button>
           {studioOpen && (
-            <div style={{ borderTop: "1px solid var(--pp-bg-border-2)" }}>
+            <div className="min-h-0 overflow-visible" style={{ borderTop: "1px solid var(--pp-bg-border-2)" }}>
               <GreetingStudio profile={profile} onProfileChange={reloadProfile as any} />
             </div>
           )}

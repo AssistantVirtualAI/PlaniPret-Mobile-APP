@@ -134,30 +134,21 @@ const AvaBadge = ({ compact = false, circle = false }: { compact?: boolean; circ
   );
 };
 
-import planipretLogoLocal from "@/assets/planipret-logo.png";
 const PlanipretBadge = () => (
   <div
     aria-label="Planiprêt"
     style={{
-      width: 44,
-      height: 44,
-      borderRadius: 10,
+      width: 28,
+      height: 28,
+      borderRadius: 8,
       overflow: "hidden",
       display: "inline-flex",
       alignItems: "center",
       justifyContent: "center",
       background: "#fff",
-      boxShadow: "0 2px 8px rgba(0,0,0,0.12)",
     }}
   >
-    <img
-      src={planipretLogoLocal}
-      alt="Planiprêt"
-      decoding="async"
-      fetchPriority="high"
-      style={{ width: "100%", height: "100%", objectFit: "contain" }}
-      onError={(e) => { (e.currentTarget as HTMLImageElement).src = planipretLogoAsset.url; }}
-    />
+    <img src={planipretLogoAsset.url} alt="Planiprêt" decoding="async" fetchPriority="high" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
   </div>
 );
 
@@ -1134,8 +1125,9 @@ export default function PlanipretMobile() {
         >
 
 
-          {/* Left group: Planiprêt logo uniquement */}
+          {/* Left group: AVA + Planiprêt logos */}
           <div className="flex items-center gap-2 min-w-0">
+            <AvaBadge />
             <PlanipretBadge />
             <div className="flex flex-col" style={{ lineHeight: 1.1 }}>
               <span className="pp-live-dot" style={{ marginBottom: 2 }} />

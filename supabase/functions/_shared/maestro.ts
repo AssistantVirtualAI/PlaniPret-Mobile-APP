@@ -29,51 +29,31 @@ export interface MaestroConfig {
 }
 
 export async function getMaestroConfig(admin: SupabaseClient): Promise<MaestroConfig> {
-  // Primary source: planipret_integration_config (written by pp-save-integration)
-  const { data: cfg1 } = await admin
-    .from("planipret_integration_config")
-    .select("config_data")
-    .eq("integration_key", "maestro")
-    .maybeSingle();
-  const c1 = (cfg1?.config_data ?? {}) as Record<string, string>;
-
-  // Fallback source: planipret_integration_secrets (legacy table)
-  const { data: cfg2 } = await admin
+  const { data } = await admin
     .from("planipret_integration_secrets")
-    .select("config")
-    .eq("provider", "maestro")
-    .maybeSingle();
-  const c2 = (cfg2?.config ?? {}) as Record<string, string>;
-
-  // Merge: planipret_integration_config takes priority
-  let apiUrl = c1.api_url ?? c2.api_url ?? Deno.env.get("MAESTRO_API_URL") ?? "";
-  let apiKey = c1.api_key ?? c2.api_key ?? Deno.env.get("MAESTRO_API_KEY") ?? "";
-  const accountId = c1.account_id ?? c2.account_id ?? Deno.env.get("MAESTRO_ACCOUNT_ID") ?? "";
-  const webhookSecret = c1.webhook_secret ?? c2.webhook_secret ?? Deno.env.get("MAESTRO_WEBHOOK_SECRET") ?? "";
-
-  // Telecom REST API fallback — always use the Planipret Maestro Telecom base URL.
-  // The machine API key authenticates server-to-server calls (?machine=1 is appended by maestroFetch).
-  // Individual broker OAuth tokens (planipret_profiles.maestro_broker_token) are used per-user
-  // via getBrokerAuth and override this key for user-scoped endpoints.
-  if (!apiUrl) {
-    apiUrl =
-      Deno.env.get("MAESTRO_TELECOM_BASE_URL") ??
-      Deno.env.get("MAESTRO_API_BASE_URL") ??
-      Deno.env.get("MAESTRO_API_URL") ??
-      "https://client-dev.planipret.com/telecom";
-  }
-  if (!apiKey) {
-    apiKey =
-      Deno.env.get("MAESTRO_API_KEY") ??
-      Deno.env.get("MAESTRO_MACHINE_KEY") ??
-      "f6b1afc243cadac3bda865beddd2e5bf0a19b7cd806b1ad1eac1c0039970fe20";
-  }
-
+    .select("provider, config")
+    .in("provider", ["maestro_telecom", "maestro"]);
+  const rows = Array.isArray(data) ? data : [];
+  const telecom = rows.find((r: any) => r.provider === "maestro_telecom")?.config ?? {};
+  const legacy = rows.find((r: any) => r.provider === "maestro")?.config ?? {};
+  const c = { ...(legacy as Record<string, string>), ...(telecom as Record<string, string>) };
+  const rawUrl = (c.api_url
+      ?? c.base_url
+      ?? Deno.env.get("MAESTRO_TELECOM_BASE_URL")
+      ?? Deno.env.get("MAESTRO_TELECOM_API_URL")
+      ?? Deno.env.get("MAESTRO_API_URL")
+      ?? "").replace(/\/$/, "");
   return {
-    url: apiUrl.replace(/\/$/, ""),
-    key: apiKey,
-    accountId,
-    webhookSecret,
+    // Shared maestro-* functions pass paths beginning with /api/v1. Scott's
+    // configured Telecom base may already include /api/v1, so normalize once.
+    url: rawUrl.replace(/\/api\/v1$/i, ""),
+    key: c.api_key
+      ?? Deno.env.get("MAESTRO_MACHINE_API_KEY")
+      ?? Deno.env.get("MAESTRO_TELECOM_API_KEY")
+      ?? Deno.env.get("MAESTRO_API_KEY")
+      ?? "",
+    accountId: c.account_id ?? Deno.env.get("MAESTRO_ACCOUNT_ID") ?? "",
+    webhookSecret: c.webhook_secret ?? Deno.env.get("MAESTRO_WEBHOOK_SECRET") ?? "",
   };
 }
 
@@ -145,10 +125,9 @@ export async function maestroFetch(cfg: MaestroConfig, opts: CallOpts) {
   if (opts.brokerId) headers["X-Broker-Id"] = String(opts.brokerId);
   if (opts.idempotencyKey) headers["Idempotency-Key"] = opts.idempotencyKey;
 
-  // Maestro Telecom machine API requires ?machine=1 on every request
-  const sep = opts.path.includes("?") ? "&" : "?";
-  const fullPath = `${opts.path}${sep}machine=1`;
-  const res = await fetch(`${cfg.url}${fullPath}`, {
+  const useMachine = opts.token === cfg.key || !opts.brokerId;
+  const suffix = useMachine ? `${opts.path.includes("?") ? "&" : "?"}machine=1` : "";
+  const res = await fetch(`${cfg.url}${opts.path}${suffix}`, {
     method: opts.method ?? "GET",
     headers,
     body: opts.body ? JSON.stringify(opts.body) : undefined,

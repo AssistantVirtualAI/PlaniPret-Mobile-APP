@@ -58,10 +58,13 @@ const platform = () => {
 };
 
 
-// Some builds ship without the native SIP/VoIP plugins compiled in. Capacitor
-// then rejects every call with `UNIMPLEMENTED`, which used to spam the console
-// on every 15s poll. Latch the unavailability once and no-op afterwards.
-const unavailable = { sip: false, voip: false };
+// Some previews/builds can report `UNIMPLEMENTED` before the native bridge is
+// ready. Do not disable SIP forever after one miss: background registration
+// must recover when the real native plugin is present.
+const unavailable = {
+  sip: { until: 0, warned: false },
+  voip: { until: 0, warned: false },
+};
 function isUnimplemented(e: unknown): boolean {
   const anyE = e as any;
   return String(anyE?.code ?? "") === "UNIMPLEMENTED"
@@ -69,13 +72,16 @@ function isUnimplemented(e: unknown): boolean {
 }
 function markUnavailable(kind: "sip" | "voip", e: unknown, label: string): boolean {
   if (!isUnimplemented(e)) return false;
-  if (!unavailable[kind]) {
-    unavailable[kind] = true;
-    console.warn(`[${label}] native plugin unavailable in this build — disabling native SIP guard`);
+  const state = unavailable[kind];
+  state.until = Date.now() + 60_000;
+  if (!state.warned) {
+    state.warned = true;
+    console.warn(`[${label}] native plugin unavailable — retrying later`);
   }
   return true;
 }
-export function isPlanipretNativeSipAvailable(): boolean { return isNative() && !unavailable.sip; }
+const isTemporarilyUnavailable = (kind: "sip" | "voip") => Date.now() < unavailable[kind].until;
+export function isPlanipretNativeSipAvailable(): boolean { return isNative() && !isTemporarilyUnavailable("sip"); }
 
 const NativePpSip: PpSipKeepAlivePlugin = isNative()
   ? registerPlugin<PpSipKeepAlivePlugin>("PpSipKeepAlive")
@@ -87,7 +93,7 @@ const NativePpVoipCall: PpVoipCallPlugin = isNative()
 
 // ---------- CallKit + PushKit bridge (iOS only) ----------
 export async function getPlanipretVoipPushToken(): Promise<{ token: string | null; platform: string; bundleId?: string; environment?: string } | null> {
-  if (platform() !== "ios" || unavailable.voip) return null;
+  if (platform() !== "ios" || isTemporarilyUnavailable("voip")) return null;
   try { return (await NativePpVoipCall.getVoipPushToken?.()) ?? null; }
   catch (e) {
     if (!markUnavailable("voip", e, "pp-voip-call")) console.warn("[pp-voip-call] getVoipPushToken failed", e);
@@ -179,7 +185,7 @@ export async function stopPlanipretSipKeepAlive(): Promise<void> {
 }
 
 export async function requestPlanipretBatteryOptimizationExemption(): Promise<void> {
-  if (platform() !== "android" || unavailable.sip) return;
+  if (platform() !== "android" || isTemporarilyUnavailable("sip")) return;
   try { await NativePpSip.requestBatteryOptimizationExemption?.(); }
   catch (e) { console.warn("[pp-sip-native] battery exemption failed", e); }
 }

@@ -176,10 +176,12 @@ Deno.serve(async (req) => {
     if (cfg.accountId) headers["X-Account-Id"] = cfg.accountId;
     if (auth.brokerId) headers["X-Broker-Id"] = String(auth.brokerId);
 
-    let endpoint = `${cfg.url}${scoped}`;
+    const machineSuffix = auth.usingFallback ? `${scoped.includes("?") ? "&" : "?"}machine=1` : "";
+    let endpoint = `${cfg.url}${scoped}${machineSuffix}`;
     let res = await fetch(endpoint, { method: "POST", headers, body: form });
     if (!res.ok && (res.status === 404 || res.status === 405) && scoped !== relPath) {
-      endpoint = `${cfg.url}${relPath}`;
+      const relMachineSuffix = auth.usingFallback ? `${relPath.includes("?") ? "&" : "?"}machine=1` : "";
+      endpoint = `${cfg.url}${relPath}${relMachineSuffix}`;
       res = await fetch(endpoint, { method: "POST", headers, body: form });
     }
 

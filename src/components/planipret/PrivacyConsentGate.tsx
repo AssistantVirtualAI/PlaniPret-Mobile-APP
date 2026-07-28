@@ -3,42 +3,18 @@ import { supabase } from "@/integrations/supabase/client";
 import { Link } from "react-router-dom";
 
 const CURRENT_VERSION = "2026-06";
-// localStorage key to avoid re-showing the modal on every render before the
-// full profile is loaded (BOOT_COLUMNS may not include privacy_version yet).
-const LS_KEY = "pp_privacy_accepted_v";
-
-function isAcceptedLocally(): boolean {
-  try {
-    return localStorage.getItem(LS_KEY) === CURRENT_VERSION;
-  } catch {
-    return false;
-  }
-}
-
-function markAcceptedLocally() {
-  try {
-    localStorage.setItem(LS_KEY, CURRENT_VERSION);
-  } catch {}
-}
 
 export default function PrivacyConsentGate({ profile, onAccepted }: { profile: any; onAccepted: () => void }) {
-  // If already accepted locally (cached), never show the modal again in this session.
-  const alreadyLocal = isAcceptedLocally();
-
   const needs =
-    !alreadyLocal &&
-    (!profile?.privacy_accepted_at || profile?.privacy_version !== CURRENT_VERSION);
+    !profile?.privacy_accepted_at ||
+    profile?.privacy_version !== CURRENT_VERSION;
 
   const [policy, setPolicy] = useState(false);
   const [recording, setRecording] = useState(false);
   const [busy, setBusy] = useState(false);
   const [open, setOpen] = useState(needs);
 
-  // Only open if `needs` transitions from false → true (i.e. profile loaded and
-  // consent is genuinely missing). Never re-open once the user has accepted.
-  useEffect(() => {
-    if (needs && !isAcceptedLocally()) setOpen(true);
-  }, [needs]);
+  useEffect(() => { setOpen(needs); }, [needs]);
 
   if (!open) return null;
 
@@ -54,8 +30,6 @@ export default function PrivacyConsentGate({ profile, onAccepted }: { profile: a
       .eq("user_id", profile.user_id);
     setBusy(false);
     if (error) return;
-    // Cache locally so the modal never re-appears even before the next profile reload.
-    markAcceptedLocally();
     setOpen(false);
     onAccepted();
   };

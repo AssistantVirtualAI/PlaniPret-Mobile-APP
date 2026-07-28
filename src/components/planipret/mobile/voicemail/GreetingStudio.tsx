@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { Play, Pause, Sparkles, Mic, RotateCw, Check, Settings2, ChevronDown, ChevronUp } from "lucide-react";
@@ -63,10 +63,7 @@ export default function GreetingStudio({ profile, onProfileChange }: { profile: 
   const [previewing, setPreviewing] = useState<string | null>(null);
   const [genderFilter, setGenderFilter] = useState<"all" | "F" | "M">("all");
   const [categoryFilter, setCategoryFilter] = useState<"all" | "professional" | "natural" | "custom">("professional");
-  // iOS fix: track textarea focus to prevent RTIInputSystem sessionID loss
-  const [textareaFocused, setTextareaFocused] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const fullName = profile.full_name ?? t("greeting.defaultBroker");
   const charCount = text.length;
@@ -74,28 +71,19 @@ export default function GreetingStudio({ profile, onProfileChange }: { profile: 
 
   // Load voices
   useEffect(() => {
+    let cancelled = false;
+    const timeout = window.setTimeout(() => {
+      if (!cancelled) setVoicesError(t("greeting.voiceLoadFailed") || "voice_load_timeout");
+    }, 10_000);
     supabase.functions.invoke("pp-greeting-voices").then(({ data, error }) => {
+      if (cancelled) return;
       if (error) { setVoicesError(error.message); return; }
       if ((data as any)?.success) setVoices((data as any).voices);
       else setVoicesError((data as any)?.error ?? "unknown_error");
-    });
-  }, []);
+    }).finally(() => window.clearTimeout(timeout));
+    return () => { cancelled = true; window.clearTimeout(timeout); };
+  }, [t]);
 
-  // Auto-select template matching app language if no custom text exists yet.
-  // When the user switches language (FR ↔ EN), the template is updated automatically
-  // only if the current text is still a template body (not custom-edited).
-  useEffect(() => {
-    const defaultKey = lang === "en" ? "pro_en" : "pro_fr";
-    const tpl = TEMPLATES.find((x) => x.key === defaultKey);
-    if (!tpl) return;
-    // Only auto-fill when: (a) text is empty, or (b) the current text matches any template body
-    const isTemplateText = TEMPLATES.some((x) => x.body(fullName) === text || x.body(profile.full_name ?? "") === text);
-    if (!text || text.trim().length === 0 || isTemplateText) {
-      setText(tpl.body(fullName));
-      setActiveTemplate(defaultKey);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lang]);
   // Sign current greeting URL if it's a storage path
   useEffect(() => {
     const path = profile.voicemail_greeting_audio_url;
@@ -107,9 +95,9 @@ export default function GreetingStudio({ profile, onProfileChange }: { profile: 
   }, [profile.voicemail_greeting_audio_url]);
 
   const applyTemplate = (k: string) => {
-    const tpl = TEMPLATES.find((x) => x.key === k);
-    if (!tpl) return;
-    setText(tpl.body(fullName));
+    const t = TEMPLATES.find((x) => x.key === k);
+    if (!t) return;
+    setText(t.body(fullName));
     setActiveTemplate(k);
   };
 
@@ -164,25 +152,8 @@ export default function GreetingStudio({ profile, onProfileChange }: { profile: 
     }
   };
 
-  // iOS fix: filtered voices displayed as a flat list (no nested scroll) to avoid
-  // RTIInputSystem sessionID loss when a textarea is focused inside a scroll container.
-  const filteredVoices = useMemo(() => {
-    if (!voices) return [];
-    return voices.filter((v) => {
-      if (categoryFilter !== "all" && v.category !== categoryFilter) return false;
-      if (genderFilter !== "all" && v.gender !== genderFilter) return false;
-      return true;
-    });
-  }, [voices, categoryFilter, genderFilter]);
-
   return (
-    // iOS fix: the outer container must NOT have overflow-y-auto — the parent page
-    // handles scrolling. Nested scroll containers cause RTIInputSystem to lose the
-    // keyboard sessionID when a textarea is focused inside them.
-    <div
-      className="space-y-4 pb-8"
-      style={{ WebkitOverflowScrolling: "touch" } as React.CSSProperties}
-    >
+    <div className="space-y-4 pb-[calc(2rem+env(safe-area-inset-bottom))] overflow-visible">
       {/* Header */}
       <div>
         <h2 className="text-[18px] font-bold" style={{ color: TOKENS.text }}>{t("greeting.title")}</h2>
@@ -233,7 +204,7 @@ export default function GreetingStudio({ profile, onProfileChange }: { profile: 
             ["professional", "Pro"],
             ["natural", t("greeting.natural")],
             ["custom", t("greeting.custom")],
-            ["all", lang === "en" ? "All" : "Tous"],
+            ["all", "Tous"],
           ] as const).map(([k, label]) => (
             <button key={k} onClick={() => setCategoryFilter(k as any)}
               className="text-[10px] px-2.5 py-1 rounded-full font-semibold transition"
@@ -245,9 +216,9 @@ export default function GreetingStudio({ profile, onProfileChange }: { profile: 
           ))}
           <span className="mx-1" style={{ color: TOKENS.border }}>·</span>
           {([
-            ["all", lang === "en" ? "All" : "Tous"],
-            ["F", lang === "en" ? "👩 Female" : "👩 Femme"],
-            ["M", lang === "en" ? "👨 Male" : "👨 Homme"],
+            ["all", "Tous"],
+            ["F", "👩 Femme"],
+            ["M", "👨 Homme"],
           ] as const).map(([k, label]) => (
             <button key={k} onClick={() => setGenderFilter(k as any)}
               className="text-[10px] px-2.5 py-1 rounded-full font-semibold transition"
@@ -265,120 +236,83 @@ export default function GreetingStudio({ profile, onProfileChange }: { profile: 
             {Array.from({ length: 4 }).map((_, i) => <div key={i} className="h-20 rounded-xl animate-pulse" style={{ background: TOKENS.card }} />)}
           </div>
         )}
-        {voices && (
-          filteredVoices.length === 0 ? (
-            <div className="text-[12px] p-3 rounded-xl text-center" style={{ background: TOKENS.card, color: TOKENS.muted, border: `1px solid ${TOKENS.border}` }}>
-              {lang === "en" ? "No voices match these filters." : "Aucune voix ne correspond à ces filtres."}
-            </div>
-          ) : (
-            // iOS fix: NO overflow-y-auto here — flat grid, no nested scroll.
-            // The parent page (MVoicemail) handles the outer scroll.
-            // This prevents RTIInputSystem from losing the keyboard sessionID
-            // when the user taps a voice card or the textarea below.
-            <div
-              className="grid grid-cols-2 gap-2"
-              role="radiogroup"
-              aria-label={t("greeting.selectVoice")}
-            >
-              {filteredVoices.map((v) => (
-                <div
-                  key={v.voice_id}
-                  role="radio"
-                  aria-checked={selectedVoice === v.voice_id}
-                  aria-label={`${t("greeting.selectVoice")} ${v.name}`}
-                  tabIndex={0}
-                  onClick={() => {
-                    // iOS fix: blur textarea before selecting a voice to avoid
-                    // RTIInputSystem sessionID conflict between keyboard and touch.
-                    if (textareaRef.current && document.activeElement === textareaRef.current) {
-                      textareaRef.current.blur();
-                    }
-                    setSelectedVoice(v.voice_id);
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSelectedVoice(v.voice_id); }
-                  }}
-                  className="text-left p-3 rounded-xl transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-                  style={{
-                    background: selectedVoice === v.voice_id ? "#0D2A4A" : TOKENS.card,
-                    border: `1px solid ${selectedVoice === v.voice_id ? TOKENS.borderActive : TOKENS.border}`,
-                    touchAction: "manipulation",
-                    WebkitTapHighlightColor: "transparent",
-                  } as React.CSSProperties}>
-                  <div className="flex items-center justify-between mb-1">
-                    <span className="text-[13px] font-semibold" style={{ color: TOKENS.text }}>
-                      {v.gender === "F" ? "👩" : "👨"} {v.name}
-                    </span>
-                    <span className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: "rgba(46,155,220,0.15)", color: TOKENS.borderActive }}>{v.language}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-[9px] px-1.5 py-0.5 rounded uppercase font-semibold"
-                      style={v.category === "professional"
-                        ? { background: "rgba(59,130,246,0.15)", color: "#3B82F6" }
-                        : v.category === "natural"
-                        ? { background: "rgba(16,185,129,0.15)", color: "#10B981" }
-                        : { background: "rgba(155,127,232,0.15)", color: "#9B7FE8" }}>
-                      {v.category === "professional" ? "Pro" : v.category === "natural" ? t("greeting.natural") : t("greeting.custom")}
-                    </span>
-                    {v.preview_url && (
-                      <button type="button"
-                        aria-label={`${t("greeting.preview")} ${v.name}`}
-                        onClick={(e) => { e.stopPropagation(); playVoicePreview(v); }}
-                        className="text-[10px] px-2 py-0.5 rounded flex items-center gap-1 min-h-[28px]"
-                        style={{ background: "rgba(255,255,255,0.05)", color: TOKENS.text }}>
-                        {previewing === v.voice_id ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />} {t("greeting.preview")}
-                      </button>
-                    )}
-                  </div>
+        {voices && (() => {
+          const filtered = voices.filter((v) => {
+            if (categoryFilter !== "all" && v.category !== categoryFilter) return false;
+            if (genderFilter !== "all" && v.gender !== genderFilter) return false;
+            return true;
+          });
+          if (filtered.length === 0) {
+            return <div className="text-[12px] p-3 rounded-xl text-center" style={{ background: TOKENS.card, color: TOKENS.muted, border: `1px solid ${TOKENS.border}` }}>Aucune voix ne correspond à ces filtres.</div>;
+          }
+          return (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pr-1" role="radiogroup" aria-label={t("greeting.selectVoice")}>
+            {filtered.map((v) => (
+              <div
+                key={v.voice_id}
+                role="radio"
+                aria-checked={selectedVoice === v.voice_id}
+                aria-label={`${t("greeting.selectVoice")} ${v.name}`}
+                tabIndex={0}
+                onClick={() => setSelectedVoice(v.voice_id)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSelectedVoice(v.voice_id); }
+                }}
+                className="text-left p-3 rounded-xl transition cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+                style={{
+                  background: selectedVoice === v.voice_id ? "#0D2A4A" : TOKENS.card,
+                  border: `1px solid ${selectedVoice === v.voice_id ? TOKENS.borderActive : TOKENS.border}`,
+                }}>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-[13px] font-semibold" style={{ color: TOKENS.text }}>
+                    {v.gender === "F" ? "👩" : "👨"} {v.name}
+                  </span>
+                  <span className="text-[9px] px-1.5 py-0.5 rounded" style={{ background: "rgba(46,155,220,0.15)", color: TOKENS.borderActive }}>{v.language}</span>
                 </div>
-              ))}
-            </div>
-          )
-        )}
+                <div className="flex items-center justify-between">
+                  <span className="text-[9px] px-1.5 py-0.5 rounded uppercase font-semibold"
+                    style={v.category === "professional"
+                      ? { background: "rgba(59,130,246,0.15)", color: "#3B82F6" }
+                      : v.category === "natural"
+                      ? { background: "rgba(16,185,129,0.15)", color: "#10B981" }
+                      : { background: "rgba(155,127,232,0.15)", color: "#9B7FE8" }}>
+                    {v.category === "professional" ? "Pro" : v.category === "natural" ? t("greeting.natural") : t("greeting.custom")}
+                  </span>
+                  {v.preview_url && (
+                    <button type="button"
+                      aria-label={`${t("greeting.preview")} ${v.name}`}
+                      onClick={(e) => { e.stopPropagation(); playVoicePreview(v); }}
+                      className="text-[10px] px-2 py-0.5 rounded flex items-center gap-1 min-h-[28px]"
+                      style={{ background: "rgba(255,255,255,0.05)", color: TOKENS.text }}>
+                      {previewing === v.voice_id ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />} {t("greeting.preview")}
+                    </button>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+          );
+        })()}
       </div>
 
       {/* Step 2 - Text */}
       <div>
         <div className="text-[10px] uppercase tracking-widest mb-2 font-semibold" style={{ color: TOKENS.muted }}>{t("greeting.writeMessage")}</div>
         <div className="flex gap-2 overflow-x-auto pb-2 mb-2 -mx-1 px-1">
-          {TEMPLATES.map((tpl) => (
-            <button key={tpl.key} onClick={() => applyTemplate(tpl.key)}
+          {TEMPLATES.map((t) => (
+            <button key={t.key} onClick={() => applyTemplate(t.key)}
               className="text-[11px] px-3 py-1.5 rounded-full whitespace-nowrap font-medium transition"
-              style={
-                activeTemplate === tpl.key
-                  ? { background: TOKENS.borderActive, color: "white" }
-                  : { background: TOKENS.card, color: TOKENS.text, border: `1px solid ${TOKENS.border}` }}>
-              {tpl.lang === "en" ? tpl.label : (tpl.key === "pro_fr" ? (lang === "en" ? "🏢 Professional" : tpl.label) : tpl.key === "out_fr" ? (lang === "en" ? "📞 Away" : tpl.label) : tpl.key === "ah_fr" ? (lang === "en" ? "🌙 Evening/WE" : tpl.label) : tpl.label)}
+              style={activeTemplate === t.key
+                ? { background: TOKENS.borderActive, color: "white" }
+                : { background: TOKENS.card, color: TOKENS.text, border: `1px solid ${TOKENS.border}` }}>
+              {t.lang === "en" ? t.label : (t.key === "pro_fr" ? (lang === "en" ? "🏢 Professional" : t.label) : t.key === "out_fr" ? (lang === "en" ? "📞 Away" : t.label) : t.key === "ah_fr" ? (lang === "en" ? "🌙 Evening/WE" : t.label) : t.label)}
             </button>
           ))}
         </div>
-        {/* iOS fix: textarea with explicit focus/blur handlers to maintain RTIInputSystem sessionID.
-            - onFocus: mark as focused so parent knows keyboard is active
-            - onBlur: mark as blurred
-            - onTouchStart: stopPropagation to prevent scroll container from stealing the touch event
-            - style: position:relative + z-index to ensure iOS renders the input above scroll layers */}
-        <textarea
-          ref={textareaRef}
-          value={text}
-          onChange={(e) => { setText(e.target.value.slice(0, 500)); setActiveTemplate(null); }}
-          onFocus={() => setTextareaFocused(true)}
-          onBlur={() => setTextareaFocused(false)}
-          onTouchStart={(e) => e.stopPropagation()}
+        <textarea value={text} onChange={(e) => { setText(e.target.value.slice(0, 500)); setActiveTemplate(null); }}
           placeholder={t("greeting.placeholder")}
-          className="w-full rounded-xl p-3 text-[14px] resize-none outline-none"
-          style={{
-            background: TOKENS.card,
-            border: `1px solid ${textareaFocused ? TOKENS.borderActive : TOKENS.border}`,
-            color: TOKENS.text,
-            minHeight: 160,
-            lineHeight: 1.7,
-            position: "relative",
-            zIndex: 1,
-            // iOS fix: explicit transform creates a new stacking context so WKWebView
-            // keeps the keyboard session attached to this element.
-            WebkitTransform: "translateZ(0)",
-          } as React.CSSProperties}
-        />
+          className="w-full rounded-xl p-3 text-[14px] resize-y outline-none"
+          style={{ background: TOKENS.card, border: `1px solid ${TOKENS.border}`, color: TOKENS.text, minHeight: 160, lineHeight: 1.7 }} />
         <div className="flex items-center justify-between mt-2">
           <span className="text-[11px] font-semibold" style={{ color: counterColor }}>{charCount}/500 {t("greeting.chars")}</span>
           <button onClick={improveText} disabled={improving}

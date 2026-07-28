@@ -12,6 +12,15 @@ const cors = {
 const json = (b: unknown, s = 200) =>
   new Response(JSON.stringify(b), { status: s, headers: { ...cors, "Content-Type": "application/json" } });
 
+function fallbackReport(language: "fr" | "en", period: "day" | "week" | "month", profile: any, stats: any, calls: any[], sms: any[], voicemails: any[]) {
+  const labelFr = period === "day" ? "de la journée" : period === "week" ? "de la semaine" : "du mois";
+  const labelEn = period === "day" ? "for today" : period === "week" ? "for the week" : "for the month";
+  if (language === "en") {
+    return `## 📊 Performance report ${labelEn}\n\n### Overview\n${profile?.full_name ?? "The broker"} has ${stats.calls_total} calls, ${stats.sms_total} text messages and ${stats.voicemails_total} voicemails in this period. Answer rate is ${stats.calls_total ? Math.round((stats.calls_answered / stats.calls_total) * 100) : 0}%.\n\n### 📞 Telephony\n- Inbound: ${stats.calls_inbound}\n- Outbound: ${stats.calls_outbound}\n- Missed: ${stats.calls_missed}\n- Average duration: ${stats.avg_duration_sec}s\n\n### 🔥 Hot leads\n${stats.hot_leads} hot leads detected.${calls.find((c: any) => c.ai_summary) ? `\nRecent insight: ${calls.find((c: any) => c.ai_summary).ai_summary}` : ""}\n\n### 📩 Client follow-up\n- SMS sent: ${stats.sms_outbound}\n- Unread voicemails: ${stats.voicemails_unread}\n- Pending reminders: ${stats.reminders_pending}\n\n### ✅ Recommendations\n- Call back missed calls first.\n- Follow up with hot leads today.\n- Clear unread voicemail and text conversations.`;
+  }
+  return `## 📊 Rapport ${labelFr}\n\n### Vue d'ensemble\n${profile?.full_name ?? "Le courtier"} a ${stats.calls_total} appels, ${stats.sms_total} textos et ${stats.voicemails_total} messages vocaux sur cette période. Le taux de réponse est de ${stats.calls_total ? Math.round((stats.calls_answered / stats.calls_total) * 100) : 0}%.\n\n### 📞 Téléphonie\n- Entrants: ${stats.calls_inbound}\n- Sortants: ${stats.calls_outbound}\n- Manqués: ${stats.calls_missed}\n- Durée moyenne: ${stats.avg_duration_sec}s\n\n### 🔥 Leads chauds\n${stats.hot_leads} leads chauds détectés.${calls.find((c: any) => c.ai_summary) ? `\nInsight récent: ${calls.find((c: any) => c.ai_summary).ai_summary}` : ""}\n\n### 📩 Suivi client\n- Textos envoyés: ${stats.sms_outbound}\n- Boîtes vocales non lues: ${stats.voicemails_unread}\n- Rappels en attente: ${stats.reminders_pending}\n\n### ✅ Recommandations\n- Rappeler les appels manqués en priorité.\n- Relancer les leads chauds aujourd'hui.\n- Traiter les voicemails et textos non lus.`;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
 
@@ -91,7 +100,7 @@ Deno.serve(async (req) => {
     };
 
     const key = Deno.env.get("LOVABLE_API_KEY");
-    if (!key) return json({ error: "ai_not_configured" }, 500);
+    if (!key) return json({ report: fallbackReport(language, period, profile, stats, calls, sms, voicemails), period, stats, degraded: true });
     const gateway = createLovableAiGatewayProvider(key);
 
     const periodLabelFr = period === "day" ? "de la journée" : period === "week" ? "de la semaine (7 jours)" : "du mois (30 jours)";
@@ -157,10 +166,17 @@ Be precise, quantified, and never fabricate data not present in the provided sta
 
     const prompt = language === "en" ? promptEn : promptFr;
 
-    const { text } = await generateText({
-      model: gateway("google/gemini-2.5-flash"),
-      prompt,
-    });
+    let text = "";
+    try {
+      const result = await generateText({
+        model: gateway("google/gemini-2.5-flash"),
+        prompt,
+      });
+      text = result.text;
+    } catch (e) {
+      console.error("pp-ava-report AI failed", e);
+      text = fallbackReport(language, period, profile, stats, calls, sms, voicemails);
+    }
 
     return json({ report: text, period, stats });
   } catch (e: any) {

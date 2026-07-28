@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useOutletContext, useNavigate } from "react-router-dom";
 
 import { supabase } from "@/integrations/supabase/client";
@@ -7,7 +7,6 @@ import {
   ArrowDownLeft, ArrowUpRight, X, Calendar, Headphones, Bot,
   BellOff, Flame, Sparkles, ChevronRight, ChevronLeft, Mail, Users as UsersIcon,
   CheckSquare, RefreshCw, AlertCircle, Video, ExternalLink, Plus,
-  Play, Pause, Volume2,
 } from "lucide-react";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
 import { toast } from "sonner";
@@ -86,12 +85,8 @@ export default function MHome() {
   const [msCalendarError, setMsCalendarError] = useState<string | null>(null);
   const [statsLoading, setStatsLoading] = useState(true);
   const [brief, setBrief] = useState<any | null>(null);
-  const [briefLoading, setBriefLoading] = useState(true);
+  const [briefLoading, setBriefLoading] = useState(false);
   const [briefErr, setBriefErr] = useState<string | null>(null);
-  // TTS briefing play/pause
-  const briefAudioRef = useRef<HTMLAudioElement | null>(null);
-  const [briefPlaying, setBriefPlaying] = useState(false);
-  const [briefTtsLoading, setBriefTtsLoading] = useState(false);
 
   useMaestroPipelineToasts(profile?.user_id);
 
@@ -245,7 +240,7 @@ export default function MHome() {
   const loadBrief = async (force = false) => {
     setBriefLoading(true);
     setBriefErr(null);
-    const { data, error } = await supabase.functions.invoke("pp-ava-brief", { body: { period, force, lang } });
+    const { data, error } = await supabase.functions.invoke("pp-ava-brief", { body: { period, force } });
     setBriefLoading(false);
     if (error || (data as any)?.error) {
       setBriefErr((data as any)?.error || error?.message || "brief unavailable");
@@ -281,68 +276,6 @@ export default function MHome() {
     if (sug.kind === "reminder") { navigate("/mplanipret/contacts"); return; }
     toast.info(sug.label);
   };
-
-  // Build a prose text from the structured brief for TTS
-  const buildBriefText = (b: any): string => {
-    const isEn = lang === "en";
-    return [
-      b?.headline,
-      ...(Array.isArray(b?.priorities) && b.priorities.length
-        ? [(isEn ? "Priorities: " : "Priorités : ") + b.priorities.join(". ")]
-        : []),
-      ...(Array.isArray(b?.risks) && b.risks.length
-        ? [(isEn ? "Attention points: " : "Points d'attention : ") + b.risks.join(". ")]
-        : []),
-      ...(Array.isArray(b?.suggestions) && b.suggestions.length
-        ? [(isEn ? "Suggestions: " : "Suggestions : ") + b.suggestions.map((s: any) => s.label ?? s).join(". ")]
-        : []),
-    ].filter(Boolean).join("\n");
-  };
-
-  const toggleBriefTts = async () => {
-    // If already playing, pause
-    if (briefPlaying) {
-      briefAudioRef.current?.pause();
-      setBriefPlaying(false);
-      return;
-    }
-    // If audio is already loaded (paused), resume
-    if (briefAudioRef.current && briefAudioRef.current.src && briefAudioRef.current.paused) {
-      try {
-        await briefAudioRef.current.play();
-        setBriefPlaying(true);
-        return;
-      } catch { /* fall through to re-generate */ }
-    }
-    if (!brief) return;
-    const text = buildBriefText(brief);
-    if (!text.trim()) { toast.error("Aucun contenu à lire"); return; }
-    setBriefTtsLoading(true);
-    try {
-      // ElevenLabs voice: Sarah (multilingual) — same voice as GreetingStudio default
-      const { data, error } = await supabase.functions.invoke("pp-ava-tts", {
-        body: { text: text.slice(0, 3800), language: lang },
-      });
-      if (error || !(data as any)?.audioContent) throw new Error(error?.message ?? "no_audio");
-      const audio = new Audio(`data:audio/mpeg;base64,${(data as any).audioContent}`);
-      briefAudioRef.current = audio;
-      audio.onended = () => setBriefPlaying(false);
-      audio.onerror = () => { setBriefPlaying(false); toast.error("Lecture vocale indisponible"); };
-      await audio.play();
-      setBriefPlaying(true);
-    } catch (e: any) {
-      toast.error("Lecture vocale indisponible", { description: e?.message });
-    } finally {
-      setBriefTtsLoading(false);
-    }
-  };
-
-  // Stop TTS when period changes (new brief will be loaded)
-  useEffect(() => {
-    briefAudioRef.current?.pause();
-    setBriefPlaying(false);
-    briefAudioRef.current = null;
-  }, [period]);
 
   const totalComms = useMemo(() => stats.calls + stats.sms + stats.outbound, [stats]);
   // REST-only calls: the browser controls NS-API, the physical mobile device handles audio.
@@ -412,35 +345,28 @@ export default function MHome() {
       <section
         className="rounded-2xl p-4 relative overflow-hidden pp-card"
         style={{
-          background: "linear-gradient(135deg, #0D1F35 0%, #0A2744 50%, #0D2A4A 100%)",
-          border: "1px solid rgba(46,155,220,0.30)",
+          background: "linear-gradient(135deg, #FFFFFF 0%, #F0F4F9 100%)",
+          borderColor: "var(--pp-bg-border)",
         }}
       >
-        {/* Ambient glow */}
         <div
-          className="absolute -top-12 -right-12 w-40 h-40 rounded-full pointer-events-none"
-          style={{ background: "radial-gradient(circle, rgba(46,155,220,0.18), transparent 70%)" }}
+          className="absolute -top-12 -right-12 w-40 h-40 rounded-full"
+          style={{ background: "radial-gradient(circle, rgba(59,111,160,0.18), transparent 70%)" }}
         />
         <div className="relative">
-          {/* Header row: icon + title + period selector + refresh */}
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center justify-between mb-2">
             <div className="flex items-center gap-2">
-              <div className="w-7 h-7 rounded-lg flex items-center justify-center"
-                style={{ background: "rgba(46,155,220,0.18)", border: "1px solid rgba(46,155,220,0.35)" }}>
-                <Sparkles className="w-3.5 h-3.5" style={{ color: "#2E9BDC" }} />
-              </div>
-              <span className="text-[13px] font-bold" style={{ color: "#E8F4FD", fontFamily: "Urbanist,sans-serif" }}>
-                {t("home.brief")}
-              </span>
+              <Sparkles className="w-4 h-4" style={{ color: "var(--pp-brand-accent)" }} />
+              <span className="pp-eyebrow">{t("home.brief")} — {periodLabel[period]}</span>
             </div>
             <button
-              onClick={() => { briefAudioRef.current?.pause(); setBriefPlaying(false); briefAudioRef.current = null; loadBrief(true); }}
+              onClick={() => loadBrief(true)}
               disabled={briefLoading}
               className="text-[11px] px-2.5 py-1 rounded-full flex items-center gap-1 disabled:opacity-50"
               style={{
-                background: "rgba(46,155,220,0.15)",
-                color: "#2E9BDC",
-                border: "1px solid rgba(46,155,220,0.30)",
+                background: "rgba(59,111,160,0.10)",
+                color: "var(--pp-brand-accent-2)",
+                border: "1px solid rgba(59,111,160,0.25)",
                 fontFamily: "Urbanist,sans-serif", fontWeight: 600,
               }}>
               <RefreshCw className={`w-3 h-3 ${briefLoading ? "animate-spin" : ""}`} />
@@ -448,41 +374,28 @@ export default function MHome() {
             </button>
           </div>
 
-          {/* Period selector: day / week / month */}
-          <div className="flex gap-1.5 mb-3">
-            {(["day", "week", "month"] as const).map((p) => (
-              <button key={p} onClick={() => setPeriod(p)}
-                className="text-[11px] px-3 py-1 rounded-full font-semibold transition"
-                style={period === p
-                  ? { background: "#2E9BDC", color: "#fff" }
-                  : { background: "rgba(255,255,255,0.07)", color: "rgba(232,244,253,0.60)", border: "1px solid rgba(255,255,255,0.12)" }}>
-                {periodLabel[p]}
-              </button>
-            ))}
-          </div>
-
           {briefLoading && !brief ? (
             <div className="space-y-2">
-              <Shimmer className="h-4 w-3/4" style={{ background: "rgba(255,255,255,0.10)" } as React.CSSProperties} />
-              <Shimmer className="h-3 w-full" style={{ background: "rgba(255,255,255,0.07)" } as React.CSSProperties} />
-              <Shimmer className="h-3 w-2/3" style={{ background: "rgba(255,255,255,0.07)" } as React.CSSProperties} />
+              <Shimmer className="h-4 w-3/4" />
+              <Shimmer className="h-3 w-full" />
+              <Shimmer className="h-3 w-2/3" />
             </div>
           ) : briefErr ? (
-            <div className="text-xs flex items-center gap-2" style={{ color: "#F87171" }}>
+            <div className="text-xs flex items-center gap-2" style={{ color: "var(--pp-danger)" }}>
               <AlertCircle className="w-3.5 h-3.5" /> {briefErr}
             </div>
           ) : brief ? (
             <>
-              <p className="text-[15px] font-semibold leading-snug" style={{ color: "#E8F4FD", fontFamily: "Urbanist,sans-serif" }}>
+              <p className="text-[15px] font-semibold leading-snug" style={{ color: "var(--pp-text-primary)", fontFamily: "Urbanist,sans-serif" }}>
                 {brief.headline}
               </p>
               {brief.priorities?.length > 0 && (
                 <ol className="mt-3 space-y-1.5">
                   {brief.priorities.slice(0, 5).map((p: string, i: number) => (
-                    <li key={i} className="flex items-start gap-2 text-[13px]" style={{ color: "rgba(232,244,253,0.80)" }}>
+                    <li key={i} className="flex items-start gap-2 text-[13px]" style={{ color: "var(--pp-text-secondary)" }}>
                       <span
                         className="mt-[2px] inline-flex items-center justify-center w-4 h-4 rounded-full text-[10px] font-bold flex-shrink-0"
-                        style={{ background: "#2E9BDC", color: "#fff", fontFamily: "Urbanist,sans-serif" }}>
+                        style={{ background: "var(--pp-brand-accent-2)", color: "#fff", fontFamily: "Urbanist,sans-serif" }}>
                         {i + 1}
                       </span>
                       <span>{p}</span>
@@ -493,10 +406,7 @@ export default function MHome() {
               {brief.risks?.length > 0 && (
                 <div className="mt-3 flex flex-wrap gap-1.5">
                   {brief.risks.map((r: string, i: number) => (
-                    <span key={i} className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
-                      style={{ background: "rgba(251,191,36,0.15)", color: "#FBB924", border: "1px solid rgba(251,191,36,0.30)" }}>
-                      ⚠ {r}
-                    </span>
+                    <span key={i} className="pp-pill pp-pill-warning">⚠ {r}</span>
                   ))}
                 </div>
               )}
@@ -504,62 +414,24 @@ export default function MHome() {
                 <div className="mt-3 flex flex-wrap gap-1.5">
                   {brief.suggestions.map((s: any, i: number) => (
                     <button key={i} onClick={() => handleSuggestion(s)}
-                      className="text-[11px] px-2.5 py-1 rounded-full font-semibold active:scale-95 transition"
-                      style={{ background: "rgba(0,212,170,0.15)", color: "#00D4AA", border: "1px solid rgba(0,212,170,0.30)" }}>
+                      className="pp-pill pp-pill-accent active:scale-95 transition">
                       {s.kind === "call" ? "📞" : s.kind === "sms" ? "💬" : s.kind === "email" ? "✉" : "⏰"} {s.label}
                     </button>
                   ))}
                 </div>
               )}
-
-              {/* ===== PLAY / PAUSE ElevenLabs TTS ===== */}
-              <div className="mt-4 flex items-center gap-2">
-                <button
-                  onClick={toggleBriefTts}
-                  disabled={briefTtsLoading}
-                  aria-label={briefPlaying ? "Pause le briefing" : "Écouter le briefing"}
-                  className="flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-[13px] disabled:opacity-60 transition active:scale-[0.97]"
-                  style={{
-                    background: briefPlaying
-                      ? "linear-gradient(135deg,#00D4AA,#00A88A)"
-                      : "linear-gradient(135deg,#2E9BDC,#1A4A8A)",
-                    color: "#fff",
-                    boxShadow: briefPlaying ? "0 0 16px rgba(0,212,170,0.35)" : "0 0 16px rgba(46,155,220,0.35)",
-                  }}>
-                  {briefTtsLoading ? (
-                    <RefreshCw className="w-4 h-4 animate-spin" />
-                  ) : briefPlaying ? (
-                    <Pause className="w-4 h-4" />
-                  ) : (
-                    <Play className="w-4 h-4" />
-                  )}
-                  <Volume2 className="w-3.5 h-3.5 opacity-70" />
-                  <span>
-                    {briefTtsLoading
-                      ? (lang === "en" ? "Generating…" : "Génération…")
-                      : briefPlaying
-                      ? (lang === "en" ? "Pause" : "Pause")
-                      : (lang === "en" ? "Listen to briefing" : "Écouter le briefing")}
-                  </span>
-                </button>
-                {briefPlaying && (
-                  <span className="text-[10px] font-semibold animate-pulse" style={{ color: "#00D4AA" }}>
-                    ● {lang === "en" ? "Playing" : "En lecture"}
-                  </span>
-                )}
-              </div>
             </>
           ) : (
-            <p className="text-xs" style={{ color: "rgba(232,244,253,0.50)" }}>{t("home.preparingBrief")}</p>
+            <p className="text-xs" style={{ color: "var(--pp-text-muted)" }}>{t("home.preparingBrief")}</p>
           )}
 
           {profile?.voice_agent_enabled && (
             <button onClick={openAva}
               className="mt-3 w-full py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5"
               style={{
-                background: "rgba(108,92,231,0.15)",
-                border: "1px solid rgba(108,92,231,0.35)",
-                color: "#9B7FE8",
+                background: "rgba(108,92,231,0.10)",
+                border: "1px solid rgba(108,92,231,0.30)",
+                color: "var(--pp-agent)",
                 fontFamily: "Urbanist,sans-serif",
               }}>
               <Headphones className="w-3.5 h-3.5" /> {t("home.listenWithAva")}
@@ -1004,94 +876,66 @@ function NewMeetingSheet({
     }
   };
 
-  const inputStyle: React.CSSProperties = {
-    padding: "10px 12px",
-    borderRadius: 8,
-    border: "1px solid #D0D7DE",
-    background: "#FFFFFF",
-    color: "#1F2328",
-    fontSize: 14,
-    width: "100%",
-    outline: "none",
-  };
   return (
     <div
       onClick={onClose}
       style={{
-        position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)",
+        position: "fixed", inset: 0, background: "rgba(4,10,25,0.55)",
         display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 9999,
       }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
+        className="pp-card"
         style={{
-          width: "100%", maxWidth: 520, borderRadius: "20px 20px 0 0",
-          padding: "20px 16px 32px", maxHeight: "92dvh", overflowY: "auto",
-          background: "#FFFFFF",
-          WebkitOverflowScrolling: "touch" as any,
-          boxShadow: "0 -4px 32px rgba(0,0,0,0.18)",
+          width: "100%", maxWidth: 520, borderRadius: "16px 16px 0 0",
+          padding: 16, maxHeight: "90dvh", overflowY: "auto",
+          background: "var(--pp-bg-elevated, #fff)",
         }}
       >
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ width: 32, height: 32, borderRadius: 8, background: "#0078D4", display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <Calendar className="w-4 h-4" style={{ color: "#fff" }} />
-            </div>
-            <h3 style={{ fontSize: 17, fontWeight: 700, color: "#1F2328", margin: 0 }}>Nouvel événement</h3>
-          </div>
-          <button onClick={onClose}
-            style={{ width: 32, height: 32, borderRadius: 8, background: "#F6F8FA", border: "1px solid #D0D7DE", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" }}>
-            <X className="w-4 h-4" style={{ color: "#656D76" }} />
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-base font-semibold pp-heading">Nouvelle réunion</h3>
+          <button onClick={onClose} className="w-8 h-8 rounded-lg flex items-center justify-center"
+            style={{ background: "rgba(0,0,0,0.06)" }}>
+            <X className="w-4 h-4" />
           </button>
         </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-          <div>
-            <label style={{ fontSize: 12, fontWeight: 600, color: "#656D76", display: "block", marginBottom: 4 }}>TITRE</label>
-            <input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Ajouter un titre"
-              style={{ ...inputStyle, fontSize: 16, fontWeight: 600, borderColor: subject ? "#0078D4" : "#D0D7DE" }} />
+        <div className="space-y-3">
+          <input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Titre"
+            className="pp-input w-full" style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid var(--pp-bg-border)" }} />
+          <div className="grid grid-cols-2 gap-2">
+            <label className="text-xs" style={{ color: "var(--pp-text-muted)" }}>
+              Début
+              <input type="datetime-local" value={start} onChange={(e) => setStart(e.target.value)}
+                className="w-full mt-1" style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid var(--pp-bg-border)" }} />
+            </label>
+            <label className="text-xs" style={{ color: "var(--pp-text-muted)" }}>
+              Fin
+              <input type="datetime-local" value={end} onChange={(e) => setEnd(e.target.value)}
+                className="w-full mt-1" style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid var(--pp-bg-border)" }} />
+            </label>
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <div>
-              <label style={{ fontSize: 12, fontWeight: 600, color: "#656D76", display: "block", marginBottom: 4 }}>DÉBUT</label>
-              <input type="datetime-local" value={start} onChange={(e) => setStart(e.target.value)} style={inputStyle} />
-            </div>
-            <div>
-              <label style={{ fontSize: 12, fontWeight: 600, color: "#656D76", display: "block", marginBottom: 4 }}>FIN</label>
-              <input type="datetime-local" value={end} onChange={(e) => setEnd(e.target.value)} style={inputStyle} />
-            </div>
-          </div>
-          <div>
-            <label style={{ fontSize: 12, fontWeight: 600, color: "#656D76", display: "block", marginBottom: 4 }}>PARTICIPANTS</label>
-            <input value={attendees} onChange={(e) => setAttendees(e.target.value)}
-              placeholder="Courriels séparés par des virgules" style={inputStyle} />
-          </div>
-          <div>
-            <label style={{ fontSize: 12, fontWeight: 600, color: "#656D76", display: "block", marginBottom: 4 }}>LIEU (optionnel)</label>
-            <input value={location} onChange={(e) => setLocation(e.target.value)}
-              placeholder="Ajouter un lieu" style={inputStyle} />
-          </div>
-          <div>
-            <label style={{ fontSize: 12, fontWeight: 600, color: "#656D76", display: "block", marginBottom: 4 }}>NOTES</label>
-            <textarea value={body} onChange={(e) => setBody(e.target.value)}
-              placeholder="Ordre du jour ou notes" rows={3}
-              style={{ ...inputStyle, resize: "vertical", lineHeight: 1.5 }} />
-          </div>
-          <label style={{ display: "flex", alignItems: "center", gap: 10, cursor: "pointer", padding: "10px 12px", borderRadius: 8, background: teams ? "#EBF3FB" : "#F6F8FA", border: `1px solid ${teams ? "#0078D4" : "#D0D7DE"}` }}>
-            <input type="checkbox" checked={teams} onChange={(e) => setTeams(e.target.checked)} style={{ width: 16, height: 16, accentColor: "#0078D4" }} />
-            <span style={{ fontSize: 14, color: "#1F2328", fontWeight: 500 }}>Créer une réunion Teams</span>
-            {teams && <span style={{ marginLeft: "auto", fontSize: 11, color: "#0078D4", fontWeight: 600 }}>✓ Teams</span>}
+          <input value={attendees} onChange={(e) => setAttendees(e.target.value)}
+            placeholder="Participants (courriels, séparés par des virgules)"
+            className="w-full" style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid var(--pp-bg-border)" }} />
+          <input value={location} onChange={(e) => setLocation(e.target.value)}
+            placeholder="Lieu (optionnel)"
+            className="w-full" style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid var(--pp-bg-border)" }} />
+          <textarea value={body} onChange={(e) => setBody(e.target.value)}
+            placeholder="Notes / ordre du jour"
+            rows={3}
+            className="w-full" style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid var(--pp-bg-border)" }} />
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={teams} onChange={(e) => setTeams(e.target.checked)} />
+            Créer une réunion Teams
           </label>
           <button
             onClick={submit}
-            disabled={saving || !subject.trim()}
-            style={{
-              width: "100%", height: 48, borderRadius: 10, fontWeight: 700, fontSize: 15,
-              background: saving || !subject.trim() ? "#B0C4D8" : "#0078D4",
-              color: "#fff", border: "none", cursor: saving || !subject.trim() ? "not-allowed" : "pointer",
-              display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
-            }}
+            disabled={saving}
+            className="w-full h-11 rounded-xl font-semibold active:scale-[0.98]"
+            style={{ background: "var(--pp-brand-accent)", color: "#fff", opacity: saving ? 0.6 : 1 }}
           >
-            {saving ? "Création en cours…" : "Créer l'événement"}
+            {saving ? "Création…" : "Créer la réunion"}
           </button>
         </div>
       </div>

@@ -57,12 +57,30 @@ export function usePlanipretPush() {
   }, []);
 
   const sendTest = useCallback(async (userId: string) => {
-    const { data, error } = await supabase.functions.invoke("pp-push-notify", {
-      body: { user_id: userId, title: "Test Planiprêt", body: "Si vous voyez ceci, les notifications fonctionnent ✅", icon: "/icon-192.png" },
-    });
-    if (error) { toast.error(error.message); return; }
-    if ((data as any)?.delivered) toast.success(`Test envoyé (${(data as any).delivered})`);
-    else toast.warning("Aucun abonnement actif trouvé");
+    setBusy(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("pp-push-notify", {
+        body: {
+          user_id: userId,
+          title: "Test Planiprêt",
+          body: "Si vous voyez ceci, les notifications fonctionnent ✅",
+          icon: "/icon-192.png",
+          category: "info",
+        },
+      });
+      if (error) { toast.error("Notification indisponible pour le moment"); return; }
+      const d = data as any;
+      if (d?.delivered) { toast.success(`Test envoyé (${d.delivered})`); return; }
+      if (d?.reason === "no_subscription") {
+        toast.info("Notification ajoutée dans l'app. Activez les notifications push pour la recevoir sur l'appareil.");
+        return;
+      }
+      if (d?.reason === "vapid_not_configured") {
+        toast.info("Notification ajoutée dans l'app (push serveur non configuré).");
+        return;
+      }
+      toast.info("Notification de test ajoutée dans l'app.");
+    } finally { setBusy(false); }
   }, []);
 
   return { subscribe, sendTest, busy };

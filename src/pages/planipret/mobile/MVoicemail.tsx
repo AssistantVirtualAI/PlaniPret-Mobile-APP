@@ -185,7 +185,7 @@ export default function MVoicemail() {
   };
 
   return (
-    <div className="p-4 space-y-4 pb-6">
+    <div className="p-4 space-y-4 pb-[calc(2rem+env(safe-area-inset-bottom))] min-h-dvh overflow-y-auto overscroll-contain">
       {/* Header — cohérent avec les autres pages */}
       <header className="flex items-center gap-3">
         <div className="w-10 h-10 rounded-2xl flex items-center justify-center" style={{ background: "rgba(34,211,238,0.15)", border: "1px solid rgba(34,211,238,0.30)", color: "var(--pp-brand-accent)" }}>
@@ -230,7 +230,7 @@ export default function MVoicemail() {
 
       <div>
         {tab === "greeting" ? (
-          <div className="space-y-3">
+          <div className="space-y-3 min-h-0 overflow-visible">
             <div className="pp-card p-4 overflow-hidden relative">
               <div className="absolute inset-x-0 top-0 h-[2px]" style={{ background: "linear-gradient(90deg, transparent, var(--pp-brand-accent), var(--pp-agent), transparent)" }} />
               <div className="flex items-start gap-3">

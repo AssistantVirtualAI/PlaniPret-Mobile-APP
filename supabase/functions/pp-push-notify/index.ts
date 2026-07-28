@@ -11,8 +11,8 @@ Deno.serve(async (req) => {
     const VAPID_PUBLIC = c.public_key ?? Deno.env.get("VAPID_PUBLIC_KEY");
     const VAPID_PRIVATE = c.private_key ?? Deno.env.get("VAPID_PRIVATE_KEY");
     const SUBJECT = c.subject ?? Deno.env.get("VAPID_SUBJECT") ?? "mailto:noreply@avastatistic.ca";
-    if (!VAPID_PUBLIC || !VAPID_PRIVATE) return json({ error: "vapid_not_configured" }, 503);
-    webpush.setVapidDetails(SUBJECT, VAPID_PUBLIC, VAPID_PRIVATE);
+    const vapidReady = Boolean(VAPID_PUBLIC && VAPID_PRIVATE);
+    if (vapidReady) webpush.setVapidDetails(SUBJECT, VAPID_PUBLIC!, VAPID_PRIVATE!);
 
     const body = await req.json().catch(() => ({}));
     const { user_id, title, body: text, data, icon, category, deep_link } = body ?? {};
@@ -48,10 +48,11 @@ Deno.serve(async (req) => {
       delivered: false,
     }).select("id").maybeSingle();
 
-    if (!allowed) return json({ delivered: 0, blocked_by_preference: true });
+    if (!allowed) return json({ delivered: 0, blocked_by_preference: true, logged: true });
+    if (!vapidReady) return json({ delivered: 0, logged: true, reason: "vapid_not_configured" });
 
     const { data: subs } = await admin.from("planipret_push_subscriptions").select("id,endpoint,p256dh,auth").eq("user_id", user_id);
-    if (!subs?.length) return json({ delivered: 0 });
+    if (!subs?.length) return json({ delivered: 0, logged: true, reason: "no_subscription" });
 
     const payload = JSON.stringify({ title, body: text ?? "", data: { ...(data ?? {}), category: cat, deep_link: finalDeepLink }, icon: icon ?? "/icon-192.png" });
     let delivered = 0;

@@ -1,0 +1,2 @@
+ALTER TABLE public.planipret_integration_secrets DROP CONSTRAINT IF EXISTS planipret_integration_secrets_provider_check;
+ALTER TABLE public.planipret_integration_secrets ADD CONSTRAINT planipret_integration_secrets_provider_check CHECK (provider = ANY (ARRAY['microsoft','maestro','maestro_telecom','maestro_oauth','maestro_oauth_pending','maestro_oauth_error','webpush']));
