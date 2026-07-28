@@ -1,0 +1,1 @@
+ALTER TABLE public.planipret_profiles ALTER COLUMN voice_agent_enabled SET DEFAULT false;

@@ -1,0 +1,14 @@
+GRANT SELECT ON public.pbx_softphone_users_safe TO authenticated;
+GRANT SELECT ON public.user_presence TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.org_contacts TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.org_chat_channels TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.org_chat_messages TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.org_chat_reads TO authenticated;
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.org_chat_message_receipts TO authenticated;
+GRANT SELECT ON public.pbx_softphone_users TO service_role;
+GRANT ALL ON public.user_presence TO service_role;
+GRANT ALL ON public.org_contacts TO service_role;
+GRANT ALL ON public.org_chat_channels TO service_role;
+GRANT ALL ON public.org_chat_messages TO service_role;
+GRANT ALL ON public.org_chat_reads TO service_role;
+GRANT ALL ON public.org_chat_message_receipts TO service_role;

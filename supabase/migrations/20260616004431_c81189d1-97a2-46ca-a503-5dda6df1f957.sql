@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX IF NOT EXISTS pbx_queue_agents_pbx_uuid_uniq ON public.pbx_queue_agents (pbx_uuid) WHERE pbx_uuid IS NOT NULL;

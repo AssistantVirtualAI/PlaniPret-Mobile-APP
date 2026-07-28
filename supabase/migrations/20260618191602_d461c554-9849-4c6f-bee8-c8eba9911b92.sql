@@ -1,0 +1,1 @@
+ALTER VIEW public.pending_sync_retry_metrics SET (security_invoker = on);

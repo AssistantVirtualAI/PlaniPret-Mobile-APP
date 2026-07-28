@@ -1,0 +1,1 @@
+ALTER VIEW public.planipret_broker_stats SET (security_invoker = true);

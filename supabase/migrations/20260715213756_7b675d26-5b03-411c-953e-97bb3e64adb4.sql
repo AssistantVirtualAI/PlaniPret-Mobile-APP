@@ -1,0 +1,1 @@
+ALTER TABLE public.planipret_profiles REPLICA IDENTITY FULL;

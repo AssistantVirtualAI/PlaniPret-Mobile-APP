@@ -1,0 +1,1 @@
+ALTER TABLE public.planipret_profiles ADD COLUMN IF NOT EXISTS ms365_scopes text;

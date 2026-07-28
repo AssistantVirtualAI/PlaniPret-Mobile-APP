@@ -1,0 +1,10 @@
+ALTER TABLE public.pbx_call_records
+  ADD COLUMN IF NOT EXISTS transcription TEXT,
+  ADD COLUMN IF NOT EXISTS ai_summary TEXT,
+  ADD COLUMN IF NOT EXISTS sentiment TEXT,
+  ADD COLUMN IF NOT EXISTS call_score INTEGER,
+  ADD COLUMN IF NOT EXISTS coaching_points JSONB,
+  ADD COLUMN IF NOT EXISTS analyzed_at TIMESTAMPTZ;
+
+ALTER TABLE public.pbx_call_records REPLICA IDENTITY FULL;
+ALTER TABLE public.org_chat_messages REPLICA IDENTITY FULL;

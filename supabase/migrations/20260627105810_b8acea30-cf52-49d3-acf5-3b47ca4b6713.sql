@@ -1,0 +1,1 @@
+GRANT SELECT, INSERT, UPDATE, DELETE ON public.planipret_profiles TO authenticated; GRANT ALL ON public.planipret_profiles TO service_role;

@@ -1,0 +1,1 @@
+UPDATE public.pbx_softphone_users SET wss_url = 'wss://pbxnode.lemtel.tel:7443' WHERE wss_url IS NOT NULL AND wss_url !~* '^wss?://';

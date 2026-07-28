@@ -1,0 +1,1 @@
+ALTER VIEW public.pbx_softphone_link_status SET (security_invoker = true);

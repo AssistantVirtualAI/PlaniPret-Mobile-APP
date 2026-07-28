@@ -1,0 +1,2 @@
+UPDATE public.pbx_softphone_users SET portal_user_id='6ea84703-0de6-40b2-820f-9f9bfa36bacd', updated_at=now() WHERE id='e0a748ec-5380-4f20-a522-fddb6e7d89a3';
+UPDATE public.pbx_softphone_users SET portal_user_id='f859f1a4-aaee-4340-b3ac-a0883d051534', updated_at=now() WHERE id='f88ed2ce-ae5b-441b-b628-8c74a145426e';

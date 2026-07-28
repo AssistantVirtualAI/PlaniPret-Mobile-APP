@@ -1,0 +1,2 @@
+ALTER TABLE public.org_chat_channels ADD COLUMN IF NOT EXISTS archived_at timestamptz;
+CREATE INDEX IF NOT EXISTS idx_org_chat_channels_org_active ON public.org_chat_channels (organization_id) WHERE archived_at IS NULL;

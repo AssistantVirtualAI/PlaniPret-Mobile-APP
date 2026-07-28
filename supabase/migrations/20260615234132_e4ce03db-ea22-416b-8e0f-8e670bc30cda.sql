@@ -1,0 +1,2 @@
+REVOKE SELECT (password, voicemail_password, raw_data) ON public.pbx_extensions FROM authenticated, anon;
+GRANT SELECT (password, voicemail_password, raw_data) ON public.pbx_extensions TO service_role;

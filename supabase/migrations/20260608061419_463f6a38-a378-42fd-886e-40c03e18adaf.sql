@@ -1,0 +1,1 @@
+UPDATE public.pbx_softphone_users SET wss_url = 'wss://pbxnode.lemtel.tel:7443', updated_at = now() WHERE wss_url = 'wss://lemtel.lemtel.tel:7443' OR wss_url IS NULL;

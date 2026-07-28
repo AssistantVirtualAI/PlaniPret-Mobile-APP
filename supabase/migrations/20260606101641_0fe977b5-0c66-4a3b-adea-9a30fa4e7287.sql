@@ -1,0 +1,1 @@
+ALTER TABLE public.pbx_softphone_users ADD COLUMN IF NOT EXISTS dnd_enabled boolean NOT NULL DEFAULT false;

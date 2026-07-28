@@ -1,0 +1,1 @@
+delete from public.planipret_maestro_sync_log where action='call.analysis.summary' and success=false and response_status=0 and (response_body->>'error') in ('no_maestro_broker_id','no_maestro_call_id');

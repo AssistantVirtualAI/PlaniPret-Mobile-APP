@@ -1,0 +1,1 @@
+REVOKE SELECT (pin) ON public.number_porting_requests FROM authenticated, anon;

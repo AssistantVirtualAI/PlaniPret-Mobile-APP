@@ -1,0 +1,1 @@
+ALTER TABLE public.planipret_profiles ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'available' CHECK (status IN ('available','busy','break','offline'));

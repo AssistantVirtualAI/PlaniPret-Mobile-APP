@@ -437,22 +437,13 @@ function NativeDeepLinkBridge() {
           import('@capacitor/browser')
             .then(({ Browser }) => Browser.close().catch(() => {}))
             .catch(() => {});
-          // Guard: only navigate if not already on the callback route with the same
-          // search params — prevents history.replaceState > 100 times loop when
-          // PlanipretErrorBoundary remounts on each location change.
-          const ms365Target = `/auth/microsoft/callback${url.search}`;
-          if (window.location.pathname + window.location.search !== ms365Target) {
-            navigate(ms365Target, { replace: true });
-          }
+          navigate(`/auth/microsoft/callback${url.search}`, { replace: true });
         } else if (isMaestroCallback) {
           localStorage.setItem('pp_maestro_callback_url', rawUrl);
           import('@capacitor/browser')
             .then(({ Browser }) => Browser.close().catch(() => {}))
             .catch(() => {});
-          const maestroTarget = `/auth/maestro/callback${url.search}`;
-          if (window.location.pathname + window.location.search !== maestroTarget) {
-            navigate(maestroTarget, { replace: true });
-          }
+          navigate(`/auth/maestro/callback${url.search}`, { replace: true });
         }
       } catch {
         // Ignore non-URL events.

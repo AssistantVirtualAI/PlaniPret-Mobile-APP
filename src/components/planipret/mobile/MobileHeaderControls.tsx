@@ -1,6 +1,7 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { Bell, Settings as SettingsIcon } from "lucide-react";
 import { useNavigate } from "react-router-dom";
+import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { useMplanipretTheme } from "@/hooks/useMplanipretTheme";
 import { supabase } from "@/integrations/supabase/client";
 import MobileProfileSheet from "./MobileProfileSheet";
@@ -13,12 +14,12 @@ const STATUS_COLOR: Record<string, string> = {
 };
 
 export default function MobileHeaderControls({ profile, reloadProfile }: { profile: any; reloadProfile: () => Promise<void> | void }) {
+  const { t } = useMplanipretLang();
   const { theme } = useMplanipretTheme();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [unread, setUnread] = useState(0);
 
-  // Mirror the active theme on <html> so Tailwind `dark:` utilities react too.
   useEffect(() => {
     if (theme === "dark") document.documentElement.classList.add("dark");
     else document.documentElement.classList.remove("dark");
@@ -39,8 +40,8 @@ export default function MobileHeaderControls({ profile, reloadProfile }: { profi
       } catch { /* noop */ }
     };
     load();
-    const timer = setInterval(load, 30000);
-    return () => { cancelled = true; clearInterval(timer); };
+    const t = setInterval(load, 30000);
+    return () => { cancelled = true; clearInterval(t); };
   }, []);
 
   const initials = (profile?.full_name || profile?.email || "?")
@@ -48,7 +49,8 @@ export default function MobileHeaderControls({ profile, reloadProfile }: { profi
   const status = profile?.status ?? "available";
 
   const btn: CSSProperties = {
-    width: 34, height: 34,
+    width: 34,
+    height: 34,
     background: "var(--pp-bg-elevated)",
     border: "1px solid var(--pp-bg-border-2)",
     color: "var(--pp-text-secondary)",
@@ -62,22 +64,15 @@ export default function MobileHeaderControls({ profile, reloadProfile }: { profi
   return (
     <>
       <div className="ml-auto flex items-center gap-2">
-        {/* Settings */}
-        <button
-          onClick={() => navigate("/mplanipret/more")}
+        <button onClick={() => navigate("/mplanipret/more")}
           style={btn}
-          aria-label="Settings"
-        >
+          aria-label="Settings">
           <SettingsIcon className="w-4 h-4" />
         </button>
-
-        {/* Bell */}
-        <button
-          onClick={() => navigate("/mplanipret/notifications")}
+        <button onClick={() => navigate("/mplanipret/notifications")}
           className="relative"
           style={btn}
-          aria-label="Notifications"
-        >
+          aria-label="Notifications">
           <Bell className="w-4 h-4" />
           {unread > 0 && (
             <span style={{
@@ -88,10 +83,7 @@ export default function MobileHeaderControls({ profile, reloadProfile }: { profi
             }}>{unread > 99 ? "99+" : unread}</span>
           )}
         </button>
-
-        {/* Avatar initiales + status dot */}
-        <button
-          onClick={() => setOpen(true)}
+        <button onClick={() => setOpen(true)}
           className="relative flex items-center justify-center rounded-full font-bold text-white"
           style={{
             width: 34, height: 34,
@@ -100,13 +92,10 @@ export default function MobileHeaderControls({ profile, reloadProfile }: { profi
             fontSize: 12,
             flexShrink: 0,
           }}
-          aria-label="Profile"
-        >
+          aria-label={t("header.profile")}>
           {initials}
-          <span
-            className="absolute -bottom-0.5 -right-0.5 rounded-full"
-            style={{ width: 9, height: 9, background: STATUS_COLOR[status], border: "1.5px solid var(--pp-bg-surface)" }}
-          />
+          <span className="absolute -bottom-0.5 -right-0.5 rounded-full"
+            style={{ width: 9, height: 9, background: STATUS_COLOR[status], border: "1.5px solid var(--pp-bg-surface)" }} />
         </button>
       </div>
       {open && <MobileProfileSheet profile={profile} reloadProfile={reloadProfile} onClose={() => setOpen(false)} />}
