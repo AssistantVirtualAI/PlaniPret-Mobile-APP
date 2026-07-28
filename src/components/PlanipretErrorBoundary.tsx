@@ -3,25 +3,16 @@ import React from "react";
 type State = { error: Error | null };
 
 function isEmptyNativeArtifact(raw: unknown): boolean {
-  // null / undefined / false / 0 / empty string
-  if (!raw) return true;
-  // Plain string errors from native bridges
-  if (typeof raw === "string") {
-    const s = raw.trim();
-    return s === "" || /not implemented/i.test(s) || /unimplemented/i.test(s);
-  }
-  if (typeof raw !== "object") return false;
+  if (typeof raw === 'string') return /multi_header\.length|multi_header/i.test(raw);
+  if (!raw || typeof raw !== 'object') return false;
+
   const obj = raw as Record<string, unknown>;
-  const message = String(obj.message ?? Object.getOwnPropertyDescriptor(obj, "message")?.value ?? "").trim();
-  const errorMessage = String(obj.errorMessage ?? Object.getOwnPropertyDescriptor(obj, "errorMessage")?.value ?? "").trim();
-  const code = String(obj.code ?? Object.getOwnPropertyDescriptor(obj, "code")?.value ?? "").trim();
-  // Empty object {}
+  const message = String(obj.message ?? Object.getOwnPropertyDescriptor(obj, 'message')?.value ?? '').trim();
+  const errorMessage = String(obj.errorMessage ?? Object.getOwnPropertyDescriptor(obj, 'errorMessage')?.value ?? '').trim();
+  const code = String(obj.code ?? Object.getOwnPropertyDescriptor(obj, 'code')?.value ?? '').trim();
+  if (/multi_header\.length|multi_header/i.test(message || errorMessage)) return true;
   if (!message && !errorMessage && !code && Object.keys(obj).length === 0) return true;
-  // Capacitor UNIMPLEMENTED
-  if (code === "UNIMPLEMENTED" && /not implemented/i.test(message || errorMessage)) return true;
-  // iOS AVD / ProResHW / AudioSession artifacts — arrive as objects with only
-  // numeric or system-level codes and no user-visible message.
-  if (!message && !errorMessage && /^\d+$/.test(code)) return true;
+  if (code === 'UNIMPLEMENTED' && /not implemented/i.test(message || errorMessage)) return true;
   return false;
 }
 
@@ -35,8 +26,8 @@ export class PlanipretErrorBoundary extends React.Component<{ children: React.Re
     if (isEmptyNativeArtifact(error)) {
       // Empty native startup artifact — swallow AND remount subtree so the
       // app doesn't stay blank after React unmounts the failing tree.
-      // retryKey is NOT capped — iOS throws AppleAVD / ProResHW artifacts
-      // multiple times and we must always recover without showing an error screen.
+      // No cap on retryKey — iOS can fire multiple empty artifacts in a row
+      // (AppleAVD, ProResHW) and we must keep remounting the subtree each time.
       this.setState((s) => ({ error: null, retryKey: s.retryKey + 1 }));
       return;
     }

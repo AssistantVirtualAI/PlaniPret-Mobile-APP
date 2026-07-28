@@ -1,13 +1,12 @@
 // Phase 4.1 — Audio output router for /mplanipret.
-// Uses the PpSipKeepAlive Capacitor plugin (setAudioRoute / getAudioRoute)
-// which wraps AVAudioSession.overrideOutputAudioPort on iOS.
-// Falls back to no-ops in the web preview.
+// Uses the Capacitor SIP plugin when available (same bridge as Lemtel) and
+// falls back to no-ops in the web preview.
 
 export type AudioRoute = "earpiece" | "speaker" | "bluetooth";
 
 function bridge(): any {
-  // PpSipKeepAlive is the plugin that exposes setAudioRoute / getAudioRoute on iOS.
-  // CapacitorSip does not exist in this project.
+  // PpSipKeepAlive is the native Capacitor plugin that exposes setAudioRoute/getAudioRoute.
+  // CapacitorSip does not exist in this project — using PpSipKeepAlive instead.
   return (window as any)?.Capacitor?.Plugins?.PpSipKeepAlive ?? null;
 }
 
