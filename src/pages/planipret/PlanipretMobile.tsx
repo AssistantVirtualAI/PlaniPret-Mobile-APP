@@ -20,8 +20,14 @@ import MobileScreenSkeleton from "@/components/planipret/mobile/MobileScreenSkel
 import { prefetchRoute, scheduleIdlePrefetch, CORE_MOBILE_TAB_PATHS, prefetchAllMobileTabs, cancelPendingPrefetches } from "@/lib/routePrefetch";
 import { useQueryClient } from "@tanstack/react-query";
 import AvaChatSheet from "@/components/planipret/mobile/AvaChatSheet";
+// Logos embarqués localement dans le bundle mobile (évite le carré blanc si le réseau tarde)
+import avaLogoLocal from "@/assets/ava-statistics-logo.png";
+import planipretLogoLocal from "@/assets/planipret-logo.png";
 import avaLogoAsset from "@/assets/ava-statistics-logo.png.asset.json";
 import planipretLogoAsset from "@/assets/planipret-logo.png.asset.json";
+// Résolution : logo local en priorité, CDN en fallback
+const avaLogoSrc: string = avaLogoLocal || avaLogoAsset.url;
+const planipretLogoSrc: string = planipretLogoLocal || planipretLogoAsset.url;
 import MobileAuthScreen from "@/components/planipret/mobile/MobileAuthScreen";
 import MobileHeaderControls from "@/components/planipret/mobile/MobileHeaderControls";
 import PpActiveCallScreen from "@/components/planipret/PpActiveCallScreen";
@@ -128,7 +134,7 @@ const AvaBadge = ({ compact = false, circle = false }: { compact?: boolean; circ
         boxShadow: compact ? undefined : "0 0 12px rgba(124,58,237,0.35)",
       }}
     >
-      <img src={avaLogoAsset.url} alt="AVA" decoding="async" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+      <img src={avaLogoSrc} alt="AVA" decoding="async" loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={(e) => { (e.target as HTMLImageElement).src = avaLogoAsset.url; }} />
     </div>
   );
 };
@@ -147,7 +153,7 @@ const PlanipretBadge = () => (
       background: "#fff",
     }}
   >
-    <img src={planipretLogoAsset.url} alt="Planiprêt" decoding="async" fetchPriority="high" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
+    <img src={planipretLogoSrc} alt="Planiprêt" decoding="async" fetchPriority="high" style={{ width: "100%", height: "100%", objectFit: "contain" }} onError={(e) => { (e.target as HTMLImageElement).src = planipretLogoAsset.url; }} />
   </div>
 );
 
@@ -1227,7 +1233,7 @@ export default function PlanipretMobile() {
               <div className="absolute inset-0 rounded-full" style={{ background: "radial-gradient(circle, rgba(124,58,237,0.45) 0%, rgba(46,155,220,0.18) 50%, transparent 75%)", filter: "blur(4px)", animation: "ava-footer-pulse 3s ease-in-out infinite" }} />
               <div className="absolute inset-0 rounded-full flex items-center justify-center overflow-hidden" style={{ background: "conic-gradient(from 0deg, #7C3AED, #2E9BDC, #00D4AA, #7C3AED)", padding: 1.5, animation: "ava-footer-spin 6s linear infinite" }}>
                 <div className="w-full h-full rounded-full overflow-hidden flex items-center justify-center">
-                  <img src={avaLogoAsset.url} alt="AVA" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+                  <img src={avaLogoSrc} alt="AVA" style={{ width: "100%", height: "100%", objectFit: "cover" }} onError={(e) => { (e.target as HTMLImageElement).src = avaLogoAsset.url; }} />
                 </div>
               </div>
             </div>

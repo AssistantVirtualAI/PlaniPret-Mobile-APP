@@ -7,6 +7,47 @@ import { clearMs365Pending } from "@/lib/ms365Pending";
 import { clearMicrosoftSignInIntentAsync, getMicrosoftSignInIntentAsync, getMicrosoftSignInNextAsync } from "@/lib/ms365AuthLogin";
 import { markOAuthCallbackCompleted } from "@/lib/deepLinkDebug";
 
+// ─── Registre persistant des codes déjà consommés ────────────────────────────
+// Survit aux cold starts iOS (getLaunchUrl rejoue le même URL de callback).
+// Clé localStorage : "pp_ms365_consumed_codes" → tableau JSON de codes.
+const CONSUMED_CODES_KEY = "pp_ms365_consumed_codes";
+
+function isCodeAlreadyConsumed(code: string): boolean {
+  try {
+    const stored = localStorage.getItem(CONSUMED_CODES_KEY);
+    const list: string[] = stored ? JSON.parse(stored) : [];
+    return list.includes(code);
+  } catch {
+    return false;
+  }
+}
+
+function markCodeConsumed(code: string): void {
+  try {
+    const stored = localStorage.getItem(CONSUMED_CODES_KEY);
+    const list: string[] = stored ? JSON.parse(stored) : [];
+    if (!list.includes(code)) {
+      // Garder seulement les 20 derniers codes pour éviter la croissance infinie
+      list.push(code);
+      if (list.length > 20) list.splice(0, list.length - 20);
+      localStorage.setItem(CONSUMED_CODES_KEY, JSON.stringify(list));
+    }
+  } catch {}
+}
+
+// ─── Erreurs Microsoft qui signifient "code déjà utilisé" → retour silencieux ─
+function isAlreadyRedeemedError(msg: string | null | undefined): boolean {
+  if (!msg) return false;
+  const lower = msg.toLowerCase();
+  return (
+    lower.includes("aadsts54005") ||
+    lower.includes("already redeemed") ||
+    lower.includes("invalid_grant") ||
+    lower.includes("code has already been redeemed")
+  );
+}
+
+// ─── Module-level guards (session-scoped) ────────────────────────────────────
 const exchangedCodes = new Set<string>();
 let exchangeInFlight = false;
 
@@ -85,16 +126,32 @@ export default function Ms365Callback() {
       setError(null);
     }
     if (exchangeStarted.current) return;
+
     const freshCode = currentCode;
+
+    // ── Guard 1 : code déjà consommé (session en cours) ──────────────────────
     if (freshCode && exchangedCodes.has(freshCode)) {
       exchangeStarted.current = true;
       navigate("/mplanipret/home", { replace: true });
       return;
     }
+
+    // ── Guard 2 : code déjà consommé (cold start iOS — persistant) ───────────
+    if (freshCode && isCodeAlreadyConsumed(freshCode)) {
+      exchangeStarted.current = true;
+      console.log("[Ms365Callback] code déjà consommé (localStorage) → retour silencieux à l'accueil");
+      navigate("/mplanipret/home", { replace: true });
+      return;
+    }
+
     if (exchangeInFlight) return;
     exchangeStarted.current = true;
     exchangeInFlight = true;
-    if (freshCode) exchangedCodes.add(freshCode);
+    if (freshCode) {
+      exchangedCodes.add(freshCode);
+      markCodeConsumed(freshCode);
+    }
+
     (async () => {
       try {
         closeNativeBrowserSoon();
@@ -114,6 +171,12 @@ export default function Ms365Callback() {
         if (isMicrosoftLogin) {
           const { data, errMsg } = await invokeAndParse("pp-ms-auth-callback", { code, redirect_uri, code_verifier });
           if (errMsg || !(data as any)?.success) {
+            // AADSTS54005 / already redeemed → retour silencieux (pas d'écran rouge)
+            if (isAlreadyRedeemedError(errMsg)) {
+              console.log("[Ms365Callback] code déjà utilisé (AADSTS54005) → retour silencieux à l'accueil");
+              navigate("/mplanipret/home", { replace: true });
+              return;
+            }
             console.error("ms365 auth failed", { data, errMsg, redirect_uri });
             setStatus("error"); setError(errMsg ?? (data as any)?.error ?? "Échec OAuth");
             return;
@@ -144,6 +207,12 @@ export default function Ms365Callback() {
         );
         const errMsg = exchangeError?.message ?? null;
         if (errMsg || !(data as any)?.success) {
+          // AADSTS54005 / already redeemed → retour silencieux (pas d'écran rouge)
+          if (isAlreadyRedeemedError(errMsg)) {
+            console.log("[Ms365Callback] code déjà utilisé (AADSTS54005) → retour silencieux à l'accueil");
+            navigate("/mplanipret/home", { replace: true });
+            return;
+          }
           console.error("ms365 exchange failed", { data, errMsg });
           setStatus("error"); setError(errMsg ?? (data as any)?.error ?? "Échec OAuth");
           return;
@@ -163,6 +232,11 @@ export default function Ms365Callback() {
     })().catch((e) => {
       exchangeInFlight = false;
       console.error("ms365 callback crashed", e);
+      // Si le crash est dû à un code déjà utilisé, retour silencieux
+      if (isAlreadyRedeemedError(String(e?.message ?? e))) {
+        navigate("/mplanipret/home", { replace: true });
+        return;
+      }
       setStatus("error");
       setError(String(e?.message ?? e ?? "Échec OAuth"));
     });
@@ -173,7 +247,23 @@ export default function Ms365Callback() {
       <div className="bg-white rounded-xl shadow p-6 max-w-md w-full text-center">
         {status === "loading" && (<><Loader2 className="w-8 h-8 mx-auto animate-spin text-blue-600 mb-3" /><p className="text-slate-700">Connexion à Microsoft 365…</p></>)}
         {status === "ok" && (<><CheckCircle2 className="w-10 h-10 mx-auto text-emerald-600 mb-3" /><p className="font-semibold text-slate-800">Microsoft 365 connecté avec succès ✅</p><p className="text-xs text-slate-500 mt-2">Redirection…</p></>)}
-        {status === "error" && (<><AlertCircle className="w-10 h-10 mx-auto text-red-600 mb-3" /><p className="font-semibold text-slate-800">Erreur de connexion</p><p className="text-xs text-slate-500 mt-2">{error}</p><button type="button" onClick={goBack} className="mt-4 px-4 py-2 text-sm bg-slate-100 rounded-lg">Retour</button></>)}
+        {status === "error" && (
+          <>
+            <AlertCircle className="w-10 h-10 mx-auto text-red-600 mb-3" />
+            <p className="font-semibold text-slate-800">Erreur de connexion</p>
+            <p className="text-xs text-slate-500 mt-2">{error}</p>
+            <div className="flex gap-2 justify-center mt-4">
+              <button type="button" onClick={goBack} className="px-4 py-2 text-sm bg-slate-100 rounded-lg">Retour</button>
+              <button
+                type="button"
+                onClick={() => navigate("/mplanipret/more?reconnect=ms365", { replace: true })}
+                className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg"
+              >
+                Se reconnecter
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
