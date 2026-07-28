@@ -1,0 +1,329 @@
+:root {
+  --bg-0: #0A1429;
+  --bg-1: #0E1B3D;
+  --bg-2: rgba(255,255,255,0.06);
+  --brand-blue: #0023e6;
+  --brand-blue-2: #2a4dff;
+  --brand-yellow: #E0A800;
+  --ava-cyan: #23d6ff;
+  --ava-violet: #7A4CFF;
+  --text: #E8EEFB;
+  --text-muted: #7C8AA8;
+  --border: rgba(255,255,255,0.08);
+  --success: #10B981;
+  --warning: #F59E0B;
+  --danger: #EF4444;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body, #root { height: 100%; margin: 0; padding: 0; overscroll-behavior: none; }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+  background:
+    radial-gradient(1100px 700px at 12% -10%, rgba(0,35,230,0.32), transparent 60%),
+    radial-gradient(900px 600px at 100% 110%, rgba(224,168,0,0.16), transparent 55%),
+    linear-gradient(180deg, #060C1C 0%, #0A1429 50%, #0E1B3D 100%);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+/* Shiny glass button — reusable across the mobile app */
+.lemtel-shiny-btn {
+  position: relative;
+  background: linear-gradient(135deg, #0052CC 0%, #2D7BE5 55%, #4F9CFF 100%);
+  color: #fff;
+  border: 1px solid rgba(255,255,255,0.35);
+  box-shadow: 0 18px 40px -16px rgba(0,82,204,0.45), inset 0 1px 0 rgba(255,255,255,0.5);
+  overflow: hidden;
+  isolation: isolate;
+}
+.lemtel-shiny-btn::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(120deg, transparent 30%, rgba(255,255,255,0.45) 50%, transparent 70%);
+  transform: translateX(-100%);
+  animation: lemtelShine 3.6s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes lemtelShine {
+  0%, 60% { transform: translateX(-120%); }
+  80%, 100% { transform: translateX(120%); }
+}
+
+.lemtel-glass {
+  background: linear-gradient(155deg, rgba(255,255,255,0.06) 0%, rgba(255,255,255,0.03) 100%);
+  border: 1px solid rgba(255,255,255,0.08);
+  backdrop-filter: blur(18px) saturate(160%);
+  -webkit-backdrop-filter: blur(18px) saturate(160%);
+  box-shadow: 0 10px 32px -16px rgba(0,0,0,0.5);
+  border-radius: 16px;
+}
+
+button, input, textarea { font-family: inherit; }
+textarea, input { user-select: text; }
+
+/* Premium page transition between tabs */
+@keyframes lemtelPageEnter {
+  from { opacity: 0; transform: translateY(6px); filter: blur(2px); }
+  to   { opacity: 1; transform: translateY(0);   filter: blur(0); }
+}
+.lemtel-page-enter {
+  animation: lemtelPageEnter .28s cubic-bezier(.2,.7,.2,1) both;
+  will-change: transform, opacity, filter;
+}
+
+/* Shimmer skeleton */
+@keyframes lemtelShimmer {
+  0%   { background-position: -420px 0; }
+  100% { background-position: 420px 0; }
+}
+.lemtel-skeleton {
+  background: linear-gradient(
+    90deg,
+    rgba(140,180,255,0.06) 0%,
+    rgba(140,180,255,0.16) 45%,
+    rgba(255,230,0,0.10) 55%,
+    rgba(140,180,255,0.06) 100%
+  );
+  background-size: 800px 100%;
+  animation: lemtelShimmer 1.4s ease-in-out infinite;
+  border-radius: 8px;
+}
+
+/* Hide scrollbars on horizontal scrollers */
+.lemtel-hscroll::-webkit-scrollbar { display: none; }
+.lemtel-hscroll { scrollbar-width: none; }
+
+@keyframes pulse-ring {
+  0% { transform: scale(1); opacity: 0.6; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
+
+/* === Desktop-parity auth screen === */
+@keyframes authGlow {
+  0%, 100% { opacity: 0.85; transform: translateX(-50%) scale(1); }
+  50%      { opacity: 1;    transform: translateX(-50%) scale(1.06); }
+}
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.lemtel-input {
+  height: 48px; padding: 0 14px; border-radius: 12px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.10);
+  color: #E8EEFB; font-size: 15px; outline: none;
+  transition: border-color .15s ease, background .15s ease;
+}
+.lemtel-input::placeholder { color: rgba(232,238,251,0.35); }
+.lemtel-input:focus {
+  border-color: rgba(255,215,0,0.55);
+  background: rgba(255,255,255,0.06);
+}
+.lemtel-btn-primary {
+  border: none; color: #0b1530; font-weight: 800; letter-spacing: 0.4px;
+  background: var(--auth-accent, linear-gradient(135deg, #FFD700 0%, #0BB5D6 100%));
+  box-shadow: 0 18px 40px -16px rgba(255,215,0,0.45), inset 0 1px 0 rgba(255,255,255,0.45);
+  transition: transform .15s ease, box-shadow .15s ease, opacity .15s ease;
+}
+.lemtel-btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+.lemtel-btn-primary:not(:disabled):active { transform: translateY(1px); }
+@keyframes spin { to { transform: rotate(360deg); } }
+.spin { animation: spin 1s linear infinite; transform-origin: center; }
+
+/* ===================================================================
+   LIGHT THEME — comprehensive overrides
+   Strategy: target inline styles using hex codes from theme.ts, plus
+   class hooks (.lemtel-card, .lemtel-input, .lemtel-glass) and data-*
+   attributes (data-bubble, data-search-bar, data-pill). Dark theme is
+   the default and is left untouched.
+   =================================================================== */
+:root[data-theme="light"] {
+  --bg-0: #f0f4ff;
+  --bg-1: #e8eeff;
+  --bg-2: #ffffff;
+  --text: #0d1426;
+  --text-muted: #6b7a99;
+  --border: rgba(0,0,0,0.10);
+  --surface: #ffffff;
+  --surface-hover: #f5f7ff;
+  --accent: #0023e6;
+  --accent-light: #e8eeff;
+}
+
+body[data-theme="light"] {
+  background:
+    radial-gradient(900px 600px at 12% -10%, rgba(0,35,230,0.10), transparent 60%),
+    radial-gradient(700px 500px at 100% 110%, rgba(0,35,230,0.06), transparent 55%),
+    linear-gradient(180deg, #e8eeff 0%, #f0f4ff 100%) !important;
+  color: #0d1426 !important;
+}
+
+/* Cards & glass surfaces */
+body[data-theme="light"] .lemtel-glass,
+body[data-theme="light"] .lemtel-card {
+  background: #ffffff !important;
+  border: 1px solid rgba(0,0,0,0.10) !important;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.08) !important;
+  color: #0d1426 !important;
+}
+
+/* Skeleton shimmer */
+body[data-theme="light"] .lemtel-skeleton {
+  background: linear-gradient(90deg, rgba(0,35,230,0.04) 0%, rgba(0,35,230,0.10) 45%, rgba(0,35,230,0.04) 100%);
+  background-size: 800px 100%;
+}
+
+/* Inputs / textareas / selects */
+body[data-theme="light"] input,
+body[data-theme="light"] textarea,
+body[data-theme="light"] select,
+body[data-theme="light"] .lemtel-input {
+  background: #ffffff !important;
+  border: 1px solid rgba(0,0,0,0.15) !important;
+  color: #0d1426 !important;
+  caret-color: #0023e6;
+}
+body[data-theme="light"] input::placeholder,
+body[data-theme="light"] textarea::placeholder,
+body[data-theme="light"] .lemtel-input::placeholder {
+  color: #9ca3af !important;
+  opacity: 1;
+}
+body[data-theme="light"] input:focus,
+body[data-theme="light"] textarea:focus,
+body[data-theme="light"] select:focus,
+body[data-theme="light"] .lemtel-input:focus {
+  border-color: #0023e6 !important;
+  box-shadow: 0 0 0 3px rgba(0,35,230,0.12) !important;
+  outline: none;
+}
+
+/* ------------------------------------------------------------------
+   Inline-style color remapping — match exact hex strings from
+   lib/theme.ts inlined by React, upgrade dark-theme text to readable
+   dark-on-light equivalents.
+   ------------------------------------------------------------------ */
+
+/* textIce #E8EEFB → primary dark */
+body[data-theme="light"] [style*="#E8EEFB"],
+body[data-theme="light"] [style*="#e8eefb"] { color: #0d1426 !important; }
+
+/* textSub #B0BACC → secondary */
+body[data-theme="light"] [style*="#B0BACC"],
+body[data-theme="light"] [style*="#b0bacc"] { color: #3a4560 !important; }
+
+/* mutedSilver #7C8AA8 → muted */
+body[data-theme="light"] [style*="#7C8AA8"],
+body[data-theme="light"] [style*="#7c8aa8"] { color: #6b7a99 !important; }
+
+/* Headings & strong text */
+body[data-theme="light"] h1,
+body[data-theme="light"] h2,
+body[data-theme="light"] h3,
+body[data-theme="light"] h4 { color: #0d1426 !important; }
+
+/* Message bubbles */
+body[data-theme="light"] [data-bubble="me"] {
+  background: #0023e6 !important; color: #ffffff !important;
+}
+body[data-theme="light"] [data-bubble="them"] {
+  background: #ffffff !important; color: #0d1426 !important;
+  border: 1px solid rgba(0,0,0,0.08) !important;
+}
+
+/* Search bars */
+body[data-theme="light"] [data-search-bar="true"] {
+  background: #f0f4ff !important;
+  border: 1px solid rgba(0,0,0,0.10) !important;
+  color: #0d1426 !important;
+}
+
+/* Pill rows / chips */
+body[data-theme="light"] [data-pill="true"] {
+  background: #ffffff !important;
+  border: 1px solid rgba(0,0,0,0.10) !important;
+  color: #3a4560 !important;
+}
+body[data-theme="light"] [data-pill="true"][data-active="true"] {
+  background: #0023e6 !important;
+  color: #ffffff !important;
+  border-color: #0023e6 !important;
+}
+
+/* Status badges */
+body[data-theme="light"] .badge-success { background:#dcfce7 !important; color:#16a34a !important; }
+body[data-theme="light"] .badge-error   { background:#fee2e2 !important; color:#dc2626 !important; }
+body[data-theme="light"] .badge-warning { background:#fef9c3 !important; color:#854d0e !important; }
+body[data-theme="light"] .badge-info    { background:#dbeafe !important; color:#1d4ed8 !important; }
+
+/* Dividers */
+body[data-theme="light"] hr { border-color: rgba(0,0,0,0.08) !important; }
+
+/* ------------------------------------------------------------------
+   LIGHT MODE — extended visibility fixes
+   Catch dark-theme inline styles that bleed into light mode.
+   ------------------------------------------------------------------ */
+
+/* White text becomes dark on light bg (except inside gradient/colored buttons) */
+body[data-theme="light"] [style*="color: #fff"]:not([style*="background: linear-gradient"]):not([style*="background:linear-gradient"]):not([style*="background: #0023e6"]):not([data-bubble="me"]):not(button),
+body[data-theme="light"] [style*="color:#fff"]:not([style*="background: linear-gradient"]):not([style*="background:linear-gradient"]):not([style*="background: #0023e6"]):not([data-bubble="me"]):not(button),
+body[data-theme="light"] [style*="color: #FFFFFF"]:not([style*="background: linear-gradient"]):not([style*="background:linear-gradient"]):not([data-bubble="me"]):not(button),
+body[data-theme="light"] [style*="color: #ffffff"]:not([style*="background: linear-gradient"]):not([style*="background:linear-gradient"]):not([data-bubble="me"]):not(button) {
+  color: #0d1426 !important;
+}
+
+/* Translucent white surfaces (cards, rows, inputs) → solid white */
+body[data-theme="light"] [style*="rgba(255,255,255,0.06)"],
+body[data-theme="light"] [style*="rgba(255,255,255,0.08)"],
+body[data-theme="light"] [style*="rgba(255,255,255,0.10)"],
+body[data-theme="light"] [style*="rgba(255, 255, 255, 0.06)"],
+body[data-theme="light"] [style*="rgba(255, 255, 255, 0.08)"],
+body[data-theme="light"] [style*="rgba(255, 255, 255, 0.10)"] {
+  background: #ffffff !important;
+  color: #0d1426 !important;
+  border-color: rgba(0,0,0,0.10) !important;
+}
+
+/* Translucent white borders → subtle dark border */
+body[data-theme="light"] [style*="border: 1px solid rgba(255,255,255"],
+body[data-theme="light"] [style*="border:1px solid rgba(255,255,255"],
+body[data-theme="light"] [style*="border-color: rgba(255,255,255"] {
+  border-color: rgba(0,0,0,0.10) !important;
+}
+
+/* Midnight/navy inline backgrounds → light surface */
+body[data-theme="light"] [style*="#0A1429"],
+body[data-theme="light"] [style*="#0a1429"],
+body[data-theme="light"] [style*="#0E1B3D"],
+body[data-theme="light"] [style*="#0e1b3d"],
+body[data-theme="light"] [style*="#060C1C"],
+body[data-theme="light"] [style*="#060c1c"] {
+  background-color: #ffffff !important;
+  color: #0d1426 !important;
+}
+
+/* All buttons that aren't gradients/branded get dark text */
+body[data-theme="light"] button:not([style*="linear-gradient"]):not([style*="#0023e6"]):not([style*="#dc2626"]):not([style*="#EF4444"]):not([style*="#ef4444"]) {
+  color: #0d1426;
+}
+
+/* Bottom nav / tab bar surfaces */
+body[data-theme="light"] nav,
+body[data-theme="light"] [role="tablist"],
+body[data-theme="light"] [data-bottom-nav="true"] {
+  background: #ffffff !important;
+  border-color: rgba(0,0,0,0.08) !important;
+  color: #0d1426 !important;
+}
+
+/* Generic <a> readability */
+body[data-theme="light"] a { color: #0023e6; }
+
+/* Empty state / muted hint helpers */
+body[data-theme="light"] [data-muted="true"],
+body[data-theme="light"] .muted {
+  color: #6b7a99 !important;
+}
