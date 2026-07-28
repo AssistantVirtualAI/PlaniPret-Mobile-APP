@@ -37,9 +37,6 @@ export function MplanipretGuard({ children }: { children: ReactNode }) {
     (async () => {
       let userId: string | null = null;
       try {
-        // getUser() performs a network validation and can stall during iOS cold
-        // boot. getSession() is local-storage backed and enough for this guard;
-        // PlanipretMobile does the real profile authorization next.
         const { data: { session } } = await withTimeout(supabase.auth.getSession(), 2500, "mplanipret_session");
         userId = session?.user?.id ?? null;
       } catch (error) {
