@@ -825,8 +825,36 @@ export default function PlanipretMobile() {
   };
 
   useEffect(() => {
-    loadProfile();
     if (location.pathname === ROUTES.MPLANIPRET) navigate(ROUTES.MPLANIPRET_HOME, { replace: true });
+    // On native (iOS/Android), Supabase restores the session from Keychain/SecureStorage
+    // asynchronously. Calling getSession() immediately at boot may return null before
+    // the session is ready, causing a false "unauthenticated" error screen.
+    // We wait for INITIAL_SESSION (fired once when the session is ready) before loading
+    // the profile. On web, INITIAL_SESSION fires synchronously so this is safe everywhere.
+    let resolved = false;
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, _session) => {
+      if (resolved) return;
+      if (event === "INITIAL_SESSION" || event === "SIGNED_IN" || event === "TOKEN_REFRESHED") {
+        resolved = true;
+        void loadProfile();
+      } else if (event === "SIGNED_OUT") {
+        resolved = true;
+        setProfile(null);
+        setAccessError("unauthenticated");
+        setLoading(false);
+      }
+    });
+    // Safety fallback: if INITIAL_SESSION never fires within 4s (rare edge case), load anyway
+    const fallbackTimer = setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        void loadProfile();
+      }
+    }, 4000);
+    return () => {
+      subscription.unsubscribe();
+      clearTimeout(fallbackTimer);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
