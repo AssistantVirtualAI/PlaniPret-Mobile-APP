@@ -57,22 +57,75 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405);
 
+  const rid = crypto.randomUUID().slice(0, 8);
+  const log = (msg: string, extra?: Record<string, unknown>) =>
+    console.log(`[maestro-sync-call][${rid}] ${msg}${extra ? " " + JSON.stringify(extra) : ""}`);
+
   try {
     const { call_id, force } = await req.json().catch(() => ({}));
     if (!call_id) return json({ success: false, error: "call_id_required" }, 400);
+    log("start", { call_id, force: !!force });
 
     const admin = adminClient();
-    const cfg = await getMaestroConfig(admin);
-    if (!cfg.url || !cfg.key) {
-      return json({ success: false, error: "maestro_not_configured" }, 200);
+
+    // ── Config diagnostics ────────────────────────────────
+    // `maestro_not_configured` était opaque : on trace maintenant d'où vient
+    // (ou ne vient pas) l'URL / la clé, y compris après une reconnexion OAuth.
+    const { data: secretRows, error: secretErr } = await admin
+      .from("planipret_integration_secrets")
+      .select("provider, config, updated_at")
+      .in("provider", ["maestro_telecom", "maestro"]);
+    if (secretErr) {
+      log("secrets_read_error", { message: secretErr.message, code: (secretErr as any).code });
+    } else {
+      log("secrets_rows", {
+        providers: (secretRows ?? []).map((r: any) => ({
+          provider: r.provider,
+          has_api_url: !!(r.config?.api_url ?? r.config?.base_url),
+          has_api_key: !!r.config?.api_key,
+          updated_at: r.updated_at,
+        })),
+      });
     }
 
-    let { data: call } = await admin
+    const cfg = await getMaestroConfig(admin);
+    const diag = {
+      url_present: !!cfg.url,
+      key_present: !!cfg.key,
+      url_host: cfg.url ? (() => { try { return new URL(cfg.url).host; } catch { return "invalid_url"; } })() : null,
+      key_len: cfg.key ? cfg.key.length : 0,
+      account_id_present: !!cfg.accountId,
+      env_base_url: !!Deno.env.get("MAESTRO_TELECOM_BASE_URL"),
+      env_machine_key: !!Deno.env.get("MAESTRO_MACHINE_API_KEY"),
+      secrets_rows: secretRows?.length ?? 0,
+      secrets_error: secretErr?.message ?? null,
+    };
+    log("config_resolved", diag);
+
+    if (!cfg.url || !cfg.key) {
+      console.error(`[maestro-sync-call][${rid}] maestro_not_configured`, JSON.stringify(diag));
+      return json({
+        success: false,
+        error: "maestro_not_configured",
+        reason: !cfg.url && !cfg.key ? "missing_url_and_key" : !cfg.url ? "missing_url" : "missing_key",
+        diagnostics: diag,
+        request_id: rid,
+      }, 200);
+    }
+
+    const { data: call0, error: callErr } = await admin
       .from("planipret_phone_calls")
       .select(CALL_COLUMNS)
       .eq("id", call_id)
       .maybeSingle();
-    if (!call) return json({ success: false, error: "call_not_found" }, 404);
+    let call = call0;
+    if (callErr) log("call_read_error", { message: callErr.message, code: (callErr as any).code });
+    if (!call) {
+      log("call_not_found", { call_id });
+      return json({ success: false, error: "call_not_found", request_id: rid, db_error: callErr?.message ?? null }, 404);
+    }
+    log("call_loaded", { user_id: call.user_id, maestro_synced: call.maestro_synced, maestro_call_id: call.maestro_call_id });
+
 
     const steps: Record<string, unknown> = {};
     await updateCallPipeline(admin, call_id, { step: "maestro_sync", started: true, error: null });
@@ -93,7 +146,14 @@ Deno.serve(async (req) => {
     }
 
     const auth = await getBrokerAuth(admin, call.user_id);
+    log("broker_auth", {
+      user_id: call.user_id,
+      broker_id: auth.brokerId,
+      using_service_key_fallback: auth.usingFallback,
+      token_len: auth.token ? auth.token.length : 0,
+    });
     const mId = call.maestro_call_id ?? call.ns_call_id ?? call.id;
+
 
     // ── 2. Recording upload ────────────────────────────────
     const rec = await invoke("maestro-recording-upload", { call_id, force });
@@ -239,9 +299,11 @@ Deno.serve(async (req) => {
       steps,
     });
 
-    return json({ success: allOk, call_id, maestro_call_id: mId, steps });
+    log("done", { allOk, steps });
+    return json({ success: allOk, call_id, maestro_call_id: mId, steps, request_id: rid });
   } catch (e: any) {
-    console.error("maestro-sync-call error", e);
-    return json({ success: false, error: e?.message ?? "server_error" }, 500);
+    console.error(`[maestro-sync-call][${rid}] fatal`, e?.stack ?? e);
+    return json({ success: false, error: e?.message ?? "server_error", request_id: rid }, 500);
   }
+
 });

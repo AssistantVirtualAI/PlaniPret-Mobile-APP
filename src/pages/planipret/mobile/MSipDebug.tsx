@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { ArrowLeft, RefreshCw, Trash2, Copy, CheckCircle2, XCircle, AlertTriangle, Loader2, Radio } from "lucide-react";
 import { toast } from "sonner";
 import { ppSipProvider, type PpSipEvent, type PpSipSnapshot } from "@/lib/planipret/sip/ppSipProvider";
+import { exportSipStability, getSipStabilityReport, resetSipStability } from "@/lib/planipret/sip/sipStabilityMonitor";
 
 const STAGES = ["idle", "connecting", "connected", "registered"] as const;
 
@@ -110,6 +111,10 @@ export default function MSipDebug() {
         </div>
       </section>
 
+
+      {/* 24h stability soak */}
+      <StabilityCard />
+
       {/* Event log */}
       <section className="pp-card p-3">
         <div className="flex items-center justify-between mb-2">
@@ -134,5 +139,42 @@ export default function MSipDebug() {
         )}
       </section>
     </div>
+  );
+}
+
+function StabilityCard() {
+  const [report, setReport] = useState(() => getSipStabilityReport());
+  useEffect(() => {
+    const t = setInterval(() => setReport(getSipStabilityReport()), 15000);
+    return () => clearInterval(t);
+  }, []);
+  const V: Record<string, string> = { stable: "#10B981", degraded: "#F59E0B", unstable: "#EF4444", collecting: "#3B82F6" };
+  return (
+    <section className="pp-card p-4 space-y-3">
+      <div className="flex items-center gap-2">
+        <Radio className="w-4 h-4" style={{ color: V[report.verdict] }} />
+        <span className="font-bold text-sm" style={{ color: "var(--pp-text-primary)" }}>Stabilité SIP (24 h)</span>
+        <span className="ml-auto px-2 py-0.5 rounded-full text-[11px] font-bold" style={{ background: V[report.verdict], color: "#fff" }}>
+          {report.verdict.toUpperCase()}
+        </span>
+      </div>
+      <div className="grid grid-cols-2 gap-2 text-[11px]" style={{ color: "var(--pp-text-secondary)" }}>
+        <div><span className="opacity-60">Fenêtre:</span> {report.windowHours.toFixed(1)} h</div>
+        <div><span className="opacity-60">Registers OK:</span> {report.counts.registered}</div>
+        <div><span className="opacity-60">WS 1001 / déco:</span> {report.counts.ws_disconnect}</div>
+        <div><span className="opacity-60">Registration failed:</span> {report.counts.registration_failed}</div>
+        <div className="col-span-2"><span className="opacity-60">Plus long trou sans REGISTER:</span> {(report.longestGapMs / 60000).toFixed(1)} min</div>
+      </div>
+      <div className="flex gap-2">
+        <button onClick={async () => { try { await navigator.clipboard.writeText(exportSipStability()); toast.success("Rapport 24 h copié"); } catch { toast.error("Copie impossible"); } }}
+          className="flex-1 py-1.5 rounded-lg text-[11px] font-semibold" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}>
+          Exporter le rapport
+        </button>
+        <button onClick={() => { resetSipStability(); setReport(getSipStabilityReport()); toast("Test 24 h redémarré"); }}
+          className="flex-1 py-1.5 rounded-lg text-[11px] font-semibold" style={{ background: "var(--pp-brand-accent)", color: "#fff" }}>
+          Démarrer un nouveau test
+        </button>
+      </div>
+    </section>
   );
 }
