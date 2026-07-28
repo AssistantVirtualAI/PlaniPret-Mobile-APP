@@ -968,7 +968,8 @@ export default function PlanipretMobile() {
           <OnboardingTutorial profile={profile} onDone={loadProfile} />
         )}
 
-        {/* Right FAB — Keypad (bleu) ou raccrocher (rouge) si appel actif */}
+        {/* Right FAB — uniquement sur Home et Calls */}
+        {(/^\/mplanipret(\/(home|calls)(\/|$)?)?$/.test(location.pathname) || location.pathname === "/mplanipret") && (
         <button onClick={activeCallId ? hangupActive : () => setDialerOpen(true)}
           className="absolute z-20 rounded-full flex items-center justify-center text-white active:scale-95 transition"
           style={{
@@ -985,6 +986,7 @@ export default function PlanipretMobile() {
           aria-label={activeCallId ? t("dialer.hangup") : t("dialer.dialNumber")}>
           {activeCallId ? <PhoneOff className="w-5 h-5" /> : <PhoneIcon className="w-5 h-5" />}
         </button>
+        )}
 
 
         {/* Tab bar (5 tabs) */}
