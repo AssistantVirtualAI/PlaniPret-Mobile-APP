@@ -17,6 +17,19 @@ import {
 const j = (b: unknown, s = 200) =>
   new Response(JSON.stringify(b), { status: s, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
+async function saveIntegrationState(
+  admin: ReturnType<typeof createClient>,
+  provider: string,
+  config: Record<string, unknown>,
+) {
+  const { error } = await admin.from("planipret_integration_secrets").upsert({
+    provider,
+    config,
+    updated_at: new Date().toISOString(),
+  }, { onConflict: "provider" });
+  if (error) console.error("[maestro-oauth-callback] integration state save failed", provider, error.message);
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
@@ -47,11 +60,13 @@ Deno.serve(async (req) => {
 
     if (!isMaestroOAuthConfigured(env)) {
       // Store the pending code so we can exchange later.
-      await admin.from("planipret_integration_secrets").upsert({
-        provider: "maestro_oauth_pending",
-        key_name: `code_${state ?? Date.now()}`,
-        value: JSON.stringify({ code, state, redirect_uri, user_id: userId, received_at: new Date().toISOString() }),
-      }, { onConflict: "provider,key_name" });
+      await saveIntegrationState(admin, "maestro_oauth_pending", {
+        code,
+        state,
+        redirect_uri,
+        user_id: userId,
+        received_at: new Date().toISOString(),
+      });
       return j({
         success: true, pending: true,
         message: "Code stocké. En attente de configuration des endpoints Maestro.",
@@ -67,10 +82,13 @@ Deno.serve(async (req) => {
     const exch = await exchangeAuthorizationCode(env, code, effectiveRedirect, codeVerifier);
 
     if (!exch.ok || !exch.data) {
-      await admin.from("planipret_integration_secrets").upsert({
-        provider: "maestro_oauth_error", key_name: "last",
-        value: JSON.stringify({ error: exch.error, http_status: exch.status, at: new Date().toISOString() }),
-      }, { onConflict: "provider,key_name" });
+      await saveIntegrationState(admin, "maestro_oauth_error", {
+        error: exch.error,
+        http_status: exch.status,
+        state: state ?? null,
+        user_id: userId,
+        at: new Date().toISOString(),
+      });
       return j({ success: false, error: exch.error ?? "token_exchange_failed" });
     }
 
@@ -99,10 +117,11 @@ Deno.serve(async (req) => {
       // Consume the state row.
       await admin.from("planipret_maestro_oauth_states").delete().eq("state", state);
     } else {
-      await admin.from("planipret_integration_secrets").upsert({
-        provider: "maestro_oauth", key_name: state ?? "default",
-        value: JSON.stringify({ ...exch.data, obtained_at: new Date().toISOString() }),
-      }, { onConflict: "provider,key_name" });
+      await saveIntegrationState(admin, "maestro_oauth", {
+        ...exch.data,
+        state: state ?? null,
+        obtained_at: new Date().toISOString(),
+      });
     }
 
     return j({

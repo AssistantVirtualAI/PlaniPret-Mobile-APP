@@ -55,12 +55,6 @@ export interface MaestroCallUpdate {
 export const updateCall = (callId: string, body: MaestroCallUpdate) =>
   call(`/users/{me}/calls/${encodeURIComponent(callId)}`, { method: "PUT", body });
 
-// API Maestro Telecom: PUT /users/{id}/calls/{callId} — ai_summary and notes included
-export const updateCallAiSummary = (callId: string, ai_summary: string) =>
-  call(`/users/{me}/calls/${encodeURIComponent(callId)}`, { method: "PUT", body: { ai_summary } });
-export const updateCallNotes = (callId: string, notes: string) =>
-  call(`/users/{me}/calls/${encodeURIComponent(callId)}`, { method: "PUT", body: { notes } });
-
 export const getRecording = (callId: string) =>
   call(`/users/{me}/call/${encodeURIComponent(callId)}/recording`);
 export const getTranscription = (callId: string) =>
@@ -95,7 +89,7 @@ export const getUserMessagesWith = (userId: string, phoneNumber: string) =>
 
 export const maestroTelecom = {
   getSip, lookupByPhone,
-  createCall, listCalls, listCallsWithContact, updateCall, updateCallAiSummary, updateCallNotes,
+  createCall, listCalls, listCallsWithContact, updateCall,
   getRecording, getTranscription, getVoicemail, markCallRead,
   sendMessage, getInbox, getMessagesWith, markMessagesRead,
   getRecentCommunications, getAllCommunications, getUserCommunications, getUserMessagesWith,

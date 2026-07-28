@@ -1,4 +1,3 @@
-import React from "react";
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { motion } from "framer-motion";
 import { useOutletContext, useSearchParams } from "react-router-dom";
@@ -109,15 +108,7 @@ function fmtPhone(n: string | null): string | null {
 }
 
 const otherNumber = (c: Call) => cleanNumber(isOutbound(c) ? c.to_number : c.from_number) || "";
-// NS sometimes returns generic account names (SpeakAccount, Unknown, etc.) instead of real caller names.
-const NS_GENERIC_NAMES = new Set(["speakaccount", "unknown", "anonymous", "unavailable", "restricted", "private", "nms"]);
-function cleanNsName(name: string | null | undefined): string {
-  if (!name) return "";
-  const lower = name.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
-  if (NS_GENERIC_NAMES.has(lower)) return "";
-  return name.trim();
-}
-const otherName = (c: Call) => cleanNsName(isOutbound(c) ? c.to_name : c.from_name);
+const otherName = (c: Call) => (isOutbound(c) ? c.to_name : c.from_name) || "";
 // Label priority: NS caller_id_name → resolved (Maestro/MS/contacts) → phone
 // number → localized "Numéro non résolu" fallback.
 const UNRESOLVED_FR = "Numéro non résolu";
@@ -356,23 +347,17 @@ export default function MCalls() {
   // are still missing audio or transcript, then relax to 60s once everything
   // is settled.
   useEffect(() => {
-    // Only poll when recordings tab is open AND some items are still pending.
-    // Start at 30s (not 5s) to avoid constant refreshes.
     if (tab !== "recordings" || !userId) return;
-    const allSettled = recordings.length > 0 && recordings.every((r: any) =>
-      (r.recording_url || r.has_recording) && (r.transcript || r.ai_summary)
-    );
-    if (allSettled) return; // nothing pending — no polling needed
     let cancelled = false;
     let timer: number | null = null;
-    let delay = 30_000; // start at 30s
+    let delay = 5_000;
     const tick = async () => {
       await loadRecordings(true);
       if (cancelled) return;
       const pending = recordings.some((r: any) =>
         !r.recording_url || !r.has_recording || (!r.transcript && !r.ai_summary)
       );
-      delay = pending ? Math.min(delay * 2, 120_000) : 120_000; // max 2min
+      delay = pending ? Math.min(delay * 2, 60_000) : 60_000;
       timer = window.setTimeout(tick, delay);
     };
     timer = window.setTimeout(tick, delay);
@@ -390,28 +375,18 @@ export default function MCalls() {
 
 
   // Realtime updates on phone_calls (for new entries + auto-refresh recordings)
-  // On UPDATE: merge the changed row directly into state without a full reload.
-  // On INSERT: trigger a full reload (debounced 2s).
   useEffect(() => {
     if (!userId) return;
     const ch = supabase
       .channel(`planipret-calls:${userId}`)
-      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "planipret_phone_calls" }, (payload: any) => {
-        const row = payload?.new ?? {};
-        if (!row.id) return;
-        if (row.user_id && row.user_id !== userId && row.user_id !== profileAuthId && row.extension !== profileExtension) return;
-        // Merge updated fields directly into state — no full reload needed.
-        setCalls((prev) => prev.map((c) => c.id === row.id ? { ...c, ...row } as any : c));
-        setRecordings((prev) => prev.map((c) => c.id === row.id ? { ...c, ...row } as any : c));
-      })
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "planipret_phone_calls" }, (payload: any) => {
-        const row = payload?.new ?? {};
+      .on("postgres_changes", { event: "*", schema: "public", table: "planipret_phone_calls" }, (payload: any) => {
+        const row = payload?.new ?? payload?.old ?? {};
         if (row.user_id && row.user_id !== userId && row.user_id !== profileAuthId && row.extension !== profileExtension) return;
         if (callsRefreshDebounceRef.current) window.clearTimeout(callsRefreshDebounceRef.current);
         callsRefreshDebounceRef.current = window.setTimeout(() => {
           void load();
           if (tab === "recordings") void loadRecordings();
-        }, 2_000); // debounce 2s pour les nouveaux appels
+        }, 1_000);
       })
       .subscribe();
     return () => {

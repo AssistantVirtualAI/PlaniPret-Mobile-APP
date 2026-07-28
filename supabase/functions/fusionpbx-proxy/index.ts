@@ -1075,11 +1075,17 @@ Deno.serve(async (req) => {
       if (!extensionUuid) return json({ ok: false, error: "EXTENSION_NOT_FOUND", extension: extNum }, 404);
 
       const dialString = buildVertoDialString();
+      // Preserve ALL existing fields (password, caller ID, voicemail, etc.) —
+      // FusionPBX POST replaces the row wholesale, so a partial payload would
+      // wipe unrelated columns.
       const patchPayload: Record<string, unknown> = {
+        ...current,
         extension_uuid: extensionUuid,
         domain_uuid: current.domain_uuid || requestedDomain,
         dial_string: dialString,
-        call_timeout: "20",
+        call_timeout: "35",
+        hangup_after_bridge: "true",
+        user_record: "all",
       };
       const write = await pbxWrite("extensions", "POST", { extensions: [patchPayload] });
       const wroteOk = write.ok || String((write as any).embeddedCode) === "000";
@@ -1116,7 +1122,9 @@ Deno.serve(async (req) => {
         const extNum = String(current.extension || "").trim();
         const extensionUuid = current?.extension_uuid;
         if (!extNum || !extensionUuid) continue;
+        // Preserve ALL existing fields — POST replaces the row wholesale.
         const patchPayload: Record<string, unknown> = {
+          ...current,
           extension_uuid: extensionUuid,
           domain_uuid: current.domain_uuid || requestedDomain,
           dial_string: dialString,
@@ -1140,6 +1148,37 @@ Deno.serve(async (req) => {
       } catch { /* audit best-effort */ }
 
       return json({ ok: true, domain_uuid: requestedDomain, total: rows.length, fixed, failed, results });
+    }
+
+    // Verto (WebSocket, port 8082) clients — NOT visible in SIP registrations.
+    // FusionPBX exposes them via mod_verto's live clients endpoint. We try a
+    // few known paths and fall back to an empty list if none exist on this build.
+    if (action === "get-verto-clients") {
+      const attempts = ["verto_clients", "app/verto/verto_clients", "status/verto"];
+      let last: any = null;
+      for (const p of attempts) {
+        const r = await pbxFetch(`${p}?domain_uuid=${requestedDomain}`);
+        last = r;
+        if (r.ok) {
+          const raw = collection(r.data, "verto_clients") || collection(r.data, "clients") || (Array.isArray(r.data) ? r.data : []);
+          const norm = (raw || []).map((x: any) => {
+            const user = String(x.user || x.login || x.aor || x.session_user || "").split("@")[0];
+            const agent = String(x.user_agent || x.agent || "");
+            const platform = /android/i.test(agent) ? "Android" : /iphone|ios|darwin/i.test(agent) ? "iOS" : /chrome|firefox|safari|edge/i.test(agent) ? "Desktop" : "Unknown";
+            return {
+              extension: user,
+              user,
+              network_ip: x.network_ip || x.remote_ip || x.ip || "",
+              user_agent: agent,
+              platform,
+              connected_since: x.connected_since || x.since || x.created || x.ts || null,
+              session_id: x.sessid || x.session_id || "",
+            };
+          });
+          return json({ ok: true, domain_uuid: requestedDomain, count: norm.length, data: norm });
+        }
+      }
+      return json({ ok: true, domain_uuid: requestedDomain, count: 0, data: [], warning: "verto_clients endpoint not available on this FusionPBX build", last_status: last?.status });
     }
 
 

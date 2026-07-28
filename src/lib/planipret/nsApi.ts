@@ -122,15 +122,22 @@ export const recordingsApi = {
         Authorization: `Bearer ${token}`,
         apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string,
       },
-      body: JSON.stringify({ call_db_id: callId, ns_callid: callId }),
+      body: JSON.stringify({ call_db_id: callId, prefer_url: true }),
     });
     const ct = res.headers.get("content-type") ?? "";
     // Edge function returns 200 + JSON when NS reports the recording is missing/forbidden.
     if (ct.includes("application/json")) {
-      const err = await res.json().catch(() => ({} as any));
-      if (err?.attempts) console.warn("Recording fetch attempts:", err.attempts);
-      const msg = err?.error ?? "Enregistrement indisponible";
-      const hint = err?.hint ?? (err?.ns_status ? `NS-API HTTP ${err.ns_status}` : "");
+      const payload = await res.json().catch(() => ({} as any));
+      if ((payload?.available || payload?.success) && (payload?.url || payload?.recording_url)) {
+        const signed = await fetch(payload.url ?? payload.recording_url);
+        if (!signed.ok) throw new Error(`Recording fetch failed (HTTP ${signed.status})`);
+        const blob = await signed.blob();
+        if (blob.size < 128) throw new Error("Fichier audio vide reçu");
+        return blob;
+      }
+      if (payload?.attempts) console.warn("Recording fetch attempts:", payload.attempts);
+      const msg = payload?.message ?? payload?.error ?? payload?.reason ?? "Enregistrement en préparation";
+      const hint = payload?.hint ?? (payload?.ns_status ? `NS-API HTTP ${payload.ns_status}` : "");
       throw new Error(hint ? `${msg} — ${hint}` : msg);
     }
     if (!res.ok) throw new Error(`Recording fetch failed (HTTP ${res.status})`);

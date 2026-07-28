@@ -59,26 +59,38 @@ async function derivePassword(userId: string): Promise<string> {
   return `Pp${hex.substring(0, 12)}!`;
 }
 
+// Hard timeout so an unreachable NS host can never hang the function until the
+// 150s platform idle timeout (which surfaces as a 504 + blank screen).
+const NS_TIMEOUT_MS = 8000;
+
+async function nsFetch(path: string, init: RequestInit = {}) {
+  try {
+    const res = await fetch(`${NS_API_BASE_URL}${path}`, {
+      ...init,
+      headers: { Authorization: `Bearer ${NS_API_KEY}`, Accept: "application/json", ...(init.headers ?? {}) },
+      signal: AbortSignal.timeout(NS_TIMEOUT_MS),
+    });
+    const text = await res.text();
+    let data: any = null;
+    try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+    return { ok: res.ok || res.status === 202, status: res.status, data };
+  } catch (e) {
+    console.warn(`[ns-resolve] nsFetch ${path} failed:`, (e as Error)?.message);
+    return { ok: false, status: 0, data: null, unreachable: true as const };
+  }
+}
+
 async function nsGet(path: string) {
-  const res = await fetch(`${NS_API_BASE_URL}${path}`, {
-    headers: { Authorization: `Bearer ${NS_API_KEY}`, Accept: "application/json" },
-  });
-  const text = await res.text();
-  let data: any = null;
-  try { data = text ? JSON.parse(text) : null; } catch { data = text; }
-  return { ok: res.ok, status: res.status, data };
+  const r = await nsFetch(path);
+  return { ...r, ok: r.status >= 200 && r.status < 300 };
 }
 
 async function nsPut(path: string, payload: Record<string, unknown>) {
-  const res = await fetch(`${NS_API_BASE_URL}${path}`, {
+  return await nsFetch(path, {
     method: "PUT",
-    headers: { Authorization: `Bearer ${NS_API_KEY}`, Accept: "application/json", "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  const text = await res.text();
-  let data: any = null;
-  try { data = text ? JSON.parse(text) : null; } catch { data = text; }
-  return { ok: res.ok || res.status === 202, status: res.status, data };
 }
 
 Deno.serve(async (req) => {
@@ -168,8 +180,10 @@ Deno.serve(async (req) => {
   let device: any = detail.ok ? (Array.isArray(detail.data) ? detail.data[0] : detail.data) : null;
   let availableDevices: string[] = [];
 
+  let unreachable = (detail as any).unreachable === true;
   if (!device) {
     const list = await nsGet(`/domains/${encodeURIComponent(domain)}/users/${encodeURIComponent(ext)}/devices`);
+    unreachable = unreachable && (list as any).unreachable === true;
     const arr: any[] = Array.isArray(list.data) ? list.data : [];
     availableDevices = arr.map(deviceIdOf).filter(Boolean) as string[];
     device = arr.find((d) => {
@@ -177,6 +191,18 @@ Deno.serve(async (req) => {
       return id === deviceName.toLowerCase();
     }) ?? null;
   }
+
+  if (!device && unreachable) {
+    return json({
+      ok: false,
+      error: "ns_unreachable",
+      extension: ext,
+      domain,
+      action: "Le serveur téléphonique est temporairement injoignable. Réessayez dans quelques instants.",
+    }, 200);
+  }
+
+
 
   if (!device) {
     return json({

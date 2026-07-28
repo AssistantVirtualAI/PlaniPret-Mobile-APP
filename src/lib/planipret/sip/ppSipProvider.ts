@@ -8,17 +8,6 @@
 
 import JsSIP from "jssip";
 
-// Détection plateforme iOS native (Capacitor)
-// Sur iOS natif, JsSIP ne doit PAS ouvrir de WebSocket SIP en parallèle avec
-// le plugin natif PpSipKeepAlive — NS ne supporte qu'une seule connexion
-// WebSocket par device et ferme la connexion native (code 1001) sinon.
-function isIosNative(): boolean {
-  try {
-    const cap = (typeof window !== "undefined") ? (window as any).Capacitor : null;
-    return !!cap?.isNativePlatform?.() && cap?.getPlatform?.() === "ios";
-  } catch { return false; }
-}
-
 export type PpSipStatus = "idle" | "connecting" | "connected" | "registered" | "disconnected" | "error";
 export type PpCallState = "idle" | "ringing-out" | "ringing-in" | "active" | "held" | "ended";
 
@@ -149,11 +138,6 @@ class PpSipProvider {
       this.update({ status: "error", errorCause: "invalid_config" });
       return;
     }
-
-    // Sur iOS natif: JsSIP gère l'enregistrement SIP en AVANT-PLAN.
-    // Le plugin PpSipKeepAlive prend le relève en ARRIÈRE-PLAN uniquement.
-    // Cette séparation est gérée par isForeground() dans PpSipKeepAlive.swift.
-    // JsSIP doit donc s'initialiser normalement ici.
     const cleanCfg = { ...cfg, wssUrl };
     const sig = `${cleanCfg.extension}|${cleanCfg.sipDomain}|${cleanCfg.wssUrl}|${cleanCfg.password}`;
     if (this.ua && sig === this.lastSig && (this.snap.status === "registered" || this.snap.status === "connected")) {
@@ -191,21 +175,7 @@ class PpSipProvider {
         password: cleanCfg.password,
         authorization_user: cleanCfg.sipUsername,
         realm: cleanCfg.sipDomain,
-        // contact_uri intentionally omitted — JsSIP auto-generates a routable
-        // contact with the real WebSocket IP:port so NetSapiens can deliver
-        // incoming INVITEs. A hardcoded domain-based contact_uri causes NS to
-        // register the device but fail to route calls → immediate voicemail.
-        //
-        // use_preloaded_route: true — CRITICAL for iOS WebKit:
-        // On iOS, JsSIP cannot determine the real IP of the WebSocket from the
-        // WKWebView sandbox, so it generates a contact like:
-        //   sip:random@1ifhb6v6fhq2.invalid;transport=ws
-        // NetSapiens cannot route INVITEs to a .invalid address.
-        // With use_preloaded_route=true, JsSIP adds a Route header pointing to
-        // the established WebSocket (sip:core1.cluster1.ucstack.io:9002;transport=ws;lr)
-        // in every outgoing request. NS then routes INVITEs back via that same
-        // WebSocket path, bypassing the unroutable .invalid contact entirely.
-        use_preloaded_route: true,
+        contact_uri: `sip:${cleanCfg.sipUsername}@${cleanCfg.sipDomain};transport=wss`,
         register: true,
         session_timers: false,
         // Match the native keep-alive REGISTER expiry so NetSapiens does not
@@ -388,14 +358,15 @@ class PpSipProvider {
   async forceReregister() {
     try {
       if (!this.ua) return;
-      // Never interrupt a connecting handshake — that was the cause of the
-      // endless "ws disconnected code:1001 → registration failed: Connection Error" loop.
+      // Only cycle the registration when we actually hold one. Calling
+      // unregister({all:true}) while the UA is still connecting aborted the
+      // in-flight REGISTER and produced "Connection Error".
+      if (this.snap.status === "registered") {
+        try { this.ua.unregister({ all: true }); } catch {}
+        setTimeout(() => { try { this.ua?.register(); } catch {} }, 250);
+        return;
+      }
       if (this.snap.status === "connecting" && Date.now() - this.connectingSince < 20_000) return;
-      // Simply send a fresh REGISTER. JsSIP will include the current WebSocket
-      // IP:port in the Contact header automatically, so NetSapiens will update
-      // its routing table without needing unregister({all:true}).
-      // NOTE: unregister({all:true}) was intentionally removed — it closes the
-      // WebSocket mid-handshake and causes code:1001 → Connection Error loops.
       try { this.ua.register(); } catch {}
     } catch {}
   }

@@ -29,10 +29,7 @@ export const useAllAgents = () => {
         .eq('organization_id', selectedOrgId)
         .not('platform_agent_id', 'is', null);
 
-      if (error) {
-        console.warn('[useAllAgents] Supabase query error (non-fatal):', error);
-        return { agents: [] };
-      }
+      if (error) throw error;
 
       return {
         agents: (agents || []) as AgentWithPlatform[],

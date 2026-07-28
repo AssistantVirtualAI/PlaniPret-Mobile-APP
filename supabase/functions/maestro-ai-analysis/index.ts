@@ -129,32 +129,23 @@ Deno.serve(async (req) => {
       })
       .eq("id", call_id);
 
-    // Push to Maestro Telecom API: PUT /users/{brokerId}/calls/{callId}
-    // Fields: ai_summary (text summary) and notes (coaching)
+    // Push to Maestro
     try {
       const cfg = await getMaestroConfig(admin);
       if (cfg.url && cfg.key) {
         const auth = await getBrokerAuth(admin, call.user_id);
-        const brokerId = auth.brokerId;
         const mId = call.maestro_call_id ?? call.ns_call_id ?? call.id;
-        if (brokerId && mId) {
-          // 1. Push ai_summary
-          await maestroFetch(cfg, {
-            method: "PUT",
-            path: `/api/v1/users/${encodeURIComponent(brokerId)}/calls/${encodeURIComponent(mId)}`,
-            token: auth.token,
-            body: { ai_summary: analysis.summary_text },
-          });
-          // 2. Push coaching as notes
-          if (analysis.coaching?.overall) {
-            await maestroFetch(cfg, {
-              method: "PUT",
-              path: `/api/v1/users/${encodeURIComponent(brokerId)}/calls/${encodeURIComponent(mId)}`,
-              token: auth.token,
-              body: { notes: analysis.coaching.overall },
-            });
-          }
-        }
+        await maestroFetch(cfg, {
+          method: "POST",
+          path: `/api/v1/calls/${encodeURIComponent(mId)}/ai_summary`,
+          token: auth.token,
+          body: {
+            summary_text: analysis.summary_text,
+            key_points: analysis.key_points,
+            next_actions: (analysis.next_actions ?? []).map((a: any) => a.title),
+            sentiment: analysis.sentiment,
+          },
+        });
       }
     } catch (e) {
       console.warn("push ai_summary to maestro failed", e);

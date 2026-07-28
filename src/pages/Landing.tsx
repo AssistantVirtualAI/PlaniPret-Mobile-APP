@@ -23,9 +23,8 @@ import { LiveDemoSection } from "@/components/landing/LiveDemoSection";
 import { AIForCompaniesSection } from "@/components/landing/AIForCompaniesSection";
 import { CompetitorComparisonSection } from "@/components/landing/CompetitorComparisonSection";
 import { WhatsNewSection } from "@/components/landing/WhatsNewSection";
-import { AppsShowcaseSection } from "@/components/landing/AppsShowcaseSection";
-import { LemtelInteractiveDemo } from "@/components/landing/LemtelInteractiveDemo";
 import { LandingDownloadSection } from "@/components/landing/LandingDownloadSection";
+import { CaseStudiesPreviewSection } from "@/components/landing/CaseStudiesPreviewSection";
 import { useTranslation } from "@/hooks/useTranslation";
 
 const Landing = () => {
@@ -52,6 +51,9 @@ const Landing = () => {
         transition={{ duration: 0.5 }}
       >
         <HeroSection />
+        <div id="case-studies">
+          <CaseStudiesPreviewSection />
+        </div>
         <div id="nouveautes">
           <WhatsNewSection />
         </div>
@@ -74,13 +76,7 @@ const Landing = () => {
         <div id="features">
           <FeaturesSection />
         </div>
-        <div id="apps-showcase">
-          <AppsShowcaseSection />
-        </div>
         <LandingDownloadSection />
-        <div id="lemtel-demo">
-          <LemtelInteractiveDemo />
-        </div>
         <SectionDivider variant="pulse" />
         <div id="live-demo">
           <LiveDemoSection />

@@ -45,23 +45,36 @@ function logNsRequest(entry: {
   } catch { /* ignore */ }
 }
 
-async function nsFetch(path: string) {
+async function nsFetch(path: string, opts: { timeoutMs?: number; retries?: number } = {}) {
   const fullUrl = `${NS_API_BASE_URL}${path}`;
-  const t0 = Date.now();
+  const timeoutMs = opts.timeoutMs ?? 15000;
+  const retries = opts.retries ?? 2;
   console.log(`[pp-admin-ns-sync][NS] GET ${path}`);
-  try {
-    const res = await fetch(fullUrl, {
-      headers: { Authorization: `Bearer ${NS_API_KEY}`, Accept: "application/json" },
-    });
-    const text = await res.text();
-    let data: any = null;
-    try { data = text ? JSON.parse(text) : null; } catch { data = text; }
-    logNsRequest({ method: "GET", path, full_url: fullUrl, status: res.status, duration_ms: Date.now() - t0, ok: res.ok, error: res.ok ? null : String(text).slice(0, 300) });
-    return { ok: res.ok, status: res.status, data, text };
-  } catch (e) {
-    logNsRequest({ method: "GET", path, full_url: fullUrl, status: 0, duration_ms: Date.now() - t0, ok: false, error: (e as Error).message });
-    throw e;
+  let lastErr: any = null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const t0 = Date.now();
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(fullUrl, {
+        headers: { Authorization: `Bearer ${NS_API_KEY}`, Accept: "application/json" },
+        signal: ctrl.signal,
+      });
+      const text = await res.text();
+      let data: any = null;
+      try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+      logNsRequest({ method: "GET", path, full_url: fullUrl, status: res.status, duration_ms: Date.now() - t0, ok: res.ok, error: res.ok ? null : String(text).slice(0, 300) });
+      return { ok: res.ok, status: res.status, data, text };
+    } catch (e) {
+      lastErr = e;
+      logNsRequest({ method: "GET", path, full_url: fullUrl, status: 0, duration_ms: Date.now() - t0, ok: false, error: (e as Error).message });
+      if (attempt < retries) await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+    } finally {
+      clearTimeout(timer);
+    }
   }
+  // Graceful degradation: return a soft failure instead of throwing (avoids 500 at top-level).
+  return { ok: false, status: 0, data: null, text: `NS unreachable: ${(lastErr as Error)?.message ?? "timeout"}` };
 }
 
 async function fetchAll(basePath: string, pageSize = 200, maxPages = 30) {
@@ -727,7 +740,18 @@ Deno.serve(async (req) => {
 
     if (!domain) return json({ error: "NS domain not configured" }, 412);
     const usersRes = await fetchAll(`/domains/${encodeURIComponent(domain)}/users`, 200, 30);
-    if (!usersRes.data.length) return json({ error: "NS users fetch failed", warning: usersRes.warning }, 502);
+    if (!usersRes.data.length) {
+      // Graceful degradation: NS unreachable/empty. Return 200 so the UI does not crash.
+      return json({
+        ok: false,
+        status: "skipped",
+        reason: "ns_unreachable",
+        domain,
+        users_total: 0,
+        raw_users_total: 0,
+        warning: usersRes.warning ?? "ns_users_empty",
+      });
+    }
     const brokerUsers = usersRes.data.filter(isPlanipretBrokerUser);
 
     const profileSync = await upsertProfiles(admin, domain, brokerUsers);

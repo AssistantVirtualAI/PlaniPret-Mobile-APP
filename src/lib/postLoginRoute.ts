@@ -69,7 +69,7 @@ export async function getPostLoginRoute(userId: string): Promise<string> {
     }
     if (isPlanipretMember) {
       setActiveOrg(PLANIPRET_ORG_ID);
-      return '/planipret';
+      return '/mplanipret/home';
     }
 
 

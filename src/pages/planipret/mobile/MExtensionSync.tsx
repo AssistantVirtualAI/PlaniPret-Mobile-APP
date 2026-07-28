@@ -1,4 +1,3 @@
-import React from "react";
 import { useState } from "react";
 import { useNavigate, useOutletContext } from "react-router-dom";
 import { ArrowLeft, RefreshCw, CheckCircle2, AlertTriangle, XCircle, Smartphone, Radio } from "lucide-react";

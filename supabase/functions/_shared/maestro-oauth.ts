@@ -42,6 +42,16 @@ export interface MaestroTokenSet {
   [k: string]: unknown;
 }
 
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs = 10_000): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // Web: includes client_secret
 async function exchangeWeb(
   env: MaestroOAuthEnv,
@@ -52,7 +62,7 @@ async function exchangeWeb(
     client_secret: env.clientSecret,
     ...params,
   });
-  const r = await fetch(env.tokenUrl, {
+  const r = await fetchWithTimeout(env.tokenUrl, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
     body: body.toString(),
@@ -71,7 +81,7 @@ async function exchangeMobile(
   params: Record<string, string>,
 ): Promise<{ ok: boolean; status: number; data: MaestroTokenSet | null; error?: string }> {
   const body = new URLSearchParams({ client_id: env.mobileClientId, ...params });
-  const r = await fetch(env.tokenUrl, {
+  const r = await fetchWithTimeout(env.tokenUrl, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
     body: body.toString(),
@@ -159,45 +169,15 @@ export async function fetchMaestroUserProfile(env: MaestroOAuthEnv, accessToken:
   const base = Deno.env.get("MAESTRO_TELECOM_BASE_URL") ?? Deno.env.get("MAESTRO_API_BASE_URL") ?? "";
   if (!base) return null;
   const root = base.replace(/\/$/, "");
-
-  // The Maestro Telecom API requires ?machine=1 on all endpoints.
-  // /user (singular) is the auto-resolved "me" endpoint — returns the profile
-  // of the authenticated user based on the Bearer OAuth token.
-  // Without ?machine=1, the API may return the machine account (e.g. Carlo, id=67)
-  // instead of the authenticated broker.
-  //
-  // Additionally, try to extract the user id from the JWT payload to call
-  // GET /users/{id}?machine=1 directly, which is the most reliable approach.
-  let jwtUserId: string | null = null;
-  try {
-    const payload = JSON.parse(atob(accessToken.split(".")[1]));
-    const rawId = payload?.sub ?? payload?.id ?? payload?.user_id ?? null;
-    if (rawId && /^\d+$/.test(String(rawId))) jwtUserId = String(rawId);
-  } catch { /* ignore */ }
-
-  const candidates: string[] = [];
-  if (jwtUserId) candidates.push(`${root}/users/${jwtUserId}?machine=1`);
-  candidates.push(
-    `${root}/user?machine=1`,
-    `${root}/users/me?machine=1`,
-    `${root}/me?machine=1`,
-  );
-
+  // Scott confirmed /user (singular) is the auto-resolved "me" endpoint.
+  // Try it first, then fall back to legacy /users/me and /me.
+  const candidates = [`${root}/user`, `${root}/users/me`, `${root}/me`];
   for (const url of candidates) {
     try {
-      const r = await fetch(url, {
+      const r = await fetchWithTimeout(url, {
         headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
-      });
-      if (r.ok) {
-        const data = await r.json();
-        // Validate: the returned id must match the JWT sub if we have it
-        const returnedId = String(data?.id ?? data?.user?.id ?? data?.user_id ?? "");
-        if (jwtUserId && returnedId && returnedId !== jwtUserId) {
-          console.warn(`[maestro-oauth] /user returned id=${returnedId} but JWT sub=${jwtUserId} — skipping`);
-          continue;
-        }
-        return data;
-      }
+      }, 4_000);
+      if (r.ok) return await r.json();
     } catch (e) {
       console.warn(`[maestro-oauth] fetch ${url} failed`, (e as Error).message);
     }

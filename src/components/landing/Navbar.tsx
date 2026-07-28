@@ -2,9 +2,10 @@ import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { AvaStatisticsLogo as AvaLogo } from '@/components/shared/AvaStatisticsLogo';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Menu, X, Globe, MoreHorizontal } from 'lucide-react';
+import { Menu, X, Globe, MoreHorizontal, Sun, Moon } from 'lucide-react';
 import { useState } from 'react';
 import { useLanguage } from '@/context/LanguageContext';
+import { useTheme } from '@/context/ThemeContext';
 import { useTranslation } from '@/hooks/useTranslation';
 import {
   DropdownMenu,
@@ -18,6 +19,7 @@ export const Navbar = () => {
   const location = useLocation();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const { language, toggleLanguage } = useLanguage();
+  const { theme, toggleTheme } = useTheme();
   const { t } = useTranslation();
 
   const navLinks = [
@@ -115,6 +117,19 @@ export const Navbar = () => {
               <span className="font-medium">{language.toUpperCase()}</span>
             </Button>
 
+            {/* Theme Toggle */}
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={toggleTheme}
+              aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+              title={theme === 'dark' ? 'Light mode' : 'Dark mode'}
+              className="rounded-full"
+            >
+              {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+            </Button>
+
+
             <Button
               variant="ghost"
               onClick={() => navigate('/login')}
@@ -146,6 +161,15 @@ export const Navbar = () => {
               <Globe className="w-4 h-4" />
               <span className="ml-1 font-medium">{language.toUpperCase()}</span>
             </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={toggleTheme}
+              aria-label={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+            >
+              {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+            </Button>
+
             <button
               onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
               className="p-2 rounded-lg hover:bg-muted transition-colors"

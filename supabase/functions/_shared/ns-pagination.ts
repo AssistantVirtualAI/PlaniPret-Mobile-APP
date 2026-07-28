@@ -132,7 +132,14 @@ export async function nsFetchAll<T = any>(
   for (let i = 0; i < maxPages; i++) {
     const sep = basePath.includes("?") ? "&" : "?";
     const url = `${basePath}${sep}limit=${pageSize}&start=${i * pageSize + 1}`;
-    const r = await nsFetchRaw(url);
+    let r: Awaited<ReturnType<typeof nsFetchRaw>>;
+    try {
+      r = await nsFetchRaw(url);
+    } catch (e) {
+      signal = "error";
+      warning = `fetch_failed: ${(e as Error).message}`;
+      break;
+    }
     const arr = pickArray(r.data) as T[];
     pages.push({
       url,

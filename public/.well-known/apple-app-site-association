@@ -1,0 +1,18 @@
+{
+  "applinks": {
+    "apps": [],
+    "details": [
+      {
+        "appIDs": ["REPLACE_WITH_APPLE_TEAM_ID.com.planipret.mobile"],
+        "components": [
+          { "/": "/auth/maestro/callback", "comment": "Maestro OAuth callback deep link" },
+          { "/": "/auth/maestro/callback?*", "comment": "Maestro OAuth callback with query params" },
+          { "/": "/auth/microsoft/callback", "comment": "Microsoft OAuth callback deep link" },
+          { "/": "/auth/microsoft/callback?*", "comment": "Microsoft OAuth callback with query params" },
+          { "/": "/auth/ms365/callback", "comment": "Microsoft 365 OAuth callback deep link" },
+          { "/": "/auth/ms365/callback?*", "comment": "Microsoft 365 OAuth callback with query params" }
+        ]
+      }
+    ]
+  }
+}

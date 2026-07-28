@@ -71,7 +71,7 @@ Deno.serve(async (req) => {
     if (profileError) return json({ success: false, error: profileError.message }, 500);
     if (!profile?.user_id) return json({ success: false, error: "account_not_linked", email: msEmail }, 403);
     if (profile.mobile_app_enabled === false) return json({ success: false, error: "mobile_access_disabled" }, 403);
-    if (profile.status && !["active", "enabled"].includes(String(profile.status).toLowerCase())) {
+    if (profile.status && ["inactive", "disabled", "banned", "suspended"].includes(String(profile.status).toLowerCase())) {
       return json({ success: false, error: "account_inactive" }, 403);
     }
 

@@ -92,6 +92,7 @@ export default function TelephonyUsers() {
   const { data: users = [], isLoading, refetch } = useSoftphoneUsers();
   const [search, setSearch] = useState('');
   const [open, setOpen] = useState(false);
+  const [pwdTarget, setPwdTarget] = useState<UserRow | null>(null);
   const qc = useQueryClient();
 
   const stats = useMemo(() => {
@@ -325,10 +326,11 @@ export default function TelephonyUsers() {
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="inline-flex gap-1">
+                        <Button size="icon" variant="ghost" title="Set a specific password (portal + SIP + PBX)" onClick={() => setPwdTarget(u)} disabled={!isAdmin}><KeyRound className="w-4 h-4 text-primary" /></Button>
+                        <Button size="icon" variant="ghost" title="Send password-reset email (user picks their own)" onClick={() => resetPassword(u)} disabled={!isAdmin}><Mail className="w-4 h-4" /></Button>
                         <Button size="icon" variant="ghost" title="Sync PBX password to portal/desktop/mobile" onClick={() => syncSipPassword(u)} disabled={!isAdmin}><RefreshCw className="w-4 h-4" /></Button>
                         <Button size="icon" variant="ghost" title="Send setup invitation (Lemtel branded)" onClick={() => sendInvite(u)} disabled={!isAdmin}><Send className="w-4 h-4 text-primary" /></Button>
-                        <Button size="icon" variant="ghost" title="Resend welcome" onClick={() => resendWelcome(u)} disabled={!isAdmin}><Mail className="w-4 h-4" /></Button>
-                        <Button size="icon" variant="ghost" title="Reset password (email)" onClick={() => resetPassword(u)} disabled={!isAdmin}><KeyRound className="w-4 h-4" /></Button>
+                        <Button size="icon" variant="ghost" title="Resend welcome" onClick={() => resendWelcome(u)} disabled={!isAdmin}><Mail className="w-4 h-4 text-muted-foreground" /></Button>
                         <Button size="icon" variant="ghost" title="Deactivate" onClick={() => deactivate(u)} disabled={!isAdmin}><Trash2 className="w-4 h-4" /></Button>
                       </div>
                     </TableCell>
@@ -346,6 +348,7 @@ export default function TelephonyUsers() {
       <InvitesTable isAdmin={isAdmin} />
 
       <AddUserDialog open={open} onOpenChange={setOpen} suggestedExtension={nextExtension} />
+      <SetPasswordDialog user={pwdTarget} onClose={() => { setPwdTarget(null); refetch(); }} />
     </div>
   );
 }
@@ -661,6 +664,61 @@ function AddUserDialog({ open, onOpenChange, suggestedExtension }: { open: boole
               ✅ Create User & Send Welcome Email
             </Button>
           )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ===================================================================
+// Set-password dialog: admin picks a password that becomes portal + SIP + PBX.
+// ===================================================================
+function SetPasswordDialog({ user, onClose }: { user: UserRow | null; onClose: () => void }) {
+  const [pwd, setPwd] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { setPwd(user ? generatePassword() : ''); }, [user?.id]);
+
+  const submit = async () => {
+    if (!user) return;
+    if (pwd.length < 10) { toast.error('Password must be at least 10 characters'); return; }
+    setBusy(true);
+    const { data, error } = await supabase.functions.invoke('set-unified-password', {
+      body: { softphone_id: user.id, password: pwd, source: 'admin_manual_set' },
+    });
+    setBusy(false);
+    if (error || (data as any)?.error) {
+      toast.error((data as any)?.message || error?.message || 'Failed to set password');
+      return;
+    }
+    toast.success(`Password set for ${user.email || user.extension}. Same password now works on portal, desktop, mobile, and PBX.`);
+    onClose();
+  };
+
+  return (
+    <Dialog open={!!user} onOpenChange={(v) => { if (!v) onClose(); }}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2"><KeyRound className="w-4 h-4" /> Set unified password</DialogTitle>
+          <DialogDescription>
+            The same password will be applied to portal login ({user?.email || 'no email'}), SIP registration (ext {user?.extension}),
+            and the FusionPBX extension. Users can sign in with their email.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3 py-2">
+          <div>
+            <Label>Password</Label>
+            <div className="flex gap-2 mt-1">
+              <Input value={pwd} onChange={(e) => setPwd(e.target.value)} className="font-mono" autoFocus />
+              <Button type="button" variant="outline" onClick={() => setPwd(generatePassword())}>Regenerate</Button>
+            </div>
+            <p className="text-[11px] text-muted-foreground mt-1">Minimum 10 characters. Share it securely with the user.</p>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>Cancel</Button>
+          <Button onClick={submit} disabled={busy}>
+            {busy ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Saving…</> : 'Set password everywhere'}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

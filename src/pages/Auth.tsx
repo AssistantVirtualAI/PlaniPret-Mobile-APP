@@ -18,6 +18,7 @@ const DialogDescription = lazy(() => import('@/components/ui/dialog').then((m) =
 import { useTranslation } from '@/hooks/useTranslation';
 import { useLanguage } from '@/context/LanguageContext';
 import { checkProviderEnabled, type ProviderStatus } from '@/lib/authProviders';
+import { isMs365LoginConfigured } from '@/lib/ms365AuthLogin';
 
 type AuthMode = 'login' | 'signup' | 'forgot' | 'reset';
 
@@ -38,7 +39,7 @@ const AuthPage = () => {
   // Probe OAuth providers so we only render buttons that will actually work.
   useEffect(() => {
     let cancelled = false;
-    checkProviderEnabled("azure").then((s) => { if (!cancelled) setMsStatus(s); });
+    isMs365LoginConfigured().then((ok) => { if (!cancelled) setMsStatus(ok ? "enabled" : "disabled"); }).catch(() => { if (!cancelled) setMsStatus("unknown"); });
     checkProviderEnabled("google").then((s) => { if (!cancelled) setGoogleStatus(s); });
     return () => { cancelled = true; };
   }, []);

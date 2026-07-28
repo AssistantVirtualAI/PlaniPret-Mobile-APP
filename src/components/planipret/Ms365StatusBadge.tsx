@@ -20,6 +20,9 @@ export function useMs365Status(pollMs = 60_000) {
   const [data, setData] = useState<Ms365StatusPayload | null>(null);
   const [loading, setLoading] = useState(true);
   async function refresh() {
+    // Skip when there is no active session to avoid 401 on unauthenticated loads.
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) { setLoading(false); return; }
     try {
       const { data: res } = await supabase.functions.invoke("ms365-status", { body: {} });
       if (res && !(res as any).error) setData(res as Ms365StatusPayload);

@@ -275,9 +275,26 @@ Deno.serve(async (req) => {
     const t = destOf(n).toLowerCase();
     return t.includes("vmail") || t.includes("voicemail");
   });
+  const didsToApp = mine.filter((n) => {
+    const t = destOf(n).toLowerCase();
+    return t.includes("speakaccount") || t.includes("speakeraccount") ||
+      (t.includes("application") && (t.includes("agent") || t.includes("ai")));
+  });
+  const didsNotToUser = mine.filter((n) => {
+    const t = destOf(n).toLowerCase();
+    const app = String(n?.["dial-rule-application"] ?? n?.["dialrule-application"] ?? n?.application ?? n?.["dest-application"] ?? "").toLowerCase();
+    return app && !["to-user", "user", "sip"].includes(app) && !t.includes(`${ext.toLowerCase()}@`) && !new RegExp(`(^|[^0-9])${ext}([^0-9]|$)`).test(t);
+  });
   if (didsToVoicemail.length) {
     verdicts.push("DID_ROUTED_TO_VOICEMAIL");
     issues.push(`DID routé directement vers la messagerie: ${didsToVoicemail.map(numOf).join(", ")}`);
+  }
+  if (didsToApp.length) {
+    verdicts.unshift("DID_ROUTED_TO_SPEAKACCOUNT");
+    issues.unshift(`DID routé vers SpeakAccount / agent IA au lieu du poste ${ext}: ${didsToApp.map(numOf).join(", ")}`);
+  } else if (didsNotToUser.length) {
+    verdicts.push("DID_NOT_ROUTED_TO_USER");
+    issues.push(`DID assigné au poste ${ext}, mais application NS différente de to-user: ${didsNotToUser.map(numOf).join(", ")}`);
   }
   if (phoneNumbers.ok && numbers.length && !mine.length) {
     verdicts.push("NO_DID_POINTING_TO_EXT");

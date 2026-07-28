@@ -1,5 +1,6 @@
 // mobile-settings-dnd: toggle do-not-disturb for the current softphone user.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { nsFetch } from "../_shared/planipret-ns.ts";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -28,15 +29,47 @@ Deno.serve(async (req) => {
     const { enabled } = await req.json().catch(() => ({}));
     const next = !!enabled;
     const { data: sp } = await sb.from("pbx_softphone_users").select("organization_id, extension, dnd_enabled").eq("portal_user_id", u.user.id).maybeSingle();
+    const { data: profile } = await sb.from("planipret_profiles")
+      .select("id, user_id, extension, ns_extension, ns_domain, dnd_enabled")
+      .eq("user_id", u.user.id)
+      .maybeSingle();
+
     const { error } = await sb.from("pbx_softphone_users")
       .update({ dnd_enabled: next, updated_at: new Date().toISOString() })
       .eq("portal_user_id", u.user.id);
     if (error) return json({ error: error.message }, 400);
+    if (profile?.id) {
+      await sb.from("planipret_profiles")
+        .update({ dnd_enabled: next, updated_at: new Date().toISOString() })
+        .eq("id", profile.id);
+    }
+
+    let nsStatus: number | null = null;
+    let nsOk = false;
+    const nsExt = profile?.ns_extension ?? profile?.extension ?? sp?.extension;
+    const nsDomain = profile?.ns_domain ?? Deno.env.get("NS_DEFAULT_DOMAIN") ?? "planipret.ca";
+    if (nsExt) {
+      const nsRes = await nsFetch(
+        `/domains/${encodeURIComponent(nsDomain)}/users/${encodeURIComponent(String(nsExt))}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            "do-not-disturb": next ? "yes" : "no",
+            "do-not-disturb-enabled": next ? "yes" : "no",
+            dnd: next ? "yes" : "no",
+          }),
+        },
+        { functionName: "mobile-settings-dnd" },
+      );
+      nsStatus = nsRes.status;
+      nsOk = nsRes.ok;
+      await nsRes.text().catch(() => "");
+    }
     try {
       await sb.from("audit_logs").insert({ organization_id: sp?.organization_id, user_id: u.user.id, action: "mobile_dnd_updated", resource_type: "pbx_softphone", metadata: { extension: sp?.extension, previous: !!sp?.dnd_enabled, next } });
     } catch { /* non-fatal */ }
 
-    return json({ ok: true, doNotDisturb: next });
+    return json({ ok: true, doNotDisturb: next, ns: { ok: nsOk, status: nsStatus } });
   } catch (e) {
     console.error("[mobile-settings-dnd]", e);
     return json({ error: String((e as Error).message || e) }, 500);

@@ -54,8 +54,9 @@ Deno.serve(async (req) => {
   if (!ext) return json({ error: "no_extension" }, 400);
   const domain = profile.ns_domain || NS_DEFAULT_DOMAIN;
 
-  // NS-API originate: dial the extension itself; NS forks to every registered
-  // device (widget + mobile). caller_id_number = admin test line.
+  // NS-API v2 requires a client-generated call id for originates. Dial the
+  // extension itself; the answering rules fork to widget + mobile.
+  const clientCallId = crypto.randomUUID();
   const nsRes = await fetch(
     `${NS_API_BASE_URL}/domains/${encodeURIComponent(domain)}/users/${encodeURIComponent(ext)}/calls`,
     {
@@ -66,9 +67,18 @@ Deno.serve(async (req) => {
         Accept: "application/json",
       },
       body: JSON.stringify({
+        "call-id": clientCallId,
+        callid: clientCallId,
+        destination: ext,
+        origination: fromNumber,
+        "call-orig-user": fromNumber,
+        "call-term-user": ext,
+        synchronous: "no",
         to_number: ext,
         caller_id_number: fromNumber,
         caller_id_name: "TEST PLANIPRET",
+        "caller-id-number": fromNumber,
+        "caller-id-name": "TEST PLANIPRET",
       }),
     },
   );
@@ -76,7 +86,7 @@ Deno.serve(async (req) => {
   let nsData: any = null;
   try { nsData = nsText ? JSON.parse(nsText) : null; } catch { nsData = nsText; }
 
-  const nsCallId = nsData?.call_id ?? nsData?.id ?? null;
+  const nsCallId = nsData?.["call-id"] ?? nsData?.call_id ?? nsData?.id ?? clientCallId;
   const testSessionId = nsCallId ?? crypto.randomUUID();
 
   // Track the test session so the admin UI can watch which device answers.
@@ -98,7 +108,7 @@ Deno.serve(async (req) => {
       broker_id: brokerId,
       action: "test_call",
       status: nsRes.ok ? "ok" : "error",
-      details: { ns_status: nsRes.status, ns_call_id: nsCallId, from: fromNumber, ext, triggered_by: user.id },
+      details: { ns_status: nsRes.status, ns_call_id: nsCallId, client_call_id: clientCallId, from: fromNumber, ext, triggered_by: user.id },
     });
   } catch { /* ignore */ }
 
