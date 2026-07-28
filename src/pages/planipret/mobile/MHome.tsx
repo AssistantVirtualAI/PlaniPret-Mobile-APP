@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useOutletContext, useNavigate } from "react-router-dom";
 
 import { supabase } from "@/integrations/supabase/client";
@@ -7,6 +7,7 @@ import {
   ArrowDownLeft, ArrowUpRight, X, Calendar, Headphones, Bot,
   BellOff, Flame, Sparkles, ChevronRight, ChevronLeft, Mail, Users as UsersIcon,
   CheckSquare, RefreshCw, AlertCircle, Video, ExternalLink, Plus,
+  Play, Pause, Volume2,
 } from "lucide-react";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
 import { toast } from "sonner";
@@ -87,6 +88,10 @@ export default function MHome() {
   const [brief, setBrief] = useState<any | null>(null);
   const [briefLoading, setBriefLoading] = useState(true);
   const [briefErr, setBriefErr] = useState<string | null>(null);
+  // TTS briefing play/pause
+  const briefAudioRef = useRef<HTMLAudioElement | null>(null);
+  const [briefPlaying, setBriefPlaying] = useState(false);
+  const [briefTtsLoading, setBriefTtsLoading] = useState(false);
 
   useMaestroPipelineToasts(profile?.user_id);
 
@@ -277,6 +282,65 @@ export default function MHome() {
     toast.info(sug.label);
   };
 
+  // Build a prose text from the structured brief for TTS
+  const buildBriefText = (b: any): string => [
+    b?.headline,
+    ...(Array.isArray(b?.priorities) && b.priorities.length
+      ? ["Priorités : " + b.priorities.join(". ")]
+      : []),
+    ...(Array.isArray(b?.risks) && b.risks.length
+      ? ["Points d'attention : " + b.risks.join(". ")]
+      : []),
+    ...(Array.isArray(b?.suggestions) && b.suggestions.length
+      ? ["Suggestions : " + b.suggestions.map((s: any) => s.label ?? s).join(". ")]
+      : []),
+  ].filter(Boolean).join("\n");
+
+  const toggleBriefTts = async () => {
+    // If already playing, pause
+    if (briefPlaying) {
+      briefAudioRef.current?.pause();
+      setBriefPlaying(false);
+      return;
+    }
+    // If audio is already loaded (paused), resume
+    if (briefAudioRef.current && briefAudioRef.current.src && briefAudioRef.current.paused) {
+      try {
+        await briefAudioRef.current.play();
+        setBriefPlaying(true);
+        return;
+      } catch { /* fall through to re-generate */ }
+    }
+    if (!brief) return;
+    const text = buildBriefText(brief);
+    if (!text.trim()) { toast.error("Aucun contenu à lire"); return; }
+    setBriefTtsLoading(true);
+    try {
+      // ElevenLabs voice: Sarah (multilingual) — same voice as GreetingStudio default
+      const { data, error } = await supabase.functions.invoke("pp-ava-tts", {
+        body: { text: text.slice(0, 3800), voiceId: "EXAVITQu4vr4xnSDxMaL", language: lang },
+      });
+      if (error || !(data as any)?.audioContent) throw new Error(error?.message ?? "no_audio");
+      const audio = new Audio(`data:audio/mpeg;base64,${(data as any).audioContent}`);
+      briefAudioRef.current = audio;
+      audio.onended = () => setBriefPlaying(false);
+      audio.onerror = () => { setBriefPlaying(false); toast.error("Lecture vocale indisponible"); };
+      await audio.play();
+      setBriefPlaying(true);
+    } catch (e: any) {
+      toast.error("Lecture vocale indisponible", { description: e?.message });
+    } finally {
+      setBriefTtsLoading(false);
+    }
+  };
+
+  // Stop TTS when period changes (new brief will be loaded)
+  useEffect(() => {
+    briefAudioRef.current?.pause();
+    setBriefPlaying(false);
+    briefAudioRef.current = null;
+  }, [period]);
+
   const totalComms = useMemo(() => stats.calls + stats.sms + stats.outbound, [stats]);
   // REST-only calls: the browser controls NS-API, the physical mobile device handles audio.
   const phoneOnline = !!profile?.extension;
@@ -345,28 +409,35 @@ export default function MHome() {
       <section
         className="rounded-2xl p-4 relative overflow-hidden pp-card"
         style={{
-          background: "linear-gradient(135deg, #FFFFFF 0%, #F0F4F9 100%)",
-          borderColor: "var(--pp-bg-border)",
+          background: "linear-gradient(135deg, #0D1F35 0%, #0A2744 50%, #0D2A4A 100%)",
+          border: "1px solid rgba(46,155,220,0.30)",
         }}
       >
+        {/* Ambient glow */}
         <div
-          className="absolute -top-12 -right-12 w-40 h-40 rounded-full"
-          style={{ background: "radial-gradient(circle, rgba(59,111,160,0.18), transparent 70%)" }}
+          className="absolute -top-12 -right-12 w-40 h-40 rounded-full pointer-events-none"
+          style={{ background: "radial-gradient(circle, rgba(46,155,220,0.18), transparent 70%)" }}
         />
         <div className="relative">
-          <div className="flex items-center justify-between mb-2">
+          {/* Header row: icon + title + period selector + refresh */}
+          <div className="flex items-center justify-between mb-3">
             <div className="flex items-center gap-2">
-              <Sparkles className="w-4 h-4" style={{ color: "var(--pp-brand-accent)" }} />
-              <span className="pp-eyebrow">{t("home.brief")} — {periodLabel[period]}</span>
+              <div className="w-7 h-7 rounded-lg flex items-center justify-center"
+                style={{ background: "rgba(46,155,220,0.18)", border: "1px solid rgba(46,155,220,0.35)" }}>
+                <Sparkles className="w-3.5 h-3.5" style={{ color: "#2E9BDC" }} />
+              </div>
+              <span className="text-[13px] font-bold" style={{ color: "#E8F4FD", fontFamily: "Urbanist,sans-serif" }}>
+                {t("home.brief")}
+              </span>
             </div>
             <button
-              onClick={() => loadBrief(true)}
+              onClick={() => { briefAudioRef.current?.pause(); setBriefPlaying(false); briefAudioRef.current = null; loadBrief(true); }}
               disabled={briefLoading}
               className="text-[11px] px-2.5 py-1 rounded-full flex items-center gap-1 disabled:opacity-50"
               style={{
-                background: "rgba(59,111,160,0.10)",
-                color: "var(--pp-brand-accent-2)",
-                border: "1px solid rgba(59,111,160,0.25)",
+                background: "rgba(46,155,220,0.15)",
+                color: "#2E9BDC",
+                border: "1px solid rgba(46,155,220,0.30)",
                 fontFamily: "Urbanist,sans-serif", fontWeight: 600,
               }}>
               <RefreshCw className={`w-3 h-3 ${briefLoading ? "animate-spin" : ""}`} />
@@ -374,28 +445,41 @@ export default function MHome() {
             </button>
           </div>
 
+          {/* Period selector: day / week / month */}
+          <div className="flex gap-1.5 mb-3">
+            {(["day", "week", "month"] as const).map((p) => (
+              <button key={p} onClick={() => setPeriod(p)}
+                className="text-[11px] px-3 py-1 rounded-full font-semibold transition"
+                style={period === p
+                  ? { background: "#2E9BDC", color: "#fff" }
+                  : { background: "rgba(255,255,255,0.07)", color: "rgba(232,244,253,0.60)", border: "1px solid rgba(255,255,255,0.12)" }}>
+                {periodLabel[p]}
+              </button>
+            ))}
+          </div>
+
           {briefLoading && !brief ? (
             <div className="space-y-2">
-              <Shimmer className="h-4 w-3/4" />
-              <Shimmer className="h-3 w-full" />
-              <Shimmer className="h-3 w-2/3" />
+              <Shimmer className="h-4 w-3/4" style={{ background: "rgba(255,255,255,0.10)" } as React.CSSProperties} />
+              <Shimmer className="h-3 w-full" style={{ background: "rgba(255,255,255,0.07)" } as React.CSSProperties} />
+              <Shimmer className="h-3 w-2/3" style={{ background: "rgba(255,255,255,0.07)" } as React.CSSProperties} />
             </div>
           ) : briefErr ? (
-            <div className="text-xs flex items-center gap-2" style={{ color: "var(--pp-danger)" }}>
+            <div className="text-xs flex items-center gap-2" style={{ color: "#F87171" }}>
               <AlertCircle className="w-3.5 h-3.5" /> {briefErr}
             </div>
           ) : brief ? (
             <>
-              <p className="text-[15px] font-semibold leading-snug" style={{ color: "var(--pp-text-primary)", fontFamily: "Urbanist,sans-serif" }}>
+              <p className="text-[15px] font-semibold leading-snug" style={{ color: "#E8F4FD", fontFamily: "Urbanist,sans-serif" }}>
                 {brief.headline}
               </p>
               {brief.priorities?.length > 0 && (
                 <ol className="mt-3 space-y-1.5">
                   {brief.priorities.slice(0, 5).map((p: string, i: number) => (
-                    <li key={i} className="flex items-start gap-2 text-[13px]" style={{ color: "var(--pp-text-secondary)" }}>
+                    <li key={i} className="flex items-start gap-2 text-[13px]" style={{ color: "rgba(232,244,253,0.80)" }}>
                       <span
                         className="mt-[2px] inline-flex items-center justify-center w-4 h-4 rounded-full text-[10px] font-bold flex-shrink-0"
-                        style={{ background: "var(--pp-brand-accent-2)", color: "#fff", fontFamily: "Urbanist,sans-serif" }}>
+                        style={{ background: "#2E9BDC", color: "#fff", fontFamily: "Urbanist,sans-serif" }}>
                         {i + 1}
                       </span>
                       <span>{p}</span>
@@ -406,7 +490,10 @@ export default function MHome() {
               {brief.risks?.length > 0 && (
                 <div className="mt-3 flex flex-wrap gap-1.5">
                   {brief.risks.map((r: string, i: number) => (
-                    <span key={i} className="pp-pill pp-pill-warning">⚠ {r}</span>
+                    <span key={i} className="text-[10px] font-semibold px-2 py-0.5 rounded-full"
+                      style={{ background: "rgba(251,191,36,0.15)", color: "#FBB924", border: "1px solid rgba(251,191,36,0.30)" }}>
+                      ⚠ {r}
+                    </span>
                   ))}
                 </div>
               )}
@@ -414,24 +501,62 @@ export default function MHome() {
                 <div className="mt-3 flex flex-wrap gap-1.5">
                   {brief.suggestions.map((s: any, i: number) => (
                     <button key={i} onClick={() => handleSuggestion(s)}
-                      className="pp-pill pp-pill-accent active:scale-95 transition">
+                      className="text-[11px] px-2.5 py-1 rounded-full font-semibold active:scale-95 transition"
+                      style={{ background: "rgba(0,212,170,0.15)", color: "#00D4AA", border: "1px solid rgba(0,212,170,0.30)" }}>
                       {s.kind === "call" ? "📞" : s.kind === "sms" ? "💬" : s.kind === "email" ? "✉" : "⏰"} {s.label}
                     </button>
                   ))}
                 </div>
               )}
+
+              {/* ===== PLAY / PAUSE ElevenLabs TTS ===== */}
+              <div className="mt-4 flex items-center gap-2">
+                <button
+                  onClick={toggleBriefTts}
+                  disabled={briefTtsLoading}
+                  aria-label={briefPlaying ? "Pause le briefing" : "Écouter le briefing"}
+                  className="flex items-center gap-2 px-4 py-2.5 rounded-xl font-semibold text-[13px] disabled:opacity-60 transition active:scale-[0.97]"
+                  style={{
+                    background: briefPlaying
+                      ? "linear-gradient(135deg,#00D4AA,#00A88A)"
+                      : "linear-gradient(135deg,#2E9BDC,#1A4A8A)",
+                    color: "#fff",
+                    boxShadow: briefPlaying ? "0 0 16px rgba(0,212,170,0.35)" : "0 0 16px rgba(46,155,220,0.35)",
+                  }}>
+                  {briefTtsLoading ? (
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                  ) : briefPlaying ? (
+                    <Pause className="w-4 h-4" />
+                  ) : (
+                    <Play className="w-4 h-4" />
+                  )}
+                  <Volume2 className="w-3.5 h-3.5 opacity-70" />
+                  <span>
+                    {briefTtsLoading
+                      ? (lang === "en" ? "Generating…" : "Génération…")
+                      : briefPlaying
+                      ? (lang === "en" ? "Pause" : "Pause")
+                      : (lang === "en" ? "Listen to briefing" : "Écouter le briefing")}
+                  </span>
+                </button>
+                {briefPlaying && (
+                  <span className="text-[10px] font-semibold animate-pulse" style={{ color: "#00D4AA" }}>
+                    ● {lang === "en" ? "Playing" : "En lecture"}
+                  </span>
+                )}
+              </div>
             </>
           ) : (
-            <p className="text-xs" style={{ color: "var(--pp-text-muted)" }}>{t("home.preparingBrief")}</p>
+            <p className="text-xs" style={{ color: "rgba(232,244,253,0.50)" }}>{t("home.preparingBrief")}</p>
           )}
 
           {profile?.voice_agent_enabled && (
             <button onClick={openAva}
               className="mt-3 w-full py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5"
               style={{
-                background: "rgba(108,92,231,0.10)",
-                border: "1px solid rgba(108,92,231,0.30)",
-                color: "var(--pp-agent)",
+                background: "rgba(108,92,231,0.15)",
+                border: "1px solid rgba(108,92,231,0.35)",
+                color: "#9B7FE8",
                 fontFamily: "Urbanist,sans-serif",
               }}>
               <Headphones className="w-3.5 h-3.5" /> {t("home.listenWithAva")}

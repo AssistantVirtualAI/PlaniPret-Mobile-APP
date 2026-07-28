@@ -937,13 +937,17 @@ function TeamChat({ profile }: { profile: any }) {
 // ============================================================
 export function EmailsList({ profile, initialTo, initialName }: { profile: any; initialTo?: string; initialName?: string }) {
   const { t, lang } = useMplanipretLang();
-  const PAGE_SIZE = 25;
+  // Fetch more emails per page to show all messages (M365 returns up to 50 per call)
+  const PAGE_SIZE = 50;
   const [emails, setEmails] = useState<any[] | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "no_m365" | "error">("loading");
   const { state: ms365State, errorMessage: ms365ErrorMessage } = useMs365Status(profile);
   const [active, setActive] = useState<any | null>(null);
   const [composeOpen, setComposeOpen] = useState(false);
   const [composeInit, setComposeInit] = useState<{ to?: string; subject?: string; body?: string }>({});
+  // Track whether user has manually loaded more pages — prevents auto-refresh from truncating
+  const hasLoadedMoreRef = useRef(false);
+  const currentEmailsRef = useRef<any[] | null>(null);
 
   useEffect(() => {
     if (initialTo && initialTo.trim()) {
@@ -957,22 +961,35 @@ export function EmailsList({ profile, initialTo, initialName }: { profile: any; 
   const [loadingMore, setLoadingMore] = useState(false);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
 
-  const load = async () => {
+  // Keep ref in sync with state for use in auto-refresh
+  useEffect(() => { currentEmailsRef.current = emails; }, [emails]);
+
+  const load = async (silent = false) => {
     if (!ms365Connected(profile)) { setState("no_m365"); return; }
-    setState((s) => (s === "ready" ? s : "loading"));
+    if (!silent) setState((s) => (s === "ready" ? s : "loading"));
     const { data, error } = await supabase.functions.invoke("ms365-actions", {
       body: { action: "read_emails", payload: { top: PAGE_SIZE, skip: 0 } },
     });
-    if (error || !(data as any)?.success) { setState("error"); return; }
+    if (error || !(data as any)?.success) { if (!silent) setState("error"); return; }
     const list = ((data as any).emails ?? (data as any).messages ?? []) as any[];
-    setEmails(list);
-    setHasMore(Boolean((data as any).hasMore) && list.length === PAGE_SIZE);
+    // If user has already loaded more pages, merge new page-1 results with existing
+    // emails rather than truncating — prevents losing emails loaded via loadMore.
+    if (hasLoadedMoreRef.current && currentEmailsRef.current && currentEmailsRef.current.length > list.length) {
+      const seen = new Set(list.map((e: any) => e.id));
+      const tail = currentEmailsRef.current.filter((e: any) => !seen.has(e.id));
+      const merged = [...list, ...tail];
+      setEmails(merged);
+    } else {
+      setEmails(list);
+    }
+    setHasMore(Boolean((data as any).hasMore) || list.length === PAGE_SIZE);
     setState("ready");
   };
 
   const loadMore = async () => {
     if (loadingMore || !emails) return;
     setLoadingMore(true);
+    hasLoadedMoreRef.current = true;
     try {
       const { data, error } = await supabase.functions.invoke("ms365-actions", {
         body: { action: "read_emails", payload: { top: PAGE_SIZE, skip: emails.length } },
@@ -995,8 +1012,9 @@ export function EmailsList({ profile, initialTo, initialName }: { profile: any; 
       if (!session) return;
       load();
       if (!ms365Connected(profile)) return;
-      const id = window.setInterval(() => { load(); }, 60_000);
-      const onVis = () => { if (document.visibilityState === "visible") load(); };
+      // Auto-refresh silently every 2 minutes — does not truncate loaded pages
+      const id = window.setInterval(() => { load(true); }, 120_000);
+      const onVis = () => { if (document.visibilityState === "visible") load(true); };
       document.addEventListener("visibilitychange", onVis);
       // Note: cleanup not possible here due to async; intervals are short-lived anyway.
     }); /* eslint-disable-next-line */
@@ -1031,7 +1049,7 @@ export function EmailsList({ profile, initialTo, initialName }: { profile: any; 
         </button>
         <div className="flex items-center gap-2">
           <button
-            onClick={load}
+            onClick={() => { hasLoadedMoreRef.current = false; load(); }}
             className="text-xs flex items-center gap-1 px-2 py-1"
             style={{ color: "var(--pp-text-muted)" }}
           >

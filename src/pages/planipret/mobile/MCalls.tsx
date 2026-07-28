@@ -566,7 +566,12 @@ export default function MCalls() {
               calls={recordings as any}
               loading={recordingsLoading}
               userId={userId}
-              onUpdated={(c) => setRecordings((prev) => prev.map((p) => (p.id === c.id ? { ...p, ...c } as any : p)))}
+              onUpdated={(c) => setRecordings((prev) => {
+                const next = prev.map((p) => (p.id === c.id ? { ...p, ...c } as any : p));
+                // Sync module-level cache so remounts don't rehydrate stale data
+                _recordingsCache.data = next;
+                return next;
+              })}
             />
           </>
         ) : tab === "voicemails" ? (
