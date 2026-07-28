@@ -4,7 +4,7 @@
  */
 import { Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { handleIncomingDeepLink } from '@/lib/deepLinkDebug';
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Toaster } from 'sonner';
 // (UI toaster removed — sonner is enough for the mobile app)
@@ -44,8 +44,6 @@ const MKpiAudit = lazyWithRetry(() => import('@/pages/planipret/mobile/MKpiAudit
 const MLayoutQA = lazyWithRetry(() => import('@/pages/planipret/mobile/MLayoutQA'), 'MLayoutQA');
 const MDeepLinkDebug = lazyWithRetry(() => import('@/pages/planipret/mobile/MDeepLinkDebug'), 'MDeepLinkDebug');
 
-
-
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -58,37 +56,63 @@ const queryClient = new QueryClient({
   },
 });
 
+// ─── Module-level singletons ────────────────────────────────────────────────
+// iOS never clears getLaunchUrl() — it keeps returning the same OAuth callback
+// URL on every subsequent call until the app is fully killed. If we read it
+// inside a useEffect that depends on `navigate` (which changes reference on
+// every React re-render / route change), we end up replaying the same stale
+// callback URL in an infinite loop. We solve this by:
+//   1. Reading getLaunchUrl() exactly ONCE per app cold-start (_launchUrlConsumed).
+//   2. Registering the appUrlOpen listener exactly ONCE (_appUrlListener).
+//   3. Keeping a navigateRef so the listener always calls the latest navigate
+//      without needing to re-register.
+let _launchUrlConsumed = false;
+let _appUrlListenerRegistered = false;
+
 function NativeDeepLinkBridge() {
   const navigate = useNavigate();
+  // Stable ref — updated on every render so the listener always has the latest navigate.
+  const navigateRef = useRef(navigate);
+  useEffect(() => { navigateRef.current = navigate; });
 
   useEffect(() => {
-    const routeFromUrl = async (rawUrl?: string | null, source = "unknown") => {
-      await handleIncomingDeepLink(rawUrl, source, navigate);
-    };
+    // Guard: only initialise once per app session.
+    if (_appUrlListenerRegistered) return;
+    _appUrlListenerRegistered = true;
 
-
-    let unsubscribe: null | (() => void) = null;
     (async () => {
       try {
         const { App: CapacitorApp } = await import('@capacitor/app');
-        // Only route on real deep links (appUrlOpen) and the initial launch URL.
-        // Do NOT re-route on appStateChange — iOS fires "active" every time the
-        // in-app Browser (SFSafariViewController) is presented/dismissed, which
-        // would replay a stale launchUrl or cached callback and close the
-        // Maestro/Microsoft login before the user finishes signing in.
-        const launch = await CapacitorApp.getLaunchUrl();
-        void routeFromUrl(launch?.url, "launchUrl");
-        const listener = await CapacitorApp.addListener('appUrlOpen', (event: { url: string }) => {
-          void routeFromUrl(event.url, "appUrlOpen");
+
+        // Read getLaunchUrl exactly once — iOS keeps returning the same URL on
+        // every subsequent call, so reading it again after a route change would
+        // replay the stale OAuth callback and create an infinite loop.
+        if (!_launchUrlConsumed) {
+          _launchUrlConsumed = true;
+          const launch = await CapacitorApp.getLaunchUrl();
+          if (launch?.url) {
+            await handleIncomingDeepLink(launch.url, 'launchUrl', navigateRef.current);
+          }
+        }
+
+        // appUrlOpen fires for every new deep-link while the app is running.
+        // Only route on real deep links — do NOT re-route on appStateChange.
+        // iOS fires "active" every time the in-app Browser (SFSafariViewController)
+        // is presented/dismissed, which would replay a stale callback and close
+        // the Maestro/Microsoft login before the user finishes signing in.
+        await CapacitorApp.addListener('appUrlOpen', (event: { url: string }) => {
+          void handleIncomingDeepLink(event.url, 'appUrlOpen', navigateRef.current);
         });
-        unsubscribe = () => { try { listener.remove(); } catch {} };
       } catch {
         // Web preview: no native deep links.
       }
     })();
 
-    return () => unsubscribe?.();
-  }, [navigate]);
+    // Do NOT remove the listener on unmount — NativeDeepLinkBridge must survive
+    // React re-renders and route changes to keep receiving deep links.
+    return () => {};
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // intentionally empty — run once
 
   return null;
 }
