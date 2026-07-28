@@ -59,6 +59,14 @@ export default function PpActiveCallScreen({
   const [loadingContacts, setLoadingContacts] = useState(false);
   const [diagOpen, setDiagOpen] = useState(false);
   const [speakerOn, setSpeakerOn] = useState(false);
+  const toggleSpeaker = async () => {
+    const next = !speakerOn;
+    setSpeakerOn(next);
+    try {
+      const { audioRouter } = await import("@/lib/planipret/audio/audioRouter");
+      await audioRouter.setRoute(next ? "speaker" : "earpiece");
+    } catch { /* ignore on web */ }
+  };
 
   useEffect(() => { setAudioEl(audioRef.current); return () => setAudioEl(null); }, [setAudioEl]);
 
@@ -283,7 +291,7 @@ export default function PpActiveCallScreen({
               style={{ background: "rgba(3,10,22,0.72)", border: "1px solid rgba(255,255,255,0.10)", boxShadow: "0 18px 48px rgba(0,0,0,0.42)", backdropFilter: "blur(18px)" }}
             >
               <CallBtn active={snap.muted} onClick={() => (snap.muted ? unmute() : mute())} icon={snap.muted ? <MicOff /> : <Mic />} label={snap.muted ? "Activer" : "Muet"} />
-              <CallBtn active={speakerOn} onClick={() => setSpeakerOn((v) => !v)} icon={speakerOn ? <Volume2 /> : <VolumeX />} label="H.-parleur" />
+              <CallBtn active={speakerOn} onClick={() => void toggleSpeaker()} icon={speakerOn ? <Volume2 /> : <VolumeX />} label="H.-parleur" />
               <CallBtn active={isHeld} onClick={() => (isHeld ? unhold() : hold())} icon={isHeld ? <Play /> : <Pause />} label={isHeld ? "Reprendre" : "Attente"} />
               <CallBtn onClick={() => setView("transfer")} icon={<PhoneForwarded />} label="Transférer" />
               <CallBtn onClick={() => setView("keypad")} icon={<Grid3X3 />} label="Clavier" />

@@ -24,6 +24,8 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       CAPPluginMethod(name: "triggerReregister", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "acknowledgeIncoming", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "setVoipPushToken", returnType: CAPPluginReturnPromise),
+      CAPPluginMethod(name: "setAudioRoute", returnType: CAPPluginReturnPromise),
+      CAPPluginMethod(name: "getAudioRoute", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "addListener", returnType: CAPPluginReturnCallback),
       CAPPluginMethod(name: "removeAllListeners", returnType: CAPPluginReturnPromise)
     ]
@@ -126,6 +128,36 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     @objc func acknowledgeIncoming(_ call: CAPPluginCall) {
       UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["pp_incoming_call"])
       call.resolve(["ok": true])
+    }
+    /// Set the audio output route: "speaker", "earpiece", or "bluetooth".
+    @objc func setAudioRoute(_ call: CAPPluginCall) {
+      let route = call.getString("route") ?? "earpiece"
+      let session = AVAudioSession.sharedInstance()
+      do {
+        try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .allowBluetoothA2DP, .mixWithOthers])
+        try session.setActive(true)
+        if route == "speaker" {
+          try session.overrideOutputAudioPort(.speaker)
+        } else {
+          try session.overrideOutputAudioPort(.none)
+        }
+        call.resolve(["ok": true, "route": route])
+      } catch {
+        call.reject("setAudioRoute failed: \(error.localizedDescription)")
+      }
+    }
+    /// Get the current audio output route.
+    @objc func getAudioRoute(_ call: CAPPluginCall) {
+      let outputs = AVAudioSession.sharedInstance().currentRoute.outputs
+      let route: String
+      if outputs.contains(where: { $0.portType == .builtInSpeaker }) {
+        route = "speaker"
+      } else if outputs.contains(where: { [.bluetoothA2DP, .bluetoothHFP, .bluetoothLE].contains($0.portType) }) {
+        route = "bluetooth"
+      } else {
+        route = "earpiece"
+      }
+      call.resolve(["route": route])
     }
 
     // ARCHITECTURE: le plugin natif gère l'enregistrement SIP UNIQUEMENT en arrière-plan.

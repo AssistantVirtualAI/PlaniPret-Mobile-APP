@@ -89,7 +89,14 @@ export default function ActiveCallOverlay({ callId, onClosed }: { callId: string
 
   const toggleMute = async () => { const next = !muted; if (await invoke("mute", { muted: next })) setMuted(next); };
   const toggleHold = async () => { const next = !held; if (await invoke(next ? "hold" : "resume")) setHeld(next); };
-  const toggleSpeaker = () => setSpeaker((v) => !v); // client-side hint only
+  const toggleSpeaker = async () => {
+    const next = !speaker;
+    setSpeaker(next);
+    try {
+      const { audioRouter } = await import("@/lib/planipret/audio/audioRouter");
+      await audioRouter.setRoute(next ? "speaker" : "earpiece");
+    } catch { /* ignore on web */ }
+  };
   const sendDtmf = async (d: string) => { setDtmfBuffer((b) => (b + d).slice(-16)); await invoke("dtmf", { digit: d }); };
   const doTransfer = async () => {
     if (!transferTo.trim()) return;
