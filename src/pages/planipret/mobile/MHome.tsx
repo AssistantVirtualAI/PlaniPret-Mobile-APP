@@ -6,7 +6,7 @@ import {
   Phone, PhoneMissed, MessageSquare, Voicemail,
   ArrowDownLeft, ArrowUpRight, X, Calendar, Headphones, Bot,
   BellOff, Flame, Sparkles, ChevronRight, ChevronLeft, Mail, Users as UsersIcon,
-  CheckSquare, RefreshCw, AlertCircle, Video, ExternalLink,
+  CheckSquare, RefreshCw, AlertCircle, Video, ExternalLink, Plus,
 } from "lucide-react";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
 import { toast } from "sonner";
@@ -16,9 +16,9 @@ import PermissionBanners from "@/components/planipret/mobile/PermissionBanners";
 import { TEMP_EMOJI } from "@/components/planipret/leadHelpers";
 import { useMaestroPipelineToasts } from "@/hooks/useMaestroPipelineToasts";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
-import { loadMHomeCache, saveMHomeCache, type SourceStatusMap } from "@/lib/mhomeCache";
-import PerformanceReportCard from "@/components/planipret/mobile/PerformanceReportCard";
 import { ms365Connected } from "@/lib/planipret/ms365Connected";
+import { Ms365ConnectionNotice } from "@/components/planipret/mobile/Ms365ConnectionNotice";
+import { useMs365Status } from "@/hooks/useMs365Status";
 
 
 type Period = "day" | "week" | "month" | "shift";
@@ -75,19 +75,18 @@ export default function MHome() {
   });
   useEffect(() => { try { localStorage.setItem("pp.mobile.period.v2", period); } catch {} }, [period]);
 
-  const cached = useMemo(() => loadMHomeCache(profile?.user_id, period), [profile?.user_id, period]);
-  const [stats, setStats] = useState(() => cached?.stats ?? { calls: 0, missed: 0, sms: 0, voicemails: 0, meetings: 0, hotLeads: 0, tasks: 0, outbound: 0 });
-  const [recent, setRecent] = useState<any[]>(() => cached?.recent ?? []);
-  const [hotLeads, setHotLeads] = useState<any[]>(() => cached?.hotLeads ?? []);
-  const [dueReminders, setDueReminders] = useState<any[]>(() => cached?.dueReminders ?? []);
-  const [meetings, setMeetings] = useState<any[]>(() => cached?.meetings ?? []);
-  const [msMeetings, setMsMeetings] = useState<any[]>(() => cached?.msMeetings ?? []);
+  const [stats, setStats] = useState({ calls: 0, missed: 0, sms: 0, voicemails: 0, meetings: 0, hotLeads: 0, tasks: 0, outbound: 0 });
+  const [recent, setRecent] = useState<any[]>([]);
+  const [hotLeads, setHotLeads] = useState<any[]>([]);
+  const [dueReminders, setDueReminders] = useState<any[]>([]);
+  const [meetings, setMeetings] = useState<any[]>([]);
+  const [msMeetings, setMsMeetings] = useState<any[]>([]);
   const [msCalendarLoading, setMsCalendarLoading] = useState(false);
   const [msCalendarError, setMsCalendarError] = useState<string | null>(null);
-  // statsLoading = cold render only. Background refreshes never toggle it,
-  // so the cached view stays on-screen while KPIs refresh silently.
-  const [statsLoading, setStatsLoading] = useState(!cached);
-  const [refreshing, setRefreshing] = useState(false);
+  const [statsLoading, setStatsLoading] = useState(true);
+  const [brief, setBrief] = useState<any | null>(null);
+  const [briefLoading, setBriefLoading] = useState(false);
+  const [briefErr, setBriefErr] = useState<string | null>(null);
 
   useMaestroPipelineToasts(profile?.user_id);
 
@@ -105,11 +104,7 @@ export default function MHome() {
 
   const loadStats = async () => {
     if (!profile) return;
-    // Only show the cold skeleton when we have nothing cached. Otherwise
-    // hydrate from cache and refresh silently in the background.
-    const hasCached = !!loadMHomeCache(profile?.user_id, period);
-    if (!hasCached) setStatsLoading(true);
-    setRefreshing(true);
+    setStatsLoading(true);
     try {
     const { sinceIso, untilIso } = periodRange(period);
     const nowIso = new Date().toISOString();
@@ -190,39 +185,37 @@ export default function MHome() {
     const liveVmItems = Array.isArray((nsVmLive.data as any)?.items) ? (nsVmLive.data as any).items : [];
     const liveVmUnread = liveVmItems.filter((v: any) => !(v.is_read ?? v.read ?? false)).length;
 
-    // Kick off Microsoft calendar fetch in PARALLEL with the main data load
-    // (previously it awaited after Promise.all, adding ~1-3s to Home render).
-    let msPromise: Promise<any[]> = Promise.resolve([]);
+    let microsoftEvents: any[] = [];
     setMsCalendarError(null);
     if (ms365Connected(profile)) {
       setMsCalendarLoading(true);
-      const calStart = new Date(); calStart.setDate(1); calStart.setHours(0,0,0,0);
-      const calEnd = new Date(calStart); calEnd.setMonth(calEnd.getMonth() + 2);
-      msPromise = supabase.functions
-        .invoke("ms365-actions", {
+      try {
+        const calStart = new Date(); calStart.setDate(1); calStart.setHours(0,0,0,0);
+        const calEnd = new Date(calStart); calEnd.setMonth(calEnd.getMonth() + 2);
+        const { data: msData, error: msError } = await supabase.functions.invoke("ms365-actions", {
           body: { action: "list_calendar_events", payload: { start: calStart.toISOString(), end: calEnd.toISOString(), top: 200 } },
-        })
-        .then(({ data: msData, error: msError }) => {
-          if (msError || (msData as any)?.success === false) {
-            const errMsg = (msData as any)?.error ?? msError?.message ?? "Calendrier Microsoft indisponible";
-            setMsCalendarError(errMsg);
-            if (/token|expir|unauthor|401|invalid_grant/i.test(errMsg)) {
-              import("@/lib/ms365E2E").then((m) => m.startMs365Reconnect("Erreur d'authentification sur le calendrier")).catch(() => {});
-            }
-            return [];
+        });
+        if (msError || (msData as any)?.success === false) {
+          const errMsg = (msData as any)?.error ?? msError?.message ?? "Calendrier Microsoft indisponible";
+          setMsCalendarError(errMsg);
+          if (/token|expir|unauthor|401|invalid_grant/i.test(errMsg)) {
+            const { startMs365Reconnect } = await import("@/lib/ms365E2E");
+            startMs365Reconnect("Erreur d'authentification sur le calendrier");
           }
-          return (msData as any)?.events ?? [];
-        })
-        .catch((e) => { setMsCalendarError(e?.message ?? "Calendrier Microsoft indisponible"); return []; })
-        .finally(() => setMsCalendarLoading(false));
+        } else {
+          microsoftEvents = (msData as any)?.events ?? [];
+        }
+      } catch (e: any) {
+        setMsCalendarError(e?.message ?? "Calendrier Microsoft indisponible");
+      } finally {
+        setMsCalendarLoading(false);
+      }
     } else {
       setMsMeetings([]);
     }
-
-    const microsoftEvents = await msPromise;
     setMsMeetings(microsoftEvents);
 
-    const nextStats = {
+    setStats({
       calls: liveCallsInPeriod.length || callsRes.count || 0,
       missed: liveCallsInPeriod.length ? liveCallsInPeriod.filter((c: any) => nsCallDirection(c) === "missed").length : (missedRes.count ?? 0),
       sms: liveSmsThreads.length ? liveSmsThreads.reduce((sum: number, th: any) => sum + nsSmsUnread(th), 0) : (smsRes.count ?? 0),
@@ -231,55 +224,34 @@ export default function MHome() {
       hotLeads: hotCountRes.count ?? 0,
       tasks: tasksCountRes.count ?? 0,
       outbound: outboundRes.count ?? 0,
-    };
-    const nextRecent = liveRecent.length ? liveRecent : (recentRes.data ?? []);
-    const nextHot = hotRes.data ?? [];
-    const nextRem = remRes.data ?? [];
-    const nextMeetings = meetingsRes.data ?? [];
-    setStats(nextStats);
-    setRecent(nextRecent);
-    setHotLeads(nextHot);
-    setDueReminders(nextRem);
-    setMeetings(nextMeetings);
-
-    // Per-source last-sync statuses feed the KPI Audit page.
-    const now = Date.now();
-    const mark = (ok: boolean, msg?: string | null) => ({ status: ok ? "ok" as const : "error" as const, lastAt: now, message: msg ?? null });
-    const sources: SourceStatusMap = {
-      ns_cdr:         { status: (nsCallsLive as any)?.error ? "error" : (liveCalls.length ? "ok" : "empty"), lastAt: now, message: (nsCallsLive as any)?.error?.message ?? null },
-      ns_sms:         { status: (nsSmsLive as any)?.error ? "error" : (liveSmsThreads.length ? "ok" : "empty"), lastAt: now, message: (nsSmsLive as any)?.error?.message ?? null },
-      ns_voicemail:   { status: (nsVmLive as any)?.error ? "error" : (liveVmItems.length ? "ok" : "empty"), lastAt: now, message: (nsVmLive as any)?.error?.message ?? null },
-      sb_calls:       mark(true),
-      sb_missed:      mark(true),
-      sb_sms_unread:  mark(true),
-      sb_voicemails:  mark(true),
-      sb_hot_leads:   mark(true),
-      sb_tasks:       mark(true),
-      sb_outbound:    mark(true),
-      sb_appointments:mark(true),
-      ms365_calendar: ms365Connected(profile)
-        ? { status: msCalendarError ? "error" : (microsoftEvents.length ? "ok" : "empty"), lastAt: now, message: msCalendarError }
-        : { status: "unknown", lastAt: null, message: "MS365 non connecté" },
-    };
-
-    saveMHomeCache(profile?.user_id, period, {
-      stats: nextStats, recent: nextRecent, hotLeads: nextHot,
-      dueReminders: nextRem, meetings: nextMeetings, msMeetings: microsoftEvents,
-      sources,
     });
+    setRecent(liveRecent.length ? liveRecent : (recentRes.data ?? []));
+    setHotLeads(hotRes.data ?? []);
+    setDueReminders(remRes.data ?? []);
+    setMeetings(meetingsRes.data ?? []);
     } catch (e) {
       console.error("[MHome] loadStats failed", e);
     } finally {
       setStatsLoading(false);
-      setRefreshing(false);
     }
   };
 
 
+  const loadBrief = async (force = false) => {
+    setBriefLoading(true);
+    setBriefErr(null);
+    const { data, error } = await supabase.functions.invoke("pp-ava-brief", { body: { period, force } });
+    setBriefLoading(false);
+    if (error || (data as any)?.error) {
+      setBriefErr((data as any)?.error || error?.message || "brief unavailable");
+      return;
+    }
+    setBrief(data);
+  };
 
-  useEffect(() => { loadStats(); /* eslint-disable-next-line */ }, [profile?.user_id, period]);
+  useEffect(() => { loadStats(); loadBrief(false); /* eslint-disable-next-line */ }, [profile?.user_id, period]);
   useEffect(() => {
-    registerRefresh(async () => { await loadStats(); });
+    registerRefresh(async () => { await Promise.all([loadStats(), loadBrief(true)]); });
     return () => registerRefresh(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile?.user_id, period]);
@@ -328,8 +300,6 @@ export default function MHome() {
         )}
       </header>
 
-      <PerformanceReportCard />
-
 
 
 
@@ -344,20 +314,9 @@ export default function MHome() {
             </button>
           ))}
         </div>
-        <div className="flex items-center gap-2">
-          {refreshing && (
-            <span className="flex items-center gap-1 text-[10px]" style={{ color: "var(--pp-text-muted)" }}>
-              <RefreshCw className="w-3 h-3 animate-spin" /> {t("home.refreshing") ?? "Actualisation…"}
-            </span>
-          )}
-          <button
-            onClick={() => navigate("/mplanipret/kpi-audit")}
-            className="text-[10px] underline decoration-dotted"
-            style={{ color: "var(--pp-text-muted)" }}
-          >
-            {totalComms} comms
-          </button>
-        </div>
+        <span className="text-[11px]" style={{ color: "var(--pp-text-muted)" }}>
+          {totalComms} comms
+        </span>
       </div>
 
       {/* ===== DND BANNER ===== */}
@@ -382,7 +341,104 @@ export default function MHome() {
         </div>
       )}
 
-      {/* AVA Brief section removed — replaced by PerformanceReportCard above */}
+      {/* ===== AI BRIEF (Navy gradient) ===== */}
+      <section
+        className="rounded-2xl p-4 relative overflow-hidden pp-card"
+        style={{
+          background: "linear-gradient(135deg, #FFFFFF 0%, #F0F4F9 100%)",
+          borderColor: "var(--pp-bg-border)",
+        }}
+      >
+        <div
+          className="absolute -top-12 -right-12 w-40 h-40 rounded-full"
+          style={{ background: "radial-gradient(circle, rgba(59,111,160,0.18), transparent 70%)" }}
+        />
+        <div className="relative">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4" style={{ color: "var(--pp-brand-accent)" }} />
+              <span className="pp-eyebrow">{t("home.brief")} — {periodLabel[period]}</span>
+            </div>
+            <button
+              onClick={() => loadBrief(true)}
+              disabled={briefLoading}
+              className="text-[11px] px-2.5 py-1 rounded-full flex items-center gap-1 disabled:opacity-50"
+              style={{
+                background: "rgba(59,111,160,0.10)",
+                color: "var(--pp-brand-accent-2)",
+                border: "1px solid rgba(59,111,160,0.25)",
+                fontFamily: "Urbanist,sans-serif", fontWeight: 600,
+              }}>
+              <RefreshCw className={`w-3 h-3 ${briefLoading ? "animate-spin" : ""}`} />
+              {briefLoading ? "…" : t("home.regenerate")}
+            </button>
+          </div>
+
+          {briefLoading && !brief ? (
+            <div className="space-y-2">
+              <Shimmer className="h-4 w-3/4" />
+              <Shimmer className="h-3 w-full" />
+              <Shimmer className="h-3 w-2/3" />
+            </div>
+          ) : briefErr ? (
+            <div className="text-xs flex items-center gap-2" style={{ color: "var(--pp-danger)" }}>
+              <AlertCircle className="w-3.5 h-3.5" /> {briefErr}
+            </div>
+          ) : brief ? (
+            <>
+              <p className="text-[15px] font-semibold leading-snug" style={{ color: "var(--pp-text-primary)", fontFamily: "Urbanist,sans-serif" }}>
+                {brief.headline}
+              </p>
+              {brief.priorities?.length > 0 && (
+                <ol className="mt-3 space-y-1.5">
+                  {brief.priorities.slice(0, 5).map((p: string, i: number) => (
+                    <li key={i} className="flex items-start gap-2 text-[13px]" style={{ color: "var(--pp-text-secondary)" }}>
+                      <span
+                        className="mt-[2px] inline-flex items-center justify-center w-4 h-4 rounded-full text-[10px] font-bold flex-shrink-0"
+                        style={{ background: "var(--pp-brand-accent-2)", color: "#fff", fontFamily: "Urbanist,sans-serif" }}>
+                        {i + 1}
+                      </span>
+                      <span>{p}</span>
+                    </li>
+                  ))}
+                </ol>
+              )}
+              {brief.risks?.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {brief.risks.map((r: string, i: number) => (
+                    <span key={i} className="pp-pill pp-pill-warning">⚠ {r}</span>
+                  ))}
+                </div>
+              )}
+              {brief.suggestions?.length > 0 && (
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {brief.suggestions.map((s: any, i: number) => (
+                    <button key={i} onClick={() => handleSuggestion(s)}
+                      className="pp-pill pp-pill-accent active:scale-95 transition">
+                      {s.kind === "call" ? "📞" : s.kind === "sms" ? "💬" : s.kind === "email" ? "✉" : "⏰"} {s.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            <p className="text-xs" style={{ color: "var(--pp-text-muted)" }}>{t("home.preparingBrief")}</p>
+          )}
+
+          {profile?.voice_agent_enabled && (
+            <button onClick={openAva}
+              className="mt-3 w-full py-2 rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5"
+              style={{
+                background: "rgba(108,92,231,0.10)",
+                border: "1px solid rgba(108,92,231,0.30)",
+                color: "var(--pp-agent)",
+                fontFamily: "Urbanist,sans-serif",
+              }}>
+              <Headphones className="w-3.5 h-3.5" /> {t("home.listenWithAva")}
+            </button>
+          )}
+        </div>
+      </section>
 
       {/* ===== STATS GRID (6 KPI) ===== */}
       <section className="grid grid-cols-3 gap-2.5">
@@ -562,6 +618,8 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
   const today = new Date(); today.setHours(0,0,0,0);
   const [cursor, setCursor] = useState(() => { const d=new Date(); d.setDate(1); d.setHours(0,0,0,0); return d; });
   const [selected, setSelected] = useState<Date>(today);
+  const [showCreate, setShowCreate] = useState(false);
+  const { state: ms365Status, errorMessage: ms365StatusError } = useMs365Status(profile);
 
   const locale = lang === "en" ? "en-CA" : "fr-CA";
 
@@ -604,13 +662,29 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
         </h2>
         <div className="flex items-center gap-2">
           <span className="pp-eyebrow">{events.length}</span>
+          {ms365Connected(profile) && (
+            <button
+              onClick={() => setShowCreate(true)}
+              className="w-8 h-8 rounded-lg flex items-center justify-center active:scale-95"
+              style={{ background: "var(--pp-brand-accent)", color: "#fff" }}
+              aria-label="Créer une réunion"
+              title="Créer une réunion"
+            >
+              <Plus className="w-4 h-4" />
+            </button>
+          )}
         </div>
       </div>
+      {showCreate && (
+        <NewMeetingSheet
+          initialDate={selected}
+          onClose={() => setShowCreate(false)}
+          onCreated={() => { setShowCreate(false); toast.success(lang === "en" ? "Meeting created" : "Réunion créée"); }}
+        />
+      )}
 
-      {!ms365Connected(profile) ? (
-        <p className="text-xs text-center py-4" style={{ color: "var(--pp-text-muted)" }}>
-          Connectez Microsoft 365 dans « Plus » pour afficher votre calendrier ici.
-        </p>
+      {ms365Status !== "connected" ? (
+        <Ms365ConnectionNotice state={ms365Status} errorMessage={ms365StatusError} compact />
       ) : (
         <>
           {/* Month header */}
@@ -742,4 +816,131 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
     </section>
   );
 }
+
+function NewMeetingSheet({
+  initialDate,
+  onClose,
+  onCreated,
+}: {
+  initialDate: Date;
+  onClose: () => void;
+  onCreated: () => void;
+}) {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const toLocalInput = (d: Date) =>
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+
+  const base = new Date(initialDate);
+  base.setHours(9, 0, 0, 0);
+  const endBase = new Date(base);
+  endBase.setMinutes(base.getMinutes() + 30);
+
+  const [subject, setSubject] = useState("");
+  const [start, setStart] = useState(toLocalInput(base));
+  const [end, setEnd] = useState(toLocalInput(endBase));
+  const [attendees, setAttendees] = useState("");
+  const [location, setLocation] = useState("");
+  const [teams, setTeams] = useState(true);
+  const [body, setBody] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Toronto";
+
+  const submit = async () => {
+    if (!subject.trim()) { toast.error("Titre requis"); return; }
+    setSaving(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("ms365-actions", {
+        body: {
+          action: "create_calendar_event",
+          payload: {
+            subject: subject.trim(),
+            start: { dateTime: new Date(start).toISOString(), timeZone: tz },
+            end: { dateTime: new Date(end).toISOString(), timeZone: tz },
+            body,
+            attendees: attendees.split(",").map((s) => s.trim()).filter(Boolean),
+            isOnlineMeeting: teams,
+            onlineMeetingProvider: "teamsForBusiness",
+            ...(location ? { location: { displayName: location } } : {}),
+          },
+        },
+      });
+      if (error || (data as any)?.success === false) {
+        throw new Error((data as any)?.error || error?.message || "Échec");
+      }
+      onCreated();
+    } catch (e: any) {
+      toast.error(e?.message || "Échec de création");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0, background: "rgba(4,10,25,0.55)",
+        display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 9999,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="pp-card"
+        style={{
+          width: "100%", maxWidth: 520, borderRadius: "16px 16px 0 0",
+          padding: 16, maxHeight: "90dvh", overflowY: "auto",
+          background: "var(--pp-bg-elevated, #fff)",
+        }}
+      >
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-base font-semibold pp-heading">Nouvelle réunion</h3>
+          <button onClick={onClose} className="w-8 h-8 rounded-lg flex items-center justify-center"
+            style={{ background: "rgba(0,0,0,0.06)" }}>
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <div className="space-y-3">
+          <input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Titre"
+            className="pp-input w-full" style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid var(--pp-bg-border)" }} />
+          <div className="grid grid-cols-2 gap-2">
+            <label className="text-xs" style={{ color: "var(--pp-text-muted)" }}>
+              Début
+              <input type="datetime-local" value={start} onChange={(e) => setStart(e.target.value)}
+                className="w-full mt-1" style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid var(--pp-bg-border)" }} />
+            </label>
+            <label className="text-xs" style={{ color: "var(--pp-text-muted)" }}>
+              Fin
+              <input type="datetime-local" value={end} onChange={(e) => setEnd(e.target.value)}
+                className="w-full mt-1" style={{ padding: "8px 10px", borderRadius: 10, border: "1px solid var(--pp-bg-border)" }} />
+            </label>
+          </div>
+          <input value={attendees} onChange={(e) => setAttendees(e.target.value)}
+            placeholder="Participants (courriels, séparés par des virgules)"
+            className="w-full" style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid var(--pp-bg-border)" }} />
+          <input value={location} onChange={(e) => setLocation(e.target.value)}
+            placeholder="Lieu (optionnel)"
+            className="w-full" style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid var(--pp-bg-border)" }} />
+          <textarea value={body} onChange={(e) => setBody(e.target.value)}
+            placeholder="Notes / ordre du jour"
+            rows={3}
+            className="w-full" style={{ padding: "10px 12px", borderRadius: 10, border: "1px solid var(--pp-bg-border)" }} />
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={teams} onChange={(e) => setTeams(e.target.checked)} />
+            Créer une réunion Teams
+          </label>
+          <button
+            onClick={submit}
+            disabled={saving}
+            className="w-full h-11 rounded-xl font-semibold active:scale-[0.98]"
+            style={{ background: "var(--pp-brand-accent)", color: "#fff", opacity: saving ? 0.6 : 1 }}
+          >
+            {saving ? "Création…" : "Créer la réunion"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 

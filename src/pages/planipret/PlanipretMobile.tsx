@@ -22,7 +22,6 @@ import { useQueryClient } from "@tanstack/react-query";
 import AvaChatSheet from "@/components/planipret/mobile/AvaChatSheet";
 import avaLogoAsset from "@/assets/ava-statistics-logo.png.asset.json";
 import planipretLogoAsset from "@/assets/planipret-logo.png.asset.json";
-import planipretLogoSrc from "@/assets/planipret-logo.png";
 import MobileAuthScreen from "@/components/planipret/mobile/MobileAuthScreen";
 import MobileHeaderControls from "@/components/planipret/mobile/MobileHeaderControls";
 import PpActiveCallScreen from "@/components/planipret/PpActiveCallScreen";
@@ -135,6 +134,7 @@ const AvaBadge = ({ compact = false, circle = false }: { compact?: boolean; circ
   );
 };
 
+import planipretLogoLocal from "@/assets/planipret-logo.png";
 const PlanipretBadge = () => (
   <div
     aria-label="Planiprêt"
@@ -147,10 +147,17 @@ const PlanipretBadge = () => (
       alignItems: "center",
       justifyContent: "center",
       background: "#fff",
-      boxShadow: "0 2px 8px rgba(0,0,0,0.18)",
+      boxShadow: "0 2px 8px rgba(0,0,0,0.12)",
     }}
   >
-    <img src={planipretLogoSrc} alt="Planiprêt" decoding="async" fetchPriority="high" style={{ width: "100%", height: "100%", objectFit: "contain" }} onError={(e) => { (e.target as HTMLImageElement).src = planipretLogoAsset.url; }} />
+    <img
+      src={planipretLogoLocal}
+      alt="Planiprêt"
+      decoding="async"
+      fetchPriority="high"
+      style={{ width: "100%", height: "100%", objectFit: "contain" }}
+      onError={(e) => { (e.currentTarget as HTMLImageElement).src = planipretLogoAsset.url; }}
+    />
   </div>
 );
 
@@ -1127,7 +1134,7 @@ export default function PlanipretMobile() {
         >
 
 
-          {/* Left group: logo Planiprêt uniquement */}
+          {/* Left group: Planiprêt logo uniquement */}
           <div className="flex items-center gap-2 min-w-0">
             <PlanipretBadge />
             <div className="flex flex-col" style={{ lineHeight: 1.1 }}>

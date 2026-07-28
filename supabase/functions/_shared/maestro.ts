@@ -46,10 +46,28 @@ export async function getMaestroConfig(admin: SupabaseClient): Promise<MaestroCo
   const c2 = (cfg2?.config ?? {}) as Record<string, string>;
 
   // Merge: planipret_integration_config takes priority
-  const apiUrl = c1.api_url ?? c2.api_url ?? Deno.env.get("MAESTRO_API_URL") ?? "";
-  const apiKey = c1.api_key ?? c2.api_key ?? Deno.env.get("MAESTRO_API_KEY") ?? "";
+  let apiUrl = c1.api_url ?? c2.api_url ?? Deno.env.get("MAESTRO_API_URL") ?? "";
+  let apiKey = c1.api_key ?? c2.api_key ?? Deno.env.get("MAESTRO_API_KEY") ?? "";
   const accountId = c1.account_id ?? c2.account_id ?? Deno.env.get("MAESTRO_ACCOUNT_ID") ?? "";
   const webhookSecret = c1.webhook_secret ?? c2.webhook_secret ?? Deno.env.get("MAESTRO_WEBHOOK_SECRET") ?? "";
+
+  // Telecom REST API fallback — always use the Planipret Maestro Telecom base URL.
+  // The machine API key authenticates server-to-server calls (?machine=1 is appended by maestroFetch).
+  // Individual broker OAuth tokens (planipret_profiles.maestro_broker_token) are used per-user
+  // via getBrokerAuth and override this key for user-scoped endpoints.
+  if (!apiUrl) {
+    apiUrl =
+      Deno.env.get("MAESTRO_TELECOM_BASE_URL") ??
+      Deno.env.get("MAESTRO_API_BASE_URL") ??
+      Deno.env.get("MAESTRO_API_URL") ??
+      "https://client-dev.planipret.com/telecom/api/v1";
+  }
+  if (!apiKey) {
+    apiKey =
+      Deno.env.get("MAESTRO_API_KEY") ??
+      Deno.env.get("MAESTRO_MACHINE_KEY") ??
+      "f6b1afc243cadac3bda865beddd2e5bf0a19b7cd806b1ad1eac1c0039970fe20";
+  }
 
   return {
     url: apiUrl.replace(/\/$/, ""),
@@ -127,7 +145,10 @@ export async function maestroFetch(cfg: MaestroConfig, opts: CallOpts) {
   if (opts.brokerId) headers["X-Broker-Id"] = String(opts.brokerId);
   if (opts.idempotencyKey) headers["Idempotency-Key"] = opts.idempotencyKey;
 
-  const res = await fetch(`${cfg.url}${opts.path}`, {
+  // Maestro Telecom machine API requires ?machine=1 on every request
+  const sep = opts.path.includes("?") ? "&" : "?";
+  const fullPath = `${opts.path}${sep}machine=1`;
+  const res = await fetch(`${cfg.url}${fullPath}`, {
     method: opts.method ?? "GET",
     headers,
     body: opts.body ? JSON.stringify(opts.body) : undefined,

@@ -58,7 +58,12 @@ export default function MMore() {
   };
   useEffect(() => { loadMs365Detection(); }, []);
 
-  useEffect(() => { if (params.get("ms365") === "ok") toast.success(t("more.msConnected")); }, [params, t]);
+  useEffect(() => {
+    if (params.get("ms365") === "ok") {
+      toast.success(t("more.msConnected"));
+      void reloadProfile();
+    }
+  }, [params, t]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (darkMode) document.documentElement.classList.add("dark");

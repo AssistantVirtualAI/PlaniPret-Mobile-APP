@@ -179,8 +179,11 @@ export default function MCalls() {
   );
   const [calls, setCalls] = useState<Call[]>([]);
   // Initialiser depuis le cache module-level pour affichage instantané au remontage
+  const _cachedUid = profile?.id ?? profile?.user_id ?? null;
   const [recordings, setRecordings] = useState<Call[]>(() =>
-    _recordingsCache.userId === (profile?.id ?? profile?.user_id) ? _recordingsCache.data as Call[] : []
+    _cachedUid && _recordingsCache.userId === _cachedUid && _recordingsCache.data.length > 0
+      ? _recordingsCache.data as Call[]
+      : []
   );
   const [loading, setLoading] = useState(true);
   const [recordingsLoading, setRecordingsLoading] = useState(false);
@@ -289,7 +292,9 @@ export default function MCalls() {
     // Only show the spinner when we have nothing to display yet — otherwise
     // refresh silently in the background so opening the tab feels instant.
     setRecordings((prev) => {
-      if (!silent && prev.length === 0) setRecordingsLoading(true);
+      // Ne montrer le spinner que si le cache module-level ET le state sont vides
+      const cacheEmpty = _recordingsCache.data.length === 0;
+      if (!silent && prev.length === 0 && cacheEmpty) setRecordingsLoading(true);
       return prev;
     });
     try {
