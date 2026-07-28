@@ -246,7 +246,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       RunLoop.main.add(timer!, forMode: .common)
       // Ping WebSocket toutes les 25s pour maintenir la connexion NAT active
       pingTimer?.invalidate()
-      pingTimer = Timer.scheduledTimer(withTimeInterval: 25, repeats: true) { [weak self] in
+      pingTimer = Timer.scheduledTimer(withTimeInterval: 25, repeats: true) { [weak self] _ in
         guard let self = self, self.wsReady, !self.isForeground() else { return }
         self.socket?.sendPing { err in
           if let err = err { NSLog("[PpSipKeepAlive] WS ping failed: \(err.localizedDescription)") }
