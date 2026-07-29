@@ -137,23 +137,29 @@ Deno.serve(async (req) => {
     await setPipelineStep(admin, call_id, "cdr", "running");
     await pipelineLog(admin, { call_id, user_id: call.user_id, step: "cdr_sync", status: "started" });
 
-    const { data: profile } = await admin
+    const { data: profRows } = await admin
       .from("planipret_profiles")
-      .select("ns_extension")
-      .eq("user_id", call.user_id ?? "")
-      .maybeSingle();
+      .select("id, user_id, ns_extension")
+      .or(`user_id.eq.${call.user_id ?? "00000000-0000-0000-0000-000000000000"},id.eq.${call.user_id ?? "00000000-0000-0000-0000-000000000000"}`)
+      .limit(2);
+    const profile = ((profRows ?? []) as any[]).find((r) => r.user_id === call.user_id) ?? (profRows ?? [])[0] ?? null;
 
+    // Payload format confirmed by Scott (Telecom REST API).
     const body = {
       provider_call_id: call.ns_call_id ?? call.id,
       to_user_number: call.direction === "inbound" ? call.from_number : call.to_number,
       from_user_number: call.direction === "inbound" ? call.to_number : call.from_number,
       status: "ended",
       direction: call.direction,
-      started_at: call.started_at,
+      duration_seconds: call.duration_seconds ?? 0,
+      initiated_at: call.started_at,
+      answered_at: call.started_at,
       ended_at: call.ended_at,
-      duration_sec: call.duration_seconds ?? 0,
+      notes: null,
+      ai_summary: null,
       broker_ext: profile?.ns_extension ?? null,
     };
+
 
     const t0 = Date.now();
     if (!auth.brokerId) {

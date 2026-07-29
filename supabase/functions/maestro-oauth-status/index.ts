@@ -38,19 +38,23 @@ Deno.serve(async (req) => {
   let pendingCount = 0;
 
   if (userId) {
-    const { data: prof } = await admin
+    const { data: profRows } = await admin
       .from("planipret_profiles")
-      .select("maestro_broker_id, maestro_email, maestro_broker_token, maestro_token_expires_at, maestro_last_sync_at, maestro_connected")
-      .eq("user_id", userId)
-      .maybeSingle();
-    // Always surface the broker id / email — machine-key mode has no token.
-    maestroBrokerId = (prof as any)?.maestro_broker_id ?? null;
+      .select("id, user_id, maestro_broker_id, maestro_email, maestro_broker_token, maestro_token_expires_at, maestro_last_sync_at, maestro_connected")
+      .or(`user_id.eq.${userId},id.eq.${userId}`)
+      .limit(2);
+    const prof = ((profRows ?? []) as any[]).find((r) => r.user_id === userId) ?? (profRows ?? [])[0] ?? null;
+    // Validation is purely local: a present, positive-integer broker id = connected.
+    const rawBrokerId = (prof as any)?.maestro_broker_id ?? null;
+    const brokerIdStr = rawBrokerId !== null && rawBrokerId !== undefined ? String(rawBrokerId).trim() : "";
+    maestroBrokerId = /^\d+$/.test(brokerIdStr) && Number(brokerIdStr) > 0 ? brokerIdStr : null;
     maestroEmail = (prof as any)?.maestro_email ?? null;
-    if (prof?.maestro_broker_token || (prof as any)?.maestro_connected || maestroBrokerId) {
+    if (maestroBrokerId || prof?.maestro_broker_token || (prof as any)?.maestro_connected) {
       status = "connected";
       lastConnectedAt = (prof as any).maestro_last_sync_at ?? null;
       const expAt = (prof as any).maestro_token_expires_at ? Date.parse((prof as any).maestro_token_expires_at) : 0;
       expiresIn = expAt ? Math.max(0, Math.floor((expAt - Date.now()) / 1000)) : null;
+
     } else if (!prof) {
       authReason = "no_profile_row";
     } else {

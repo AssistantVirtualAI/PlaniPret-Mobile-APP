@@ -181,18 +181,21 @@ export async function loadBrokerProfile(
   diag?: BrokerAuthDiag,
 ): Promise<{ id: string; maestro_broker_id: string | null; extension: string | null; phone: string | null } | null> {
   const cols = "id, user_id, maestro_broker_id, extension, phone";
-  const byUser = await admin.from("planipret_profiles").select(cols).eq("user_id", userId).maybeSingle();
-  if (byUser.data) {
-    if (diag) { diag.profile_found = true; diag.matched_by = "user_id"; diag.profile_id = (byUser.data as any).id; }
-    return byUser.data as any;
-  }
-  const byId = await admin.from("planipret_profiles").select(cols).eq("id", userId).maybeSingle();
-  if (byId.data) {
-    if (diag) { diag.profile_found = true; diag.matched_by = "profile_id"; diag.profile_id = (byId.data as any).id; }
-    return byId.data as any;
+  // planipret_phone_calls.user_id may hold either auth.users.id or the profile id.
+  const both = await admin.from("planipret_profiles").select(cols).or(`user_id.eq.${userId},id.eq.${userId}`).limit(2);
+  const rows = (both.data ?? []) as any[];
+  const hit = rows.find((r) => r.user_id === userId) ?? rows[0];
+  if (hit) {
+    if (diag) {
+      diag.profile_found = true;
+      diag.matched_by = hit.user_id === userId ? "user_id" : "profile_id";
+      diag.profile_id = hit.id;
+    }
+    return hit;
   }
   if (diag) { diag.profile_found = false; diag.matched_by = null; }
   return null;
+
 }
 
 /**
@@ -236,16 +239,14 @@ export async function getBrokerAuth(
       diag.reason = "stored_broker_id_not_numeric";
       brokerId = null;
     } else if (brokerId) {
-      const valid = !!(await verifyTelecomUserId(cfg, brokerId));
-      diag.stored_broker_id_valid = valid;
-      if (!valid) {
-        console.warn(`[maestro.brokerId] stored broker id ${brokerId} rejected by GET /users/${brokerId}/sip — re-resolving`);
-        diag.reason = "stored_broker_id_unknown_upstream";
-        brokerId = null;
-      }
+      // Trust the stored numeric id. Never probe /users/{id}/sip to validate it:
+      // a network hiccup there would discard a perfectly valid broker id.
+      diag.stored_broker_id_valid = true;
+      diag.reason = "ok";
     }
     if (!brokerId) brokerId = await resolveBrokerIdFromTelecom(admin, userId, cfg, 250, diag);
     if (brokerId) diag.reason = "ok";
+
   }
 
   if (!brokerId) {

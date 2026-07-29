@@ -19,8 +19,13 @@ import {
 function pickUrl(d: any): string | null {
   if (!d) return null;
   if (typeof d === "string") return d.startsWith("http") ? d : null;
-  return d.recording_url ?? d.url ?? d.download_url ?? d.media_url ?? d.file_url ?? null;
+  // Maestro still generating the media.
+  if (Number(d.saving_call_recording) === 1) return null;
+  const c = d.call ?? d.recording ?? {};
+  return d.call_recording_url ?? d.recording_url ?? d.url ?? d.download_url ?? d.media_url ?? d.file_url
+    ?? c.call_recording_url ?? c.recording_url ?? c.url ?? null;
 }
+
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
