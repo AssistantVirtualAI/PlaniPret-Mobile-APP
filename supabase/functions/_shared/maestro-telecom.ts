@@ -357,9 +357,10 @@ export function mirrorCallAnalysisToMaestro(
         return;
       }
 
-      // Scott (Maestro) confirmed: ai_summary and notes use PUT /calls/{call_id}
-      // (no /users/{broker}/ prefix). Send ai_summary and notes as separate calls.
-      const path = `/calls/${encodeURIComponent(maestroCallId)}`;
+      // Scott API: PUT /users/{brokerId}/calls/{callId}
+      const path = brokerId
+        ? `/users/${encodeURIComponent(String(brokerId))}/calls/${encodeURIComponent(maestroCallId)}`
+        : `/calls/${encodeURIComponent(maestroCallId)}`;
       console.log(`[maestro-telecom.analysis] → PUT ${path} pp_call=${ppCall?.id}`);
 
       // 1. Push ai_summary

@@ -174,17 +174,18 @@ Deno.serve(async (req) => {
         .maybeSingle();
       if (fresh) call = fresh;
     } else {
-      // Push the already-stored transcript (no re-transcription cost).
-      const res = await maestroFetchScoped(cfg, {
-        method: "POST",
-        path: `/api/v1/calls/${encodeURIComponent(String(mId))}/transcript`,
+      // Scott API: PUT /users/{brokerId}/calls/{callId} with transcript field
+      const transcriptPath = auth.brokerId
+        ? `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/calls/${encodeURIComponent(String(mId))}`
+        : `/api/v1/users/me/calls/${encodeURIComponent(String(mId))}`;
+      const res = await maestroFetch(cfg, {
+        method: "PUT",
+        path: transcriptPath,
         token: auth.token,
         brokerId: auth.brokerId,
         body: {
-          language: call.transcript_language ?? "fr-CA",
-          text: transcript,
-          segments: asArray(call.transcript_segments),
-          confidence: 0.95,
+          transcript: transcript,
+          transcript_language: call.transcript_language ?? "fr-CA",
         },
       });
       steps.transcript = { ok: res.ok, status: res.status, reused: true };
@@ -212,25 +213,18 @@ Deno.serve(async (req) => {
           ? asArray(aij.key_points)
           : asArray(call.ai_topics);
 
-      const res = await maestroFetchScoped(cfg, {
-        method: "POST",
-        path: `/api/v1/calls/${encodeURIComponent(String(mId))}/ai_summary`,
+      // Scott API: PUT /users/{brokerId}/calls/{callId} with ai_summary and notes
+      const aiPath = auth.brokerId
+        ? `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/calls/${encodeURIComponent(String(mId))}`
+        : `/api/v1/users/me/calls/${encodeURIComponent(String(mId))}`;
+      const res = await maestroFetch(cfg, {
+        method: "PUT",
+        path: aiPath,
         token: auth.token,
         brokerId: auth.brokerId,
         body: {
-          summary_text: summary,
-          key_points: keyPoints,
-          next_actions: nextActions.map(actionTitle).filter(Boolean),
-          sentiment: (call as any).ai_sentiment ?? aij?.sentiment ?? null,
-          analytics: {
-            coaching: call.ai_coaching ?? aij?.coaching ?? null,
-            coaching_score: call.coaching_score ?? null,
-            lead_score: call.lead_score ?? null,
-            lead_temperature: call.lead_temperature ?? null,
-            lead_score_reason: call.lead_score_reason ?? null,
-            client_insights: call.ai_client_insights ?? aij?.client_insights ?? null,
-            topics: asArray(call.ai_topics),
-          },
+          ai_summary: summary,
+          notes: nextActions.map(actionTitle).filter(Boolean).join("\n") || null,
         },
       });
       steps.ai = { ok: res.ok, status: res.status, reused: true };

@@ -78,11 +78,16 @@ Deno.serve(async (req) => {
         await pipelineLog(admin, { call_id, user_id: call.user_id, step: "client_lookup", status: "success", payload: { source: "cache", client_id: maestroClientId } });
       } else {
         const t0 = Date.now();
-        const lookup = await maestroFetchScoped(cfg, {
-          method: "GET",
-          path: `/api/v1/clients/lookup?phone=${encodeURIComponent(contactPhone)}`,
+        // Scott API: POST /users/{brokerId}/lookup-by-phone { phone: "+1..." }
+        const lookupPath = auth.brokerId
+          ? `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/lookup-by-phone`
+          : `/api/v1/users/me/lookup-by-phone`;
+        const lookup = await maestroFetch(cfg, {
+          method: "POST",
+          path: lookupPath,
           token: auth.token,
           brokerId: auth.brokerId,
+          body: { phone: contactPhone },
         });
         await pipelineLog(admin, {
           call_id,
@@ -150,12 +155,27 @@ Deno.serve(async (req) => {
     };
 
     const t0 = Date.now();
-    const res = await maestroFetchScoped(cfg, {
+    // Scott API: POST /users/{brokerId}/calls
+    const cdrPath = auth.brokerId
+      ? `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/calls`
+      : `/api/v1/users/me/calls`;
+    const res = await maestroFetch(cfg, {
       method: "POST",
-      path: "/api/v1/calls/cdr",
+      path: cdrPath,
       token: auth.token,
       brokerId: auth.brokerId,
-      body: { ...body, maestro_broker_id: auth.brokerId },
+      body: {
+        provider_call_id: call.ns_call_id ?? call.id,
+        direction: call.direction,
+        to_user_number: call.direction === "outbound" ? call.to_number : call.from_number,
+        status: "ended",
+        ended_reason: "complete",
+        started_at: call.started_at,
+        ended_at: call.ended_at,
+        duration_sec: call.duration_seconds ?? 0,
+        recording_url: call.recording_url ?? null,
+        maestro_client_id: maestroClientId,
+      },
       idempotencyKey: call.id,
     });
     const ms = Date.now() - t0;

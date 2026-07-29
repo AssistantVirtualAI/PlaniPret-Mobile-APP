@@ -153,9 +153,14 @@ Deno.serve(async (req) => {
       const cfg = await getMaestroConfig(admin);
       if (cfg.url && cfg.key) {
         const auth = await getBrokerAuth(admin, call.user_id);
+        // Scott API: GET /users/{brokerId}/call/{callId}/recording
+        const recId = call.maestro_call_id ?? call.ns_call_id ?? call.id;
+        const recPath = auth.brokerId
+          ? `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/call/${encodeURIComponent(recId)}/recording`
+          : `/api/v1/users/me/call/${encodeURIComponent(recId)}/recording`;
         const recRes = await maestroFetch(cfg, {
           method: "GET",
-          path: `/api/v1/calls/${encodeURIComponent(call.maestro_call_id ?? call.ns_call_id ?? call.id)}/recording`,
+          path: recPath,
           token: auth.token,
         });
         if (recRes.ok && recRes.data?.url) {
@@ -189,16 +194,18 @@ Deno.serve(async (req) => {
       const cfg = await getMaestroConfig(admin);
       if (cfg.url && cfg.key) {
         const auth = await getBrokerAuth(admin, call.user_id);
+        // Scott API: PUT /users/{brokerId}/calls/{callId} with transcript field
         const mId = call.maestro_call_id ?? call.ns_call_id ?? call.id;
+        const trPath = auth.brokerId
+          ? `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/calls/${encodeURIComponent(mId)}`
+          : `/api/v1/users/me/calls/${encodeURIComponent(mId)}`;
         await maestroFetch(cfg, {
-          method: "POST",
-          path: `/api/v1/calls/${encodeURIComponent(mId)}/transcript`,
+          method: "PUT",
+          path: trPath,
           token: auth.token,
           body: {
-            language: "fr-CA",
-            text: result.text,
-            segments: result.segments,
-            confidence: 0.95,
+            transcript: result.text,
+            transcript_language: "fr-CA",
           },
         });
       }

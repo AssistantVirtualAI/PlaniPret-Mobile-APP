@@ -168,20 +168,24 @@ Deno.serve(async (req) => {
     form.append("call_id", String(mId));
     if (call.duration_seconds != null) form.append("duration_sec", String(call.duration_seconds));
 
-    const relPath = `/api/v1/calls/${encodeURIComponent(String(mId))}/recording`;
+    // Scott API: GET /users/{brokerId}/call/{callId}/recording
+    // Note: the API provides a GET to retrieve the recording URL — we store it locally.
+    // For uploading, we POST the multipart form to the same path.
     const scoped = auth.brokerId
-      ? `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/calls/${encodeURIComponent(String(mId))}/recording`
-      : relPath;
+      ? `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/call/${encodeURIComponent(String(mId))}/recording`
+      : `/api/v1/users/me/call/${encodeURIComponent(String(mId))}/recording`;
+    const machineSuffix = auth.usingFallback ? `${scoped.includes("?") ? "&" : "?"}machine=1` : "";
     const headers: Record<string, string> = { Authorization: `Bearer ${auth.token}` };
     if (cfg.accountId) headers["X-Account-Id"] = cfg.accountId;
     if (auth.brokerId) headers["X-Broker-Id"] = String(auth.brokerId);
-
-    const machineSuffix = auth.usingFallback ? `${scoped.includes("?") ? "&" : "?"}machine=1` : "";
     let endpoint = `${cfg.url}${scoped}${machineSuffix}`;
     let res = await fetch(endpoint, { method: "POST", headers, body: form });
-    if (!res.ok && (res.status === 404 || res.status === 405) && scoped !== relPath) {
-      const relMachineSuffix = auth.usingFallback ? `${relPath.includes("?") ? "&" : "?"}machine=1` : "";
-      endpoint = `${cfg.url}${relPath}${relMachineSuffix}`;
+    // Fallback: try without /call/ (singular) path variant
+    if (!res.ok && (res.status === 404 || res.status === 405)) {
+      const fallbackPath = auth.brokerId
+        ? `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/calls/${encodeURIComponent(String(mId))}/recording`
+        : `/api/v1/users/me/calls/${encodeURIComponent(String(mId))}/recording`;
+      endpoint = `${cfg.url}${fallbackPath}${machineSuffix}`;
       res = await fetch(endpoint, { method: "POST", headers, body: form });
     }
 
