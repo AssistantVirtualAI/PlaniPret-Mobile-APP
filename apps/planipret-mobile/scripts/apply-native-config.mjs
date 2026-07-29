@@ -788,13 +788,13 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       guard let sock = socket, status == "registered", !domain.isEmpty else { return }
       let seq = cseq; cseq += 1
       let branch = "z9hG4bK" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
-      var sip = "OPTIONS sip:" + domain + " SIP/2.0\r\n"
-      sip += "Via: SIP/2.0/WSS planipret-ios.invalid;branch=" + branch + "\r\n"
-      sip += "From: <sip:" + login + "@" + domain + ">;tag=" + fromTag + "\r\n"
-      sip += "To: <sip:" + domain + ">\r\n"
-      sip += "Call-ID: " + UUID().uuidString + "@planipret-ios\r\n"
-      sip += "CSeq: " + String(seq) + " OPTIONS\r\n"
-      sip += "Max-Forwards: 70\r\nUser-Agent: Planipret iOS KeepAlive\r\nContent-Length: 0\r\n\r\n"
+      var sip = "OPTIONS sip:" + domain + " SIP/2.0\\r\\n"
+      sip += "Via: SIP/2.0/WSS planipret-ios.invalid;branch=" + branch + "\\r\\n"
+      sip += "From: <sip:" + login + "@" + domain + ">;tag=" + fromTag + "\\r\\n"
+      sip += "To: <sip:" + domain + ">\\r\\n"
+      sip += "Call-ID: " + UUID().uuidString + "@planipret-ios\\r\\n"
+      sip += "CSeq: " + String(seq) + " OPTIONS\\r\\n"
+      sip += "Max-Forwards: 70\\r\\nUser-Agent: Planipret iOS KeepAlive\\r\\nContent-Length: 0\\r\\n\\r\\n"
       sock.send(.string(sip)) { err in
         if let e = err { NSLog("[PpSipKeepAlive] OPTIONS ping failed: %@", String(describing: e)) }
       }
