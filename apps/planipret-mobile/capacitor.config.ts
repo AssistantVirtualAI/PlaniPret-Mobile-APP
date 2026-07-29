@@ -20,6 +20,10 @@ const config: CapacitorConfig = {
     webContentsDebuggingEnabled: false,
   },
   plugins: {
+    // IMPORTANT: must stay disabled. When enabled, the native HTTP bridge
+    // patches window.fetch and drops/overrides the Supabase `Authorization`
+    // header, so every Edge Function call arrives with the anon key
+    // ("invalid claim: missing sub claim" / 401 unauthorized).
     CapacitorHttp: {
       enabled: false,
     },

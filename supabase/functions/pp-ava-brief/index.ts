@@ -21,6 +21,8 @@ const BriefSchema = z.object({
   risks: z.array(z.string()).max(3),
   highlights: z.array(z.string()).max(5).optional(),
   metrics: z.array(z.object({ label: z.string(), value: z.string() })).max(8).optional(),
+  tips: z.array(z.object({ title: z.string(), detail: z.string() })).max(5).optional(),
+  focus: z.string().optional(),
   suggestions: z.array(z.object({
     label: z.string(),
     kind: z.enum(["call", "sms", "email", "reminder"]),
@@ -325,6 +327,8 @@ Génère un brief DÉTAILLÉ, professionnel et actionnable, ENTIÈREMENT en fran
 - highlights: jusqu'à 5 faits saillants nommant les vrais contacts/clients les plus actifs et ce qui s'est passé.
 - priorities: 3 actions concrètes ordonnées par urgence (max 12 mots chacune), en nommant la personne ou le numéro.
 - risks: jusqu'à 3 risques ou points d'attention.
+- tips: 3 à 5 conseils de coaching { title, detail } — chaque "detail" = 1 à 2 phrases concrètes basées sur les chiffres (relances, plages horaires les plus productives, durée des appels, suivi des leads chauds, textos non lus, boîtes vocales).
+- focus: 1 phrase « objectif du jour » chiffré et mesurable.
 - suggestions: jusqu'à 3 actions cliquables (call/sms/email/reminder) avec si pertinent un numéro extrait des données.`
       : `You are AVA, the assistant of a mortgage broker in Quebec. You receive the real statistics of broker ${profile.full_name ?? ""} for ${periodLabelEn}.
 Generate a DETAILED, professional and actionable brief, ENTIRELY in English (no French words at all).
@@ -334,6 +338,8 @@ Generate a DETAILED, professional and actionable brief, ENTIRELY in English (no 
 - highlights: up to 5 highlights naming the real most active contacts/clients and what happened.
 - priorities: 3 concrete actions ordered by urgency (max 12 words each), naming the person or number.
 - risks: up to 3 risks or watch-outs.
+- tips: 3 to 5 coaching tips { title, detail } — each "detail" = 1 to 2 concrete sentences based on the numbers (follow-ups, most productive time slots, call duration, hot-lead nurturing, unread texts, voicemails).
+- focus: 1 measurable "goal of the day" sentence with a number.
 - suggestions: up to 3 clickable actions (call/sms/email/reminder) with a number extracted from the data when relevant.`;
 
     const userPrompt = lang === "fr"

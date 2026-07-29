@@ -8,6 +8,7 @@ import CoachOverlay from "@/components/planipret/ava/CoachOverlay";
 import { callAva, type AvaSuggestion } from "@/services/avaProactive";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import Ms365StatsCard from "@/components/planipret/Ms365StatsCard";
+import BriefListenButton from "@/components/planipret/mobile/BriefListenButton";
 
 
 type Period = "week" | "month" | "quarter";
@@ -30,21 +31,36 @@ export default function MStats() {
   const [coachReply, setCoachReply] = useState("");
   const [coachSuggestions, setCoachSuggestions] = useState<AvaSuggestion[]>([]);
 
+  // Telephony rows are keyed either by the profile id, the auth user id or the
+  // SIP extension depending on the ingestion path — match them all, otherwise
+  // the performance page renders empty even though calls exist.
+  const scope = (query: any, withExtension = false) => {
+    const ext = profile?.ns_extension ?? profile?.extension;
+    const filter = [
+      profile?.id ? `user_id.eq.${profile.id}` : null,
+      profile?.user_id ? `user_id.eq.${profile.user_id}` : null,
+      withExtension && ext ? `extension.eq.${ext}` : null,
+    ].filter(Boolean).join(",");
+    return filter ? query.or(filter) : query;
+  };
+
   useEffect(() => {
-    if (!profile?.user_id) return;
+    if (!profile?.id && !profile?.user_id) return;
     (async () => {
       setLoading(true);
       const days = period === "week" ? 7 : period === "month" ? 30 : 90;
       const since = new Date(Date.now() - days * 86400000).toISOString();
       const [cRes, lRes] = await Promise.all([
-        supabase.from("planipret_phone_calls").select("id,direction,status,duration_seconds,lead_score,created_at,started_at")
-          .eq("user_id", profile.user_id).gte("created_at", since).order("created_at", { ascending: false }),
-        supabase.from("planipret_pipeline").select("id,stage,created_at")
-          .eq("user_id", profile.user_id).gte("created_at", since),
+        scope(supabase.from("planipret_phone_calls")
+          .select("id,direction,status,duration_seconds,lead_score,lead_temperature,coaching_score,ai_summary,from_name,from_number,to_name,to_number,created_at,started_at"), true)
+          .gte("started_at", since).order("started_at", { ascending: false }).limit(1000),
+        scope(supabase.from("planipret_pipeline").select("id,stage,created_at"))
+          .gte("created_at", since),
       ]);
       setCalls(cRes.data ?? []); setLeads(lRes.data ?? []); setLoading(false);
     })();
-  }, [profile?.user_id, period]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile?.id, profile?.user_id, profile?.extension, profile?.ns_extension, period]);
 
   const kpi = useMemo(() => {
     const total = calls.length;
@@ -62,7 +78,7 @@ export default function MStats() {
       return { label: d.toLocaleDateString(lang === "en" ? "en-CA" : "fr-CA", { weekday: "short", day: "2-digit" }), out: 0, in: 0, missed: 0, date: d.toDateString() };
     });
     for (const c of calls) {
-      const dStr = new Date(c.created_at).toDateString();
+      const dStr = new Date(c.started_at ?? c.created_at).toDateString();
       const b = buckets.find((x) => x.date === dStr); if (!b) continue;
       if (c.status === "missed" || (c.duration_seconds ?? 0) === 0) b.missed++;
       else if (c.direction === "outbound") b.out++; else b.in++;
@@ -117,13 +133,28 @@ export default function MStats() {
           setCoachSuggestions([]);
           const res = await callAva({
             mode: "recommend",
+            level: "detailed",
             message: t("stats.coachPrompt").replace("{period}", t(`stats.periods.${period}`)),
             context: {
               period,
+              language: lang,
               kpi,
               funnel,
               best_day: bestDay,
               broker: profile?.full_name,
+              breakdown: donut.map((d) => ({ label: d.name, value: d.value })),
+              daily: dailyData.map((d) => ({ day: d.label, out: d.out, in: d.in, missed: d.missed })),
+              coaching_scores: calls.filter((c) => typeof c.coaching_score === "number").map((c) => c.coaching_score),
+              hot_leads: calls
+                .filter((c) => (c.lead_score ?? 0) >= 7 || c.lead_temperature === "hot")
+                .slice(0, 8)
+                .map((c) => ({
+                  name: c.from_name ?? c.to_name,
+                  number: c.from_number ?? c.to_number,
+                  score: c.lead_score,
+                  summary: (c.ai_summary ?? "").slice(0, 240),
+                })),
+              recent_summaries: calls.filter((c) => c.ai_summary).slice(0, 6).map((c) => (c.ai_summary ?? "").slice(0, 240)),
             },
           });
           setCoachReply(res.reply);
@@ -209,7 +240,19 @@ export default function MStats() {
       <CoachOverlay
         open={coachOpen}
         title="Coach AVA"
-        subtitle={coachLoading ? t("stats.analyzing") : coachReply}
+        subtitle={coachLoading ? t("stats.analyzing") : undefined}
+        body={
+          coachLoading ? null : coachReply ? (
+            <div className="rounded-xl p-3 mb-1" style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)" }}>
+              <p className="text-[13px] whitespace-pre-line" style={{ color: "var(--pp-text-secondary)" }}>{coachReply}</p>
+              <BriefListenButton
+                text={coachReply}
+                language={lang}
+                label={lang === "en" ? "Listen to the analysis" : "Écouter l’analyse"}
+              />
+            </div>
+          ) : null
+        }
         suggestions={coachSuggestions}
         ctx={{ openDialer, openAva, userId: profile?.user_id }}
         onClose={() => setCoachOpen(false)}

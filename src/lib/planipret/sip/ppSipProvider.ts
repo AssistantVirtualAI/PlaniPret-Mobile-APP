@@ -37,15 +37,7 @@ export interface PpSipSnapshot {
 }
 
 
-export interface PpSipEvent {
-  time: number;
-  level: "info" | "warn" | "error";
-  event: string;
-  detail?: string;
-}
-
 type Listener = (s: PpSipSnapshot) => void;
-type EventsListener = (e: PpSipEvent[]) => void;
 
 let sipParserGuardInstalled = false;
 
@@ -68,6 +60,15 @@ function installSipParserGuard() {
     event.preventDefault();
   });
 }
+
+export interface PpSipEvent {
+  time: number;
+  level: "info" | "warn" | "error";
+  event: string;
+  detail?: string;
+}
+
+type EventsListener = (e: PpSipEvent[]) => void;
 
 class PpSipProvider {
   private ua: any = null;
@@ -125,11 +126,6 @@ class PpSipProvider {
     const fn = level === "error" ? "error" : level === "warn" ? "warn" : "log";
     // eslint-disable-next-line no-console
     (console as any)[fn](`[pp-sip] ${msg}`, detail ?? "");
-    const detailStr = detail === undefined || detail === null || detail === ""
-      ? undefined
-      : typeof detail === "string" ? detail : (() => { try { return JSON.stringify(detail); } catch { return String(detail); } })();
-    this.events = [...this.events, { time: Date.now(), level, event: msg, detail: detailStr }].slice(-200);
-    this.eventListeners.forEach((l) => { try { l(this.events); } catch {} });
   }
 
   async init(cfg: PpSipConfig) {
@@ -181,7 +177,7 @@ class PpSipProvider {
         session_timers: false,
         // Match the native keep-alive REGISTER expiry so NetSapiens does not
         // expire one contact while the other still shows "registered" locally.
-        register_expires: 300,
+        register_expires: 180,
         connection_recovery_min_interval: 2,
         connection_recovery_max_interval: 30,
         user_agent: "Planipret Softphone 1.0",
@@ -252,6 +248,20 @@ class PpSipProvider {
       muted: false,
       onHold: false,
     });
+
+    // If the user tapped "Répondre" on the native background notification
+    // before JsSIP had a chance to receive the INVITE, auto-answer as soon as
+    // the session arrives (within a 30s intent window).
+    if (incoming) {
+      try {
+        const pending = (typeof window !== "undefined") ? (window as any).__ppPendingAnswer : null;
+        if (pending && (Date.now() - (pending.ts || 0)) < 30_000) {
+          (window as any).__ppPendingAnswer = null;
+          setTimeout(() => { try { this.answer(); } catch {} }, 250);
+        }
+      } catch {}
+    }
+
 
     session.on("progress", () => { if (!incoming) this.update({ callState: "ringing-out" }); });
     session.on("confirmed", () => this.update({ callState: "active", startedAt: Date.now() }));
@@ -365,8 +375,11 @@ class PpSipProvider {
       // unregister({all:true}) while the UA is still connecting aborted the
       // in-flight REGISTER and produced "Connection Error".
       if (this.snap.status === "registered") {
-        try { this.ua.unregister({ all: true }); } catch {}
-        setTimeout(() => { try { this.ua?.register(); } catch {} }, 250);
+        // NEVER unregister({all:true}) here: it wipes EVERY contact bound to the
+        // AoR — including the native background keep-alive registration — which
+        // left the extension unregistered and sent inbound calls straight to
+        // voicemail. A plain re-REGISTER refreshes only this contact.
+        try { this.ua.register(); } catch {}
         return;
       }
       if (this.snap.status === "connecting" && Date.now() - this.connectingSince < 20_000) return;
@@ -390,6 +403,20 @@ class PpSipProvider {
 
   private stopKeepAlive() {
     if (this.keepAliveTimer) { clearInterval(this.keepAliveTimer); this.keepAliveTimer = null; }
+  }
+
+  /**
+   * Background handoff: remove THIS WebView contact from NetSapiens before the
+   * OS suspends the WebSocket. A suspended socket keeps a dead contact bound to
+   * the extension, NS forks the inbound call to it, the fork fails instantly and
+   * the caller lands in voicemail. Removing it lets the native keep-alive
+   * registration (or the VoIP push) take the call instead.
+   */
+  async releaseForBackground(): Promise<void> {
+    if (this.hasActiveCall() || this.snap.callState === "ringing-in" || this.snap.callState === "ringing-out") return;
+    try { this.ua?.unregister({ all: false }); } catch { /* noop */ }
+    await new Promise((r) => setTimeout(r, 250));
+    this.stop();
   }
 
   stop() {

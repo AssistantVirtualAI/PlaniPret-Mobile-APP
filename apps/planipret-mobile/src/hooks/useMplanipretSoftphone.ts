@@ -355,14 +355,24 @@ export function useMplanipretSoftphone(enabled = true) {
           const s = await startPlanipretSipKeepAlive(cfg);
           if (s) setNativeStatus(s);
           const st = String(s?.status ?? "");
-          if (s?.ok !== false && (st === "registered" || st === "protected" || st === "connecting" || st === "reconnecting")) return;
+          if (s?.ok !== false && (st === "registered" || st === "protected" || st === "connecting" || st === "reconnecting")) {
+            // Native owns the registration now — drop the WebView contact so
+            // NetSapiens stops forking inbound calls to a suspended WebSocket
+            // (that fork fails instantly => "straight to voicemail").
+            try { await ppSipProvider.releaseForBackground(); } catch { /* noop */ }
+            return;
+          }
         } catch { /* retry */ }
         await new Promise((r) => setTimeout(r, 2_000 * (attempt + 1)));
       }
     };
     const un = ppSipProvider.subscribe(() => evaluate());
     const onResume = () => {
-      try { ppSipProvider.forceReregister(); } catch {}
+      try {
+        const cfg = ppSipProvider.getConfig();
+        if (cfg) void ppSipProvider.init(cfg);
+        else ppSipProvider.forceReregister();
+      } catch { /* noop */ }
       evaluate();
     };
     const onVis = () => { if (document.visibilityState === "visible") onResume(); else void handoffToNative(); };
@@ -384,7 +394,13 @@ export function useMplanipretSoftphone(enabled = true) {
           const p = AppPlugin.addListener("appStateChange", (state: { isActive: boolean }) => {
             if (state?.isActive) {
               void stopPlanipretSipKeepAlive().catch(() => undefined);
-              try { ppSipProvider.forceReregister(); } catch {}
+              // The WebView contact was released on background — re-init the UA
+              // (forceReregister is a no-op once the UA has been stopped).
+              try {
+                const cfg = ppSipProvider.getConfig();
+                if (cfg) void ppSipProvider.init(cfg);
+                else ppSipProvider.forceReregister();
+              } catch { /* noop */ }
               evaluate();
             } else {
               void handoffToNative();

@@ -404,6 +404,24 @@ export default function MHome() {
                   ))}
                 </ol>
               )}
+              {brief.tips?.length > 0 && (
+                <div className="mt-3 space-y-2">
+                  {brief.tips.slice(0, 5).map((tip: any, i: number) => (
+                    <div key={i} className="rounded-xl p-2.5"
+                      style={{ background: "rgba(59,111,160,0.06)", border: "1px solid rgba(59,111,160,0.18)" }}>
+                      <p className="text-[12px] font-semibold" style={{ color: "var(--pp-brand-accent-2)", fontFamily: "Urbanist,sans-serif" }}>
+                        💡 {tip.title}
+                      </p>
+                      <p className="text-[12px] mt-0.5" style={{ color: "var(--pp-text-secondary)" }}>{tip.detail}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {brief.focus && (
+                <p className="mt-3 text-[12px] font-semibold" style={{ color: "var(--pp-brand-accent-2)" }}>
+                  🎯 {brief.focus}
+                </p>
+              )}
               {brief.risks?.length > 0 && (
                 <div className="mt-3 flex flex-wrap gap-1.5">
                   {brief.risks.map((r: string, i: number) => (
@@ -432,7 +450,9 @@ export default function MHome() {
               text={[
                 brief.headline,
                 ...(brief.priorities ?? []).map((p: string, i: number) => `${i + 1}. ${p}`),
+                ...(brief.tips ?? []).map((tp: any) => `${tp.title}. ${tp.detail}`),
                 ...(brief.risks ?? []).map((r: string) => (lang === "en" ? `Risk: ${r}` : `Risque : ${r}`)),
+                brief.focus ?? "",
               ].filter(Boolean).join(". ")}
             />
           )}

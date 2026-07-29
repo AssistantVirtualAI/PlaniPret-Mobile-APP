@@ -17,7 +17,9 @@ export function Ms365PendingBanner({ onRetry }: { onRetry: () => void | Promise<
     // If the user returned within 3s the callback might still be routing;
     // wait a bit longer before showing retry.
     const age = Date.now() - startedAt;
-    if (age > 4000) setVisible(true);
+    // Stale attempt (older than 5 min): drop it instead of nagging forever.
+    if (age > 5 * 60 * 1000) { clearMs365Pending(); setVisible(false); return; }
+    setVisible(age > 4000);
   }, []);
 
   useEffect(() => {

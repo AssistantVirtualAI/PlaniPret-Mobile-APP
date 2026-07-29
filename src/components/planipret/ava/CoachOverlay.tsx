@@ -1,4 +1,5 @@
 import { X, Phone, MessageSquare, Mail, BellRing, Workflow, Mic, Sparkles, Loader2 } from "lucide-react";
+import type { ReactNode } from "react";
 import { useState } from "react";
 import { toast } from "sonner";
 import type { AvaSuggestion, AvaActionContext } from "@/services/avaProactive";
@@ -22,6 +23,7 @@ export default function CoachOverlay({
   suggestions,
   ctx,
   onClose,
+  body,
 }: {
   open: boolean;
   title?: string;
@@ -29,6 +31,7 @@ export default function CoachOverlay({
   suggestions: AvaSuggestion[];
   ctx: AvaActionContext;
   onClose: () => void;
+  body?: ReactNode;
 }) {
   const [running, setRunning] = useState<string | null>(null);
   if (!open) return null;
@@ -62,7 +65,8 @@ export default function CoachOverlay({
           </button>
         </div>
         <div className="p-3 space-y-2 overflow-y-auto" style={{ maxHeight: "50vh" }}>
-          {suggestions.length === 0 && (
+          {body}
+          {suggestions.length === 0 && !body && (
             <p className="text-center text-sm py-6" style={{ color: "var(--pp-text-muted)" }}>
               Aucune action suggérée
             </p>

@@ -43,10 +43,7 @@ async function refreshSessionSafely() {
  * that response bubble into the global runtime overlay / blank screen.
  */
 (supabase.functions as any).invoke = async (functionName: string, options?: Record<string, unknown>) => {
-  if (!protectedEdgeFunctions.has(String(functionName))) {
-    return originalInvoke(functionName, options as never);
-  }
-
+  const name = String(functionName);
   const invokeWithToken = async (accessToken?: string) => originalInvoke(functionName, {
     ...(options as Record<string, unknown> | undefined),
     headers: {
@@ -57,27 +54,31 @@ async function refreshSessionSafely() {
 
   let { data: { session } } = await supabase.auth.getSession();
   const nowSec = Math.floor(Date.now() / 1000);
-  if (!session || (session.expires_at && session.expires_at - nowSec < 60)) {
+  if (!session || (session.expires_at && session.expires_at - nowSec < 120)) {
     session = (await refreshSessionSafely()) ?? session;
   }
 
   if (!session?.access_token) {
-    console.warn(`[supabase] Skipped ${String(functionName)}: no authenticated session yet`);
-    return {
-      data: { error: 'AUTH_REQUIRED', message: 'Please sign in again before calling the PBX service.' },
-      error: null,
-    } as Awaited<ReturnType<typeof supabase.functions.invoke>>;
+    if (protectedEdgeFunctions.has(name)) {
+      console.warn(`[supabase] Skipped ${name}: no authenticated session yet`);
+      return {
+        data: { error: 'AUTH_REQUIRED', message: 'Please sign in again before calling the PBX service.' },
+        error: null,
+      } as Awaited<ReturnType<typeof supabase.functions.invoke>>;
+    }
+    return originalInvoke(functionName, options as never);
   }
 
   let result = await invokeWithToken(session.access_token);
+
   if (isUnauthorizedFunctionError(result.error)) {
     const refreshed = await refreshSessionSafely();
     if (refreshed?.access_token) {
       result = await invokeWithToken(refreshed.access_token);
     }
   }
-  if (isUnauthorizedFunctionError(result.error)) {
-    console.warn(`[supabase] ${String(functionName)} still returned 401 after token refresh`);
+  if (isUnauthorizedFunctionError(result.error) && protectedEdgeFunctions.has(name)) {
+    console.warn(`[supabase] ${name} still returned 401 after token refresh`);
     return {
       data: { error: 'AUTH_REQUIRED', message: 'Please sign in again before calling the PBX service.' },
       error: null,

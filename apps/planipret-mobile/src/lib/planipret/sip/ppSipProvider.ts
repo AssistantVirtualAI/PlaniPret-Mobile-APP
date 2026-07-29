@@ -375,8 +375,11 @@ class PpSipProvider {
       // unregister({all:true}) while the UA is still connecting aborted the
       // in-flight REGISTER and produced "Connection Error".
       if (this.snap.status === "registered") {
-        try { this.ua.unregister({ all: true }); } catch {}
-        setTimeout(() => { try { this.ua?.register(); } catch {} }, 250);
+        // NEVER unregister({all:true}) here: it wipes EVERY contact bound to the
+        // AoR — including the native background keep-alive registration — which
+        // left the extension unregistered and sent inbound calls straight to
+        // voicemail. A plain re-REGISTER refreshes only this contact.
+        try { this.ua.register(); } catch {}
         return;
       }
       if (this.snap.status === "connecting" && Date.now() - this.connectingSince < 20_000) return;
@@ -400,6 +403,20 @@ class PpSipProvider {
 
   private stopKeepAlive() {
     if (this.keepAliveTimer) { clearInterval(this.keepAliveTimer); this.keepAliveTimer = null; }
+  }
+
+  /**
+   * Background handoff: remove THIS WebView contact from NetSapiens before the
+   * OS suspends the WebSocket. A suspended socket keeps a dead contact bound to
+   * the extension, NS forks the inbound call to it, the fork fails instantly and
+   * the caller lands in voicemail. Removing it lets the native keep-alive
+   * registration (or the VoIP push) take the call instead.
+   */
+  async releaseForBackground(): Promise<void> {
+    if (this.hasActiveCall() || this.snap.callState === "ringing-in" || this.snap.callState === "ringing-out") return;
+    try { this.ua?.unregister({ all: false }); } catch { /* noop */ }
+    await new Promise((r) => setTimeout(r, 250));
+    this.stop();
   }
 
   stop() {

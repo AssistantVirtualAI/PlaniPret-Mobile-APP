@@ -8,6 +8,7 @@ import { useSafeAreaInsets } from "@/hooks/useSafeAreaInsets";
 import avaLogoAsset from "@/assets/ava-statistics-logo.png.asset.json";
 import planipretLogoAsset from "@/assets/planipret-logo.png.asset.json";
 import { startMicrosoftSignIn } from "@/lib/ms365AuthLogin";
+import { clearMs365Pending } from "@/lib/ms365Pending";
 import { Ms365PendingBanner } from "@/components/planipret/mobile/Ms365PendingBanner";
 
 const AvaBadge = ({ size = 44 }: { size?: number }) => (
@@ -26,19 +27,35 @@ export default function MobileAuthScreen({ onLoggedIn }: { onLoggedIn: () => Pro
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [formError, setFormError] = useState<string | null>(null);
   const [showLegal, setShowLegal] = useState<null | "tos" | "privacy">(null);
 
-  const submit = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!email || !password) { toast.error(t("auth.missing")); return; }
+  const submit = async (e?: FormEvent) => {
+    e?.preventDefault();
+    setFormError(null);
+    if (!email || !password) { setFormError(t("auth.missing")); toast.error(t("auth.missing")); return; }
     setLoading(true);
-    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
-    setLoading(false);
-    if (error) { toast.error(error.message || t("auth.failed")); return; }
-    toast.success(t("auth.success"));
-    void import("@/lib/native/requestPermissionsAfterLogin").then(m => m.requestPermissionsAfterLogin());
-    await onLoggedIn();
+    try {
+      const { error } = await supabase.auth.signInWithPassword({ email: email.trim().toLowerCase(), password });
+      if (error) {
+        const msg = error.message || t("auth.failed");
+        setFormError(msg);
+        toast.error(msg);
+        return;
+      }
+      clearMs365Pending();
+      toast.success(t("auth.success"));
+      void import("@/lib/native/requestPermissionsAfterLogin").then(m => m.requestPermissionsAfterLogin());
+      await onLoggedIn();
+    } catch (err: any) {
+      const msg = err?.message || "Network error";
+      setFormError(msg);
+      toast.error(msg);
+    } finally {
+      setLoading(false);
+    }
   };
+
 
   const forgot = async () => {
     if (!email) { toast.error(t("auth.email")); return; }
@@ -142,11 +159,17 @@ export default function MobileAuthScreen({ onLoggedIn }: { onLoggedIn: () => Pro
               className="w-full rounded-xl px-4 py-3 outline-none"
               style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)", fontSize: 14, marginTop: 0 }} />
           </div>
-          <button type="submit" disabled={loading}
+          {formError && (
+            <div style={{ background: "rgba(220,38,38,0.12)", border: "1px solid rgba(220,38,38,0.4)", color: "#F87171", borderRadius: 12, padding: "10px 12px", fontSize: 12.5 }}>
+              {formError}
+            </div>
+          )}
+          <button type="submit" disabled={loading} onClick={(e) => { e.preventDefault(); void submit(); }}
             className="w-full rounded-xl py-3 font-bold text-white disabled:opacity-60"
             style={{ background: "linear-gradient(135deg, #1A4A8A, #2E9BDC)", boxShadow: "0 6px 22px rgba(46,155,220,0.40)", fontSize: 14 }}>
             {loading ? t("auth.signingIn") : t("auth.signIn")}
           </button>
+
           <button type="button" onClick={forgot}
             className="w-full text-center py-1 text-[12px] font-semibold"
             style={{ color: "var(--pp-brand-accent)" }}>
@@ -167,18 +190,12 @@ export default function MobileAuthScreen({ onLoggedIn }: { onLoggedIn: () => Pro
         <button onClick={() => setShowLegal("privacy")} style={{ color: "var(--pp-brand-accent)", textDecoration: "underline" }}>{t("legal.privacy")}</button>.
       </p>
 
-      {/* Footer — visible both themes */}
-      <div className="h-[36px] flex items-center justify-center gap-1.5 pp-mobile-footer">
-        <span style={{ fontFamily: "Urbanist,sans-serif", fontSize: 9, color: "var(--pp-text-secondary)", letterSpacing: "0.14em", fontWeight: 600 }}>{t("footer.poweredBy")}</span>
-        <div style={{ position: "relative", width: 22, height: 22 }}>
-          <div style={{ position: "absolute", inset: 0, borderRadius: "50%", background: "conic-gradient(from 0deg, #7C3AED, #2E9BDC, #00D4AA, #7C3AED)", padding: 1.5 }}>
-            <div style={{ width: "100%", height: "100%", borderRadius: "50%", overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <img src={avaLogoAsset.url} alt="AVA" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-            </div>
-          </div>
-        </div>
-        <span style={{ fontFamily: "Urbanist,sans-serif", fontSize: 12, letterSpacing: "0.06em", fontWeight: 800, background: "linear-gradient(90deg,#7C3AED,#2E9BDC)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", backgroundClip: "text" }}>AVA</span>
-        <span style={{ fontSize: 8, color: "var(--pp-text-secondary)", letterSpacing: "0.1em" }}>· {t("footer.developedBy")}</span>
+      {/* Footer */}
+      <div className="h-[28px] flex items-center justify-center gap-2 pp-mobile-footer">
+        <span style={{ fontFamily: "Urbanist,sans-serif", fontSize: 9, color: "var(--pp-text-muted)", letterSpacing: "0.14em", fontWeight: 600 }}>{t("footer.poweredBy")}</span>
+        <div style={{ background: "#7C3AED", borderRadius: 4, padding: "2px 5px", color: "white", fontWeight: 700, fontSize: 8 }}>AVA</div>
+        <span style={{ fontFamily: "Urbanist,sans-serif", fontSize: 9, color: "var(--pp-brand-accent-2)", letterSpacing: "0.10em", fontWeight: 700 }}>AVA</span>
+        <span style={{ fontSize: 8.5, color: "var(--pp-text-faint)", letterSpacing: "0.1em" }}>· {t("footer.developedBy")}</span>
       </div>
 
       {showLegal && (

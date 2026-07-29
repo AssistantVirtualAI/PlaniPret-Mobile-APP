@@ -1231,6 +1231,12 @@ function patchIosNativeFiles() {
   console.log("[native-config] iOS PpSipKeepAlive + PpVoipCall plugins applied.");
 }
 
+patchCopiedWebBundles();
+patchIosInfoPlist();
+patchAndroidManifest();
+patchAndroidNativeFiles();
+patchIosNativeFiles();
+
 function installIconsAndSplash() {
   const iconsSrc = path.join(appDir, "native-config", "icons", "ios", "AppIcon.appiconset");
   const splashSrc = path.join(appDir, "native-config", "icons", "ios", "Splash.imageset");
@@ -1246,7 +1252,8 @@ function installIconsAndSplash() {
     for (const f of fs.readdirSync(iconsSrc)) {
       fs.copyFileSync(path.join(iconsSrc, f), path.join(dst, f));
     }
-    console.log(`[native-config] AppIcon.appiconset installed (${fs.readdirSync(iconsSrc).filter(f => f.endsWith('.png')).length} icons).`);
+    const count = fs.readdirSync(iconsSrc).filter(f => f.endsWith(".png")).length;
+    console.log(`[native-config] AppIcon.appiconset installed (${count} icons).`);
   }
   // Splash.imageset
   if (fs.existsSync(splashSrc)) {
@@ -1274,9 +1281,4 @@ function installIconsAndSplash() {
   }
 }
 
-patchCopiedWebBundles();
-patchIosInfoPlist();
-patchAndroidManifest();
-patchAndroidNativeFiles();
-patchIosNativeFiles();
 installIconsAndSplash();

@@ -21,12 +21,19 @@ import { callQualitySampler, type CallQualitySnapshot } from "@/lib/planipret/au
 import { getAudioConstraints, type NCMode } from "@/lib/planipret/audio/audioConstraints";
 import { ensureMicPermission, type MicPermissionState } from "@/lib/planipret/audio/micPermission";
 import {
-  getPlanipretVoipPushToken,
+  acknowledgePlanipretIncoming,
   getPlanipretSipKeepAliveStatus,
+  getPlanipretVoipPushToken,
+  onPlanipretIncomingCallAnswered,
+  onPlanipretIncomingCallRejected,
+  onPlanipretIncomingInvite,
   onPlanipretNativeReregister,
   onPlanipretSipKeepAliveStatus,
+  onPlanipretVoipPushToken,
+  reportPlanipretCallEnded,
   requestPlanipretBatteryOptimizationExemption,
   startPlanipretSipKeepAlive,
+  stopPlanipretSipKeepAlive,
   type PpNativeSipStatus,
 } from "@/lib/planipret/sip/nativePpSipService";
 import {
@@ -169,8 +176,7 @@ export function useMplanipretSoftphone(enabled = true) {
         if (opts?.force) {
           try { ppSipProvider.stop(); } catch {}
         }
-        const clientType = (typeof window !== "undefined" && (window as any)?.Capacitor?.isNativePlatform?.()) ? "mobile" : "web";
-        const { data, error } = await supabase.functions.invoke("ns-resolve-sip-credentials", { body: { client_type: clientType } });
+        const { data, error } = await supabase.functions.invoke("ns-resolve-sip-credentials", { body: { client_type: "mobile" } });
         if (cancelled) return;
         if (error || !data || (data as any)?.error) return;
         const d = data as any;
@@ -236,6 +242,48 @@ export function useMplanipretSoftphone(enabled = true) {
       try { window.dispatchEvent(new CustomEvent("pp:sip-force-reregister")); } catch {}
     }).then((fn) => { cleanupReregister = fn; }).catch(() => undefined);
 
+    // Native incoming INVITE (background/lockscreen). Wake JsSIP + broadcast so
+    // MActiveCall / MHome can pop the ringing sheet even if the WebView slept.
+    let cleanupInvite: (() => void) | undefined;
+    onPlanipretIncomingInvite((invite) => {
+      try { ppSipProvider.forceReregister(); } catch {}
+      try {
+        window.dispatchEvent(new CustomEvent("pp:sip-incoming-invite", { detail: invite }));
+      } catch {}
+      // If the user already tapped Answer on the notification, mark the intent
+      // so the softphone auto-answers the JsSIP-side INVITE as soon as it lands.
+      if (invite?.action === "answer") {
+        try { (window as any).__ppPendingAnswer = { callId: invite.callId, ts: Date.now() }; } catch {}
+      } else if (invite?.action === "decline") {
+        try { ppSipProvider.hangup(); } catch {}
+        void acknowledgePlanipretIncoming();
+      }
+    }).then((fn) => { cleanupInvite = fn; }).catch(() => undefined);
+
+
+
+    // iOS PushKit + CallKit: forward device token to the backend, and bridge
+    // the native answer/reject actions to the JsSIP session.
+    let cleanupVoipToken: (() => void) | undefined;
+    let cleanupVoipAnswer: (() => void) | undefined;
+    let cleanupVoipReject: (() => void) | undefined;
+    onPlanipretVoipPushToken(({ token, bundleId, environment }) => { void uploadPlanipretVoipToken(token, bundleId, null, environment); })
+      .then((fn) => { cleanupVoipToken = fn; }).catch(() => undefined);
+    void getPlanipretVoipPushToken().then((t) => { if (t?.token) void uploadPlanipretVoipToken(t.token, t.bundleId, null, t.environment); });
+
+    onPlanipretIncomingCallAnswered((data) => {
+      try { (window as any).__ppPendingAnswer = { callId: data?.callId, ts: Date.now() }; } catch {}
+      try { ppSipProvider.forceReregister(); } catch {}
+      try { ppSipProvider.answer(); } catch {}
+      try { window.dispatchEvent(new CustomEvent("pp:sip-callkit-answered", { detail: data })); } catch {}
+    }).then((fn) => { cleanupVoipAnswer = fn; }).catch(() => undefined);
+
+    onPlanipretIncomingCallRejected((data) => {
+      try { ppSipProvider.hangup(); } catch {}
+      void acknowledgePlanipretIncoming();
+      try { window.dispatchEvent(new CustomEvent("pp:sip-callkit-rejected", { detail: data })); } catch {}
+    }).then((fn) => { cleanupVoipReject = fn; }).catch(() => undefined);
+
     const poll = window.setInterval(() => {
       getPlanipretSipKeepAliveStatus().then((s) => { if (s && !cancelled) setNativeStatus(s); }).catch(() => undefined);
     }, 15_000);
@@ -246,6 +294,10 @@ export function useMplanipretSoftphone(enabled = true) {
       window.clearInterval(poll);
       cleanupStatus?.();
       cleanupReregister?.();
+      cleanupInvite?.();
+      cleanupVoipToken?.();
+      cleanupVoipAnswer?.();
+      cleanupVoipReject?.();
     };
   }, [enabled, user?.id]);
 
@@ -303,14 +355,24 @@ export function useMplanipretSoftphone(enabled = true) {
           const s = await startPlanipretSipKeepAlive(cfg);
           if (s) setNativeStatus(s);
           const st = String(s?.status ?? "");
-          if (s?.ok !== false && (st === "registered" || st === "protected" || st === "connecting" || st === "reconnecting")) return;
+          if (s?.ok !== false && (st === "registered" || st === "protected" || st === "connecting" || st === "reconnecting")) {
+            // Native owns the registration now — drop the WebView contact so
+            // NetSapiens stops forking inbound calls to a suspended WebSocket
+            // (that fork fails instantly => "straight to voicemail").
+            try { await ppSipProvider.releaseForBackground(); } catch { /* noop */ }
+            return;
+          }
         } catch { /* retry */ }
         await new Promise((r) => setTimeout(r, 2_000 * (attempt + 1)));
       }
     };
     const un = ppSipProvider.subscribe(() => evaluate());
     const onResume = () => {
-      try { ppSipProvider.forceReregister(); } catch {}
+      try {
+        const cfg = ppSipProvider.getConfig();
+        if (cfg) void ppSipProvider.init(cfg);
+        else ppSipProvider.forceReregister();
+      } catch { /* noop */ }
       evaluate();
     };
     const onVis = () => { if (document.visibilityState === "visible") onResume(); else void handoffToNative(); };
@@ -321,8 +383,7 @@ export function useMplanipretSoftphone(enabled = true) {
 
     window.addEventListener("focus", onResume);
     window.addEventListener("online", onResume);
-    // Native app foreground/background → refresh registration and keep the OS-level
-    // SIP guard running while JS timers are throttled.
+    // Native app foreground → immediately re-REGISTER before the 10s watchdog.
     let appStateHandle: { remove: () => void } | null = null;
     const cap: any = (typeof window !== "undefined") ? (window as any).Capacitor : null;
     const isNative = !!cap?.isNativePlatform?.();
@@ -332,17 +393,22 @@ export function useMplanipretSoftphone(enabled = true) {
         if (AppPlugin?.addListener) {
           const p = AppPlugin.addListener("appStateChange", (state: { isActive: boolean }) => {
             if (state?.isActive) {
-              // Foreground: JsSIP owns the single SIP registration. Triggering the
-              // native REGISTER here made the PBX close the JsSIP socket (1001) and
-              // caused an endless disconnect/reconnect loop.
-              try { ppSipProvider.forceReregister(); } catch {}
+              void stopPlanipretSipKeepAlive().catch(() => undefined);
+              // The WebView contact was released on background — re-init the UA
+              // (forceReregister is a no-op once the UA has been stopped).
+              try {
+                const cfg = ppSipProvider.getConfig();
+                if (cfg) void ppSipProvider.init(cfg);
+                else ppSipProvider.forceReregister();
+              } catch { /* noop */ }
               evaluate();
             } else {
               void handoffToNative();
             }
           });
+          // addListener may return a Promise<PluginListenerHandle> or the handle directly.
           if (p && typeof p.then === "function") {
-            p.then((h: any) => { appStateHandle = h; }).catch(() => undefined);
+            p.then((h: any) => { appStateHandle = h; }).catch(() => {});
           } else {
             appStateHandle = p;
           }
@@ -353,7 +419,10 @@ export function useMplanipretSoftphone(enabled = true) {
     // (background tab, radio switch, NS keepalive drop). Poll every 15s so the
     // watchdog escalates to forceReregister even without a subscribe callback.
     const heartbeat = window.setInterval(() => {
-      if (typeof document !== "undefined" && document.visibilityState === "hidden") { void handoffToNative(); return; }
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        void handoffToNative();
+        return;
+      }
       evaluate();
     }, 15_000);
     // Initial evaluation — don't wait for the first SIP event.
@@ -457,8 +526,7 @@ export function useMplanipretSoftphone(enabled = true) {
   }, [restCall?.id]);
 
   const callViaPBX = useCallback(async (destination: string): Promise<OutboundResult> => {
-    const clientType = (typeof window !== "undefined" && (window as any)?.Capacitor?.isNativePlatform?.()) ? "mobile" : "web";
-    const { data, error } = await supabase.functions.invoke("pp-ns-calls", { body: { action: "start", to_number: destination, client_type: clientType } });
+    const { data, error } = await supabase.functions.invoke("pp-ns-calls", { body: { action: "start", to_number: destination, client_type: "mobile" } });
     if (error || (data as any)?.success === false) {
       const msg = (data as any)?.message ?? (data as any)?.error ?? error?.message ?? "PBX call failed";
       return { via: "none", ok: false, error: msg };
