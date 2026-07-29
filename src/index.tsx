@@ -4,7 +4,6 @@
 import React from 'react';
 import { render as legacyRender } from 'react-dom';
 import { createRoot } from 'react-dom/client';
-import { BrowserRouter } from 'react-router-dom';
 import { Capacitor } from '@capacitor/core';
 import App from './App';
 import './styles.css';
@@ -160,9 +159,7 @@ async function bootstrap() {
     if (container.textContent?.trim() === 'Démarrage...') container.innerHTML = '';
     const appTree = (
       <NativeRootRecoveryBoundary>
-        <BrowserRouter>
-          <App />
-        </BrowserRouter>
+        <App />
       </NativeRootRecoveryBoundary>
     );
 
