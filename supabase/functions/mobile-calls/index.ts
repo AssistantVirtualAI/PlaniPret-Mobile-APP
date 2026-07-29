@@ -134,7 +134,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    const days = Math.min(Math.max(Number(url.searchParams.get("days")) || 7, 1), 30);
+    const days = Math.min(Math.max(Number(url.searchParams.get("days")) || 30, 1), 90);
     const sinceDate = new Date();
     sinceDate.setDate(sinceDate.getDate() - days);
     sinceDate.setHours(0, 0, 0, 0);
@@ -145,7 +145,6 @@ Deno.serve(async (req) => {
       .eq("organization_id", sp.organization_id)
       .gte("start_at", since);
     listQ = listQ.or(extFilter);
-    if (sp.domain_uuid) listQ = listQ.or(`domain_uuid.eq.${sp.domain_uuid},domain_uuid.is.null`);
     const { data: rows, error } = await listQ
       .order("start_at", { ascending: false })
       .limit(limit);

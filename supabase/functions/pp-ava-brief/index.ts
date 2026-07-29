@@ -1,12 +1,30 @@
 // pp-ava-brief: structured daily/weekly/monthly brief for the Planipret mobile home.
 // Aggregates real broker data (calls, missed, sms, voicemails, leads, meetings, tasks)
-// and asks Lovable AI Gateway for a French, actionable summary.
-// Cached 30 min per (user, period) in `planipret_ai_insights`.
+// and generates a French/English actionable summary via Claude (Anthropic).
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
-import { generateText, Output } from "npm:ai";
 import { z } from "npm:zod";
-import { createLovableAiGatewayProvider } from "../_shared/ai-gateway.ts";
 import { MS365_DELEGATED_SCOPES, refreshMicrosoftAccessToken } from "../_shared/ms365.ts";
+
+async function getAnthropicKey(admin: any): Promise<string | null> {
+  const { data } = await admin.from("planipret_integration_secrets").select("config").eq("provider", "anthropic").maybeSingle();
+  return (data?.config as any)?.api_key ?? Deno.env.get("ANTHROPIC_API_KEY") ?? null;
+}
+
+async function callClaude(apiKey: string, system: string, userPrompt: string): Promise<string> {
+  const r = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+    body: JSON.stringify({
+      model: "claude-opus-4-5",
+      max_tokens: 4096,
+      system,
+      messages: [{ role: "user", content: userPrompt }],
+    }),
+  });
+  if (!r.ok) throw new Error(`Claude API error ${r.status}: ${(await r.text()).slice(0, 400)}`);
+  const d = await r.json();
+  return d.content?.[0]?.text ?? "{}";
+}
 
 const GRAPH = "https://graph.microsoft.com/v1.0";
 
@@ -416,13 +434,12 @@ Deno.serve(async (req) => {
     };
 
 
-    const lovableKey = Deno.env.get("LOVABLE_API_KEY");
-    if (!lovableKey) {
+    const anthropicKey = await getAnthropicKey(admin);
+    if (!anthropicKey) {
       const fallback = buildFallbackBrief(stats, period, lang);
       return json({ ...fallback, stats, language: lang, cached: false, degraded: true });
     }
 
-    const gateway = createLovableAiGatewayProvider(lovableKey);
     const periodLabelFr = period === "day" ? "la journée" : period === "week" ? "la semaine" : period === "month" ? "le mois" : "votre quart";
     const periodLabelEn = period === "day" ? "today" : period === "week" ? "this week" : period === "month" ? "this month" : "this shift";
 
@@ -458,14 +475,10 @@ You must cover TWO sources: telephony (calls, texts, voicemails, leads) AND Micr
 
     let result: any;
     try {
-      const r = await generateText({
-        model: gateway("google/gemini-3-flash-preview"),
-        system,
-        prompt: userPrompt,
-        experimental_output: Output.object({ schema: BriefSchema }),
-      });
-      const out = (r as any).experimental_output ?? (r as any).output;
-      result = BriefSchema.parse(out);
+      const rawText = await callClaude(anthropicKey, system, userPrompt);
+      const jsonMatch = rawText.match(/\{[\s\S]*\}/);
+      const parsed = JSON.parse(jsonMatch?.[0] ?? "{}");
+      result = BriefSchema.parse(parsed);
       const fb = buildFallbackBrief(stats, period, lang);
       if (!result.metrics?.length) result.metrics = fb.metrics;
       if (!result.overview) result.overview = fb.overview;
