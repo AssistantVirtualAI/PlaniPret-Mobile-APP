@@ -42,7 +42,15 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id) {
-          if (id.includes('node_modules/react/') || id.includes('node_modules/react-dom/')) return 'vendor-react';
+          // scheduler MUST stay in the same chunk as react-dom.
+          // They share internal references (unstable_scheduleCallback etc.).
+          // Splitting them causes "ce.unstable_scheduleCallback is not a function"
+          // on iOS WKWebView (Capacitor) — the app shows a blank screen.
+          if (
+            id.includes('node_modules/react/') ||
+            id.includes('node_modules/react-dom/') ||
+            id.includes('node_modules/scheduler/')
+          ) return 'vendor-react';
           if (id.includes('node_modules/react-router')) return 'vendor-router';
           if (id.includes('@supabase')) return 'vendor-supabase';
           if (id.includes('recharts') || id.includes('d3-')) return 'vendor-charts';
