@@ -1,11 +1,34 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
 node_modules
 dist
-.env.local
-ios/App/App/public
-ios/App/Pods
-ios/App/build
-android/app/build
-android/.gradle
-android/build
-android/app/src/main/assets/public
-.vite-cache/
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Block root postcss config (breaks Electron desktop build)
+postcss.config.js
+postcss.config.cjs
+postcss.config.mjs
+
+# Local patch backups
+*.bak_*
+lemtel-live-fusionpbx-patch.sh
+apps/planipret-mobile/reports/

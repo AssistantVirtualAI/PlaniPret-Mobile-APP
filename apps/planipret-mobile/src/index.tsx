@@ -8,6 +8,7 @@ import { BrowserRouter } from 'react-router-dom';
 import { Capacitor } from '@capacitor/core';
 import App from './App';
 import './styles.css';
+import { scheduleRuntimeSmokeCheck } from './lib/runtimeSmoke';
 
 type BootWindow = Window & {
   __PP_REACT_BOOTED__?: boolean;
@@ -192,6 +193,7 @@ async function bootstrap() {
     if (Capacitor.isNativePlatform() || window.location.protocol === 'capacitor:') {
       legacyRender(appTree, container);
       watchFirstPaint(container);
+      scheduleRuntimeSmokeCheck();
       window.setTimeout(() => { (window as BootWindow).__PP_REACT_MOUNT_CALLED__ = true; }, 0);
       return;
     }

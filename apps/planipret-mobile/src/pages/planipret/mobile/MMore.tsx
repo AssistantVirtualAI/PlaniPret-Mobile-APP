@@ -300,7 +300,13 @@ export default function MMore() {
               className="text-[11px] font-semibold"
               style={{ color: "#2E9BDC" }}
             >{t("screens.more.ms365Link")}</button>
+            <button
+              onClick={() => navigate("/mplanipret/build-diagnostics")}
+              className="text-[11px] font-semibold"
+              style={{ color: "#F5A623" }}
+            >Build</button>
           </div>
+
         </div>
         <Row icon={<Mail className="w-4 h-4" style={{ color: "#3FA3F0" }} />} label={t("screens.more.ms365Label")}
           sub={

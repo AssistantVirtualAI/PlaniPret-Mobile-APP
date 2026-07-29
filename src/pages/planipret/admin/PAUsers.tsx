@@ -194,6 +194,9 @@ const DICT = {
     syncNs: "Sync NS-API",
     importing: "Import...",
     importDid: "Importer DID",
+    syncDidPbx: "Sync DID (PBX)",
+    didPbxSynced: (n: number, r: number) => `${n} DID synchronisés depuis le PBX (${r} retirés)`,
+
     addAdminBtn: "Ajouter un admin",
     addBroker: "Ajouter un courtier",
     appReviewNotConfigured: "⚡ Utilisateur App Review non configuré",
@@ -364,6 +367,9 @@ const DICT = {
     syncNs: "Sync NS-API",
     importing: "Importing...",
     importDid: "Import DID",
+    syncDidPbx: "Sync DID (PBX)",
+    didPbxSynced: (n: number, r: number) => `${n} DIDs synced from the PBX (${r} removed)`,
+
     addAdminBtn: "Add an admin",
     addBroker: "Add a broker",
     appReviewNotConfigured: "⚡ App Review user not configured",
@@ -542,6 +548,8 @@ export default function PAUsers() {
   const [numbersError, setNumbersError] = useState<string | null>(null);
   const [numbersLoading, setNumbersLoading] = useState(false);
   const [importingAssignments, setImportingAssignments] = useState(false);
+  const [syncingDids, setSyncingDids] = useState(false);
+
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const didInitialLoad = useRef(false);
 
@@ -575,6 +583,23 @@ export default function PAUsers() {
     setNumbersError(null);
     setAllNumbers(((data as any).numbers ?? []) as NsNumber[]);
   };
+
+  // Mirror the live PBX DID inventory into planipret_did_assignments
+  const syncDidsFromPbx = async () => {
+    setSyncingDids(true);
+    const { data, error } = await supabase.functions.invoke("pp-admin-phonenumbers", {
+      body: { action: "sync_from_pbx" },
+    });
+    setSyncingDids(false);
+    if (error || !(data as any)?.success) {
+      toast.error((data as any)?.error ?? error?.message ?? t.genericError);
+      return;
+    }
+    toast.success(t.didPbxSynced((data as any).synced ?? 0, (data as any).removed ?? 0));
+    await loadNumbers();
+  };
+
+
 
   const load = async () => {
     setLoading(true);
@@ -876,6 +901,10 @@ export default function PAUsers() {
           <button onClick={() => fileInputRef.current?.click()} disabled={importingAssignments} className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)", opacity: importingAssignments ? 0.6 : 1 }}>
             <Upload className={`w-4 h-4 ${importingAssignments ? "animate-pulse" : ""}`} /> {importingAssignments ? t.importing : t.importDid}
           </button>
+          <button onClick={syncDidsFromPbx} disabled={syncingDids} className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)", opacity: syncingDids ? 0.6 : 1 }}>
+            <RefreshCw className={`w-4 h-4 ${syncingDids ? "animate-spin" : ""}`} /> {t.syncDidPbx}
+          </button>
+
           <button onClick={() => setAddAdminOpen(true)} className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium" style={{ background: "var(--pp-bg-elevated)", border: `1px solid ${ACCENT}55`, color: ACCENT }}>
             <Plus className="w-4 h-4" /> {t.addAdminBtn}
           </button>

@@ -13,7 +13,7 @@
  *
  * Run with `npm run check:imports` (also wired into `prebuild`).
  */
-import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, existsSync, statSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, dirname, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -127,33 +127,94 @@ while (queue.length) {
   }
 }
 
+function expectedSource(spec, file) {
+  return spec.startsWith("@/")
+    ? `apps/planipret-mobile/src/${spec.slice(2)}.(ts|tsx)`
+    : `resolved relative to ${file}`;
+}
+
+
+// Orphan files: not part of the bundle graph, so broken imports there cannot
+// break the build — report them so they get cleaned up or fixed.
+const orphanIssues = [];
+const orphanFiles = [];
+for (const file of [...walk(srcDir), ...walk(sharedDir)]) {
+  if (reachable.has(file)) continue;
+  orphanFiles.push(relative(root, file));
+  const code = readFileSync(file, "utf8");
+  for (const { spec, index } of collectSpecifiers(code)) {
+    if (resolveLocal(spec, file) === null) {
+      const line = code.slice(0, index).split("\n").length;
+      orphanIssues.push({ file: relative(root, file), line, spec, expected: expectedSource(spec, file) });
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Build artifacts: reports/imports.json + reports/imports.html
+// ---------------------------------------------------------------------------
+const report = {
+  generatedAt: new Date().toISOString(),
+  entry: entries.map((e) => relative(root, e)),
+  ok: missing.length === 0,
+  totals: {
+    localImportsChecked: checked,
+    bundledFiles: reachable.size,
+    missing: missing.length,
+    orphanFiles: orphanFiles.length,
+    orphanBrokenImports: orphanIssues.length,
+  },
+  missing: missing.map((m) => ({ ...m, expected: expectedSource(m.spec, join(root, m.file)) })),
+  orphanFiles,
+  orphanBrokenImports: orphanIssues,
+};
+
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const rows = (items, cols) =>
+  items.length === 0
+    ? `<p class="ok">Aucun</p>`
+    : `<table><thead><tr>${cols.map((c) => `<th>${c[0]}</th>`).join("")}</tr></thead><tbody>${items
+        .map((i) => `<tr>${cols.map((c) => `<td>${esc(c[1](i))}</td>`).join("")}</tr>`)
+        .join("")}</tbody></table>`;
+
+const html = `<!doctype html><meta charset="utf-8"><title>check-imports — planipret-mobile</title>
+<style>
+body{font:14px/1.5 -apple-system,system-ui,sans-serif;background:#060D1A;color:#E8EDF5;padding:24px;margin:0}
+h1{font-size:20px} h2{font-size:15px;margin-top:28px;color:#8FA8C0}
+table{border-collapse:collapse;width:100%;font-size:12px;font-family:ui-monospace,monospace}
+th,td{border:1px solid #0E2A45;padding:6px 8px;text-align:left;vertical-align:top}
+th{background:#0A1628;color:#8FA8C0}
+.ok{color:#2EDC78}.bad{color:#E84C4C}.warn{color:#F5A623}
+.badge{display:inline-block;padding:4px 10px;border-radius:999px;font-weight:700}
+</style>
+<h1>check-imports — planipret-mobile</h1>
+<p><span class="badge ${report.ok ? "ok" : "bad"}">${report.ok ? "OK" : `${missing.length} import(s) manquant(s)`}</span>
+ &nbsp;<span style="color:#4A7FA5">${esc(report.generatedAt)}</span></p>
+<p>${checked} imports locaux · ${reachable.size} fichiers bundlés · ${orphanFiles.length} orphelins · ${orphanIssues.length} imports cassés hors bundle</p>
+<h2>Imports manquants (bloquants)</h2>
+${rows(report.missing, [["Fichier", (i) => `${i.file}:${i.line}`], ["Spécificateur", (i) => i.spec], ["Source attendue", (i) => i.expected]])}
+<h2>Imports cassés dans des fichiers orphelins (non bloquants)</h2>
+${rows(report.orphanBrokenImports, [["Fichier", (i) => `${i.file}:${i.line}`], ["Spécificateur", (i) => i.spec], ["Source attendue", (i) => i.expected]])}
+<h2>Fichiers orphelins (non inclus dans le bundle)</h2>
+${rows(orphanFiles.map((f) => ({ f })), [["Fichier", (i) => i.f]])}
+`;
+
+const reportsDir = join(root, "reports");
+mkdirSync(reportsDir, { recursive: true });
+writeFileSync(join(reportsDir, "imports.json"), JSON.stringify(report, null, 2));
+writeFileSync(join(reportsDir, "imports.html"), html);
+console.log(`[check-imports] report → apps/planipret-mobile/reports/imports.json + imports.html`);
+
 if (missing.length > 0) {
   console.error(red(`\n[check-imports] \u2717 ${missing.length} missing local module(s) reachable from src/index.tsx:\n`));
   for (const { file, line, spec } of missing) {
     console.error(red(`  \u2022 ${file}:${line}`));
     console.error(`    imports ${yellow(`"${spec}"`)} \u2192 file not found`);
-    const hint = spec.startsWith("@/")
-      ? `apps/planipret-mobile/src/${spec.slice(2)}.(ts|tsx)`
-      : `resolved relative to ${file}`;
-    console.error(`    expected: ${hint}`);
+    console.error(`    expected: ${expectedSource(spec, join(root, file))}`);
   }
   console.error(red(`\nFix: copy the missing file(s) from the web app into apps/planipret-mobile/src/, or remove the import.`));
   console.error(red(`Build aborted before vite so the iOS/Android bundle is never shipped broken.\n`));
   process.exit(1);
-}
-
-// Orphan files: not part of the bundle graph, so broken imports there cannot
-// break the build — report them so they get cleaned up or fixed.
-const orphanIssues = [];
-for (const file of [...walk(srcDir), ...walk(sharedDir)]) {
-  if (reachable.has(file)) continue;
-  const code = readFileSync(file, "utf8");
-  for (const { spec, index } of collectSpecifiers(code)) {
-    if (resolveLocal(spec, file) === null) {
-      const line = code.slice(0, index).split("\n").length;
-      orphanIssues.push({ file: relative(root, file), line, spec });
-    }
-  }
 }
 
 console.log(green(`[check-imports] \u2713 ${checked} local imports across ${reachable.size} bundled files all resolve`));
@@ -161,3 +222,4 @@ if (orphanIssues.length > 0) {
   console.log(yellow(`[check-imports] ! ${orphanIssues.length} broken import(s) in ${new Set(orphanIssues.map((o) => o.file)).size} unbundled file(s) (not shipped):`));
   for (const { file, line, spec } of orphanIssues) console.log(yellow(`    ${file}:${line} \u2192 "${spec}"`));
 }
+

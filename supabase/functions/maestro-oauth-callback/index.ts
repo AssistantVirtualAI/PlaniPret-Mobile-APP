@@ -106,11 +106,28 @@ Deno.serve(async (req) => {
       if (me) {
         const mid = (me as any).id ?? (me as any).user?.id ?? (me as any).user_id ?? null;
         const email = String((me as any).email ?? (me as any).user?.email ?? "").toLowerCase().trim();
+        const remoteName = [(me as any).first_name, (me as any).last_name].filter(Boolean).join(" ").trim();
         const patch: Record<string, unknown> = {};
         if (mid) patch.maestro_broker_id = String(mid);
         if (email) patch.maestro_email = email;
         if (Object.keys(patch).length) {
           await admin.from("planipret_profiles").update(patch).eq("user_id", userId);
+        }
+        // Names are intentionally NOT copied: Maestro's first_name/last_name can be
+        // stale on shared/test accounts. Log a mismatch so it can be fixed upstream.
+        if (remoteName) {
+          const { data: prof } = await admin
+            .from("planipret_profiles")
+            .select("full_name, email")
+            .eq("user_id", userId)
+            .maybeSingle();
+          const localName = String((prof as any)?.full_name ?? "").trim();
+          if (localName && localName.toLowerCase() !== remoteName.toLowerCase()) {
+            console.warn("[maestro-oauth-callback] maestro_name_mismatch", JSON.stringify({
+              maestro_broker_id: mid, maestro_email: email,
+              maestro_name: remoteName, local_name: localName, local_email: (prof as any)?.email ?? null,
+            }));
+          }
         }
       }
 

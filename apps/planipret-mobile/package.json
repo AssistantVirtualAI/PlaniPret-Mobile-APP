@@ -32,6 +32,7 @@
     "native:ios": "npm run build:ios",
     "native:android": "npm run build:android",
     "check:imports": "node scripts/check-imports.mjs",
+    "ios:verify": "node scripts/ios-verify.mjs",
     "prebuild": "node scripts/check-imports.mjs"
   },
   "dependencies": {

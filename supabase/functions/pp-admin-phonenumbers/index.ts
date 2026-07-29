@@ -248,7 +248,59 @@ Deno.serve(async (req) => {
       return jsonResponse({ success: true, phone_number: pn, extension: ext });
     }
 
+    // Pull the live DID inventory from the PBX and make planipret_did_assignments
+    // an exact mirror of it (source of truth = NetSapiens).
+    if (action === "sync_from_pbx") {
+      const r = await nsFetchFirstOk([
+        `/domains/${encodeURIComponent(domain)}/phonenumbers?limit=1000`,
+        `/domains/${encodeURIComponent(domain)}/phone-numbers?limit=1000`,
+        `/domains/${encodeURIComponent(domain)}/numbers?limit=1000`,
+      ]);
+      if (!r.ok) return jsonResponse({ success: false, error: `NS-API list failed (${r.status})`, detail: r.data }, 200);
+      const raw = Array.isArray(r.data) ? r.data : (r.data?.data ?? r.data?.items ?? []);
+      const numbers = (raw ?? []).map(normalizeNumber).filter((n: any) => n.raw);
+      const rows = numbers
+        .filter((n: any) => n.extension)
+        .map((n: any) => {
+          const digits = String(n.raw).replace(/\D/g, "");
+          const phoneDigits = digits.length === 10 ? `1${digits}` : digits;
+          return {
+            phone_number_e164: `+${phoneDigits}`,
+            phone_number_digits: phoneDigits,
+            extension: String(n.extension),
+            callerid_name: n.ns?.["dial-rule-description"] ? String(n.ns["dial-rule-description"]).slice(0, 200) : null,
+            domain,
+            source: "pbx_sync",
+            updated_at: new Date().toISOString(),
+          };
+        });
+      const deduped = Array.from(new Map(rows.map((x: any) => [x.phone_number_e164, x])).values());
+      const db = supaAdmin();
+      let removed = 0;
+      if (deduped.length > 0) {
+        const { error: upErr } = await db.from("planipret_did_assignments")
+          .upsert(deduped, { onConflict: "phone_number_e164" });
+        if (upErr) return jsonResponse({ success: false, error: upErr.message }, 200);
+        const keep = new Set(deduped.map((x: any) => x.phone_number_e164));
+        const { data: existing } = await db.from("planipret_did_assignments")
+          .select("phone_number_e164").eq("domain", domain);
+        const stale = (existing ?? []).map((x: any) => String(x.phone_number_e164)).filter((n) => !keep.has(n));
+        if (stale.length > 0) {
+          await db.from("planipret_did_assignments").delete().eq("domain", domain).in("phone_number_e164", stale);
+          removed = stale.length;
+        }
+      }
+      return jsonResponse({
+        success: true, domain,
+        pbx_numbers: numbers.length,
+        synced: deduped.length,
+        removed,
+        unassigned_on_pbx: numbers.length - deduped.length,
+      });
+    }
+
     if (action === "sync_assignments") {
+
       const assignments = Array.isArray(payload?.assignments) ? payload.assignments : [];
       const rows = assignments
         .map((a: any) => normalizeAssignment(a, domain))
