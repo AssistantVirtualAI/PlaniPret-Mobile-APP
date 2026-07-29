@@ -244,7 +244,9 @@ class PpSipProvider {
       ua.on("connected", () => {
         this.wsFailures = 0;
         if (this.wsRetryTimer) { clearTimeout(this.wsRetryTimer); this.wsRetryTimer = null; }
-        this.startKeepAlive();
+        // Do NOT ping here: sending an un-authenticated OPTIONS before the
+        // REGISTER 200 OK makes NetSapiens close the socket with code 1001,
+        // which produced the endless connect -> 1001 -> "Connection Error" loop.
         this.update({ status: "connected" });
       });
       ua.on("disconnected", (e: any) => {
@@ -269,11 +271,17 @@ class PpSipProvider {
         return this.update({ status: "registered", errorCause: undefined, lastRegistrationAt: Date.now() });
       });
       ua.on("unregistered", () => {
+        // When the transport is already down, the socket reconnect loop owns
+        // recovery — re-registering here only yields "Connection Error".
+        if (!this.ua?.isConnected?.()) {
+          this.log("warn", "unregistered while transport down - deferring to reconnect loop");
+          return;
+        }
         this.log("warn", "unregistered - forcing re-register");
         this.update({ status: "connected", errorCause: "re_registering" });
         // NetSapiens sometimes returns 401/403 mid-session on stale nonce;
         // trigger an immediate re-REGISTER instead of leaving the UA idle.
-        setTimeout(() => { try { this.ua?.register(); } catch {} }, getPpSipReconnectConfig().reRegisterDelayMs);
+        setTimeout(() => { try { if (this.ua?.isConnected?.()) this.ua.register(); } catch {} }, getPpSipReconnectConfig().reRegisterDelayMs);
       });
       ua.on("registrationFailed", (e: any) => {
         const cause = e?.cause || e?.response?.reason_phrase || "registration_failed";
@@ -543,12 +551,14 @@ class PpSipProvider {
     const sendPing = () => {
       const ua = this.ua;
       if (!ua) return;
+      // Only ping once the REGISTER succeeded — an OPTIONS sent before the
+      // registration completes is rejected and the server drops the socket.
+      if (this.snap.status !== "registered") return;
       try {
         if (!ua.isConnected?.()) { try { ua.start(); } catch {} return; }
         ua.sendRequest((JsSIP as any).C.OPTIONS, `sip:${ua.configuration?.uri?.host ?? ""}`, {});
       } catch { /* ping failures are non-fatal */ }
     };
-    sendPing();
     this.keepAliveTimer = setInterval(() => {
       sendPing();
     }, getPpSipReconnectConfig().keepAliveMs);
