@@ -171,6 +171,16 @@ Deno.serve(async (req) => {
     verdicts.push("HIDDEN_FORWARD");
     issues.push(`Renvoi actif au niveau utilisateur: ${activeForwards.join(", ")}`);
   }
+  const callScreeningKeys = [
+    "call-screening", "call-screening-enabled",
+    "phone-numbers-to-allow-enabled", "phone-numbers-to-reject-enabled",
+    "reject-anonymous-calls-enabled", "anonymous-call-rejection-enabled", "anonymous-call-rejection",
+  ];
+  const activeCallScreening = callScreeningKeys.filter((k) => yes(u?.[k]));
+  if (activeCallScreening.length) {
+    verdicts.unshift("CALL_SCREENING_BLOCKING");
+    issues.unshift(`Call screening / allow-reject list actif: ${activeCallScreening.join(", ")} — cause typique de “No Dial Rule” et voicemail instantané.`);
+  }
 
   // answering rules
   const ruleList = arrOf(rules.data).filter((r) => r && typeof r === "object");
@@ -315,7 +325,7 @@ Deno.serve(async (req) => {
     term_user: c?.["call-term-user"] ?? c?.["term-user"] ?? c?.["term-to-user"],
     term_to_uri: c?.["call-term-to-uri"] ?? c?.["term-to-uri"] ?? c?.call_term_to_uri ?? null,
     disposition: c?.["call-disposition"] ?? c?.disposition,
-    release_code: c?.["release-code"] ?? c?.["call-release-code"] ?? c?.["disconnect-reason"],
+    release_code: c?.["release-code"] ?? c?.["call-release-code"] ?? c?.["disconnect-reason"] ?? c?.["call-disconnect-reason-text"] ?? c?.reason,
     ring_seconds: Number(c?.["time-ringing"] ?? c?.["ring-duration"] ?? c?.["duration-ringing"] ?? 0),
     answer_time: c?.["call-answer-datetime"] ?? c?.["time-answer"] ?? null,
     start_time: c?.["call-start-datetime"] ?? c?.["time-start"] ?? null,
@@ -345,6 +355,12 @@ Deno.serve(async (req) => {
     issues.unshift(
       `${appTerminated.length} appel(s) entrant(s) répondu(s) instantanément par une application NS (${apps.join(", ")}) — l'appel n'a jamais été forké vers un device SIP. Interception en amont des answering rules (DID / territoire).`,
     );
+  }
+
+  const noDialRule = cdrSummary.filter((c) => /no dial rule/i.test(String(c.release_code ?? "")));
+  if (noDialRule.length) {
+    verdicts.unshift("NO_DIAL_RULE_BLOCK");
+    issues.unshift(`${noDialRule.length} appel(s) récent(s) avec “No Dial Rule” — vérifier/désactiver call screening + listes allow/reject sur le poste.`);
   }
 
   const unreachable = cdrSummary.filter((c) => {
@@ -378,6 +394,7 @@ Deno.serve(async (req) => {
     summary: {
       user_dnd: dndOn,
       user_forwards: activeForwards,
+      user_call_screening: activeCallScreening,
       rules_count: ruleList.length,
       active_timeframe: activeRule ? tfOf(activeRule) : null,
       sim_ring_enabled: simEnabled,

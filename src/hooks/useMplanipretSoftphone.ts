@@ -30,6 +30,8 @@ import {
   onPlanipretNativeReregister,
   onPlanipretSipKeepAliveStatus,
   onPlanipretVoipPushToken,
+  onPlanipretVoipPushTokenInvalidated,
+  refreshPlanipretVoipPushToken,
   reportPlanipretCallEnded,
   requestPlanipretBatteryOptimizationExemption,
   startPlanipretSipKeepAlive,
@@ -51,8 +53,16 @@ const maestroLog = (fn: () => Promise<unknown>) => {
   fn().catch((e) => console.warn("[maestro-telecom]", (e as Error)?.message ?? e));
 };
 
+// Last VoIP token pushed to the backend — used to detect rotations (restore,
+// reinstall, APNs re-issue) and re-arm the SIP registration when it changes.
+let lastVoipToken: string | null = null;
+
 async function uploadPlanipretVoipToken(token: string, bundleId?: string, extension?: string | null, environment?: string) {
   if (!token) return;
+  const changed = lastVoipToken !== null && lastVoipToken !== token;
+  if (changed) console.info("[pp-voip] VoIP token changed → re-registering SIP", { suffix: token.slice(-6) });
+  else if (lastVoipToken === null) console.info("[pp-voip] VoIP token registered", { suffix: token.slice(-6) });
+  lastVoipToken = token;
   try {
     const { error } = await supabase.functions.invoke("pp-voip-push-token", {
       body: {
@@ -64,7 +74,31 @@ async function uploadPlanipretVoipToken(token: string, bundleId?: string, extens
       },
     });
     if (error) console.warn("[pp-voip] token upload failed", error);
+    else if (changed) {
+      try { ppSipProvider.forceReregister(); } catch {}
+      try { window.dispatchEvent(new CustomEvent("pp:sip-force-reregister")); } catch {}
+    }
   } catch (e) { console.warn("[pp-voip] token upload failed", e); }
+}
+
+let softphoneOwnerId: string | null = null;
+let softphoneOwnerUserId: string | null = null;
+let softphoneOwnerSeq = 0;
+
+function acquireSoftphoneOwner(instanceId: string, userId: string): boolean {
+  if (!softphoneOwnerId || softphoneOwnerId === instanceId || softphoneOwnerUserId !== userId) {
+    softphoneOwnerId = instanceId;
+    softphoneOwnerUserId = userId;
+    return true;
+  }
+  return false;
+}
+
+function releaseSoftphoneOwner(instanceId: string) {
+  if (softphoneOwnerId === instanceId) {
+    softphoneOwnerId = null;
+    softphoneOwnerUserId = null;
+  }
 }
 
 
@@ -122,6 +156,7 @@ type RestCallAttachment = {
 
 export function useMplanipretSoftphone(enabled = true) {
   const { user } = useAuth();
+  const ownerIdRef = useRef<string>(`pp-softphone-${++softphoneOwnerSeq}`);
   const [snap, setSnap] = useState<PpSipSnapshot>(() => ppSipProvider.getSnapshot());
   const [loading, setLoading] = useState(false);
   const [net, setNet] = useState<NetSample>(networkMonitor.current());
@@ -169,6 +204,8 @@ export function useMplanipretSoftphone(enabled = true) {
   // NetSapiens with IP/User-Agent instead of empty columns.
   useEffect(() => {
     if (!enabled || !user) { setLoading(false); return; }
+    const ownerId = ownerIdRef.current;
+    if (!acquireSoftphoneOwner(ownerId, user.id)) { setLoading(false); return; }
     let cancelled = false;
     const doInit = async (opts?: { force?: boolean }) => {
       setLoading(true);
@@ -224,6 +261,7 @@ export function useMplanipretSoftphone(enabled = true) {
       cancelled = true;
       window.removeEventListener("pp:sip-ready", onReady as any);
       window.removeEventListener("pp:sip-force-reregister", onForce as any);
+      releaseSoftphoneOwner(ownerId);
     };
   }, [enabled, user?.id]);
 
@@ -231,6 +269,7 @@ export function useMplanipretSoftphone(enabled = true) {
   // iOS receives native background refresh requests and re-registers as soon as execution resumes.
   useEffect(() => {
     if (!enabled || !user) return;
+    if (softphoneOwnerId !== ownerIdRef.current) return;
     let cleanupStatus: (() => void) | undefined;
     let cleanupReregister: (() => void) | undefined;
     let cancelled = false;
@@ -267,9 +306,30 @@ export function useMplanipretSoftphone(enabled = true) {
     let cleanupVoipToken: (() => void) | undefined;
     let cleanupVoipAnswer: (() => void) | undefined;
     let cleanupVoipReject: (() => void) | undefined;
-    onPlanipretVoipPushToken(({ token, bundleId, environment }) => { void uploadPlanipretVoipToken(token, bundleId, null, environment); })
-      .then((fn) => { cleanupVoipToken = fn; }).catch(() => undefined);
-    void getPlanipretVoipPushToken().then((t) => { if (t?.token) void uploadPlanipretVoipToken(t.token, t.bundleId, null, t.environment); });
+    let cleanupVoipInvalid: (() => void) | undefined;
+    onPlanipretVoipPushToken(({ token, bundleId, environment, source }) => {
+      if (!token) { console.warn("[pp-voip] empty VoIP token received", { source }); return; }
+      void uploadPlanipretVoipToken(token, bundleId, null, environment);
+    }).then((fn) => { cleanupVoipToken = fn; }).catch(() => undefined);
+
+    onPlanipretVoipPushTokenInvalidated(() => {
+      console.warn("[pp-voip] VoIP token invalidated by iOS → requesting a new one");
+      lastVoipToken = null;
+      void refreshPlanipretVoipPushToken();
+    }).then((fn) => { cleanupVoipInvalid = fn; }).catch(() => undefined);
+
+    // Verify the token on mount and every time the app comes back to the
+    // foreground; regenerate it when iOS returns nothing.
+    const verifyVoipToken = () => {
+      void getPlanipretVoipPushToken().then((t) => {
+        if (t?.token) void uploadPlanipretVoipToken(t.token, t.bundleId, null, t.environment);
+        else { console.warn("[pp-voip] no VoIP token available → refreshing PushKit"); void refreshPlanipretVoipPushToken(); }
+      });
+    };
+    verifyVoipToken();
+    const onVisibleVoip = () => { if (document.visibilityState === "visible") verifyVoipToken(); };
+    document.addEventListener("visibilitychange", onVisibleVoip);
+    const voipRecheck = window.setInterval(verifyVoipToken, 10 * 60_000);
 
     onPlanipretIncomingCallAnswered((data) => {
       try { (window as any).__ppPendingAnswer = { callId: data?.callId, ts: Date.now() }; } catch {}
@@ -295,7 +355,10 @@ export function useMplanipretSoftphone(enabled = true) {
       cleanupStatus?.();
       cleanupReregister?.();
       cleanupInvite?.();
+      document.removeEventListener("visibilitychange", onVisibleVoip);
+      window.clearInterval(voipRecheck);
       cleanupVoipToken?.();
+      cleanupVoipInvalid?.();
       cleanupVoipAnswer?.();
       cleanupVoipReject?.();
     };
@@ -308,6 +371,7 @@ export function useMplanipretSoftphone(enabled = true) {
   // user never sees "Offline" while a call is ringing.
   useEffect(() => {
     if (!enabled || !user) return;
+    if (softphoneOwnerId !== ownerIdRef.current) return;
     let disconnectedSince = 0;
     let softTimer: ReturnType<typeof setTimeout> | null = null;
     let hardTimer: ReturnType<typeof setTimeout> | null = null;

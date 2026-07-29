@@ -38,10 +38,12 @@ type PpSipKeepAlivePlugin = {
 
 type PpVoipCallPlugin = {
   getVoipPushToken?: () => Promise<{ token: string | null; platform: string; bundleId?: string; environment?: string }>;
+  refreshVoipPushToken?: () => Promise<{ ok: boolean; token?: string }>;
   reportCallEnded?: (opts: { callId?: string; reason?: string }) => Promise<{ ok: boolean }>;
   addListener?: (
     event:
       | "voipPushToken"
+      | "voipPushTokenInvalidated"
       | "incomingCallAnswered"
       | "incomingCallRejected"
       | "callKitReady",
@@ -101,7 +103,25 @@ export async function getPlanipretVoipPushToken(): Promise<{ token: string | nul
   }
 }
 
-export async function onPlanipretVoipPushToken(cb: (data: { token: string; bundleId?: string; environment?: string }) => void): Promise<() => void> {
+/** Ask PushKit to re-issue the VoIP token (app resume / backend rejected token). */
+export async function refreshPlanipretVoipPushToken(): Promise<boolean> {
+  if (platform() !== "ios" || isTemporarilyUnavailable("voip")) return false;
+  try { const r = await NativePpVoipCall.refreshVoipPushToken?.(); return !!r?.ok; }
+  catch (e) {
+    if (!markUnavailable("voip", e, "pp-voip-call")) console.warn("[pp-voip-call] refreshVoipPushToken failed", e);
+    return false;
+  }
+}
+
+export async function onPlanipretVoipPushTokenInvalidated(cb: () => void): Promise<() => void> {
+  if (platform() !== "ios" || !NativePpVoipCall.addListener) return () => undefined;
+  try {
+    const handle = await NativePpVoipCall.addListener("voipPushTokenInvalidated", () => cb());
+    return () => { void handle?.remove?.(); };
+  } catch { return () => undefined; }
+}
+
+export async function onPlanipretVoipPushToken(cb: (data: { token: string; bundleId?: string; environment?: string; changed?: boolean; source?: string }) => void): Promise<() => void> {
   if (platform() !== "ios" || !NativePpVoipCall.addListener) return () => undefined;
   try {
     const handle = await NativePpVoipCall.addListener("voipPushToken", (data: any) => cb(data ?? {}));

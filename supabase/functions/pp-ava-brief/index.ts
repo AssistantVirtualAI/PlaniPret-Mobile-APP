@@ -6,6 +6,97 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { generateText, Output } from "npm:ai";
 import { z } from "npm:zod";
 import { createLovableAiGatewayProvider } from "../_shared/ai-gateway.ts";
+import { MS365_DELEGATED_SCOPES, refreshMicrosoftAccessToken } from "../_shared/ms365.ts";
+
+const GRAPH = "https://graph.microsoft.com/v1.0";
+
+async function graphGet(admin: any, profile: any, path: string, retry = true): Promise<any[]> {
+  try {
+    const r = await fetch(`${GRAPH}${path}`, {
+      headers: { Authorization: `Bearer ${profile.ms365_access_token}` },
+    });
+    if (r.status === 401 && retry) {
+      const t = await refreshMicrosoftAccessToken(admin, profile, MS365_DELEGATED_SCOPES);
+      if (t) { profile.ms365_access_token = t; return graphGet(admin, profile, path, false); }
+      return [];
+    }
+    if (!r.ok) return [];
+    const d = await r.json().catch(() => ({}));
+    return d?.value ?? [];
+  } catch (_e) {
+    return [];
+  }
+}
+
+async function buildMicrosoftStats(admin: any, profile: any, sinceIso: string) {
+  if (!profile?.ms365_access_token) return { connected: false };
+  const nowIso = new Date().toISOString();
+  const futureIso = new Date(Date.now() + 7 * 86400_000).toISOString();
+
+  const [received, sent, unread, flagged, pastEvents, upcoming, todos] = await Promise.all([
+    graphGet(admin, profile, `/me/messages?$filter=receivedDateTime ge ${sinceIso}&$select=receivedDateTime,from,subject,isRead,bodyPreview&$top=100`),
+    graphGet(admin, profile, `/me/mailFolders/sentitems/messages?$filter=sentDateTime ge ${sinceIso}&$select=sentDateTime,toRecipients,subject&$top=100`),
+    graphGet(admin, profile, `/me/messages?$filter=isRead eq false&$select=receivedDateTime,from,subject,bodyPreview&$orderby=receivedDateTime desc&$top=15`),
+    graphGet(admin, profile, `/me/messages?$filter=flag/flagStatus eq 'flagged'&$select=receivedDateTime,from,subject&$top=10`),
+    graphGet(admin, profile, `/me/events?$filter=start/dateTime ge '${sinceIso}' and start/dateTime le '${nowIso}'&$select=subject,start,end,attendees,isOnlineMeeting&$top=50`),
+    graphGet(admin, profile, `/me/events?$filter=start/dateTime ge '${nowIso}' and start/dateTime le '${futureIso}'&$select=subject,start,end,attendees,isOnlineMeeting,location&$orderby=start/dateTime&$top=15`),
+    graphGet(admin, profile, `/me/todo/lists`),
+  ]);
+
+  let tasks: any[] = [];
+  const firstList = todos?.[0]?.id;
+  if (firstList) {
+    const t = await graphGet(admin, profile, `/me/todo/lists/${firstList}/tasks?$filter=status ne 'completed'&$top=15`);
+    tasks = t.map((x: any) => ({ title: x.title, due: x.dueDateTime?.dateTime ?? null, importance: x.importance }));
+  }
+
+  const senderTally = new Map<string, { name?: string; address?: string; count: number }>();
+  for (const m of received) {
+    const a = m?.from?.emailAddress;
+    const key = (a?.address || a?.name || "").toLowerCase();
+    if (!key) continue;
+    const e = senderTally.get(key) ?? { name: a?.name, address: a?.address, count: 0 };
+    e.count++; senderTally.set(key, e);
+  }
+
+  const meetingMinutes = pastEvents.reduce((acc: number, e: any) => {
+    const s = e?.start?.dateTime ? new Date(e.start.dateTime).getTime() : 0;
+    const en = e?.end?.dateTime ? new Date(e.end.dateTime).getTime() : 0;
+    return acc + (s && en && en > s ? Math.round((en - s) / 60000) : 0);
+  }, 0);
+
+  return {
+    connected: true,
+    mailbox: profile.ms365_email ?? null,
+    emails_received: received.length,
+    emails_sent: sent.length,
+    emails_unread: unread.length,
+    emails_flagged: flagged.length,
+    unread_recent: unread.slice(0, 8).map((m: any) => ({
+      from: m?.from?.emailAddress?.name || m?.from?.emailAddress?.address,
+      subject: m.subject,
+      received_at: m.receivedDateTime,
+      preview: (m.bodyPreview || "").slice(0, 180),
+    })),
+    flagged_recent: flagged.slice(0, 5).map((m: any) => ({
+      from: m?.from?.emailAddress?.name || m?.from?.emailAddress?.address,
+      subject: m.subject,
+      received_at: m.receivedDateTime,
+    })),
+    top_senders: [...senderTally.values()].sort((a, b) => b.count - a.count).slice(0, 5),
+    meetings_held: pastEvents.length,
+    meeting_minutes: meetingMinutes,
+    upcoming_meetings: upcoming.slice(0, 8).map((e: any) => ({
+      subject: e.subject,
+      start: e?.start?.dateTime ?? null,
+      end: e?.end?.dateTime ?? null,
+      online: !!e.isOnlineMeeting,
+      location: e?.location?.displayName ?? null,
+      attendees: (e.attendees ?? []).slice(0, 5).map((a: any) => a?.emailAddress?.name || a?.emailAddress?.address),
+    })),
+    tasks_open: tasks,
+  };
+}
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -17,17 +108,17 @@ const json = (b: unknown, s = 200) =>
 const BriefSchema = z.object({
   headline: z.string(),
   overview: z.string().optional(),
-  priorities: z.array(z.string()).max(5),
-  risks: z.array(z.string()).max(3),
-  highlights: z.array(z.string()).max(5).optional(),
-  metrics: z.array(z.object({ label: z.string(), value: z.string() })).max(8).optional(),
-  tips: z.array(z.object({ title: z.string(), detail: z.string() })).max(5).optional(),
+  priorities: z.array(z.string()).max(8),
+  risks: z.array(z.string()).max(5),
+  highlights: z.array(z.string()).max(8).optional(),
+  metrics: z.array(z.object({ label: z.string(), value: z.string() })).max(14).optional(),
+  tips: z.array(z.object({ title: z.string(), detail: z.string() })).max(7).optional(),
   focus: z.string().optional(),
   suggestions: z.array(z.object({
     label: z.string(),
     kind: z.enum(["call", "sms", "email", "reminder"]),
     number: z.string().optional(),
-  })).max(3),
+  })).max(5),
 });
 
 type Period = "day" | "week" | "month" | "shift";
@@ -94,6 +185,12 @@ function buildFallbackBrief(stats: any, period: Period, lang: Lang) {
         { label: "Non lus", value: `${stats.sms_unread} textos · ${stats.voicemails_unread} messages vocaux` },
         { label: "Leads chauds", value: `${stats.hot_leads?.length ?? 0}` },
         { label: "Rendez-vous", value: `${stats.meetings?.length ?? 0}` },
+        ...(stats.microsoft?.connected ? [
+          { label: "Courriels (Microsoft 365)", value: `${stats.microsoft.emails_received} reçus · ${stats.microsoft.emails_sent} envoyés` },
+          { label: "Courriels non lus", value: `${stats.microsoft.emails_unread}` },
+          { label: "Réunions Outlook", value: `${stats.microsoft.meetings_held} (${stats.microsoft.meeting_minutes} min)` },
+          { label: "Réunions à venir", value: `${stats.microsoft.upcoming_meetings?.length ?? 0}` },
+        ] : []),
       ]
     : [
         { label: "Calls", value: `${stats.calls_total} (${stats.calls_inbound} inbound · ${stats.calls_outbound} outbound)` },
@@ -104,6 +201,12 @@ function buildFallbackBrief(stats: any, period: Period, lang: Lang) {
         { label: "Unread", value: `${stats.sms_unread} texts · ${stats.voicemails_unread} voicemails` },
         { label: "Hot leads", value: `${stats.hot_leads?.length ?? 0}` },
         { label: "Meetings", value: `${stats.meetings?.length ?? 0}` },
+        ...(stats.microsoft?.connected ? [
+          { label: "Emails (Microsoft 365)", value: `${stats.microsoft.emails_received} received · ${stats.microsoft.emails_sent} sent` },
+          { label: "Unread emails", value: `${stats.microsoft.emails_unread}` },
+          { label: "Outlook meetings", value: `${stats.microsoft.meetings_held} (${stats.microsoft.meeting_minutes} min)` },
+          { label: "Upcoming meetings", value: `${stats.microsoft.upcoming_meetings?.length ?? 0}` },
+        ] : []),
       ];
 
   const parts = fr
@@ -188,7 +291,7 @@ Deno.serve(async (req) => {
     if (!effectiveUserId) return json({ error: "no_user" }, 400);
 
     const { data: profile } = await admin.from("planipret_profiles")
-      .select("id, user_id, full_name, extension, organization_id, language")
+      .select("id, user_id, full_name, extension, organization_id, language, ms365_access_token, ms365_refresh_token, ms365_email")
       .eq("user_id", effectiveUserId).maybeSingle();
     if (!profile) return json({ error: "no_profile" }, 404);
 
@@ -309,6 +412,7 @@ Deno.serve(async (req) => {
       hot_leads: hotLeads,
       meetings: meetings.data || [],
       tasks_pending: tasks.data || [],
+      microsoft: await buildMicrosoftStats(admin, profile, sinceIso),
     };
 
 
@@ -325,30 +429,32 @@ Deno.serve(async (req) => {
     const system = lang === "fr"
       ? `Tu es AVA, l'assistante d'un courtier hypothécaire au Québec. Tu reçois les statistiques réelles du courtier ${profile.full_name ?? ""} pour ${periodLabelFr}.
 Génère un brief DÉTAILLÉ, professionnel et actionnable, ENTIÈREMENT en français du Québec (aucun mot en anglais).
-- headline: 1 phrase percutante citant les chiffres clés réels (appels, manqués, minutes, textos, leads chauds, rendez-vous).
-- overview: 5 à 7 phrases qui analysent la performance: volume d'appels entrants vs sortants, taux de réponse, durée moyenne, activité texto, messages vocaux en attente, tendance et qualité des conversations (résumés IA, score de coaching).
-- metrics: 5 à 8 indicateurs { label, value } tirés des chiffres exacts (appels, répondus/manqués, temps au téléphone, durée moyenne, textos, non lus, leads chauds, rendez-vous, score de coaching).
-- highlights: 4 à 5 faits saillants nommant les vrais contacts/clients les plus actifs et ce qui s'est passé.
-- priorities: 4 actions concrètes ordonnées par urgence (max 12 mots chacune), en nommant la personne ou le numéro.
-- risks: jusqu'à 3 risques ou points d'attention.
-- tips: 4 à 5 conseils de coaching { title, detail } — chaque "detail" = 1 à 2 phrases concrètes basées sur les chiffres (relances, plages horaires les plus productives, durée des appels, suivi des leads chauds, textos non lus, boîtes vocales).
-- focus: 1 phrase « objectif du jour » chiffré et mesurable.
-- suggestions: jusqu'à 3 actions cliquables (call/sms/email/reminder) avec si pertinent un numéro extrait des données.`
+Tu dois couvrir DEUX sources: la téléphonie (appels, textos, boîtes vocales, leads) ET Microsoft 365 (stats.microsoft: courriels reçus/envoyés/non lus/marqués, expéditeurs principaux, réunions Outlook tenues et à venir, tâches To Do). Si stats.microsoft.connected est faux, mentionne une seule fois que Microsoft 365 n'est pas connecté et invite à le connecter.
+- headline: 1 phrase percutante citant les chiffres clés réels (appels, manqués, minutes, textos, courriels non lus, réunions).
+- overview: 8 à 12 phrases d'analyse approfondie: volume d'appels entrants vs sortants, taux de réponse, durée moyenne, activité texto, messages vocaux en attente, charge de la boîte courriel Microsoft 365 (reçus/envoyés/non lus, expéditeurs récurrents), agenda Outlook (réunions tenues, minutes en réunion, prochaines réunions avec noms et heures), tâches To Do en attente, corrélations entre les canaux (ex.: clients qui écrivent ET appellent), tendance et qualité des conversations (résumés IA, score de coaching).
+- metrics: 8 à 12 indicateurs { label, value } tirés des chiffres exacts, incluant obligatoirement les courriels Microsoft 365, les non lus, les réunions tenues/à venir et les tâches ouvertes quand Microsoft est connecté.
+- highlights: 5 à 6 faits saillants nommant les vrais contacts, expéditeurs de courriels, sujets de courriels non lus et réunions à venir.
+- priorities: 5 à 6 actions concrètes ordonnées par urgence (max 14 mots chacune), en nommant la personne, le numéro, le sujet du courriel ou la réunion.
+- risks: jusqu'à 4 risques (appels manqués sans rappel, courriels non lus/marqués, réunions sans préparation, tâches en retard).
+- tips: 5 à 6 conseils de coaching { title, detail } — chaque "detail" = 2 à 3 phrases concrètes basées sur les chiffres (relances, plages horaires les plus productives, traitement des courriels par blocs, préparation des réunions Outlook, suivi des leads chauds, textos non lus, boîtes vocales).
+- focus: 1 phrase « objectif du jour » chiffré et mesurable couvrant téléphonie ET courriel/agenda.
+- suggestions: jusqu'à 4 actions cliquables (call/sms/email/reminder) avec si pertinent un numéro extrait des données.`
       : `You are AVA, the assistant of a mortgage broker in Quebec. You receive the real statistics of broker ${profile.full_name ?? ""} for ${periodLabelEn}.
 Generate a DETAILED, professional and actionable brief, ENTIRELY in English (no French words at all).
-- headline: 1 punchy sentence quoting the real key numbers (calls, missed, minutes, texts, hot leads, meetings).
-- overview: 5 to 7 sentences analysing performance: inbound vs outbound volume, answer rate, average duration, texting activity, pending voicemails, trend and conversation quality (AI summaries, coaching score).
-- metrics: 5 to 8 indicators { label, value } from the exact numbers (calls, answered/missed, talk time, average duration, texts, unread, hot leads, meetings, coaching score).
-- highlights: 4 to 5 highlights naming the real most active contacts/clients and what happened.
-- priorities: 4 concrete actions ordered by urgency (max 12 words each), naming the person or number.
-- risks: up to 3 risks or watch-outs.
-- tips: 4 to 5 coaching tips { title, detail } — each "detail" = 1 to 2 concrete sentences based on the numbers (follow-ups, most productive time slots, call duration, hot-lead nurturing, unread texts, voicemails).
-- focus: 1 measurable "goal of the day" sentence with a number.
-- suggestions: up to 3 clickable actions (call/sms/email/reminder) with a number extracted from the data when relevant.`;
+You must cover TWO sources: telephony (calls, texts, voicemails, leads) AND Microsoft 365 (stats.microsoft: emails received/sent/unread/flagged, top senders, Outlook meetings held and upcoming, To Do tasks). If stats.microsoft.connected is false, mention once that Microsoft 365 is not connected and invite the broker to connect it.
+- headline: 1 punchy sentence quoting the real key numbers (calls, missed, minutes, texts, unread emails, meetings).
+- overview: 8 to 12 sentences of deep analysis: inbound vs outbound volume, answer rate, average duration, texting activity, pending voicemails, Microsoft 365 inbox load (received/sent/unread, recurring senders), Outlook calendar (meetings held, meeting minutes, next meetings with names and times), open To Do tasks, cross-channel correlations (clients who both email and call), trend and conversation quality (AI summaries, coaching score).
+- metrics: 8 to 12 indicators { label, value } from the exact numbers, mandatorily including Microsoft 365 emails, unread, meetings held/upcoming and open tasks when Microsoft is connected.
+- highlights: 5 to 6 highlights naming real contacts, email senders, unread email subjects and upcoming meetings.
+- priorities: 5 to 6 concrete actions ordered by urgency (max 14 words each), naming the person, number, email subject or meeting.
+- risks: up to 4 risks (missed calls not returned, unread/flagged emails, unprepared meetings, overdue tasks).
+- tips: 5 to 6 coaching tips { title, detail } — each "detail" = 2 to 3 concrete sentences based on the numbers (follow-ups, most productive time slots, batching email, preparing Outlook meetings, hot-lead nurturing, unread texts, voicemails).
+- focus: 1 measurable "goal of the day" sentence covering both telephony AND email/calendar.
+- suggestions: up to 4 clickable actions (call/sms/email/reminder) with a number extracted from the data when relevant.`;
 
     const userPrompt = lang === "fr"
-      ? `Statistiques réelles (JSON):\n${JSON.stringify(stats).slice(0, 12000)}\n\nUtilise ces chiffres exacts (appels, manqués, minutes, textos, boîtes vocales, leads chauds, rendez-vous, contacts actifs). N'invente rien. Réponds uniquement en français du Québec : chaque champ (headline, overview, metrics.label, highlights, priorities, risks, tips.title, tips.detail, focus, suggestions.label) doit être rédigé en français, sans aucun mot anglais.`
-      : `Real statistics (JSON):\n${JSON.stringify(stats).slice(0, 12000)}\n\nUse these exact numbers (calls, missed, minutes, texts, voicemails, hot leads, meetings, active contacts). Do not invent anything. Answer strictly in English: every field (headline, overview, metrics.label, highlights, priorities, risks, tips.title, tips.detail, focus, suggestions.label) must be written in English, with no French words.`;
+      ? `Statistiques réelles (JSON):\n${JSON.stringify(stats).slice(0, 24000)}\n\nUtilise ces chiffres exacts (appels, manqués, minutes, textos, boîtes vocales, leads chauds, rendez-vous, contacts actifs) ET les données Microsoft 365 du champ "microsoft" (courriels, non lus, expéditeurs, réunions Outlook à venir, tâches To Do). N'invente rien. Réponds uniquement en français du Québec : chaque champ (headline, overview, metrics.label, highlights, priorities, risks, tips.title, tips.detail, focus, suggestions.label) doit être rédigé en français, sans aucun mot anglais.`
+      : `Real statistics (JSON):\n${JSON.stringify(stats).slice(0, 24000)}\n\nUse these exact numbers (calls, missed, minutes, texts, voicemails, hot leads, meetings, active contacts) AND the Microsoft 365 data in the "microsoft" field (emails, unread, senders, upcoming Outlook meetings, To Do tasks). Do not invent anything. Answer strictly in English: every field (headline, overview, metrics.label, highlights, priorities, risks, tips.title, tips.detail, focus, suggestions.label) must be written in English, with no French words.`;
 
     let result: any;
     try {

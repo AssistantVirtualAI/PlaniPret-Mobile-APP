@@ -97,6 +97,9 @@ class PpSipProvider {
   private regRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private keepAliveTimer: ReturnType<typeof setInterval> | null = null;
   private regFailures = 0;
+  private wsRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private wsFailures = 0;
+  private netWatchInstalled = false;
 
   subscribe(fn: Listener): () => void {
     this.listeners.add(fn);
@@ -184,15 +187,24 @@ class PpSipProvider {
       });
 
       ua.on("connecting", () => { this.connectingSince = Date.now(); this.update({ status: "connecting" }); });
-      ua.on("connected", () => this.update({ status: "connected" }));
+      ua.on("connected", () => {
+        this.wsFailures = 0;
+        if (this.wsRetryTimer) { clearTimeout(this.wsRetryTimer); this.wsRetryTimer = null; }
+        this.update({ status: "connected" });
+      });
       ua.on("disconnected", (e: any) => {
         this.log("warn", "ws disconnected", e);
         this.stopKeepAlive();
         this.update({ status: "disconnected", errorCause: e?.reason || "ws_disconnected" });
-        // JsSIP retries the socket via connection_recovery_*; no manual work needed.
+        // JsSIP retries the socket via connection_recovery_*, but on mobile the
+        // OS often kills the socket while the recovery timer is suspended, so we
+        // drive our own exponential-backoff reconnect + re-REGISTER loop.
+        this.scheduleSocketReconnect(String(e?.reason || "ws_disconnected"));
       });
       ua.on("registered", () => {
         this.regFailures = 0;
+        this.wsFailures = 0;
+        if (this.wsRetryTimer) { clearTimeout(this.wsRetryTimer); this.wsRetryTimer = null; }
         this.startKeepAlive();
         if (this.regRetryTimer) { clearTimeout(this.regRetryTimer); this.regRetryTimer = null; }
         return this.update({ status: "registered", errorCause: undefined, lastRegistrationAt: Date.now() });
@@ -221,6 +233,7 @@ class PpSipProvider {
 
       ua.start();
       this.ua = ua;
+      this.installNetworkWatch();
     } catch (err: any) {
       const msg = String(err?.message || err);
       this.log("error", `UA init failed: ${msg}`);
@@ -387,6 +400,44 @@ class PpSipProvider {
     } catch {}
   }
 
+  /** Exponential-backoff reconnect: restart the socket, then re-REGISTER, and
+   *  keep retrying (1s → 30s cap) until the UA reports `registered` again. */
+  private scheduleSocketReconnect(reason: string) {
+    if (this.wsRetryTimer) return;
+    this.wsFailures = Math.min(this.wsFailures + 1, 6);
+    const delay = Math.min(30_000, 1000 * 2 ** (this.wsFailures - 1));
+    this.log("warn", `sip reconnect scheduled in ${delay}ms (${reason})`);
+    this.wsRetryTimer = setTimeout(() => {
+      this.wsRetryTimer = null;
+      const ua = this.ua;
+      if (!ua) return;
+      const online = typeof navigator === "undefined" || navigator.onLine !== false;
+      if (!online) { this.log("warn", "sip reconnect deferred: offline"); this.scheduleSocketReconnect("offline"); return; }
+      try {
+        if (ua.isConnected?.()) { ua.register(); } else { ua.start(); }
+        this.log("info", "sip reconnect attempt sent");
+      } catch (e: any) {
+        this.log("error", `sip reconnect failed: ${e?.message || e}`);
+      }
+      setTimeout(() => {
+        if (this.ua && this.snap.status !== "registered") this.scheduleSocketReconnect("still_unregistered");
+      }, 6000);
+    }, delay);
+  }
+
+  /** Reconnect immediately when the device regains connectivity. */
+  private installNetworkWatch() {
+    if (this.netWatchInstalled || typeof window === "undefined") return;
+    this.netWatchInstalled = true;
+    window.addEventListener("online", () => {
+      this.log("info", "network online → sip reconnect");
+      this.wsFailures = 0;
+      if (this.wsRetryTimer) { clearTimeout(this.wsRetryTimer); this.wsRetryTimer = null; }
+      this.scheduleSocketReconnect("network_online");
+    });
+    window.addEventListener("offline", () => this.log("warn", "network offline"));
+  }
+
   /** NetSapiens closes idle WebSockets with code 1001 after ~60s.
    *  A periodic in-dialog OPTIONS ping keeps the socket alive. */
   private startKeepAlive() {
@@ -421,6 +472,7 @@ class PpSipProvider {
 
   stop() {
     this.stopKeepAlive();
+    if (this.wsRetryTimer) { clearTimeout(this.wsRetryTimer); this.wsRetryTimer = null; }
     if (this.regRetryTimer) { clearTimeout(this.regRetryTimer); this.regRetryTimer = null; }
     try { this.ua?.stop(); } catch {}
     this.ua = null;
