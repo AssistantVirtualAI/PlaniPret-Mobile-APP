@@ -41,6 +41,7 @@ export interface PpSipSnapshot {
 type Listener = (s: PpSipSnapshot) => void;
 
 let sipParserGuardInstalled = false;
+let ppSipInitInFlight = false;
 
 function isKnownJsSipParserCrash(value: unknown): boolean {
   const text = String(value instanceof Error ? value.message : value ?? "");
@@ -133,6 +134,7 @@ class PpSipProvider {
   }
 
   async init(cfg: PpSipConfig) {
+    if (ppSipInitInFlight) return;
     installSipParserGuard();
     const wssUrl = String(cfg.wssUrl ?? "").trim();
     if (!cfg.extension || !cfg.sipDomain || !wssUrl || wssUrl === "undefined" || !/^wss?:\/\//i.test(wssUrl) || !cfg.password) {
@@ -165,6 +167,7 @@ class PpSipProvider {
     this.update({ status: "connecting", errorCause: undefined });
 
     try {
+      ppSipInitInFlight = true;
       const urls = Array.from(new Set([cleanCfg.wssUrl, ...(cleanCfg.wssUrls || [])]
         .map((u) => String(u ?? "").trim())
         .filter((u) => /^wss?:\/\//i.test(u)))) as string[];
@@ -181,7 +184,7 @@ class PpSipProvider {
         // Match the native keep-alive REGISTER expiry so NetSapiens does not
         // expire one contact while the other still shows "registered" locally.
         register_expires: getPpSipReconnectConfig().registerExpiresSec,
-        connection_recovery_min_interval: Math.max(1, Math.round(getPpSipReconnectConfig().socketBackoffMinMs / 1000)),
+        connection_recovery_min_interval: Math.max(3, Math.round(getPpSipReconnectConfig().socketBackoffMinMs / 1000)),
         connection_recovery_max_interval: Math.max(2, Math.round(getPpSipReconnectConfig().socketBackoffMaxMs / 1000)),
         user_agent: "Planipret Softphone 1.0",
       });
@@ -233,13 +236,15 @@ class PpSipProvider {
       });
       ua.on("newRTCSession", (e: any) => this.attachSession(e.session, e.originator));
 
-      ua.start();
       this.ua = ua;
+      ua.start();
       this.installNetworkWatch();
     } catch (err: any) {
       const msg = String(err?.message || err);
       this.log("error", `UA init failed: ${msg}`);
       this.update({ status: "error", errorCause: msg });
+    } finally {
+      ppSipInitInFlight = false;
     }
   }
 
@@ -408,7 +413,7 @@ class PpSipProvider {
     if (this.wsRetryTimer) return;
     const rc = getPpSipReconnectConfig();
     this.wsFailures = Math.min(this.wsFailures + 1, rc.socketBackoffMaxAttempts);
-    const delay = ppSipBackoffDelay(this.wsFailures, rc.socketBackoffMinMs, rc.socketBackoffMaxMs);
+    const delay = Math.max(3000, ppSipBackoffDelay(this.wsFailures, rc.socketBackoffMinMs, rc.socketBackoffMaxMs));
     this.log("warn", `sip reconnect scheduled in ${delay}ms (${reason})`);
     this.wsRetryTimer = setTimeout(() => {
       this.wsRetryTimer = null;
@@ -445,13 +450,17 @@ class PpSipProvider {
    *  A periodic in-dialog OPTIONS ping keeps the socket alive. */
   private startKeepAlive() {
     this.stopKeepAlive();
-    this.keepAliveTimer = setInterval(() => {
+    const sendPing = () => {
       const ua = this.ua;
       if (!ua) return;
       try {
         if (!ua.isConnected?.()) { try { ua.start(); } catch {} return; }
         ua.sendRequest((JsSIP as any).C.OPTIONS, `sip:${ua.configuration?.uri?.host ?? ""}`, {});
       } catch { /* ping failures are non-fatal */ }
+    };
+    sendPing();
+    this.keepAliveTimer = setInterval(() => {
+      sendPing();
     }, getPpSipReconnectConfig().keepAliveMs);
   }
 

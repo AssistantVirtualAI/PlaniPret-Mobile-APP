@@ -60,6 +60,7 @@ let lastVoipToken: string | null = null;
 
 async function uploadPlanipretVoipToken(token: string, bundleId?: string, extension?: string | null, environment?: string) {
   if (!token) return;
+  const firstSeen = lastVoipToken === null;
   const changed = lastVoipToken !== null && lastVoipToken !== token;
   if (changed) console.info("[pp-voip] VoIP token changed → re-registering SIP", { suffix: token.slice(-6) });
   else if (lastVoipToken === null) console.info("[pp-voip] VoIP token registered", { suffix: token.slice(-6) });
@@ -75,7 +76,7 @@ async function uploadPlanipretVoipToken(token: string, bundleId?: string, extens
       },
     });
     if (error) console.warn("[pp-voip] token upload failed", error);
-    else if (changed || lastVoipToken !== null) {
+    else if (changed || firstSeen) {
       try { ppSipProvider.forceReregister(); } catch {}
       try { window.dispatchEvent(new CustomEvent("pp:sip-force-reregister", { detail: { force: false, reason: "voip_token_ready" } })); } catch {}
     }
@@ -85,6 +86,21 @@ async function uploadPlanipretVoipToken(token: string, bundleId?: string, extens
 let softphoneOwnerId: string | null = null;
 let softphoneOwnerUserId: string | null = null;
 let softphoneOwnerSeq = 0;
+let globalSipInitInFlight = false;
+let lastSipInitStartedAt = 0;
+
+function acquireSipInitLock(minGapMs = 2500): boolean {
+  const now = Date.now();
+  if (globalSipInitInFlight) return false;
+  if (now - lastSipInitStartedAt < minGapMs) return false;
+  globalSipInitInFlight = true;
+  lastSipInitStartedAt = now;
+  return true;
+}
+
+function releaseSipInitLock() {
+  globalSipInitInFlight = false;
+}
 
 function acquireSoftphoneOwner(instanceId: string, userId: string): boolean {
   if (!softphoneOwnerId || softphoneOwnerId === instanceId || softphoneOwnerUserId !== userId) {
@@ -167,7 +183,6 @@ export function useMplanipretSoftphone(enabled = true) {
   const [restCall, setRestCall] = useState<RestCallAttachment | null>(null);
   const [nativeStatus, setNativeStatus] = useState<PpNativeSipStatus | null>(null);
   const seenCallIds = useRef<Set<string>>(new Set());
-  const sipInitInProgress = useRef(false);
 
   // Subscribe to the SIP snapshot.
   useEffect(() => ppSipProvider.subscribe(setSnap), []);
@@ -210,6 +225,7 @@ export function useMplanipretSoftphone(enabled = true) {
     if (!acquireSoftphoneOwner(ownerId, user.id)) { setLoading(false); return; }
     let cancelled = false;
     const doInit = async (opts?: { force?: boolean }) => {
+      if (!acquireSipInitLock(opts?.force ? 0 : 2500)) return;
       setLoading(true);
       try {
         if (opts?.force) {
@@ -239,11 +255,8 @@ export function useMplanipretSoftphone(enabled = true) {
           password: String(d.sip_password),
           displayName: String(d.display_name || d.sip_display_name || d.sip_extension),
         };
-        if (sipInitInProgress.current) return;
-        sipInitInProgress.current = true;
-        void startPlanipretSipKeepAlive(sipConfig).then((s) => { if (s && !cancelled) setNativeStatus(s); });
-        try { await ppSipProvider.init(sipConfig); }
-        finally { sipInitInProgress.current = false; }
+        startPlanipretSipKeepAlive(sipConfig).then((s) => { if (s && !cancelled) setNativeStatus(s); }).catch(() => undefined);
+        await ppSipProvider.init(sipConfig);
         void getPlanipretVoipPushToken().then((t) => {
           if (t?.token) void uploadPlanipretVoipToken(t.token, t.bundleId, sipConfig.extension, t.environment);
         });
@@ -254,6 +267,7 @@ export function useMplanipretSoftphone(enabled = true) {
           }));
         } catch {}
       } finally {
+        releaseSipInitLock();
         if (!cancelled) setLoading(false);
       }
     };
@@ -380,9 +394,9 @@ export function useMplanipretSoftphone(enabled = true) {
   useEffect(() => {
     if (!enabled || !user) return;
     if (softphoneOwnerId !== ownerIdRef.current) return;
-    let disconnectedSince = 0;
     let softTimer: ReturnType<typeof setTimeout> | null = null;
     let hardTimer: ReturnType<typeof setTimeout> | null = null;
+    let lastWatchdogAt = 0;
     const clearTimers = () => {
       if (softTimer) { clearTimeout(softTimer); softTimer = null; }
       if (hardTimer) { clearTimeout(hardTimer); hardTimer = null; }
@@ -390,7 +404,7 @@ export function useMplanipretSoftphone(enabled = true) {
     const evaluate = () => {
       const st = ppSipProvider.getSnapshot().status;
       if (st === "registered" || st === "connected") {
-        disconnectedSince = 0;
+        lastWatchdogAt = 0;
         clearTimers();
         return;
       }
@@ -398,7 +412,8 @@ export function useMplanipretSoftphone(enabled = true) {
       // the UA while it is still "connecting" was the cause of the endless
       // "registration failed: Connection Error" loop.
       if (st === "connecting") return;
-      if (!disconnectedSince) disconnectedSince = Date.now();
+      if (Date.now() - lastWatchdogAt < 20_000) return;
+      lastWatchdogAt = Date.now();
       clearTimers();
       softTimer = setTimeout(() => {
         const s = ppSipProvider.getSnapshot().status;
@@ -409,7 +424,7 @@ export function useMplanipretSoftphone(enabled = true) {
       hardTimer = setTimeout(() => {
         const s = ppSipProvider.getSnapshot().status;
         if (s !== "registered" && s !== "connected") {
-          try { window.dispatchEvent(new CustomEvent("pp:sip-force-reregister", { detail: { force: true, reason: "watchdog_hard_timeout" } })); } catch {}
+          try { ppSipProvider.forceReregister(); } catch {}
         }
       }, 45_000);
     };
@@ -448,9 +463,8 @@ export function useMplanipretSoftphone(enabled = true) {
       try {
         const cfg = ppSipProvider.getConfig();
         if (cfg) {
-          if (sipInitInProgress.current) return;
-          sipInitInProgress.current = true;
-          void ppSipProvider.init(cfg).finally(() => { sipInitInProgress.current = false; });
+          if (!acquireSipInitLock(4000)) return;
+          void ppSipProvider.init(cfg).finally(releaseSipInitLock);
         }
         else ppSipProvider.forceReregister();
       } catch { /* noop */ }
@@ -480,9 +494,8 @@ export function useMplanipretSoftphone(enabled = true) {
               try {
                 const cfg = ppSipProvider.getConfig();
                 if (cfg) {
-                  if (sipInitInProgress.current) return;
-                  sipInitInProgress.current = true;
-                  void ppSipProvider.init(cfg).finally(() => { sipInitInProgress.current = false; });
+                  if (!acquireSipInitLock(4000)) return;
+                  void ppSipProvider.init(cfg).finally(releaseSipInitLock);
                 }
                 else ppSipProvider.forceReregister();
               } catch { /* noop */ }

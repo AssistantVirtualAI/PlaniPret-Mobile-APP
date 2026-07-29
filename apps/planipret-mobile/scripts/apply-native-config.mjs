@@ -1279,6 +1279,29 @@ class AppBridgeViewController: CAPBridgeViewController {
   return Array.from(new Set([...existing, file]));
 }
 
+function ensureIosSceneDelegate(iosApp) {
+  const file = path.join(iosApp, "SceneDelegate.swift");
+  const source = `import UIKit
+
+class SceneDelegate: UIResponder, UIWindowSceneDelegate {
+    var window: UIWindow?
+
+    func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options connectionOptions: UIScene.ConnectionOptions) {
+        guard let windowScene = scene as? UIWindowScene else { return }
+        let storyboard = UIStoryboard(name: "Main", bundle: nil)
+        let rootViewController = storyboard.instantiateInitialViewController() ?? AppBridgeViewController()
+        let window = UIWindow(windowScene: windowScene)
+        window.rootViewController = rootViewController
+        self.window = window
+        window.makeKeyAndVisible()
+    }
+}
+`;
+  writeIfChanged(file, source);
+  ensureXcodeSourceFiles(path.join(appDir, "ios", "App"), ["App/SceneDelegate.swift"]);
+  console.log("[native-config] iOS SceneDelegate applied.");
+}
+
 function patchIosInfoPlist() {
   const file = path.join(appDir, "ios", "App", "App", "Info.plist");
   if (!fs.existsSync(file)) {
@@ -1332,6 +1355,30 @@ function patchIosInfoPlist() {
   if (!xml.includes("<key>ITSAppUsesNonExemptEncryption</key>")) {
     xml = xml.replace(/\n<\/dict>\s*\n<\/plist>\s*$/, "\n\t<key>ITSAppUsesNonExemptEncryption</key>\n\t<false/>\n</dict>\n</plist>\n");
   }
+
+  const sceneManifest = `
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+		<key>UISceneConfigurations</key>
+		<dict>
+			<key>UIWindowSceneSessionRoleApplication</key>
+			<array>
+				<dict>
+					<key>UISceneConfigurationName</key>
+					<string>Default Configuration</string>
+					<key>UISceneDelegateClassName</key>
+					<string>$(PRODUCT_MODULE_NAME).SceneDelegate</string>
+					<key>UISceneStoryboardFile</key>
+					<string>Main</string>
+				</dict>
+			</array>
+		</dict>
+	</dict>
+`;
+  xml = xml.replace(/\n\t?<key>UIApplicationSceneManifest<\/key>\s*<dict>[\s\S]*?\n\t<\/dict>/, "");
+  xml = xml.replace(/\n<\/dict>\s*\n<\/plist>\s*$/, `${sceneManifest}\n</dict>\n</plist>\n`);
 
   writeIfChanged(file, xml);
   console.log("[native-config] iOS URL schemes + background modes applied.");
@@ -1441,6 +1488,7 @@ function patchIosNativeFiles() {
   const pluginFilesAreInProject = hasProjectReference(iosRoot, "PpSipKeepAlive.swift") && hasProjectReference(iosRoot, "PpVoipCall.swift");
   patchIosAppDelegate(iosApp);
   ensureIosBridgeController(iosApp, pluginFilesAreInProject);
+  ensureIosSceneDelegate(iosApp);
   for (const controllerName of ["AppBridgeViewController.swift", "ViewController.swift"]) {
     const file = path.join(iosApp, controllerName);
     if (!fs.existsSync(file)) continue;

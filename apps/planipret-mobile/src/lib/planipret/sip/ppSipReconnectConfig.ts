@@ -118,5 +118,7 @@ export function reloadPpSipReconnectConfig(): PpSipReconnectConfig {
 /** Exponential backoff delay, clamped to [min, max]. */
 export function ppSipBackoffDelay(attempt: number, min: number, max: number): number {
   const safeAttempt = Math.max(1, attempt);
-  return Math.min(max, min * 2 ** (safeAttempt - 1));
+  const safeMin = Math.max(3000, min);
+  const safeMax = Math.max(safeMin, max);
+  return Math.min(safeMax, safeMin * 2 ** (safeAttempt - 1));
 }
