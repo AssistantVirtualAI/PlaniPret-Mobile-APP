@@ -1,6 +1,6 @@
 package com.planipret.mobile;
 
-// Planiprêt-only Capacitor plugin. DO NOT reuse in Lemtel (Verto stack).
+// Planipret-only Capacitor plugin. DO NOT reuse in Lemtel (Verto stack).
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;

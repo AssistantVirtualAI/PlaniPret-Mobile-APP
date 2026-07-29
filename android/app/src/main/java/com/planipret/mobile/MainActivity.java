@@ -146,7 +146,7 @@ public class MainActivity extends BridgeActivity {
                 "Appels entrants",
                 NotificationManager.IMPORTANCE_HIGH
             );
-            callChannel.setDescription("Notifications pour les appels téléphoniques entrants");
+            callChannel.setDescription("Notifications pour les appels telephoniques entrants");
             callChannel.enableVibration(true);
             callChannel.setVibrationPattern(new long[]{0, 500, 200, 500, 200, 500});
             callChannel.enableLights(true);
@@ -166,20 +166,20 @@ public class MainActivity extends BridgeActivity {
         if (nm.getNotificationChannel("default") == null) {
             NotificationChannel defaultChannel = new NotificationChannel(
                 "default",
-                "Notifications générales",
+                "Notifications generales",
                 NotificationManager.IMPORTANCE_DEFAULT
             );
-            defaultChannel.setDescription("Notifications générales de l'application");
+            defaultChannel.setDescription("Notifications generales de l'application");
             nm.createNotificationChannel(defaultChannel);
         }
 
         if (nm.getNotificationChannel("missed_calls") == null) {
             NotificationChannel missedChannel = new NotificationChannel(
                 "missed_calls",
-                "Appels manqués",
+                "Appels manques",
                 NotificationManager.IMPORTANCE_DEFAULT
             );
-            missedChannel.setDescription("Notifications pour les appels manqués et la messagerie vocale");
+            missedChannel.setDescription("Notifications pour les appels manques et la messagerie vocale");
             nm.createNotificationChannel(missedChannel);
         }
     }

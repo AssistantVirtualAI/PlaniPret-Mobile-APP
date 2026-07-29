@@ -91,7 +91,7 @@ const ANDROID_SERVICE = `
 
 const ANDROID_PLUGIN_JAVA = (pkg) => `package ${pkg};
 
-// Planiprêt-only Capacitor plugin. DO NOT reuse in Lemtel (Verto stack).
+// Planipret-only Capacitor plugin. DO NOT reuse in Lemtel (Verto stack).
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -179,7 +179,7 @@ public class PpSipKeepAlivePlugin extends Plugin {
 // full-screen incoming-call notification and wakes MainActivity.
 const ANDROID_RECEIVER_JAVA = (pkg) => `package ${pkg};
 
-// Planiprêt-only. DO NOT reuse in Lemtel.
+// Planipret-only. DO NOT reuse in Lemtel.
 import android.app.NotificationManager;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -227,7 +227,7 @@ public class PpIncomingActionReceiver extends BroadcastReceiver {
 
 const ANDROID_SERVICE_JAVA = (pkg) => `package ${pkg};
 
-// Planiprêt-only background SIP keep-alive over WSS (NetSapiens).
+// Planipret-only background SIP keep-alive over WSS (NetSapiens).
 // DO NOT reuse or unify with Lemtel's SipConnectionService (FreeSWITCH/Verto).
 import android.app.*;
 import android.content.*;
@@ -287,7 +287,7 @@ public class PpSipKeepAliveService extends Service {
   }
 
   @Override public int onStartCommand(Intent intent, int flags, int startId) {
-    Notification n = buildOngoingNotification("Téléphonie prête en arrière-plan");
+    Notification n = buildOngoingNotification("Telephonie prete en arriere-plan");
     if (Build.VERSION.SDK_INT >= 34) ServiceCompat.startForeground(this, NOTIFICATION_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL);
     else startForeground(NOTIFICATION_ID, n);
     emitStatus("connecting", "native_register_start");
@@ -441,7 +441,7 @@ public class PpSipKeepAliveService extends Service {
         .setColor(Color.parseColor("#0023e6"))
         .setContentIntent(contentPi)
         .setFullScreenIntent(contentPi, true)
-        .addAction(new NotificationCompat.Action(android.R.drawable.sym_action_call, "Répondre", answerPi))
+        .addAction(new NotificationCompat.Action(android.R.drawable.sym_action_call, "Repondre", answerPi))
         .addAction(new NotificationCompat.Action(android.R.drawable.ic_menu_close_clear_cancel, "Refuser", declinePi));
       NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
       if (nm != null) nm.notify(INCOMING_NOTIFICATION_ID, b.build());
@@ -449,14 +449,14 @@ public class PpSipKeepAliveService extends Service {
   }
 
   private void emitStatus(String status, String reason) { long now = System.currentTimeMillis(); boolean wake = wakeLock != null && wakeLock.isHeld(), wifi = wifiLock != null && wifiLock.isHeld(), logged = status.equals("registered") || status.equals("protected"); getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putString(KEY_STATUS, status).putString(KEY_REASON, reason).putLong(KEY_UPDATED_AT, now).putBoolean(KEY_WAKE_HELD, wake).putBoolean(KEY_WIFI_HELD, wifi).putBoolean(KEY_LOGGED_IN, logged).apply(); sendBroadcast(new Intent(ACTION_STATUS).setPackage(getPackageName()).putExtra("status", status).putExtra("reason", reason).putExtra("updatedAt", now).putExtra("wakeLockHeld", wake).putExtra("wifiLockHeld", wifi).putExtra("loggedIn", logged)); }
-  private Notification buildOngoingNotification(String text) { return new NotificationCompat.Builder(this, CHANNEL_ID).setContentTitle("Planiprêt Mobile").setContentText(text).setSmallIcon(android.R.drawable.ic_menu_call).setPriority(NotificationCompat.PRIORITY_LOW).setOngoing(true).setSilent(true).build(); }
+  private Notification buildOngoingNotification(String text) { return new NotificationCompat.Builder(this, CHANNEL_ID).setContentTitle("Planipret Mobile").setContentText(text).setSmallIcon(android.R.drawable.ic_menu_call).setPriority(NotificationCompat.PRIORITY_LOW).setOngoing(true).setSilent(true).build(); }
   private void createChannels() {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
     NotificationManager nm = (NotificationManager) getSystemService(NotificationManager.class);
     if (nm == null) return;
-    nm.createNotificationChannel(new NotificationChannel(CHANNEL_ID, "Connexion téléphonique", NotificationManager.IMPORTANCE_LOW));
+    nm.createNotificationChannel(new NotificationChannel(CHANNEL_ID, "Connexion telephonique", NotificationManager.IMPORTANCE_LOW));
     NotificationChannel incoming = new NotificationChannel(CHANNEL_INCOMING_ID, "Appels entrants", NotificationManager.IMPORTANCE_HIGH);
-    incoming.setDescription("Notifications d'appel entrant Planiprêt");
+    incoming.setDescription("Notifications d'appel entrant Planipret");
     incoming.enableVibration(true);
     incoming.enableLights(true);
     AudioAttributes attrs = new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build();
