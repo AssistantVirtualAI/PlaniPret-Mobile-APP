@@ -928,6 +928,14 @@ function ensurePluginRegistration(swift) {
   return next;
 }
 
+function ensurePluginRegistrationOrThrow(swift, file) {
+  const next = ensurePluginRegistration(swift);
+  if (!next.includes("PpSipKeepAlive()") || !next.includes("PpVoipCall()")) {
+    throw new Error(`[native-config] iOS plugin registration failed in ${file}: PpSipKeepAlive/PpVoipCall missing`);
+  }
+  return next;
+}
+
 // Force portrait at the AppDelegate level (Info.plist alone is overridden by
 // a `.all` Swift override in some Capacitor templates).
 function patchIosAppDelegate(iosApp) {
@@ -956,10 +964,19 @@ function patchIosAppDelegate(iosApp) {
 // plugins reported UNIMPLEMENTED. Create a bridge controller and point the
 // storyboard at it so registration always happens.
 function ensureIosBridgeController(iosApp, pluginFilesAreInProject) {
+  const storyboard = path.join(iosApp, "Base.lproj", "Main.storyboard");
   const existing = ["AppBridgeViewController.swift", "ViewController.swift"]
     .map((n) => path.join(iosApp, n))
     .filter((f) => fs.existsSync(f));
-  if (existing.length) return existing;
+
+  // Always create/refresh AppBridgeViewController and always point the
+  // storyboard to it. Some generated iOS projects already contain a plain
+  // ViewController, so the old early-return skipped the storyboard patch and
+  // Capacitor loaded CAPBridgeViewController directly → JS saw both native
+  // plugins as UNIMPLEMENTED.
+  if (existing.length && !existing.some((f) => path.basename(f) === "AppBridgeViewController.swift")) {
+    console.log("[native-config] iOS existing ViewController found; adding AppBridgeViewController for plugin registration.");
+  }
 
   const file = path.join(iosApp, "AppBridgeViewController.swift");
   const inline = pluginFilesAreInProject
@@ -986,7 +1003,6 @@ class AppBridgeViewController: CAPBridgeViewController {
   ensureXcodeSourceFiles(path.join(appDir, "ios", "App"), ["App/AppBridgeViewController.swift"]);
 
   // Point Main.storyboard at the subclass.
-  const storyboard = path.join(iosApp, "Base.lproj", "Main.storyboard");
   if (fs.existsSync(storyboard)) {
     let xml = fs.readFileSync(storyboard, "utf8");
     if (!xml.includes('customClass="AppBridgeViewController"')) {
@@ -994,11 +1010,15 @@ class AppBridgeViewController: CAPBridgeViewController {
         /customClass="CAPBridgeViewController"\s*customModule="Capacitor"(\s*customModuleProvider="target")?/,
         'customClass="AppBridgeViewController" customModule="App" customModuleProvider="target"',
       );
+      xml = xml.replace(
+        /customClass="ViewController"\s*customModule="App"(\s*customModuleProvider="target")?/,
+        'customClass="AppBridgeViewController" customModule="App" customModuleProvider="target"',
+      );
       writeIfChanged(storyboard, xml);
     }
   }
   console.log("[native-config] iOS AppBridgeViewController created and wired to Main.storyboard.");
-  return [file];
+  return Array.from(new Set([...existing, file]));
 }
 
 function patchIosInfoPlist() {
@@ -1158,13 +1178,20 @@ function patchIosNativeFiles() {
     if (!fs.existsSync(file)) continue;
     let swift = fs.readFileSync(file, "utf8");
     const before = swift;
-    swift = ensurePluginRegistration(swift);
+    swift = ensurePluginRegistrationOrThrow(swift, file);
     if (!pluginFilesAreInProject && !swift.includes("@objc(PpSipKeepAlive)")) {
       swift = ensureSwiftImports(swift, ["Foundation", "Capacitor", "UIKit", "AVFoundation", "CryptoKit", "UserNotifications", "PushKit", "CallKit"]);
       swift = `${swift.trim()}\n\n// MARK: - Inline Planiprêt native plugins\n${stripSwiftImports(IOS_PLUGIN)}\n\n${stripSwiftImports(IOS_VOIP_CALL_PLUGIN)}\n`;
       console.log("[native-config] iOS native plugins embedded into existing ViewController target.");
     }
     if (swift !== before) writeIfChanged(file, swift);
+  }
+  const bridge = path.join(iosApp, "AppBridgeViewController.swift");
+  const storyboard = path.join(iosApp, "Base.lproj", "Main.storyboard");
+  const storyboardText = fs.existsSync(storyboard) ? fs.readFileSync(storyboard, "utf8") : "";
+  const bridgeText = fs.existsSync(bridge) ? fs.readFileSync(bridge, "utf8") : "";
+  if (!bridgeText.includes("PpSipKeepAlive()") || !bridgeText.includes("PpVoipCall()") || !storyboardText.includes('customClass="AppBridgeViewController"')) {
+    throw new Error("[native-config] iOS native plugins are not wired into the launch ViewController; aborting sync so SIP/VoIP cannot ship UNIMPLEMENTED.");
   }
   console.log("[native-config] iOS PpSipKeepAlive + PpVoipCall plugins applied.");
 }

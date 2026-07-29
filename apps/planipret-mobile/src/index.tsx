@@ -16,6 +16,7 @@ type BootWindow = Window & {
   __PP_REACT_MOUNT_CALLED__?: boolean;
   __PP_MARK_BOOT_READY__?: () => void;
   __PP_SHOW_BOOT_FALLBACK__?: (message?: string) => void;
+  __PP_DISABLE_NATIVE_BOOT_FALLBACK__?: boolean;
 };
 
 function isIgnorableNativeStartupError(raw: unknown): boolean {
@@ -33,6 +34,7 @@ function isIgnorableNativeStartupError(raw: unknown): boolean {
 
 function showNativeBootFallback(message?: string) {
   try {
+    if ((window as BootWindow).__PP_DISABLE_NATIVE_BOOT_FALLBACK__) return;
     ((window as BootWindow).__PP_SHOW_BOOT_FALLBACK__ ?? (() => undefined))(message);
   } catch {}
 }
@@ -91,8 +93,7 @@ class NativeRootRecoveryBoundary extends React.Component<{ children: React.React
       this.setState((state) => {
         const nextRetryKey = state.retryKey + 1;
         if (nextRetryKey > 3) {
-          showNativeBootFallback('Le démarrage natif a été interrompu plusieurs fois. Relancez l’application.');
-          return { error: null, retryKey: state.retryKey };
+          return { error: null, retryKey: nextRetryKey };
         }
         return { error: null, retryKey: nextRetryKey };
       });
@@ -115,24 +116,17 @@ class NativeRootRecoveryBoundary extends React.Component<{ children: React.React
 }
 
 if (typeof window !== 'undefined') {
+  (window as BootWindow).__PP_DISABLE_NATIVE_BOOT_FALLBACK__ = true;
   (window as BootWindow).__PP_MARK_BOOT_READY__ = markBootReady;
   window.addEventListener('error', (event) => {
     if (!isIgnorableNativeStartupError((event as ErrorEvent).error) && !isIgnorableNativeStartupError((event as ErrorEvent).message)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    window.setTimeout(() => {
-      const root = document.getElementById('root');
-      if (root && !root.textContent?.trim()) showNativeBootFallback('Le démarrage natif a été interrompu avant le premier écran.');
-    }, 250);
   }, true);
   window.addEventListener('unhandledrejection', (event) => {
     if (!isIgnorableNativeStartupError(event.reason)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    window.setTimeout(() => {
-      const root = document.getElementById('root');
-      if (root && !root.textContent?.trim()) showNativeBootFallback('Le démarrage natif a été interrompu avant le premier écran.');
-    }, 250);
   }, true);
 }
 
