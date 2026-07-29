@@ -5,9 +5,11 @@ import { Link } from "react-router-dom";
 const CURRENT_VERSION = "2026-06";
 
 export default function PrivacyConsentGate({ profile, onAccepted }: { profile: any; onAccepted: () => void }) {
+  // Le consentement est demandé UNE SEULE FOIS (après le login initial).
+  // Une fois accepté et enregistré, on ne réaffiche jamais le popup.
   const needs =
-    !profile?.privacy_accepted_at ||
-    profile?.privacy_version !== CURRENT_VERSION;
+    !profile?.privacy_accepted_at &&
+    localStorage.getItem("pp_privacy_accepted") !== "1";
 
   const [policy, setPolicy] = useState(false);
   const [recording, setRecording] = useState(false);
@@ -30,6 +32,7 @@ export default function PrivacyConsentGate({ profile, onAccepted }: { profile: a
       .eq("user_id", profile.user_id);
     setBusy(false);
     if (error) return;
+    localStorage.setItem("pp_privacy_accepted", "1");
     setOpen(false);
     onAccepted();
   };

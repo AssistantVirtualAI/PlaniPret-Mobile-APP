@@ -3,33 +3,9 @@ import { Phone, PhoneOff, X, Bot } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
+import { startSelectedRingtone } from "@/lib/planipret/audio/ringtonePresets";
 
 export type InboundCall = { call_id?: string; from_number?: string; caller_name?: string } | null;
-
-/** Generates the dual-tone ringback via Web Audio. Returns a stop() function. */
-function startRingtone(): () => void {
-  const Ctx = (window.AudioContext || (window as any).webkitAudioContext);
-  if (!Ctx) return () => {};
-  const ctx = new Ctx();
-  let killed = false;
-  const cycle = () => {
-    if (killed) return;
-    const t = ctx.currentTime;
-    const o1 = ctx.createOscillator();
-    const o2 = ctx.createOscillator();
-    const g = ctx.createGain();
-    o1.frequency.value = 440; o2.frequency.value = 480;
-    g.gain.setValueAtTime(0.0, t);
-    g.gain.linearRampToValueAtTime(0.15, t + 0.05);
-    g.gain.setValueAtTime(0.15, t + 1.95);
-    g.gain.linearRampToValueAtTime(0, t + 2.0);
-    o1.connect(g); o2.connect(g); g.connect(ctx.destination);
-    o1.start(t); o2.start(t); o1.stop(t + 2.0); o2.stop(t + 2.0);
-    setTimeout(cycle, 6000);
-  };
-  cycle();
-  return () => { killed = true; ctx.close().catch(() => {}); };
-}
 
 export default function InboundCallOverlay({ call, onClose }: { call: InboundCall; onClose: () => void }) {
   const navigate = useNavigate();
@@ -55,8 +31,7 @@ export default function InboundCallOverlay({ call, onClose }: { call: InboundCal
 
   useEffect(() => {
     if (!call) return;
-    stopRef.current = startRingtone();
-    try { (navigator as any).vibrate?.([400, 200, 400, 200, 400]); } catch (_) { /* */ }
+    stopRef.current = startSelectedRingtone();
     const t = setTimeout(() => {
       toast(`📞 Appel manqué de ${contact?.full_name ?? call.from_number ?? ""}`);
       handleClose();
@@ -104,8 +79,8 @@ export default function InboundCallOverlay({ call, onClose }: { call: InboundCal
   const initials = displayName.split(/\s+/).slice(0, 2).map((w) => w[0]).join("").toUpperCase();
 
   return (
-    <div className="absolute inset-0 z-[60] flex flex-col items-center justify-between" style={{ background: "linear-gradient(180deg,#0A1628 0%,#020610 100%)", paddingTop: "calc(env(safe-area-inset-top, 0px) + 24px)", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 24px)" }}>
-      <button onClick={handleClose} className="absolute right-4 text-slate-400 hover:text-white text-xs flex items-center gap-1 px-3 py-2 rounded-full" style={{ background: "rgba(255,255,255,0.05)", top: "calc(env(safe-area-inset-top, 0px) + 16px)" }}>
+    <div className="absolute inset-0 z-[60] flex flex-col items-center justify-between py-10" style={{ background: "linear-gradient(180deg,#0A1628 0%,#020610 100%)" }}>
+      <button onClick={handleClose} className="absolute top-4 right-4 text-slate-400 hover:text-white text-xs flex items-center gap-1 px-3 py-2 rounded-full" style={{ background: "rgba(255,255,255,0.05)" }}>
         <X className="w-4 h-4" /> Ignorer
       </button>
 

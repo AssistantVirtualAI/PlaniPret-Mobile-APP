@@ -595,7 +595,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       let content = UNMutableNotificationContent()
       content.title = "Appel entrant"
       content.body = label
-      content.sound = UNNotificationSound.defaultRingtone
+      if #available(iOS 15.2, *) { content.sound = UNNotificationSound.defaultRingtone } else { content.sound = UNNotificationSound.default }
       if #available(iOS 15.0, *) { content.interruptionLevel = .timeSensitive }
       content.categoryIdentifier = "PP_INCOMING_CALL"
       content.userInfo = ["pp_call_id": callId, "pp_incoming_call": true]

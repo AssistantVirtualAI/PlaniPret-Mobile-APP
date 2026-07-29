@@ -143,7 +143,7 @@ export async function getUserMaestroAccessToken(
   const { data: prof } = await admin
     .from("planipret_profiles")
     .select("maestro_broker_token, maestro_refresh_token, maestro_token_expires_at, maestro_oauth_client")
-    .eq("user_id", userId)
+    .or(`user_id.eq.${userId},id.eq.${userId}`)
     .maybeSingle();
   if (!prof?.maestro_broker_token) return null;
 

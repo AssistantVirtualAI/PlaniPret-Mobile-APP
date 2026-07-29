@@ -35,29 +35,60 @@ Deno.serve(async (req) => {
   if (!call_id) return json({ success: false, error: "call_id_required" }, 400);
 
   const admin = adminClient();
-  const { data: call } = await admin
+  let { data: call } = await admin
     .from("planipret_phone_calls")
     .select("id, user_id, maestro_call_id, recording_url, metadata")
     .eq("id", call_id)
     .maybeSingle();
 
   const userId = call?.user_id ?? null;
-  const maestroCallId = (call as any)?.maestro_call_id ?? null;
+  let maestroCallId = (call as any)?.maestro_call_id ?? null;
 
   if (!maestroCallId) {
     await pipelineLog(admin, {
+      call_id, user_id: userId, step: "cdr_sync", status: "started",
+      payload: { reason: "recording_poll_missing_maestro_call_id" },
+    });
+
+    const cdrRes = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/maestro-cdr`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
+      },
+      body: JSON.stringify({ call_id, force: true }),
+    });
+    const cdrData = await cdrRes.json().catch(() => ({}));
+
+    const refreshed = await admin
+      .from("planipret_phone_calls")
+      .select("id, user_id, maestro_call_id, recording_url, metadata")
+      .eq("id", call_id)
+      .maybeSingle();
+    call = refreshed.data ?? call;
+    maestroCallId = (call as any)?.maestro_call_id ?? null;
+
+    if (maestroCallId) {
+      await pipelineLog(admin, {
+        call_id, user_id: userId, step: "cdr_sync", status: "success",
+        payload: { maestro_call_id: maestroCallId, repaired_before_recording: true },
+      });
+    } else {
+    await pipelineLog(admin, {
       call_id, user_id: userId, step: "recording_poll", status: "skipped",
       error_message: "maestro_call_id_missing",
+      payload: { cdr_status: cdrRes.status, cdr_error: cdrData?.error ?? null, cdr_detail: cdrData?.detail ?? null },
     });
     await admin.from("planipret_recording_uploads").upsert({
       call_id, user_id: userId, status: "skipped",
       error_message: "maestro_call_id_missing", updated_at: new Date().toISOString(),
     }, { onConflict: "call_id" }).then(() => {}, () => {});
-    return json({ success: false, error: "maestro_call_id_missing" });
+    return json({ success: false, error: "maestro_call_id_missing", cdr: cdrData }, 424);
+    }
   }
 
   const cfg = await getMaestroConfig(admin);
-  const auth = await telecomAuth(admin, userId ?? "");
+  const auth = await telecomAuth(admin, userId ?? "", true);
   if (!cfg.url || !cfg.key || !auth.brokerId) {
     return json({ success: false, error: !auth.brokerId ? "maestro_broker_id_missing" : "maestro_not_configured" });
   }
@@ -66,6 +97,7 @@ Deno.serve(async (req) => {
     method: "GET",
     path: `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/calls/${encodeURIComponent(String(maestroCallId))}/recording`,
     token: auth.token,
+    machine: auth.machine,
   });
   const url = res.ok ? pickUrl(res.data) : null;
   const meta = ((call as any)?.metadata ?? {}) as Record<string, unknown>;
@@ -80,7 +112,7 @@ Deno.serve(async (req) => {
       payload: { maestro_call_id: maestroCallId, status: res.status },
     });
     await admin.from("planipret_recording_uploads").upsert({
-      call_id, user_id: userId, status: "pending",
+      call_id, user_id: userId, maestro_call_id: maestroCallId, status: "pending",
       error_message: "media_not_ready", updated_at: new Date().toISOString(),
     }, { onConflict: "call_id" }).then(() => {}, () => {});
     return json({ success: true, skipped: "media_not_ready", status: res.status });
@@ -102,7 +134,7 @@ Deno.serve(async (req) => {
   });
   await setPipelineStep(admin, call_id, "cdr", "done", { recording: "ready" }).catch(() => {});
   await admin.from("planipret_recording_uploads").upsert({
-    call_id, user_id: userId, status: "synced",
+    call_id, user_id: userId, maestro_call_id: maestroCallId, status: "synced",
     error_message: null, updated_at: new Date().toISOString(),
   }, { onConflict: "call_id" }).then(() => {}, () => {});
 

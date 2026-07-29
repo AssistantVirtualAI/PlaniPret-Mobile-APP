@@ -15,6 +15,7 @@ import { safeEdgeFunction } from "@/lib/safeEdgeFunction";
 import MNetworkSection from "@/components/planipret/mobile/MNetworkSection";
 import MaestroConnectCard from "@/components/planipret/mobile/MaestroConnectCard";
 import MCallAudioSettings from "@/components/planipret/mobile/MCallAudioSettings";
+import MRingtoneSettings from "@/components/planipret/mobile/MRingtoneSettings";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import Ms365StatusBadge from "@/components/planipret/Ms365StatusBadge";
 import { openMs365Authorize } from "@/lib/ms365OAuth";
@@ -392,6 +393,8 @@ export default function MMore() {
       <MNetworkSection />
 
       <MCallAudioSettings />
+
+      <MRingtoneSettings />
 
 
       <NotificationsSection profile={profile} reloadProfile={reloadProfile} />
