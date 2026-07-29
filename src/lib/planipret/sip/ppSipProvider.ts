@@ -124,7 +124,10 @@ class PpSipProvider {
   private keepAliveTimer: ReturnType<typeof setInterval> | null = null;
   private regFailures = 0;
   private wsRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private wsWatchdogTimer: ReturnType<typeof setTimeout> | null = null;
   private wsFailures = 0;
+  private lastWsDisconnectedAt = 0;
+  private lastRegisterAttemptAt = 0;
   private netWatchInstalled = false;
   /** Reconnect instrumentation — surfaced via getReconnectMetrics(). */
   private reconnectMetrics: PpSipReconnectMetrics = {
@@ -224,6 +227,13 @@ class PpSipProvider {
         .filter((u) => /^wss?:\/\//i.test(u)))) as string[];
       if (!urls.length) throw new Error("No valid SIP WSS URL");
       const sockets = urls.map((u) => new (JsSIP as any).WebSocketInterface(u));
+      const reconnectConfig = getPpSipReconnectConfig();
+      this.log("info", "reconnect guard active v3", {
+        floorMs: PP_SIP_RECONNECT_FLOOR_MS,
+        backoffMinMs: reconnectConfig.socketBackoffMinMs,
+        verifyDelayMs: reconnectConfig.socketVerifyDelayMs,
+        registerExpiresSec: reconnectConfig.registerExpiresSec,
+      });
       const ua = new (JsSIP as any).UA({
         sockets,
         uri: `sip:${cleanCfg.sipUsername}@${cleanCfg.sipDomain}`,
@@ -234,16 +244,19 @@ class PpSipProvider {
         session_timers: false,
         // Match the native keep-alive REGISTER expiry so NetSapiens does not
         // expire one contact while the other still shows "registered" locally.
-        register_expires: getPpSipReconnectConfig().registerExpiresSec,
-        connection_recovery_min_interval: Math.max(3, Math.round(getPpSipReconnectConfig().socketBackoffMinMs / 1000)),
-        connection_recovery_max_interval: Math.max(2, Math.round(getPpSipReconnectConfig().socketBackoffMaxMs / 1000)),
+        register_expires: reconnectConfig.registerExpiresSec,
+        connection_recovery_min_interval: Math.max(3, Math.ceil(reconnectConfig.socketBackoffMinMs / 1000)),
+        connection_recovery_max_interval: Math.max(3, Math.ceil(reconnectConfig.socketBackoffMaxMs / 1000)),
         user_agent: "Planipret Softphone 1.0",
       });
 
       ua.on("connecting", () => { this.connectingSince = Date.now(); this.update({ status: "connecting" }); });
       ua.on("connected", () => {
-        this.wsFailures = 0;
+        // Do not reset wsFailures until REGISTER succeeds. NetSapiens can accept
+        // the TCP/WSS connection and still close it before REGISTER 200 OK; if we
+        // reset here every drop becomes attempt #1 forever.
         if (this.wsRetryTimer) { clearTimeout(this.wsRetryTimer); this.wsRetryTimer = null; }
+        if (this.wsWatchdogTimer) { clearTimeout(this.wsWatchdogTimer); this.wsWatchdogTimer = null; }
         // Do NOT ping here: sending an un-authenticated OPTIONS before the
         // REGISTER 200 OK makes NetSapiens close the socket with code 1001,
         // which produced the endless connect -> 1001 -> "Connection Error" loop.
@@ -251,12 +264,22 @@ class PpSipProvider {
       });
       ua.on("disconnected", (e: any) => {
         this.log("warn", "ws disconnected", e);
+        this.lastWsDisconnectedAt = Date.now();
         this.stopKeepAlive();
         this.update({ status: "disconnected", errorCause: e?.reason || "ws_disconnected" });
-        // JsSIP retries the socket via connection_recovery_*, but on mobile the
-        // OS often kills the socket while the recovery timer is suspended, so we
-        // drive our own exponential-backoff reconnect + re-REGISTER loop.
-        this.scheduleSocketReconnect(String(e?.reason || "ws_disconnected"));
+        // JsSIP already owns the first retry via connection_recovery_* (>= 3s).
+        // Scheduling our own reconnect here opened a SECOND WebSocket for the
+        // same AoR: NetSapiens then closed the older socket with code 1001,
+        // which restarted the whole cycle forever. We only act as a watchdog if
+        // JsSIP has not recovered after socketVerifyDelayMs.
+        const rc = getPpSipReconnectConfig();
+        if (this.wsWatchdogTimer) clearTimeout(this.wsWatchdogTimer);
+        this.wsWatchdogTimer = setTimeout(() => {
+          this.wsWatchdogTimer = null;
+          if (this.ua && this.snap.status !== "registered" && this.snap.status !== "connected") {
+            this.scheduleSocketReconnect(String(e?.reason || "ws_disconnected"));
+          }
+        }, Math.max(PP_SIP_RECONNECT_FLOOR_MS, rc.socketVerifyDelayMs));
       });
       ua.on("registered", () => {
         this.regFailures = 0;
@@ -266,27 +289,51 @@ class PpSipProvider {
         this.reconnectMetrics.delaySource = "none";
         this.emitMetrics();
         if (this.wsRetryTimer) { clearTimeout(this.wsRetryTimer); this.wsRetryTimer = null; }
+        if (this.wsWatchdogTimer) { clearTimeout(this.wsWatchdogTimer); this.wsWatchdogTimer = null; }
         this.startKeepAlive();
         if (this.regRetryTimer) { clearTimeout(this.regRetryTimer); this.regRetryTimer = null; }
         return this.update({ status: "registered", errorCause: undefined, lastRegistrationAt: Date.now() });
       });
       ua.on("unregistered", () => {
+        const rc = getPpSipReconnectConfig();
+        const recentlyDisconnected = Date.now() - this.lastWsDisconnectedAt < rc.socketVerifyDelayMs;
         // When the transport is already down, the socket reconnect loop owns
         // recovery — re-registering here only yields "Connection Error".
-        if (!this.ua?.isConnected?.()) {
-          this.log("warn", "unregistered while transport down - deferring to reconnect loop");
+        if (!this.ua?.isConnected?.() || recentlyDisconnected || this.snap.status === "disconnected") {
+          this.log("warn", "unregistered ignored; transport recovery owns reconnect");
+          // Deferred: never open a competing socket while JsSIP recovery runs.
+          if (!this.wsWatchdogTimer && !this.wsRetryTimer) {
+            this.wsWatchdogTimer = setTimeout(() => {
+              this.wsWatchdogTimer = null;
+              if (this.ua && this.snap.status !== "registered") this.scheduleSocketReconnect("unregistered_transport_down");
+            }, Math.max(PP_SIP_RECONNECT_FLOOR_MS, rc.socketVerifyDelayMs));
+          }
           return;
         }
-        this.log("warn", "unregistered - forcing re-register");
+        this.log("warn", "unregistered on live transport - scheduling guarded re-register");
         this.update({ status: "connected", errorCause: "re_registering" });
         // NetSapiens sometimes returns 401/403 mid-session on stale nonce;
         // trigger an immediate re-REGISTER instead of leaving the UA idle.
-        setTimeout(() => { try { if (this.ua?.isConnected?.()) this.ua.register(); } catch {} }, getPpSipReconnectConfig().reRegisterDelayMs);
+        setTimeout(() => {
+          try {
+            if (this.ua?.isConnected?.()) {
+              this.lastRegisterAttemptAt = Date.now();
+              this.ua.register();
+            } else {
+              this.scheduleSocketReconnect("guarded_reregister_transport_down");
+            }
+          } catch {}
+        }, Math.max(PP_SIP_RECONNECT_FLOOR_MS, rc.reRegisterDelayMs));
       });
       ua.on("registrationFailed", (e: any) => {
         const cause = e?.cause || e?.response?.reason_phrase || "registration_failed";
         this.log("error", `registration failed: ${cause}`);
         this.update({ status: "error", errorCause: cause });
+        if (!this.ua?.isConnected?.() || /connection error/i.test(String(cause))) {
+          if (this.regRetryTimer) { clearTimeout(this.regRetryTimer); this.regRetryTimer = null; }
+          this.scheduleSocketReconnect(`registration_failed:${cause}`);
+          return;
+        }
         // Retry with exponential backoff and a single pending timer — stacking
         // retries hammered NetSapiens and kept the socket in a failed state.
         const rc = getPpSipReconnectConfig();
@@ -294,8 +341,15 @@ class PpSipProvider {
         if (this.regRetryTimer) clearTimeout(this.regRetryTimer);
         this.regRetryTimer = setTimeout(() => {
           this.regRetryTimer = null;
-          try { this.ua?.register(); } catch {}
-        }, Math.min(rc.registerRetryMaxMs, rc.registerRetryBaseMs * this.regFailures));
+          try {
+            if (this.ua?.isConnected?.()) {
+              this.lastRegisterAttemptAt = Date.now();
+              this.ua.register();
+            } else {
+              this.scheduleSocketReconnect("registration_retry_transport_down");
+            }
+          } catch {}
+        }, Math.max(PP_SIP_RECONNECT_FLOOR_MS, Math.min(rc.registerRetryMaxMs, rc.registerRetryBaseMs * this.regFailures)));
       });
       ua.on("newRTCSession", (e: any) => this.attachSession(e.session, e.originator));
 
@@ -453,20 +507,27 @@ class PpSipProvider {
   }
   async forceReregister() {
     try {
-      if (!this.ua) return;
+      const ua = this.ua;
+      if (!ua) return;
       // Only cycle the registration when we actually hold one. Calling
       // unregister({all:true}) while the UA is still connecting aborted the
       // in-flight REGISTER and produced "Connection Error".
+      if (this.snap.status === "connecting" && Date.now() - this.connectingSince < 20_000) return;
+      if (!ua.isConnected?.() || this.snap.status === "disconnected" || this.snap.status === "error") {
+        this.scheduleSocketReconnect("force_reregister_transport_down");
+        return;
+      }
+      if (Date.now() - this.lastRegisterAttemptAt < PP_SIP_RECONNECT_FLOOR_MS) return;
+      this.lastRegisterAttemptAt = Date.now();
       if (this.snap.status === "registered") {
         // NEVER unregister({all:true}) here: it wipes EVERY contact bound to the
         // AoR — including the native background keep-alive registration — which
         // left the extension unregistered and sent inbound calls straight to
         // voicemail. A plain re-REGISTER refreshes only this contact.
-        try { this.ua.register(); } catch {}
+        try { ua.register(); } catch {}
         return;
       }
-      if (this.snap.status === "connecting" && Date.now() - this.connectingSince < 20_000) return;
-      try { this.ua.register(); } catch {}
+      try { ua.register(); } catch {}
     } catch {}
   }
 
@@ -476,11 +537,14 @@ class PpSipProvider {
    *  the delay never regresses to 1000ms. */
   private scheduleSocketReconnect(reason: string) {
     if (this.wsRetryTimer) return;
+    if (this.wsWatchdogTimer) { clearTimeout(this.wsWatchdogTimer); this.wsWatchdogTimer = null; }
     const rc = getPpSipReconnectConfig();
-    const floorMs = PP_SIP_RECONNECT_FLOOR_MS;
+    const floorMs = Math.max(PP_SIP_RECONNECT_FLOOR_MS, rc.socketBackoffMinMs);
     this.wsFailures = Math.min(this.wsFailures + 1, rc.socketBackoffMaxAttempts);
-    const raw = ppSipBackoffDelay(this.wsFailures, rc.socketBackoffMinMs, rc.socketBackoffMaxMs);
-    const delay = Math.max(floorMs, raw);
+    const configuredMin = Math.max(1, Number(rc.socketBackoffMinMs) || 1);
+    const configuredMax = Math.max(configuredMin, Number(rc.socketBackoffMaxMs) || configuredMin);
+    const raw = Math.min(configuredMax, configuredMin * 2 ** (Math.max(1, this.wsFailures) - 1));
+    const delay = Math.max(floorMs, ppSipBackoffDelay(this.wsFailures, rc.socketBackoffMinMs, rc.socketBackoffMaxMs), raw);
     const source: PpSipReconnectMetrics["delaySource"] =
       raw < floorMs ? "floor" : (raw >= rc.socketBackoffMaxMs ? "cap" : "backoff");
 
@@ -517,7 +581,12 @@ class PpSipProvider {
         return;
       }
       try {
-        if (ua.isConnected?.()) { ua.register(); } else { ua.start(); }
+        if (ua.isConnected?.()) {
+          this.lastRegisterAttemptAt = Date.now();
+          ua.register();
+        } else {
+          ua.start();
+        }
         this.log("info", `sip reconnect attempt #${this.reconnectMetrics.attempt} sent`);
       } catch (e: any) {
         this.reconnectMetrics.lastFailureReason = `attempt_error:${e?.message || e}`;
@@ -555,7 +624,9 @@ class PpSipProvider {
       // registration completes is rejected and the server drops the socket.
       if (this.snap.status !== "registered") return;
       try {
-        if (!ua.isConnected?.()) { try { ua.start(); } catch {} return; }
+        // Never call ua.start() from the ping: it races the reconnect loop and
+        // opens a duplicate socket (→ 1001 on the previous one).
+        if (!ua.isConnected?.()) return;
         ua.sendRequest((JsSIP as any).C.OPTIONS, `sip:${ua.configuration?.uri?.host ?? ""}`, {});
       } catch { /* ping failures are non-fatal */ }
     };
@@ -585,6 +656,7 @@ class PpSipProvider {
   stop() {
     this.stopKeepAlive();
     if (this.wsRetryTimer) { clearTimeout(this.wsRetryTimer); this.wsRetryTimer = null; }
+    if (this.wsWatchdogTimer) { clearTimeout(this.wsWatchdogTimer); this.wsWatchdogTimer = null; }
     if (this.regRetryTimer) { clearTimeout(this.regRetryTimer); this.regRetryTimer = null; }
     try { this.ua?.stop(); } catch {}
     this.ua = null;

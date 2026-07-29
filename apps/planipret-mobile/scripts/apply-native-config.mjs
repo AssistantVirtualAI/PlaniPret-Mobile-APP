@@ -1513,6 +1513,16 @@ function patchIosNativeFiles() {
   console.log("[native-config] iOS PpSipKeepAlive + PpVoipCall plugins applied.");
 }
 
+// Remove duplicate AppDelegate.swift that cap sync sometimes creates at ios/App/ root
+// (the canonical one is ios/App/App/AppDelegate.swift referenced by project.pbxproj)
+{
+  const rootDelegate = path.join(appDir, "ios", "App", "AppDelegate.swift");
+  const appDelegate  = path.join(appDir, "ios", "App", "App", "AppDelegate.swift");
+  if (fs.existsSync(rootDelegate) && fs.existsSync(appDelegate)) {
+    fs.rmSync(rootDelegate);
+    console.log("[native-config] Removed duplicate ios/App/AppDelegate.swift (kept ios/App/App/AppDelegate.swift).");
+  }
+}
 patchCopiedWebBundles();
 patchIosInfoPlist();
 patchIosEntitlements();

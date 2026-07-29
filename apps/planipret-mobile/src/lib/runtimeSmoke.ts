@@ -20,6 +20,7 @@ export interface SmokeResult {
   tailwindVars: boolean;
   utilityProbe: string;
   buildId: string;
+  sipGuard: string;
   passed: boolean;
   failures: string[];
 }
@@ -86,6 +87,7 @@ export function runRuntimeSmokeCheck(): SmokeResult {
     tailwindVars,
     utilityProbe: utility.actual,
     buildId: (import.meta as any).env?.VITE_BUILD_ID ?? '—',
+    sipGuard: 'reconnect-guard-v3-floor-3000',
     passed: failures.length === 0,
     failures,
   };
@@ -95,7 +97,7 @@ export function runRuntimeSmokeCheck(): SmokeResult {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(result));
   } catch {}
 
-  if (result.passed) console.log('[PP][smoke] ✓ root rendered + Tailwind compiled', result.buildId);
+  if (result.passed) console.log('[PP][smoke] ✓ root rendered + Tailwind compiled', result.buildId, result.sipGuard);
   else console.error('[PP][smoke] ✗ startup smoke check failed:', failures.join(', '), result);
 
   return result;
