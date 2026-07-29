@@ -250,15 +250,20 @@ export async function getBrokerAuth(
   }
 
   if (!brokerId) {
-    brokerId = await fallbackBrokerId(admin);
-    diag.used_fallback = !!brokerId;
-    if (brokerId) {
-      diag.reason = "using_global_fallback_broker_id";
-      console.warn(`[maestro.brokerId] falling back to global broker id ${brokerId} for user ${userId ?? "-"}`);
-    } else if (diag.reason === "ok") {
-      diag.reason = "no_broker_id_anywhere";
+    // The global fallback broker id is ONLY valid when no user is attached to
+    // the record. Using it for a known user would push that broker's calls,
+    // recordings and transcripts into somebody else's Maestro account.
+    if (!userId) {
+      brokerId = await fallbackBrokerId(admin);
+      diag.used_fallback = !!brokerId;
+      if (brokerId) diag.reason = "using_global_fallback_broker_id_no_user";
+    } else {
+      diag.reason = diag.reason === "ok" ? "broker_id_unresolved_for_user" : diag.reason;
+      console.warn(`[maestro.brokerId] no broker id for user ${userId} — global fallback refused (would cross-post to another broker)`);
     }
+    if (!brokerId && diag.reason === "ok") diag.reason = "no_broker_id_anywhere";
   }
+
   if (!brokerId) {
     console.error(`[maestro.brokerId] UNRESOLVED user=${userId ?? "-"} ${JSON.stringify(diag)}`);
   }

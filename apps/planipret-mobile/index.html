@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="theme-color" content="#1A4A8A" />
+    <title>Planiprêt Mobile</title>
+    <meta name="description" content="Planiprêt — application mobile courtier (appels, messages, pipeline, AVA)." />
+    <!-- Warm up the asset host early so logos + preloaded chunks resolve fast on cold start. -->
+    <link rel="preconnect" href="https://avastatistic.ca" crossorigin />
+    <link rel="dns-prefetch" href="https://avastatistic.ca" />
+    <link rel="preconnect" href="https://gejxisrqtvxavbrfcoxz.supabase.co" crossorigin />
+    <link rel="dns-prefetch" href="https://gejxisrqtvxavbrfcoxz.supabase.co" />
+    <!-- Preload the LCP logo used in the header. -->
+    <link rel="preload" as="image" href="https://avastatistic.ca/__l5e/assets-v1/e3dd3a86-14ac-4585-8736-b102e9737302/planipret-logo.png" fetchpriority="high" />
+    <style>
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      html { background: #0A1425; height: 100%; overflow: hidden; -webkit-text-size-adjust: 100%; touch-action: manipulation; }
+      body { background: #0A1425; height: 100%; min-height: -webkit-fill-available; overflow: hidden; overscroll-behavior: none; }
+      #root { background: #0A1425; height: 100%; min-height: -webkit-fill-available; overflow: hidden; }
+      input, textarea, select { font-size: 16px !important; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      (function () {
+        function isIgnorableNativeStartupError(raw) {
+          if (typeof raw === 'string') return /multi_header\.length|multi_header/i.test(raw);
+          if (!raw || typeof raw !== 'object') return false;
+          var message = String(raw.message || raw.errorMessage || '').trim();
+          var code = String(raw.code || '').trim();
+          if (/multi_header\.length|multi_header/i.test(message)) return true;
+          if (!message && !code && Object.keys(raw).length === 0) return true;
+          return code === 'UNIMPLEMENTED' && /not implemented/i.test(message);
+        }
+        window.__PP_REACT_BOOTED__ = false;
+        window.__PP_REACT_BOOT_ATTEMPTED__ = false;
+        function showBootFallback(message) {
+          var fallback = document.getElementById('pp-native-boot-fallback');
+          if (!fallback) return;
+          var body = fallback.querySelector('[data-pp-boot-message]');
+          if (body && message) body.textContent = message;
+          fallback.style.display = 'flex';
+        }
+        window.addEventListener('error', function (event) {
+          if (!isIgnorableNativeStartupError(event.error) && !isIgnorableNativeStartupError(event.message)) return;
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        }, true);
+        window.addEventListener('unhandledrejection', function (event) {
+          if (!isIgnorableNativeStartupError(event.reason)) return;
+          event.preventDefault();
+          event.stopImmediatePropagation();
+        }, true);
+        window.__PP_SHOW_BOOT_FALLBACK__ = showBootFallback;
+      })();
+
+      setTimeout(function () {
+        var root = document.getElementById('root');
+        if (root && root.innerHTML === '' && !window.__PP_REACT_BOOTED__) {
+          root.innerHTML = '<div data-pp-boot-visible="1" style="color:white;padding:20px;background:#0A1425;min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:system-ui,sans-serif">Démarrage...</div>';
+        }
+      }, 1200);
+
+      setTimeout(function () {
+        var root = document.getElementById('root');
+        if (!root || window.__PP_REACT_BOOTED__) return;
+        // Only block the screen when React really rendered nothing. A slow
+        // provider/lazy chunk must never hide a working UI behind the overlay.
+        var hasRealContent = root.children.length > 0 && !root.querySelector('[data-pp-boot-visible]');
+        if (hasRealContent) { window.__PP_REACT_BOOTED__ = true; return; }
+        if (window.__PP_SHOW_BOOT_FALLBACK__) {
+          window.__PP_SHOW_BOOT_FALLBACK__('Le démarrage iOS a été interrompu avant le premier écran. Fermez puis relancez l’application.');
+        }
+      }, 4500);
+
+    </script>
+    <div id="pp-native-boot-fallback" style="display:none;position:fixed;inset:0;z-index:2147483647;align-items:center;justify-content:center;background:#0A1425;color:#E2E8F0;font-family:system-ui,-apple-system,BlinkMacSystemFont,sans-serif;padding:24px;text-align:center">
+      <div style="max-width:320px">
+        <div style="width:58px;height:58px;border-radius:18px;background:#fff;margin:0 auto 16px;display:flex;align-items:center;justify-content:center;color:#1A4A8A;font-weight:800;font-size:20px">PP</div>
+        <div style="font-weight:800;font-size:18px;margin-bottom:8px">Planiprêt Mobile</div>
+        <div data-pp-boot-message style="font-size:13px;line-height:1.45;opacity:.82;margin-bottom:18px">Démarrage interrompu.</div>
+        <button onclick="location.reload()" style="border:0;border-radius:12px;background:#2E9BDC;color:white;font-weight:800;padding:12px 18px">Relancer</button>
+      </div>
+    </div>
+    <script type="module" src="/src/index.tsx"></script>
+  </body>
+</html>

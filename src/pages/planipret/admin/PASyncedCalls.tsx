@@ -5,8 +5,10 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { RefreshCw, Radio, FileText, Sparkles, BarChart3, CheckCircle2, Clock, Search } from "lucide-react";
+import { RefreshCw, Radio, FileText, Sparkles, BarChart3, CheckCircle2, Clock, Search, Link2 } from "lucide-react";
+import { toast } from "sonner";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+
 
 const DICT = {
   fr: {
@@ -95,6 +97,28 @@ export default function PASyncedCalls() {
   const t = DICT[(lang === "en" ? "en" : "fr") as "fr" | "en"];
   const [rows, setRows] = useState<CallRow[]>([]);
   const [loading, setLoading] = useState(true);
+  const [linking, setLinking] = useState(false);
+
+  const linkBrokers = useCallback(async () => {
+    setLinking(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("pp-maestro-broker-backfill", {
+        body: { only_missing: true, max_id: 800 },
+      });
+      if (error) throw error;
+      const d = data as { matched?: number; updated?: number; unmatched?: number };
+      toast.success(
+        lang === "fr"
+          ? `${d?.updated ?? 0} courtier(s) liés à Maestro — ${d?.unmatched ?? 0} sans correspondance`
+          : `${d?.updated ?? 0} broker(s) linked to Maestro — ${d?.unmatched ?? 0} unmatched`,
+      );
+    } catch (e) {
+      toast.error((e as Error)?.message ?? "Error");
+    } finally {
+      setLinking(false);
+    }
+  }, [lang]);
+
   const [liveOk, setLiveOk] = useState(false);
   const [q, setQ] = useState("");
   const [onlySynced, setOnlySynced] = useState(true);
@@ -185,12 +209,17 @@ export default function PASyncedCalls() {
             <Badge variant={liveOk ? "default" : "secondary"} className="gap-1">
               <Radio className="h-3 w-3" /> {liveOk ? t.live : t.offline}
             </Badge>
+            <Button size="sm" variant="outline" onClick={() => void linkBrokers()} disabled={linking}>
+              <Link2 className={`h-4 w-4 ${linking ? "animate-pulse" : ""}`} />{" "}
+              {lang === "fr" ? "Lier les courtiers à Maestro" : "Link brokers to Maestro"}
+            </Button>
             <Button size="sm" variant="outline" onClick={() => void load()} disabled={loading}>
               <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} /> {t.refresh}
             </Button>
           </div>
         }
       />
+
 
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         {[
