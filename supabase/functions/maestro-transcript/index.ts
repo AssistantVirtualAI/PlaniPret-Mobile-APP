@@ -12,6 +12,7 @@ import {
   maestroFetch,
   pipelineLog,
   setPipelineStep,
+  telecomAuth,
   updateCallPipeline,
 } from "../_shared/maestro.ts";
 
@@ -103,9 +104,43 @@ Deno.serve(async (req) => {
     await pipelineLog(admin, { call_id, user_id: call.user_id, step: "transcript", status: "started" });
 
     const t0 = Date.now();
+
+    // 0. Poll Maestro (it generates the transcription server-side after {status:"ended"}).
+    let result: { text: string; segments: any[] } | null = null;
+    let source: any = null;
+    if (call.maestro_call_id) {
+      try {
+        const cfg = await getMaestroConfig(admin);
+        const tAuth = await telecomAuth(admin, call.user_id ?? "");
+        if (cfg.url && cfg.key && tAuth.brokerId) {
+          const base = `/api/v1/users/${encodeURIComponent(String(tAuth.brokerId))}/calls/${encodeURIComponent(String(call.maestro_call_id))}`;
+          const r = await maestroFetch(cfg, { method: "GET", path: `${base}/transcription`, token: tAuth.token });
+          const d: any = r.ok ? r.data : null;
+          const text = typeof d === "string"
+            ? d
+            : (d?.transcript ?? d?.transcription ?? d?.text ?? d?.content ?? null);
+          if (typeof text === "string" && text.trim()) {
+            result = { text, segments: d?.segments ?? [] };
+            source = "maestro";
+          }
+          await pipelineLog(admin, {
+            call_id, user_id: call.user_id, step: "transcript_poll",
+            status: result ? "success" : "skipped",
+            error_message: result ? undefined : "transcript_not_ready",
+            payload: { maestro_call_id: call.maestro_call_id, status: r.status },
+          }).catch(() => {});
+        }
+      } catch (e) {
+        console.warn("[maestro-transcript] maestro poll failed", e);
+      }
+    }
+
     // 1. Try NS-API
-    let result = await tryNsTranscript(admin, call.ns_call_id);
-    let source: "ns" | "lovable" | null = result ? "netsapiens" as any : null;
+    if (!result) {
+      result = await tryNsTranscript(admin, call.ns_call_id);
+      if (result) source = "netsapiens";
+    }
+
 
     // 2. Fallback to the canonical NS recording proxy, then Lovable AI Gateway.
     if (!result) {
@@ -153,21 +188,11 @@ Deno.serve(async (req) => {
       const cfg = await getMaestroConfig(admin);
       if (cfg.url && cfg.key) {
         const auth = await getBrokerAuth(admin, call.user_id);
-        // Scott API: GET /users/{brokerId}/calls/{callId}/recording (try plural then singular)
-        const recId = call.maestro_call_id ?? call.ns_call_id ?? call.id;
-        const recPaths = auth.brokerId
-          ? [
-              `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/calls/${encodeURIComponent(recId)}/recording`,
-              `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/call/${encodeURIComponent(recId)}/recording`,
-            ]
-          : [
-              `/api/v1/users/me/calls/${encodeURIComponent(recId)}/recording`,
-              `/api/v1/users/me/call/${encodeURIComponent(recId)}/recording`,
-            ];
-        let recRes = await maestroFetch(cfg, { method: "GET", path: recPaths[0], token: auth.token });
-        if (!recRes.ok && (recRes.status === 404 || recRes.status === 405)) {
-          recRes = await maestroFetch(cfg, { method: "GET", path: recPaths[1], token: auth.token });
-        }
+        const recRes = await maestroFetch(cfg, {
+          method: "GET",
+          path: `/api/v1/calls/${encodeURIComponent(call.maestro_call_id ?? call.ns_call_id ?? call.id)}/recording`,
+          token: auth.token,
+        });
         if (recRes.ok && recRes.data?.url) {
           result = await transcribeViaLovable(recRes.data.url);
           source = result ? "lovable" as any : null;
@@ -199,18 +224,16 @@ Deno.serve(async (req) => {
       const cfg = await getMaestroConfig(admin);
       if (cfg.url && cfg.key) {
         const auth = await getBrokerAuth(admin, call.user_id);
-        // Scott API: PUT /users/{brokerId}/calls/{callId} with transcript field
         const mId = call.maestro_call_id ?? call.ns_call_id ?? call.id;
-        const trPath = auth.brokerId
-          ? `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/calls/${encodeURIComponent(mId)}`
-          : `/api/v1/users/me/calls/${encodeURIComponent(mId)}`;
         await maestroFetch(cfg, {
-          method: "PUT",
-          path: trPath,
+          method: "POST",
+          path: `/api/v1/calls/${encodeURIComponent(mId)}/transcript`,
           token: auth.token,
           body: {
-            transcript: result.text,
-            transcript_language: "fr-CA",
+            language: "fr-CA",
+            text: result.text,
+            segments: result.segments,
+            confidence: 0.95,
           },
         });
       }

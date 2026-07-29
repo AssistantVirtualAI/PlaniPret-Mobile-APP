@@ -240,6 +240,41 @@ Deno.serve(async (req) => {
       // Close any open retry entry and re-trigger the dependent recording upload.
       await markCdrRetrySucceeded(admin, call_id, maestroCallId ? String(maestroCallId) : null);
 
+      // Mark the call as ended so Maestro starts generating recording + transcription.
+      if (maestroCallId) {
+        try {
+          const endRes = await maestroFetch(cfg, {
+            method: "PUT",
+            path: `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/calls/${encodeURIComponent(String(maestroCallId))}`,
+            token: auth.token,
+            body: { status: "ended" },
+          }) as any;
+          await maestroSyncLog(admin, {
+            user_id: call.user_id,
+            action: "call.ended",
+            endpoint: endRes.endpoint ?? "/api/v1/users/{id}/calls/{callId}",
+            request_body: { maestro_call_id: maestroCallId, status: "ended" },
+            response_status: endRes.status,
+            response_body: endRes.data,
+            duration_ms: 0,
+            success: !!endRes.ok,
+          });
+          await pipelineLog(admin, {
+            call_id, user_id: call.user_id, step: "call_ended",
+            status: endRes.ok ? "success" : "error",
+            error_message: endRes.ok ? undefined : `http_${endRes.status}`,
+            payload: { maestro_call_id: maestroCallId, status: endRes.status },
+          });
+        } catch (e) {
+          console.warn("[maestro-cdr] mark ended failed", e);
+          await pipelineLog(admin, {
+            call_id, user_id: call.user_id, step: "call_ended", status: "error",
+            error_message: (e as Error)?.message ?? "mark_ended_failed",
+          }).catch(() => {});
+        }
+      }
+
+
       // Trigger transcript (fire and forget)
       try {
         const supaUrl = Deno.env.get("SUPABASE_URL")!;

@@ -186,8 +186,11 @@ Deno.serve(async (req) => {
     const mobileOnly = (aors: string[], ext: string) =>
       aors.filter((a) => a.toLowerCase().includes(`${String(ext).toLowerCase()}_mobile`));
 
-    const fetchDeviceAors = async (ext: string, domain: string): Promise<{ aors: string[]; source: string; status: number; registered_aors: string[] }> => {
-      const fallback = [`sip:${ext}_mobile@${domain}`];
+    const fetchDeviceAors = async (ext: string, domain: string): Promise<{ aors: string[]; source: string; status: number; registered_aors: string[]; all_aors: string[] }> => {
+      // Last-resort fallback: never leave the rule pointing at a single dead
+      // convention AOR — `<OwnDevices>` makes NS fork to whatever the user has
+      // actually registered instead of answering instantly with voicemail.
+      const fallback = [`sip:${ext}_mobile@${domain}`, "<OwnDevices>"];
       try {
         const res = await nsFetch(
           `/domains/${encodeURIComponent(domain)}/users/${encodeURIComponent(ext)}/devices`,
@@ -196,32 +199,38 @@ Deno.serve(async (req) => {
         );
         const data: any = await readBody(res);
         const rows: any[] = Array.isArray(data) ? data : (data?.data ?? data?.items ?? []);
-        const provisioned = mobileOnly(rows.map((r: any) => aorFromRow(r, ext, domain)).filter(Boolean), ext);
-        const registered = mobileOnly(rows.filter(isRegisteredDevice).map((r: any) => aorFromRow(r, ext, domain)).filter(Boolean), ext);
-        const chosen = registered.length ? registered : provisioned;
+        const allAors = [...new Set(rows.map((r: any) => aorFromRow(r, ext, domain)).filter(Boolean))];
+        const provisioned = mobileOnly(allAors, ext);
+        const registeredAll = [...new Set(rows.filter(isRegisteredDevice).map((r: any) => aorFromRow(r, ext, domain)).filter(Boolean))];
+        const registered = mobileOnly(registeredAll, ext);
+
+        // Preference order:
+        //  1. registered mobile device  (best: rings the app instantly)
+        //  2. provisioned mobile device (app exists but is momentarily offline)
+        //  3. every registered device   (desk/web) — better than nothing
+        //  4. every provisioned device + <OwnDevices>
+        let chosen: string[] = [];
+        let source = "";
+        if (registered.length) { chosen = registered; source = "ns_registered_mobile_device"; }
+        else if (provisioned.length) { chosen = [...provisioned, "<OwnDevices>"]; source = "ns_provisioned_mobile_device_plus_owndevices"; }
+        else if (registeredAll.length) { chosen = [...registeredAll, "<OwnDevices>"]; source = "ns_registered_any_device"; }
+        else if (allAors.length) { chosen = [...allAors, "<OwnDevices>"]; source = "ns_provisioned_any_device"; }
+
         if (chosen.length) {
           return {
             aors: [...new Set(chosen)],
-            source: registered.length ? "ns_registered_mobile_device" : "ns_provisioned_mobile_device",
+            source,
             status: res.status,
-            registered_aors: [...new Set(registered)],
+            registered_aors: registered.length ? registered : registeredAll,
+            all_aors: allAors,
           };
         }
-        return {
-          aors: fallback,
-          source: "convention_fallback_mobile",
-          status: res.status,
-          registered_aors: [],
-        };
+        return { aors: fallback, source: "convention_fallback_mobile_plus_owndevices", status: res.status, registered_aors: [], all_aors: [] };
       } catch {
-        return {
-          aors: fallback,
-          source: "convention_fallback_mobile",
-          status: 0,
-          registered_aors: [],
-        };
+        return { aors: fallback, source: "convention_fallback_mobile_plus_owndevices", status: 0, registered_aors: [], all_aors: [] };
       }
     };
+
 
 
     const normalizeDigits = (value: unknown) => {
@@ -250,6 +259,45 @@ Deno.serve(async (req) => {
       enabled: "yes",
     });
 
+    // Read a DID back from NS and decide whether it really routes to the user.
+    const DID_DEST_FIELDS = [
+      "destination", "dest", "user", "to-user", "dest-user", "destination-user",
+      "dial-rule-destination", "dialrule-destination",
+      "dial-rule-translation-destination", "dialrule-translation-destination",
+    ];
+    const DID_APP_FIELDS = [
+      "dest-application", "destination-application",
+      "dial-rule-application", "dialrule-application", "application",
+    ];
+
+    const readDidRoute = async (pn: string, domain: string) => {
+      const endpoints = [
+        `/domains/${encodeURIComponent(domain)}/phonenumbers/${encodeURIComponent(pn)}`,
+        `/domains/${encodeURIComponent(domain)}/phone-numbers/${encodeURIComponent(pn)}`,
+        `/domains/${encodeURIComponent(domain)}/numbers/${encodeURIComponent(pn)}`,
+      ];
+      for (const endpoint of endpoints) {
+        const res = await nsFetch(endpoint, { method: "GET" }, { functionName: "pp-sync-answering-rules" });
+        const data: any = await readBody(res);
+        if (!res.ok) continue;
+        const row = Array.isArray(data) ? data[0] : (data?.data?.[0] ?? data?.items?.[0] ?? data);
+        if (row && typeof row === "object") return { endpoint, status: res.status, row };
+      }
+      return { endpoint: null as string | null, status: 0, row: null as any };
+    };
+
+    const didRoutesToUser = (row: any, ext: string, domain: string) => {
+      if (!row) return false;
+      const app = DID_APP_FIELDS.map((f) => String(row?.[f] ?? "").toLowerCase()).find(Boolean) ?? "";
+      const dest = DID_DEST_FIELDS.map((f) => String(row?.[f] ?? "")).filter(Boolean).join(" ").toLowerCase();
+      const badApp = /vmail|voicemail|speakaccount|speakeraccount|auto-?attendant|conference|queue/.test(`${app} ${dest}`);
+      if (badApp) return false;
+      const appOk = !app || ["to-user", "user", "sip", "to_user"].includes(app);
+      const extRe = new RegExp(`(^|[^0-9])${ext}([^0-9]|$)`);
+      const destOk = extRe.test(dest) || dest.includes(`${ext.toLowerCase()}@${domain.toLowerCase()}`);
+      return appOk && destOk;
+    };
+
     const repairDidRoutes = async (ext: string, domain: string) => {
       if (!repair_dids) return { skipped: true, reason: "disabled" };
       const { data: rows, error } = await admin
@@ -259,30 +307,76 @@ Deno.serve(async (req) => {
         .eq("extension", ext);
       if (error) return { success: false, error: error.message, attempted: 0, repaired: 0 };
       const numbers = [...new Set((rows ?? []).map((r: any) => normalizeDigits(r.phone_number_digits ?? r.phone_number_e164)).filter(Boolean))];
-      if (!numbers.length) return { success: true, attempted: 0, repaired: 0, source: "no_local_did_assignment" };
+      if (!numbers.length) return { success: true, attempted: 0, repaired: 0, verified: 0, source: "no_local_did_assignment" };
 
       const payload = buildDidPayload(ext, domain);
       let repaired = 0;
+      let verified = 0;
       const failures: any[] = [];
+      const details: any[] = [];
+
       for (const pn of numbers) {
+        // 1) Read current state — skip the write when NS already routes correctly.
+        const before = await readDidRoute(pn, domain);
+        if (before.row && didRoutesToUser(before.row, ext, domain)) {
+          verified += 1;
+          repaired += 1;
+          details.push({ phone_number: pn, state: "already_correct", endpoint: before.endpoint });
+          continue;
+        }
+        if (!before.row) {
+          failures.push({ phone_number: pn, reason: "not_found_on_pbx", status: before.status });
+          details.push({ phone_number: pn, state: "not_found_on_pbx" });
+          continue;
+        }
+
+        // 2) Write.
         const endpoints = [
+          before.endpoint,
           `/domains/${encodeURIComponent(domain)}/phonenumbers/${encodeURIComponent(pn)}`,
           `/domains/${encodeURIComponent(domain)}/phone-numbers/${encodeURIComponent(pn)}`,
           `/domains/${encodeURIComponent(domain)}/numbers/${encodeURIComponent(pn)}`,
-        ];
+        ].filter(Boolean) as string[];
         let lastStatus = 0;
         let ok = false;
-        for (const endpoint of endpoints) {
+        for (const endpoint of [...new Set(endpoints)]) {
           const res = await nsFetch(endpoint, { method: "PUT", body: JSON.stringify(payload) }, { functionName: "pp-sync-answering-rules" });
           lastStatus = res.status;
           await res.text().catch(() => {});
           if (res.ok) { ok = true; break; }
         }
-        if (ok) repaired += 1;
-        else failures.push({ phone_number: pn, status: lastStatus });
+        if (!ok) {
+          failures.push({ phone_number: pn, reason: "write_rejected", status: lastStatus });
+          details.push({ phone_number: pn, state: "write_rejected", status: lastStatus });
+          continue;
+        }
+        repaired += 1;
+
+        // 3) Read-after-write — a 200 from NS does NOT mean the route changed.
+        const after = await readDidRoute(pn, domain);
+        if (after.row && didRoutesToUser(after.row, ext, domain)) {
+          verified += 1;
+          details.push({ phone_number: pn, state: "repaired_and_verified" });
+        } else {
+          const app = DID_APP_FIELDS.map((f) => after.row?.[f]).find(Boolean) ?? null;
+          const dest = DID_DEST_FIELDS.map((f) => after.row?.[f]).find(Boolean) ?? null;
+          failures.push({ phone_number: pn, reason: "write_not_honored", stored_application: app, stored_destination: dest });
+          details.push({ phone_number: pn, state: "write_not_honored", stored_application: app, stored_destination: dest });
+          console.error("[didRepair] NS ignored DID route write", JSON.stringify({ extension: ext, domain, phone_number: pn, stored_application: app, stored_destination: dest }));
+        }
       }
-      return { success: failures.length === 0, attempted: numbers.length, repaired, failures: failures.slice(0, 10), payload };
+
+      return {
+        success: failures.length === 0,
+        attempted: numbers.length,
+        repaired,
+        verified,
+        failures: failures.slice(0, 10),
+        details: details.slice(0, 20),
+        payload,
+      };
     };
+
 
 
 
@@ -407,12 +501,26 @@ Deno.serve(async (req) => {
         verify = { error: (e as Error).message };
       }
 
+      // A 200 on the rule write is not enough: the call only rings if the DID
+      // reaches the user AND the stored rule forks to a real device.
+      const didOk = (did_repair as any)?.skipped === true
+        || (did_repair as any)?.attempted === 0
+        || ((did_repair as any)?.verified ?? 0) >= ((did_repair as any)?.attempted ?? 0);
+      const routing_ok = !!opRes.ok && !!verify?.honored && didOk;
+
       return {
         broker_id: broker.id ?? broker.user_id,
         broker_name: broker.full_name,
         extension: ext,
         domain,
         success: opRes.ok,
+        routing_ok,
+        routing_blockers: [
+          ...(opRes.ok ? [] : ["rule_write_failed"]),
+          ...(verify?.honored ? [] : ["sim_ring_not_honored"]),
+          ...(didOk ? [] : ["did_route_not_verified"]),
+          ...(devices.registered_aors?.length ? [] : ["no_registered_device"]),
+        ],
         mode,
         status: opRes.status,
         rule_path: rulePath,
@@ -424,8 +532,77 @@ Deno.serve(async (req) => {
         list_status: listRes.status,
         user_reset_status: userReset,
       };
+
     };
 
+
+    // ---- DID inventory refresh (source of truth = PBX, not the CSV import) ----
+    // The original `file_sync` import left mangled rows (a whole CSV line stored
+    // in callerid_name), so the local number→extension map could not be trusted.
+    if (body?.refresh_dids === true) {
+      const domain = String(body?.domain ?? NS_DEFAULT_DOMAIN);
+      const res = await nsFetch(
+        `/domains/${encodeURIComponent(domain)}/phonenumbers`,
+        { method: "GET" },
+        { functionName: "pp-sync-answering-rules" },
+      );
+      const data: any = await readBody(res);
+      if (!res.ok) return json({ error: "ns_phonenumbers_unreadable", status: res.status, detail: data }, 502);
+      const rowsRaw: any[] = Array.isArray(data) ? data : (data?.data ?? data?.items ?? []);
+
+      const numOf = (n: any) => String(n?.phonenumber ?? n?.["phone-number"] ?? n?.number ?? n?.did ?? "").trim();
+      const destOf = (n: any) =>
+        DID_DEST_FIELDS.map((f) => String(n?.[f] ?? "")).filter(Boolean).join(" ");
+      const extOf = (n: any) => {
+        const m = destOf(n).match(/(?:^|[^0-9])(\d{3,6})(?:@|[^0-9]|$)/);
+        return m ? m[1] : "";
+      };
+
+      const upserts: any[] = [];
+      const unrouted: any[] = [];
+      for (const n of rowsRaw) {
+        const digits = normalizeDigits(numOf(n));
+        if (!digits) continue;
+        const ext = extOf(n);
+        const app = DID_APP_FIELDS.map((f) => String(n?.[f] ?? "").toLowerCase()).find(Boolean) ?? "";
+        if (!ext) { unrouted.push({ phone_number: digits, application: app, destination: destOf(n) }); continue; }
+        upserts.push({
+          phone_number_e164: `+${digits}`,
+          phone_number_digits: digits,
+          extension: ext,
+          domain,
+          callerid_name: String(n?.["callerid-name"] ?? n?.["caller-id-name"] ?? n?.["dial-rule-description"] ?? "").slice(0, 120) || null,
+          source: "ns_live",
+          updated_at: new Date().toISOString(),
+        });
+      }
+
+      let written = 0;
+      let writeError: string | null = null;
+      if (!dry_run && upserts.length) {
+        for (let i = 0; i < upserts.length; i += 200) {
+          const chunk = upserts.slice(i, i + 200);
+          const { error } = await admin
+            .from("planipret_did_assignments")
+            .upsert(chunk, { onConflict: "phone_number_e164" });
+          if (error) { writeError = error.message; break; }
+          written += chunk.length;
+        }
+      }
+
+      return json({
+        success: !writeError,
+        mode: "refresh_dids",
+        domain,
+        dry_run,
+        pbx_numbers: rowsRaw.length,
+        mapped: upserts.length,
+        written,
+        unrouted_count: unrouted.length,
+        unrouted: unrouted.slice(0, 25),
+        error: writeError,
+      });
+    }
 
 
     // Single
@@ -473,6 +650,13 @@ Deno.serve(async (req) => {
         processed: all.length,
         succeeded,
         failed,
+        routing_ok_count: all.filter((r: any) => r.routing_ok).length,
+        routing_ko: all.filter((r: any) => r.success && !r.routing_ok).slice(0, 50).map((r: any) => ({
+          extension: r.extension,
+          blockers: r.routing_blockers,
+          did: r.did_repair ? { attempted: r.did_repair.attempted, verified: r.did_repair.verified, failures: r.did_repair.failures } : null,
+          targets: r.verify?.stored_targets,
+        })),
         dry_run,
         repair_dids,
         ring_timeout,
@@ -484,6 +668,7 @@ Deno.serve(async (req) => {
         errors: all.filter((r: any) => !r.success).slice(0, 20).map((r: any) => ({
           extension: r.extension, status: r.status, error: r.error,
         })),
+
       });
     }
 
