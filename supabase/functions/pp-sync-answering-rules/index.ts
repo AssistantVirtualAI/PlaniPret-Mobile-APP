@@ -442,6 +442,10 @@ Deno.serve(async (req) => {
             body: JSON.stringify({
               "do-not-disturb": "no",
               "do-not-disturb-enabled": "no",
+              "call-screening-enabled": "no",
+              "phone-numbers-to-allow-enabled": "no",
+              "phone-numbers-to-reject-enabled": "no",
+              "reject-anonymous-calls-enabled": "no",
               "forward-always-enabled": "no",
               "forward-on-busy-enabled": "no",
               "forward-when-unregistered-enabled": "no",
