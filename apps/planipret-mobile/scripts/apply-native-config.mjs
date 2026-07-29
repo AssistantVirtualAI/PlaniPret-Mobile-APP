@@ -1586,15 +1586,45 @@ function patchIosNativeFiles() {
 }
 
 function patchIosSplash() {
-  let iosSplashDir = path.join(appDir, "ios", "App", "App", "Assets.xcassets", "Splash.imageset");
-  if (!fs.existsSync(iosSplashDir)) {
-    iosSplashDir = path.join(appDir, "..", "..", "ios", "App", "App", "Assets.xcassets", "Splash.imageset");
+  // Chercher Assets.xcassets dans appDir/ios (après cap sync) ou ../../ios (racine repo)
+  let iosAppDir = path.join(appDir, "ios", "App", "App");
+  if (!fs.existsSync(path.join(iosAppDir, "Assets.xcassets"))) {
+    iosAppDir = path.join(appDir, "..", "..", "ios", "App", "App");
   }
+  const iosAssetsDir = path.join(iosAppDir, "Assets.xcassets");
+  const iosSplashDir = path.join(iosAssetsDir, "Splash.imageset");
   const nativeSplashDir = path.join(appDir, "native-config", "splash");
-  if (!fs.existsSync(iosSplashDir) || !fs.existsSync(nativeSplashDir)) {
-    console.warn("[native-config] iOS Splash dir ou native-config/splash introuvable, splash patch ignoré.");
+
+  if (!fs.existsSync(iosAssetsDir)) {
+    console.warn("[native-config] Assets.xcassets introuvable — splash patch ignoré.");
     return;
   }
+  if (!fs.existsSync(nativeSplashDir)) {
+    console.warn("[native-config] native-config/splash introuvable — splash patch ignoré.");
+    return;
+  }
+
+  // Créer Splash.imageset s'il n'existe pas
+  if (!fs.existsSync(iosSplashDir)) fs.mkdirSync(iosSplashDir, { recursive: true });
+
+  // S'assurer que Assets.xcassets/Contents.json est valide
+  const assetsContentsJson = path.join(iosAssetsDir, "Contents.json");
+  if (!fs.existsSync(assetsContentsJson)) {
+    fs.writeFileSync(assetsContentsJson, JSON.stringify({ info: { version: 1, author: "xcode" } }, null, 2) + "\n");
+  }
+
+  // Écrire le Contents.json correct pour Splash.imageset
+  const splashContents = {
+    images: [
+      { idiom: "universal", filename: "splash-2732x2732-2.png", scale: "1x" },
+      { idiom: "universal", filename: "splash-2732x2732-1.png", scale: "2x" },
+      { idiom: "universal", filename: "splash-2732x2732.png", scale: "3x" }
+    ],
+    info: { version: 1, author: "xcode" }
+  };
+  fs.writeFileSync(path.join(iosSplashDir, "Contents.json"), JSON.stringify(splashContents, null, 2) + "\n");
+
+  // Copier les images splash AVA AI 3D
   const splash3x = path.join(nativeSplashDir, "splash-3x.png");
   const splash2x = path.join(nativeSplashDir, "splash-2x.png");
   const splash1x = path.join(nativeSplashDir, "splash-1x.png");
