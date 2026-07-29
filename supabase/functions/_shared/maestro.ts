@@ -75,7 +75,27 @@ export async function getBrokerAuth(
     .select("maestro_broker_id")
     .eq("user_id", userId)
     .maybeSingle();
-  const brokerId = profile?.maestro_broker_id ?? null;
+  let brokerId: string | null = profile?.maestro_broker_id ?? null;
+
+  // Fallback: if broker_id not on profile, try integration_secrets
+  // (machine key connection stores broker_id in the config JSON)
+  if (!brokerId) {
+    const { data: secrets } = await admin
+      .from("planipret_integration_secrets")
+      .select("config")
+      .in("provider", ["maestro_telecom", "maestro"])
+      .order("updated_at", { ascending: false })
+      .limit(2);
+    for (const row of (secrets ?? [])) {
+      const c = (row as any).config ?? {};
+      const id = c.broker_id ?? c.maestro_broker_id ?? c.user_id ?? null;
+      if (id && /^\d+$/.test(String(id))) {
+        brokerId = String(id);
+        break;
+      }
+    }
+  }
+
   return {
     token: cfg.key,
     brokerId,
