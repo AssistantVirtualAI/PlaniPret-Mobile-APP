@@ -35,8 +35,11 @@ Deno.serve(async (req) => {
     if (userErr || !userRes?.user) return json({ success: false, error: "unauthorized" }, 401);
 
     const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-    const { data: isSuper } = await admin.rpc("is_super_admin", { _user_id: userRes.user.id });
-    if (!isSuper) return json({ success: false, error: "forbidden_super_admin_only" }, 403);
+    const [{ data: isSuper }, { data: isPpAdmin }] = await Promise.all([
+      admin.rpc("is_super_admin", { _user_id: userRes.user.id }),
+      admin.rpc("is_planipret_admin", { _user_id: userRes.user.id }),
+    ]);
+    if (!isSuper && !isPpAdmin) return json({ success: false, error: "forbidden_admin_only" }, 403);
 
     const body = await req.json().catch(() => ({}));
     const targetUserId = String(body?.target_user_id ?? "");

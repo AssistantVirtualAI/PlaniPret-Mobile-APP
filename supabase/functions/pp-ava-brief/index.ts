@@ -3,7 +3,7 @@
 // and asks Lovable AI Gateway for a French, actionable summary.
 // Cached 30 min per (user, period) in `planipret_ai_insights`.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
-import { generateText, Output } from "npm:ai";
+import { generateText } from "npm:ai";
 import { z } from "npm:zod";
 import { createLovableAiGatewayProvider } from "../_shared/ai-gateway.ts";
 import { MS365_DELEGATED_SCOPES, refreshMicrosoftAccessToken } from "../_shared/ms365.ts";
@@ -12,9 +12,12 @@ const GRAPH = "https://graph.microsoft.com/v1.0";
 
 async function graphGet(admin: any, profile: any, path: string, retry = true): Promise<any[]> {
   try {
+    const ctl = new AbortController();
+    const to = setTimeout(() => ctl.abort(), 7000);
     const r = await fetch(`${GRAPH}${path}`, {
       headers: { Authorization: `Bearer ${profile.ms365_access_token}` },
-    });
+      signal: ctl.signal,
+    }).finally(() => clearTimeout(to));
     if (r.status === 401 && retry) {
       const t = await refreshMicrosoftAccessToken(admin, profile, MS365_DELEGATED_SCOPES);
       if (t) { profile.ms365_access_token = t; return graphGet(admin, profile, path, false); }
@@ -105,21 +108,27 @@ const cors = {
 const json = (b: unknown, s = 200) =>
   new Response(JSON.stringify(b), { status: s, headers: { ...cors, "Content-Type": "application/json" } });
 
-const BriefSchema = z.object({
+const stripNulls = (v: any): any =>
+  Array.isArray(v) ? v.map(stripNulls)
+    : v && typeof v === "object"
+      ? Object.fromEntries(Object.entries(v).filter(([, x]) => x !== null).map(([k, x]) => [k, stripNulls(x)]))
+      : v;
+
+const BriefSchema = z.preprocess(stripNulls, z.object({
   headline: z.string(),
   overview: z.string().optional(),
-  priorities: z.array(z.string()).max(8),
-  risks: z.array(z.string()).max(5),
-  highlights: z.array(z.string()).max(8).optional(),
-  metrics: z.array(z.object({ label: z.string(), value: z.string() })).max(14).optional(),
-  tips: z.array(z.object({ title: z.string(), detail: z.string() })).max(7).optional(),
+  priorities: z.array(z.string()).optional().default([]),
+  risks: z.array(z.string()).optional().default([]),
+  highlights: z.array(z.string()).optional().default([]),
+  metrics: z.array(z.object({ label: z.string(), value: z.coerce.string() })).optional().default([]),
+  tips: z.array(z.object({ title: z.string(), detail: z.string() })).optional().default([]),
   focus: z.string().optional(),
   suggestions: z.array(z.object({
     label: z.string(),
-    kind: z.enum(["call", "sms", "email", "reminder"]),
-    number: z.string().optional(),
-  })).max(5),
-});
+    kind: z.string().optional(),
+    number: z.coerce.string().optional(),
+  })).optional().default([]),
+}).passthrough()) as any;
 
 type Period = "day" | "week" | "month" | "shift";
 type Lang = "fr" | "en";
@@ -419,7 +428,10 @@ Deno.serve(async (req) => {
       hot_leads: hotLeads,
       meetings: meetings.data || [],
       tasks_pending: tasks.data || [],
-      microsoft: await buildMicrosoftStats(admin, profile, sinceIso),
+      microsoft: await Promise.race([
+        buildMicrosoftStats(admin, profile, sinceIso).catch(() => ({ connected: false })),
+        new Promise((res) => setTimeout(() => res({ connected: false, timeout: true }), 15000)),
+      ]),
     };
 
 
@@ -466,19 +478,32 @@ You must cover TWO sources: telephony (calls, texts, voicemails, leads) AND Micr
     let result: any;
     try {
       const r = await generateText({
-        model: gateway("google/gemini-3-flash-preview"),
-        system,
+        model: gateway("google/gemini-2.5-flash"),
+        system: `${system}\n\nRéponds UNIQUEMENT avec un objet JSON valide (pas de texte autour, pas de balises markdown) respectant exactement ces clés: headline (string), overview (string), priorities (string[]), risks (string[]), highlights (string[]), metrics ({label,value}[]), tips ({title,detail}[]), focus (string), suggestions ({label,kind,number}[]).`,
         prompt: userPrompt,
-        experimental_output: Output.object({ schema: BriefSchema }),
       });
-      const out = (r as any).experimental_output ?? (r as any).output;
+      let out: any = (r as any).text;
+      if (typeof out === "string") {
+        const cleaned = out.trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
+        const start = cleaned.indexOf("{");
+        const end = cleaned.lastIndexOf("}");
+        out = JSON.parse(start >= 0 && end > start ? cleaned.slice(start, end + 1) : cleaned);
+      }
       result = BriefSchema.parse(out);
+      result.priorities = (result.priorities ?? []).slice(0, 8);
+      result.risks = (result.risks ?? []).slice(0, 5);
+      result.highlights = (result.highlights ?? []).slice(0, 8);
+      result.metrics = (result.metrics ?? []).slice(0, 14);
+      result.tips = (result.tips ?? []).slice(0, 7);
+      result.suggestions = (result.suggestions ?? [])
+        .filter((x: any) => ["call", "sms", "email", "reminder"].includes(x.kind)).slice(0, 5);
       const fb = buildFallbackBrief(stats, period, lang);
       if (!result.metrics?.length) result.metrics = fb.metrics;
       if (!result.overview) result.overview = fb.overview;
     } catch (e) {
-      console.error("pp-ava-brief AI failed", e);
-      result = buildFallbackBrief(stats, period, lang);
+      const msg = (e as any)?.message ?? String(e);
+      console.error("pp-ava-brief AI failed:", msg);
+      result = { ...buildFallbackBrief(stats, period, lang), ai_error: String(msg).slice(0, 300) };
     }
 
 

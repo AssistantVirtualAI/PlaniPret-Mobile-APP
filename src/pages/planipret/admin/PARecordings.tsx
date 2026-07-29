@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
@@ -299,14 +299,18 @@ export default function PARecordings() {
   useEffect(() => { load(page, pageSize); /* eslint-disable-next-line */ }, [page, pageSize, search, broker, from, to, withTranscript]);
 
   // Realtime: throttled reload (max once per 30s) to avoid flicker on our own AI writes
+  const pageRef = useRef({ page, pageSize });
+  pageRef.current = { page, pageSize };
   useEffect(() => {
-    let last = 0;
+    let last = Date.now();
     let pending: ReturnType<typeof setTimeout> | null = null;
     const trigger = () => {
-      const now = Date.now();
-      const wait = Math.max(0, 30_000 - (now - last));
+      const wait = Math.max(2000, 30_000 - (Date.now() - last));
       if (pending) return;
-      pending = setTimeout(() => { last = Date.now(); pending = null; load(page, pageSize); }, wait);
+      pending = setTimeout(() => {
+        last = Date.now(); pending = null;
+        load(pageRef.current.page, pageRef.current.pageSize);
+      }, wait);
     };
     const ch = supabase.channel("admin-recordings")
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "planipret_phone_calls" }, trigger)

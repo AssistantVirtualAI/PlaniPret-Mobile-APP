@@ -20,7 +20,24 @@ let _events: AdminEvent[] = [];
 let _channel: ReturnType<typeof supabase.channel> | null = null;
 let _unread = 0;
 
-const notify = () => listeners.forEach((l) => l());
+let _notifyTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Coalesce burst inserts (CDR sync writes dozens of rows/sec) into one re-render per 3s. */
+const notify = () => {
+  if (_notifyTimer) return;
+  _notifyTimer = setTimeout(() => {
+    _notifyTimer = null;
+    listeners.forEach((l) => l());
+  }, 3000);
+};
+
+const notifyNow = () => {
+  if (_notifyTimer) { clearTimeout(_notifyTimer); _notifyTimer = null; }
+  listeners.forEach((l) => l());
+};
+
+let _lastToastAt = 0;
+let _burst = 0;
 
 const push = (kind: AdminEvent["kind"], label: string, href: string, payload?: any) => {
   const ev: AdminEvent = {
@@ -29,7 +46,18 @@ const push = (kind: AdminEvent["kind"], label: string, href: string, payload?: a
   };
   _events = [ev, ..._events].slice(0, 20);
   _unread += 1;
-  toast({ title: label, description: "Nouvelle activité en direct", duration: 2500 });
+  _burst += 1;
+  const now = Date.now();
+  // At most one toast per 20s, summarising the burst.
+  if (now - _lastToastAt > 20_000) {
+    _lastToastAt = now;
+    toast({
+      title: _burst > 1 ? `${_burst} nouvelles activités` : label,
+      description: "Activité en direct",
+      duration: 2500,
+    });
+    _burst = 0;
+  }
   notify();
 };
 
@@ -52,7 +80,7 @@ const ensureChannel = () => {
     });
 };
 
-export const clearAdminUnread = () => { _unread = 0; notify(); };
+export const clearAdminUnread = () => { _unread = 0; notifyNow(); };
 
 export function useAdminRealtime() {
   const [, setTick] = useState(0);

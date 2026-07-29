@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { ArrowDownLeft, ArrowUpRight, X, Mic, Sparkles, Download, Eye, RefreshCw } from "lucide-react";
@@ -98,14 +98,33 @@ export default function PACalls() {
     setLoading(false);
   };
 
-  usePlanipretNsAutoSync({ onQueued: () => load(page, pageSize) });
+  // Debounced reload: NS sync bursts must not re-query on every inserted row.
+  const reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastReload = useRef(0);
+  const pageRef = useRef({ page, pageSize });
+  pageRef.current = { page, pageSize };
+  const scheduleReload = () => {
+    if (reloadTimer.current) return;
+    const wait = Math.max(2000, 15_000 - (Date.now() - lastReload.current));
+    reloadTimer.current = setTimeout(() => {
+      reloadTimer.current = null;
+      lastReload.current = Date.now();
+      load(pageRef.current.page, pageRef.current.pageSize);
+    }, wait);
+  };
+
+  usePlanipretNsAutoSync({ enabled: false });
 
   useEffect(() => {
+    lastReload.current = Date.now();
     load(page, pageSize);
     const ch = supabase.channel("admin-calls")
-      .on("postgres_changes", { event: "*", schema: "public", table: "planipret_phone_calls" }, () => load(page, pageSize))
+      .on("postgres_changes", { event: "*", schema: "public", table: "planipret_phone_calls" }, scheduleReload)
       .subscribe();
-    return () => { supabase.removeChannel(ch); };
+    return () => {
+      if (reloadTimer.current) { clearTimeout(reloadTimer.current); reloadTimer.current = null; }
+      supabase.removeChannel(ch);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page, pageSize, filters.broker, filters.from, filters.to, filters.direction, filters.status, filters.ai, filters.search]);
 
