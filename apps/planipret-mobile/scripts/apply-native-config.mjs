@@ -1231,8 +1231,52 @@ function patchIosNativeFiles() {
   console.log("[native-config] iOS PpSipKeepAlive + PpVoipCall plugins applied.");
 }
 
+function installIconsAndSplash() {
+  const iconsSrc = path.join(appDir, "native-config", "icons", "ios", "AppIcon.appiconset");
+  const splashSrc = path.join(appDir, "native-config", "icons", "ios", "Splash.imageset");
+  const iosAssets = path.join(appDir, "ios", "App", "App", "Assets.xcassets");
+  if (!fs.existsSync(iosAssets)) {
+    console.log("[native-config] Assets.xcassets not found — run npx cap add ios first.");
+    return;
+  }
+  // AppIcon.appiconset
+  if (fs.existsSync(iconsSrc)) {
+    const dst = path.join(iosAssets, "AppIcon.appiconset");
+    fs.mkdirSync(dst, { recursive: true });
+    for (const f of fs.readdirSync(iconsSrc)) {
+      fs.copyFileSync(path.join(iconsSrc, f), path.join(dst, f));
+    }
+    console.log(`[native-config] AppIcon.appiconset installed (${fs.readdirSync(iconsSrc).filter(f => f.endsWith('.png')).length} icons).`);
+  }
+  // Splash.imageset
+  if (fs.existsSync(splashSrc)) {
+    const dst = path.join(iosAssets, "Splash.imageset");
+    fs.mkdirSync(dst, { recursive: true });
+    for (const f of fs.readdirSync(splashSrc)) {
+      fs.copyFileSync(path.join(splashSrc, f), path.join(dst, f));
+    }
+    console.log("[native-config] Splash.imageset installed.");
+  }
+  // Android mipmaps
+  const androidIconsSrc = path.join(appDir, "native-config", "icons", "android");
+  const androidRes = path.join(appDir, "android", "app", "src", "main", "res");
+  if (fs.existsSync(androidIconsSrc) && fs.existsSync(androidRes)) {
+    for (const folder of fs.readdirSync(androidIconsSrc)) {
+      const srcDir = path.join(androidIconsSrc, folder);
+      const dstDir = path.join(androidRes, folder);
+      if (!fs.statSync(srcDir).isDirectory()) continue;
+      fs.mkdirSync(dstDir, { recursive: true });
+      for (const f of fs.readdirSync(srcDir)) {
+        fs.copyFileSync(path.join(srcDir, f), path.join(dstDir, f));
+      }
+    }
+    console.log("[native-config] Android mipmaps installed.");
+  }
+}
+
 patchCopiedWebBundles();
 patchIosInfoPlist();
 patchAndroidManifest();
 patchAndroidNativeFiles();
 patchIosNativeFiles();
+installIconsAndSplash();
