@@ -395,6 +395,7 @@ export function useMplanipretSoftphone(enabled = true) {
     if (softphoneOwnerId !== ownerIdRef.current) return;
     let softTimer: ReturnType<typeof setTimeout> | null = null;
     let hardTimer: ReturnType<typeof setTimeout> | null = null;
+    let nativeStopTimer: ReturnType<typeof setTimeout> | null = null;
     let lastWatchdogAt = 0;
     let lastResumeAt = 0;
     const clearTimers = () => {
@@ -457,6 +458,20 @@ export function useMplanipretSoftphone(enabled = true) {
       // unregistered, otherwise every inbound call drops to voicemail.
       try { ppSipProvider.forceReregister(); } catch { /* noop */ }
     };
+    const stopNativeAfterWebRegistered = () => {
+      if (nativeStopTimer) clearTimeout(nativeStopTimer);
+      const startedAt = Date.now();
+      const tick = () => {
+        if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+        const st = ppSipProvider.getSnapshot().status;
+        if (st === "registered") {
+          void stopPlanipretSipKeepAlive().catch(() => undefined);
+          return;
+        }
+        if (Date.now() - startedAt < 20_000) nativeStopTimer = setTimeout(tick, 1_000);
+      };
+      nativeStopTimer = setTimeout(tick, 1_000);
+    };
     const un = ppSipProvider.subscribe(() => evaluate());
     const onResume = () => {
       const now = Date.now();
@@ -466,9 +481,15 @@ export function useMplanipretSoftphone(enabled = true) {
         const cfg = ppSipProvider.getConfig();
         if (cfg) {
           if (!acquireSipInitLock(4000)) return;
-          void ppSipProvider.init(cfg).finally(releaseSipInitLock);
+            void ppSipProvider.init(cfg).finally(() => {
+              releaseSipInitLock();
+              stopNativeAfterWebRegistered();
+            });
         }
-        else ppSipProvider.forceReregister();
+        else {
+          ppSipProvider.forceReregister();
+          stopNativeAfterWebRegistered();
+        }
       } catch { /* noop */ }
       evaluate();
     };
@@ -490,16 +511,21 @@ export function useMplanipretSoftphone(enabled = true) {
       try {
         removeAppStateListener = addDedupedCapListener("App", cap?.Plugins?.App, "appStateChange", (state: { isActive: boolean }) => {
           if (state?.isActive) {
-            void stopPlanipretSipKeepAlive().catch(() => undefined);
-            // The WebView contact was released on background — re-init the UA
-            // (forceReregister is a no-op once the UA has been stopped).
+            // Keep native SIP alive until the WebView has confirmed REGISTERED;
+            // stopping it first creates a no-contact gap and sends calls to VM.
             try {
               const cfg = ppSipProvider.getConfig();
               if (cfg) {
                 if (!acquireSipInitLock(4000)) return;
-                void ppSipProvider.init(cfg).finally(releaseSipInitLock);
+                void ppSipProvider.init(cfg).finally(() => {
+                  releaseSipInitLock();
+                  stopNativeAfterWebRegistered();
+                });
               }
-              else ppSipProvider.forceReregister();
+              else {
+                ppSipProvider.forceReregister();
+                stopNativeAfterWebRegistered();
+              }
             } catch { /* noop */ }
             evaluate();
           } else {
@@ -524,6 +550,7 @@ export function useMplanipretSoftphone(enabled = true) {
     return () => {
       un();
       clearTimers();
+      if (nativeStopTimer) clearTimeout(nativeStopTimer);
       window.clearInterval(heartbeat);
       document.removeEventListener("visibilitychange", onVis);
       window.removeEventListener("focus", onResume);

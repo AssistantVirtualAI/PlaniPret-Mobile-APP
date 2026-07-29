@@ -325,8 +325,9 @@ class PpSipProvider {
     this.wsWatchdogTimer = setTimeout(() => {
       this.wsWatchdogTimer = null;
       if (this.ua && this.snap.status !== "registered" && this.snap.status !== "connected") {
-        // Hand the lease over from JsSIP to our watchdog.
-        this.recoveryOwner = "none";
+        // Hand the lease over cleanly so blocked watchdog recoveries cannot get
+        // stuck behind a stale JsSIP owner.
+        this.releaseRecovery("jssip_timeout");
         this.scheduleSocketReconnect(reason);
       } else {
         this.releaseRecovery("jssip_recovered");
@@ -441,6 +442,16 @@ class PpSipProvider {
         };
       } catch { /* JsSIP API guard */ }
 
+      try {
+        const transport = (ua as any)?._transport;
+        if (transport && typeof transport._reconnect === "function") {
+          transport._reconnect = () => {
+            this.log("warn", "JsSIP built-in recovery suppressed; watchdog owns reconnect");
+            this.scheduleSocketReconnect("jssip_recovery_suppressed");
+          };
+        }
+      } catch { /* private JsSIP API guard */ }
+
       ua.on("connecting", () => { this.connectingSince = Date.now(); this.update({ status: "connecting" }); });
       ua.on("connected", () => {
         // Do not reset wsFailures until REGISTER succeeds. NetSapiens can accept
@@ -458,10 +469,7 @@ class PpSipProvider {
         this.lastWsDisconnectedAt = Date.now();
         this.stopKeepAlive();
         this.update({ status: "disconnected", errorCause: e?.reason || "ws_disconnected" });
-        // Let JsSIP's built-in connection recovery do the first reconnect. The
-        // watchdog only takes over after the verify window if registration did
-        // not recover, preventing two WSS sockets for the same AoR.
-        this.deferTransportRecovery(String(e?.reason || "ws_disconnected"));
+        this.scheduleSocketReconnect(String(e?.reason || "ws_disconnected"));
       });
       ua.on("registered", () => {
         this.regFailures = 0;

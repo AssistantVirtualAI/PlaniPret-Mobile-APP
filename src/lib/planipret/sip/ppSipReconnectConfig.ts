@@ -88,10 +88,14 @@ function readOverrides(): Partial<PpSipReconnectConfig> {
 let cached: PpSipReconnectConfig | null = null;
 
 const SAFE_MINIMUMS: Partial<PpSipReconnectConfig> = {
-  socketBackoffMinMs: 3000,
-  socketVerifyDelayMs: 10000,
+  socketBackoffMinMs: 5000,
+  socketVerifyDelayMs: 15000,
+  reRegisterDelayMs: 5000,
   registerExpiresSec: 1800,
-  nativeBackoffMinMs: 4000,
+  keepAliveMs: 45000,
+  nativeBackoffMinMs: 5000,
+  nativeVerifyDelayMs: 15000,
+  nativeHeartbeatSec: 300,
   nativeRegisterExpiresSec: 1800,
 };
 
@@ -116,7 +120,7 @@ export function reloadPpSipReconnectConfig(): PpSipReconnectConfig {
 }
 
 /** Hard floor for any WSS reconnect delay — guarantees we never go back to 1000ms. */
-export const PP_SIP_RECONNECT_FLOOR_MS = 3000;
+export const PP_SIP_RECONNECT_FLOOR_MS = 5000;
 
 /** Exponential backoff delay, clamped to [min, max]. */
 export function ppSipBackoffDelay(attempt: number, min: number, max: number): number {
