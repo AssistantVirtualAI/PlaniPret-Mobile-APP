@@ -380,17 +380,46 @@ Deno.serve(async (req) => {
 
 
 
+    // Local DID inventory for one extension (used for diagnostics + dry-run).
+    const localDids = async (ext: string, domain: string) => {
+      const { data } = await admin
+        .from("planipret_did_assignments")
+        .select("phone_number_e164, phone_number_digits")
+        .eq("domain", domain)
+        .eq("extension", ext);
+      return (data ?? []).map((r: any) => r.phone_number_e164 ?? r.phone_number_digits).filter(Boolean);
+    };
+
     const applyRule = async (broker: any) => {
       const ext = broker.ns_extension ?? broker.extension;
       const domain = broker.ns_domain || NS_DEFAULT_DOMAIN;
-      if (!ext) return { broker_id: broker.id ?? broker.user_id, success: false, error: "no_extension" };
+      const brokerLabel = { broker_id: broker.id ?? broker.user_id, broker_name: broker.full_name, email: broker.email };
+      if (!ext) {
+        return {
+          ...brokerLabel, extension: null, domain, success: false,
+          routing_ok: false, error: "no_extension", routing_blockers: ["no_extension"],
+          dids: [], raw_pbx: [],
+        };
+      }
 
+      const dids = await localDids(ext, domain);
       const devices = await fetchDeviceAors(ext, domain);
       const payload = buildRulePayload(ext, domain, devices.aors);
       if (dry_run) {
         const did_repair = { skipped: true, reason: "dry_run" };
-        return { broker_id: broker.id ?? broker.user_id, extension: ext, domain, dry_run: true, payload, devices, did_repair, success: true };
+        const blockers = [
+          ...(dids.length ? [] : ["no_did"]),
+          ...(devices.registered_aors?.length ? [] : ["no_registered_device"]),
+        ];
+        return {
+          ...brokerLabel, extension: ext, domain, dry_run: true,
+          action: blockers.includes("no_did") ? "would_skip" : "would_configure",
+          reason: blockers.join(",") || null,
+          routing_blockers: blockers,
+          dids, payload, devices, did_repair, success: true,
+        };
       }
+
 
 
       // Clear any user-level DND / forward that overrides answering rules and
@@ -455,6 +484,22 @@ Deno.serve(async (req) => {
         mode = "created";
       }
       const opBody = await readBody(opRes);
+      const bodySnippet = typeof opBody === "string" ? opBody.slice(0, 200) : JSON.stringify(opBody ?? null).slice(0, 200);
+      const returnedHtml = typeof opBody === "string" && /^\s*<(?:!doctype|html)/i.test(opBody);
+      const authFailed = opRes.status === 401 || opRes.status === 403 || listRes.status === 401 || listRes.status === 403;
+      const raw_pbx = [
+        { extension: ext, step: "list_rules", route: `GET ${base}`, http_status: listRes.status, status: listRes.status },
+        {
+          extension: ext,
+          step: `${mode}_rule`,
+          route: `${mode === "updated" ? "PUT" : "POST"} ${base}`,
+          http_status: opRes.status,
+          status: opRes.status,
+          body: bodySnippet,
+        },
+      ];
+
+
 
       if (!opRes.ok) {
         console.error("[syncBroker] FAILED", JSON.stringify({
@@ -481,8 +526,12 @@ Deno.serve(async (req) => {
           return tf === "default" || tf === "*" || tf === "always";
         }) ?? vArr[0] ?? null;
         const sim = stored?.["simultaneous-ring"] ?? null;
-        const list: any[] = Array.isArray(sim?.destinations) ? sim.destinations
-          : (Array.isArray(sim?.list) ? sim.list : (Array.isArray(stored?.["simultaneous-ring-list"]) ? stored["simultaneous-ring-list"] : []));
+        // NS v2 returns the fork targets under `parameters` (array of AOR
+        // strings). Older/other builds use `destinations` / `list`.
+        const list: any[] = Array.isArray(sim?.parameters) ? sim.parameters
+          : (Array.isArray(sim?.destinations) ? sim.destinations
+          : (Array.isArray(sim?.list) ? sim.list
+          : (Array.isArray(stored?.["simultaneous-ring-list"]) ? stored["simultaneous-ring-list"] : [])));
         const targets = list.map((x: any) => String(x?.destination ?? x ?? "").toLowerCase()).filter(Boolean);
         const simOn = ["yes", "true", "1"].includes(String(sim?.enabled ?? stored?.["simultaneous-ring-enabled"] ?? "").toLowerCase());
         verify = {
@@ -511,16 +560,23 @@ Deno.serve(async (req) => {
       return {
         broker_id: broker.id ?? broker.user_id,
         broker_name: broker.full_name,
+        email: broker.email,
         extension: ext,
         domain,
         success: opRes.ok,
         routing_ok,
+        dids,
         routing_blockers: [
+          ...(authFailed ? ["pbx_auth_failed"] : []),
+          ...(returnedHtml ? ["pbx_returned_html"] : []),
           ...(opRes.ok ? [] : ["rule_write_failed"]),
           ...(verify?.honored ? [] : ["sim_ring_not_honored"]),
           ...(didOk ? [] : ["did_route_not_verified"]),
+          ...(dids.length ? [] : ["no_did"]),
           ...(devices.registered_aors?.length ? [] : ["no_registered_device"]),
         ],
+        raw_pbx,
+        pbx_returned_html: returnedHtml ? bodySnippet : undefined,
         mode,
         status: opRes.status,
         rule_path: rulePath,
@@ -532,6 +588,7 @@ Deno.serve(async (req) => {
         list_status: listRes.status,
         user_reset_status: userReset,
       };
+
 
     };
 
@@ -622,12 +679,12 @@ Deno.serve(async (req) => {
 
       const { data: brokers } = await admin.from("planipret_profiles")
         .select("id, user_id, full_name, email, extension, ns_extension, ns_domain")
-        .not("extension", "is", null)
         .order("ns_extension", { ascending: true })
         .range(offset, offset + limit - 1);
       console.log("[pp-sync-answering-rules] bulk brokers found:", (brokers ?? []).length);
       const list = brokers ?? [];
-      if (list.length === 0) return json({ success: true, message: "Aucun courtier avec extension NS", total: 0, offset, limit });
+      if (list.length === 0) return json({ success: true, message: "Aucun courtier trouvé", total: 0, brokers_found: 0, offset, limit });
+
 
       const all: any[] = [];
       let succeeded = 0, failed = 0;
@@ -642,6 +699,20 @@ Deno.serve(async (req) => {
         if (i + batch_size < list.length) await new Promise((r) => setTimeout(r, 200));
       }
       const include_results = body?.include_results !== false;
+
+      // ── Diagnostics summary ────────────────────────────────────────────
+      const blockerBuckets: Record<string, string[]> = {
+        no_extension: [], no_did: [], pbx_auth_failed: [], pbx_returned_html: [],
+        rule_write_failed: [], did_route_not_verified: [], sim_ring_not_honored: [],
+        no_registered_device: [],
+      };
+      for (const r of all as any[]) {
+        for (const b of (r.routing_blockers ?? [])) {
+          (blockerBuckets[b] ??= []).push(String(r.extension ?? r.email ?? r.broker_id));
+        }
+      }
+      const raw_pbx_responses = (all as any[]).flatMap((r) => r.raw_pbx ?? []).slice(0, 50);
+
       return json({
         success: failed === 0,
         offset,
@@ -650,7 +721,27 @@ Deno.serve(async (req) => {
         processed: all.length,
         succeeded,
         failed,
+        brokers_found: all.length,
+        brokers_with_extension: (all as any[]).filter((r) => !!r.extension).length,
+        brokers_with_did: (all as any[]).filter((r) => (r.dids?.length ?? 0) > 0).length,
+        routing_ok: (all as any[]).filter((r) => r.routing_ok).length,
+        routing_blockers: Object.fromEntries(
+          Object.entries(blockerBuckets).map(([k, v]) => [k, v.slice(0, 25)]),
+        ),
+        routing_blocker_counts: Object.fromEntries(
+          Object.entries(blockerBuckets).map(([k, v]) => [k, v.length]),
+        ),
+        raw_pbx_responses,
+        dry_run_report: dry_run
+          ? (all as any[]).map((r) => ({
+              extension: r.extension, email: r.email,
+              action: r.action ?? (r.extension ? "would_configure" : "would_skip"),
+              reason: r.reason ?? r.error ?? null,
+              dids: r.dids ?? [],
+            })).slice(0, 200)
+          : undefined,
         routing_ok_count: all.filter((r: any) => r.routing_ok).length,
+
         routing_ko: all.filter((r: any) => r.success && !r.routing_ok).slice(0, 50).map((r: any) => ({
           extension: r.extension,
           blockers: r.routing_blockers,
