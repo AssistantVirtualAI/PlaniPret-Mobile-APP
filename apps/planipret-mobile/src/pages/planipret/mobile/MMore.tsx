@@ -225,7 +225,7 @@ export default function MMore() {
 
       <Section title={t("more.sections.account")}>
         <Row icon={<User className="w-4 h-4" />} label={t("more.myProfile")} onClick={() => setEditOpen(true)} chevron />
-        <Row icon={<Lock className="w-4 h-4" />} label={t("more.changePassword")} onClick={() => navigate("/reset-password")} chevron />
+        <Row icon={<Lock className="w-4 h-4" />} label={t("more.changePassword")} onClick={() => navigate("/mplanipret/change-password")} chevron />
         <Row icon={<Download className="w-4 h-4" />} label={t("more.myData")} sub={t("more.myDataSub")}
           onClick={async () => {
             toast.info(t("more.preparingExport"));
@@ -403,7 +403,7 @@ export default function MMore() {
         <Row icon={<HelpCircle className="w-4 h-4" />} label={t("more.helpCenter")} onClick={() => setHelpOpen(true)} chevron />
         <Row icon={<MessageCircle className="w-4 h-4" />} label={t("more.contactSupport")}
           onClick={() => { window.location.href = "mailto:support@avastatistic.ca?subject=Support%20Planipr%C3%AAt%20AI%20Portal"; }} chevron />
-        <Row icon={<Shield className="w-4 h-4" />} label={t("more.privacy")} onClick={() => navigate("/planipret/privacy")} chevron />
+        <Row icon={<Shield className="w-4 h-4" />} label={t("more.privacy")} onClick={() => navigate("/mplanipret/privacy")} chevron />
         <Row icon={<SettingsIcon className="w-4 h-4" />} label={t("more.diagnostic")} sub={t("more.diagnosticSub")}
           onClick={async () => {
             toast.info(t("more.diagnosticRunning"));

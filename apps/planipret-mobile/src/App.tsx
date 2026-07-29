@@ -46,6 +46,9 @@ const MSipDebug = lazyWithRetry(() => import('@/pages/planipret/mobile/MSipDebug
 const MKpiAudit = lazyWithRetry(() => import('@/pages/planipret/mobile/MKpiAudit'), 'MKpiAudit');
 const MLayoutQA = lazyWithRetry(() => import('@/pages/planipret/mobile/MLayoutQA'), 'MLayoutQA');
 const MDeepLinkDebug = lazyWithRetry(() => import('@/pages/planipret/mobile/MDeepLinkDebug'), 'MDeepLinkDebug');
+const MChangePassword = lazyWithRetry(() => import('@/pages/planipret/mobile/MChangePassword'), 'MChangePassword');
+const PlanipretPrivacy = lazyWithRetry(() => import('@/pages/planipret/PlanipretPrivacy'), 'PlanipretPrivacy');
+
 
 
 
@@ -144,6 +147,9 @@ export default function App() {
                     <Route path="search" element={<MSearch />} />
                     <Route path="stats" element={<MStats />} />
                     <Route path="ava" element={<MAvaChat />} />
+                    <Route path="change-password" element={<MChangePassword />} />
+                    <Route path="privacy" element={<PlanipretPrivacy />} />
+
                     <Route path="notifications" element={<MAvaNotifications />} />
                     <Route path="extension-sync" element={<MExtensionSync />} />
                     <Route path="connections" element={<MConnections />} />
