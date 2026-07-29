@@ -392,7 +392,7 @@ export default function PAMobileDevices() {
 
     for (let page = 0; page < 20; page += 1) {
       const { data, error } = await supabase.functions.invoke("pp-sync-answering-rules", {
-        body: { bulk: true, offset, limit: 50, batch_size: 10, include_results: false, dry_run: dryRun },
+        body: { bulk: true, offset, limit: 50, batch_size: 10, include_results: false, dry_run: dryRun, repair_dids: !dryRun },
       });
       if (error) { lastError = error.message; break; }
       const d = data as any;

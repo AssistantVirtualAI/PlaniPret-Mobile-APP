@@ -165,8 +165,12 @@ function parseWss(cfg: PpSipConfig) {
   }
 }
 
+let _sipStartPending = false;
+
 export async function startPlanipretSipKeepAlive(cfg: PpSipConfig): Promise<PpNativeSipStatus | null> {
   if (!isPlanipretNativeSipAvailable()) return null;
+  if (_sipStartPending) return null;
+  _sipStartPending = true;
   const wss = parseWss(cfg);
   try {
     const result = await NativePpSip.startSipService?.({
@@ -195,6 +199,8 @@ export async function startPlanipretSipKeepAlive(cfg: PpSipConfig): Promise<PpNa
   } catch (e) {
     if (!markUnavailable("sip", e, "pp-sip-native")) console.warn("[pp-sip-native] start failed", e);
     return null;
+  } finally {
+    _sipStartPending = false;
   }
 }
 

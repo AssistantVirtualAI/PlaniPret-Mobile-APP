@@ -68,10 +68,9 @@ Deno.serve(async (req) => {
     const dry_run: boolean = !!body?.dry_run;
     const batch_size: number = Math.max(1, Math.min(20, Number(body?.batch_size ?? 10)));
     const ring_timeout: number = Math.max(20, Math.min(120, Number(body?.ring_timeout ?? 35)));
-    // Opt-in only: planipret_did_assignments is NOT the source of truth for DID
-    // routes on NetSapiens, so the repair step used to block routing_ok for
-    // ~all brokers (did_route_not_verified). Pass repair_dids:true explicitly.
-    const repair_dids: boolean = body?.repair_dids === true;
+    // DID routing must be verified/repaired on real syncs; otherwise a DID can
+    // still point to voicemail/SpeakAccount before the user's ring rule runs.
+    const repair_dids: boolean = !dry_run && body?.repair_dids !== false;
 
     // Auth: admin only
     const authHeader = req.headers.get("Authorization") ?? "";
@@ -573,9 +572,9 @@ Deno.serve(async (req) => {
 
       // A 200 on the rule write is not enough: the call only rings if the DID
       // reaches the user AND the stored rule forks to a real device.
-      const didOk = (did_repair as any)?.skipped === true
-        || (did_repair as any)?.attempted === 0
-        || ((did_repair as any)?.verified ?? 0) >= ((did_repair as any)?.attempted ?? 0);
+      const didAttempted = Number((did_repair as any)?.attempted ?? 0);
+      const didVerified = Number((did_repair as any)?.verified ?? 0);
+      const didOk = dids.length > 0 && didAttempted > 0 && didVerified >= didAttempted;
       const routing_ok = !!opRes.ok && !!verify?.honored && didOk;
 
       return {

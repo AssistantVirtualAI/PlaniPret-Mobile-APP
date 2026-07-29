@@ -35,7 +35,11 @@ Deno.serve(async (req) => {
     const admin = createClient(Deno.env.get("SUPABASE_URL")!, serviceKey);
 
     const body = await req.json();
-    const { action, payload = {}, _user_id: bodyUserId } = body ?? {};
+    const { action, payload: rawPayload = {}, _user_id: bodyUserId, ...legacyPayload } = body ?? {};
+    const payload = {
+      ...(rawPayload && typeof rawPayload === "object" ? rawPayload : {}),
+      ...legacyPayload,
+    };
 
     // Trusted server-to-server call (service role) may pass _user_id in body.
     let userId: string | undefined;

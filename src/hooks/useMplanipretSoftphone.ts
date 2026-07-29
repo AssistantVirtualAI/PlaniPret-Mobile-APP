@@ -75,7 +75,7 @@ async function uploadPlanipretVoipToken(token: string, bundleId?: string, extens
       },
     });
     if (error) console.warn("[pp-voip] token upload failed", error);
-    else if (changed) {
+    else if (changed || lastVoipToken !== null) {
       try { ppSipProvider.forceReregister(); } catch {}
       try { window.dispatchEvent(new CustomEvent("pp:sip-force-reregister")); } catch {}
     }
@@ -430,6 +430,10 @@ export function useMplanipretSoftphone(enabled = true) {
         } catch { /* retry */ }
         await new Promise((r) => setTimeout(r, 2_000 * (attempt + 1)));
       }
+      // Native keep-alive unavailable (plugin missing / start refused):
+      // keep the WebView registration alive instead of leaving the extension
+      // unregistered, otherwise every inbound call drops to voicemail.
+      try { ppSipProvider.forceReregister(); } catch { /* noop */ }
     };
     const un = ppSipProvider.subscribe(() => evaluate());
     const onResume = () => {

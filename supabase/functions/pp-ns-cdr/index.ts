@@ -39,7 +39,7 @@ function val(raw: any, keys: string[], fb: any = null) {
   return fb;
 }
 
-const JUNK_ENDPOINTS = /^(speakaccount|speak-account|vmail|voicemail|nms|sip|unknown|anonymous|restricted|private|conference|park|null)$/i;
+const JUNK_ENDPOINTS = /^(speakaccount|speakeraccount|speak-account|speaker-account|vmail|voicemail|nms|sip|unknown|anonymous|restricted|private|conference|park|null)$/i;
 
 function normalizeEndpoint(v: unknown): string | null {
   let s = String(v ?? "").trim();

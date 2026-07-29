@@ -1,30 +1,12 @@
 // pp-ava-brief: structured daily/weekly/monthly brief for the Planipret mobile home.
 // Aggregates real broker data (calls, missed, sms, voicemails, leads, meetings, tasks)
-// and generates a French/English actionable summary via Claude (Anthropic).
+// and asks Lovable AI Gateway for a French, actionable summary.
+// Cached 30 min per (user, period) in `planipret_ai_insights`.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { generateText, Output } from "npm:ai";
 import { z } from "npm:zod";
+import { createLovableAiGatewayProvider } from "../_shared/ai-gateway.ts";
 import { MS365_DELEGATED_SCOPES, refreshMicrosoftAccessToken } from "../_shared/ms365.ts";
-
-async function getAnthropicKey(admin: any): Promise<string | null> {
-  const { data } = await admin.from("planipret_integration_secrets").select("config").eq("provider", "anthropic").maybeSingle();
-  return (data?.config as any)?.api_key ?? Deno.env.get("ANTHROPIC_API_KEY") ?? null;
-}
-
-async function callClaude(apiKey: string, system: string, userPrompt: string): Promise<string> {
-  const r = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-    body: JSON.stringify({
-      model: "claude-opus-4-5",
-      max_tokens: 4096,
-      system,
-      messages: [{ role: "user", content: userPrompt }],
-    }),
-  });
-  if (!r.ok) throw new Error(`Claude API error ${r.status}: ${(await r.text()).slice(0, 400)}`);
-  const d = await r.json();
-  return d.content?.[0]?.text ?? "{}";
-}
 
 const GRAPH = "https://graph.microsoft.com/v1.0";
 
@@ -297,19 +279,20 @@ Deno.serve(async (req) => {
     if (serviceHeader) {
       effectiveUserId = req.headers.get("x-broker-user-id") ?? body?.broker_user_id ?? null;
     } else {
+      const token = authHeader.replace(/^Bearer\s+/i, "");
       const sb = createClient(
         Deno.env.get("SUPABASE_URL")!,
-        Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+        Deno.env.get("SUPABASE_ANON_KEY")!,
         { global: { headers: { Authorization: authHeader } } },
       );
-      const { data: u } = await sb.auth.getUser();
+      const { data: u } = await sb.auth.getUser(token);
       if (!u?.user) return json({ error: "unauthorized" }, 401);
       effectiveUserId = u.user.id;
     }
     if (!effectiveUserId) return json({ error: "no_user" }, 400);
 
     const { data: profile } = await admin.from("planipret_profiles")
-      .select("id, user_id, full_name, extension, organization_id, language, ms365_access_token, ms365_refresh_token, ms365_email")
+      .select("id, user_id, full_name, extension, ns_extension, organization_id, language, ms365_access_token, ms365_refresh_token, ms365_email")
       .eq("user_id", effectiveUserId).maybeSingle();
     if (!profile) return json({ error: "no_profile" }, 404);
 
@@ -333,10 +316,16 @@ Deno.serve(async (req) => {
     // depending on the ingestion path — match both.
     const ids = Array.from(new Set([profile.id, profile.user_id, effectiveUserId].filter(Boolean))) as string[];
 
+    const ext = (profile.ns_extension || profile.extension || "").trim();
+    const callScope = [
+      ids.length ? `user_id.in.(${ids.join(",")})` : null,
+      ext ? `extension.eq.${ext}` : null,
+    ].filter(Boolean).join(",");
+
     const [callRows, smsRows, voicemails, meetings, tasks] = await Promise.all([
       admin.from("planipret_phone_calls")
         .select("id, direction, status, from_number, from_name, to_number, to_name, started_at, duration_seconds, lead_score, lead_temperature, ai_summary, ai_coaching")
-        .in("user_id", ids).gte("started_at", sinceIso).lte("started_at", untilIso)
+        .or(callScope).gte("started_at", sinceIso).lte("started_at", untilIso)
         .order("started_at", { ascending: false }).limit(500),
       admin.from("planipret_phone_messages")
         .select("id, direction, from_number, to_number, body, read_at, created_at")
@@ -434,12 +423,13 @@ Deno.serve(async (req) => {
     };
 
 
-    const anthropicKey = await getAnthropicKey(admin);
-    if (!anthropicKey) {
+    const lovableKey = Deno.env.get("LOVABLE_API_KEY");
+    if (!lovableKey) {
       const fallback = buildFallbackBrief(stats, period, lang);
       return json({ ...fallback, stats, language: lang, cached: false, degraded: true });
     }
 
+    const gateway = createLovableAiGatewayProvider(lovableKey);
     const periodLabelFr = period === "day" ? "la journée" : period === "week" ? "la semaine" : period === "month" ? "le mois" : "votre quart";
     const periodLabelEn = period === "day" ? "today" : period === "week" ? "this week" : period === "month" ? "this month" : "this shift";
 
@@ -475,10 +465,14 @@ You must cover TWO sources: telephony (calls, texts, voicemails, leads) AND Micr
 
     let result: any;
     try {
-      const rawText = await callClaude(anthropicKey, system, userPrompt);
-      const jsonMatch = rawText.match(/\{[\s\S]*\}/);
-      const parsed = JSON.parse(jsonMatch?.[0] ?? "{}");
-      result = BriefSchema.parse(parsed);
+      const r = await generateText({
+        model: gateway("google/gemini-3-flash-preview"),
+        system,
+        prompt: userPrompt,
+        experimental_output: Output.object({ schema: BriefSchema }),
+      });
+      const out = (r as any).experimental_output ?? (r as any).output;
+      result = BriefSchema.parse(out);
       const fb = buildFallbackBrief(stats, period, lang);
       if (!result.metrics?.length) result.metrics = fb.metrics;
       if (!result.overview) result.overview = fb.overview;

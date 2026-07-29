@@ -271,13 +271,17 @@ export async function requirePlanipretBroker(
     if (userId) userId = String(userId);
   } else {
     const { data: claimsData, error: claimsErr } = await userClient.auth.getClaims(token);
-    if (claimsErr || !claimsData?.claims) {
-      return new Response(JSON.stringify({ error: "Unauthorized" }), {
-        status: 401,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+    userId = claimsData?.claims?.sub as string | null;
+    if (claimsErr || !userId) {
+      const { data: userData, error: userErr } = await userClient.auth.getUser(token);
+      if (userErr || !userData?.user?.id) {
+        return new Response(JSON.stringify({ error: "Unauthorized" }), {
+          status: 401,
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        });
+      }
+      userId = userData.user.id;
     }
-    userId = claimsData.claims.sub as string;
   }
 
   if (!userId) {
