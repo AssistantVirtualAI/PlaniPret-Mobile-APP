@@ -9,7 +9,7 @@ const LEGACY_MARKERS = [
   "unregistered -" + " forcing re-register",
 ];
 const REQUIRED_MARKERS = [
-  "reconnect guard active v3",
+  "reconnect guard active", // accepte v3, v4, etc.
   "sip reconnect #",
   "PP_SIP_RECONNECT_FLOOR_MS",
 ];
