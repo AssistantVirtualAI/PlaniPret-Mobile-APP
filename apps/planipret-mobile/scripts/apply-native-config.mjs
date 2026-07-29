@@ -1236,3 +1236,65 @@ patchIosInfoPlist();
 patchAndroidManifest();
 patchAndroidNativeFiles();
 patchIosNativeFiles();
+
+// ─── ICONS & SPLASH ────────────────────────────────────────────────────────
+function installIconsAndSplash() {
+  const iconsBase = path.join(appDir, "native-config", "icons");
+  const splashBase = path.join(appDir, "native-config", "splash");
+
+  // ── iOS AppIcon ──────────────────────────────────────────────────────────
+  const iosIconSrc = path.join(iconsBase, "ios");
+  const iosIconDst = path.join(appDir, "ios", "App", "App", "Assets.xcassets", "AppIcon.appiconset");
+  if (fs.existsSync(iosIconSrc) && fs.existsSync(path.join(appDir, "ios"))) {
+    fs.mkdirSync(iosIconDst, { recursive: true });
+    for (const f of fs.readdirSync(iosIconSrc)) {
+      fs.copyFileSync(path.join(iosIconSrc, f), path.join(iosIconDst, f));
+    }
+    const pngCount = fs.readdirSync(iosIconSrc).filter(f => f.endsWith(".png")).length;
+    console.log("[native-config] iOS AppIcon installed (" + pngCount + " sizes).");
+  }
+
+  // ── iOS Splash ───────────────────────────────────────────────────────────
+  const splashSrc = path.join(splashBase, "splash.png");
+  const splashDstDir = path.join(appDir, "ios", "App", "App", "Assets.xcassets", "Splash.imageset");
+  if (fs.existsSync(splashSrc) && fs.existsSync(path.join(appDir, "ios"))) {
+    fs.mkdirSync(splashDstDir, { recursive: true });
+    fs.copyFileSync(splashSrc, path.join(splashDstDir, "splash.png"));
+    const contents = {
+      images: [
+        { idiom: "universal", filename: "splash.png", scale: "1x" },
+        { idiom: "universal", filename: "splash.png", scale: "2x" },
+        { idiom: "universal", filename: "splash.png", scale: "3x" }
+      ],
+      info: { author: "xcode", version: 1 }
+    };
+    fs.writeFileSync(path.join(splashDstDir, "Contents.json"), JSON.stringify(contents, null, 2));
+    console.log("[native-config] iOS Splash screen (AVA AI) installed.");
+  }
+
+  // ── Android mipmap icons ─────────────────────────────────────────────────
+  const androidIconSrc = path.join(iconsBase, "android");
+  const androidRes = path.join(appDir, "android", "app", "src", "main", "res");
+  if (fs.existsSync(androidIconSrc) && fs.existsSync(androidRes)) {
+    for (const folder of fs.readdirSync(androidIconSrc)) {
+      const srcDir = path.join(androidIconSrc, folder);
+      const dstDir = path.join(androidRes, folder);
+      if (!fs.statSync(srcDir).isDirectory()) continue;
+      fs.mkdirSync(dstDir, { recursive: true });
+      for (const f of fs.readdirSync(srcDir)) {
+        fs.copyFileSync(path.join(srcDir, f), path.join(dstDir, f));
+      }
+    }
+    console.log("[native-config] Android mipmap icons installed.");
+  }
+
+  // ── Android Splash ───────────────────────────────────────────────────────
+  const splashAndroidSrc = path.join(splashBase, "splash-android.png");
+  const splashAndroidDst = path.join(androidRes, "drawable", "splash.png");
+  if (fs.existsSync(splashAndroidSrc) && fs.existsSync(androidRes)) {
+    fs.mkdirSync(path.dirname(splashAndroidDst), { recursive: true });
+    fs.copyFileSync(splashAndroidSrc, splashAndroidDst);
+    console.log("[native-config] Android splash screen (AVA AI) installed.");
+  }
+}
+installIconsAndSplash();
