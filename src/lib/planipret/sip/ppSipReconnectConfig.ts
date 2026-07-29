@@ -115,10 +115,14 @@ export function reloadPpSipReconnectConfig(): PpSipReconnectConfig {
   return getPpSipReconnectConfig();
 }
 
+/** Hard floor for any WSS reconnect delay — guarantees we never go back to 1000ms. */
+export const PP_SIP_RECONNECT_FLOOR_MS = 3000;
+
 /** Exponential backoff delay, clamped to [min, max]. */
 export function ppSipBackoffDelay(attempt: number, min: number, max: number): number {
   const safeAttempt = Math.max(1, attempt);
-  const safeMin = Math.max(3000, min);
+  const safeMin = Math.max(PP_SIP_RECONNECT_FLOOR_MS, min);
   const safeMax = Math.max(safeMin, max);
   return Math.min(safeMax, safeMin * 2 ** (safeAttempt - 1));
 }
+

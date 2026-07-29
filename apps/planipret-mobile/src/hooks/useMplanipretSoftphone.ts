@@ -39,6 +39,7 @@ import {
   stopPlanipretSipKeepAlive,
   type PpNativeSipStatus,
 } from "@/lib/planipret/sip/nativePpSipService";
+import { addDedupedCapListener } from "@/lib/planipret/sip/capListeners";
 import {
   upsertRingingSession,
   claimCall,
@@ -457,7 +458,6 @@ export function useMplanipretSoftphone(enabled = true) {
       // unregistered, otherwise every inbound call drops to voicemail.
       try { ppSipProvider.forceReregister(); } catch { /* noop */ }
     };
-
     const un = ppSipProvider.subscribe(() => evaluate());
     const onResume = () => {
       try {
@@ -479,40 +479,34 @@ export function useMplanipretSoftphone(enabled = true) {
     window.addEventListener("focus", onResume);
     window.addEventListener("online", onResume);
     // Native app foreground → immediately re-REGISTER before the 10s watchdog.
-    let appStateHandle: { remove: () => void } | null = null;
+    // Registered through the dedup registry: a second mount must NOT create a
+    // second native subscription (that fired init/reconnect twice).
+    let removeAppStateListener: () => void = () => undefined;
     const cap: any = (typeof window !== "undefined") ? (window as any).Capacitor : null;
     const isNative = !!cap?.isNativePlatform?.();
     if (isNative) {
       try {
-        const AppPlugin = cap?.Plugins?.App;
-        if (AppPlugin?.addListener) {
-          const p = AppPlugin.addListener("appStateChange", (state: { isActive: boolean }) => {
-            if (state?.isActive) {
-              void stopPlanipretSipKeepAlive().catch(() => undefined);
-              // The WebView contact was released on background — re-init the UA
-              // (forceReregister is a no-op once the UA has been stopped).
-              try {
-                const cfg = ppSipProvider.getConfig();
-                if (cfg) {
-                  if (!acquireSipInitLock(4000)) return;
-                  void ppSipProvider.init(cfg).finally(releaseSipInitLock);
-                }
-                else ppSipProvider.forceReregister();
-              } catch { /* noop */ }
-              evaluate();
-            } else {
-              void handoffToNative();
-            }
-          });
-          // addListener may return a Promise<PluginListenerHandle> or the handle directly.
-          if (p && typeof p.then === "function") {
-            p.then((h: any) => { appStateHandle = h; }).catch(() => {});
+        removeAppStateListener = addDedupedCapListener("App", cap?.Plugins?.App, "appStateChange", (state: { isActive: boolean }) => {
+          if (state?.isActive) {
+            void stopPlanipretSipKeepAlive().catch(() => undefined);
+            // The WebView contact was released on background — re-init the UA
+            // (forceReregister is a no-op once the UA has been stopped).
+            try {
+              const cfg = ppSipProvider.getConfig();
+              if (cfg) {
+                if (!acquireSipInitLock(4000)) return;
+                void ppSipProvider.init(cfg).finally(releaseSipInitLock);
+              }
+              else ppSipProvider.forceReregister();
+            } catch { /* noop */ }
+            evaluate();
           } else {
-            appStateHandle = p;
+            void handoffToNative();
           }
-        }
+        });
       } catch { /* ignore */ }
     }
+
     // Heartbeat: SIP transport can go silent without emitting a status event
     // (background tab, radio switch, NS keepalive drop). Poll every 15s so the
     // watchdog escalates to forceReregister even without a subscribe callback.
@@ -534,7 +528,7 @@ export function useMplanipretSoftphone(enabled = true) {
       window.removeEventListener("online", onResume);
       window.removeEventListener("pagehide", onBackgrounded);
       window.removeEventListener("freeze", onBackgrounded as EventListener);
-      try { appStateHandle?.remove?.(); } catch {}
+      try { removeAppStateListener(); } catch {}
     };
 
   }, [enabled, user?.id]);

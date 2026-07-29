@@ -7,7 +7,7 @@
 // stats sampling, and ICE-restart support for Wi-Fi ↔ LTE handover.
 
 import JsSIP from "jssip";
-import { getPpSipReconnectConfig, ppSipBackoffDelay } from "./ppSipReconnectConfig";
+import { getPpSipReconnectConfig, ppSipBackoffDelay, PP_SIP_RECONNECT_FLOOR_MS } from "./ppSipReconnectConfig";
 
 export type PpSipStatus = "idle" | "connecting" | "connected" | "registered" | "disconnected" | "error";
 export type PpCallState = "idle" | "ringing-out" | "ringing-in" | "active" | "held" | "ended";
@@ -39,6 +39,30 @@ export interface PpSipSnapshot {
 
 
 type Listener = (s: PpSipSnapshot) => void;
+
+/** Reconnect instrumentation: lets us prove the backoff never falls back to 1000ms. */
+export interface PpSipReconnectMetrics {
+  /** Current consecutive-failure counter used for the exponential backoff. */
+  attempt: number;
+  /** Delay actually scheduled for the next reconnect (ms). */
+  currentDelayMs: number;
+  /** Delay computed by the backoff formula before the floor is applied (ms). */
+  rawBackoffMs: number;
+  /** Where currentDelayMs came from: the backoff curve, the hard floor, or the max cap. */
+  delaySource: "none" | "backoff" | "floor" | "cap";
+  /** Hard floor applied on top of the configured backoff (ms). */
+  floorMs: number;
+  /** Smallest delay ever scheduled in this session — must stay >= floorMs. */
+  minDelayObservedMs: number | null;
+  /** Reason reported for the last disconnect / failed reconnect. */
+  lastFailureReason: string | null;
+  lastScheduledAt: number | null;
+  lastAttemptAt: number | null;
+  totalAttempts: number;
+  /** Count of attempts that would have been scheduled below the floor (source of a 1000ms). */
+  subThresholdHits: number;
+}
+
 
 let sipParserGuardInstalled = false;
 let ppSipInitInFlight = false;
@@ -102,6 +126,33 @@ class PpSipProvider {
   private wsRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private wsFailures = 0;
   private netWatchInstalled = false;
+  /** Reconnect instrumentation — surfaced via getReconnectMetrics(). */
+  private reconnectMetrics: PpSipReconnectMetrics = {
+    attempt: 0,
+    currentDelayMs: 0,
+    rawBackoffMs: 0,
+    delaySource: "none",
+    floorMs: 0,
+    minDelayObservedMs: null,
+    lastFailureReason: null,
+    lastScheduledAt: null,
+    lastAttemptAt: null,
+    totalAttempts: 0,
+    subThresholdHits: 0,
+  };
+  private metricsListeners = new Set<(m: PpSipReconnectMetrics) => void>();
+
+  getReconnectMetrics(): PpSipReconnectMetrics { return { ...this.reconnectMetrics }; }
+  subscribeReconnectMetrics(fn: (m: PpSipReconnectMetrics) => void): () => void {
+    this.metricsListeners.add(fn);
+    fn(this.getReconnectMetrics());
+    return () => { this.metricsListeners.delete(fn); };
+  }
+  private emitMetrics() {
+    const m = this.getReconnectMetrics();
+    this.metricsListeners.forEach((fn) => { try { fn(m); } catch { /* noop */ } });
+  }
+
 
   subscribe(fn: Listener): () => void {
     this.listeners.add(fn);
@@ -208,6 +259,10 @@ class PpSipProvider {
       ua.on("registered", () => {
         this.regFailures = 0;
         this.wsFailures = 0;
+        this.reconnectMetrics.attempt = 0;
+        this.reconnectMetrics.currentDelayMs = 0;
+        this.reconnectMetrics.delaySource = "none";
+        this.emitMetrics();
         if (this.wsRetryTimer) { clearTimeout(this.wsRetryTimer); this.wsRetryTimer = null; }
         this.startKeepAlive();
         if (this.regRetryTimer) { clearTimeout(this.regRetryTimer); this.regRetryTimer = null; }
@@ -408,30 +463,65 @@ class PpSipProvider {
   }
 
   /** Exponential-backoff reconnect: restart the socket, then re-REGISTER, and
-   *  keep retrying (1s → 30s cap) until the UA reports `registered` again. */
+   *  keep retrying (floor → cap) until the UA reports `registered` again.
+   *  Every scheduling decision is recorded in `reconnectMetrics` so we can prove
+   *  the delay never regresses to 1000ms. */
   private scheduleSocketReconnect(reason: string) {
     if (this.wsRetryTimer) return;
     const rc = getPpSipReconnectConfig();
+    const floorMs = PP_SIP_RECONNECT_FLOOR_MS;
     this.wsFailures = Math.min(this.wsFailures + 1, rc.socketBackoffMaxAttempts);
-    const delay = Math.max(3000, ppSipBackoffDelay(this.wsFailures, rc.socketBackoffMinMs, rc.socketBackoffMaxMs));
-    this.log("warn", `sip reconnect scheduled in ${delay}ms (${reason})`);
+    const raw = ppSipBackoffDelay(this.wsFailures, rc.socketBackoffMinMs, rc.socketBackoffMaxMs);
+    const delay = Math.max(floorMs, raw);
+    const source: PpSipReconnectMetrics["delaySource"] =
+      raw < floorMs ? "floor" : (raw >= rc.socketBackoffMaxMs ? "cap" : "backoff");
+
+    const m = this.reconnectMetrics;
+    m.attempt = this.wsFailures;
+    m.currentDelayMs = delay;
+    m.rawBackoffMs = raw;
+    m.delaySource = source;
+    m.floorMs = floorMs;
+    m.minDelayObservedMs = m.minDelayObservedMs === null ? delay : Math.min(m.minDelayObservedMs, delay);
+    m.lastFailureReason = reason;
+    m.lastScheduledAt = Date.now();
+    m.totalAttempts += 1;
+    if (raw < floorMs) m.subThresholdHits += 1;
+    this.emitMetrics();
+
+    if (raw < floorMs) {
+      // This is the only path that could ever produce a ~1000ms delay: the
+      // configured socketBackoffMinMs is below the floor. Make it loud.
+      this.log("warn", `sip backoff below floor (raw=${raw}ms cfgMin=${rc.socketBackoffMinMs}ms) → clamped to ${floorMs}ms`);
+    }
+    this.log("warn", `sip reconnect #${m.attempt} in ${delay}ms (src=${source}, raw=${raw}ms, floor=${floorMs}ms, reason=${reason})`);
+
     this.wsRetryTimer = setTimeout(() => {
       this.wsRetryTimer = null;
       const ua = this.ua;
       if (!ua) return;
+      this.reconnectMetrics.lastAttemptAt = Date.now();
       const online = typeof navigator === "undefined" || navigator.onLine !== false;
-      if (!online) { this.log("warn", "sip reconnect deferred: offline"); this.scheduleSocketReconnect("offline"); return; }
+      if (!online) {
+        this.log("warn", "sip reconnect deferred: offline");
+        this.emitMetrics();
+        this.scheduleSocketReconnect("offline");
+        return;
+      }
       try {
         if (ua.isConnected?.()) { ua.register(); } else { ua.start(); }
-        this.log("info", "sip reconnect attempt sent");
+        this.log("info", `sip reconnect attempt #${this.reconnectMetrics.attempt} sent`);
       } catch (e: any) {
+        this.reconnectMetrics.lastFailureReason = `attempt_error:${e?.message || e}`;
         this.log("error", `sip reconnect failed: ${e?.message || e}`);
       }
+      this.emitMetrics();
       setTimeout(() => {
         if (this.ua && this.snap.status !== "registered") this.scheduleSocketReconnect("still_unregistered");
       }, rc.socketVerifyDelayMs);
     }, delay);
   }
+
 
   /** Reconnect immediately when the device regains connectivity. */
   private installNetworkWatch() {

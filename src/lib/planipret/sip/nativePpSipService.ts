@@ -1,5 +1,6 @@
 import { Capacitor, registerPlugin } from "@capacitor/core";
 import { getPpSipReconnectConfig } from "./ppSipReconnectConfig";
+import { addDedupedCapListener } from "./capListeners";
 import type { PpSipConfig } from "./ppSipProvider";
 
 export type PpNativeSipStatus = {
@@ -115,36 +116,25 @@ export async function refreshPlanipretVoipPushToken(): Promise<boolean> {
 }
 
 export async function onPlanipretVoipPushTokenInvalidated(cb: () => void): Promise<() => void> {
-  if (platform() !== "ios" || !NativePpVoipCall.addListener) return () => undefined;
-  try {
-    const handle = await NativePpVoipCall.addListener("voipPushTokenInvalidated", () => cb());
-    return () => { void handle?.remove?.(); };
-  } catch { return () => undefined; }
+  if (platform() !== "ios") return () => undefined;
+  return addDedupedCapListener("PpVoipCall", NativePpVoipCall, "voipPushTokenInvalidated", () => cb());
 }
 
 export async function onPlanipretVoipPushToken(cb: (data: { token: string; bundleId?: string; environment?: string; changed?: boolean; source?: string }) => void): Promise<() => void> {
-  if (platform() !== "ios" || !NativePpVoipCall.addListener) return () => undefined;
-  try {
-    const handle = await NativePpVoipCall.addListener("voipPushToken", (data: any) => cb(data ?? {}));
-    return () => { void handle?.remove?.(); };
-  } catch { return () => undefined; }
+  if (platform() !== "ios") return () => undefined;
+  return addDedupedCapListener("PpVoipCall", NativePpVoipCall, "voipPushToken", (data: any) => cb(data ?? {}));
 }
 
 export async function onPlanipretIncomingCallAnswered(cb: (data: { callUUID: string; callId?: string }) => void): Promise<() => void> {
-  if (platform() !== "ios" || !NativePpVoipCall.addListener) return () => undefined;
-  try {
-    const handle = await NativePpVoipCall.addListener("incomingCallAnswered", (data: any) => cb(data ?? {}));
-    return () => { void handle?.remove?.(); };
-  } catch { return () => undefined; }
+  if (platform() !== "ios") return () => undefined;
+  return addDedupedCapListener("PpVoipCall", NativePpVoipCall, "incomingCallAnswered", (data: any) => cb(data ?? {}));
 }
 
 export async function onPlanipretIncomingCallRejected(cb: (data: { callUUID: string; callId?: string }) => void): Promise<() => void> {
-  if (platform() !== "ios" || !NativePpVoipCall.addListener) return () => undefined;
-  try {
-    const handle = await NativePpVoipCall.addListener("incomingCallRejected", (data: any) => cb(data ?? {}));
-    return () => { void handle?.remove?.(); };
-  } catch { return () => undefined; }
+  if (platform() !== "ios") return () => undefined;
+  return addDedupedCapListener("PpVoipCall", NativePpVoipCall, "incomingCallRejected", (data: any) => cb(data ?? {}));
 }
+
 
 export async function reportPlanipretCallEnded(callId?: string, reason?: string): Promise<void> {
   if (platform() !== "ios") return;
@@ -234,23 +224,13 @@ export async function triggerPlanipretNativeReregister(): Promise<void> {
 }
 
 export async function onPlanipretSipKeepAliveStatus(cb: (status: PpNativeSipStatus) => void): Promise<() => void> {
-  if (!isNative() || !NativePpSip.addListener) return () => undefined;
-  try {
-    const handle = await NativePpSip.addListener("sipServiceStatus", cb);
-    return () => { void handle?.remove?.(); };
-  } catch {
-    return () => undefined;
-  }
+  if (!isNative()) return () => undefined;
+  return addDedupedCapListener("PpSipKeepAlive", NativePpSip, "sipServiceStatus", (data: any) => cb(data as PpNativeSipStatus));
 }
 
 export async function onPlanipretNativeReregister(cb: () => void): Promise<() => void> {
-  if (!isNative() || !NativePpSip.addListener) return () => undefined;
-  try {
-    const handle = await NativePpSip.addListener("sipReregisterRequested", () => cb());
-    return () => { void handle?.remove?.(); };
-  } catch {
-    return () => undefined;
-  }
+  if (!isNative()) return () => undefined;
+  return addDedupedCapListener("PpSipKeepAlive", NativePpSip, "sipReregisterRequested", () => cb());
 }
 
 /** Fires whenever the native SIP socket sees an INVITE while the WebView is
@@ -258,14 +238,10 @@ export async function onPlanipretNativeReregister(cb: () => void): Promise<() =>
  *  the corresponding button on the Android full-screen notification (iOS uses
  *  the local notification banner + CallKit). Planiprêt-only. */
 export async function onPlanipretIncomingInvite(cb: (invite: PpIncomingInvite) => void): Promise<() => void> {
-  if (!isNative() || !NativePpSip.addListener) return () => undefined;
-  try {
-    const handle = await NativePpSip.addListener("sipIncomingInvite", (data: PpIncomingInvite) => cb(data ?? {}));
-    return () => { void handle?.remove?.(); };
-  } catch {
-    return () => undefined;
-  }
+  if (!isNative()) return () => undefined;
+  return addDedupedCapListener("PpSipKeepAlive", NativePpSip, "sipIncomingInvite", (data: any) => cb((data ?? {}) as PpIncomingInvite));
 }
+
 
 export async function acknowledgePlanipretIncoming(): Promise<void> {
   if (!isNative()) return;

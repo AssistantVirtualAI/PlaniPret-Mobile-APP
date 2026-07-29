@@ -12,6 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { verifyIosScene } from "./verify-ios-scene.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const appDir = path.resolve(path.dirname(__filename), "..");
@@ -1518,3 +1519,9 @@ patchIosEntitlements();
 patchAndroidManifest();
 patchAndroidNativeFiles();
 patchIosNativeFiles();
+
+// Guard: cap sync can regenerate native files — fail loudly if the UIScene /
+// SceneDelegate patch did not land.
+if (!verifyIosScene({ soft: process.env.PP_SCENE_CHECK_SOFT === "1" })) {
+  throw new Error("[native-config] iOS UIScene/SceneDelegate patch missing after cap sync — aborting.");
+}
