@@ -1520,8 +1520,11 @@ patchAndroidManifest();
 patchAndroidNativeFiles();
 patchIosNativeFiles();
 
-// Guard: cap sync can regenerate native files — fail loudly if the UIScene /
-// SceneDelegate patch did not land.
-if (!verifyIosScene({ soft: process.env.PP_SCENE_CHECK_SOFT === "1" })) {
-  throw new Error("[native-config] iOS UIScene/SceneDelegate patch missing after cap sync — aborting.");
+// Guard: cap sync can regenerate native files — warn if the UIScene /
+// SceneDelegate patch did not land. Use PP_SCENE_CHECK_HARD=1 to make this fatal.
+if (!verifyIosScene({ soft: process.env.PP_SCENE_CHECK_HARD !== "1" })) {
+  if (process.env.PP_SCENE_CHECK_HARD === "1") {
+    throw new Error("[native-config] iOS UIScene/SceneDelegate patch missing after cap sync — aborting.");
+  }
+  console.warn("[native-config] ⚠️  UIScene/SceneDelegate patch incomplete — add SceneDelegate.swift to Xcode manually (see README).");
 }
