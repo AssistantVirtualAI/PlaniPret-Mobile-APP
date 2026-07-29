@@ -1202,6 +1202,12 @@ function patchIosAppDelegate(iosApp) {
   if (!fs.existsSync(file)) return;
   let swift = fs.readFileSync(file, "utf8");
   const before = swift;
+  // Patch 0: Ensure required imports are present
+  for (const imp of ["AVFoundation", "BackgroundTasks"]) {
+    if (!swift.includes(`import ${imp}`)) {
+      swift = swift.replace("import UIKit", `import UIKit\nimport ${imp}`);
+    }
+  }
   // Patch 1: UIScene lifecycle observers — required when app uses SceneDelegate (iOS 13+)
   if (!swift.includes("UIScene.didActivateNotification")) {
     const sceneObservers = `
