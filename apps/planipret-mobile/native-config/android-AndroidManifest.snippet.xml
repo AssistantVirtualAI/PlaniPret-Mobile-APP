@@ -1,0 +1,75 @@
+<!--
+  Planiprêt Mobile — Extrait AndroidManifest.xml
+  À fusionner dans android/app/src/main/AndroidManifest.xml après `npx cap add android`
+-->
+
+<!-- Permissions requises -->
+<uses-permission android:name="android.permission.INTERNET" />
+<uses-permission android:name="android.permission.RECORD_AUDIO" />
+<uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+<uses-permission android:name="android.permission.READ_CONTACTS" />
+<uses-permission android:name="android.permission.WRITE_CONTACTS" />
+<uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+<uses-permission android:name="android.permission.VIBRATE" />
+<uses-permission android:name="android.permission.WAKE_LOCK" />
+<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+<uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+
+<!-- Application -->
+<application
+    android:label="Planiprêt"
+    android:icon="@mipmap/ic_launcher_planipret"
+    android:roundIcon="@mipmap/ic_launcher_planipret_round"
+    android:theme="@style/AppTheme.Planipret">
+
+    <activity android:name=".MainActivity">
+        <!-- Custom scheme deep links:
+             - planipret://auth/maestro/callback for Maestro mobile OAuth
+             - capacitor://localhost/auth/microsoft/callback for Microsoft mobile OAuth
+        -->
+        <intent-filter>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="planipret" />
+        </intent-filter>
+
+        <intent-filter>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="capacitor" android:host="localhost"
+                  android:pathPrefix="/auth/microsoft/callback" />
+            <data android:scheme="capacitor" android:host="localhost"
+                  android:pathPrefix="/auth/ms365/callback" />
+        </intent-filter>
+
+        <!--
+          Android App Links (https)
+          Requires public/.well-known/assetlinks.json served at
+          https://avastatistic.ca/.well-known/assetlinks.json
+          with the app's SHA256 signing certificate fingerprint.
+          autoVerify=true triggers Google to verify assetlinks.json on install.
+        -->
+        <intent-filter android:autoVerify="true">
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="https" android:host="avastatistic.ca"
+                  android:pathPrefix="/auth/maestro/callback" />
+            <data android:scheme="https" android:host="avastatistic.ca"
+                  android:pathPrefix="/auth/microsoft/callback" />
+            <data android:scheme="https" android:host="avastatistic.ca"
+                  android:pathPrefix="/auth/ms365/callback" />
+        </intent-filter>
+    </activity>
+
+    <!-- Service de notification d'appel entrant -->
+    <service
+        android:name=".IncomingCallService"
+        android:foregroundServiceType="phoneCall"
+        android:exported="false" />
+
+</application>

@@ -1,0 +1,79 @@
+<!--
+  Planiprêt Mobile — Extrait Info.plist iOS
+  À fusionner dans ios/App/App/Info.plist après `npx cap add ios`
+-->
+
+<!-- Permissions microphone (requis pour les appels SIP) -->
+<key>NSMicrophoneUsageDescription</key>
+<string>Planiprêt utilise le microphone pour les appels téléphoniques VoIP.</string>
+
+<!-- Permissions contacts -->
+<key>NSContactsUsageDescription</key>
+<string>Planiprêt accède à vos contacts pour faciliter les appels et la gestion des clients.</string>
+
+<!-- Modes audio en arrière-plan (appels VoIP) -->
+<key>UIBackgroundModes</key>
+<array>
+    <string>audio</string>
+    <string>voip</string>
+    <string>remote-notification</string>
+    <string>fetch</string>
+</array>
+
+<!-- Deep link schemes:
+     - planipret://auth/maestro/callback for Maestro mobile OAuth
+     - capacitor://localhost/auth/microsoft/callback for Microsoft mobile OAuth
+-->
+<key>CFBundleURLTypes</key>
+<array>
+    <dict>
+        <key>CFBundleURLName</key>
+        <string>com.planipret.mobile.oauth</string>
+        <key>CFBundleURLSchemes</key>
+        <array>
+            <string>planipret</string>
+            <string>capacitor</string>
+        </array>
+    </dict>
+</array>
+
+<!--
+  iOS Universal Links
+  Also add the "Associated Domains" capability in Xcode (Signing & Capabilities)
+  with the entry: applinks:avastatistic.ca
+  Requires public/.well-known/apple-app-site-association served as
+  application/json (no extension) at https://avastatistic.ca/.well-known/apple-app-site-association
+  with the correct TEAMID.com.planipret.mobile appID.
+-->
+
+<!-- Identifiant Bundle -->
+<key>CFBundleIdentifier</key>
+<string>com.planipret.mobile</string>
+
+<!-- Nom d'affichage -->
+<key>CFBundleDisplayName</key>
+<string>Planiprêt</string>
+
+<!-- Notifications push (APNs) -->
+<key>aps-environment</key>
+<string>production</string>
+
+<!-- Désactiver le zoom de l'interface -->
+<key>UISupportedInterfaceOrientations</key>
+<array>
+    <string>UIInterfaceOrientationPortrait</string>
+</array>
+
+<!-- Export compliance: standard HTTPS/TLS + SRTP only -->
+<key>ITSAppUsesNonExemptEncryption</key>
+<false/>
+
+<!-- Additional purpose strings required by App Review -->
+<key>NSCameraUsageDescription</key>
+<string>Planiprêt utilise l'appareil photo pour définir votre photo de profil.</string>
+<key>NSPhotoLibraryUsageDescription</key>
+<string>Planiprêt accède à vos photos pour définir votre photo de profil.</string>
+<key>NSLocalNetworkUsageDescription</key>
+<string>Planiprêt utilise le réseau local pour établir l'audio des appels VoIP.</string>
+<key>NSSpeechRecognitionUsageDescription</key>
+<string>Planiprêt transcrit vos appels enregistrés lorsque vous activez la transcription.</string>

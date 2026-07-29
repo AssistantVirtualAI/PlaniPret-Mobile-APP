@@ -272,6 +272,7 @@ export default function PAMobileDevices() {
   const [backfilling, setBackfilling] = useState(false);
   const [syncingDevices, setSyncingDevices] = useState(false);
   const [syncingRules, setSyncingRules] = useState(false);
+  const [rulesDiag, setRulesDiag] = useState<any>(null);
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(25);
 
@@ -356,28 +357,84 @@ export default function PAMobileDevices() {
     await refresh(true);
   }, [refresh, t]);
 
-  const syncAnsweringRules = useCallback(async () => {
+  const syncAnsweringRules = useCallback(async (dryRun = false) => {
     setSyncingRules(true);
+    setRulesDiag(null);
     let offset = 0;
     let ok = 0;
     let total = 0;
+    let routingOk = 0;
     let lastError: string | null = null;
+    const agg = {
+      brokers_found: 0,
+      brokers_with_extension: 0,
+      brokers_with_did: 0,
+      routing_ok: 0,
+      blockers: {} as Record<string, number>,
+      raw: [] as any[],
+      dry: [] as any[],
+      did_failures: [] as any[],
+      did_failure_reasons: {} as Record<string, number>,
+    };
+
+    // Step 0 — re-read the DID inventory from the PBX so the number→extension
+    // map used by the repair step is the real one (the original CSV import was
+    // partially mangled).
+    let didRefresh: any = null;
+    if (!dryRun) {
+      try {
+        const { data } = await supabase.functions.invoke("pp-sync-answering-rules", {
+          body: { refresh_dids: true },
+        });
+        didRefresh = data;
+      } catch { /* non-blocking */ }
+    }
+
     for (let page = 0; page < 20; page += 1) {
       const { data, error } = await supabase.functions.invoke("pp-sync-answering-rules", {
-        body: { bulk: true, offset, limit: 50, batch_size: 10, include_results: false },
+        body: { bulk: true, offset, limit: 50, batch_size: 10, include_results: false, dry_run: dryRun },
       });
       if (error) { lastError = error.message; break; }
-      ok += Number((data as any)?.succeeded ?? 0);
-      total += Number((data as any)?.processed ?? 0);
-      const next = (data as any)?.next_offset;
+      const d = data as any;
+      ok += Number(d?.succeeded ?? 0);
+      total += Number(d?.processed ?? 0);
+      routingOk += Number(d?.routing_ok_count ?? d?.routing_ok ?? 0);
+      agg.brokers_found += Number(d?.brokers_found ?? 0);
+      agg.brokers_with_extension += Number(d?.brokers_with_extension ?? 0);
+      agg.brokers_with_did += Number(d?.brokers_with_did ?? 0);
+      agg.routing_ok += Number(d?.routing_ok ?? 0);
+      for (const [k, v] of Object.entries(d?.routing_blocker_counts ?? {})) {
+        agg.blockers[k] = (agg.blockers[k] ?? 0) + Number(v ?? 0);
+      }
+      if (Array.isArray(d?.raw_pbx_responses)) agg.raw.push(...d.raw_pbx_responses.slice(0, 10));
+      if (Array.isArray(d?.dry_run_report)) agg.dry.push(...d.dry_run_report);
+      if (Array.isArray(d?.did_failures)) agg.did_failures.push(...d.did_failures.slice(0, 10));
+      for (const [k, v] of Object.entries(d?.did_failure_reasons ?? {})) {
+        agg.did_failure_reasons[k] = (agg.did_failure_reasons[k] ?? 0) + Number(v ?? 0);
+      }
+      const next = d?.next_offset;
       if (next === null || next === undefined) break;
       offset = Number(next);
     }
     setSyncingRules(false);
+    setRulesDiag({ ...agg, dry_run: dryRun, total });
     if (lastError && total === 0) { toast.error(t.toastSyncRulesError, { description: lastError }); return; }
-    toast.success(t.toastSyncRulesSuccess(ok, total));
+    if (dryRun) {
+      toast.success(`Dry run: ${agg.brokers_with_extension}/${agg.brokers_found} avec extension`, {
+        description: `DID: ${agg.brokers_with_did} · sans extension: ${agg.blockers.no_extension ?? 0}`,
+      });
+      return;
+    }
+    const didPart = didRefresh?.mapped != null
+      ? `DID: ${didRefresh.mapped}/${didRefresh.pbx_numbers} · `
+      : "";
+    toast.success(t.toastSyncRulesSuccess(ok, total), {
+      description: `${didPart}routage vérifié: ${routingOk}/${total}`,
+    });
     refresh();
   }, [refresh, t]);
+
+
 
   const [diagBroker, setDiagBroker] = useState<Row | null>(null);
   const [diagLoading, setDiagLoading] = useState(false);
@@ -477,14 +534,76 @@ export default function PAMobileDevices() {
           <button onClick={backfill} disabled={backfilling} className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)", opacity: backfilling ? 0.65 : 1 }}>
             {backfilling ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />} {t.missingBtn}
           </button>
-          <button onClick={syncAnsweringRules} disabled={syncingRules} className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium" style={{ background: "#0D2540", border: "1px solid #2E9BDC44", color: "#2E9BDC", opacity: syncingRules ? 0.65 : 1 }}>
+          <button onClick={() => syncAnsweringRules(false)} disabled={syncingRules} className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium" style={{ background: "#0D2540", border: "1px solid #2E9BDC44", color: "#2E9BDC", opacity: syncingRules ? 0.65 : 1 }}>
             {syncingRules ? <Loader2 className="h-4 w-4 animate-spin" /> : <PhoneCall className="h-4 w-4" />} {t.syncAnsweringRules}
+          </button>
+          <button onClick={() => syncAnsweringRules(true)} disabled={syncingRules} className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)", opacity: syncingRules ? 0.65 : 1 }}>
+            {syncingRules ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />} Dry run
           </button>
           <button onClick={provisionAppReview} className="rounded-lg px-3 py-2 text-sm font-medium" style={{ background: ACCENT, color: "#fff" }}>
             {t.appReviewUser}
           </button>
         </div>
       </div>
+
+      {rulesDiag && (
+        <div className="rounded-xl p-4 text-sm" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)" }}>
+          <div className="mb-2 flex items-center justify-between">
+            <span className="font-semibold" style={{ color: "var(--pp-text-primary)" }}>
+              {rulesDiag.dry_run ? "Dry run — diagnostic routage" : "Diagnostic routage"}
+            </span>
+            <button onClick={() => setRulesDiag(null)} className="text-xs" style={{ color: "var(--pp-text-secondary)" }}>✕</button>
+          </div>
+          <div className="grid grid-cols-2 gap-2 md:grid-cols-4" style={{ color: "var(--pp-text-secondary)" }}>
+            <div>Courtiers: <b style={{ color: "var(--pp-text-primary)" }}>{rulesDiag.brokers_found}</b></div>
+            <div>Avec extension: <b style={{ color: "var(--pp-text-primary)" }}>{rulesDiag.brokers_with_extension}</b></div>
+            <div>Avec DID: <b style={{ color: "var(--pp-text-primary)" }}>{rulesDiag.brokers_with_did}</b></div>
+            <div>Routage OK: <b style={{ color: SUCCESS }}>{rulesDiag.routing_ok}</b></div>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {Object.entries(rulesDiag.blockers ?? {})
+              .filter(([, v]) => Number(v) > 0)
+              .map(([k, v]) => (
+                <span key={k} className="rounded-md px-2 py-1 text-xs" style={{ background: "#3A1B1B", color: "#F87171" }}>
+                  {k}: {String(v)}
+                </span>
+              ))}
+            {Object.values(rulesDiag.blockers ?? {}).every((v) => !Number(v)) && (
+              <span className="text-xs" style={{ color: SUCCESS }}>Aucun blocage détecté</span>
+            )}
+          </div>
+          {(!!rulesDiag.did_failures?.length || !!Object.keys(rulesDiag.did_failure_reasons ?? {}).length) && (
+            <details className="mt-3" open>
+              <summary className="cursor-pointer text-xs" style={{ color: "#F87171" }}>
+                Échecs DID ({rulesDiag.did_failures?.length ?? 0} courtiers) —{" "}
+                {Object.entries(rulesDiag.did_failure_reasons ?? {})
+                  .map(([k, v]) => `${k}: ${v}`)
+                  .join(" · ") || "détail"}
+              </summary>
+              <pre className="mt-2 max-h-56 overflow-auto rounded-lg p-2 text-[11px]" style={{ background: "var(--pp-bg-base)", color: "var(--pp-text-secondary)" }}>
+                {JSON.stringify((rulesDiag.did_failures ?? []).slice(0, 20), null, 2)}
+              </pre>
+            </details>
+          )}
+          {!!rulesDiag.raw?.length && (
+            <details className="mt-3">
+              <summary className="cursor-pointer text-xs" style={{ color: "var(--pp-text-secondary)" }}>Réponses PBX brutes</summary>
+              <pre className="mt-2 max-h-56 overflow-auto rounded-lg p-2 text-[11px]" style={{ background: "var(--pp-bg-base)", color: "var(--pp-text-secondary)" }}>
+                {JSON.stringify(rulesDiag.raw.slice(0, 30), null, 2)}
+              </pre>
+            </details>
+          )}
+          {!!rulesDiag.dry?.length && (
+            <details className="mt-2">
+              <summary className="cursor-pointer text-xs" style={{ color: "var(--pp-text-secondary)" }}>Plan dry run ({rulesDiag.dry.length})</summary>
+              <pre className="mt-2 max-h-56 overflow-auto rounded-lg p-2 text-[11px]" style={{ background: "var(--pp-bg-base)", color: "var(--pp-text-secondary)" }}>
+                {JSON.stringify(rulesDiag.dry.slice(0, 60), null, 2)}
+              </pre>
+            </details>
+          )}
+        </div>
+      )}
+
 
       <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
         {([

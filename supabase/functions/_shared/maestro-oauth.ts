@@ -166,21 +166,26 @@ export async function getUserMaestroAccessToken(
 }
 
 export async function fetchMaestroUserProfile(env: MaestroOAuthEnv, accessToken: string) {
-  const base = Deno.env.get("MAESTRO_TELECOM_BASE_URL") ?? Deno.env.get("MAESTRO_API_BASE_URL") ?? "";
-  if (!base) return null;
-  const root = base.replace(/\/$/, "");
-  // Scott confirmed /user (singular) is the auto-resolved "me" endpoint.
-  // Try it first, then fall back to legacy /users/me and /me.
-  const candidates = [`${root}/user`, `${root}/users/me`, `${root}/me`];
-  for (const url of candidates) {
-    try {
-      const r = await fetchWithTimeout(url, {
-        headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
-      }, 4_000);
-      if (r.ok) return await r.json();
-    } catch (e) {
-      console.warn(`[maestro-oauth] fetch ${url} failed`, (e as Error).message);
+  const root = (
+    Deno.env.get("MAESTRO_TELECOM_BASE_URL")
+    ?? Deno.env.get("MAESTRO_API_BASE_URL")
+    ?? "https://client-dev.planipret.com/telecom/api/v1"
+  ).replace(/\/$/, "");
+  // Confirmed with Scott: with an OAuth access token (no machine=1),
+  // GET /user returns the authenticated broker profile { id, first_name, last_name, email }.
+  try {
+    const r = await fetchWithTimeout(`${root}/user`, {
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+    }, 6_000);
+    if (r.ok) {
+      const j = await r.json();
+      if (j && typeof j === "object" && Object.keys(j).length > 0) return j;
+      console.warn("[maestro-oauth] GET /user returned an empty object — token may be a machine key");
+    } else {
+      console.warn("[maestro-oauth] GET /user failed", r.status);
     }
+  } catch (e) {
+    console.warn("[maestro-oauth] GET /user error", (e as Error).message);
   }
   return null;
 }
