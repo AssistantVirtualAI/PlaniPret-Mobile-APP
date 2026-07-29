@@ -71,7 +71,6 @@ for (const f of jsFiles) {
     foundId = m[1];
     if (foundId.startsWith(today)) {
       buildIdHit = true;
-      break;
     }
   }
 }

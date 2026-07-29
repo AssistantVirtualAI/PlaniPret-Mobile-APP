@@ -41,8 +41,8 @@ function markBootReady() {
 /**
  * The boot flag used to be set only by <NativeBootMarker /> deep inside the
  * provider tree. If any provider or lazy chunk was slow (cold start on iOS),
- * the 4.5s watchdog painted the "démarrage interrompu" overlay on top of an
- * app that was actually booting fine — and it never went away.
+ * the old watchdog could paint a diagnostic overlay on top of an app that was
+ * actually booting fine — and it never went away.
  * We now mark the boot as soon as React commits anything into #root.
  */
 function watchFirstPaint(container: HTMLElement) {

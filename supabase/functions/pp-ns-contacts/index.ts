@@ -132,16 +132,27 @@ Deno.serve(async (req) => {
         };
       });
 
+      directory.sort((a, b) => {
+        const aMe = String(a.extension ?? "") === String(ctx.extension);
+        const bMe = String(b.extension ?? "") === String(ctx.extension);
+        if (aMe && !bMe) return -1;
+        if (!aMe && bMe) return 1;
+        return String(a.name ?? "").localeCompare(String(b.name ?? ""), "fr", { sensitivity: "base" });
+      });
+      const me = directory.find((d) => String(d.extension ?? "") === String(ctx.extension)) ?? null;
+
       if (debug) {
         return jsonResponse({
           ok: true,
           count: directory.length,
+          current_extension: ctx.extension,
+          me,
           sample_raw: users.slice(0, 2),
           sample_detail: Array.from(details.entries()).slice(0, 2),
           directory,
         });
       }
-      return jsonResponse({ ok: true, count: directory.length, directory });
+      return jsonResponse({ ok: true, count: directory.length, current_extension: ctx.extension, me, directory });
     }
 
     if (action === "create") {

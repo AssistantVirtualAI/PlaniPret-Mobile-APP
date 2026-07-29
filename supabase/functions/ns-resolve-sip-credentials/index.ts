@@ -135,7 +135,7 @@ Deno.serve(async (req) => {
 
   const { data: profile } = await userClient
     .from("planipret_profiles")
-    .select("id, user_id, ns_extension, ns_domain, maestro_broker_id")
+    .select("id, user_id, full_name, email, ns_extension, ns_domain, maestro_broker_id")
     .eq("user_id", user.id)
     .maybeSingle();
 
@@ -195,6 +195,7 @@ Deno.serve(async (req) => {
   const ext = String(profile.ns_extension);
   const domain = profile.ns_domain || NS_DEFAULT_DOMAIN;
   const deviceName = deviceNameFor(ext, clientType);
+  const brokerDisplayName = String((profile as any).full_name || (profile as any).email || ext).trim();
 
   console.log(`[ns-resolve] client_type=${clientType} ext=${ext} device=${deviceName}`);
 
@@ -277,7 +278,7 @@ Deno.serve(async (req) => {
     sip_wss_url: NS_SIP_WSS_URL,
     sip_ws_urls: Array.from(new Set([NS_SIP_WSS_URL, `wss://${coreServer}:9002`, "wss://core1.cluster1.ucstack.io:9002"])),
     sip_wss_urls: Array.from(new Set([NS_SIP_WSS_URL, `wss://${coreServer}:9002`, "wss://core1.cluster1.ucstack.io:9002"])),
-    display_name: device["display-name"] ?? device.display_name ?? device.name ?? ext,
+    display_name: brokerDisplayName,
     sip_state: sipState,
     device_registered: sipState === "registered",
     repair_status: repairStatus ? { ok: repairStatus.ok, status: repairStatus.status } : null,

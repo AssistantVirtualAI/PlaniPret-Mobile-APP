@@ -832,6 +832,41 @@ function writeIfChanged(file, next) {
   return true;
 }
 
+function stripObsoleteIosFallbackFromHtml(html) {
+  let next = html;
+  next = next.replace(
+    /\n\s*function showBootFallback\(message\) \{[\s\S]*?\n\s*window\.__PP_DISABLE_NATIVE_BOOT_FALLBACK__ = true;/,
+    "\n        window.__PP_DISABLE_NATIVE_BOOT_FALLBACK__ = true;",
+  );
+  next = next.replace(/\n\s*window\.__PP_SHOW_BOOT_FALLBACK__ = showBootFallback;\s*/g, "\n");
+  next = next.replace(/\n\s*<div id="pp-native-boot-fallback"[\s\S]*?\n\s*<\/body>/, "\n  </body>");
+  next = next.replace(/const t=document\.getElementById\("pp-native-boot-fallback"\);t&&\(t\.style\.display="none"\)/g, "");
+  return next;
+}
+
+function patchCopiedWebBundles() {
+  const rels = [
+    "dist/index.html",
+    "ios/App/App/public/index.html",
+    "android/app/src/main/assets/public/index.html",
+  ];
+  for (const assetsRel of ["dist/assets", "ios/App/App/public/assets", "android/app/src/main/assets/public/assets"]) {
+    const dir = path.join(appDir, assetsRel);
+    if (!fs.existsSync(dir)) continue;
+    for (const name of fs.readdirSync(dir)) if (name.endsWith(".js")) rels.push(path.join(assetsRel, name));
+  }
+  for (const rel of rels) {
+    const file = path.join(appDir, rel);
+    if (!fs.existsSync(file)) continue;
+    const before = fs.readFileSync(file, "utf8");
+    const next = stripObsoleteIosFallbackFromHtml(before);
+    if (next !== before) {
+      fs.writeFileSync(file, next);
+      console.log(`[native-config] removed obsolete iOS boot fallback from ${rel}`);
+    }
+  }
+}
+
 function walk(dir, files = []) {
   if (!fs.existsSync(dir)) return files;
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -1196,6 +1231,7 @@ function patchIosNativeFiles() {
   console.log("[native-config] iOS PpSipKeepAlive + PpVoipCall plugins applied.");
 }
 
+patchCopiedWebBundles();
 patchIosInfoPlist();
 patchAndroidManifest();
 patchAndroidNativeFiles();
