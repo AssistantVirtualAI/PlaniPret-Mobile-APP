@@ -62,31 +62,24 @@ export async function getBrokerAuth(
   admin: SupabaseClient,
   userId: string | null | undefined,
 ): Promise<{ token: string; brokerId: string | null; usingFallback: boolean }> {
+  // NOTE: Maestro Telecom API only accepts the machine API key + ?machine=1.
+  // Per-broker OAuth tokens are NOT accepted by the telecom API endpoints.
+  // We always use the machine key but still resolve brokerId from the profile
+  // so routes can be scoped to /users/{brokerId}/...
+  const cfg = await getMaestroConfig(admin);
   if (!userId) {
-    const cfg = await getMaestroConfig(admin);
     return { token: cfg.key, brokerId: null, usingFallback: true };
   }
   const { data: profile } = await admin
     .from("planipret_profiles")
-    .select("maestro_broker_token, maestro_broker_id, maestro_token_expires_at")
+    .select("maestro_broker_id")
     .eq("user_id", userId)
     .maybeSingle();
-  const tokenValid =
-    profile?.maestro_broker_token &&
-    (!profile.maestro_token_expires_at ||
-      new Date(profile.maestro_token_expires_at) > new Date());
-  if (tokenValid) {
-    return {
-      token: profile!.maestro_broker_token!,
-      brokerId: profile!.maestro_broker_id ?? null,
-      usingFallback: false,
-    };
-  }
-  const cfg = await getMaestroConfig(admin);
+  const brokerId = profile?.maestro_broker_id ?? null;
   return {
     token: cfg.key,
-    brokerId: profile?.maestro_broker_id ?? null,
-    usingFallback: true,
+    brokerId,
+    usingFallback: true, // always machine key
   };
 }
 

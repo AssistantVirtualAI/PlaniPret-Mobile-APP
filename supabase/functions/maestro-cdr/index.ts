@@ -52,6 +52,22 @@ Deno.serve(async (req) => {
 
     const auth = await getBrokerAuth(admin, call.user_id);
 
+    // Guard: brokerId is required for all Maestro Telecom API calls
+    if (!auth.brokerId) {
+      await updateCallPipeline(admin, call_id, { step: "error", error: "maestro_broker_id_missing" });
+      await setPipelineStep(admin, call_id, "cdr", "error", { reason: "maestro_broker_id_missing" });
+      await pipelineLog(admin, {
+        call_id, user_id: call.user_id, step: "cdr_sync", status: "error",
+        error_message: "maestro_broker_id_missing",
+        payload: { hint: "Set maestro_broker_id (numeric, e.g. 67) on planipret_profiles for this user" },
+      });
+      return json({
+        success: false,
+        error: "maestro_broker_id_missing",
+        hint: "The broker's Maestro user ID (maestro_broker_id) is not set on their profile. Ask Scott for the numeric broker ID (e.g. 67 or 93135) and set it in planipret_profiles.",
+      }, 200);
+    }
+
     // ── STEP 1: client lookup (cache-first) ─────────────────────
     let maestroClientId = call.maestro_client_id ?? null;
     let clientName: string | null = null;

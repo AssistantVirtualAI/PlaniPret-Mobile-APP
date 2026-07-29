@@ -152,6 +152,25 @@ Deno.serve(async (req) => {
       using_service_key_fallback: auth.usingFallback,
       token_len: auth.token ? auth.token.length : 0,
     });
+
+    // Guard: brokerId is required for all Maestro Telecom API calls
+    if (!auth.brokerId) {
+      log("maestro_broker_id_missing", { user_id: call.user_id });
+      await setPipelineStep(admin, call_id, "maestro", "error", { reason: "maestro_broker_id_missing" });
+      await updateCallPipeline(admin, call_id, { step: "error", error: "maestro_broker_id_missing" });
+      await pipelineLog(admin, {
+        call_id, user_id: call.user_id, step: "maestro_sync", status: "error",
+        error_message: "maestro_broker_id_missing",
+        payload: { hint: "Set maestro_broker_id (numeric, e.g. 67) on planipret_profiles for this user" },
+      });
+      return json({
+        success: false,
+        error: "maestro_broker_id_missing",
+        hint: "Set maestro_broker_id (numeric broker ID from Scott, e.g. 67 or 93135) on planipret_profiles for this user.",
+        request_id: rid,
+      }, 200);
+    }
+
     const mId = call.maestro_call_id ?? call.ns_call_id ?? call.id;
 
 

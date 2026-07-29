@@ -64,9 +64,13 @@ Deno.serve(async (req) => {
     try {
       const auth = await getBrokerAuth(admin, call.user_id);
       const maestroCallId = call.maestro_call_id ?? call.ns_call_id ?? call.id;
+      // Scott API: GET /users/{brokerId}/calls/{callId}/recording
+      const recPath = auth.brokerId
+        ? `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/calls/${encodeURIComponent(maestroCallId)}/recording`
+        : `/api/v1/users/me/calls/${encodeURIComponent(maestroCallId)}/recording`;
       res = await maestroFetch(cfg, {
         method: "GET",
-        path: `/api/v1/calls/${encodeURIComponent(maestroCallId)}/recording`,
+        path: recPath,
         token: auth.token,
       });
     } catch (e: any) {
