@@ -11,16 +11,25 @@ import {
   AVA_ORG_ID,
 } from "../_shared/planipret-ns.ts";
 
-function pickDirection(raw: any): "inbound" | "outbound" | "missed" {
-  const dir = String(val(raw, ["direction", "call_direction", "call-direction", "type", "call-type"], "")).toLowerCase();
-  const disposition = String(val(raw, ["disposition", "status", "call-status"], "")).toLowerCase();
-  if (dir.includes("in") || dir === "incoming" || dir === "received") {
-    if (raw?.answered === false || ["no-answer", "missed", "unanswered"].includes(disposition)) return "missed";
-    return "inbound";
+function pickDirection(raw: any, ext?: string): "inbound" | "outbound" | "missed" {
+  const disposition = String(val(raw, ["disposition", "status", "call-status", "call-disconnect-reason-text"], "")).toLowerCase();
+  const answered = val(raw, ["answer_time", "answered_at", "time-answer", "call-answer-datetime", "call-batch-answer-datetime"]);
+  if (raw?.answered === false || ["no-answer", "missed", "unanswered"].includes(disposition)) return "missed";
+
+  // Topology first (NetSapiens numeric call-direction is unreliable).
+  const orig = String(val(raw, ["call-orig-user", "orig-user", "orig_user", "from-user"], "")).trim();
+  const term = String(val(raw, ["call-term-user", "term-user", "term_user", "call-through-user", "to-user"], "")).trim();
+  const e = String(ext ?? "").trim();
+  if (e) {
+    if (term === e && orig !== e) return answered ? "inbound" : "inbound";
+    if (orig === e && term !== e) return "outbound";
   }
-  if (["no-answer", "missed", "unanswered"].includes(disposition)) return "missed";
-  return "outbound";
+  const dir = String(val(raw, ["direction", "call_direction", "type", "call-type"], "")).toLowerCase();
+  if (dir.includes("in") || dir === "incoming" || dir === "received") return "inbound";
+  if (dir.includes("out")) return "outbound";
+  return "inbound";
 }
+
 
 function val(raw: any, keys: string[], fb: any = null) {
   for (const k of keys) {
@@ -30,10 +39,30 @@ function val(raw: any, keys: string[], fb: any = null) {
   return fb;
 }
 
+const JUNK_ENDPOINTS = /^(speakaccount|speak-account|vmail|voicemail|nms|sip|unknown|anonymous|restricted|private|conference|park|null)$/i;
+
 function normalizeEndpoint(v: unknown): string | null {
-  const s = String(v ?? "").trim();
+  let s = String(v ?? "").trim();
   if (!s) return null;
-  return s.replace(/^sips?:/i, "").replace(/^tel:/i, "").split("@")[0] || s;
+  s = s.replace(/^sips?:/i, "").replace(/^tel:/i, "").split("@")[0].replace(/[<>"']/g, "").trim();
+  if (!s) return null;
+  if (/^\d(\.\d+)?e\+\d+$/i.test(s)) {
+    const n = Number(s);
+    if (Number.isFinite(n)) s = n.toFixed(0);
+  }
+  if (JUNK_ENDPOINTS.test(s)) return null;
+  const digits = s.replace(/[^\d+]/g, "");
+  if (!/^\+?\d{2,18}$/.test(digits)) return null;
+  return digits;
+}
+
+/** First key whose value normalises to a real number. */
+function pickEndpoint(raw: any, keys: string[]): string | null {
+  for (const k of keys) {
+    const n = normalizeEndpoint(raw?.[k]);
+    if (n) return n;
+  }
+  return null;
 }
 
 function normalizeCdr(it: any, ctx: any) {
@@ -41,8 +70,8 @@ function normalizeCdr(it: any, ctx: any) {
   const nsCallId = val(it, ["call-id", "call_id", "callid", "call-parent-call-id", "orig_callid", "term_callid"]);
   const nsOrigCallId = val(it, ["call-orig-call-id", "orig_callid", "orig-callid", "orig-call-id"]);
   const nsTermCallId = val(it, ["call-term-call-id", "term_callid", "term-callid", "term-call-id"]);
-  const fromNumber = normalizeEndpoint(val(it, ["from_number", "from", "caller_id_number", "caller-id-number", "call-orig-from-uri", "orig-from-uri", "orig_from_uri", "call-orig-user", "orig-user", "orig_from_user", "ani", "by_number"]));
-  const toNumber = normalizeEndpoint(val(it, ["to_number", "to", "destination", "dialed_number", "dnis", "call-term-to-uri", "call-orig-to-uri", "term_to_user", "term-user", "call-term-user", "orig_to_user", "orig-to-user"]));
+  const fromNumber = pickEndpoint(it, ["from_number", "from", "caller_id_number", "caller-id-number", "call-orig-from-uri", "orig-from-uri", "orig_from_uri", "call-orig-from-user", "call-orig-caller-id", "call-orig-user", "orig-user", "orig_from_user", "ani", "by_number"]);
+  const toNumber = pickEndpoint(it, ["to_number", "to", "destination", "dialed_number", "dnis", "call-orig-request-user", "call-orig-to-user", "call-orig-to-uri", "term_to_user", "term-user", "call-term-user", "orig_to_user", "orig-to-user", "call-term-to-uri"]);
   const recordingUrl = val(it, ["file-access-url", "recording_url", "recording-url", "record_url", "recording", "url"]);
   const recordingStatus = val(it, ["call-recording-status", "recording_status"]);
   return {
@@ -54,7 +83,7 @@ function normalizeCdr(it: any, ctx: any) {
     ns_cdr_id: nsCdrId,
     ns_domain: ctx.nsDomain,
     extension: ctx.extension,
-    direction: pickDirection(it),
+    direction: pickDirection(it, ctx.extension),
     status: val(it, ["disposition", "status", "call-status"]),
     from_number: fromNumber,
     from_name: val(it, ["from_name", "caller_id_name", "caller-id-name", "orig_from_name", "orig-name", "by_name"]),

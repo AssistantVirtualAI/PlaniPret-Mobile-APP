@@ -22,10 +22,29 @@ function val(raw: any, keys: string[], fb: any = null) {
   return fb;
 }
 
+const JUNK_ENDPOINTS = /^(speakaccount|speak-account|vmail|voicemail|nms|sip|unknown|anonymous|restricted|private|conference|park|null)$/i;
+
 function normalizeEndpoint(v: unknown): string | null {
-  const s = String(v ?? "").trim();
+  let s = String(v ?? "").trim();
   if (!s) return null;
-  return s.replace(/^sips?:/i, "").replace(/^tel:/i, "").split("@")[0] || s;
+  s = s.replace(/^sips?:/i, "").replace(/^tel:/i, "").split("@")[0].replace(/[<>"']/g, "").trim();
+  if (!s) return null;
+  if (/^\d(\.\d+)?e\+\d+$/i.test(s)) {
+    const n = Number(s);
+    if (Number.isFinite(n)) s = n.toFixed(0);
+  }
+  if (JUNK_ENDPOINTS.test(s)) return null;
+  const digits = s.replace(/[^\d+]/g, "");
+  if (!/^\+?\d{2,18}$/.test(digits)) return null;
+  return digits;
+}
+
+function pickEndpoint(raw: any, keys: string[]): string | null {
+  for (const k of keys) {
+    const n = normalizeEndpoint(raw?.[k]);
+    if (n) return n;
+  }
+  return null;
 }
 
 Deno.serve(async (req) => {
@@ -131,8 +150,16 @@ Deno.serve(async (req) => {
         const nsOrigCallId = val(it, ["call-orig-call-id", "orig_callid", "orig-callid", "orig-call-id"]);
         const nsTermCallId = val(it, ["call-term-call-id", "term_callid", "term-callid", "term-call-id"]);
         const enriched = [nsId, nsCallId, nsOrigCallId, nsTermCallId].map((id) => id ? byNsId.get(id) : null).find(Boolean);
-        const dirRaw = String(val(it, ["direction", "call_direction", "call-direction"], enriched?.direction ?? "")).toLowerCase();
-        const direction = dirRaw.includes("in") ? "inbound" : "outbound";
+        const recExt = String(enriched?.extension ?? ctx.extension ?? "").trim();
+        const origUser = String(val(it, ["call-orig-user", "orig-user", "orig_user"], "")).trim();
+        const termUser = String(val(it, ["call-term-user", "term-user", "term_user", "call-through-user"], "")).trim();
+        const dirRaw = String(val(it, ["direction", "call_direction"], enriched?.direction ?? "")).toLowerCase();
+        let direction: string;
+        if (recExt && termUser === recExt && origUser !== recExt) direction = "inbound";
+        else if (recExt && origUser === recExt && termUser !== recExt) direction = "outbound";
+        else if (dirRaw.includes("in")) direction = "inbound";
+        else if (dirRaw.includes("out")) direction = "outbound";
+        else direction = enriched?.direction ?? "inbound";
         const recordingUrl = val(it, ["file-access-url", "url", "recording_url", "recording", "record_url"]) ?? enriched?.recording_url ?? null;
         return {
           id: enriched?.id ?? nsId ?? `rec-${i}`,
@@ -143,9 +170,9 @@ Deno.serve(async (req) => {
           ns_term_callid: nsTermCallId ?? enriched?.ns_term_callid ?? null,
           extension: enriched?.extension ?? ctx.extension,
           direction,
-          from_number: normalizeEndpoint(val(it, ["from_number", "from", "caller_id_number", "caller-id-number", "orig_from_user", "orig-user", "call-orig-user", "call-orig-from-uri", "orig-from-uri", "by_number"])) ?? enriched?.from_number ?? null,
+          from_number: pickEndpoint(it, ["from_number", "from", "caller_id_number", "caller-id-number", "call-orig-from-uri", "orig-from-uri", "call-orig-from-user", "orig_from_user", "call-orig-user", "orig-user", "by_number"]) ?? enriched?.from_number ?? null,
           from_name: val(it, ["from_name", "caller_id_name", "caller-id-name", "orig_from_name", "orig-name"]) ?? enriched?.from_name ?? null,
-          to_number: normalizeEndpoint(val(it, ["to_number", "to", "destination", "dialed_number", "dnis", "term_to_user", "term-user", "call-term-user", "call-term-to-uri", "call-orig-to-uri"])) ?? enriched?.to_number ?? null,
+          to_number: pickEndpoint(it, ["to_number", "to", "destination", "dialed_number", "dnis", "call-orig-request-user", "call-orig-to-user", "call-orig-to-uri", "term_to_user", "term-user", "call-term-user", "call-term-to-uri"]) ?? enriched?.to_number ?? null,
           to_name: val(it, ["to_name", "term_to_name", "term-name"]) ?? enriched?.to_name ?? null,
           started_at: val(it, ["start_time", "started_at", "time_start", "time-start", "call-recording-started-datetime"]) ?? enriched?.started_at ?? null,
           duration_seconds: Number(val(it, ["duration", "billsec", "time_talking", "file-duration-seconds"], 0)) || enriched?.duration_seconds || 0,
@@ -187,7 +214,7 @@ Deno.serve(async (req) => {
           ns_orig_callid: r.ns_orig_callid,
           ns_term_callid: r.ns_term_callid,
           extension: r.extension ?? ctx.extension,
-          direction: r.direction ?? "outbound",
+          direction: r.direction ?? "inbound",
           status: r.status ?? null,
           from_number: r.from_number,
           from_name: r.from_name,

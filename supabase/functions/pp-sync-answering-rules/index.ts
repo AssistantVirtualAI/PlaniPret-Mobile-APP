@@ -131,9 +131,11 @@ Deno.serve(async (req) => {
           // tenant it can resolve to a terminating application (SpeakAccount /
           // voicemail) before the registered devices are forked.
           "include-user-extension": "no",
-          // Ring ONLY the mobile device AORs (never <OwnDevices>, which would
-          // also fork to {ext}_web and steal the call from the mobile app).
-          "ring-all-user-phones": "no",
+          // Fork to every registered device as well: if the mobile contact has
+          // expired (app backgrounded / OS suspended the WebView), the call must
+          // still reach any other registered terminal instead of dropping to
+          // voicemail after a 0s leg.
+          "ring-all-user-phones": "yes",
           "parameters": deviceAors,
           "destinations": destinations,
           "list": deviceAors,
@@ -148,10 +150,10 @@ Deno.serve(async (req) => {
         "simultaneous-ring-enabled": "yes",
         "simultaneous-ring-confirm": "no",
         "simultaneous-ring-include-user-extension": "no",
-        "simultaneous-ring-all-user-phones": "no",
+        "simultaneous-ring-all-user-phones": "yes",
         "simultaneous-ring-parameters": deviceAors,
         "sim-ring-include-user-extension": "no",
-        "sim-ring-all-user-phones": "no",
+        "sim-ring-all-user-phones": "yes",
         "sim-ring-parameters": deviceAors,
         "simultaneous-ring-list": deviceAors,
 
@@ -182,12 +184,19 @@ Deno.serve(async (req) => {
       return `sip:${id}@${domain}`;
     };
 
-    // Read the broker's real device AORs from NS and keep ONLY the mobile
-    // device ({ext}_mobile). Inbound calls must always ring the mobile app —
-    // never {ext}_web (desktop/browser), which would answer first and make the
-    // mobile app look silent.
+    // Read the broker's real device AORs from NS. The mobile app must be first,
+    // but it must NOT be the only target: when iOS/Android suspends the mobile
+    // SIP contact, a mobile-only sim-ring is answered immediately by voicemail.
+    // Keep every provisioned device as fallback so NS actually rings instead of
+    // terminating at SpeakAccount/VMail after a 0-second leg.
     const mobileOnly = (aors: string[], ext: string) =>
       aors.filter((a) => a.toLowerCase().includes(`${String(ext).toLowerCase()}_mobile`));
+
+    const mobileFirst = (aors: string[], ext: string) => {
+      const mobile = mobileOnly(aors, ext);
+      const rest = aors.filter((a) => !mobile.includes(a));
+      return [...new Set([...mobile, ...rest])];
+    };
 
     const fetchDeviceAors = async (ext: string, domain: string): Promise<{ aors: string[]; source: string; status: number; registered_aors: string[]; all_aors: string[] }> => {
       // Last-resort fallback: never leave the rule pointing at a single dead
@@ -208,16 +217,13 @@ Deno.serve(async (req) => {
         const registered = mobileOnly(registeredAll, ext);
 
         // Preference order:
-        //  1. registered mobile device  (best: rings the app instantly)
-        //  2. provisioned mobile device (app exists but is momentarily offline)
-        //  3. every registered device   (desk/web) — better than nothing
-        //  4. every provisioned device + <OwnDevices>
+        //  1. registered devices, mobile first (best: rings live contacts)
+        //  2. provisioned devices, mobile first (still gives NS real AORs)
+        //  3. convention fallback if NS does not list devices
         let chosen: string[] = [];
         let source = "";
-        if (registered.length) { chosen = registered; source = "ns_registered_mobile_device"; }
-        else if (provisioned.length) { chosen = [...provisioned, "<OwnDevices>"]; source = "ns_provisioned_mobile_device_plus_owndevices"; }
-        else if (registeredAll.length) { chosen = [...registeredAll, "<OwnDevices>"]; source = "ns_registered_any_device"; }
-        else if (allAors.length) { chosen = [...allAors, "<OwnDevices>"]; source = "ns_provisioned_any_device"; }
+        if (registeredAll.length) { chosen = mobileFirst(registeredAll, ext); source = "ns_registered_devices_mobile_first"; }
+        else if (allAors.length) { chosen = mobileFirst(allAors, ext); source = "ns_provisioned_devices_mobile_first"; }
 
         if (chosen.length) {
           return {

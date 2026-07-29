@@ -190,24 +190,57 @@ function toIso(v: unknown): string | null {
   return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
+const JUNK_ENDPOINTS = /^(speakaccount|speak-account|vmail|voicemail|nms|sip|unknown|anonymous|restricted|private|conference|park|null)$/i;
+
 function normalizePhone(v: unknown): string | null {
-  const s = String(v ?? "").replace(/^sip:/i, "").split("@")[0].replace(/[<>\"']/g, "").trim();
-  return s || null;
+  let s = String(v ?? "").replace(/^sip:/i, "").split("@")[0].replace(/[<>"']/g, "").trim();
+  if (!s) return null;
+  // NetSapiens sometimes serialises numbers in scientific notation (1.5142163359e+10)
+  if (/^\d(\.\d+)?e\+\d+$/i.test(s)) {
+    const n = Number(s);
+    if (Number.isFinite(n)) s = n.toFixed(0);
+  }
+  if (JUNK_ENDPOINTS.test(s)) return null;
+  const digits = s.replace(/[^\d+]/g, "");
+  // Reject non-numeric routing labels (SpeakAccount, VMail, ForwardSRing, ...)
+  if (!/^\+?\d{2,18}$/.test(digits)) return null;
+  return digits;
+}
+
+/** First key whose value normalises to a real phone number / extension. */
+function pickPhone(c: any, keys: string[]): string | null {
+  for (const k of keys) {
+    const n = normalizePhone(c?.[k]);
+    if (n) return n;
+  }
+  return null;
 }
 
 function pickDirection(c: any, ext?: string): "inbound" | "outbound" | "missed" {
-  const dRaw = val(c, ["direction", "call_direction", "call-direction", "call-direction-text", "type"], "");
-  const d = String(dRaw).toLowerCase();
   const disp = String(val(c, ["release-text", "call-disconnect-reason-text", "call-disposition", "disposition", "status", "result"], "")).toLowerCase();
   const answered = val(c, ["time-answer", "answer_time", "answer-time", "answered_at", "answered-at", "call-answer-datetime", "call-batch-answer-datetime"]);
   if (disp.includes("miss") || disp.includes("no answer") || disp.includes("no-answer") || (!answered && disp.includes("cancel"))) return "missed";
-  if (d.includes("out") || d === "1" || d === "outbound") return "outbound";
-  if (d.includes("in") || d === "0" || d === "inbound") return "inbound";
-  const orig = String(val(c, ["orig-user", "from-user", "from_user", "user", "call-orig-user"], ""));
-  const term = String(val(c, ["term-user", "to-user", "to_user", "call-term-user"], ""));
-  if (ext && orig === ext && term !== ext) return "outbound";
+
+  // Topology first — it is far more reliable than NetSapiens' numeric call-direction.
+  const orig = String(val(c, ["orig-user", "from-user", "from_user", "user", "call-orig-user", "call-orig-from-user"], "")).trim();
+  const term = String(val(c, ["term-user", "to-user", "to_user", "call-term-user", "call-through-user"], "")).trim();
+  const e = String(ext ?? "").trim();
+  if (e) {
+    if (term === e && orig !== e) return "inbound";
+    if (orig === e && term !== e) return "outbound";
+  }
+  // An external caller reaching one of our DIDs is always inbound.
+  const origHost = String(val(c, ["call-orig-from-host", "orig-from-host"], "")).toLowerCase();
+  const origDomain = String(val(c, ["call-orig-domain", "orig-domain"], "")).trim();
+  if (!origDomain && origHost && !origHost.includes(String(val(c, ["call-term-domain", "domain"], "\u0000")))) return "inbound";
+
+  const dRaw = val(c, ["direction", "call_direction", "call-direction-text", "type"], "");
+  const d = String(dRaw).toLowerCase();
+  if (d.includes("out") || d === "outbound") return "outbound";
+  if (d.includes("in") || d === "inbound") return "inbound";
   return "inbound";
 }
+
 
 function recordingUrl(c: any): string | null {
   return val(c, [
@@ -448,9 +481,9 @@ async function syncCalls(admin: ReturnType<typeof createClient>, domain: string,
       extension: ext || null,
       direction: pickDirection(c, ext),
       status: String(val(c, ["release-text", "call-disconnect-reason-text", "call-disposition", "disposition", "status"], val(c, ["call-answer-datetime", "time-answer"], null) ? "completed" : "missed")).toLowerCase(),
-      from_number: normalizePhone(val(c, ["orig-from-uri", "from", "from_number", "from-user", "caller_id_number", "call-orig-from-uri", "call-orig-from-user", "call-orig-caller-id"])),
+      from_number: pickPhone(c, ["call-orig-from-uri", "orig-from-uri", "from", "from_number", "from-user", "caller_id_number", "call-orig-from-user", "call-orig-caller-id"]),
       from_name: val(c, ["orig-from-name", "from_name", "caller_id_name", "call-orig-from-name"]),
-      to_number: normalizePhone(val(c, ["term-to-uri", "to", "to_number", "to-user", "destination", "call-term-to-uri", "call-orig-to-uri", "call-term-user", "call-orig-to-user", "call-orig-request-user"])),
+      to_number: pickPhone(c, ["call-orig-request-user", "orig-request-user", "call-orig-to-user", "call-orig-to-uri", "to", "to_number", "to-user", "destination", "term-to-uri", "call-term-to-uri", "call-term-user"]),
       to_name: val(c, ["term-to-name", "to_name", "call-term-to-name"]),
       started_at: started,
       answered_at: toIso(val(c, ["time-answer", "answer-time", "answer_time", "answered_at", "call-answer-datetime", "call-batch-answer-datetime"])),
@@ -627,9 +660,9 @@ async function syncRecordings(admin: ReturnType<typeof createClient>, domain: st
       extension: ext || null,
       direction: pickDirection(rec, ext),
       status: String(val(rec, ["release-text", "call-disconnect-reason-text", "call-disposition", "disposition", "status"], "completed")).toLowerCase(),
-      from_number: normalizePhone(val(rec, ["orig-from-uri", "from", "from_number", "from-user", "caller_id_number", "call-orig-from-uri", "call-orig-from-user", "call-orig-caller-id"])),
+      from_number: pickPhone(rec, ["call-orig-from-uri", "orig-from-uri", "from", "from_number", "from-user", "caller_id_number", "call-orig-from-user", "call-orig-caller-id"]),
       from_name: val(rec, ["orig-from-name", "from_name", "caller_id_name", "call-orig-from-name"]),
-      to_number: normalizePhone(val(rec, ["term-to-uri", "to", "to_number", "to-user", "destination", "call-term-to-uri", "call-orig-to-uri", "call-term-user", "call-orig-to-user", "call-orig-request-user"])),
+      to_number: pickPhone(rec, ["call-orig-request-user", "orig-request-user", "call-orig-to-user", "call-orig-to-uri", "to", "to_number", "to-user", "destination", "term-to-uri", "call-term-to-uri", "call-term-user"]),
       to_name: val(rec, ["term-to-name", "to_name", "call-term-to-name"]),
       started_at: started,
       duration_seconds: numVal(rec, ["duration", "time-talking", "billsec", "talk_time", "recording_seconds", "call-total-duration-seconds", "call-batch-total-duration-seconds", "call-talking-duration-seconds"], 0),
