@@ -408,7 +408,7 @@ public class PpSipKeepAliveService extends Service {
         .putExtra("fromUser", fromUser).putExtra("fromDisplay", fromDisplay));
       // Fire the full-screen "ringing" notification with Answer / Decline actions.
       showIncomingCallNotification(inviteCallId, fromHdr, fromUser, fromDisplay);
-      requestReregister(this, "incoming_invite");
+      // re-REGISTER on INVITE suppressed: duplicate AoR causes NetSapiens to close WSS.
     }
   }
 
@@ -434,7 +434,8 @@ public class PpSipKeepAliveService extends Service {
     if (login == null || login.length() == 0 || domain == null || domain.length() == 0) { emitStatus("error", "missing_credentials"); return; }
     int seq = cseq++;
     String branch = "z9hG4bK" + UUID.randomUUID().toString().replace("-", "");
-    String contact = "<sip:" + login + "@" + UUID.randomUUID().toString().replace("-", "") + ".invalid;transport=wss>";
+    String safeLogin = login.toLowerCase().replaceAll("[^a-z0-9-]", "-");
+    String contact = "<sip:" + login + "@android-" + (safeLogin.isEmpty() ? "planipret" : safeLogin) + ".planipret.invalid;transport=wss>";
     StringBuilder sip = new StringBuilder();
     sip.append("REGISTER sip:").append(domain).append(" SIP/2.0\\r\\n");
     sip.append("Via: SIP/2.0/WSS planipret-mobile.invalid;branch=").append(branch).append("\\r\\n");
@@ -758,8 +759,8 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       if msg.hasPrefix("SIP/2.0 200") && msg.uppercased().contains(" REGISTER") {
         lastRegisterOkTime = Date()
         setStatus("registered", "native_register_200")
-        // NetSapiens closes inactive sockets: ping within 500ms of the 200 OK.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.sendOptionsPing() }
+        // NetSapiens accepts OPTIONS only after the dialog settles; too early can close WSS with 1001.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in self?.sendOptionsPing() }
         return
       }
       if msg.hasPrefix("INVITE ") {
@@ -776,7 +777,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
           "callId": cidHdr, "from": fromHdr, "fromUser": fromUser, "fromDisplay": fromDisplay
         ])
         showIncomingCallBanner(callId: cidHdr, label: fromDisplay.isEmpty ? (fromUser.isEmpty ? "Appel entrant" : fromUser) : fromDisplay)
-        notifyListeners("sipReregisterRequested", data: ["reason": "incoming_invite"])
+        // re-REGISTER on INVITE suppressed: causes duplicate AoR on NetSapiens.
       }
     }
 
