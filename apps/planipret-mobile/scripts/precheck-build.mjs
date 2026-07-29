@@ -28,6 +28,11 @@ if (!existsSync(dist) || !existsSync(assets)) {
 }
 
 const files = readdirSync(assets);
+const distIndex = readFileSync(join(dist, "index.html"), "utf8");
+
+if (/pp-native-boot-fallback|Démarrage interrompu|Le démarrage iOS a été interrompu|avant le premier écran/.test(distIndex)) {
+  fail("obsolete native boot fallback found in dist/index.html — rebuild from the updated index.html before cap sync");
+}
 
 // 1. Tailwind check — look for compiled utility rules in a CSS file.
 const cssFiles = files.filter((f) => f.endsWith(".css")).map((f) => join(assets, f));
@@ -58,6 +63,9 @@ let foundId = null;
 const idRegex = /(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z)/;
 for (const f of jsFiles) {
   const js = readFileSync(f, "utf8");
+  if (/pp-native-boot-fallback|Démarrage interrompu|Le démarrage iOS a été interrompu|avant le premier écran/.test(js)) {
+    fail(`obsolete native boot fallback found in ${f.split("/").pop()} — remove fallback UI before cap sync`);
+  }
   const m = js.match(idRegex);
   if (m) {
     foundId = m[1];

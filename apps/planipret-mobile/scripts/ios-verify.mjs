@@ -68,9 +68,11 @@ function staticBootCheck() {
     const assets = readdirSync(join(dist, 'assets'));
     const css = assets.filter((f) => f.endsWith('.css')).map((f) => readFileSync(join(dist, 'assets', f), 'utf8'));
     const twOk = css.some((c) => /--tw-/.test(c) && /\.flex\{display:flex\}/.test(c));
-    const hasRoot = readFileSync(join(dist, 'index.html'), 'utf8').includes('id="root"');
-    if (!twOk || !hasRoot) {
-      console.error(red(`[ios:verify] ✗ static boot check failed (tailwind=${twOk}, root=${hasRoot})`));
+    const indexHtml = readFileSync(join(dist, 'index.html'), 'utf8');
+    const hasRoot = indexHtml.includes('id="root"');
+    const staleFallback = /pp-native-boot-fallback|Démarrage interrompu|Le démarrage iOS a été interrompu|avant le premier écran/.test(indexHtml);
+    if (!twOk || !hasRoot || staleFallback) {
+      console.error(red(`[ios:verify] ✗ static boot check failed (tailwind=${twOk}, root=${hasRoot}, staleFallback=${staleFallback})`));
       process.exit(1);
     }
     console.log(green('[ios:verify] ✓ static boot check (Tailwind compiled, #root present)'));
@@ -120,7 +122,7 @@ async function bootCheck() {
       text: (root?.textContent ?? '').trim().length,
       react: !!document.querySelector('[data-reactroot], #root > *'),
       tailwind: tw,
-      fallback: !!document.querySelector('#pp-native-boot-fallback:not([style*="display: none"])'),
+      fallback: !!document.querySelector('#pp-native-boot-fallback'),
     };
   });
 
@@ -131,6 +133,7 @@ async function bootCheck() {
   if (result.children === 0 || result.text === 0) failures.push('#root vide (aucun rendu visible)');
   if (!result.react) failures.push('aucun marqueur React monté');
   if (!result.tailwind) failures.push('utilities Tailwind non appliquées');
+  if (result.fallback) failures.push('ancien fallback iOS encore présent dans le bundle');
   if (errors.length) failures.push(`erreurs JS: ${errors.slice(0, 3).join(' | ')}`);
 
   if (failures.length) {

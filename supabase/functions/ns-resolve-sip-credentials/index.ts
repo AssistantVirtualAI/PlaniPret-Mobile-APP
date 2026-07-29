@@ -61,24 +61,48 @@ async function derivePassword(userId: string): Promise<string> {
 
 // Hard timeout so an unreachable NS host can never hang the function until the
 // 150s platform idle timeout (which surfaces as a 504 + blank screen).
-const NS_TIMEOUT_MS = 8000;
+const NS_TIMEOUT_MS = 12000;
+
+// voice.ava-telecom.ca intermittently hangs (TLS accepted, no response).
+// core1.cluster1.ucstack.io serves the same NS-API and answers in <500ms, so we
+// fail over to it instead of surfacing "ns_unreachable" to the app.
+const NS_API_BASES: string[] = Array.from(
+  new Set(
+    [
+      NS_API_BASE_URL,
+      "https://core1.cluster1.ucstack.io/ns-api/v2",
+      "https://voice.ava-telecom.ca/ns-api/v2",
+    ]
+      .filter(Boolean)
+      .map((u) => u.replace(/\/+$/, "")),
+  ),
+);
+
+async function nsFetchOnce(base: string, path: string, init: RequestInit) {
+  const res = await fetch(`${base}${path}`, {
+    ...init,
+    headers: { Authorization: `Bearer ${NS_API_KEY}`, Accept: "application/json", ...(init.headers ?? {}) },
+    signal: AbortSignal.timeout(NS_TIMEOUT_MS),
+  });
+  const text = await res.text();
+  let data: any = null;
+  try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+  return { ok: res.ok || res.status === 202, status: res.status, data };
+}
 
 async function nsFetch(path: string, init: RequestInit = {}) {
-  try {
-    const res = await fetch(`${NS_API_BASE_URL}${path}`, {
-      ...init,
-      headers: { Authorization: `Bearer ${NS_API_KEY}`, Accept: "application/json", ...(init.headers ?? {}) },
-      signal: AbortSignal.timeout(NS_TIMEOUT_MS),
-    });
-    const text = await res.text();
-    let data: any = null;
-    try { data = text ? JSON.parse(text) : null; } catch { data = text; }
-    return { ok: res.ok || res.status === 202, status: res.status, data };
-  } catch (e) {
-    console.warn(`[ns-resolve] nsFetch ${path} failed:`, (e as Error)?.message);
-    return { ok: false, status: 0, data: null, unreachable: true as const };
+  let lastErr = "";
+  for (const base of NS_API_BASES) {
+    try {
+      return await nsFetchOnce(base, path, init);
+    } catch (e) {
+      lastErr = (e as Error)?.message ?? "unknown";
+      console.warn(`[ns-resolve] nsFetch ${base}${path} failed:`, lastErr);
+    }
   }
+  return { ok: false, status: 0, data: null, unreachable: true as const };
 }
+
 
 async function nsGet(path: string) {
   const r = await nsFetch(path);

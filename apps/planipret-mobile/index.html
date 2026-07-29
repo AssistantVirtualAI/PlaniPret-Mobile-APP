@@ -36,14 +36,6 @@
         }
         window.__PP_REACT_BOOTED__ = false;
         window.__PP_REACT_BOOT_ATTEMPTED__ = false;
-        function showBootFallback(message) {
-          var fallback = document.getElementById('pp-native-boot-fallback');
-          if (!fallback) return;
-          if (window.__PP_DISABLE_NATIVE_BOOT_FALLBACK__) return;
-          var body = fallback.querySelector('[data-pp-boot-message]');
-          if (body && message) body.textContent = message;
-          fallback.style.display = 'flex';
-        }
         window.__PP_DISABLE_NATIVE_BOOT_FALLBACK__ = true;
         window.addEventListener('error', function (event) {
           if (!isIgnorableNativeStartupError(event.error) && !isIgnorableNativeStartupError(event.message)) return;
@@ -55,7 +47,6 @@
           event.preventDefault();
           event.stopImmediatePropagation();
         }, true);
-        window.__PP_SHOW_BOOT_FALLBACK__ = showBootFallback;
       })();
 
       setTimeout(function () {
@@ -64,16 +55,7 @@
           root.innerHTML = '<div data-pp-boot-visible="1" style="color:white;padding:20px;background:#0A1425;min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:system-ui,sans-serif">Démarrage...</div>';
         }
       }, 1200);
-
     </script>
-    <div id="pp-native-boot-fallback" style="display:none;position:fixed;inset:0;z-index:2147483647;align-items:center;justify-content:center;background:#0A1425;color:#E2E8F0;font-family:system-ui,-apple-system,BlinkMacSystemFont,sans-serif;padding:24px;text-align:center">
-      <div style="max-width:320px">
-        <div style="width:58px;height:58px;border-radius:18px;background:#fff;margin:0 auto 16px;display:flex;align-items:center;justify-content:center;color:#1A4A8A;font-weight:800;font-size:20px">PP</div>
-        <div style="font-weight:800;font-size:18px;margin-bottom:8px">Planiprêt Mobile</div>
-        <div data-pp-boot-message style="font-size:13px;line-height:1.45;opacity:.82;margin-bottom:18px">Démarrage interrompu.</div>
-        <button onclick="location.reload()" style="border:0;border-radius:12px;background:#2E9BDC;color:white;font-weight:800;padding:12px 18px">Relancer</button>
-      </div>
-    </div>
     <script type="module" src="/src/index.tsx"></script>
   </body>
 </html>

@@ -102,8 +102,6 @@ function NativeBootMarker() {
     if (typeof markReady === 'function') markReady();
     else {
       (window as any).__PP_REACT_BOOTED__ = true;
-      const fallback = document.getElementById('pp-native-boot-fallback');
-      if (fallback) fallback.style.display = 'none';
     }
   }, []);
   return null;
