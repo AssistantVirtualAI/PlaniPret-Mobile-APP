@@ -1,6 +1,6 @@
 package com.planipret.mobile;
 
-// Planiprêt-only background SIP keep-alive over WSS (NetSapiens).
+// Planipret-only background SIP keep-alive over WSS (NetSapiens).
 // DO NOT reuse or unify with Lemtel's SipConnectionService (FreeSWITCH/Verto).
 import android.app.*;
 import android.content.*;
@@ -40,9 +40,9 @@ public class PpSipKeepAliveService extends Service {
   private int cseq = 1;
   private final String callId = UUID.randomUUID().toString() + "@planipret-mobile";
   private final String fromTag = Long.toHexString(System.nanoTime());
-  // instanceId STABLE: calculé une seule fois à la création du service.
-  // Un UUID aléatoire à chaque REGISTER ferait croire à NS qu'il s'agit d'un
-  // nouvel appareil → NS ferme le WS (code 1001) → boucle infinie.
+  // instanceId STABLE: calcule une seule fois a la creation du service.
+  // Un UUID aleatoire a chaque REGISTER ferait croire a NS qu'il s'agit d'un
+  // nouvel appareil -> NS ferme le WS (code 1001) -> boucle infinie.
   private final String instanceId = UUID.randomUUID().toString().replace("-", "");
   private volatile boolean readerRunning = false;
 
@@ -64,15 +64,15 @@ public class PpSipKeepAliveService extends Service {
   }
 
   @Override public int onStartCommand(Intent intent, int flags, int startId) {
-    Notification n = buildOngoingNotification("Téléphonie prête en arrière-plan");
+    Notification n = buildOngoingNotification("Telephonie prete en arriere-plan");
     if (Build.VERSION.SDK_INT >= 34) ServiceCompat.startForeground(this, NOTIFICATION_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL);
     else startForeground(NOTIFICATION_ID, n);
     emitStatus("connecting", "native_register_start");
     requestReregister(this, "service_start");
     executor.execute(this::connectAndRegister);
     if (heartbeat != null) heartbeat.cancel(false);
-    // Heartbeat toutes les 120s (2 min) — bien avant l'expiration du REGISTER (1800s)
-    // Garantit que le SIP reste enregistré en permanence, même en arrière-plan
+    // Heartbeat toutes les 120s (2 min) -- bien avant l'expiration du REGISTER (1800s)
+    // Garantit que le SIP reste enregistre en permanence, meme en arriere-plan
     heartbeat = executor.scheduleAtFixedRate(() -> {
       try {
         if (wsSocket == null || wsSocket.isClosed() || !wsSocket.isConnected()) {
@@ -173,7 +173,7 @@ public class PpSipKeepAliveService extends Service {
     String branch = "z9hG4bK" + UUID.randomUUID().toString().replace("-", "");
     String sipHost = p.getString("host", "core1.cluster1.ucstack.io");
     int sipPort = p.getInt("port", 443);
-    // Contact STABLE avec instanceId fixe — pas de .invalid aléatoire à chaque REGISTER.
+    // Contact STABLE avec instanceId fixe -- pas de .invalid aleatoire a chaque REGISTER.
     String contact = "<sip:" + login + "@" + instanceId + ".planipret-mobile.invalid;transport=wss>";
     // Sanitize display name
     String safeDisplay = (display == null || display.length() == 0) ? login : display.replace("\"", "");
@@ -193,7 +193,7 @@ public class PpSipKeepAliveService extends Service {
     if (challenge != null && password != null && password.length() > 0) {
       // Route header (use_preloaded_route RFC 3327): NS route les INVITEs entrants via le WebSocket.
       sip.append("Route: <sip:").append(sipHost).append(":").append(sipPort).append(";transport=wss;lr>\r\n");
-      // RFC 3261 §22.3: NS proxy → 407 → Proxy-Authorization requis (pas Authorization)
+      // RFC 3261 S22.3: NS proxy -> 407 -> Proxy-Authorization requis (pas Authorization)
       boolean isProxy = challenge.toLowerCase(Locale.US).contains("proxy-authenticate:");
       String authHeader = isProxy ? "Proxy-Authorization" : "Authorization";
       sip.append(authHeader).append(": ").append(digestAuth(challenge, login, password, domain)).append("\r\n");
@@ -306,7 +306,7 @@ public class PpSipKeepAliveService extends Service {
         .setColor(Color.parseColor("#0023e6"))
         .setContentIntent(contentPi)
         .setFullScreenIntent(contentPi, true)
-        .addAction(new NotificationCompat.Action(android.R.drawable.sym_action_call, "Répondre", answerPi))
+        .addAction(new NotificationCompat.Action(android.R.drawable.sym_action_call, "Repondre", answerPi))
         .addAction(new NotificationCompat.Action(android.R.drawable.ic_menu_close_clear_cancel, "Refuser", declinePi));
       NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
       if (nm != null) nm.notify(INCOMING_NOTIFICATION_ID, b.build());
@@ -314,14 +314,14 @@ public class PpSipKeepAliveService extends Service {
   }
 
   private void emitStatus(String status, String reason) { long now = System.currentTimeMillis(); boolean wake = wakeLock != null && wakeLock.isHeld(), wifi = wifiLock != null && wifiLock.isHeld(), logged = status.equals("registered") || status.equals("protected"); getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putString(KEY_STATUS, status).putString(KEY_REASON, reason).putLong(KEY_UPDATED_AT, now).putBoolean(KEY_WAKE_HELD, wake).putBoolean(KEY_WIFI_HELD, wifi).putBoolean(KEY_LOGGED_IN, logged).apply(); sendBroadcast(new Intent(ACTION_STATUS).setPackage(getPackageName()).putExtra("status", status).putExtra("reason", reason).putExtra("updatedAt", now).putExtra("wakeLockHeld", wake).putExtra("wifiLockHeld", wifi).putExtra("loggedIn", logged)); }
-  private Notification buildOngoingNotification(String text) { return new NotificationCompat.Builder(this, CHANNEL_ID).setContentTitle("Planiprêt Mobile").setContentText(text).setSmallIcon(android.R.drawable.ic_menu_call).setPriority(NotificationCompat.PRIORITY_LOW).setOngoing(true).setSilent(true).build(); }
+  private Notification buildOngoingNotification(String text) { return new NotificationCompat.Builder(this, CHANNEL_ID).setContentTitle("Planipret Mobile").setContentText(text).setSmallIcon(android.R.drawable.ic_menu_call).setPriority(NotificationCompat.PRIORITY_LOW).setOngoing(true).setSilent(true).build(); }
   private void createChannels() {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
     NotificationManager nm = (NotificationManager) getSystemService(NotificationManager.class);
     if (nm == null) return;
-    nm.createNotificationChannel(new NotificationChannel(CHANNEL_ID, "Connexion téléphonique", NotificationManager.IMPORTANCE_LOW));
+    nm.createNotificationChannel(new NotificationChannel(CHANNEL_ID, "Connexion telephonique", NotificationManager.IMPORTANCE_LOW));
     NotificationChannel incoming = new NotificationChannel(CHANNEL_INCOMING_ID, "Appels entrants", NotificationManager.IMPORTANCE_HIGH);
-    incoming.setDescription("Notifications d'appel entrant Planiprêt");
+    incoming.setDescription("Notifications d'appel entrant Planipret");
     incoming.enableVibration(true);
     incoming.enableLights(true);
     AudioAttributes attrs = new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build();
