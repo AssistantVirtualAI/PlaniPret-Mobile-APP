@@ -7,6 +7,7 @@
 // stats sampling, and ICE-restart support for Wi-Fi ↔ LTE handover.
 
 import JsSIP from "jssip";
+import { getPpSipReconnectConfig, ppSipBackoffDelay } from "./ppSipReconnectConfig";
 
 export type PpSipStatus = "idle" | "connecting" | "connected" | "registered" | "disconnected" | "error";
 export type PpCallState = "idle" | "ringing-out" | "ringing-in" | "active" | "held" | "ended";
@@ -180,9 +181,9 @@ class PpSipProvider {
         session_timers: false,
         // Match the native keep-alive REGISTER expiry so NetSapiens does not
         // expire one contact while the other still shows "registered" locally.
-        register_expires: 180,
-        connection_recovery_min_interval: 2,
-        connection_recovery_max_interval: 30,
+        register_expires: getPpSipReconnectConfig().registerExpiresSec,
+        connection_recovery_min_interval: Math.max(1, Math.round(getPpSipReconnectConfig().socketBackoffMinMs / 1000)),
+        connection_recovery_max_interval: Math.max(2, Math.round(getPpSipReconnectConfig().socketBackoffMaxMs / 1000)),
         user_agent: "Planipret Softphone 1.0",
       });
 
@@ -214,7 +215,7 @@ class PpSipProvider {
         this.update({ status: "connected", errorCause: "re_registering" });
         // NetSapiens sometimes returns 401/403 mid-session on stale nonce;
         // trigger an immediate re-REGISTER instead of leaving the UA idle.
-        setTimeout(() => { try { this.ua?.register(); } catch {} }, 1500);
+        setTimeout(() => { try { this.ua?.register(); } catch {} }, getPpSipReconnectConfig().reRegisterDelayMs);
       });
       ua.on("registrationFailed", (e: any) => {
         const cause = e?.cause || e?.response?.reason_phrase || "registration_failed";
@@ -222,12 +223,13 @@ class PpSipProvider {
         this.update({ status: "error", errorCause: cause });
         // Retry with exponential backoff and a single pending timer — stacking
         // retries hammered NetSapiens and kept the socket in a failed state.
-        this.regFailures = Math.min(this.regFailures + 1, 6);
+        const rc = getPpSipReconnectConfig();
+        this.regFailures = Math.min(this.regFailures + 1, rc.socketBackoffMaxAttempts);
         if (this.regRetryTimer) clearTimeout(this.regRetryTimer);
         this.regRetryTimer = setTimeout(() => {
           this.regRetryTimer = null;
           try { this.ua?.register(); } catch {}
-        }, Math.min(60_000, 5_000 * this.regFailures));
+        }, Math.min(rc.registerRetryMaxMs, rc.registerRetryBaseMs * this.regFailures));
       });
       ua.on("newRTCSession", (e: any) => this.attachSession(e.session, e.originator));
 
@@ -404,8 +406,9 @@ class PpSipProvider {
    *  keep retrying (1s → 30s cap) until the UA reports `registered` again. */
   private scheduleSocketReconnect(reason: string) {
     if (this.wsRetryTimer) return;
-    this.wsFailures = Math.min(this.wsFailures + 1, 6);
-    const delay = Math.min(30_000, 1000 * 2 ** (this.wsFailures - 1));
+    const rc = getPpSipReconnectConfig();
+    this.wsFailures = Math.min(this.wsFailures + 1, rc.socketBackoffMaxAttempts);
+    const delay = ppSipBackoffDelay(this.wsFailures, rc.socketBackoffMinMs, rc.socketBackoffMaxMs);
     this.log("warn", `sip reconnect scheduled in ${delay}ms (${reason})`);
     this.wsRetryTimer = setTimeout(() => {
       this.wsRetryTimer = null;
@@ -421,7 +424,7 @@ class PpSipProvider {
       }
       setTimeout(() => {
         if (this.ua && this.snap.status !== "registered") this.scheduleSocketReconnect("still_unregistered");
-      }, 6000);
+      }, rc.socketVerifyDelayMs);
     }, delay);
   }
 
@@ -449,7 +452,7 @@ class PpSipProvider {
         if (!ua.isConnected?.()) { try { ua.start(); } catch {} return; }
         ua.sendRequest((JsSIP as any).C.OPTIONS, `sip:${ua.configuration?.uri?.host ?? ""}`, {});
       } catch { /* ping failures are non-fatal */ }
-    }, 25000);
+    }, getPpSipReconnectConfig().keepAliveMs);
   }
 
   private stopKeepAlive() {

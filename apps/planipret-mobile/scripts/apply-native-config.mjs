@@ -154,6 +154,14 @@ public class PpSipKeepAlivePlugin extends Plugin {
       call.getString("domain", ""),
       call.getString("displayName", call.getString("extension", "")),
       call.getString("password", ""));
+    // Same reconnection strategy as iOS, pushed from the JS config file / env vars.
+    PpSipKeepAliveService.saveStrategy(getContext(),
+      call.getInt("backoffMinMs", 2000),
+      call.getInt("backoffMaxMs", 60000),
+      call.getInt("backoffMaxAttempts", 5),
+      call.getInt("verifyDelayMs", 8000),
+      call.getInt("heartbeatSec", 60),
+      call.getInt("registerExpiresSec", 1800));
     PpSipKeepAliveService.start(getContext());
     call.resolve(readStatus().put("ok", true));
   }
@@ -268,15 +276,46 @@ public class PpSipKeepAliveService extends Service {
   private final String callId = UUID.randomUUID().toString() + "@planipret-mobile";
   private final String fromTag = Long.toHexString(System.nanoTime());
   private volatile boolean readerRunning = false;
+  // Reconnection strategy (configurable from JS — see src/config/ppSipReconnect.json).
+  private int backoffMinMs = 2000, backoffMaxMs = 60000, backoffMaxAttempts = 5, verifyDelayMs = 8000, heartbeatSec = 60, registerExpires = 1800;
+  private int reconnectAttempts = 0; private volatile boolean reconnectPending = false;
 
   public static void start(Context c) { Intent i = new Intent(c, PpSipKeepAliveService.class); if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) c.startForegroundService(i); else c.startService(i); }
   public static void stop(Context c) { c.stopService(new Intent(c, PpSipKeepAliveService.class)); }
   public static void saveConfig(Context c, String host, int port, String path, String login, String domain, String displayName, String password) { c.getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putString("host", host).putInt("port", port).putString("path", path).putString("login", login).putString("domain", domain).putString("display_name", displayName).putString("password", password).apply(); }
+  public static void saveStrategy(Context c, int backoffMinMs, int backoffMaxMs, int backoffMaxAttempts, int verifyDelayMs, int heartbeatSec, int registerExpiresSec) {
+    c.getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
+      .putInt("backoff_min_ms", backoffMinMs).putInt("backoff_max_ms", backoffMaxMs).putInt("backoff_max_attempts", backoffMaxAttempts)
+      .putInt("verify_delay_ms", verifyDelayMs).putInt("heartbeat_sec", heartbeatSec).putInt("register_expires_sec", registerExpiresSec).apply();
+  }
+  private void loadStrategy() {
+    SharedPreferences p = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
+    backoffMinMs = Math.max(500, p.getInt("backoff_min_ms", 2000));
+    backoffMaxMs = Math.max(backoffMinMs, p.getInt("backoff_max_ms", 60000));
+    backoffMaxAttempts = Math.max(1, p.getInt("backoff_max_attempts", 5));
+    verifyDelayMs = Math.max(1000, p.getInt("verify_delay_ms", 8000));
+    heartbeatSec = Math.max(15, p.getInt("heartbeat_sec", 60));
+    registerExpires = Math.max(60, p.getInt("register_expires_sec", 1800));
+  }
+  /** Exponential backoff reconnect + re-REGISTER, mirroring the iOS plugin. */
+  private void scheduleReconnect(String why) {
+    if (reconnectPending) return;
+    reconnectPending = true;
+    reconnectAttempts = Math.min(reconnectAttempts + 1, backoffMaxAttempts);
+    long delay = Math.min((long) backoffMaxMs, (long) (backoffMinMs * Math.pow(2, reconnectAttempts - 1)));
+    emitStatus("reconnecting", why);
+    executor.schedule(() -> {
+      reconnectPending = false;
+      connectAndRegister();
+      executor.schedule(() -> { if (!"registered".equals(lastStatus)) scheduleReconnect("still_unregistered"); }, verifyDelayMs, TimeUnit.MILLISECONDS);
+    }, delay, TimeUnit.MILLISECONDS);
+  }
   public static void requestReregister(Context c, String reason) { c.sendBroadcast(new Intent(ACTION_REREGISTER).setPackage(c.getPackageName()).putExtra("reason", reason)); }
   public static void clearIncomingNotification(Context c) { try { NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE); if (nm != null) nm.cancel(INCOMING_NOTIFICATION_ID); } catch(Exception ignored) {} }
 
   @Override public void onCreate() {
     super.onCreate();
+    loadStrategy();
     createChannels();
     PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
     wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Planipret::SipWakeLock"); wakeLock.setReferenceCounted(false); wakeLock.acquire();
@@ -295,9 +334,9 @@ public class PpSipKeepAliveService extends Service {
     executor.execute(this::connectAndRegister);
     if (heartbeat != null) heartbeat.cancel(false);
     heartbeat = executor.scheduleAtFixedRate(() -> {
-      try { sendRegister(null); } catch (Exception e) { emitStatus("reconnecting", "register_retry"); connectAndRegister(); }
+      try { sendRegister(null); } catch (Exception e) { scheduleReconnect("register_retry"); }
       requestReregister(this, "keepalive");
-    }, 60, 60, TimeUnit.SECONDS);
+    }, heartbeatSec, heartbeatSec, TimeUnit.SECONDS);
     return START_STICKY;
   }
 
@@ -331,7 +370,7 @@ public class PpSipKeepAliveService extends Service {
     while (wsSocket != null && wsSocket.isConnected() && !wsSocket.isClosed()) {
       String msg = readFrame(); if (msg == null) break; handleSipMessage(msg);
     }
-  } catch(Exception ignored) {} finally { readerRunning = false; emitStatus("reconnecting", "ws_reader_closed"); closeWs(); executor.schedule(this::connectAndRegister, 2, TimeUnit.SECONDS); } }
+  } catch(Exception ignored) {} finally { readerRunning = false; closeWs(); scheduleReconnect("ws_reader_closed"); } }
 
   private void handleSipMessage(String msg) throws Exception {
     if (msg.startsWith("SIP/2.0 401") || msg.startsWith("SIP/2.0 407")) {
@@ -391,7 +430,7 @@ public class PpSipKeepAliveService extends Service {
     sip.append("From: \"").append(display == null ? login : display.replace("\"", "")).append("\" <sip:").append(login).append("@").append(domain).append(">;tag=").append(fromTag).append("\r\n");
     sip.append("Call-ID: ").append(callId).append("\r\n");
     sip.append("CSeq: ").append(seq).append(" REGISTER\r\n");
-    sip.append("Contact: ").append(contact).append(";expires=1800\r\nExpires: 1800\r\nUser-Agent: Planipret Native KeepAlive\r\nSupported: outbound,path,gruu\r\nAllow: INVITE,ACK,CANCEL,BYE,OPTIONS,MESSAGE,INFO,UPDATE,REGISTER\r\n");
+    sip.append("Contact: ").append(contact).append(";expires=").append(registerExpires).append("\r\nExpires: ").append(registerExpires).append("\r\nUser-Agent: Planipret Native KeepAlive\r\nSupported: outbound,path,gruu\r\nAllow: INVITE,ACK,CANCEL,BYE,OPTIONS,MESSAGE,INFO,UPDATE,REGISTER\r\n");
     if (challenge != null && password != null && password.length() > 0) sip.append("Authorization: ").append(digestAuth(challenge, login, password, domain)).append("\r\n");
     sip.append("Content-Length: 0\r\n\r\n");
     sendFrame(sip.toString());
@@ -448,7 +487,8 @@ public class PpSipKeepAliveService extends Service {
     } catch (Exception ignored) {}
   }
 
-  private void emitStatus(String status, String reason) { long now = System.currentTimeMillis(); boolean wake = wakeLock != null && wakeLock.isHeld(), wifi = wifiLock != null && wifiLock.isHeld(), logged = status.equals("registered") || status.equals("protected"); getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putString(KEY_STATUS, status).putString(KEY_REASON, reason).putLong(KEY_UPDATED_AT, now).putBoolean(KEY_WAKE_HELD, wake).putBoolean(KEY_WIFI_HELD, wifi).putBoolean(KEY_LOGGED_IN, logged).apply(); sendBroadcast(new Intent(ACTION_STATUS).setPackage(getPackageName()).putExtra("status", status).putExtra("reason", reason).putExtra("updatedAt", now).putExtra("wakeLockHeld", wake).putExtra("wifiLockHeld", wifi).putExtra("loggedIn", logged)); }
+  private volatile String lastStatus = "idle";
+  private void emitStatus(String status, String reason) { lastStatus = status; if ("registered".equals(status)) { reconnectAttempts = 0; } long now = System.currentTimeMillis(); boolean wake = wakeLock != null && wakeLock.isHeld(), wifi = wifiLock != null && wifiLock.isHeld(), logged = status.equals("registered") || status.equals("protected"); getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putString(KEY_STATUS, status).putString(KEY_REASON, reason).putLong(KEY_UPDATED_AT, now).putBoolean(KEY_WAKE_HELD, wake).putBoolean(KEY_WIFI_HELD, wifi).putBoolean(KEY_LOGGED_IN, logged).apply(); sendBroadcast(new Intent(ACTION_STATUS).setPackage(getPackageName()).putExtra("status", status).putExtra("reason", reason).putExtra("updatedAt", now).putExtra("wakeLockHeld", wake).putExtra("wifiLockHeld", wifi).putExtra("loggedIn", logged)); }
   private Notification buildOngoingNotification(String text) { return new NotificationCompat.Builder(this, CHANNEL_ID).setContentTitle("Planiprêt Mobile").setContentText(text).setSmallIcon(android.R.drawable.ic_menu_call).setPriority(NotificationCompat.PRIORITY_LOW).setOngoing(true).setSilent(true).build(); }
   private void createChannels() {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
@@ -473,6 +513,7 @@ import UIKit
 import AVFoundation
 import CryptoKit
 import UserNotifications
+import Network
 
 // Planiprêt-only. DO NOT reuse in Lemtel (Verto stack).
 @objc(PpSipKeepAlive)
@@ -496,10 +537,33 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private var cseq = 1
     private let callIdReg = UUID().uuidString + "@planipret-ios"
     private let fromTag = String(Int(Date().timeIntervalSince1970 * 1000), radix: 16)
+    private var appActive = true
+    private var reconnectAttempts = 0
+    // Reconnection strategy pushed from JS (src/config/ppSipReconnect.json + VITE_PP_SIP_* env).
+    private var backoffMinMs: Double = 2000
+    private var backoffMaxMs: Double = 60000
+    private var backoffMaxAttempts: Int = 5
+    private var verifyDelayMs: Double = 8000
+    private var registerExpires: Int = 1800
+    private var reconnectPending = false
+    private var pathMonitor: NWPathMonitor?
+    private var networkUp = true
 
     public override func load() {
+      DispatchQueue.main.async { [weak self] in self?.appActive = UIApplication.shared.applicationState == .active }
       NotificationCenter.default.addObserver(self, selector: #selector(onBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
       NotificationCenter.default.addObserver(self, selector: #selector(onForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
+      NotificationCenter.default.addObserver(self, selector: #selector(onForeground), name: UIApplication.didBecomeActiveNotification, object: nil)
+      NotificationCenter.default.addObserver(self, selector: #selector(onBackground), name: UIApplication.willResignActiveNotification, object: nil)
+      // UIScene lifecycle (iOS 13+) — the app adopts scenes, so the legacy
+      // UIApplication notifications are not always delivered. Observing both
+      // keeps appActive correct without ever reading UI state off-thread.
+      if #available(iOS 13.0, *) {
+        NotificationCenter.default.addObserver(self, selector: #selector(onForeground), name: UIScene.didActivateNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(onSceneWillEnterForeground), name: UIScene.willEnterForegroundNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(onBackground), name: UIScene.didEnterBackgroundNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(onBackground), name: UIScene.willDeactivateNotification, object: nil)
+      }
       // Ask for notification permission so the incoming-call banner can ring.
       UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
     }
@@ -509,34 +573,58 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       host = call.getString("host") ?? call.getString("domain") ?? ""; port = call.getInt("port") ?? 443; path = call.getString("path") ?? "/"
       login = call.getString("login") ?? call.getString("username") ?? call.getString("extension") ?? ""
       domain = call.getString("domain") ?? ""; displayName = call.getString("displayName") ?? login; password = call.getString("password") ?? ""
-      activateAudioSession()
-      // Only ONE SIP registration per AOR: while the app is in the foreground the
-      // JsSIP web layer owns the registration. Registering natively at the same
-      // time made NetSapiens close the JsSIP socket (1001), producing an endless
-      // disconnect/reconnect loop. Store the credentials and stay idle instead.
-      if isForeground() { releaseRegistration("foreground_js_owns") } else { connect(); scheduleRegister() }
-      call.resolve(snapshot(ok: true))
+      backoffMinMs = Double(call.getInt("backoffMinMs") ?? 2000)
+      backoffMaxMs = Double(call.getInt("backoffMaxMs") ?? 60000)
+      backoffMaxAttempts = call.getInt("backoffMaxAttempts") ?? 5
+      verifyDelayMs = Double(call.getInt("verifyDelayMs") ?? 8000)
+      registerExpires = call.getInt("registerExpiresSec") ?? 1800
+      NSLog("[PpSipKeepAlive] reconnect strategy min=%.0fms max=%.0fms attempts=%d verify=%.0fms expires=%ds", backoffMinMs, backoffMaxMs, backoffMaxAttempts, verifyDelayMs, registerExpires)
+      DispatchQueue.main.async { [weak self] in
+        guard let self = self else { call.resolve(["ok": false, "status": "error", "reason": "plugin_released"]); return }
+        self.activateAudioSession()
+        // Only ONE SIP registration per AOR: while the app is in the foreground the
+        // JsSIP web layer owns the registration. Registering natively at the same
+        // time made NetSapiens close the JsSIP socket (1001), producing an endless
+        // disconnect/reconnect loop. Store the credentials and stay idle instead.
+        if self.isForeground() { self.releaseRegistration("foreground_js_owns") } else { self.connect(); self.scheduleRegister() }
+        call.resolve(self.snapshot(ok: true))
+      }
     }
-    @objc func stopSipService(_ call: CAPPluginCall) { releaseRegistration("stopped"); call.resolve(snapshot(ok: true)) }
-    @objc func getSipServiceStatus(_ call: CAPPluginCall) { call.resolve(snapshot(ok: true)) }
+    @objc func stopSipService(_ call: CAPPluginCall) { DispatchQueue.main.async { self.releaseRegistration("stopped"); call.resolve(self.snapshot(ok: true)) } }
+    @objc func getSipServiceStatus(_ call: CAPPluginCall) { DispatchQueue.main.async { call.resolve(self.snapshot(ok: true)) } }
     @objc func triggerReregister(_ call: CAPPluginCall) {
-      if isForeground() { releaseRegistration("foreground_js_owns") } else { sendRegister(challenge: nil); notifyListeners("sipReregisterRequested", data: ["reason": "manual"]) }
-      call.resolve(snapshot(ok: true))
+      DispatchQueue.main.async { [weak self] in
+        guard let self = self else { call.resolve(["ok": false, "status": "error", "reason": "plugin_released"]); return }
+        if self.isForeground() { self.releaseRegistration("foreground_js_owns") } else { self.sendRegister(challenge: nil); self.notifyListeners("sipReregisterRequested", data: ["reason": "manual"]) }
+        call.resolve(self.snapshot(ok: true))
+      }
     }
     @objc func acknowledgeIncoming(_ call: CAPPluginCall) {
       UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["pp_incoming_call"])
       call.resolve(["ok": true])
     }
 
-    private func isForeground() -> Bool { UIApplication.shared.applicationState == .active }
+    // NEVER touch UIApplication/UIScene off the main thread: it triggers
+    // "UI API called on a background thread" and can deadlock (DispatchQueue.main.sync).
+    // The cached appActive flag is refreshed only from main-thread notifications.
+    private func isForeground() -> Bool {
+      if Thread.isMainThread {
+        appActive = UIApplication.shared.applicationState == .active
+        return appActive
+      }
+      return appActive
+    }
+    @objc private func onSceneWillEnterForeground() { onForeground() }
     private func releaseRegistration(_ why: String) {
+      if !Thread.isMainThread { DispatchQueue.main.async { [weak self] in self?.releaseRegistration(why) }; return }
       timer?.invalidate(); timer = nil
       socket?.cancel(with: .goingAway, reason: nil); socket = nil
       endBackgroundTask(); setStatus("idle", why)
     }
 
-    @objc private func onBackground() { beginBackgroundTask(); activateAudioSession(); connect(); scheduleRegister(); sendRegister(challenge: nil); setStatus("protected", "background_register_sent") }
+    @objc private func onBackground() { appActive = false; beginBackgroundTask(); activateAudioSession(); connect(); scheduleRegister(); sendRegister(challenge: nil); setStatus("protected", "background_register_sent") }
     @objc private func onForeground() {
+      appActive = true
       // Hand the AOR back to JsSIP and ask the web layer to re-REGISTER.
       releaseRegistration("foreground_js_owns")
       notifyListeners("sipReregisterRequested", data: ["reason": "enter_foreground"])
@@ -545,6 +633,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private func activateAudioSession() { try? AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .allowBluetoothA2DP, .mixWithOthers]); try? AVAudioSession.sharedInstance().setActive(true) }
     private func connect() {
       guard !host.isEmpty else { setStatus("error", "missing_host"); return }
+      startPathMonitor()
       if isForeground() { return }
       if socket != nil { return }
       var comps = URLComponents(); comps.scheme = port == 80 ? "ws" : "wss"; comps.host = host; comps.port = port; comps.path = path.isEmpty ? "/" : path
@@ -554,7 +643,70 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in self?.sendRegister(challenge: nil) }
     }
     private func scheduleRegister() { timer?.invalidate(); timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in self?.sendRegister(challenge: nil) }; RunLoop.main.add(timer!, forMode: .common) }
-    private func receiveLoop() { socket?.receive { [weak self] result in guard let self = self else { return }; switch result { case .success(let message): if case .string(let text) = message { self.handle(text) }; self.receiveLoop(); case .failure: self.socket = nil; if self.isForeground() { self.setStatus("idle", "foreground_js_owns") } else { self.setStatus("reconnecting", "ws_closed"); DispatchQueue.main.asyncAfter(deadline: .now() + 5) { self.connect() } } } } }
+    private func receiveLoop() {
+      socket?.receive { [weak self] result in
+        guard let self = self else { return }
+        switch result {
+        case .success(let message):
+          self.reconnectAttempts = 0
+          if case .string(let text) = message { self.handle(text) }
+          self.receiveLoop()
+        case .failure(let err):
+          self.socket = nil
+          if self.isForeground() { self.setStatus("idle", "foreground_js_owns") }
+          else {
+            NSLog("[PpSipKeepAlive] socket closed: %@", String(describing: err))
+            self.setStatus("reconnecting", "ws_closed")
+            self.scheduleReconnect("ws_closed")
+          }
+        }
+      }
+    }
+
+    /// Exponential backoff (2s → 60s cap) until the socket is back and REGISTER succeeds.
+    private func scheduleReconnect(_ why: String) {
+      if reconnectPending { return }
+      reconnectPending = true
+      reconnectAttempts = min(reconnectAttempts + 1, max(1, backoffMaxAttempts))
+      let delay = min(backoffMaxMs / 1000.0, (backoffMinMs / 1000.0) * pow(2.0, Double(reconnectAttempts - 1)))
+      NSLog("[PpSipKeepAlive] reconnect in %.0fs (%@)", delay, why)
+      DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+        guard let self = self else { return }
+        self.reconnectPending = false
+        if self.isForeground() { self.setStatus("idle", "foreground_js_owns"); return }
+        guard self.networkUp else { self.setStatus("reconnecting", "network_down"); self.scheduleReconnect("network_down"); return }
+        self.connect()
+        self.sendRegister(challenge: nil)
+        DispatchQueue.main.asyncAfter(deadline: .now() + self.verifyDelayMs / 1000.0) { [weak self] in
+          guard let self = self else { return }
+          if self.status != "registered" && !self.isForeground() { self.scheduleReconnect("still_unregistered") }
+        }
+      }
+    }
+
+    private func startPathMonitor() {
+      if pathMonitor != nil { return }
+      let m = NWPathMonitor()
+      m.pathUpdateHandler = { [weak self] path in
+        guard let self = self else { return }
+        let up = path.status == .satisfied
+        let wasUp = self.networkUp
+        self.networkUp = up
+        NSLog("[PpSipKeepAlive] network %@", up ? "available" : "lost")
+        if up && !wasUp {
+          self.reconnectAttempts = 0
+          DispatchQueue.main.async { [weak self] in
+            guard let self = self, !self.isForeground() else { return }
+            self.socket?.cancel(with: .goingAway, reason: nil); self.socket = nil
+            self.connect(); self.sendRegister(challenge: nil)
+          }
+        } else if !up {
+          self.setStatus("reconnecting", "network_lost")
+        }
+      }
+      m.start(queue: DispatchQueue.global(qos: .utility))
+      pathMonitor = m
+    }
 
     private func handle(_ msg: String) {
       if msg.hasPrefix("SIP/2.0 401") || msg.hasPrefix("SIP/2.0 407") { sendRegister(challenge: headerVal(msg, msg.hasPrefix("SIP/2.0 407") ? "Proxy-Authenticate" : "WWW-Authenticate")); return }
@@ -613,7 +765,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       var sip = "REGISTER sip:" + domain + " SIP/2.0\\r\\n"
       sip += "Via: SIP/2.0/WSS planipret-ios.invalid;branch=" + branch + "\\r\\nMax-Forwards: 70\\r\\n"
       sip += "To: <sip:" + login + "@" + domain + ">\\r\\nFrom: \\"" + displayName.replacingOccurrences(of: "\\"", with: "") + "\\" <sip:" + login + "@" + domain + ">;tag=" + fromTag + "\\r\\n"
-      sip += "Call-ID: " + callIdReg + "\\r\\nCSeq: " + String(seq) + " REGISTER\\r\\nContact: " + contact + ";expires=1800\\r\\nExpires: 1800\\r\\nUser-Agent: Planipret iOS KeepAlive\\r\\nSupported: outbound,path,gruu\\r\\nAllow: INVITE,ACK,CANCEL,BYE,OPTIONS,MESSAGE,INFO,UPDATE,REGISTER\\r\\n"
+      sip += "Call-ID: " + callIdReg + "\\r\\nCSeq: " + String(seq) + " REGISTER\\r\\nContact: " + contact + ";expires=" + String(registerExpires) + "\\r\\nExpires: " + String(registerExpires) + "\\r\\nUser-Agent: Planipret iOS KeepAlive\\r\\nSupported: outbound,path,gruu\\r\\nAllow: INVITE,ACK,CANCEL,BYE,OPTIONS,MESSAGE,INFO,UPDATE,REGISTER\\r\\n"
       if let ch = challenge, !password.isEmpty { sip += "Authorization: " + digest(challenge: ch) + "\\r\\n" }
       sip += "Content-Length: 0\\r\\n\\r\\n"
       socket?.send(.string(sip)) { [weak self] err in DispatchQueue.main.async { self?.setStatus(err == nil ? "connecting" : "error", err == nil ? (challenge == nil ? "register_sent" : "register_auth_sent") : "register_send_failed") } }
@@ -648,6 +800,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     public let identifier = "PpVoipCall"; public let jsName = "PpVoipCall"
     public let pluginMethods: [CAPPluginMethod] = [
       CAPPluginMethod(name: "getVoipPushToken", returnType: CAPPluginReturnPromise),
+      CAPPluginMethod(name: "refreshVoipPushToken", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "reportCallEnded", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "addListener", returnType: CAPPluginReturnCallback),
       CAPPluginMethod(name: "removeAllListeners", returnType: CAPPluginReturnPromise)
@@ -657,6 +810,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     private var provider: CXProvider?
     private var callController = CXCallController()
     private var voipToken: String?
+    private var lastReportedToken: String?
     private var activeCallUUID: UUID?
     private var activeCallId: String?
 
@@ -699,12 +853,45 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
 
     // MARK: - JS ↔ Native
     @objc func getVoipPushToken(_ call: CAPPluginCall) {
+        // If PushKit has not handed us a token yet, re-arm the registry: after a
+        // restore/reinstall the first didUpdate can be missed entirely.
+        if (voipToken ?? "").isEmpty {
+            NSLog("[PpVoipCall] no VoIP token cached, re-arming PushKit")
+            DispatchQueue.main.async { [weak self] in self?.setupPushKit() }
+        }
         call.resolve([
             "token": voipToken ?? "",
             "platform": "ios",
             "bundleId": Bundle.main.bundleIdentifier ?? "",
             "environment": apnsEnvironment()
         ])
+    }
+
+    /// Force PushKit to re-issue the VoIP token (used on app resume and when the
+    /// backend reports the stored token as invalid/unregistered).
+    @objc func refreshVoipPushToken(_ call: CAPPluginCall) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { call.resolve(["ok": false]); return }
+            let previous = self.voipToken
+            self.pushRegistry?.desiredPushTypes = []
+            self.pushRegistry = nil
+            self.setupPushKit()
+            NSLog("[PpVoipCall] VoIP token refresh requested (had token: %@)", previous == nil ? "no" : "yes")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                guard let self = self else { return }
+                let current = self.voipToken ?? ""
+                let changed = current != (previous ?? "")
+                NSLog("[PpVoipCall] VoIP token after refresh changed=%@ empty=%@", changed ? "yes" : "no", current.isEmpty ? "yes" : "no")
+                self.notifyListeners("voipPushToken", data: [
+                    "token": current,
+                    "bundleId": Bundle.main.bundleIdentifier ?? "",
+                    "environment": self.apnsEnvironment(),
+                    "changed": changed,
+                    "source": "refresh"
+                ])
+            }
+            call.resolve(["ok": true, "token": previous ?? ""])
+        }
     }
 
     @objc func reportCallEnded(_ call: CAPPluginCall) {
@@ -721,16 +908,24 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     public func pushRegistry(_ registry: PKPushRegistry, didUpdate credentials: PKPushCredentials, for type: PKPushType) {
         guard type == .voIP else { return }
         let token = credentials.token.map { String(format: "%02x", $0) }.joined()
+        let changed = token != (lastReportedToken ?? "")
         self.voipToken = token
+        self.lastReportedToken = token
+        NSLog("[PpVoipCall] VoIP token updated changed=%@ suffix=%@", changed ? "yes" : "no", String(token.suffix(6)))
         notifyListeners("voipPushToken", data: [
             "token": token,
             "bundleId": Bundle.main.bundleIdentifier ?? "",
-            "environment": apnsEnvironment()
+            "environment": apnsEnvironment(),
+            "changed": changed,
+            "source": "pushkit"
         ])
     }
 
     public func pushRegistry(_ registry: PKPushRegistry, didInvalidatePushTokenFor type: PKPushType) {
+        NSLog("[PpVoipCall] VoIP token invalidated — re-arming PushKit")
         self.voipToken = nil
+        notifyListeners("voipPushTokenInvalidated", data: ["platform": "ios"])
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in self?.setupPushKit() }
     }
 
     public func pushRegistry(_ registry: PKPushRegistry, didReceiveIncomingPushWith payload: PKPushPayload, for type: PKPushType, completion: @escaping () -> Void) {
@@ -803,6 +998,7 @@ const IOS_VOIP_CALL_BRIDGE = `#import <Foundation/Foundation.h>
 
 CAP_PLUGIN(PpVoipCall, "PpVoipCall",
   CAP_PLUGIN_METHOD(getVoipPushToken, CAPPluginReturnPromise);
+  CAP_PLUGIN_METHOD(refreshVoipPushToken, CAPPluginReturnPromise);
   CAP_PLUGIN_METHOD(reportCallEnded, CAPPluginReturnPromise);
   CAP_PLUGIN_METHOD(addListener, CAPPluginReturnCallback);
   CAP_PLUGIN_METHOD(removeAllListeners, CAPPluginReturnPromise);
@@ -972,7 +1168,7 @@ function ensurePluginRegistrationOrThrow(swift, file) {
 }
 
 // Force portrait at the AppDelegate level (Info.plist alone is overridden by
-// a `.all` Swift override in some Capacitor templates).
+// a .all Swift override in some Capacitor templates).
 function patchIosAppDelegate(iosApp) {
   const file = path.join(iosApp, "AppDelegate.swift");
   if (!fs.existsSync(file)) return;
@@ -1231,54 +1427,41 @@ function patchIosNativeFiles() {
   console.log("[native-config] iOS PpSipKeepAlive + PpVoipCall plugins applied.");
 }
 
+// ─── Icons & Splash ───────────────────────────────────────────────────────────
+function installIconsAndSplash() {
+  const ROOT = appDir;
+  const iconsSrc = path.join(ROOT, "native-config", "icons", "ios", "AppIcon.appiconset");
+  const iconsDst = path.join(ROOT, "ios", "App", "App", "Assets.xcassets", "AppIcon.appiconset");
+  const splashSrc = path.join(ROOT, "native-config", "icons", "splash.png");
+  const splashDst = path.join(ROOT, "ios", "App", "App", "Assets.xcassets", "Splash.imageset");
+
+  if (fs.existsSync(iconsSrc)) {
+    fs.mkdirSync(iconsDst, { recursive: true });
+    for (const f of fs.readdirSync(iconsSrc)) {
+      fs.copyFileSync(path.join(iconsSrc, f), path.join(iconsDst, f));
+    }
+    console.log("[native-config] AppIcon.appiconset installed (" + fs.readdirSync(iconsDst).length + " files).");
+  } else {
+    console.warn("[native-config] WARNING: native-config/icons/ios/AppIcon.appiconset not found — icons not installed.");
+  }
+
+  if (fs.existsSync(splashSrc)) {
+    fs.mkdirSync(splashDst, { recursive: true });
+    fs.copyFileSync(splashSrc, path.join(splashDst, "splash.png"));
+    const splashContents = JSON.stringify({
+      images: [{ idiom: "universal", filename: "splash.png", scale: "1x" }],
+      info: { version: 1, author: "xcode" }
+    }, null, 2);
+    fs.writeFileSync(path.join(splashDst, "Contents.json"), splashContents);
+    console.log("[native-config] Splash screen installed.");
+  } else {
+    console.warn("[native-config] WARNING: native-config/icons/splash.png not found — splash not installed.");
+  }
+}
+
 patchCopiedWebBundles();
 patchIosInfoPlist();
 patchAndroidManifest();
 patchAndroidNativeFiles();
 patchIosNativeFiles();
-
-function installIconsAndSplash() {
-  const iconsSrc = path.join(appDir, "native-config", "icons", "ios", "AppIcon.appiconset");
-  const splashSrc = path.join(appDir, "native-config", "icons", "ios", "Splash.imageset");
-  const iosAssets = path.join(appDir, "ios", "App", "App", "Assets.xcassets");
-  if (!fs.existsSync(iosAssets)) {
-    console.log("[native-config] Assets.xcassets not found — run npx cap add ios first.");
-    return;
-  }
-  // AppIcon.appiconset
-  if (fs.existsSync(iconsSrc)) {
-    const dst = path.join(iosAssets, "AppIcon.appiconset");
-    fs.mkdirSync(dst, { recursive: true });
-    for (const f of fs.readdirSync(iconsSrc)) {
-      fs.copyFileSync(path.join(iconsSrc, f), path.join(dst, f));
-    }
-    const count = fs.readdirSync(iconsSrc).filter(f => f.endsWith(".png")).length;
-    console.log(`[native-config] AppIcon.appiconset installed (${count} icons).`);
-  }
-  // Splash.imageset
-  if (fs.existsSync(splashSrc)) {
-    const dst = path.join(iosAssets, "Splash.imageset");
-    fs.mkdirSync(dst, { recursive: true });
-    for (const f of fs.readdirSync(splashSrc)) {
-      fs.copyFileSync(path.join(splashSrc, f), path.join(dst, f));
-    }
-    console.log("[native-config] Splash.imageset installed.");
-  }
-  // Android mipmaps
-  const androidIconsSrc = path.join(appDir, "native-config", "icons", "android");
-  const androidRes = path.join(appDir, "android", "app", "src", "main", "res");
-  if (fs.existsSync(androidIconsSrc) && fs.existsSync(androidRes)) {
-    for (const folder of fs.readdirSync(androidIconsSrc)) {
-      const srcDir = path.join(androidIconsSrc, folder);
-      const dstDir = path.join(androidRes, folder);
-      if (!fs.statSync(srcDir).isDirectory()) continue;
-      fs.mkdirSync(dstDir, { recursive: true });
-      for (const f of fs.readdirSync(srcDir)) {
-        fs.copyFileSync(path.join(srcDir, f), path.join(dstDir, f));
-      }
-    }
-    console.log("[native-config] Android mipmaps installed.");
-  }
-}
-
 installIconsAndSplash();

@@ -1,0 +1,17 @@
+{
+  "socketBackoffMinMs": 1000,
+  "socketBackoffMaxMs": 30000,
+  "socketBackoffMaxAttempts": 6,
+  "socketVerifyDelayMs": 6000,
+  "registerRetryBaseMs": 5000,
+  "registerRetryMaxMs": 60000,
+  "reRegisterDelayMs": 1500,
+  "registerExpiresSec": 180,
+  "keepAliveMs": 25000,
+  "voipTokenCheckMs": 600000,
+  "nativeBackoffMinMs": 2000,
+  "nativeBackoffMaxMs": 60000,
+  "nativeVerifyDelayMs": 8000,
+  "nativeHeartbeatSec": 60,
+  "nativeRegisterExpiresSec": 1800
+}

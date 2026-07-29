@@ -1,4 +1,5 @@
 import { Capacitor, registerPlugin } from "@capacitor/core";
+import { getPpSipReconnectConfig } from "./ppSipReconnectConfig";
 import type { PpSipConfig } from "./ppSipProvider";
 
 export type PpNativeSipStatus = {
@@ -178,6 +179,14 @@ export async function startPlanipretSipKeepAlive(cfg: PpSipConfig): Promise<PpNa
       displayName: cfg.displayName || cfg.extension,
       transport: "wss",
       wssUrl: cfg.wssUrl,
+      // Reconnection strategy is configured once in JS (config file / env vars)
+      // and forwarded to the native keep-alive so iOS and Android behave the same.
+      backoffMinMs: getPpSipReconnectConfig().nativeBackoffMinMs,
+      backoffMaxMs: getPpSipReconnectConfig().nativeBackoffMaxMs,
+      backoffMaxAttempts: getPpSipReconnectConfig().socketBackoffMaxAttempts,
+      verifyDelayMs: getPpSipReconnectConfig().nativeVerifyDelayMs,
+      heartbeatSec: getPpSipReconnectConfig().nativeHeartbeatSec,
+      registerExpiresSec: getPpSipReconnectConfig().nativeRegisterExpiresSec,
     });
     if (platform() === "android") {
       void NativePpSip.requestBatteryOptimizationExemption?.().catch(() => undefined);

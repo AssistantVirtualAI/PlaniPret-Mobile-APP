@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
+import { getPpSipReconnectConfig } from "@/lib/planipret/sip/ppSipReconnectConfig";
 import { ppSipProvider, type PpSipSnapshot } from "@/lib/planipret/sip/ppSipProvider";
 import { startSipStabilityMonitor } from "@/lib/planipret/sip/sipStabilityMonitor";
 import { networkMonitor, type NetSample } from "@/lib/planipret/network/networkMonitor";
@@ -329,7 +330,7 @@ export function useMplanipretSoftphone(enabled = true) {
     verifyVoipToken();
     const onVisibleVoip = () => { if (document.visibilityState === "visible") verifyVoipToken(); };
     document.addEventListener("visibilitychange", onVisibleVoip);
-    const voipRecheck = window.setInterval(verifyVoipToken, 10 * 60_000);
+    const voipRecheck = window.setInterval(verifyVoipToken, getPpSipReconnectConfig().voipTokenCheckMs);
 
     onPlanipretIncomingCallAnswered((data) => {
       try { (window as any).__ppPendingAnswer = { callId: data?.callId, ts: Date.now() }; } catch {}
