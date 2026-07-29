@@ -43,6 +43,16 @@ const IOS_URL_TYPES_DICT = `
 \t\t</dict>
 `;
 
+const IOS_ENTITLEMENTS = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>aps-environment</key>
+	<string>development</string>
+</dict>
+</plist>
+`;
+
 const ANDROID_INTENT_FILTERS = `
             <!-- Planiprêt OAuth deep links: Maestro + Microsoft mobile callbacks -->
             <intent-filter>
@@ -156,7 +166,7 @@ public class PpSipKeepAlivePlugin extends Plugin {
       call.getString("password", ""));
     // Same reconnection strategy as iOS, pushed from the JS config file / env vars.
     PpSipKeepAliveService.saveStrategy(getContext(),
-      call.getInt("backoffMinMs", 2000),
+      call.getInt("backoffMinMs", 4000),
       call.getInt("backoffMaxMs", 60000),
       call.getInt("backoffMaxAttempts", 5),
       call.getInt("verifyDelayMs", 8000),
@@ -277,7 +287,7 @@ public class PpSipKeepAliveService extends Service {
   private final String fromTag = Long.toHexString(System.nanoTime());
   private volatile boolean readerRunning = false;
   // Reconnection strategy (configurable from JS — see src/config/ppSipReconnect.json).
-  private int backoffMinMs = 2000, backoffMaxMs = 60000, backoffMaxAttempts = 5, verifyDelayMs = 8000, heartbeatSec = 60, registerExpires = 1800;
+  private int backoffMinMs = 4000, backoffMaxMs = 60000, backoffMaxAttempts = 5, verifyDelayMs = 8000, heartbeatSec = 60, registerExpires = 1800;
   private int reconnectAttempts = 0; private volatile boolean reconnectPending = false;
 
   public static void start(Context c) { Intent i = new Intent(c, PpSipKeepAliveService.class); if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) c.startForegroundService(i); else c.startService(i); }
@@ -290,7 +300,7 @@ public class PpSipKeepAliveService extends Service {
   }
   private void loadStrategy() {
     SharedPreferences p = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-    backoffMinMs = Math.max(500, p.getInt("backoff_min_ms", 2000));
+    backoffMinMs = Math.max(4000, p.getInt("backoff_min_ms", 4000));
     backoffMaxMs = Math.max(backoffMinMs, p.getInt("backoff_max_ms", 60000));
     backoffMaxAttempts = Math.max(1, p.getInt("backoff_max_attempts", 5));
     verifyDelayMs = Math.max(1000, p.getInt("verify_delay_ms", 8000));
@@ -540,7 +550,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private var appActive = true
     private var reconnectAttempts = 0
     // Reconnection strategy pushed from JS (src/config/ppSipReconnect.json + VITE_PP_SIP_* env).
-    private var backoffMinMs: Double = 2000
+    private var backoffMinMs: Double = 4000
     private var backoffMaxMs: Double = 60000
     private var backoffMaxAttempts: Int = 5
     private var verifyDelayMs: Double = 8000
@@ -573,7 +583,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       host = call.getString("host") ?? call.getString("domain") ?? ""; port = call.getInt("port") ?? 443; path = call.getString("path") ?? "/"
       login = call.getString("login") ?? call.getString("username") ?? call.getString("extension") ?? ""
       domain = call.getString("domain") ?? ""; displayName = call.getString("displayName") ?? login; password = call.getString("password") ?? ""
-      backoffMinMs = Double(call.getInt("backoffMinMs") ?? 2000)
+      backoffMinMs = max(4000, Double(call.getInt("backoffMinMs") ?? 4000))
       backoffMaxMs = Double(call.getInt("backoffMaxMs") ?? 60000)
       backoffMaxAttempts = call.getInt("backoffMaxAttempts") ?? 5
       verifyDelayMs = Double(call.getInt("verifyDelayMs") ?? 8000)
@@ -709,7 +719,11 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     }
 
     private func handle(_ msg: String) {
-      if msg.hasPrefix("SIP/2.0 401") || msg.hasPrefix("SIP/2.0 407") { sendRegister(challenge: headerVal(msg, msg.hasPrefix("SIP/2.0 407") ? "Proxy-Authenticate" : "WWW-Authenticate")); return }
+      if msg.hasPrefix("SIP/2.0 401") || msg.hasPrefix("SIP/2.0 407") {
+        let isProxyAuth = msg.hasPrefix("SIP/2.0 407")
+        sendRegister(challenge: headerVal(msg, isProxyAuth ? "Proxy-Authenticate" : "WWW-Authenticate"), proxyAuth: isProxyAuth)
+        return
+      }
       if msg.hasPrefix("SIP/2.0 200") && msg.uppercased().contains(" REGISTER") { setStatus("registered", "native_register_200"); return }
       if msg.hasPrefix("INVITE ") {
         setStatus("registered", "incoming_invite")
@@ -755,7 +769,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
     }
 
-    private func sendRegister(challenge: String?) {
+    private func sendRegister(challenge: String?, proxyAuth: Bool = false) {
       if isForeground() { releaseRegistration("foreground_js_owns"); return }
       if socket == nil { connect(); return }
       guard !login.isEmpty, !domain.isEmpty else { setStatus("error", "missing_credentials"); return }
@@ -766,9 +780,22 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       sip += "Via: SIP/2.0/WSS planipret-ios.invalid;branch=" + branch + "\\r\\nMax-Forwards: 70\\r\\n"
       sip += "To: <sip:" + login + "@" + domain + ">\\r\\nFrom: \\"" + displayName.replacingOccurrences(of: "\\"", with: "") + "\\" <sip:" + login + "@" + domain + ">;tag=" + fromTag + "\\r\\n"
       sip += "Call-ID: " + callIdReg + "\\r\\nCSeq: " + String(seq) + " REGISTER\\r\\nContact: " + contact + ";expires=" + String(registerExpires) + "\\r\\nExpires: " + String(registerExpires) + "\\r\\nUser-Agent: Planipret iOS KeepAlive\\r\\nSupported: outbound,path,gruu\\r\\nAllow: INVITE,ACK,CANCEL,BYE,OPTIONS,MESSAGE,INFO,UPDATE,REGISTER\\r\\n"
-      if let ch = challenge, !password.isEmpty { sip += "Authorization: " + digest(challenge: ch) + "\\r\\n" }
+      if let ch = challenge, !password.isEmpty { sip += (proxyAuth ? "Proxy-Authorization: " : "Authorization: ") + digest(challenge: ch) + "\\r\\n" }
       sip += "Content-Length: 0\\r\\n\\r\\n"
-      socket?.send(.string(sip)) { [weak self] err in DispatchQueue.main.async { self?.setStatus(err == nil ? "connecting" : "error", err == nil ? (challenge == nil ? "register_sent" : "register_auth_sent") : "register_send_failed") } }
+      socket?.send(.string(sip)) { [weak self] err in
+        DispatchQueue.main.async {
+          guard let self = self else { return }
+          if err == nil {
+            self.setStatus("connecting", challenge == nil ? "register_sent" : "register_auth_sent")
+          } else {
+            NSLog("[PpSipKeepAlive] REGISTER send failed: %@", String(describing: err))
+            self.socket?.cancel(with: .abnormalClosure, reason: nil)
+            self.socket = nil
+            self.setStatus("reconnecting", "register_send_failed")
+            self.scheduleReconnect("register_send_failed")
+          }
+        }
+      }
     }
 
     private func digest(challenge: String) -> String { let m = parseDigest(challenge); let realm = m["realm"] ?? domain; let nonce = m["nonce"] ?? ""; let qop = m["qop"] ?? ""; let uri = "sip:" + domain; let nc = "00000001"; let cnonce = String(Int(Date().timeIntervalSince1970 * 1000), radix: 16); let ha1 = md5(login + ":" + realm + ":" + password); let ha2 = md5("REGISTER:" + uri); let response = qop.contains("auth") ? md5(ha1 + ":" + nonce + ":" + nc + ":" + cnonce + ":auth:" + ha2) : md5(ha1 + ":" + nonce + ":" + ha2); var out = "Digest username=\\"" + login + "\\", realm=\\"" + realm + "\\", nonce=\\"" + nonce + "\\", uri=\\"" + uri + "\\", response=\\"" + response + "\\", algorithm=MD5"; if qop.contains("auth") { out += ", qop=auth, nc=" + nc + ", cnonce=\\"" + cnonce + "\\"" }; if let opaque = m["opaque"] { out += ", opaque=\\"" + opaque + "\\"" }; return out }
@@ -1310,6 +1337,16 @@ function patchIosInfoPlist() {
   console.log("[native-config] iOS URL schemes + background modes applied.");
 }
 
+function patchIosEntitlements() {
+  const file = path.join(appDir, "ios", "App", "App", "App.entitlements");
+  if (!fs.existsSync(path.dirname(file))) {
+    console.log("[native-config] iOS App.entitlements path not found — run npx cap add ios first.");
+    return;
+  }
+  writeIfChanged(file, IOS_ENTITLEMENTS);
+  console.log("[native-config] iOS PushKit VoIP entitlements applied.");
+}
+
 function patchAndroidManifest() {
   const file = path.join(appDir, "android", "app", "src", "main", "AndroidManifest.xml");
   if (!fs.existsSync(file)) {
@@ -1427,41 +1464,9 @@ function patchIosNativeFiles() {
   console.log("[native-config] iOS PpSipKeepAlive + PpVoipCall plugins applied.");
 }
 
-// ─── Icons & Splash ───────────────────────────────────────────────────────────
-function installIconsAndSplash() {
-  const ROOT = appDir;
-  const iconsSrc = path.join(ROOT, "native-config", "icons", "ios", "AppIcon.appiconset");
-  const iconsDst = path.join(ROOT, "ios", "App", "App", "Assets.xcassets", "AppIcon.appiconset");
-  const splashSrc = path.join(ROOT, "native-config", "icons", "splash.png");
-  const splashDst = path.join(ROOT, "ios", "App", "App", "Assets.xcassets", "Splash.imageset");
-
-  if (fs.existsSync(iconsSrc)) {
-    fs.mkdirSync(iconsDst, { recursive: true });
-    for (const f of fs.readdirSync(iconsSrc)) {
-      fs.copyFileSync(path.join(iconsSrc, f), path.join(iconsDst, f));
-    }
-    console.log("[native-config] AppIcon.appiconset installed (" + fs.readdirSync(iconsDst).length + " files).");
-  } else {
-    console.warn("[native-config] WARNING: native-config/icons/ios/AppIcon.appiconset not found — icons not installed.");
-  }
-
-  if (fs.existsSync(splashSrc)) {
-    fs.mkdirSync(splashDst, { recursive: true });
-    fs.copyFileSync(splashSrc, path.join(splashDst, "splash.png"));
-    const splashContents = JSON.stringify({
-      images: [{ idiom: "universal", filename: "splash.png", scale: "1x" }],
-      info: { version: 1, author: "xcode" }
-    }, null, 2);
-    fs.writeFileSync(path.join(splashDst, "Contents.json"), splashContents);
-    console.log("[native-config] Splash screen installed.");
-  } else {
-    console.warn("[native-config] WARNING: native-config/icons/splash.png not found — splash not installed.");
-  }
-}
-
 patchCopiedWebBundles();
 patchIosInfoPlist();
+patchIosEntitlements();
 patchAndroidManifest();
 patchAndroidNativeFiles();
 patchIosNativeFiles();
-installIconsAndSplash();

@@ -176,7 +176,6 @@ class PpSipProvider {
         password: cleanCfg.password,
         authorization_user: cleanCfg.sipUsername,
         realm: cleanCfg.sipDomain,
-        contact_uri: `sip:${cleanCfg.sipUsername}@${cleanCfg.sipDomain};transport=wss`,
         register: true,
         session_timers: false,
         // Match the native keep-alive REGISTER expiry so NetSapiens does not
@@ -191,6 +190,7 @@ class PpSipProvider {
       ua.on("connected", () => {
         this.wsFailures = 0;
         if (this.wsRetryTimer) { clearTimeout(this.wsRetryTimer); this.wsRetryTimer = null; }
+        this.startKeepAlive();
         this.update({ status: "connected" });
       });
       ua.on("disconnected", (e: any) => {

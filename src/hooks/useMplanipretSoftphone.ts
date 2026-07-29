@@ -77,7 +77,7 @@ async function uploadPlanipretVoipToken(token: string, bundleId?: string, extens
     if (error) console.warn("[pp-voip] token upload failed", error);
     else if (changed || lastVoipToken !== null) {
       try { ppSipProvider.forceReregister(); } catch {}
-      try { window.dispatchEvent(new CustomEvent("pp:sip-force-reregister")); } catch {}
+      try { window.dispatchEvent(new CustomEvent("pp:sip-force-reregister", { detail: { force: false, reason: "voip_token_ready" } })); } catch {}
     }
   } catch (e) { console.warn("[pp-voip] token upload failed", e); }
 }
@@ -167,6 +167,7 @@ export function useMplanipretSoftphone(enabled = true) {
   const [restCall, setRestCall] = useState<RestCallAttachment | null>(null);
   const [nativeStatus, setNativeStatus] = useState<PpNativeSipStatus | null>(null);
   const seenCallIds = useRef<Set<string>>(new Set());
+  const sipInitInProgress = useRef(false);
 
   // Subscribe to the SIP snapshot.
   useEffect(() => ppSipProvider.subscribe(setSnap), []);
@@ -238,8 +239,11 @@ export function useMplanipretSoftphone(enabled = true) {
           password: String(d.sip_password),
           displayName: String(d.display_name || d.sip_display_name || d.sip_extension),
         };
+        if (sipInitInProgress.current) return;
+        sipInitInProgress.current = true;
         void startPlanipretSipKeepAlive(sipConfig).then((s) => { if (s && !cancelled) setNativeStatus(s); });
-        await ppSipProvider.init(sipConfig);
+        try { await ppSipProvider.init(sipConfig); }
+        finally { sipInitInProgress.current = false; }
         void getPlanipretVoipPushToken().then((t) => {
           if (t?.token) void uploadPlanipretVoipToken(t.token, t.bundleId, sipConfig.extension, t.environment);
         });
@@ -255,7 +259,10 @@ export function useMplanipretSoftphone(enabled = true) {
     };
     void doInit();
     const onReady = (e: any) => { void doInit({ force: !!e?.detail?.force }); };
-    const onForce = () => { void doInit({ force: true }); };
+    const onForce = (e: any) => {
+      if (e?.detail?.force === true) { void doInit({ force: true }); return; }
+      try { ppSipProvider.forceReregister(); } catch {}
+    };
     window.addEventListener("pp:sip-ready", onReady as any);
     window.addEventListener("pp:sip-force-reregister", onForce as any);
     return () => {
@@ -279,7 +286,7 @@ export function useMplanipretSoftphone(enabled = true) {
       .catch(() => undefined);
     onPlanipretNativeReregister(() => {
       try { ppSipProvider.forceReregister(); } catch {}
-      try { window.dispatchEvent(new CustomEvent("pp:sip-force-reregister")); } catch {}
+      try { window.dispatchEvent(new CustomEvent("pp:sip-force-reregister", { detail: { force: false, reason: "native_reregister" } })); } catch {}
     }).then((fn) => { cleanupReregister = fn; }).catch(() => undefined);
 
     // Native incoming INVITE (background/lockscreen). Wake JsSIP + broadcast so
@@ -402,7 +409,7 @@ export function useMplanipretSoftphone(enabled = true) {
       hardTimer = setTimeout(() => {
         const s = ppSipProvider.getSnapshot().status;
         if (s !== "registered" && s !== "connected") {
-          try { window.dispatchEvent(new CustomEvent("pp:sip-force-reregister")); } catch {}
+          try { window.dispatchEvent(new CustomEvent("pp:sip-force-reregister", { detail: { force: true, reason: "watchdog_hard_timeout" } })); } catch {}
         }
       }, 45_000);
     };
@@ -439,7 +446,11 @@ export function useMplanipretSoftphone(enabled = true) {
     const onResume = () => {
       try {
         const cfg = ppSipProvider.getConfig();
-        if (cfg) void ppSipProvider.init(cfg);
+        if (cfg) {
+          if (sipInitInProgress.current) return;
+          sipInitInProgress.current = true;
+          void ppSipProvider.init(cfg).finally(() => { sipInitInProgress.current = false; });
+        }
         else ppSipProvider.forceReregister();
       } catch { /* noop */ }
       evaluate();
@@ -467,7 +478,11 @@ export function useMplanipretSoftphone(enabled = true) {
               // (forceReregister is a no-op once the UA has been stopped).
               try {
                 const cfg = ppSipProvider.getConfig();
-                if (cfg) void ppSipProvider.init(cfg);
+                if (cfg) {
+                  if (sipInitInProgress.current) return;
+                  sipInitInProgress.current = true;
+                  void ppSipProvider.init(cfg).finally(() => { sipInitInProgress.current = false; });
+                }
                 else ppSipProvider.forceReregister();
               } catch { /* noop */ }
               evaluate();

@@ -87,8 +87,25 @@ function readOverrides(): Partial<PpSipReconnectConfig> {
 
 let cached: PpSipReconnectConfig | null = null;
 
+const SAFE_MINIMUMS: Partial<PpSipReconnectConfig> = {
+  socketBackoffMinMs: 3000,
+  socketVerifyDelayMs: 10000,
+  registerExpiresSec: 1800,
+  nativeBackoffMinMs: 4000,
+  nativeRegisterExpiresSec: 1800,
+};
+
+function withSafeMinimums(config: PpSipReconnectConfig): PpSipReconnectConfig {
+  const out = { ...config };
+  for (const key of Object.keys(SAFE_MINIMUMS) as (keyof PpSipReconnectConfig)[]) {
+    const floor = SAFE_MINIMUMS[key];
+    if (typeof floor === "number" && out[key] < floor) out[key] = floor;
+  }
+  return out;
+}
+
 export function getPpSipReconnectConfig(): PpSipReconnectConfig {
-  if (!cached) cached = { ...(defaults as PpSipReconnectConfig), ...readOverrides() };
+  if (!cached) cached = withSafeMinimums({ ...(defaults as PpSipReconnectConfig), ...readOverrides() });
   return cached;
 }
 
