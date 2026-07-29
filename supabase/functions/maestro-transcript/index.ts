@@ -153,16 +153,21 @@ Deno.serve(async (req) => {
       const cfg = await getMaestroConfig(admin);
       if (cfg.url && cfg.key) {
         const auth = await getBrokerAuth(admin, call.user_id);
-        // Scott API: GET /users/{brokerId}/call/{callId}/recording
+        // Scott API: GET /users/{brokerId}/calls/{callId}/recording (try plural then singular)
         const recId = call.maestro_call_id ?? call.ns_call_id ?? call.id;
-        const recPath = auth.brokerId
-          ? `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/call/${encodeURIComponent(recId)}/recording`
-          : `/api/v1/users/me/call/${encodeURIComponent(recId)}/recording`;
-        const recRes = await maestroFetch(cfg, {
-          method: "GET",
-          path: recPath,
-          token: auth.token,
-        });
+        const recPaths = auth.brokerId
+          ? [
+              `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/calls/${encodeURIComponent(recId)}/recording`,
+              `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/call/${encodeURIComponent(recId)}/recording`,
+            ]
+          : [
+              `/api/v1/users/me/calls/${encodeURIComponent(recId)}/recording`,
+              `/api/v1/users/me/call/${encodeURIComponent(recId)}/recording`,
+            ];
+        let recRes = await maestroFetch(cfg, { method: "GET", path: recPaths[0], token: auth.token });
+        if (!recRes.ok && (recRes.status === 404 || recRes.status === 405)) {
+          recRes = await maestroFetch(cfg, { method: "GET", path: recPaths[1], token: auth.token });
+        }
         if (recRes.ok && recRes.data?.url) {
           result = await transcribeViaLovable(recRes.data.url);
           source = result ? "lovable" as any : null;

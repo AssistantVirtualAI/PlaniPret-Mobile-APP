@@ -168,24 +168,34 @@ Deno.serve(async (req) => {
     form.append("call_id", String(mId));
     if (call.duration_seconds != null) form.append("duration_sec", String(call.duration_seconds));
 
-    // Scott API: GET /users/{brokerId}/call/{callId}/recording
-    // Note: the API provides a GET to retrieve the recording URL — we store it locally.
-    // For uploading, we POST the multipart form to the same path.
-    const scoped = auth.brokerId
-      ? `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/call/${encodeURIComponent(String(mId))}/recording`
-      : `/api/v1/users/me/call/${encodeURIComponent(String(mId))}/recording`;
-    const machineSuffix = auth.usingFallback ? `${scoped.includes("?") ? "&" : "?"}machine=1` : "";
+    // Scott API — try 3 route variants in order of preference:
+    //   1. /api/v1/users/{brokerId}/calls/{callId}/recording  (plural, broker-scoped)
+    //   2. /api/v1/users/{brokerId}/call/{callId}/recording   (singular, older variant)
+    //   3. /api/v1/calls/{callId}/recording                   (legacy, no broker scope)
+    const machineSuffix = auth.usingFallback ? "?machine=1" : "";
     const headers: Record<string, string> = { Authorization: `Bearer ${auth.token}` };
     if (cfg.accountId) headers["X-Account-Id"] = cfg.accountId;
     if (auth.brokerId) headers["X-Broker-Id"] = String(auth.brokerId);
-    let endpoint = `${cfg.url}${scoped}${machineSuffix}`;
+
+    const routeCandidates: string[] = [];
+    if (auth.brokerId) {
+      routeCandidates.push(
+        `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/calls/${encodeURIComponent(String(mId))}/recording`,
+        `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/call/${encodeURIComponent(String(mId))}/recording`,
+      );
+    } else {
+      routeCandidates.push(
+        `/api/v1/users/me/calls/${encodeURIComponent(String(mId))}/recording`,
+        `/api/v1/users/me/call/${encodeURIComponent(String(mId))}/recording`,
+      );
+    }
+    // Legacy fallback: no broker scope
+    routeCandidates.push(`/api/v1/calls/${encodeURIComponent(String(mId))}/recording`);
+
+    let endpoint = `${cfg.url}${routeCandidates[0]}${machineSuffix}`;
     let res = await fetch(endpoint, { method: "POST", headers, body: form });
-    // Fallback: try without /call/ (singular) path variant
-    if (!res.ok && (res.status === 404 || res.status === 405)) {
-      const fallbackPath = auth.brokerId
-        ? `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/calls/${encodeURIComponent(String(mId))}/recording`
-        : `/api/v1/users/me/calls/${encodeURIComponent(String(mId))}/recording`;
-      endpoint = `${cfg.url}${fallbackPath}${machineSuffix}`;
+    for (let i = 1; i < routeCandidates.length && !res.ok && (res.status === 404 || res.status === 405); i++) {
+      endpoint = `${cfg.url}${routeCandidates[i]}${machineSuffix}`;
       res = await fetch(endpoint, { method: "POST", headers, body: form });
     }
 
