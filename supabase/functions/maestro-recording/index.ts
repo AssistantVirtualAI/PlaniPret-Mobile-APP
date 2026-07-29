@@ -63,16 +63,19 @@ Deno.serve(async (req) => {
     let res: any;
     try {
       const auth = await getBrokerAuth(admin, call.user_id);
+      if (!auth.brokerId) {
+        if (call.recording_url) {
+          return json({ available: true, reason: "ns_fallback", url: call.recording_url, recording_url: call.recording_url, expires_at: null, source: "ns" });
+        }
+        return json({ available: false, reason: "maestro_broker_id_missing", url: null, recording_url: null });
+      }
       const maestroCallId = call.maestro_call_id ?? call.ns_call_id ?? call.id;
-      // Scott API: GET /users/{brokerId}/calls/{callId}/recording
-      const recPath = auth.brokerId
-        ? `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/calls/${encodeURIComponent(maestroCallId)}/recording`
-        : `/api/v1/users/me/calls/${encodeURIComponent(maestroCallId)}/recording`;
       res = await maestroFetch(cfg, {
         method: "GET",
-        path: recPath,
+        path: `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/calls/${encodeURIComponent(maestroCallId)}/recording`,
         token: auth.token,
       });
+
     } catch (e: any) {
       if (call.recording_url) {
         return json({ available: true, reason: "ns_fallback", url: call.recording_url, recording_url: call.recording_url, expires_at: null, source: "ns" });

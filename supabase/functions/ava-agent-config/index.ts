@@ -32,16 +32,33 @@ const TOOL_NAMES = [
   "explain_feature", "get_integration_status",
 ];
 
-function buildPrompt(p: any): string {
+function buildPrompt(p: any, lang: "fr" | "en" = "fr"): string {
   const firstName = (p.full_name ?? "courtier").split(" ")[0];
-  return `Tu es AVA (Assistant Virtuel Avancé), l'assistante IA personnelle de ${p.full_name ?? "ce courtier"}, courtier hypothécaire chez Planiprêt.
+  const langBlock = lang === "en"
+    ? `═══════════════════════════════════
+LANGUAGE — ABSOLUTE RULE
+═══════════════════════════════════
+The broker's app language is ENGLISH. You MUST speak and write ONLY in English,
+including greetings, confirmations, tool summaries and error messages.
+Never answer in French unless the broker explicitly speaks French to you.
+`
+    : `═══════════════════════════════════
+LANGUE — RÈGLE ABSOLUE
+═══════════════════════════════════
+La langue de l'application du courtier est le FRANÇAIS (québécois). Tu dois parler
+et écrire UNIQUEMENT en français, y compris les salutations, confirmations,
+résumés d'outils et messages d'erreur.
+Ne réponds jamais en anglais sauf si le courtier te parle explicitement en anglais.
+`;
+  return langBlock + `
+Tu es AVA (Assistant Virtuel Avancé), l'assistante IA personnelle de ${p.full_name ?? "ce courtier"}, courtier hypothécaire chez Planiprêt.
 
 ═══════════════════════════════════
 IDENTITÉ
 ═══════════════════════════════════
 - Professionnelle, chaleureuse, proactive
 - Tutoie naturellement
-- Français québécois par défaut, anglais sur demande
+- Langue active: ${lang === "en" ? "anglais" : "français québécois"} (voir RÈGLE ABSOLUE ci-dessus)
 - Directe et efficace — phrases courtes (2-3 max par réponse)
 - Confirme avant chaque action irréversible (selon mode autonomie)
 
@@ -134,9 +151,14 @@ Deno.serve(async (req) => {
   if ("error" in auth) return auth.error;
   const { admin, profile } = auth;
 
+  let reqBody: any = {};
+  try { reqBody = req.method === "POST" ? await req.json() : {}; } catch { reqBody = {}; }
+  const requestedLang: "fr" | "en" | null =
+    reqBody?.language === "en" ? "en" : reqBody?.language === "fr" ? "fr" : null;
+
   const { data: full } = await admin
     .from("planipret_profiles")
-    .select("id, full_name, extension, ns_domain, ms365_access_token, maestro_broker_id, maestro_connected, voice_agent_enabled, ava_autonomy_mode, ava_preferred_lang, elevenlabs_agent_id, ava_voice_id, ava_voice_stability, ava_voice_similarity, ava_voice_style")
+    .select("id, full_name, extension, ns_domain, ms365_access_token, maestro_broker_id, maestro_connected, voice_agent_enabled, ava_autonomy_mode, ava_preferred_lang, elevenlabs_agent_id, ava_voice_id, ava_voice_name, ava_voice_stability, ava_voice_similarity, ava_voice_style, ava_voice_speed")
     .eq("id", profile.id)
     .maybeSingle();
 
@@ -154,6 +176,13 @@ Deno.serve(async (req) => {
       setup_url: "/planipret/admin/integrations",
       missing_secret: "ELEVENLABS_DEFAULT_AGENT_ID",
     }, 200);
+  }
+
+  const lang: "fr" | "en" = requestedLang ?? (p.ava_preferred_lang === "en" ? "en" : "fr");
+  // Persist the active UI language so voice + chat + brief stay in sync.
+  if (requestedLang && requestedLang !== p.ava_preferred_lang) {
+    admin.from("planipret_profiles").update({ ava_preferred_lang: requestedLang })
+      .eq("id", p.id).then(() => null);
   }
 
   const firstName = (p.full_name ?? "courtier").split(" ")[0];
@@ -220,15 +249,19 @@ Deno.serve(async (req) => {
     success: true,
     agent_id: agentId,
     voice_agent_enabled: true,
-    system_prompt: buildPrompt(p),
-    first_message: `Bonjour ${firstName} ! Je suis AVA, ton assistante IA. Comment puis-je t'aider aujourd'hui ?`,
+    system_prompt: buildPrompt(p, lang),
+    first_message: lang === "en"
+      ? `Hi ${firstName}! I'm AVA, your AI assistant. How can I help you today?`
+      : `Bonjour ${firstName} ! Je suis AVA, ton assistante IA. Comment puis-je t'aider aujourd'hui ?`,
     voice_id: voiceId,
     voice_settings: {
       stability: Number(p.ava_voice_stability ?? 0.6),
       similarity_boost: Number(p.ava_voice_similarity ?? 0.8),
       style: Number(p.ava_voice_style ?? 0.3),
+      speed: Number(p.ava_voice_speed ?? 1),
     },
-    language: p.ava_preferred_lang ?? "fr",
+    voice_name: p.ava_voice_name ?? null,
+    language: lang,
     autonomy_mode: p.ava_autonomy_mode ?? "confirm",
     overrides_allowed,
     agent_status,

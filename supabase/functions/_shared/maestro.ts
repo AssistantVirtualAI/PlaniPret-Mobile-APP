@@ -57,51 +57,230 @@ export async function getMaestroConfig(admin: SupabaseClient): Promise<MaestroCo
   };
 }
 
-/** Resolve broker token + maestro_broker_id for a given user (falls back to service key). */
+/** Fallback broker id from the integration secrets store (machine-key mode). */
+export async function fallbackBrokerId(admin: SupabaseClient): Promise<string | null> {
+  const { data } = await admin
+    .from("planipret_integration_secrets")
+    .select("provider, config")
+    .in("provider", ["maestro_telecom", "maestro"]);
+  const rows = Array.isArray(data) ? data : [];
+  const telecom = rows.find((r: any) => r.provider === "maestro_telecom")?.config ?? {};
+  const legacy = rows.find((r: any) => r.provider === "maestro")?.config ?? {};
+  const c = { ...(legacy as Record<string, unknown>), ...(telecom as Record<string, unknown>) };
+  for (const k of ["broker_id", "maestro_broker_id", "user_id"]) {
+    const v = (c as any)[k];
+    if (v !== undefined && v !== null && String(v).trim() !== "" && /^\d+$/.test(String(v).trim())) {
+      return String(v).trim();
+    }
+  }
+  return null;
+}
+
+/**
+ * Resolve the machine API key + the broker's numeric Maestro telecom user id.
+ * NOTE: Scott's Telecom API only accepts the machine key (`Bearer <key>&machine=1`);
+ * per-broker OAuth tokens are never used for these calls.
+ */
+/** Digits-only comparison helper. */
+function digits(v: unknown): string {
+  return String(v ?? "").replace(/\D/g, "");
+}
+
+/** Verify that a telecom user id really exists (GET /users/{id}/sip). */
+export async function verifyTelecomUserId(cfg: MaestroConfig, id: string): Promise<any | null> {
+  if (!cfg.url || !cfg.key || !/^\d+$/.test(id)) return null;
+  try {
+    const r = await fetch(`${cfg.url}/api/v1/users/${id}/sip?machine=1`, {
+      headers: { Authorization: `Bearer ${cfg.key}` },
+    });
+    if (!r.ok) return null;
+    const j = await r.json().catch(() => null);
+    return j?.sip ? j.sip : null;
+  } catch {
+    return null;
+  }
+}
+
+const RESOLVE_COOLDOWN = new Map<string, number>();
+
+export interface BrokerAuthDiag {
+  user_id: string | null;
+  profile_found: boolean;
+  matched_by: "user_id" | "profile_id" | null;
+  profile_id: string | null;
+  stored_broker_id: string | null;
+  stored_broker_id_valid: boolean | null;
+  sip_probe_attempted: boolean;
+  sip_probe_result: string | null;
+  cooldown_active: boolean;
+  used_fallback: boolean;
+  reason: string;
+}
+
+/**
+ * Discover the broker's numeric Maestro telecom user id by probing
+ * `GET /users/{id}/sip` and matching the SIP extension or phone number to the
+ * broker's Planiprêt profile. Persists the result on the profile.
+ */
+export async function resolveBrokerIdFromTelecom(
+  admin: SupabaseClient,
+  userId: string,
+  cfg: MaestroConfig,
+  maxId = 250,
+  diag?: BrokerAuthDiag,
+): Promise<string | null> {
+  const note = (r: string) => { if (diag) diag.sip_probe_result = r; console.warn(`[maestro.brokerId] sip-resolve user=${userId} → ${r}`); };
+  if (!cfg.url || !cfg.key) { note("telecom_not_configured"); return null; }
+  const last = RESOLVE_COOLDOWN.get(userId) ?? 0;
+  if (Date.now() - last < 10 * 60_000) {
+    if (diag) diag.cooldown_active = true;
+    note(`cooldown_active (retry in ${Math.ceil((10 * 60_000 - (Date.now() - last)) / 1000)}s)`);
+    return null;
+  }
+  RESOLVE_COOLDOWN.set(userId, Date.now());
+  if (diag) diag.sip_probe_attempted = true;
+
+  const profile = await loadBrokerProfile(admin, userId);
+  const ext = String(profile?.extension ?? "").trim();
+  const phone = digits(profile?.phone);
+  if (!profile) { note("no_profile_for_sip_match"); return null; }
+  if (!ext && !phone) { note("profile_has_no_extension_and_no_phone"); return null; }
+
+  const match = async (id: number): Promise<string | null> => {
+    const sip = await verifyTelecomUserId(cfg, String(id));
+    if (!sip) return null;
+    const sipUser = String(sip.sip_username ?? "").trim();
+    const pu = sip.provider_user ?? {};
+    const pNums = [digits(pu.phone_number), digits(pu.sms_number)].filter(Boolean);
+    const extMatch = ext && (sipUser === ext || String(pu.provider_external_user_id ?? "") === ext);
+    const phoneMatch = phone && pNums.some((n) => n.endsWith(phone.slice(-10)));
+    return extMatch || phoneMatch ? String(id) : null;
+  };
+
+  for (let start = 1; start <= maxId; start += 25) {
+    const ids = Array.from({ length: Math.min(25, maxId - start + 1) }, (_, i) => start + i);
+    const found = (await Promise.all(ids.map(match))).find(Boolean);
+    if (found) {
+      await admin.from("planipret_profiles").update({ maestro_broker_id: found }).eq("id", profile.id);
+      if (diag) diag.sip_probe_result = `matched_id_${found}`;
+      console.log(`[maestro.brokerId] resolved broker id ${found} for user ${userId} (ext=${ext || "-"} phone=${phone || "-"})`);
+      return found;
+    }
+  }
+  note(`no_sip_match_in_1..${maxId} (ext=${ext || "-"} phone=${phone || "-"})`);
+  return null;
+}
+
+/**
+ * `planipret_phone_calls.user_id` sometimes holds the auth user id and
+ * sometimes the `planipret_profiles.id` — resolve both.
+ */
+export async function loadBrokerProfile(
+  admin: SupabaseClient,
+  userId: string,
+  diag?: BrokerAuthDiag,
+): Promise<{ id: string; maestro_broker_id: string | null; extension: string | null; phone: string | null } | null> {
+  const cols = "id, user_id, maestro_broker_id, extension, phone";
+  const byUser = await admin.from("planipret_profiles").select(cols).eq("user_id", userId).maybeSingle();
+  if (byUser.data) {
+    if (diag) { diag.profile_found = true; diag.matched_by = "user_id"; diag.profile_id = (byUser.data as any).id; }
+    return byUser.data as any;
+  }
+  const byId = await admin.from("planipret_profiles").select(cols).eq("id", userId).maybeSingle();
+  if (byId.data) {
+    if (diag) { diag.profile_found = true; diag.matched_by = "profile_id"; diag.profile_id = (byId.data as any).id; }
+    return byId.data as any;
+  }
+  if (diag) { diag.profile_found = false; diag.matched_by = null; }
+  return null;
+}
+
+/**
+ * Resolve the machine API key + the broker's numeric Maestro telecom user id.
+ * NOTE: Scott's Telecom API only accepts the machine key (`Bearer <key>&machine=1`);
+ * per-broker OAuth tokens are never used for these calls.
+ */
 export async function getBrokerAuth(
   admin: SupabaseClient,
   userId: string | null | undefined,
-): Promise<{ token: string; brokerId: string | null; usingFallback: boolean }> {
-  // NOTE: Maestro Telecom API only accepts the machine API key + ?machine=1.
-  // Per-broker OAuth tokens are NOT accepted by the telecom API endpoints.
-  // We always use the machine key but still resolve brokerId from the profile
-  // so routes can be scoped to /users/{brokerId}/...
+): Promise<{ token: string; brokerId: string | null; usingFallback: boolean; diag: BrokerAuthDiag }> {
   const cfg = await getMaestroConfig(admin);
-  if (!userId) {
-    return { token: cfg.key, brokerId: null, usingFallback: true };
-  }
-  const { data: profile } = await admin
-    .from("planipret_profiles")
-    .select("maestro_broker_id")
-    .eq("user_id", userId)
-    .maybeSingle();
-  let brokerId: string | null = profile?.maestro_broker_id ?? null;
+  const diag: BrokerAuthDiag = {
+    user_id: userId ?? null,
+    profile_found: false,
+    matched_by: null,
+    profile_id: null,
+    stored_broker_id: null,
+    stored_broker_id_valid: null,
+    sip_probe_attempted: false,
+    sip_probe_result: null,
+    cooldown_active: false,
+    used_fallback: false,
+    reason: "ok",
+  };
+  let brokerId: string | null = null;
+  if (!userId) diag.reason = "no_user_id_on_record";
 
-  // Fallback: if broker_id not on profile, try integration_secrets
-  // (machine key connection stores broker_id in the config JSON)
-  if (!brokerId) {
-    const { data: secrets } = await admin
-      .from("planipret_integration_secrets")
-      .select("config")
-      .in("provider", ["maestro_telecom", "maestro"])
-      .order("updated_at", { ascending: false })
-      .limit(2);
-    for (const row of (secrets ?? [])) {
-      const c = (row as any).config ?? {};
-      const id = c.broker_id ?? c.maestro_broker_id ?? c.user_id ?? null;
-      if (id && /^\d+$/.test(String(id))) {
-        brokerId = String(id);
-        break;
+  if (userId) {
+    const profile = await loadBrokerProfile(admin, userId, diag);
+    if (!profile) {
+      diag.reason = "no_planipret_profile_matches_user_id_or_profile_id";
+      console.warn(`[maestro.brokerId] no profile for ${userId} (searched planipret_profiles.user_id then .id)`);
+    }
+    brokerId = profile?.maestro_broker_id ? String(profile.maestro_broker_id).trim() : null;
+    diag.stored_broker_id = brokerId;
+
+    if (brokerId && !/^\d+$/.test(brokerId)) {
+      console.warn(`[maestro.brokerId] stored broker id "${brokerId}" is not numeric — ignored`);
+      diag.stored_broker_id_valid = false;
+      diag.reason = "stored_broker_id_not_numeric";
+      brokerId = null;
+    } else if (brokerId) {
+      const valid = !!(await verifyTelecomUserId(cfg, brokerId));
+      diag.stored_broker_id_valid = valid;
+      if (!valid) {
+        console.warn(`[maestro.brokerId] stored broker id ${brokerId} rejected by GET /users/${brokerId}/sip — re-resolving`);
+        diag.reason = "stored_broker_id_unknown_upstream";
+        brokerId = null;
       }
     }
+    if (!brokerId) brokerId = await resolveBrokerIdFromTelecom(admin, userId, cfg, 250, diag);
+    if (brokerId) diag.reason = "ok";
   }
 
-  return {
-    token: cfg.key,
-    brokerId,
-    usingFallback: true, // always machine key
-  };
+  if (!brokerId) {
+    brokerId = await fallbackBrokerId(admin);
+    diag.used_fallback = !!brokerId;
+    if (brokerId) {
+      diag.reason = "using_global_fallback_broker_id";
+      console.warn(`[maestro.brokerId] falling back to global broker id ${brokerId} for user ${userId ?? "-"}`);
+    } else if (diag.reason === "ok") {
+      diag.reason = "no_broker_id_anywhere";
+    }
+  }
+  if (!brokerId) {
+    console.error(`[maestro.brokerId] UNRESOLVED user=${userId ?? "-"} ${JSON.stringify(diag)}`);
+  }
+  return { token: cfg.key, brokerId, usingFallback: diag.used_fallback, diag };
 }
+
+
+
+/**
+ * Telecom REST API auth (Scott's spec): the machine API key + the broker's
+ * numeric Maestro telecom user id. Broker OAuth tokens are NOT accepted by
+ * `/telecom/api/v1` — it only authenticates `Bearer <machine key>&machine=1`.
+ */
+export async function telecomAuth(
+  admin: SupabaseClient,
+  userId: string | null | undefined,
+): Promise<{ token: string; brokerId: string | null; usingFallback: boolean; diag: BrokerAuthDiag }> {
+  return await getBrokerAuth(admin, userId);
+}
+
+
+
+
 
 interface CallOpts {
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
@@ -138,9 +317,11 @@ export async function maestroFetch(cfg: MaestroConfig, opts: CallOpts) {
   if (opts.brokerId) headers["X-Broker-Id"] = String(opts.brokerId);
   if (opts.idempotencyKey) headers["Idempotency-Key"] = opts.idempotencyKey;
 
-  const useMachine = opts.token === cfg.key || !opts.brokerId;
-  const suffix = useMachine ? `${opts.path.includes("?") ? "&" : "?"}machine=1` : "";
-  const res = await fetch(`${cfg.url}${opts.path}${suffix}`, {
+  // Scott's Telecom REST API authenticates the machine API key only when
+  // `?machine=1` is present — always append it.
+  const suffix = `${opts.path.includes("?") ? "&" : "?"}machine=1`;
+  const endpoint = `${cfg.url}${opts.path}${suffix}`;
+  const res = await fetch(endpoint, {
     method: opts.method ?? "GET",
     headers,
     body: opts.body ? JSON.stringify(opts.body) : undefined,
@@ -152,7 +333,7 @@ export async function maestroFetch(cfg: MaestroConfig, opts: CallOpts) {
   } catch {
     data = { raw: text };
   }
-  return { ok: res.ok, status: res.status, data };
+  return { ok: res.ok, status: res.status, data, endpoint };
 }
 
 /**
@@ -171,6 +352,28 @@ export async function maestroFetchScoped(
   }
   const r = await maestroFetch(cfg, opts);
   return { ...r, path: opts.path };
+}
+
+export function summarizeMaestroFailure(status: number, data: any): { error: string; detail: string; permanent: boolean } {
+  const raw = typeof data?.raw === "string" ? data.raw : JSON.stringify(data ?? {}).slice(0, 500);
+  const lower = raw.toLowerCase();
+  if (status === 404) {
+    const html = lower.includes("<html") || lower.includes("<title>");
+    return {
+      error: "maestro_endpoint_not_found",
+      detail: html
+        ? "Configured Maestro URL returns an HTML 404 page; the telecom API prefix is not being served."
+        : "Maestro returned 404 for this endpoint.",
+      permanent: true,
+    };
+  }
+  if (status === 401 || status === 403) {
+    return { error: "maestro_auth_failed", detail: `Maestro rejected the token with HTTP ${status}.`, permanent: true };
+  }
+  if (status === 0) {
+    return { error: "maestro_unreachable", detail: "Maestro could not be reached from the backend.", permanent: false };
+  }
+  return { error: "maestro_error", detail: `Maestro returned HTTP ${status}.`, permanent: status >= 400 && status < 500 };
 }
 
 

@@ -9,6 +9,9 @@ import { toast } from "sonner";
 import { X, Mic, Send, Settings, AlertTriangle, Sparkles, PhoneOutgoing, MessageSquare, Search, Calendar, Mail, Bot, Map } from "lucide-react";
 import avaLogo from "@/assets/ava-statistics-logo.png.asset.json";
 import AvaOrb, { useAnalyserLevel } from "@/components/planipret/mobile/AvaOrb";
+import VoiceSettingsSheet from "@/components/planipret/mobile/VoiceSettingsSheet";
+import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import { getAvaToolLabel } from "@/lib/i18n/avaToolLabels";
 
 type AgentState = "idle" | "connecting" | "listening" | "speaking" | "processing" | "tool_running" | "error";
 type AutonomyMode = "confirm" | "semi_auto" | "full_auto";
@@ -18,14 +21,25 @@ interface Props { onClose: () => void; userId: string; onFallbackToChat?: () => 
 interface TranscriptEntry { id: string; role: "user" | "agent" | "tool" | "nav"; text: string; toolIcon?: string; }
 interface PendingTool { tool: string; params: any; resolve: (v: any) => void; reject: (e: any) => void; }
 
-const STATE_LABEL: Record<AgentState, string> = {
-  idle: "Appuyez pour parler",
-  connecting: "Connexion...",
-  listening: "Je vous écoute...",
-  speaking: "AVA parle...",
-  processing: "Traitement...",
-  tool_running: "Exécution...",
-  error: "Erreur de connexion",
+const STATE_LABELS: Record<"fr" | "en", Record<AgentState, string>> = {
+  fr: {
+    idle: "Appuyez pour parler",
+    connecting: "Connexion...",
+    listening: "Je vous écoute...",
+    speaking: "AVA parle...",
+    processing: "Traitement...",
+    tool_running: "Exécution...",
+    error: "Erreur de connexion",
+  },
+  en: {
+    idle: "Tap to speak",
+    connecting: "Connecting...",
+    listening: "I'm listening...",
+    speaking: "AVA is speaking...",
+    processing: "Processing...",
+    tool_running: "Running...",
+    error: "Connection error",
+  },
 };
 
 // Retry any async op with exponential backoff. Returns the value or throws the
@@ -54,23 +68,6 @@ const TOOL_ICONS: Record<string, any> = {
   get_upcoming_meetings: Calendar,
 };
 
-const TOOL_LABELS: Record<string, string> = {
-  make_call: "Lancement d'un appel",
-  send_sms: "Envoi d'un SMS",
-  send_email: "Envoi d'un courriel",
-  summarize_email: "Résumé du courriel",
-  read_emails: "Lecture des courriels",
-  get_unread_emails: "Courriels non lus",
-  get_recent_emails: "Derniers courriels",
-  create_task: "Création d'une tâche Maestro",
-  create_appointment: "Création d'un RDV",
-  create_calendar_event: "Création d'un meeting",
-  move_calendar_event: "Déplacement du meeting",
-  cancel_calendar_event: "Annulation du meeting",
-  get_upcoming_meetings: "Meetings à venir",
-  generate_voicemail_greeting: "Génération de boîte vocale",
-};
-
 const CONFIRM_REQUIRED = new Set([
   "make_call", "send_sms", "send_email",
   "create_task", "create_appointment", "generate_voicemail_greeting",
@@ -80,6 +77,10 @@ const CONFIRM_REQUIRED = new Set([
 
 export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Props) {
   const navigate = useNavigate();
+  const { lang } = useMplanipretLang();
+  const L = useCallback((fr: string, en: string) => (lang === "en" ? en : fr), [lang]);
+  const toolLabel = useCallback((name: string) => getAvaToolLabel(name, lang), [lang]);
+  const [voiceSheetOpen, setVoiceSheetOpen] = useState(false);
   const [state, setState] = useState<AgentState>("idle");
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [toolNotif, setToolNotif] = useState<string | null>(null);
@@ -112,15 +113,15 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
   const callServerTool = useCallback(async (toolName: string, params: any) => {
     setState("tool_running");
     setCurrentTool(toolName);
-    showToolNotif(`${TOOL_LABELS[toolName] ?? toolName}...`);
-    appendTranscript({ role: "tool", text: TOOL_LABELS[toolName] ?? toolName });
+    showToolNotif(`${toolLabel(toolName)}...`);
+    appendTranscript({ role: "tool", text: toolLabel(toolName) });
     const { data, error } = await supabase.functions.invoke("ava-tool-executor", {
       body: { tool_name: toolName, parameters: params, session_id: sessionId },
     });
     setState("listening");
     setCurrentTool(null);
     if (error || !(data as any)?.success) {
-      const msg = (data as any)?.error ?? error?.message ?? "Erreur";
+      const msg = (data as any)?.error ?? error?.message ?? L("Erreur", "Error");
       toast.error("❌ " + msg);
       return { success: false, error: msg };
     }
@@ -130,7 +131,7 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
       appendTranscript({ role: "nav", text: `🗺️ ${d.message ?? "Navigation"}` });
     }
     return d;
-  }, [sessionId]);
+  }, [sessionId, toolLabel, L]);
 
   // Client-only tools execute in the browser (no server round-trip).
   const CLIENT_ONLY: Record<string, (p: any) => any> = useMemo(() => ({
@@ -176,7 +177,7 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
   const handleTool = useCallback(async (toolName: string, params: any) => {
     // Route client-only tools locally (no confirm gate, no server call).
     if (CLIENT_ONLY[toolName]) {
-      showToolNotif(TOOL_LABELS[toolName] ?? toolName);
+      showToolNotif(toolLabel(toolName));
       return CLIENT_ONLY[toolName](params ?? {});
     }
     // Confirmation gate for mutating server tools.
@@ -186,7 +187,7 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
       }).then((r: any) => r ?? { success: false, error: "user_cancelled" });
     }
     return callServerTool(toolName, params);
-  }, [autonomy, callServerTool, CLIENT_ONLY]);
+  }, [autonomy, callServerTool, CLIENT_ONLY, toolLabel]);
 
   // Build clientTools map dynamically (server + client-side tools)
   const clientTools = useMemo(() => {
@@ -285,12 +286,12 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
         let cfg: any;
         try {
           cfg = await withBackoff(async () => {
-            const { data, error } = await supabase.functions.invoke("ava-agent-config", { body: {} });
+            const { data, error } = await supabase.functions.invoke("ava-agent-config", { body: { language: lang } });
             if (error || !(data as any)?.success) throw new Error((data as any)?.error ?? error?.message ?? "ava-agent-config failed");
             return data;
           }, 3, 400);
         } catch (e: any) {
-          fallback("AVA vocal indisponible", "config_failed");
+          fallback(L("AVA vocal indisponible", "AVA voice unavailable"), "config_failed");
           return;
         }
         if (cancelled) return;
@@ -299,7 +300,7 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
         setAutonomy(c.autonomy_mode ?? "confirm");
 
         if (!c.agent_id) {
-          fallback("Agent vocal non provisionné", "no_agent");
+          fallback(L("Agent vocal non provisionné", "Voice agent not provisioned"), "no_agent");
           return;
         }
 
@@ -309,6 +310,8 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
           const { data, error } = await supabase.functions.invoke("pp-ava-webrtc-token", { body: { type: kind } });
           let d: any = data;
           if (error) {
+            // FunctionsHttpError carries the response body in .context — read it
+            // so we can surface actionable server-side codes (voice_agent_disabled…).
             try {
               const ctx = (error as any)?.context;
               if (ctx && typeof ctx.text === "function") {
@@ -329,13 +332,14 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
         const overrides: any = { agent: {}, tts: {} };
         if (oa.prompt) overrides.agent.prompt = { prompt: c.system_prompt };
         if (oa.first_message) overrides.agent.firstMessage = c.first_message;
-        if (oa.language) overrides.agent.language = c.language ?? "fr";
+        if (oa.language) overrides.agent.language = lang;
         if (oa.voice) {
           overrides.tts.voiceId = c.voice_id;
           if (c.voice_settings) {
             overrides.tts.stability = c.voice_settings.stability;
             overrides.tts.similarityBoost = c.voice_settings.similarity_boost;
             overrides.tts.style = c.voice_settings.style;
+            if (c.voice_settings.speed) overrides.tts.speed = c.voice_settings.speed;
           }
         }
         const hasOverrides = Object.keys(overrides.agent).length > 0 || Object.keys(overrides.tts).length > 0;
@@ -420,13 +424,13 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
             console.error("AVA startSession failed on both transports", wsErr);
             const code = wsErr?.code ?? webrtcErr?.code;
             if (code === "voice_agent_disabled") {
-              fallback("Agent vocal AVA désactivé — contactez votre administrateur pour l'activer.", "voice_agent_disabled");
+              fallback(L("Agent vocal AVA désactivé — contactez votre administrateur pour l'activer.", "AVA voice agent disabled — contact your administrator to enable it."), "voice_agent_disabled");
             } else if (code === "agent_not_provisioned") {
-              fallback("Agent vocal non provisionné — contactez votre administrateur.", "agent_not_provisioned");
+              fallback(L("Agent vocal non provisionné — contactez votre administrateur.", "Voice agent not provisioned — contact your administrator."), "agent_not_provisioned");
             } else if (code === "profile_not_found") {
-              fallback("Profil courtier introuvable — contactez le support.", "profile_not_found");
+              fallback(L("Profil courtier introuvable — contactez le support.", "Broker profile not found — contact support."), "profile_not_found");
             } else {
-              fallback("Connexion vocale échouée", "start_failed");
+              fallback(L("Connexion vocale échouée", "Voice connection failed"), "start_failed");
             }
             return;
           }
@@ -448,7 +452,9 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
               .eq("user_id", userId)
               .gte("started_at", new Date(new Date().setHours(0, 0, 0, 0)).toISOString()),
           ]);
-          const ctx = `Contexte courant du courtier: ${missedRes.count ?? 0} appel(s) manqué(s) dans les dernières 24h, ${vmRes.count ?? 0} message(s) vocal(aux) non lu(s), ${todayCallsRes.count ?? 0} appel(s) aujourd'hui.`;
+          const ctx = lang === "en"
+            ? `Broker's current context: ${missedRes.count ?? 0} missed call(s) in the last 24h, ${vmRes.count ?? 0} unread voicemail(s), ${todayCallsRes.count ?? 0} call(s) today.`
+            : `Contexte courant du courtier: ${missedRes.count ?? 0} appel(s) manqué(s) dans les dernières 24h, ${vmRes.count ?? 0} message(s) vocal(aux) non lu(s), ${todayCallsRes.count ?? 0} appel(s) aujourd'hui.`;
           conv.sendContextualUpdate?.(ctx);
         } catch (ctxErr) { console.warn("contextual_update failed", ctxErr); }
 
@@ -460,7 +466,7 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
       } catch (e) {
         console.error(e);
         setState("error");
-        toast.error("Échec d'initialisation AVA");
+        toast.error(L("Échec d'initialisation AVA", "AVA initialization failed"));
       }
     })();
     return () => {
@@ -473,7 +479,7 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initAttempt]);
+  }, [initAttempt, lang]);
 
   const retryConnection = useCallback(() => {
     sessionRowIdRef.current = null;
@@ -511,7 +517,7 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
   const endSession = async () => {
     const dur = Math.round((Date.now() - startTimeRef.current) / 1000);
     try { await convRef.current?.endSession(); } catch (_) { /* */ }
-    toast.success(`Session AVA · ${Math.floor(dur / 60)}min${String(dur % 60).padStart(2, "0")}s`);
+    toast.success(`${L("Session AVA", "AVA session")} · ${Math.floor(dur / 60)}min${String(dur % 60).padStart(2, "0")}s`);
     onClose();
   };
 
@@ -555,12 +561,12 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
           </div>
           <span className="text-[14px] font-bold text-white">AVA</span>
         </div>
-        <span className="text-[12px]" style={{ color: "#4A7FA5" }}>{STATE_LABEL[state]}</span>
+        <span className="text-[12px]" style={{ color: "#4A7FA5" }}>{STATE_LABELS[lang][state]}</span>
         <div className="flex gap-1">
-          <button onClick={() => setSettingsOpen(true)} aria-label="Paramètres" className="w-10 h-10 rounded-full flex items-center justify-center" style={{ background: "rgba(255,255,255,0.08)", color: "#fff" }}>
+          <button onClick={() => setSettingsOpen(true)} aria-label={L("Paramètres", "Settings")} className="w-10 h-10 rounded-full flex items-center justify-center" style={{ background: "rgba(255,255,255,0.08)", color: "#fff" }}>
             <Settings className="w-4 h-4" />
           </button>
-          <button onClick={endSession} aria-label="Fermer" className="w-10 h-10 rounded-full flex items-center justify-center" style={{ background: "rgba(232,76,76,0.85)", color: "#fff", boxShadow: "0 2px 10px rgba(232,76,76,0.5)" }}>
+          <button onClick={endSession} aria-label={L("Fermer", "Close")} className="w-10 h-10 rounded-full flex items-center justify-center" style={{ background: "rgba(232,76,76,0.85)", color: "#fff", boxShadow: "0 2px 10px rgba(232,76,76,0.5)" }}>
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -580,18 +586,18 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
         {micError ? (
           <div className="bg-white rounded-2xl p-5 text-center max-w-xs">
             <AlertTriangle className="w-8 h-8 mx-auto text-amber-500 mb-2" />
-            <p className="font-semibold text-slate-900">🎙️ Microphone requis</p>
-            <p className="text-xs text-slate-600 mt-1">Autorisez le microphone dans les paramètres du navigateur.</p>
+            <p className="font-semibold text-slate-900">🎙️ {L("Microphone requis", "Microphone required")}</p>
+            <p className="text-xs text-slate-600 mt-1">{L("Autorisez le microphone dans les paramètres du navigateur.", "Allow microphone access in your browser settings.")}</p>
           </div>
         ) : state === "error" ? (
           <div className="bg-white rounded-2xl p-5 text-center max-w-xs">
             <AlertTriangle className="w-8 h-8 mx-auto text-amber-500 mb-2" />
-            <p className="font-semibold text-slate-900">Connexion vocale interrompue</p>
-            <p className="text-xs text-slate-600 mt-1">Réessaie la connexion ou continue en chat texte.</p>
+            <p className="font-semibold text-slate-900">{L("Connexion vocale interrompue", "Voice connection interrupted")}</p>
+            <p className="text-xs text-slate-600 mt-1">{L("Réessaie la connexion ou continue en chat texte.", "Retry the connection or continue in text chat.")}</p>
             <div className="flex gap-2 mt-3">
-              <button onClick={retryConnection} className="flex-1 h-10 rounded-lg text-white text-sm font-medium" style={{ background: "linear-gradient(135deg,#2E9BDC,#6C3CE1)" }}>Réessayer</button>
+              <button onClick={retryConnection} className="flex-1 h-10 rounded-lg text-white text-sm font-medium" style={{ background: "linear-gradient(135deg,#2E9BDC,#6C3CE1)" }}>{L("Réessayer", "Retry")}</button>
               {onFallbackToChat && (
-                <button onClick={onFallbackToChat} className="flex-1 h-10 rounded-lg text-sm font-medium border border-slate-300 text-slate-700">Chat texte</button>
+                <button onClick={onFallbackToChat} className="flex-1 h-10 rounded-lg text-sm font-medium border border-slate-300 text-slate-700">{L("Chat texte", "Text chat")}</button>
               )}
             </div>
           </div>
@@ -637,7 +643,7 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
 
       {/* Quick action chips */}
       <div className="px-4 pb-2 flex gap-2 overflow-x-auto">
-        {["📊 Mon brief", "🔥 Leads chauds", "📞 Dernier appel", "📅 Mes RDV"].map((chip) => (
+        {(lang === "en" ? ["📊 My brief", "🔥 Hot leads", "📞 Last call", "📅 My meetings"] : ["📊 Mon brief", "🔥 Leads chauds", "📞 Dernier appel", "📅 Mes RDV"]).map((chip) => (
           <button key={chip} onClick={async () => {
             appendTranscript({ role: "user", text: chip });
             try { await convRef.current?.sendUserMessage?.(chip); } catch (_) { /* */ }
@@ -652,7 +658,7 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
       {/* Bottom input bar */}
       <div className="px-4 py-3 flex items-center gap-2" style={{ background: "rgba(6,13,26,0.9)", borderTop: "1px solid #0A1E35" }}>
         <input value={textInput} onChange={(e) => setTextInput(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") sendText(); }}
-          placeholder="Écrivez à AVA..."
+          placeholder={L("Écrivez à AVA...", "Write to AVA...")}
           className="flex-1 h-11 px-4 rounded-full outline-none text-[14px]"
           style={{ background: "#0A1628", border: "1px solid #0E2A45", color: "#E8EDF5" }} />
         <button onClick={textInput ? sendText : endSession}
@@ -668,6 +674,7 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
       {pending && (
         <CalendarAwareConfirm
           pending={pending}
+          toolLabel={toolLabel}
           onCancel={() => confirmAction(false)}
           onConfirm={(patchedParams) => {
             // Overwrite params with patched (tz + confirmed) then execute
@@ -682,7 +689,7 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
       {settingsOpen && (
         <div className="absolute inset-0 z-20 flex items-end bg-black/40" onClick={() => setSettingsOpen(false)}>
           <div className="w-full rounded-t-2xl p-5" style={{ background: "#0A1628", border: "1px solid #0E2A45" }} onClick={(e) => e.stopPropagation()}>
-            <div className="text-[13px] font-semibold mb-3 text-white">Mode d'autonomie</div>
+            <div className="text-[13px] font-semibold mb-3 text-white">{L("Mode d'autonomie", "Autonomy mode")}</div>
             {(["confirm", "semi_auto", "full_auto"] as const).map((m) => (
               <button key={m} onClick={async () => {
                 setAutonomy(m);
@@ -691,23 +698,44 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
                 className="w-full text-left p-3 rounded-xl mb-2 flex items-center justify-between"
                 style={{ background: autonomy === m ? "rgba(46,155,220,0.15)" : "rgba(255,255,255,0.03)", border: `1px solid ${autonomy === m ? "#2E9BDC" : "#0E2A45"}` }}>
                 <div>
-                  <div className="text-[13px] text-white font-medium">{m === "confirm" ? "Confirmation requise" : m === "semi_auto" ? "Semi-automatique" : "Pleinement autonome"}</div>
+                  <div className="text-[13px] text-white font-medium">{m === "confirm" ? L("Confirmation requise", "Confirmation required") : m === "semi_auto" ? L("Semi-automatique", "Semi-automatic") : L("Pleinement autonome", "Fully autonomous")}</div>
                   <div className="text-[11px]" style={{ color: "#4A7FA5" }}>
-                    {m === "confirm" ? "AVA confirme avant chaque action" : m === "semi_auto" ? "Auto pour lectures, confirme les envois" : "AVA agit sans demander ⚡"}
+                    {m === "confirm" ? L("AVA confirme avant chaque action", "AVA confirms before every action") : m === "semi_auto" ? L("Auto pour lectures, confirme les envois", "Auto for reads, confirms sends") : L("AVA agit sans demander ⚡", "AVA acts without asking ⚡")}
                   </div>
                 </div>
                 {autonomy === m && <span className="text-[#2E9BDC]">●</span>}
               </button>
             ))}
-            <button onClick={() => setSettingsOpen(false)} className="w-full h-11 mt-2 rounded-xl text-white font-medium" style={{ background: "#2E9BDC" }}>Fermer</button>
+            <button
+              onClick={() => { setSettingsOpen(false); setVoiceSheetOpen(true); }}
+              className="w-full text-left p-3 rounded-xl mb-2 flex items-center justify-between"
+              style={{ background: "rgba(255,255,255,0.03)", border: "1px solid #0E2A45" }}>
+              <div>
+                <div className="text-[13px] text-white font-medium">{L("Voix d'AVA", "AVA voice")}</div>
+                <div className="text-[11px]" style={{ color: "#4A7FA5" }}>
+                  {L("Choisir la voix ElevenLabs (synchronisée)", "Pick the ElevenLabs voice (synced)")}
+                </div>
+              </div>
+              <span className="text-[#2E9BDC]">›</span>
+            </button>
+            <button onClick={() => setSettingsOpen(false)} className="w-full h-11 mt-2 rounded-xl text-white font-medium" style={{ background: "#2E9BDC" }}>{L("Fermer", "Close")}</button>
           </div>
         </div>
+      )}
+
+      {voiceSheetOpen && (
+        <VoiceSettingsSheet
+          userId={userId}
+          onClose={() => setVoiceSheetOpen(false)}
+          onSaved={() => retryConnection()}
+        />
       )}
     </div>
   );
 }
 
 function VoiceOrb({ state, analyser }: { state: AgentState; analyser: AnalyserNode | null }) {
+  const { lang } = useMplanipretLang();
   const level = useAnalyserLevel(analyser, state === "listening");
   const orbState: "idle" | "connecting" | "listening" | "speaking" | "processing" | "error" =
     state === "tool_running" ? "processing" : state;
@@ -715,7 +743,9 @@ function VoiceOrb({ state, analyser }: { state: AgentState; analyser: AnalyserNo
     <div className="flex flex-col items-center gap-4">
       <AvaOrb state={orbState} level={level} size={260} />
       <div className="text-[15px] font-semibold tracking-wide" style={{ color: "#E8EDF5", fontFamily: "Urbanist,sans-serif" }}>
-        {state === "speaking" ? "AVA parle…" : state === "listening" ? "Je vous écoute…" : state === "processing" ? "Réflexion…" : state === "tool_running" ? "Exécution…" : state === "connecting" ? "Connexion…" : state === "error" ? "Erreur" : "Prête"}
+        {lang === "en"
+          ? (state === "speaking" ? "AVA is speaking…" : state === "listening" ? "I'm listening…" : state === "processing" ? "Thinking…" : state === "tool_running" ? "Running…" : state === "connecting" ? "Connecting…" : state === "error" ? "Error" : "Ready")
+          : (state === "speaking" ? "AVA parle…" : state === "listening" ? "Je vous écoute…" : state === "processing" ? "Réflexion…" : state === "tool_running" ? "Exécution…" : state === "connecting" ? "Connexion…" : state === "error" ? "Erreur" : "Prête")}
       </div>
     </div>
   );
@@ -737,10 +767,11 @@ function isValidIANATimezone(tz: string): boolean {
   } catch { return false; }
 }
 
-function CalendarAwareConfirm({
-  pending, onCancel, onConfirm,
+export function CalendarAwareConfirm({
+  pending, toolLabel, onCancel, onConfirm,
 }: {
   pending: PendingTool;
+  toolLabel: (name: string) => string;
   onCancel: () => void;
   onConfirm: (patched: Record<string, any>) => void;
 }) {
@@ -817,7 +848,7 @@ function CalendarAwareConfirm({
         ) : (
           <>
             <div className="rounded-xl p-3 mb-3 text-[13px]" style={{ background: "rgba(155,127,232,0.08)", color: "#E8EDF5" }}>
-              <div className="font-semibold mb-1">{TOOL_LABELS[pending.tool] ?? pending.tool}</div>
+              <div className="font-semibold mb-1">{toolLabel(pending.tool)}</div>
               {reformulation && <div className="text-[12px]" style={{ color: "#B4C6D8" }}>{reformulation}</div>}
               <pre className="text-[10px] mt-2 opacity-60 whitespace-pre-wrap">
                 {JSON.stringify({ ...pending.params, timezone: isCalendar ? effectiveTz : pending.params?.timezone }, null, 2).slice(0, 300)}

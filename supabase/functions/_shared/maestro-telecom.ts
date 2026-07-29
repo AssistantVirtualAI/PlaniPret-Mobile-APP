@@ -268,11 +268,21 @@ export async function pingMaestroTelecom(admin: SupabaseClient, userId?: string 
  */
 export async function getMaestroBrokerId(admin: SupabaseClient, userId: string): Promise<string | null> {
   try {
-    const { data } = await admin
+    // `user_id` may be an auth user id OR a planipret_profiles.id depending on
+    // the caller — resolve both so the broker id is never silently missing.
+    let { data } = await admin
       .from("planipret_profiles")
       .select("maestro_broker_id")
       .eq("user_id", userId)
       .maybeSingle();
+    if (!data) {
+      const byId = await admin
+        .from("planipret_profiles")
+        .select("maestro_broker_id")
+        .eq("id", userId)
+        .maybeSingle();
+      data = byId.data as any;
+    }
     const raw = (data as any)?.maestro_broker_id;
     if (!raw) return null;
     const id = String(raw).trim();
@@ -284,6 +294,7 @@ export async function getMaestroBrokerId(admin: SupabaseClient, userId: string):
     return null;
   }
 }
+
 
 /**
  * Mirror a completed AI analysis (summary + full analysis JSON + coaching)
@@ -357,10 +368,9 @@ export function mirrorCallAnalysisToMaestro(
         return;
       }
 
-      // Scott API: PUT /users/{brokerId}/calls/{callId}
-      const path = brokerId
-        ? `/users/${encodeURIComponent(String(brokerId))}/calls/${encodeURIComponent(maestroCallId)}`
-        : `/calls/${encodeURIComponent(maestroCallId)}`;
+      // Scott (Maestro) confirmed: ai_summary and notes use PUT /calls/{call_id}
+      // (no /users/{broker}/ prefix). Send ai_summary and notes as separate calls.
+      const path = `/calls/${encodeURIComponent(maestroCallId)}`;
       console.log(`[maestro-telecom.analysis] → PUT ${path} pp_call=${ppCall?.id}`);
 
       // 1. Push ai_summary

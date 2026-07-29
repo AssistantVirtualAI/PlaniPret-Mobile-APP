@@ -5,13 +5,14 @@ import ElevenLabsManagementCard from "@/components/planipret/admin/integrations/
 import AvaVoiceHealthPanel from "@/components/planipret/admin/ava/AvaVoiceHealthPanel";
 import AvaVoiceBrokersTable from "@/components/planipret/admin/ava/AvaVoiceBrokersTable";
 import AvaVoiceSessionsLog from "@/components/planipret/admin/ava/AvaVoiceSessionsLog";
+import AvaVoiceSettingsCard from "@/components/planipret/admin/ava/AvaVoiceSettingsCard";
 import AvaVoiceSimulatorPanel from "@/components/planipret/admin/ava/AvaVoiceSimulatorPanel";
 import { Bot } from "lucide-react";
 
 export default function PAAvaAgent() {
   const { t } = useMplanipretLang();
   const [userId, setUserId] = useState<string | null>(null);
-  const [tab, setTab] = useState<"health" | "brokers" | "sessions" | "simulator" | "config">("health");
+  const [tab, setTab] = useState<"health" | "brokers" | "sessions" | "simulator" | "voice" | "config">("health");
 
   useEffect(() => {
     supabase.auth.getUser().then(({ data }) => setUserId(data.user?.id ?? null));
@@ -37,6 +38,7 @@ export default function PAAvaAgent() {
           ["brokers", "Courtiers"],
           ["sessions", "Sessions"],
           ["simulator", "Test multi-comptes"],
+          ["voice", "Voix"],
           ["config", "Configuration"],
         ] as const).map(([k, label]) => (
           <button key={k} onClick={() => setTab(k)}
@@ -54,6 +56,7 @@ export default function PAAvaAgent() {
       {tab === "brokers" && <AvaVoiceBrokersTable />}
       {tab === "sessions" && <AvaVoiceSessionsLog />}
       {tab === "simulator" && <AvaVoiceSimulatorPanel />}
+      {tab === "voice" && <AvaVoiceSettingsCard />}
       {tab === "config" && <ElevenLabsManagementCard userId={userId} />}
     </div>
   );

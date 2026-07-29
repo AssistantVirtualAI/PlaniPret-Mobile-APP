@@ -178,6 +178,8 @@ Deno.serve(async (req) => {
     const context: Record<string, unknown> = (body?.context && typeof body.context === "object") ? body.context : {};
     const confirmAction = (body?.confirm_action && typeof body.confirm_action === "object") ? body.confirm_action : null;
     const level: string = String(body?.level ?? "standard"); // short | standard | detailed
+    const requestedLang: "fr" | "en" | null =
+      body?.language === "en" || body?.language === "fr" ? body.language : null;
 
     const sb = createClient(
       Deno.env.get("SUPABASE_URL")!,
@@ -192,43 +194,61 @@ Deno.serve(async (req) => {
     // Light Planipret context
     const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
     const { data: profile } = await admin.from("planipret_profiles")
-      .select("id, user_id, full_name, role, extension, ms365_access_token, ms365_scopes, ms365_email")
+      .select("id, user_id, full_name, role, extension, ms365_access_token, ms365_scopes, ms365_email, language")
       .eq("user_id", u.user.id).maybeSingle();
+
+    // Active UI language wins; fall back to the broker profile preference.
+    const lang: "fr" | "en" = requestedLang ?? ((profile as any)?.language === "en" ? "en" : "fr");
+
+
+    const L = (fr: string, en: string) => (lang === "fr" ? fr : en);
 
     if (confirmAction) {
       const kind = String(confirmAction.kind ?? "");
       const payload = (confirmAction.payload && typeof confirmAction.payload === "object") ? confirmAction.payload : {};
       if (kind === "ms365_action") {
         const action = String(payload.action ?? "");
-        if (!MS365_ACTIONS.has(action)) return json({ reply: "Action Microsoft inconnue.", suggestions: [] }, 400);
+        if (!MS365_ACTIONS.has(action)) return json({ reply: L("Action Microsoft inconnue.", "Unknown Microsoft action."), suggestions: [] }, 400);
         if (MUTATING_MS365.has(action) && body?.approved !== true) {
-          return json({ reply: "Cette action nécessite votre confirmation avant l'envoi.", suggestions: [confirmAction] });
+          return json({ reply: L("Cette action nécessite votre confirmation avant l'envoi.", "This action requires your confirmation before sending."), suggestions: [confirmAction] });
         }
         const exec = await invokeFunction("ms365-actions", authHeader, { action, payload });
         const ok = !!exec.data?.success && exec.ok;
         await logAvaAction(admin, profile, u.user.id, `ms365_${action}`, payload, ok, exec.data, ok ? null : (exec.data?.error ?? `HTTP ${exec.status}`));
-        return json({ reply: ok ? "Action Microsoft 365 exécutée." : `Action Microsoft 365 échouée: ${exec.data?.error ?? exec.data?.message ?? exec.status}`, result: exec.data, suggestions: [] }, ok ? 200 : 200);
+        return json({
+          reply: ok
+            ? L("Action Microsoft 365 exécutée.", "Microsoft 365 action completed.")
+            : `${L("Action Microsoft 365 échouée", "Microsoft 365 action failed")}: ${exec.data?.error ?? exec.data?.message ?? exec.status}`,
+          result: exec.data, suggestions: [],
+        }, ok ? 200 : 200);
       }
       if (kind === "sms") {
         const to = String(payload.number ?? payload.to ?? "");
         const message = String(payload.text ?? payload.message ?? "");
-        if (!to || !message) return json({ reply: "Numéro ou message SMS manquant.", suggestions: [] }, 400);
-        if (body?.approved !== true) return json({ reply: "Confirmez avant l'envoi du SMS.", suggestions: [confirmAction] });
+        if (!to || !message) return json({ reply: L("Numéro ou message SMS manquant.", "Missing SMS number or message."), suggestions: [] }, 400);
+        if (body?.approved !== true) return json({ reply: L("Confirmez avant l'envoi du SMS.", "Please confirm before sending the text."), suggestions: [confirmAction] });
         const exec = await invokeFunction("pp-ns-sms", authHeader, { action: "send", to, message });
         const ok = !!(exec.data?.ok ?? exec.data?.success) && exec.ok;
         await logAvaAction(admin, profile, u.user.id, "sms_send", { to, message }, ok, exec.data, ok ? null : (exec.data?.error ?? `HTTP ${exec.status}`));
-        return json({ reply: ok ? "SMS envoyé." : `SMS non envoyé: ${exec.data?.error ?? exec.status}`, result: exec.data, suggestions: [] });
+        return json({
+          reply: ok ? L("SMS envoyé.", "Text message sent.") : `${L("SMS non envoyé", "Text message not sent")}: ${exec.data?.error ?? exec.status}`,
+          result: exec.data, suggestions: [],
+        });
       }
       if (kind === "call") {
         const to = String(payload.number ?? payload.to ?? "");
-        if (!to) return json({ reply: "Numéro d'appel manquant.", suggestions: [] }, 400);
-        if (body?.approved !== true) return json({ reply: "Confirmez avant de lancer l'appel.", suggestions: [confirmAction] });
+        if (!to) return json({ reply: L("Numéro d'appel manquant.", "Missing phone number."), suggestions: [] }, 400);
+        if (body?.approved !== true) return json({ reply: L("Confirmez avant de lancer l'appel.", "Please confirm before starting the call."), suggestions: [confirmAction] });
         const exec = await invokeFunction("ns-make-call", authHeader, { to_number: to });
         const ok = !!exec.data?.success && exec.ok;
         await logAvaAction(admin, profile, u.user.id, "call_start", { to }, ok, exec.data, ok ? null : (exec.data?.error ?? `HTTP ${exec.status}`));
-        return json({ reply: ok ? "Appel lancé." : `Appel non lancé: ${exec.data?.error ?? exec.status}`, result: exec.data, suggestions: [] });
+        return json({
+          reply: ok ? L("Appel lancé.", "Call started.") : `${L("Appel non lancé", "Call not started")}: ${exec.data?.error ?? exec.status}`,
+          result: exec.data, suggestions: [],
+        });
       }
     }
+
 
     let appContext = "";
     const integrations: string[] = [
@@ -299,7 +319,7 @@ Deno.serve(async (req) => {
       const reportPeriod = wantsReport(userMessage);
       if (reportPeriod) {
         try {
-          const rep = await invokeFunction("pp-ava-report", authHeader, { period: reportPeriod, language: "fr" });
+          const rep = await invokeFunction("pp-ava-report", authHeader, { period: reportPeriod, language: lang });
           if (rep.ok && rep.data?.report) {
             dataBlocks.push(`Rapport de performance (${reportPeriod}) — Stats: ${JSON.stringify(rep.data.stats ?? {})}\n${String(rep.data.report).slice(0, 6000)}`);
           }
@@ -355,7 +375,7 @@ SMS non lus: ${smsUnread ?? 0}`;
     }
 
     const lovableKey = Deno.env.get("LOVABLE_API_KEY");
-    if (!lovableKey) return json({ reply: "(Lovable AI non configuré)", suggestions: [] });
+    if (!lovableKey) return json({ reply: L("(Lovable AI non configuré)", "(Lovable AI not configured)"), suggestions: [] });
 
     const gateway = createLovableAiGatewayProvider(lovableKey);
 
@@ -363,7 +383,10 @@ SMS non lus: ${smsUnread ?? 0}`;
  Tu as accès en direct aux données du courtier: appels (planipret_phone_calls), SMS, messagerie vocale, leads chauds, rappels/tâches, calendrier Microsoft 365, courriels Microsoft, Teams, pipeline Maestro.
  Intégrations connectées: ${integrations.join(" · ")}.
  IMPORTANT: quand des données sont fournies dans [Contexte] ci-dessous, utilise-les pour répondre concrètement. Ne dis JAMAIS que tu n'as pas d'intégration ou d'accès — tu peux consulter appels, SMS, courriels, calendrier et pipeline. Si aucune donnée n'apparaît dans le contexte pour la question posée, dis simplement qu'il n'y a rien à afficher pour cette période.
- Réponds en français, court et actionnable. Tu peux proposer jusqu'à 4 suggestions (kind: call/sms/email/reminder/maestro_action/ms365_action/open_voice/open_coach).
+ ${lang === "fr"
+    ? "LANGUE: réponds TOUJOURS en français du Québec, 100% en français (y compris les libellés de suggestions et les titres). N'utilise jamais l'anglais."
+    : "LANGUAGE: ALWAYS answer 100% in English (including suggestion labels and titles), even if the underlying data or these instructions are in French. Never reply in French."}
+ Réponds court et actionnable. Tu peux proposer jusqu'à 4 suggestions (kind: call/sms/email/reminder/maestro_action/ms365_action/open_voice/open_coach).
  Pour 'call' mets payload.number. Pour 'sms' mets payload.number et payload.message. Pour 'email' préfère ms365_action avec payload.action='send_email'. Pour 'reminder' payload.title/due_at. Pour 'maestro_action' payload.action et payload.* requis.
  Pour Microsoft utilise kind='ms365_action' et payload.action parmi: read_emails, read_email_detail, list_calendar_events, send_email, create_calendar_event, update_calendar_event, delete_calendar_event, send_teams_message, reply_teams_message, search_contact.
  RÉPERTOIRE: quand l'utilisateur demande d'envoyer un courriel/SMS/appel à une personne par son nom, cherche d'abord son adresse dans [Contexte] (section "Contacts trouvés" + "Contact Microsoft"). Si tu trouves une correspondance unique, propose directement l'action ms365_action send_email (payload.to = [email], subject, body) pour confirmation. Si plusieurs correspondances, liste-les et demande laquelle. Si aucune, propose un ms365_action search_contact avec payload.query = nom, ou demande l'adresse exacte.
@@ -377,15 +400,20 @@ Mets openVoice=true seulement si l'utilisateur demande explicitement de parler. 
 
 
     if (mode === "summarize") {
-      const len = level === "short" ? "1 phrase" : level === "detailed" ? "résumé détaillé + points clés + prochaine étape" : "3 phrases + une action recommandée";
-      system = `Tu es AVA. Résume le contenu fourni en ${len}, en français, professionnel. Ne propose pas de suggestions sauf si pertinent (max 2).`;
+      if (lang === "fr") {
+        const len = level === "short" ? "1 phrase" : level === "detailed" ? "résumé détaillé + points clés + prochaine étape" : "3 phrases + une action recommandée";
+        system = `Tu es AVA. Résume le contenu fourni en ${len}, en français du Québec, professionnel. Réponds uniquement en français. Ne propose pas de suggestions sauf si pertinent (max 2).`;
+      } else {
+        const len = level === "short" ? "1 sentence" : level === "detailed" ? "a detailed summary + key points + next step" : "3 sentences + one recommended action";
+        system = `You are AVA. Summarize the provided content in ${len}, in professional English. Answer in English only. Do not propose suggestions unless relevant (max 2).`;
+      }
     }
 
     const prompt = [
       appContext && `[Contexte]\n${appContext}`,
       context && Object.keys(context).length ? `[Données]\n${JSON.stringify(context).slice(0, 4000)}` : "",
       history.length ? `[Historique]\n${history.map(h => `${h.role}: ${h.content}`).join("\n")}` : "",
-      userMessage ? `[Demande]\n${userMessage}` : (mode === "recommend" ? "[Demande]\nDonne-moi 3 recommandations actionnables pour les prochaines heures." : ""),
+      userMessage ? `[Demande]\n${userMessage}` : (mode === "recommend" ? (lang === "fr" ? "[Demande]\nDonne-moi 3 recommandations actionnables pour les prochaines heures." : "[Request]\nGive me 3 actionable recommendations for the next few hours.") : ""),
     ].filter(Boolean).join("\n\n");
 
     let result: any = { reply: "", suggestions: [] };
@@ -409,7 +437,7 @@ Mets openVoice=true seulement si l'utilisateur demande explicitement de parler. 
         });
         result = { reply: r2.text ?? "Désolé, je n'ai pas pu répondre.", suggestions: [] };
       } catch (e2) {
-        return json({ reply: "Désolé, je rencontre un problème. Réessayez.", suggestions: [], error: String(e2) }, 200);
+        return json({ reply: L("Désolé, je rencontre un problème. Réessayez.", "Sorry, something went wrong. Please try again."), suggestions: [], error: String(e2) }, 200);
       }
     }
 

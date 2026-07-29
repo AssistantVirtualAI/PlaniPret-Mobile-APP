@@ -20,6 +20,8 @@ import {
   maestroFetchScoped,
   pipelineLog,
   setPipelineStep,
+  summarizeMaestroFailure,
+  telecomAuth,
   updateCallPipeline,
 } from "../_shared/maestro.ts";
 
@@ -133,7 +135,13 @@ Deno.serve(async (req) => {
     // ── 1. CDR + client lookup ─────────────────────────────
     if (!call.maestro_synced || force) {
       const r = await invoke("maestro-cdr", { call_id });
-      steps.cdr = { ok: r.ok && r.data?.success !== false, status: r.status };
+      steps.cdr = {
+        ok: r.ok && r.data?.success !== false,
+        status: r.data?.status ?? r.status,
+        error: r.data?.error ?? null,
+        detail: r.data?.detail ?? null,
+        permanent: r.data?.permanent ?? false,
+      };
       // reload so we pick up maestro_call_id / maestro_client_id
       const { data: fresh } = await admin
         .from("planipret_phone_calls")
@@ -145,40 +153,37 @@ Deno.serve(async (req) => {
       steps.cdr = { ok: true, skipped: "already_synced" };
     }
 
-    const auth = await getBrokerAuth(admin, call.user_id);
+    const auth = await telecomAuth(admin, call.user_id);
     log("broker_auth", {
       user_id: call.user_id,
       broker_id: auth.brokerId,
       using_service_key_fallback: auth.usingFallback,
       token_len: auth.token ? auth.token.length : 0,
     });
-
-    // Guard: brokerId is required for all Maestro Telecom API calls
     if (!auth.brokerId) {
-      log("maestro_broker_id_missing", { user_id: call.user_id });
-      await setPipelineStep(admin, call_id, "maestro", "error", { reason: "maestro_broker_id_missing" });
-      await updateCallPipeline(admin, call_id, { step: "error", error: "maestro_broker_id_missing" });
       await pipelineLog(admin, {
-        call_id, user_id: call.user_id, step: "maestro_sync", status: "error",
+        call_id,
+        user_id: call.user_id,
+        step: "maestro_sync",
+        status: "error",
         error_message: "maestro_broker_id_missing",
-        payload: { hint: "Set maestro_broker_id (numeric, e.g. 67) on planipret_profiles for this user" },
       });
       return json({
         success: false,
         error: "maestro_broker_id_missing",
         hint: "Set maestro_broker_id (numeric broker ID from Scott, e.g. 67 or 93135) on planipret_profiles for this user.",
-        request_id: rid,
+        steps,
       }, 200);
     }
+    const mId = call.maestro_call_id;
 
-    const mId = call.maestro_call_id ?? call.ns_call_id ?? call.id;
 
 
     // ── 2. Recording upload ────────────────────────────────
     const rec = await invoke("maestro-recording-upload", { call_id, force });
     steps.recording = rec.data?.skipped
       ? { ok: true, skipped: rec.data.skipped }
-      : { ok: !!rec.data?.success, error: rec.data?.error ?? null };
+      : { ok: !!rec.data?.success, status: rec.data?.status ?? rec.status, error: rec.data?.error ?? null, detail: rec.data?.detail ?? null, permanent: rec.data?.permanent ?? false };
 
     // ── 3. Transcript ──────────────────────────────────────
     let transcript: string | null = call.transcript ?? call.transcript_raw ?? null;
@@ -192,28 +197,13 @@ Deno.serve(async (req) => {
         .eq("id", call_id)
         .maybeSingle();
       if (fresh) call = fresh;
+    } else if (mId) {
+      // Scott's Telecom API has no transcript upload endpoint; the transcript
+      // is pushed inside the call PUT below (notes field).
+      steps.transcript = { ok: true, reused: true, delivered_via: "call_update" };
+      await setPipelineStep(admin, call_id, "transcript", "done", { pushed: true });
     } else {
-      // Scott API: PUT /users/{brokerId}/calls/{callId} with transcript field
-      const transcriptPath = auth.brokerId
-        ? `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/calls/${encodeURIComponent(String(mId))}`
-        : `/api/v1/users/me/calls/${encodeURIComponent(String(mId))}`;
-      const res = await maestroFetch(cfg, {
-        method: "PUT",
-        path: transcriptPath,
-        token: auth.token,
-        brokerId: auth.brokerId,
-        body: {
-          transcript: transcript,
-          transcript_language: call.transcript_language ?? "fr-CA",
-        },
-      });
-      steps.transcript = { ok: res.ok, status: res.status, reused: true };
-      await setPipelineStep(admin, call_id, "transcript", res.ok ? "done" : "error", { pushed: res.ok });
-      await pipelineLog(admin, {
-        call_id, user_id: call.user_id, step: "transcript_push",
-        status: res.ok ? "success" : "error",
-        payload: { status: res.status },
-      });
+      steps.transcript = { ok: false, skipped: "maestro_call_id_missing", error: "maestro_call_id_missing" };
     }
 
     // ── 4. AI summary + analytics (reuse existing analysis) ─
@@ -225,28 +215,29 @@ Deno.serve(async (req) => {
         ? asArray(call.next_actions)
         : asArray(call.ai_action_items);
 
-    if (summary) {
+    if (summary && mId) {
       const keyPoints = asArray(call.ai_key_points).length
         ? asArray(call.ai_key_points)
         : asArray(aij?.key_points).length
           ? asArray(aij.key_points)
           : asArray(call.ai_topics);
 
-      // Scott API: PUT /users/{brokerId}/calls/{callId} with ai_summary and notes
-      const aiPath = auth.brokerId
-        ? `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/calls/${encodeURIComponent(String(mId))}`
-        : `/api/v1/users/me/calls/${encodeURIComponent(String(mId))}`;
       const res = await maestroFetch(cfg, {
         method: "PUT",
-        path: aiPath,
+        path: `/api/v1/users/${encodeURIComponent(String(auth.brokerId ?? ""))}/calls/${encodeURIComponent(String(mId))}`,
         token: auth.token,
-        brokerId: auth.brokerId,
         body: {
+          status: "ended",
           ai_summary: summary,
-          notes: nextActions.map(actionTitle).filter(Boolean).join("\n") || null,
+          notes: [
+            keyPoints.length ? `Points clés: ${keyPoints.map(String).join(" • ")}` : null,
+            nextActions.length ? `Prochaines actions: ${nextActions.map(actionTitle).filter(Boolean).join(" • ")}` : null,
+            transcript ? `Transcription:\n${String(transcript).slice(0, 8000)}` : null,
+          ].filter(Boolean).join("\n\n") || null,
         },
       });
-      steps.ai = { ok: res.ok, status: res.status, reused: true };
+      const failure = res.ok ? null : summarizeMaestroFailure(res.status, res.data);
+      steps.ai = { ok: res.ok, status: res.status, reused: true, error: failure?.error ?? null, detail: failure?.detail ?? null, permanent: failure?.permanent ?? false };
       await setPipelineStep(admin, call_id, "ai", res.ok ? "done" : "error", {
         pushed: res.ok,
         lead_score: call.lead_score,
@@ -289,7 +280,9 @@ Deno.serve(async (req) => {
         }
       }
     } else {
-      steps.ai = { ok: false, skipped: "no_analysis_yet" };
+      steps.ai = summary
+        ? { ok: false, skipped: "maestro_call_id_missing", error: "maestro_call_id_missing" }
+        : { ok: false, skipped: "no_analysis_yet" };
     }
 
     const allOk =
@@ -299,10 +292,13 @@ Deno.serve(async (req) => {
       (steps.ai as any)?.ok !== false;
 
     await setPipelineStep(admin, call_id, "maestro", allOk ? "done" : "error", steps);
+    const stepValues = Object.values(steps) as any[];
+    const firstError = stepValues.find((s) => s?.error)?.error ?? (allOk ? null : "maestro_partial_sync");
+    const firstDetail = stepValues.find((s) => s?.detail)?.detail ?? null;
     await updateCallPipeline(admin, call_id, {
       step: allOk ? "complete" : "maestro_partial",
       completed: allOk,
-      error: allOk ? null : "maestro_partial_sync",
+      error: allOk ? null : firstError,
     });
     await maestroAudit(admin, "call_synced", { call_id, steps, all_ok: allOk });
     await broadcastPipeline(admin, call.user_id, "pipeline_step", {
@@ -313,7 +309,7 @@ Deno.serve(async (req) => {
     });
 
     log("done", { allOk, steps });
-    return json({ success: allOk, call_id, maestro_call_id: mId, steps, request_id: rid });
+    return json({ success: allOk, call_id, maestro_call_id: mId, error: allOk ? null : firstError, detail: firstDetail, permanent: stepValues.some((s) => s?.permanent === true), steps, request_id: rid });
   } catch (e: any) {
     console.error(`[maestro-sync-call][${rid}] fatal`, e?.stack ?? e);
     return json({ success: false, error: e?.message ?? "server_error", request_id: rid }, 500);

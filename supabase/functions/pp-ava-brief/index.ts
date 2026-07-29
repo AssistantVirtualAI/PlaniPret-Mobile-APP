@@ -16,8 +16,11 @@ const json = (b: unknown, s = 200) =>
 
 const BriefSchema = z.object({
   headline: z.string(),
+  overview: z.string().optional(),
   priorities: z.array(z.string()).max(5),
   risks: z.array(z.string()).max(3),
+  highlights: z.array(z.string()).max(5).optional(),
+  metrics: z.array(z.object({ label: z.string(), value: z.string() })).max(8).optional(),
   suggestions: z.array(z.object({
     label: z.string(),
     kind: z.enum(["call", "sms", "email", "reminder"]),
@@ -26,47 +29,117 @@ const BriefSchema = z.object({
 });
 
 type Period = "day" | "week" | "month" | "shift";
+type Lang = "fr" | "en";
 
-function buildFallbackBrief(stats: any, period: Period) {
-  const periodLabel = period === "day" ? "aujourd’hui" : period === "week" ? "cette semaine" : period === "month" ? "ce mois-ci" : "ce quart";
+const plural = (n: number, s: string) => (n > 1 ? `${s}s` : s);
+
+function buildFallbackBrief(stats: any, period: Period, lang: Lang) {
+  const fr = lang === "fr";
+  const periodLabel = fr
+    ? (period === "day" ? "aujourd’hui" : period === "week" ? "cette semaine" : period === "month" ? "ce mois-ci" : "ce quart")
+    : (period === "day" ? "today" : period === "week" ? "this week" : period === "month" ? "this month" : "this shift");
+
   const priorities = [
     stats.missed_recent?.[0]
-      ? `Rappeler ${stats.missed_recent[0].from_name || stats.missed_recent[0].from_number || "l’appel manqué"}`
+      ? (fr ? `Rappeler ${stats.missed_recent[0].from_name || stats.missed_recent[0].from_number || "l’appel manqué"}`
+            : `Call back ${stats.missed_recent[0].from_name || stats.missed_recent[0].from_number || "the missed call"}`)
       : null,
     stats.tasks_pending?.[0]
-      ? `Compléter: ${stats.tasks_pending[0].note || stats.tasks_pending[0].contact_name || "rappel client"}`
+      ? (fr ? `Compléter: ${stats.tasks_pending[0].note || stats.tasks_pending[0].contact_name || "rappel client"}`
+            : `Complete: ${stats.tasks_pending[0].note || stats.tasks_pending[0].contact_name || "client follow-up"}`)
       : null,
     stats.hot_leads?.[0]
-      ? `Relancer ${stats.hot_leads[0].from_name || stats.hot_leads[0].from_number || "le lead chaud"}`
+      ? (fr ? `Relancer ${stats.hot_leads[0].from_name || stats.hot_leads[0].from_number || "le lead chaud"}`
+            : `Follow up with ${stats.hot_leads[0].from_name || stats.hot_leads[0].from_number || "the hot lead"}`)
       : null,
     stats.meetings?.[0]
-      ? `Préparer le rendez-vous ${stats.meetings[0].title || stats.meetings[0].attendee_name || "à venir"}`
+      ? (fr ? `Préparer le rendez-vous ${stats.meetings[0].title || stats.meetings[0].attendee_name || "à venir"}`
+            : `Prepare the meeting ${stats.meetings[0].title || stats.meetings[0].attendee_name || "coming up"}`)
       : null,
   ].filter(Boolean).slice(0, 5) as string[];
+
   const risks = [
-    stats.missed_count > 0 ? `${stats.missed_count} appel${stats.missed_count > 1 ? "s" : ""} manqué${stats.missed_count > 1 ? "s" : ""}` : null,
-    stats.sms_unread > 0 ? `${stats.sms_unread} texto${stats.sms_unread > 1 ? "s" : ""} non lu${stats.sms_unread > 1 ? "s" : ""}` : null,
-    stats.voicemails_unread > 0 ? `${stats.voicemails_unread} boîte${stats.voicemails_unread > 1 ? "s" : ""} vocale${stats.voicemails_unread > 1 ? "s" : ""} à traiter` : null,
+    stats.missed_count > 0
+      ? (fr ? `${stats.missed_count} ${plural(stats.missed_count, "appel")} ${plural(stats.missed_count, "manqué")}`
+            : `${stats.missed_count} missed ${plural(stats.missed_count, "call")}`)
+      : null,
+    stats.sms_unread > 0
+      ? (fr ? `${stats.sms_unread} ${plural(stats.sms_unread, "texto")} non ${plural(stats.sms_unread, "lu")}`
+            : `${stats.sms_unread} unread ${plural(stats.sms_unread, "text")}`)
+      : null,
+    stats.voicemails_unread > 0
+      ? (fr ? `${stats.voicemails_unread} ${plural(stats.voicemails_unread, "boîte")} ${plural(stats.voicemails_unread, "vocale")} à traiter`
+            : `${stats.voicemails_unread} ${plural(stats.voicemails_unread, "voicemail")} to handle`)
+      : null,
   ].filter(Boolean).slice(0, 3) as string[];
+
   const suggestions = [
-    stats.missed_recent?.[0]?.from_number ? { label: "Rappeler l’appel manqué", kind: "call", number: stats.missed_recent[0].from_number } : null,
-    stats.hot_leads?.[0]?.from_number ? { label: "Texter le lead chaud", kind: "sms", number: stats.hot_leads[0].from_number } : null,
+    stats.missed_recent?.[0]?.from_number
+      ? { label: fr ? "Rappeler l’appel manqué" : "Call back the missed call", kind: "call", number: stats.missed_recent[0].from_number }
+      : null,
+    stats.hot_leads?.[0]?.from_number
+      ? { label: fr ? "Texter le lead chaud" : "Text the hot lead", kind: "sms", number: stats.hot_leads[0].from_number }
+      : null,
   ].filter(Boolean).slice(0, 3);
-  const parts = [
-    `${stats.calls_total} appel${stats.calls_total > 1 ? "s" : ""} (${stats.calls_answered} répondus, ${stats.missed_count} manqués)`,
-    `${stats.talk_minutes} min au téléphone`,
-    `${stats.sms_total} texto${stats.sms_total > 1 ? "s" : ""}`,
-    `${stats.hot_leads.length} lead${stats.hot_leads.length > 1 ? "s" : ""} chaud${stats.hot_leads.length > 1 ? "s" : ""}`,
-    `${stats.meetings.length} rendez-vous`,
-  ];
+
+  const metrics = fr
+    ? [
+        { label: "Appels", value: `${stats.calls_total} (${stats.calls_inbound} entrants · ${stats.calls_outbound} sortants)` },
+        { label: "Répondus / manqués", value: `${stats.calls_answered} / ${stats.missed_count}` },
+        { label: "Temps au téléphone", value: `${stats.talk_minutes} min` },
+        { label: "Durée moyenne", value: `${stats.avg_call_seconds} s` },
+        { label: "Textos", value: `${stats.sms_total} (${stats.sms_received} reçus · ${stats.sms_sent} envoyés)` },
+        { label: "Non lus", value: `${stats.sms_unread} textos · ${stats.voicemails_unread} messages vocaux` },
+        { label: "Leads chauds", value: `${stats.hot_leads?.length ?? 0}` },
+        { label: "Rendez-vous", value: `${stats.meetings?.length ?? 0}` },
+      ]
+    : [
+        { label: "Calls", value: `${stats.calls_total} (${stats.calls_inbound} inbound · ${stats.calls_outbound} outbound)` },
+        { label: "Answered / missed", value: `${stats.calls_answered} / ${stats.missed_count}` },
+        { label: "Talk time", value: `${stats.talk_minutes} min` },
+        { label: "Average duration", value: `${stats.avg_call_seconds} s` },
+        { label: "Texts", value: `${stats.sms_total} (${stats.sms_received} received · ${stats.sms_sent} sent)` },
+        { label: "Unread", value: `${stats.sms_unread} texts · ${stats.voicemails_unread} voicemails` },
+        { label: "Hot leads", value: `${stats.hot_leads?.length ?? 0}` },
+        { label: "Meetings", value: `${stats.meetings?.length ?? 0}` },
+      ];
+
+  const parts = fr
+    ? [
+        `${stats.calls_total} ${plural(stats.calls_total, "appel")} (${stats.calls_answered} répondus, ${stats.missed_count} manqués)`,
+        `${stats.talk_minutes} min au téléphone`,
+        `${stats.sms_total} ${plural(stats.sms_total, "texto")}`,
+        `${stats.hot_leads.length} ${plural(stats.hot_leads.length, "lead")} ${plural(stats.hot_leads.length, "chaud")}`,
+        `${stats.meetings.length} ${stats.meetings.length > 1 ? "rendez-vous" : "rendez-vous"}`,
+      ]
+    : [
+        `${stats.calls_total} ${plural(stats.calls_total, "call")} (${stats.calls_answered} answered, ${stats.missed_count} missed)`,
+        `${stats.talk_minutes} min on the phone`,
+        `${stats.sms_total} ${plural(stats.sms_total, "text")}`,
+        `${stats.hot_leads.length} hot ${plural(stats.hot_leads.length, "lead")}`,
+        `${stats.meetings.length} ${plural(stats.meetings.length, "meeting")}`,
+      ];
+
   return {
     headline: `${periodLabel}: ${parts.join(" · ")}.`,
-    priorities: priorities.length ? priorities : ["Aucune urgence détectée — garder le suivi client à jour."],
+    overview: fr
+      ? `Résumé ${periodLabel} — ${parts.join(", ")}. Durée moyenne des appels: ${stats.avg_call_seconds} s.`
+      : `Summary for ${periodLabel} — ${parts.join(", ")}. Average call duration: ${stats.avg_call_seconds} s.`,
+    priorities: priorities.length
+      ? priorities
+      : [fr ? "Aucune urgence détectée — garder le suivi client à jour." : "No urgent item detected — keep client follow-ups up to date."],
     risks,
+    highlights: (stats.top_contacts ?? []).slice(0, 3).map((c: any) =>
+      fr
+        ? `${c.name || c.number}: ${c.calls} ${plural(c.calls, "appel")}, ${c.sms} ${plural(c.sms, "texto")}`
+        : `${c.name || c.number}: ${c.calls} ${plural(c.calls, "call")}, ${c.sms} ${plural(c.sms, "text")}`,
+    ),
+    metrics,
     suggestions,
   };
 
 }
+
 
 function periodRange(period: Period): { since: Date; until: Date; label: string } {
   const now = new Date();
@@ -89,6 +162,9 @@ Deno.serve(async (req) => {
     const body = await req.json().catch(() => ({}));
     const period: Period = (["day","week","month","shift"].includes(body?.period) ? body.period : "day") as Period;
     const force = !!body?.force;
+    const requestedLang: Lang | null =
+      body?.language === "en" || body?.language === "fr" ? body.language : null;
+
 
     const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
@@ -110,9 +186,14 @@ Deno.serve(async (req) => {
     if (!effectiveUserId) return json({ error: "no_user" }, 400);
 
     const { data: profile } = await admin.from("planipret_profiles")
-      .select("id, user_id, full_name, extension, organization_id")
+      .select("id, user_id, full_name, extension, organization_id, language")
       .eq("user_id", effectiveUserId).maybeSingle();
     if (!profile) return json({ error: "no_profile" }, 404);
+
+    // Language: explicit request wins (mobile app sends the active UI language),
+    // otherwise fall back to the broker profile (used by the 08:30 / 17:30 schedulers).
+    const lang: Lang = requestedLang ?? ((profile as any).language === "en" ? "en" : "fr");
+
 
     // Caching is handled by React Query on the client; force flag is accepted for future use.
     void force;
@@ -227,36 +308,59 @@ Deno.serve(async (req) => {
 
     const lovableKey = Deno.env.get("LOVABLE_API_KEY");
     if (!lovableKey) {
-      const fallback = buildFallbackBrief(stats, period);
-      return json({ ...fallback, stats, cached: false, degraded: true });
+      const fallback = buildFallbackBrief(stats, period, lang);
+      return json({ ...fallback, stats, language: lang, cached: false, degraded: true });
     }
 
     const gateway = createLovableAiGatewayProvider(lovableKey);
-    const periodLabel = period === "day" ? "la journée" : period === "week" ? "la semaine" : period === "month" ? "le mois" : "votre quart";
-    const system = `Tu es AVA, l'assistante d'un courtier hypothécaire au Québec. Tu reçois les statistiques réelles du courtier ${profile.full_name ?? ""} pour ${periodLabel}.
-Génère un brief court, professionnel, en français du Québec.
+    const periodLabelFr = period === "day" ? "la journée" : period === "week" ? "la semaine" : period === "month" ? "le mois" : "votre quart";
+    const periodLabelEn = period === "day" ? "today" : period === "week" ? "this week" : period === "month" ? "this month" : "this shift";
+
+    const system = lang === "fr"
+      ? `Tu es AVA, l'assistante d'un courtier hypothécaire au Québec. Tu reçois les statistiques réelles du courtier ${profile.full_name ?? ""} pour ${periodLabelFr}.
+Génère un brief DÉTAILLÉ, professionnel et actionnable, ENTIÈREMENT en français du Québec (aucun mot en anglais).
 - headline: 1 phrase percutante citant les chiffres clés réels (appels, manqués, minutes, textos, leads chauds, rendez-vous).
-- priorities: 3 actions concrètes ordonnées par urgence (max 12 mots chacune).
-- risks: jusqu'à 2 risques ou points d'attention.
-- suggestions: jusqu'à 3 actions cliquables (call/sms/reminder) avec si pertinent un numéro extrait des données.`;
+- overview: 3 à 5 phrases qui analysent la performance: volume d'appels entrants vs sortants, taux de réponse, durée moyenne, activité texto, messages vocaux en attente, tendance et qualité des conversations (résumés IA, score de coaching).
+- metrics: 5 à 8 indicateurs { label, value } tirés des chiffres exacts (appels, répondus/manqués, temps au téléphone, durée moyenne, textos, non lus, leads chauds, rendez-vous, score de coaching).
+- highlights: jusqu'à 5 faits saillants nommant les vrais contacts/clients les plus actifs et ce qui s'est passé.
+- priorities: 3 actions concrètes ordonnées par urgence (max 12 mots chacune), en nommant la personne ou le numéro.
+- risks: jusqu'à 3 risques ou points d'attention.
+- suggestions: jusqu'à 3 actions cliquables (call/sms/email/reminder) avec si pertinent un numéro extrait des données.`
+      : `You are AVA, the assistant of a mortgage broker in Quebec. You receive the real statistics of broker ${profile.full_name ?? ""} for ${periodLabelEn}.
+Generate a DETAILED, professional and actionable brief, ENTIRELY in English (no French words at all).
+- headline: 1 punchy sentence quoting the real key numbers (calls, missed, minutes, texts, hot leads, meetings).
+- overview: 3 to 5 sentences analysing performance: inbound vs outbound volume, answer rate, average duration, texting activity, pending voicemails, trend and conversation quality (AI summaries, coaching score).
+- metrics: 5 to 8 indicators { label, value } from the exact numbers (calls, answered/missed, talk time, average duration, texts, unread, hot leads, meetings, coaching score).
+- highlights: up to 5 highlights naming the real most active contacts/clients and what happened.
+- priorities: 3 concrete actions ordered by urgency (max 12 words each), naming the person or number.
+- risks: up to 3 risks or watch-outs.
+- suggestions: up to 3 clickable actions (call/sms/email/reminder) with a number extracted from the data when relevant.`;
+
+    const userPrompt = lang === "fr"
+      ? `Statistiques réelles (JSON):\n${JSON.stringify(stats).slice(0, 12000)}\n\nUtilise ces chiffres exacts (appels, manqués, minutes, textos, boîtes vocales, leads chauds, rendez-vous, contacts actifs). N'invente rien. Réponds uniquement en français.`
+      : `Real statistics (JSON):\n${JSON.stringify(stats).slice(0, 12000)}\n\nUse these exact numbers (calls, missed, minutes, texts, voicemails, hot leads, meetings, active contacts). Do not invent anything. Answer in English only.`;
 
     let result: any;
     try {
       const r = await generateText({
         model: gateway("google/gemini-3-flash-preview"),
         system,
-        prompt: `Statistiques réelles (JSON):\n${JSON.stringify(stats).slice(0, 12000)}\n\nUtilise ces chiffres exacts (appels, manqués, minutes, textos, boîtes vocales, leads chauds, rendez-vous, contacts actifs). N'invente rien.`,
+        prompt: userPrompt,
         experimental_output: Output.object({ schema: BriefSchema }),
       });
       const out = (r as any).experimental_output ?? (r as any).output;
       result = BriefSchema.parse(out);
+      const fb = buildFallbackBrief(stats, period, lang);
+      if (!result.metrics?.length) result.metrics = fb.metrics;
+      if (!result.overview) result.overview = fb.overview;
     } catch (e) {
       console.error("pp-ava-brief AI failed", e);
-      result = buildFallbackBrief(stats, period);
+      result = buildFallbackBrief(stats, period, lang);
     }
 
 
-    return json({ ...result, stats, cached: false });
+    return json({ ...result, stats, language: lang, cached: false });
+
   } catch (e) {
     console.error("pp-ava-brief error", e);
     return json({ error: String(e) }, 500);

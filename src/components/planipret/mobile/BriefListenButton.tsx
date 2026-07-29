@@ -54,7 +54,7 @@ export default function BriefListenButton({
     try {
       const clean = text.replace(/[#*_`>]/g, "").replace(/\s+\n/g, "\n").slice(0, 3800);
       const { data, error } = await supabase.functions.invoke("pp-ava-tts", {
-        body: { text: clean, language },
+        body: { text: clean, language: language === "en" ? "en" : "fr" },
       });
       if (error) throw error;
       const b64 = (data as any)?.audioContent;

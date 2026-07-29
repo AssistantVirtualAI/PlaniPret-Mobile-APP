@@ -9,7 +9,9 @@
 
 import { corsHeaders, jsonResponse } from "../_shared/planipret-ns.ts";
 import { requirePlanipretAdmin } from "../_shared/ns-broker.ts";
+import { maestroTelecomFetch } from "../_shared/maestro-telecom.ts";
 import {
+
   getMaestroTelecomConfig,
   isMaestroTelecomConfigured,
   pingMaestroTelecom,
@@ -256,7 +258,104 @@ Deno.serve(async (req) => {
       return jsonResponse({ ok: true, hours, by_action: byAction, total: rows.length });
     }
 
+    // ── Telecom mapping (broker ↔ numeric Telecom user id) ───────────────
+    if (action === "telecom-map-list") {
+      const { data: profiles, error } = await admin
+        .from("planipret_profiles")
+        .select("id, user_id, full_name, email, extension, phone, maestro_broker_id")
+        .order("full_name", { ascending: true })
+        .limit(500);
+      if (error) return jsonResponse({ error: error.message }, 500);
+      return jsonResponse({ ok: true, profiles: profiles ?? [] });
+    }
+
+    if (action === "telecom-map-test") {
+      const id = String(body.telecom_id ?? "").trim();
+      if (!/^\d+$/.test(id)) return jsonResponse({ ok: false, error: "telecom_id_must_be_numeric" }, 200);
+      const cfg = await getMaestroTelecomConfig(admin);
+      if (!isMaestroTelecomConfigured(cfg)) return jsonResponse({ ok: false, error: "maestro_telecom_not_configured" }, 200);
+      const r = await maestroTelecomFetch<any>(cfg, `/users/${encodeURIComponent(id)}/sip`, { maxAttempts: 1 });
+      const d: any = r.data ?? {};
+      const sip = d?.sip ?? d;
+      return jsonResponse({
+        ok: r.ok,
+        status: r.status,
+        telecom_id: id,
+        sip_username: sip?.sip_username ?? sip?.username ?? sip?.extension ?? null,
+        phone_number: sip?.provider_user?.phone_number ?? null,
+        sms_number: sip?.provider_user?.sms_number ?? null,
+        data: r.data,
+        error: r.ok ? null : (r.error ?? `HTTP ${r.status}`),
+      });
+    }
+
+    if (action === "telecom-map-save") {
+      const profileId = String(body.profile_id ?? "").trim();
+      const raw = body.telecom_id === null || body.telecom_id === "" ? null : String(body.telecom_id).trim();
+      if (!profileId) return jsonResponse({ error: "profile_id required" }, 400);
+      if (raw !== null && !/^\d+$/.test(raw)) return jsonResponse({ ok: false, error: "telecom_id_must_be_numeric" }, 200);
+      const { error } = await admin
+        .from("planipret_profiles")
+        .update({ maestro_broker_id: raw })
+        .eq("id", profileId);
+      if (error) return jsonResponse({ error: error.message }, 500);
+      return jsonResponse({ ok: true, profile_id: profileId, maestro_broker_id: raw });
+    }
+
+    // ── CDR retry queue ──────────────────────────────────────────────────
+    if (action === "cdr-retries") {
+      const limit = Math.min(200, Math.max(1, Number(body.limit ?? 100)));
+      let q = admin
+        .from("planipret_maestro_cdr_retries")
+        .select("*")
+        .order("updated_at", { ascending: false })
+        .limit(limit);
+      if (body.status) q = q.eq("status", String(body.status));
+      const { data, error } = await q;
+      if (error) return jsonResponse({ error: error.message }, 500);
+      const rows = data ?? [];
+      return jsonResponse({
+        ok: true,
+        entries: rows,
+        counts: {
+          pending: rows.filter((r: any) => r.status === "pending").length,
+          succeeded: rows.filter((r: any) => r.status === "succeeded").length,
+          abandoned: rows.filter((r: any) => r.status === "abandoned").length,
+        },
+      });
+    }
+
+    if (action === "cdr-retry-run") {
+      const url = Deno.env.get("SUPABASE_URL")!;
+      const svc = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+      const r = await fetch(`${url}/functions/v1/maestro-cdr-retry-job`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${svc}` },
+        body: JSON.stringify({ limit: Number(body.limit ?? 15), sweep: body.sweep !== false }),
+      });
+      const out = await r.json().catch(() => null);
+      return jsonResponse({ ok: r.ok, result: out });
+    }
+
+    if (action === "cdr-retry-reset") {
+      const callId = String(body.call_id ?? "").trim();
+      if (!callId) return jsonResponse({ error: "call_id required" }, 400);
+      const { error } = await admin
+        .from("planipret_maestro_cdr_retries")
+        .update({
+          status: "pending",
+          attempts: 0,
+          next_attempt_at: new Date().toISOString(),
+          abandoned_at: null,
+          last_reason: "manual_reset",
+        })
+        .eq("call_id", callId);
+      if (error) return jsonResponse({ error: error.message }, 500);
+      return jsonResponse({ ok: true });
+    }
+
     return jsonResponse({ error: `unsupported action: ${action}` }, 400);
+
   } catch (e) {
     console.error("[pp-maestro-admin]", e);
     return jsonResponse({ error: (e as Error).message }, 500);

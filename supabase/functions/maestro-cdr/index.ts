@@ -12,11 +12,16 @@ import {
   maestroAudit,
   maestroFetch,
   maestroFetchScoped,
+  maestroSyncLog,
   normalizePhone,
   pipelineLog,
   setPipelineStep,
+  summarizeMaestroFailure,
+  telecomAuth,
   updateCallPipeline,
 } from "../_shared/maestro.ts";
+import { markCdrRetrySucceeded, scheduleCdrRetry } from "../_shared/maestro-cdr-retry.ts";
+
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -50,23 +55,7 @@ Deno.serve(async (req) => {
     await updateCallPipeline(admin, call_id, { step: "client_lookup", started: true, error: null });
     await pipelineLog(admin, { call_id, user_id: call.user_id, step: "client_lookup", status: "started" });
 
-    const auth = await getBrokerAuth(admin, call.user_id);
-
-    // Guard: brokerId is required for all Maestro Telecom API calls
-    if (!auth.brokerId) {
-      await updateCallPipeline(admin, call_id, { step: "error", error: "maestro_broker_id_missing" });
-      await setPipelineStep(admin, call_id, "cdr", "error", { reason: "maestro_broker_id_missing" });
-      await pipelineLog(admin, {
-        call_id, user_id: call.user_id, step: "cdr_sync", status: "error",
-        error_message: "maestro_broker_id_missing",
-        payload: { hint: "Set maestro_broker_id (numeric, e.g. 67) on planipret_profiles for this user" },
-      });
-      return json({
-        success: false,
-        error: "maestro_broker_id_missing",
-        hint: "The broker's Maestro user ID (maestro_broker_id) is not set on their profile. Ask Scott for the numeric broker ID (e.g. 67 or 93135) and set it in planipret_profiles.",
-      }, 200);
-    }
+    const auth = await telecomAuth(admin, call.user_id);
 
     // ── STEP 1: client lookup (cache-first) ─────────────────────
     let maestroClientId = call.maestro_client_id ?? null;
@@ -94,17 +83,14 @@ Deno.serve(async (req) => {
         await pipelineLog(admin, { call_id, user_id: call.user_id, step: "client_lookup", status: "success", payload: { source: "cache", client_id: maestroClientId } });
       } else {
         const t0 = Date.now();
-        // Scott API: POST /users/{brokerId}/lookup-by-phone { phone: "+1..." }
-        const lookupPath = auth.brokerId
-          ? `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/lookup-by-phone`
-          : `/api/v1/users/me/lookup-by-phone`;
-        const lookup = await maestroFetch(cfg, {
-          method: "POST",
-          path: lookupPath,
-          token: auth.token,
-          brokerId: auth.brokerId,
-          body: { phone: contactPhone },
-        });
+        const lookup = auth.brokerId
+          ? await maestroFetch(cfg, {
+              method: "POST",
+              path: `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/lookup-by-phone`,
+              token: auth.token,
+              body: { phone: contactPhone },
+            })
+          : { ok: false, status: 0, data: null, path: "lookup_skipped_no_broker_id" } as any;
         await pipelineLog(admin, {
           call_id,
           user_id: call.user_id,
@@ -114,7 +100,7 @@ Deno.serve(async (req) => {
           payload: { source: "maestro", status: lookup.status },
         });
         if (lookup.ok && lookup.data) {
-          const c = lookup.data?.client ?? lookup.data;
+          const c = lookup.data?.user ?? lookup.data?.client ?? lookup.data;
           maestroClientId = c?.id ?? c?.client_id ?? null;
           clientName = c?.full_name ?? c?.name ?? ([c?.first_name, c?.last_name].filter(Boolean).join(" ") || null);
           clientCompany = c?.company ?? null;
@@ -158,50 +144,78 @@ Deno.serve(async (req) => {
       .maybeSingle();
 
     const body = {
-      call_id: call.ns_call_id ?? call.id,
+      provider_call_id: call.ns_call_id ?? call.id,
+      to_user_number: call.direction === "inbound" ? call.from_number : call.to_number,
+      from_user_number: call.direction === "inbound" ? call.to_number : call.from_number,
+      status: "ended",
       direction: call.direction,
-      caller_number: call.from_number,
-      callee_number: call.to_number,
       started_at: call.started_at,
       ended_at: call.ended_at,
       duration_sec: call.duration_seconds ?? 0,
-      recording_url: call.recording_url,
       broker_ext: profile?.ns_extension ?? null,
-      maestro_client_id: maestroClientId,
     };
 
     const t0 = Date.now();
-    // Scott API: POST /users/{brokerId}/calls
-    const cdrPath = auth.brokerId
-      ? `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/calls`
-      : `/api/v1/users/me/calls`;
+    if (!auth.brokerId) {
+      const diag = (auth as any).diag ?? null;
+      console.error(
+        `[maestro-cdr] call=${call_id} broker id unresolved — reason=${diag?.reason ?? "unknown"} ` +
+          `matched_by=${diag?.matched_by ?? "none"} stored=${diag?.stored_broker_id ?? "-"} ` +
+          `sip_probe=${diag?.sip_probe_result ?? "-"} cooldown=${diag?.cooldown_active ?? false}`,
+      );
+      await setPipelineStep(admin, call_id, "cdr", "error", { reason: "maestro_broker_id_missing", diag });
+      await pipelineLog(admin, {
+        call_id,
+        user_id: call.user_id,
+        step: "cdr",
+        status: "error",
+        error_message: "maestro_broker_id_missing",
+        payload: { diag },
+      });
+      const retry = await scheduleCdrRetry(admin, {
+        call_id,
+        user_id: call.user_id,
+        reason: "maestro_broker_id_missing",
+        error: diag?.reason ?? "maestro_broker_id_missing",
+        permanent: true,
+      });
+      return json({
+        success: false,
+        error: "maestro_broker_id_missing",
+        hint: "Set maestro_broker_id (numeric Telecom user id, e.g. 67) via Admin → Telecom Mapping.",
+        permanent: true,
+        diag,
+        retry,
+      }, 200);
+    }
+
     const res = await maestroFetch(cfg, {
       method: "POST",
-      path: cdrPath,
+      path: `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/calls`,
       token: auth.token,
-      brokerId: auth.brokerId,
-      body: {
-        provider_call_id: call.ns_call_id ?? call.id,
-        direction: call.direction,
-        to_user_number: call.direction === "outbound" ? call.to_number : call.from_number,
-        status: "ended",
-        ended_reason: "complete",
-        started_at: call.started_at,
-        ended_at: call.ended_at,
-        duration_sec: call.duration_seconds ?? 0,
-        recording_url: call.recording_url ?? null,
-        maestro_client_id: maestroClientId,
-      },
+      body,
       idempotencyKey: call.id,
-    });
+    }) as any;
     const ms = Date.now() - t0;
 
+    await maestroSyncLog(admin, {
+      user_id: call.user_id,
+      action: "call.cdr",
+      endpoint: res.endpoint ?? "/api/v1/users/{id}/calls",
+      request_body: { call_id, ns_call_id: call.ns_call_id ?? null, has_contact_phone: !!contactPhone, has_broker_id: !!auth.brokerId, broker_id: auth.brokerId, broker_diag: (auth as any).diag ?? null },
+      response_status: res.status,
+      response_body: res.data,
+      duration_ms: ms,
+      success: res.ok || res.status === 409,
+    });
+
     if (res.ok || res.status === 409) {
+      const maestroCallId = res.data?.call?.id ?? res.data?.id ?? res.data?.call_id ?? null;
       await admin
         .from("planipret_phone_calls")
         .update({
           maestro_synced: true,
-          maestro_call_id: res.data?.id ?? res.data?.call_id ?? null,
+          maestro_call_id: maestroCallId,
         })
         .eq("id", call.id);
       await updateCallPipeline(admin, call_id, { step: "cdr_sent" });
@@ -212,7 +226,7 @@ Deno.serve(async (req) => {
         step: "cdr_sync",
         status: "success",
         duration_ms: ms,
-        payload: { maestro_call_id: res.data?.id ?? null, conflict: res.status === 409 },
+        payload: { maestro_call_id: maestroCallId, conflict: res.status === 409 },
       });
       await maestroAudit(admin, "cdr_pushed", { call_id, status: res.status, client_id: maestroClientId });
       await broadcastPipeline(admin, call.user_id, "pipeline_step", {
@@ -222,6 +236,9 @@ Deno.serve(async (req) => {
         client_found: !!maestroClientId,
         client_name: clientName,
       });
+
+      // Close any open retry entry and re-trigger the dependent recording upload.
+      await markCdrRetrySucceeded(admin, call_id, maestroCallId ? String(maestroCallId) : null);
 
       // Trigger transcript (fire and forget)
       try {
@@ -234,15 +251,25 @@ Deno.serve(async (req) => {
         }).catch(() => {});
       } catch {}
 
-      return json({ success: true, maestro_call_id: res.data?.id ?? null, client_id: maestroClientId });
+      return json({ success: true, maestro_call_id: maestroCallId, client_id: maestroClientId, retry: { status: "succeeded" } });
     }
 
-    await updateCallPipeline(admin, call_id, { step: "error", error: `cdr_${res.status}` });
+    const failure = summarizeMaestroFailure(res.status, res.data);
+    await updateCallPipeline(admin, call_id, { step: "error", error: `${failure.error}_${res.status}` });
     await setPipelineStep(admin, call_id, "cdr", "error", { status: res.status });
-    await pipelineLog(admin, { call_id, user_id: call.user_id, step: "cdr_sync", status: "error", duration_ms: ms, error_message: `status_${res.status}` });
-    await maestroAudit(admin, "cdr_failed", { call_id, status: res.status, data: res.data });
-    await broadcastPipeline(admin, call.user_id, "pipeline_error", { call_id, step: "cdr_sync", error: `HTTP ${res.status}` });
-    return json({ success: false, status: res.status, details: res.data }, 200);
+    await pipelineLog(admin, { call_id, user_id: call.user_id, step: "cdr_sync", status: "error", duration_ms: ms, error_message: failure.error });
+    await maestroAudit(admin, "cdr_failed", { call_id, status: res.status, error: failure.error, detail: failure.detail });
+    await broadcastPipeline(admin, call.user_id, "pipeline_error", { call_id, step: "cdr_sync", error: `${failure.error} (${res.status})` });
+    const retry = await scheduleCdrRetry(admin, {
+      call_id,
+      user_id: call.user_id,
+      reason: failure.error,
+      error: failure.detail ?? failure.error,
+      status: res.status,
+      permanent: failure.permanent,
+    });
+    return json({ success: false, status: res.status, error: failure.error, detail: failure.detail, permanent: failure.permanent, details: res.data, retry }, 200);
+
   } catch (e: any) {
     console.error("maestro-cdr error", e);
     return json({ success: false, error: e?.message ?? "server_error" }, 500);

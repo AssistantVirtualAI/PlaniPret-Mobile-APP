@@ -1,13 +1,11 @@
 // POST /functions/v1/maestro-recording-upload
 // Body: { call_id: uuid, force?: boolean }
 //
-// NOTE: The Maestro Telecom API is READ-ONLY for recordings.
-// There is no POST/PUT endpoint to upload audio files — only GET to retrieve
-// the recording URL that Maestro already has from its own telephony system.
-// This function now skips gracefully instead of looping with 404 errors.
-//
-// The recording URL from NS-API is stored on the call row (recording_url)
-// and passed to Maestro via the CDR push (POST /users/{id}/calls).
+// The Maestro Telecom REST API is READ-ONLY for recordings: the only route is
+// `GET /api/v1/users/{brokerId}/calls/{callId}/recording`. There is no upload
+// endpoint, so this function is a no-op that records the skip and marks the
+// pipeline `recording` step as done. The recording_url is already delivered to
+// Maestro through the CDR push (`POST /api/v1/users/{id}/calls`).
 import {
   adminClient,
   corsHeaders,
@@ -16,50 +14,53 @@ import {
   setPipelineStep,
 } from "../_shared/maestro.ts";
 
+const SKIP_REASON =
+  "Maestro Telecom API is read-only for recordings. The recording_url is already sent via CDR push.";
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405);
 
-  try {
-    const { call_id } = await req.json().catch(() => ({}));
-    if (!call_id) return json({ success: false, error: "call_id_required" }, 400);
+  const { call_id } = await req.json().catch(() => ({} as any));
+  const admin = adminClient();
 
-    const admin = adminClient();
-    const { data: call } = await admin
-      .from("planipret_phone_calls")
-      .select("id, user_id, recording_url, recording_storage_path")
-      .eq("id", call_id)
-      .maybeSingle();
-    if (!call) return json({ success: false, error: "call_not_found" }, 404);
+  if (call_id) {
+    let userId: string | null = null;
+    let maestroCallId: string | null = null;
+    let reason = "no_upload_endpoint";
+    try {
+      const { data: call } = await admin
+        .from("planipret_phone_calls")
+        .select("id, user_id, maestro_call_id")
+        .eq("id", call_id)
+        .maybeSingle();
+      userId = call?.user_id ?? null;
+      maestroCallId = (call as any)?.maestro_call_id ?? null;
+    } catch (_) { /* ignore */ }
 
-    // The Maestro Telecom API does not expose a recording upload endpoint.
-    // Recording URLs are already sent to Maestro as part of the CDR push
-    // (recording_url field in POST /users/{brokerId}/calls).
-    // We mark the pipeline step as done and return a clean skip.
-    await setPipelineStep(admin, call_id, "recording" as any, "done", {
-      reason: "no_upload_endpoint",
-      recording_url: call.recording_url ?? null,
-    });
+    // Make the blocking reason explicit so the retry job can pick it up.
+    reason = maestroCallId ? "no_upload_endpoint" : "maestro_call_id_missing";
+    console.log(`[maestro-recording-upload] call=${call_id} skipped reason=${reason} maestro_call_id=${maestroCallId ?? "-"}`);
+
     await pipelineLog(admin, {
       call_id,
-      user_id: call.user_id,
+      user_id: userId,
       step: "recording_upload",
       status: "skipped",
-      payload: {
-        reason: "maestro_api_read_only",
-        recording_url_present: !!call.recording_url,
-        storage_path_present: !!call.recording_storage_path,
-      },
+      error_message: reason,
+      payload: { reason: SKIP_REASON, maestro_call_id: maestroCallId },
     });
-
-    return json({
-      success: true,
-      skipped: "no_upload_endpoint",
-      reason: "Maestro Telecom API is read-only for recordings. The recording_url is sent via CDR push.",
-      recording_url: call.recording_url ?? null,
-    });
-  } catch (e: any) {
-    console.error("maestro-recording-upload error", e);
-    return json({ success: false, error: e?.message ?? "server_error" }, 500);
+    await setPipelineStep(admin, call_id, "cdr", "done", { recording: "skipped_no_upload_endpoint" }).catch(() => {});
+    try {
+      await admin.from("planipret_recording_uploads").upsert({
+        call_id,
+        user_id: userId,
+        status: "skipped",
+        error_message: reason,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: "call_id" });
+    } catch (_) { /* ignore */ }
   }
+
+  return json({ success: true, skipped: "no_upload_endpoint", reason: SKIP_REASON });
 });
