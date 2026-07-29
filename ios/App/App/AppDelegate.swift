@@ -16,6 +16,16 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         // - allowBluetooth: enables Bluetooth headsets and AirPods
         configureAudioSession()
 
+        // UIScene lifecycle observers (iOS 13+) — required for SIP foreground/background
+        // transitions when the app uses UIScene (SceneDelegate). UIApplication notifications
+        // alone are not reliably fired when UIScene is active.
+        if #available(iOS 13.0, *) {
+            NotificationCenter.default.addObserver(self, selector: #selector(onSceneForeground), name: UIScene.didActivateNotification, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(onSceneForeground), name: UIScene.willEnterForegroundNotification, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(onSceneBackground), name: UIScene.didEnterBackgroundNotification, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(onSceneBackground), name: UIScene.willDeactivateNotification, object: nil)
+        }
+
         // Register BGProcessingTask for periodic SIP re-registration (parity with Android PpSipKeepAliveService)
         // This ensures the SIP REGISTER is refreshed even when the app is in background/suspended.
         if #available(iOS 13.0, *) {
@@ -86,6 +96,19 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     func applicationDidBecomeActive(_ application: UIApplication) {}
 
     func applicationWillTerminate(_ application: UIApplication) {}
+
+    // MARK: - UIScene lifecycle (iOS 13+)
+
+    @available(iOS 13.0, *)
+    @objc private func onSceneForeground() {
+        try? AVAudioSession.sharedInstance().setActive(true)
+        NotificationCenter.default.post(name: NSNotification.Name("PpSipSceneForeground"), object: nil)
+    }
+
+    @available(iOS 13.0, *)
+    @objc private func onSceneBackground() {
+        NotificationCenter.default.post(name: NSNotification.Name("PpSipSceneBackground"), object: nil)
+    }
 
     // MARK: - Background tasks (SIP registration refresh — iOS 13+)
 

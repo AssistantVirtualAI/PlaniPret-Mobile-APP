@@ -1202,6 +1202,39 @@ function patchIosAppDelegate(iosApp) {
   if (!fs.existsSync(file)) return;
   let swift = fs.readFileSync(file, "utf8");
   const before = swift;
+  // Patch 1: UIScene lifecycle observers — required when app uses SceneDelegate (iOS 13+)
+  if (!swift.includes("UIScene.didActivateNotification")) {
+    const sceneObservers = `
+        // UIScene lifecycle observers (iOS 13+) — required for SIP foreground/background
+        if #available(iOS 13.0, *) {
+            NotificationCenter.default.addObserver(self, selector: #selector(onSceneForeground), name: UIScene.didActivateNotification, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(onSceneForeground), name: UIScene.willEnterForegroundNotification, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(onSceneBackground), name: UIScene.didEnterBackgroundNotification, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(onSceneBackground), name: UIScene.willDeactivateNotification, object: nil)
+        }`;
+    // Insert after configureAudioSession() or at start of didFinishLaunching body
+    if (swift.includes("configureAudioSession()")) {
+      swift = swift.replace("configureAudioSession()", `configureAudioSession()\n${sceneObservers}`);
+    } else {
+      swift = swift.replace(/(func application\([^)]*didFinishLaunchingWithOptions[^)]*\)[^{]*\{)/, `$1${sceneObservers}`);
+    }
+    // Add the @objc handler methods before the last closing brace
+    const sceneHandlers = `
+    @available(iOS 13.0, *)
+    @objc private func onSceneForeground() {
+        try? AVAudioSession.sharedInstance().setActive(true)
+        NotificationCenter.default.post(name: NSNotification.Name("PpSipSceneForeground"), object: nil)
+    }
+
+    @available(iOS 13.0, *)
+    @objc private func onSceneBackground() {
+        NotificationCenter.default.post(name: NSNotification.Name("PpSipSceneBackground"), object: nil)
+    }
+`;
+    const lastBrace = swift.lastIndexOf("}");
+    if (lastBrace > -1) swift = `${swift.slice(0, lastBrace)}${sceneHandlers}${swift.slice(lastBrace)}`;
+    console.log("[native-config] iOS AppDelegate UIScene observers added.");
+  }
   if (/supportedInterfaceOrientationsFor/.test(swift)) {
     swift = swift.replace(
       /(func application\(\s*_ application: UIApplication,\s*supportedInterfaceOrientationsFor[^)]*\)\s*->\s*UIInterfaceOrientationMask\s*\{)[\s\S]*?\n\s*\}/,
