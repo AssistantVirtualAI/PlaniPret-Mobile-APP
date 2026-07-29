@@ -35,10 +35,13 @@
 		<!-- Portrait uniquement — app mobile VoIP (Phase 1.4 plan soumission) -->
 		<string>UIInterfaceOrientationPortrait</string>
 	</array>
+	<!-- iPad : toutes les orientations requises par Apple pour le multitasking (code 90474) -->
 	<key>UISupportedInterfaceOrientations~ipad</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
 		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
@@ -75,6 +78,8 @@
 		<string>remote-notification</string>
 		<string>voip</string>
 		<string>fetch</string>
+		<!-- processing requis pour BGProcessingTask — doit avoir BGTaskSchedulerPermittedIdentifiers (code 90771) -->
+		<string>processing</string>
 	</array>
 
 	<!-- Caméra (optionnel — pour les photos de profil) -->
