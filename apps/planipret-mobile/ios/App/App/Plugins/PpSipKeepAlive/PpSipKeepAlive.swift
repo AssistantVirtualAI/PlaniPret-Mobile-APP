@@ -36,6 +36,10 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private var backoffMaxAttempts: Int = 5
     private var verifyDelayMs: Double = 8000
     private var registerExpires: Int = 1800
+    // NetSapiens closes the socket when it sees two REGISTERs for the same AoR
+    // back-to-back. Debounce every REGISTER for 2s after a 200 OK.
+    private var lastRegisterOkTime: Date?
+    private let registerDebounceSec: TimeInterval = 2.0
     private var reconnectPending = false
     private var pathMonitor: NWPathMonitor?
     private var networkUp = true
@@ -123,6 +127,8 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
 
     private func activateAudioSession() { try? AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .allowBluetoothA2DP, .mixWithOthers]); try? AVAudioSession.sharedInstance().setActive(true) }
     private func connect() {
+      // A new socket means a new AoR binding: clear the 200 OK debounce.
+      lastRegisterOkTime = nil
       guard !host.isEmpty else { setStatus("error", "missing_host"); return }
       startPathMonitor()
       if isForeground() { return }
@@ -205,7 +211,13 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         sendRegister(challenge: headerVal(msg, isProxyAuth ? "Proxy-Authenticate" : "WWW-Authenticate"), proxyAuth: isProxyAuth)
         return
       }
-      if msg.hasPrefix("SIP/2.0 200") && msg.uppercased().contains(" REGISTER") { setStatus("registered", "native_register_200"); return }
+      if msg.hasPrefix("SIP/2.0 200") && msg.uppercased().contains(" REGISTER") {
+        lastRegisterOkTime = Date()
+        setStatus("registered", "native_register_200")
+        // NetSapiens closes inactive sockets: ping within 500ms of the 200 OK.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.sendOptionsPing() }
+        return
+      }
       if msg.hasPrefix("INVITE ") {
         setStatus("registered", "incoming_invite")
         let fromHdr = headerVal(msg, "From") ?? ""
@@ -250,9 +262,35 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
     }
 
+    /// OPTIONS keep-alive sent right after the REGISTER 200 OK (never before:
+    /// an un-authenticated OPTIONS makes NetSapiens close the socket).
+    private func sendOptionsPing() {
+      guard let sock = socket, status == "registered", !domain.isEmpty else { return }
+      let seq = cseq; cseq += 1
+      let branch = "z9hG4bK" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+      var sip = "OPTIONS sip:" + domain + " SIP/2.0\r\n"
+      sip += "Via: SIP/2.0/WSS planipret-ios.invalid;branch=" + branch + "\r\n"
+      sip += "From: <sip:" + login + "@" + domain + ">;tag=" + fromTag + "\r\n"
+      sip += "To: <sip:" + domain + ">\r\n"
+      sip += "Call-ID: " + UUID().uuidString + "@planipret-ios\r\n"
+      sip += "CSeq: " + String(seq) + " OPTIONS\r\n"
+      sip += "Max-Forwards: 70\r\nUser-Agent: Planipret iOS KeepAlive\r\nContent-Length: 0\r\n\r\n"
+      sock.send(.string(sip)) { err in
+        if let e = err { NSLog("[PpSipKeepAlive] OPTIONS ping failed: %@", String(describing: e)) }
+      }
+    }
+
     private func sendRegister(challenge: String?, proxyAuth: Bool = false) {
       if isForeground() { releaseRegistration("foreground_js_owns"); return }
       if socket == nil { connect(); return }
+      // Two REGISTERs in a row on the same WSS connection make NetSapiens see a
+      // duplicate AoR and close the socket. Hold off for 2s after each 200 OK
+      // (auth challenge responses are exempt: they complete the same handshake).
+      if challenge == nil, let okAt = lastRegisterOkTime, Date().timeIntervalSince(okAt) <= registerDebounceSec {
+        NSLog("[PpSipKeepAlive] REGISTER debounced: %.2fs since 200 OK (min %.1fs)", Date().timeIntervalSince(okAt), registerDebounceSec)
+        sendOptionsPing()
+        return
+      }
       guard !login.isEmpty, !domain.isEmpty else { setStatus("error", "missing_credentials"); return }
       let seq = cseq; cseq += 1
       let branch = "z9hG4bK" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
