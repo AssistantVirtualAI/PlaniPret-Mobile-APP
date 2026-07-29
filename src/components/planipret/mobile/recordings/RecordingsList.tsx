@@ -165,6 +165,7 @@ export default function RecordingsList({
   );
   const autoPipelineDoneRef = useRef<Set<string>>(new Set());
   const autoCrmSyncDoneRef = useRef<Set<string>>(new Set());
+  const maestroUnavailableRef = useRef(false);
   const audioBlobCacheRef = useRef<Map<string, string>>(new Map());
   const [audioStatus, setAudioStatus] = useState<Record<string, AudioStatus>>({});
   const [uploadLedger, setUploadLedger] = useState<Record<string, string>>({});
@@ -302,21 +303,30 @@ export default function RecordingsList({
         }
 
         // 4) CRM Maestro : sync automatique et idempotent (CDR + recording + transcript + AI).
-        if (!call.maestro_synced && !autoCrmSyncDoneRef.current.has(call.id)) {
+        // Circuit breaker : si Maestro est injoignable/mal configuré, on arrête la boucle
+        // pour la session au lieu de faire tourner les badges « En cours… » indéfiniment.
+        if (!maestroUnavailableRef.current && !call.maestro_synced && !autoCrmSyncDoneRef.current.has(call.id)) {
           autoCrmSyncDoneRef.current.add(call.id);
           setLedger(call.id, "uploading");
-          // Retry automatique avec backoff exponentiel (3s → 9s → 27s → 81s).
+          // Retry automatique avec backoff exponentiel (3s → 9s → 27s → 81s),
+          // sauf erreur permanente (endpoints Maestro absents / non configuré).
           retryWithBackoff(async () => {
             const { data, error } = await supabase.functions.invoke("maestro-sync-call", {
               body: { call_id: call.id, force: false },
             });
             if (error) throw error;
-            if ((data as any)?.success === false) throw new Error((data as any)?.error ?? "sync_failed");
+            const d = (data as any) ?? {};
+            if (d?.success === false) {
+              const err = new Error(d?.error ?? "sync_failed");
+              if (isPermanentMaestroError(d)) (err as any).permanent = true;
+              throw err;
+            }
             return data;
           }, {
             attempts: 4,
             baseDelayMs: 3000,
             signal: controller.signal,
+            shouldRetry: (e: any) => !e?.permanent,
             onRetry: ({ attempt, delayMs }) =>
               console.warn(`[RecordingsList] Maestro sync retry ${attempt} dans ${delayMs}ms`, who),
           })
@@ -327,10 +337,16 @@ export default function RecordingsList({
             })
             .catch((e: any) => {
               autoCrmSyncDoneRef.current.delete(call.id);
+              if (e?.permanent) {
+                maestroUnavailableRef.current = true;
+                console.warn("[RecordingsList] Maestro indisponible — sync auto désactivée", e?.message);
+              }
               if (cancelled) return;
               setLedger(call.id, "failed");
               console.warn("[RecordingsList] auto Maestro sync failed", who, e?.message);
             });
+        } else if (maestroUnavailableRef.current && !call.maestro_synced) {
+          setLedger(call.id, "failed");
         }
 
         await sleep(400);
@@ -1336,4 +1352,10 @@ function MaestroSyncSection({ call, onUpdated }: { call: RecordingCall; onUpdate
       </div>
     </div>
   );
+}
+
+/** Erreurs Maestro non-récupérables : inutile de relancer en boucle. */
+function isPermanentMaestroError(d: any): boolean {
+  const txt = `${d?.error ?? ""} ${JSON.stringify(d?.steps ?? {})}`.toLowerCase();
+  return /maestro_not_configured|not_configured|unauthorized|forbidden|404|call_not_found|endpoint/.test(txt);
 }

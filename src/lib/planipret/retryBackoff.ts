@@ -10,6 +10,8 @@ export type RetryOptions = {
   maxDelayMs?: number;
   /** Signal d'annulation. */
   signal?: AbortSignal;
+  /** Retourne false pour arrêter immédiatement (erreur permanente). */
+  shouldRetry?: (error: unknown) => boolean;
   /** Callback avant chaque nouvelle tentative. */
   onRetry?: (info: { attempt: number; delayMs: number; error: unknown }) => void;
 };
@@ -47,7 +49,7 @@ const wait = (ms: number, signal?: AbortSignal) =>
  * `fn` doit lever une erreur pour déclencher un retry.
  */
 export async function retryWithBackoff<T>(fn: (attempt: number) => Promise<T>, opts: RetryOptions = {}): Promise<T> {
-  const { attempts = 4, baseDelayMs = 3000, maxDelayMs = 120_000, signal, onRetry } = opts;
+  const { attempts = 4, baseDelayMs = 3000, maxDelayMs = 120_000, signal, onRetry, shouldRetry } = opts;
   let lastError: unknown;
 
   for (let attempt = 1; attempt <= attempts; attempt++) {
@@ -57,6 +59,7 @@ export async function retryWithBackoff<T>(fn: (attempt: number) => Promise<T>, o
     } catch (e) {
       lastError = e;
       if (e instanceof RetryAbortedError) throw e;
+      if (shouldRetry && !shouldRetry(e)) throw e;
       if (attempt >= attempts) break;
       const delayMs = backoffDelay(attempt, baseDelayMs, maxDelayMs);
       onRetry?.({ attempt, delayMs, error: e });
