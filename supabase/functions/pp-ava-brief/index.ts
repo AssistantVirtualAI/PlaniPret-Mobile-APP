@@ -195,6 +195,10 @@ Deno.serve(async (req) => {
     // Language: explicit request wins (mobile app sends the active UI language),
     // otherwise fall back to the broker profile (used by the 08:30 / 17:30 schedulers).
     const lang: Lang = requestedLang ?? ((profile as any).language === "en" ? "en" : "fr");
+    if (requestedLang && (profile as any).language !== requestedLang) {
+      admin.from("planipret_profiles").update({ language: requestedLang }).eq("id", profile.id)
+        .then(() => {}, () => {});
+    }
 
 
     // Caching is handled by React Query on the client; force flag is accepted for future use.
@@ -322,29 +326,29 @@ Deno.serve(async (req) => {
       ? `Tu es AVA, l'assistante d'un courtier hypothécaire au Québec. Tu reçois les statistiques réelles du courtier ${profile.full_name ?? ""} pour ${periodLabelFr}.
 Génère un brief DÉTAILLÉ, professionnel et actionnable, ENTIÈREMENT en français du Québec (aucun mot en anglais).
 - headline: 1 phrase percutante citant les chiffres clés réels (appels, manqués, minutes, textos, leads chauds, rendez-vous).
-- overview: 3 à 5 phrases qui analysent la performance: volume d'appels entrants vs sortants, taux de réponse, durée moyenne, activité texto, messages vocaux en attente, tendance et qualité des conversations (résumés IA, score de coaching).
+- overview: 5 à 7 phrases qui analysent la performance: volume d'appels entrants vs sortants, taux de réponse, durée moyenne, activité texto, messages vocaux en attente, tendance et qualité des conversations (résumés IA, score de coaching).
 - metrics: 5 à 8 indicateurs { label, value } tirés des chiffres exacts (appels, répondus/manqués, temps au téléphone, durée moyenne, textos, non lus, leads chauds, rendez-vous, score de coaching).
-- highlights: jusqu'à 5 faits saillants nommant les vrais contacts/clients les plus actifs et ce qui s'est passé.
-- priorities: 3 actions concrètes ordonnées par urgence (max 12 mots chacune), en nommant la personne ou le numéro.
+- highlights: 4 à 5 faits saillants nommant les vrais contacts/clients les plus actifs et ce qui s'est passé.
+- priorities: 4 actions concrètes ordonnées par urgence (max 12 mots chacune), en nommant la personne ou le numéro.
 - risks: jusqu'à 3 risques ou points d'attention.
-- tips: 3 à 5 conseils de coaching { title, detail } — chaque "detail" = 1 à 2 phrases concrètes basées sur les chiffres (relances, plages horaires les plus productives, durée des appels, suivi des leads chauds, textos non lus, boîtes vocales).
+- tips: 4 à 5 conseils de coaching { title, detail } — chaque "detail" = 1 à 2 phrases concrètes basées sur les chiffres (relances, plages horaires les plus productives, durée des appels, suivi des leads chauds, textos non lus, boîtes vocales).
 - focus: 1 phrase « objectif du jour » chiffré et mesurable.
 - suggestions: jusqu'à 3 actions cliquables (call/sms/email/reminder) avec si pertinent un numéro extrait des données.`
       : `You are AVA, the assistant of a mortgage broker in Quebec. You receive the real statistics of broker ${profile.full_name ?? ""} for ${periodLabelEn}.
 Generate a DETAILED, professional and actionable brief, ENTIRELY in English (no French words at all).
 - headline: 1 punchy sentence quoting the real key numbers (calls, missed, minutes, texts, hot leads, meetings).
-- overview: 3 to 5 sentences analysing performance: inbound vs outbound volume, answer rate, average duration, texting activity, pending voicemails, trend and conversation quality (AI summaries, coaching score).
+- overview: 5 to 7 sentences analysing performance: inbound vs outbound volume, answer rate, average duration, texting activity, pending voicemails, trend and conversation quality (AI summaries, coaching score).
 - metrics: 5 to 8 indicators { label, value } from the exact numbers (calls, answered/missed, talk time, average duration, texts, unread, hot leads, meetings, coaching score).
-- highlights: up to 5 highlights naming the real most active contacts/clients and what happened.
-- priorities: 3 concrete actions ordered by urgency (max 12 words each), naming the person or number.
+- highlights: 4 to 5 highlights naming the real most active contacts/clients and what happened.
+- priorities: 4 concrete actions ordered by urgency (max 12 words each), naming the person or number.
 - risks: up to 3 risks or watch-outs.
-- tips: 3 to 5 coaching tips { title, detail } — each "detail" = 1 to 2 concrete sentences based on the numbers (follow-ups, most productive time slots, call duration, hot-lead nurturing, unread texts, voicemails).
+- tips: 4 to 5 coaching tips { title, detail } — each "detail" = 1 to 2 concrete sentences based on the numbers (follow-ups, most productive time slots, call duration, hot-lead nurturing, unread texts, voicemails).
 - focus: 1 measurable "goal of the day" sentence with a number.
 - suggestions: up to 3 clickable actions (call/sms/email/reminder) with a number extracted from the data when relevant.`;
 
     const userPrompt = lang === "fr"
-      ? `Statistiques réelles (JSON):\n${JSON.stringify(stats).slice(0, 12000)}\n\nUtilise ces chiffres exacts (appels, manqués, minutes, textos, boîtes vocales, leads chauds, rendez-vous, contacts actifs). N'invente rien. Réponds uniquement en français.`
-      : `Real statistics (JSON):\n${JSON.stringify(stats).slice(0, 12000)}\n\nUse these exact numbers (calls, missed, minutes, texts, voicemails, hot leads, meetings, active contacts). Do not invent anything. Answer in English only.`;
+      ? `Statistiques réelles (JSON):\n${JSON.stringify(stats).slice(0, 12000)}\n\nUtilise ces chiffres exacts (appels, manqués, minutes, textos, boîtes vocales, leads chauds, rendez-vous, contacts actifs). N'invente rien. Réponds uniquement en français du Québec : chaque champ (headline, overview, metrics.label, highlights, priorities, risks, tips.title, tips.detail, focus, suggestions.label) doit être rédigé en français, sans aucun mot anglais.`
+      : `Real statistics (JSON):\n${JSON.stringify(stats).slice(0, 12000)}\n\nUse these exact numbers (calls, missed, minutes, texts, voicemails, hot leads, meetings, active contacts). Do not invent anything. Answer strictly in English: every field (headline, overview, metrics.label, highlights, priorities, risks, tips.title, tips.detail, focus, suggestions.label) must be written in English, with no French words.`;
 
     let result: any;
     try {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import { useOutletContext, useNavigate } from "react-router-dom";
 
 import { supabase } from "@/integrations/supabase/client";
@@ -251,6 +251,13 @@ export default function MHome() {
   };
 
   useEffect(() => { loadStats(); loadBrief(false); /* eslint-disable-next-line */ }, [profile?.user_id, period]);
+  // Regenerate the brief in the language selected in the app.
+  const firstLangRun = useRef(true);
+  useEffect(() => {
+    if (firstLangRun.current) { firstLangRun.current = false; return; }
+    loadBrief(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lang]);
   useEffect(() => {
     registerRefresh(async () => { await Promise.all([loadStats(), loadBrief(true)]); });
     return () => registerRefresh(null);
