@@ -50,6 +50,8 @@ const IOS_ENTITLEMENTS = `<?xml version="1.0" encoding="UTF-8"?>
 <dict>
 	<key>aps-environment</key>
 	<string>development</string>
+	<key>com.apple.developer.pushkit.unrestricted-voip</key>
+	<true/>
 </dict>
 </plist>
 `;
@@ -561,6 +563,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private var lastRegisterOkTime: Date?
     private let registerDebounceSec: TimeInterval = 2.0
     private var reconnectPending = false
+    private var backgroundHandoffWorkItem: DispatchWorkItem?
     private var pathMonitor: NWPathMonitor?
     private var networkUp = true
 
@@ -601,7 +604,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         // JsSIP web layer owns the registration. Registering natively at the same
         // time made NetSapiens close the JsSIP socket (1001), producing an endless
         // disconnect/reconnect loop. Store the credentials and stay idle instead.
-        if self.isForeground() { self.releaseRegistration("foreground_js_owns") } else { self.connect(); self.scheduleRegister() }
+        if self.isForeground() { self.releaseRegistration("foreground_js_owns") } else { self.beginNativeOwnership("service_start") }
         call.resolve(self.snapshot(ok: true))
       }
     }
@@ -632,17 +635,38 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     @objc private func onSceneWillEnterForeground() { onForeground() }
     private func releaseRegistration(_ why: String) {
       if !Thread.isMainThread { DispatchQueue.main.async { [weak self] in self?.releaseRegistration(why) }; return }
+      backgroundHandoffWorkItem?.cancel(); backgroundHandoffWorkItem = nil
       timer?.invalidate(); timer = nil
       socket?.cancel(with: .goingAway, reason: nil); socket = nil
       endBackgroundTask(); setStatus("idle", why)
     }
 
-    @objc private func onBackground() { appActive = false; beginBackgroundTask(); activateAudioSession(); connect(); scheduleRegister(); sendRegister(challenge: nil); setStatus("protected", "background_register_sent") }
+    @objc private func onBackground() {
+      appActive = false
+      beginBackgroundTask()
+      activateAudioSession()
+      setStatus("protected", "background_handoff_pending")
+      backgroundHandoffWorkItem?.cancel()
+      let work = DispatchWorkItem { [weak self] in
+        guard let self = self, !self.isForeground() else { return }
+        self.beginNativeOwnership("background_handoff")
+      }
+      backgroundHandoffWorkItem = work
+      DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
+    }
     @objc private func onForeground() {
       appActive = true
       // Hand the AOR back to JsSIP and ask the web layer to re-REGISTER.
       releaseRegistration("foreground_js_owns")
       notifyListeners("sipReregisterRequested", data: ["reason": "enter_foreground"])
+    }
+
+    private func beginNativeOwnership(_ why: String) {
+      guard !isForeground() else { releaseRegistration("foreground_js_owns"); return }
+      connect()
+      scheduleRegister()
+      if socket != nil, status != "registered" { sendRegister(challenge: nil) }
+      setStatus(status == "registered" ? "registered" : "protected", why)
     }
 
     private func activateAudioSession() { try? AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .allowBluetoothA2DP, .mixWithOthers]); try? AVAudioSession.sharedInstance().setActive(true) }
@@ -788,13 +812,13 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       guard let sock = socket, status == "registered", !domain.isEmpty else { return }
       let seq = cseq; cseq += 1
       let branch = "z9hG4bK" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
-      var sip = "OPTIONS sip:" + domain + " SIP/2.0\\r\\n"
-      sip += "Via: SIP/2.0/WSS planipret-ios.invalid;branch=" + branch + "\\r\\n"
-      sip += "From: <sip:" + login + "@" + domain + ">;tag=" + fromTag + "\\r\\n"
-      sip += "To: <sip:" + domain + ">\\r\\n"
-      sip += "Call-ID: " + UUID().uuidString + "@planipret-ios\\r\\n"
-      sip += "CSeq: " + String(seq) + " OPTIONS\\r\\n"
-      sip += "Max-Forwards: 70\\r\\nUser-Agent: Planipret iOS KeepAlive\\r\\nContent-Length: 0\\r\\n\\r\\n"
+      var sip = "OPTIONS sip:" + domain + " SIP/2.0\r\n"
+      sip += "Via: SIP/2.0/WSS planipret-ios.invalid;branch=" + branch + "\r\n"
+      sip += "From: <sip:" + login + "@" + domain + ">;tag=" + fromTag + "\r\n"
+      sip += "To: <sip:" + domain + ">\r\n"
+      sip += "Call-ID: " + UUID().uuidString + "@planipret-ios\r\n"
+      sip += "CSeq: " + String(seq) + " OPTIONS\r\n"
+      sip += "Max-Forwards: 70\r\nUser-Agent: Planipret iOS KeepAlive\r\nContent-Length: 0\r\n\r\n"
       sock.send(.string(sip)) { err in
         if let e = err { NSLog("[PpSipKeepAlive] OPTIONS ping failed: %@", String(describing: e)) }
       }
@@ -814,7 +838,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       guard !login.isEmpty, !domain.isEmpty else { setStatus("error", "missing_credentials"); return }
       let seq = cseq; cseq += 1
       let branch = "z9hG4bK" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
-      let contact = "<sip:" + login + "@" + UUID().uuidString.replacingOccurrences(of: "-", with: "") + ".invalid;transport=wss>"
+      let contact = "<sip:" + login + "@" + stableContactHost() + ";transport=wss>"
       var sip = "REGISTER sip:" + domain + " SIP/2.0\\r\\n"
       sip += "Via: SIP/2.0/WSS planipret-ios.invalid;branch=" + branch + "\\r\\nMax-Forwards: 70\\r\\n"
       sip += "To: <sip:" + login + "@" + domain + ">\\r\\nFrom: \\"" + displayName.replacingOccurrences(of: "\\"", with: "") + "\\" <sip:" + login + "@" + domain + ">;tag=" + fromTag + "\\r\\n"
@@ -835,6 +859,16 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
           }
         }
       }
+    }
+
+    private func stableContactHost() -> String {
+      let raw = (login.isEmpty ? "planipret" : login).lowercased()
+      let safe = raw.map { ch -> Character in
+        if ch.isLetter || ch.isNumber || ch == "-" { return ch }
+        return "-"
+      }
+      let token = String(safe).split(separator: "-").joined(separator: "-")
+      return "ios-" + (token.isEmpty ? "planipret" : token) + ".planipret.invalid"
     }
 
     private func digest(challenge: String) -> String { let m = parseDigest(challenge); let realm = m["realm"] ?? domain; let nonce = m["nonce"] ?? ""; let qop = m["qop"] ?? ""; let uri = "sip:" + domain; let nc = "00000001"; let cnonce = String(Int(Date().timeIntervalSince1970 * 1000), radix: 16); let ha1 = md5(login + ":" + realm + ":" + password); let ha2 = md5("REGISTER:" + uri); let response = qop.contains("auth") ? md5(ha1 + ":" + nonce + ":" + nc + ":" + cnonce + ":auth:" + ha2) : md5(ha1 + ":" + nonce + ":" + ha2); var out = "Digest username=\\"" + login + "\\", realm=\\"" + realm + "\\", nonce=\\"" + nonce + "\\", uri=\\"" + uri + "\\", response=\\"" + response + "\\", algorithm=MD5"; if qop.contains("auth") { out += ", qop=auth, nc=" + nc + ", cnonce=\\"" + cnonce + "\\"" }; if let opaque = m["opaque"] { out += ", opaque=\\"" + opaque + "\\"" }; return out }
@@ -1507,35 +1541,6 @@ function patchAndroidNativeFiles() {
   console.log("[native-config] Android PpSipKeepAlive plugin applied.");
 }
 
-function patchIosSplash() {
-  let iosSplashDir = path.join(appDir, "ios", "App", "App", "Assets.xcassets", "Splash.imageset");
-  if (!fs.existsSync(iosSplashDir)) {
-    iosSplashDir = path.join(appDir, "..", "..", "ios", "App", "App", "Assets.xcassets", "Splash.imageset");
-  }
-  const nativeSplashDir = path.join(appDir, "native-config", "splash");
-  
-  if (!fs.existsSync(iosSplashDir) || !fs.existsSync(nativeSplashDir)) {
-    console.warn("[native-config] iOS Splash dir or native-config/splash not found, skipping splash patch.");
-    return;
-  }
-
-  const splash3x = path.join(nativeSplashDir, "splash-3x.png");
-  const splash2x = path.join(nativeSplashDir, "splash-2x.png");
-  const splash1x = path.join(nativeSplashDir, "splash-1x.png");
-
-  if (fs.existsSync(splash3x)) {
-    fs.copyFileSync(splash3x, path.join(iosSplashDir, "splash-2732x2732.png"));
-  }
-  if (fs.existsSync(splash2x)) {
-    fs.copyFileSync(splash2x, path.join(iosSplashDir, "splash-2732x2732-1.png"));
-  }
-  if (fs.existsSync(splash1x)) {
-    fs.copyFileSync(splash1x, path.join(iosSplashDir, "splash-2732x2732-2.png"));
-  }
-
-  console.log("[native-config] iOS Splash images applied from native-config/splash.");
-}
-
 function patchIosNativeFiles() {
   const iosApp = path.join(appDir, "ios", "App", "App");
   if (!fs.existsSync(iosApp)) {
@@ -1580,6 +1585,24 @@ function patchIosNativeFiles() {
   console.log("[native-config] iOS PpSipKeepAlive + PpVoipCall plugins applied.");
 }
 
+function patchIosSplash() {
+  let iosSplashDir = path.join(appDir, "ios", "App", "App", "Assets.xcassets", "Splash.imageset");
+  if (!fs.existsSync(iosSplashDir)) {
+    iosSplashDir = path.join(appDir, "..", "..", "ios", "App", "App", "Assets.xcassets", "Splash.imageset");
+  }
+  const nativeSplashDir = path.join(appDir, "native-config", "splash");
+  if (!fs.existsSync(iosSplashDir) || !fs.existsSync(nativeSplashDir)) {
+    console.warn("[native-config] iOS Splash dir ou native-config/splash introuvable, splash patch ignoré.");
+    return;
+  }
+  const splash3x = path.join(nativeSplashDir, "splash-3x.png");
+  const splash2x = path.join(nativeSplashDir, "splash-2x.png");
+  const splash1x = path.join(nativeSplashDir, "splash-1x.png");
+  if (fs.existsSync(splash3x)) fs.copyFileSync(splash3x, path.join(iosSplashDir, "splash-2732x2732.png"));
+  if (fs.existsSync(splash2x)) fs.copyFileSync(splash2x, path.join(iosSplashDir, "splash-2732x2732-1.png"));
+  if (fs.existsSync(splash1x)) fs.copyFileSync(splash1x, path.join(iosSplashDir, "splash-2732x2732-2.png"));
+  console.log("[native-config] iOS Splash AVA AI 3D appliqué depuis native-config/splash.");
+}
 patchCopiedWebBundles();
 patchIosInfoPlist();
 patchIosEntitlements();

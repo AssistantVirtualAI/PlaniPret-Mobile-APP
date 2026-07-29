@@ -88,6 +88,21 @@ export interface PpSipReconnectEvent {
 let sipParserGuardInstalled = false;
 let ppSipInitInFlight = false;
 
+function sipToken(value: string): string {
+  return String(value || "pp")
+    .toLowerCase()
+    .replace(/[^a-z0-9-]/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+    .slice(0, 48) || "pp";
+}
+
+function buildContactUri(cfg: PpSipConfig): string {
+  const user = sipToken(cfg.sipUsername || cfg.extension);
+  const ext = sipToken(cfg.extension || cfg.sipUsername);
+  return `sip:${user}@${ext}-web.planipret.invalid;transport=ws`;
+}
+
 function isKnownJsSipParserCrash(value: unknown): boolean {
   const text = String(value instanceof Error ? value.message : value ?? "");
   return /multi_header\.length|multi_header/i.test(text);
@@ -146,6 +161,7 @@ class PpSipProvider {
   private regFailures = 0;
   private wsRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private wsWatchdogTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectVerifyTimer: ReturnType<typeof setTimeout> | null = null;
   private wsFailures = 0;
   private lastWsDisconnectedAt = 0;
   private lastRegisterAttemptAt = 0;
@@ -379,6 +395,7 @@ class PpSipProvider {
       const ua = new (JsSIP as any).UA({
         sockets,
         uri: `sip:${cleanCfg.sipUsername}@${cleanCfg.sipDomain}`,
+        contact_uri: buildContactUri(cleanCfg),
         password: cleanCfg.password,
         authorization_user: cleanCfg.sipUsername,
         realm: cleanCfg.sipDomain,
@@ -391,6 +408,20 @@ class PpSipProvider {
         connection_recovery_max_interval: Math.max(3, Math.ceil(reconnectConfig.socketBackoffMaxMs / 1000)),
         user_agent: "Planipret Softphone 1.0",
       });
+
+      // Definitive single-owner recovery: JsSIP's internal recovery and our
+      // watchdog were both opening WSS sockets for the same AoR. NetSapiens then
+      // closed one side with code 1001 and the loop restarted. Disable the
+      // built-in retry hook and let scheduleSocketReconnect() be the only path.
+      try {
+        const transport = (ua as any)?._transport;
+        if (transport && typeof transport._reconnect === "function") {
+          transport._reconnect = () => {
+            this.log("warn", "JsSIP built-in recovery suppressed; watchdog owns reconnect");
+            this.scheduleSocketReconnect("jssip_recovery_suppressed");
+          };
+        }
+      } catch { /* private JsSIP API guard */ }
 
       ua.on("connecting", () => { this.connectingSince = Date.now(); this.update({ status: "connecting" }); });
       ua.on("connected", () => {
@@ -410,11 +441,9 @@ class PpSipProvider {
         this.stopKeepAlive();
         this.update({ status: "disconnected", errorCause: e?.reason || "ws_disconnected" });
         // JsSIP already owns the first retry via connection_recovery_* (>= 3s).
-        // Scheduling our own reconnect here opened a SECOND WebSocket for the
-        // same AoR: NetSapiens then closed the older socket with code 1001,
-        // which restarted the whole cycle forever. We only act as a watchdog if
-        // JsSIP has not recovered after socketVerifyDelayMs.
-        this.deferTransportRecovery(String(e?.reason || "ws_disconnected"));
+        // The built-in retry hook is suppressed above, so the watchdog is the
+        // only owner allowed to reconnect this AoR.
+        this.scheduleSocketReconnect(String(e?.reason || "ws_disconnected"));
       });
       ua.on("registered", () => {
         this.regFailures = 0;
@@ -424,6 +453,7 @@ class PpSipProvider {
         this.reconnectMetrics.delaySource = "none";
         if (this.wsRetryTimer) { clearTimeout(this.wsRetryTimer); this.wsRetryTimer = null; }
         if (this.wsWatchdogTimer) { clearTimeout(this.wsWatchdogTimer); this.wsWatchdogTimer = null; }
+        if (this.reconnectVerifyTimer) { clearTimeout(this.reconnectVerifyTimer); this.reconnectVerifyTimer = null; }
         this.releaseRecovery("registered");
         this.emitMetrics();
 
@@ -438,8 +468,7 @@ class PpSipProvider {
         // recovery — re-registering here only yields "Connection Error".
         if (!this.ua?.isConnected?.() || recentlyDisconnected || this.snap.status === "disconnected") {
           this.log("warn", "unregistered ignored; transport recovery owns reconnect");
-          // Deferred: never open a competing socket while JsSIP recovery runs.
-          this.deferTransportRecovery("unregistered_transport_down");
+          this.scheduleSocketReconnect("unregistered_transport_down");
           return;
         }
         this.log("warn", "unregistered on live transport - scheduling guarded re-register");
@@ -463,12 +492,7 @@ class PpSipProvider {
         this.update({ status: "error", errorCause: cause });
         if (!this.ua?.isConnected?.() || /connection error/i.test(String(cause))) {
           if (this.regRetryTimer) { clearTimeout(this.regRetryTimer); this.regRetryTimer = null; }
-          // Connection Error is emitted by the failed REGISTER transaction while
-          // JsSIP's transport recovery is already scheduled. Starting our own
-          // reconnect here races that recovery and creates the duplicate WSS
-          // socket that NetSapiens closes with 1001. Wait for the recovery
-          // window, then rebuild the UA only if it is still not registered.
-          this.deferTransportRecovery(`registration_failed:${cause}`);
+          this.scheduleSocketReconnect(`registration_failed:${cause}`);
           return;
         }
         // Retry with exponential backoff and a single pending timer — stacking
@@ -747,7 +771,9 @@ class PpSipProvider {
         this.log("error", `sip reconnect failed: ${e?.message || e}`);
       }
       this.emitMetrics();
-      setTimeout(() => {
+      if (this.reconnectVerifyTimer) clearTimeout(this.reconnectVerifyTimer);
+      this.reconnectVerifyTimer = setTimeout(() => {
+        this.reconnectVerifyTimer = null;
         if (this.ua && this.snap.status !== "registered") this.scheduleSocketReconnect("still_unregistered");
       }, rc.socketVerifyDelayMs);
     }, delay);
@@ -817,6 +843,7 @@ class PpSipProvider {
     this.stopKeepAlive();
     if (this.wsRetryTimer) { clearTimeout(this.wsRetryTimer); this.wsRetryTimer = null; }
     if (this.wsWatchdogTimer) { clearTimeout(this.wsWatchdogTimer); this.wsWatchdogTimer = null; }
+    if (this.reconnectVerifyTimer) { clearTimeout(this.reconnectVerifyTimer); this.reconnectVerifyTimer = null; }
     if (this.regRetryTimer) { clearTimeout(this.regRetryTimer); this.regRetryTimer = null; }
     this.releaseRecovery("stop");
     try { this.ua?.stop(); } catch {}

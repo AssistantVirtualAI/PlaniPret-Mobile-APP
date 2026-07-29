@@ -2,6 +2,8 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react-swc';
 import path from 'path';
 import fs from 'fs';
+import tailwindcss from 'tailwindcss';
+import autoprefixer from 'autoprefixer';
 
 const buildId = `${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}Z`;
 const buildTime = new Date().toISOString();
@@ -42,15 +44,7 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id) {
-          // scheduler MUST stay in the same chunk as react-dom.
-          // They share internal references (unstable_scheduleCallback etc.).
-          // Splitting them causes "ce.unstable_scheduleCallback is not a function"
-          // on iOS WKWebView (Capacitor) — the app shows a blank screen.
-          if (
-            id.includes('node_modules/react/') ||
-            id.includes('node_modules/react-dom/') ||
-            id.includes('node_modules/scheduler/')
-          ) return 'vendor-react';
+          if (id.includes('node_modules/react/') || id.includes('node_modules/react-dom/')) return 'vendor-react';
           if (id.includes('node_modules/react-router')) return 'vendor-router';
           if (id.includes('@supabase')) return 'vendor-supabase';
           if (id.includes('recharts') || id.includes('d3-')) return 'vendor-charts';
@@ -65,6 +59,15 @@ export default defineConfig({
     },
   },
   base: './',
+  // The mobile app has its own package.json, so postcss-load-config never
+  // reaches the repo root. Wire Tailwind/Autoprefixer explicitly, otherwise
+  // the built CSS ships without any utility class (blank/broken screens).
+  css: {
+    postcss: {
+      plugins: [tailwindcss({ config: path.resolve(__dirname, 'tailwind.config.ts') }), autoprefixer],
+    },
+  },
+
   server: {
     port: 5175,
     strictPort: true,

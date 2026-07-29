@@ -88,6 +88,7 @@ describe("ppSipProvider — transport recovery guard", () => {
     await bootRegistered();
     expect(created.sockets).toHaveLength(1);
     expect(liveUAs()).toHaveLength(1);
+    expect(created.uas[0].config.contact_uri).toBe("sip:113@113-web.planipret.invalid;transport=ws");
     expect(provider.getSnapshot().status).toBe("registered");
   });
 
@@ -100,8 +101,8 @@ describe("ppSipProvider — transport recovery guard", () => {
     ua.emit("disconnected", { reason: "ws_disconnected", code: 1001 });
     ua.emit("unregistered");
 
-    // JsSIP owns the first recovery window.
-    expect(provider.getReconnectMetrics().recoveryOwner).toBe("jssip");
+    // Our watchdog is the only recovery owner; JsSIP recovery is suppressed.
+    expect(provider.getReconnectMetrics().recoveryOwner).toBe("watchdog");
     expect(created.sockets).toHaveLength(1);
 
     // Drive far past the verification window: the watchdog may rebuild the UA,
@@ -137,9 +138,9 @@ describe("ppSipProvider — transport recovery guard", () => {
     const report = JSON.parse(provider.exportReconnectMetrics());
     expect(report.guardVersion).toBe("v4");
     expect(report.metrics.socketsCreated).toBeGreaterThanOrEqual(1);
-    expect(report.metrics.lastFailureReason).toContain("ws_disconnected");
     expect(Array.isArray(report.metrics.history)).toBe(true);
-    expect(report.metrics.history.some((h: any) => h.phase === "defer")).toBe(true);
+    expect(report.metrics.history.some((h: any) => h.reason === "ws_disconnected")).toBe(true);
+    expect(report.metrics.history.some((h: any) => h.phase === "schedule")).toBe(true);
     expect(["none", "jssip", "watchdog"]).toContain(report.metrics.recoveryOwner);
   });
 });

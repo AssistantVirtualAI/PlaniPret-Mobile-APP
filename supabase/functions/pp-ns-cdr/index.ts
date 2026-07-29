@@ -185,7 +185,7 @@ Deno.serve(async (req) => {
     }
     if (!res) {
       if (action === "list") return await dbFallback(`NS-API unreachable: ${(lastErr as Error)?.message ?? "unknown"}`);
-      return jsonResponse({ error: `NS-API unreachable: ${(lastErr as Error)?.message ?? "unknown"}` }, 502);
+      return jsonResponse({ ok: false, degraded: true, items: [], count: 0, error: `NS-API unreachable: ${(lastErr as Error)?.message ?? "unknown"}` });
     }
     // nsFetch returned a degraded 503 (network error or breaker open) — use cache
     if (res.status === 503 && action === "list") {
@@ -198,7 +198,7 @@ Deno.serve(async (req) => {
     if (!res.ok) {
       const txt = await res.text();
       if (action === "list" && res.status >= 500) return await dbFallback(`NS-API ${res.status}`);
-      return jsonResponse({ error: "NS-API CDR fetch failed", status: res.status, body: txt }, 502);
+      return jsonResponse({ ok: false, degraded: true, items: [], count: 0, error: "NS-API CDR fetch failed", ns_status: res.status, body: txt });
     }
 
     const raw = await res.json();
@@ -302,7 +302,7 @@ Deno.serve(async (req) => {
       } catch (e) {
         const msg = (e as Error).message;
         if (runId) await supabase.from("planipret_edge_function_runs").update({ status: "error", finished_at: new Date().toISOString(), error: msg }).eq("id", runId);
-        return jsonResponse({ error: msg }, 500);
+        return jsonResponse({ ok: false, degraded: true, error: msg, upserted: 0 });
       }
 
 
@@ -312,9 +312,9 @@ Deno.serve(async (req) => {
       return jsonResponse({ ok: true, ...summary });
     }
 
-    return jsonResponse({ error: "unsupported action/method" }, 400);
+    return jsonResponse({ ok: false, error: "unsupported action/method", items: [], count: 0 });
   } catch (e) {
     if (action === "list") return await dbFallback((e as Error).message);
-    return jsonResponse({ error: (e as Error).message }, 502);
+    return jsonResponse({ ok: false, degraded: true, items: [], count: 0, error: (e as Error).message });
   }
 });

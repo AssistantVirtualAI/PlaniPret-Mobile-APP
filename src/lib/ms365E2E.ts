@@ -80,7 +80,9 @@ export async function runMs365E2E(feature: Ms365Feature): Promise<Ms365TestRepor
 
   if (feature === "calendar" || feature === "all") {
     steps.push(await timed("Calendar (événements)", "Calendars.ReadWrite", async () => {
-      const d = await invokeAction("list_calendar_events", { limit: 1 });
+      const now = new Date();
+      const end = new Date(Date.now() + 7 * 86400000);
+      const d = await invokeAction("list_calendar_events", { payload: { start: now.toISOString(), end: end.toISOString(), top: 1 } });
       const n = Array.isArray(d?.events) ? d.events.length : Array.isArray(d?.value) ? d.value.length : 0;
       return { ok: true, message: `${n} événement(s) accessibles` };
     }));

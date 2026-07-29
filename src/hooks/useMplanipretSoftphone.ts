@@ -79,7 +79,6 @@ async function uploadPlanipretVoipToken(token: string, bundleId?: string, extens
     if (error) console.warn("[pp-voip] token upload failed", error);
     else if (changed || firstSeen) {
       try { ppSipProvider.forceReregister(); } catch {}
-      try { window.dispatchEvent(new CustomEvent("pp:sip-force-reregister", { detail: { force: false, reason: "voip_token_ready" } })); } catch {}
     }
   } catch (e) { console.warn("[pp-voip] token upload failed", e); }
 }
@@ -301,7 +300,6 @@ export function useMplanipretSoftphone(enabled = true) {
       .catch(() => undefined);
     onPlanipretNativeReregister(() => {
       try { ppSipProvider.forceReregister(); } catch {}
-      try { window.dispatchEvent(new CustomEvent("pp:sip-force-reregister", { detail: { force: false, reason: "native_reregister" } })); } catch {}
     }).then((fn) => { cleanupReregister = fn; }).catch(() => undefined);
 
     // Native incoming INVITE (background/lockscreen). Wake JsSIP + broadcast so
@@ -398,6 +396,7 @@ export function useMplanipretSoftphone(enabled = true) {
     let softTimer: ReturnType<typeof setTimeout> | null = null;
     let hardTimer: ReturnType<typeof setTimeout> | null = null;
     let lastWatchdogAt = 0;
+    let lastResumeAt = 0;
     const clearTimers = () => {
       if (softTimer) { clearTimeout(softTimer); softTimer = null; }
       if (hardTimer) { clearTimeout(hardTimer); hardTimer = null; }
@@ -460,6 +459,9 @@ export function useMplanipretSoftphone(enabled = true) {
     };
     const un = ppSipProvider.subscribe(() => evaluate());
     const onResume = () => {
+      const now = Date.now();
+      if (now - lastResumeAt < 4000) return;
+      lastResumeAt = now;
       try {
         const cfg = ppSipProvider.getConfig();
         if (cfg) {

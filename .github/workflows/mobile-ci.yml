@@ -1,0 +1,58 @@
+name: Mobile CI (Planiprêt)
+
+on:
+  pull_request:
+    paths:
+      - 'apps/planipret-mobile/**'
+      - '.github/workflows/mobile-ci.yml'
+  workflow_dispatch:
+
+jobs:
+  verify:
+    name: check:imports + build ${{ matrix.platform }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [ios, android]
+    defaults:
+      run:
+        working-directory: apps/planipret-mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Check imports (fails on missing local module)
+        run: npm run check:imports
+
+      - name: Build web bundle (${{ matrix.platform }})
+        run: npx vite build
+
+      - name: Verify Tailwind compiled + fresh build ID
+        run: npm run precheck:build
+
+      - name: Capacitor sync (${{ matrix.platform }})
+        run: npx cap sync ${{ matrix.platform }} || echo "::warning::cap sync skipped (no native project in CI)"
+
+      - name: Upload import report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: import-report-${{ matrix.platform }}
+          path: |
+            apps/planipret-mobile/reports/imports.json
+            apps/planipret-mobile/reports/imports.html
+          if-no-files-found: warn
+
+      - name: Fail if Tailwind not compiled
+        run: |
+          if ! grep -rq -- "--tw-" dist/assets/*.css; then
+            echo "::error::Tailwind CSS not compiled in dist/assets — check postcss.config.js"
+            exit 1
+          fi
+          echo "Tailwind OK"

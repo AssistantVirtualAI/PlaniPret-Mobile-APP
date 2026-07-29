@@ -182,3 +182,18 @@ export async function openMs365Authorize(cfg: {
   // Web: direct navigation
   window.location.href = url;
 }
+/**
+ * Async aliases kept in parity with the web app (`src/lib/ms365OAuth.ts`).
+ * The mobile callback reads these after a deep-link relaunch, where the
+ * WebView storage may have been recreated and only native Preferences hold
+ * the PKCE state.
+ */
+export async function getRememberedMs365RedirectUriAsync(): Promise<string> {
+  return getRememberedMs365RedirectUri();
+}
+
+export async function getRememberedMs365CodeVerifierAsync(
+  state?: string | null,
+): Promise<string | null> {
+  return getRememberedMs365CodeVerifier(state);
+}

@@ -18,12 +18,26 @@ const json = (body: unknown, status = 200) =>
     headers: { ...corsHeaders, "Content-Type": "application/json" },
   });
 
+// Configuration protection: accept every redirect URI shape the mobile/web
+// clients can legitimately produce (custom scheme, capacitor, https), and
+// reject anything else so a tampered redirect_uri can never be exchanged.
+const NATIVE_SCHEMES = ["capacitor:", "planipret:", "ionic:"];
+const CALLBACK_PATHS = ["/auth/microsoft/callback", "/auth/ms365/callback", "/auth/callback"];
+
 function redirectAllowed(value: string): boolean {
-  if (value === "capacitor://localhost/auth/microsoft/callback") return true;
+  const raw = String(value ?? "").trim();
+  if (!raw) return false;
   try {
-    const url = new URL(value);
-    return (url.protocol === "https:" || url.protocol === "http:") &&
-      (url.pathname === "/auth/microsoft/callback" || url.pathname === "/auth/ms365/callback");
+    const url = new URL(raw);
+    const path = url.pathname.replace(/\/+$/, "") || "/";
+    const withHost = `/${[url.hostname, url.pathname].filter(Boolean).join("/")}`
+      .replace(/\/+/g, "/")
+      .replace(/\/+$/, "");
+    const matchesPath = CALLBACK_PATHS.includes(path) || CALLBACK_PATHS.includes(withHost);
+    if (NATIVE_SCHEMES.includes(url.protocol)) return matchesPath;
+    if (url.protocol.startsWith("msauth")) return true;
+    if (url.protocol === "https:" || url.protocol === "http:") return matchesPath;
+    return false;
   } catch {
     return false;
   }

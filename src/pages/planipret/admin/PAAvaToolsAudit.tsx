@@ -128,7 +128,7 @@ export default function PAAvaToolsAudit() {
   const totalPresent = EXPECTED.filter(t => registered.has(t.name)).length;
 
   return (
-    <div className="space-y-5">
+    <div className="pa-page space-y-5">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <h1 style={{ fontFamily: "Inter,sans-serif", fontWeight: 700, fontSize: 22 }}>
@@ -239,7 +239,7 @@ export default function PAAvaToolsAudit() {
           </button>
         </div>
         {readEmailsResult && (
-          <table className="w-full text-xs">
+          <div className="pa-scroll"><table className="w-full text-xs">
             <thead>
               <tr style={{ color: "var(--pp-text-faint)" }}>
                 <th className="text-left py-1">Dossier</th>
@@ -270,7 +270,7 @@ export default function PAAvaToolsAudit() {
                 </tr>
               ))}
             </tbody>
-          </table>
+          </table></div>
         )}
       </div>
     </div>

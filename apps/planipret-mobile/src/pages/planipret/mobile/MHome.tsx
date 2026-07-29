@@ -241,10 +241,21 @@ export default function MHome() {
   const loadBrief = async (force = false) => {
     setBriefLoading(true);
     setBriefErr(null);
-    const { data, error } = await supabase.functions.invoke("pp-ava-brief", { body: { period, force, language: lang } });
+    // Protection: one silent retry, then a friendly localized message — never a raw
+    // "Edge Function returned a non-2xx status code" and never wipe the last brief.
+    let data: any = null;
+    let error: any = null;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const r = await supabase.functions.invoke("pp-ava-brief", { body: { period, force, language: lang } });
+      data = r.data; error = r.error;
+      if (!error) break;
+      await new Promise((res) => setTimeout(res, 800));
+    }
     setBriefLoading(false);
-    if (error || (data as any)?.error) {
-      setBriefErr((data as any)?.error || error?.message || "brief unavailable");
+    if (error || !data || (data as any)?.error) {
+      setBriefErr(lang === "en"
+        ? "Brief temporarily unavailable — pull to refresh."
+        : "Brief temporairement indisponible — tirez pour rafraîchir.");
       return;
     }
     setBrief(data);

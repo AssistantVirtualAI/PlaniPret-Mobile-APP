@@ -9,7 +9,6 @@ const LEGACY_MARKERS = [
   "unregistered -" + " forcing re-register",
 ];
 const REQUIRED_MARKERS = [
-  "reconnect guard active", // accepte v3, v4, etc.
   "sip reconnect #",
   "PP_SIP_RECONNECT_FLOOR_MS",
 ];
@@ -25,6 +24,8 @@ function walk(dir, out = []) {
   return out;
 }
 
+const GUARD_RE = /reconnect guard active v(\d+)/;
+
 function scan(label, files, { requireMarkers = false } = {}) {
   const corpus = files.map((f) => readFileSync(f, "utf8")).join("\n");
   const legacy = LEGACY_MARKERS.filter((m) => corpus.includes(m));
@@ -33,7 +34,10 @@ function scan(label, files, { requireMarkers = false } = {}) {
     process.exit(1);
   }
   if (requireMarkers) {
+    const guard = corpus.match(GUARD_RE);
+    const guardOk = guard && Number(guard[1]) >= 3;
     const missing = REQUIRED_MARKERS.filter((m) => !corpus.includes(m));
+    if (!guardOk) missing.push("reconnect guard active v3+");
     if (missing.length) {
       console.error(`❌ ${label}: garde SIP v3 absent (${missing.join(", ")}).`);
       process.exit(1);

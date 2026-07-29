@@ -18,7 +18,7 @@ type Health = {
 };
 
 const SELECT =
-  "id, user_id, ms365_email, ms365_refresh_token, ms365_token_expiry, maestro_refresh_token, maestro_token_expires_at";
+  "id, user_id, ms365_email, ms365_refresh_token, ms365_token_expiry, maestro_refresh_token, maestro_token_expires_at, maestro_broker_id";
 
 async function elevenLabsHealth(): Promise<Health> {
   const key = Deno.env.get("ELEVENLABS_API_KEY");
@@ -56,7 +56,13 @@ Deno.serve(async (req) => {
       .select(SELECT)
       .eq("user_id", u.user.id)
       .maybeSingle();
-    if (!profile) return j({ error: "no_profile" }, 404);
+    if (!profile) {
+      // Protection: always 200 so the mobile app renders a status card instead of an edge error.
+      return j({ success: true, healthy: false, degraded: true, checked_at: new Date().toISOString(), services: [
+        { service: "ms365", state: "not_configured", detail: "no_profile", can_reconnect: true },
+        { service: "maestro", state: "not_configured", detail: "no_profile", can_reconnect: true },
+      ] });
+    }
 
     const p = profile as any;
     const services: Health[] = [];
@@ -94,6 +100,8 @@ Deno.serve(async (req) => {
     // ---- Maestro -----------------------------------------------------------
     if (!p.maestro_refresh_token) {
       services.push({ service: "maestro", state: "not_configured", detail: "maestro_not_configured", can_reconnect: true });
+    } else if (!p.maestro_broker_id) {
+      services.push({ service: "maestro", state: "error", detail: "missing_maestro_broker_id — reconnect Maestro so sync can attach calls to the broker account", can_reconnect: true });
     } else {
       try {
         const t = await getUserMaestroAccessToken(admin as any, u.user.id);
@@ -116,6 +124,6 @@ Deno.serve(async (req) => {
     return j({ success: true, healthy, checked_at: new Date().toISOString(), services });
   } catch (e) {
     console.error("[pp-connections-status]", e);
-    return j({ error: (e as Error).message }, 500);
+    return j({ success: true, healthy: false, degraded: true, error: (e as Error).message, checked_at: new Date().toISOString(), services: [] });
   }
 });

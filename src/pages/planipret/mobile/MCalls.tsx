@@ -347,23 +347,17 @@ export default function MCalls() {
   // are still missing audio or transcript, then relax to 60s once everything
   // is settled.
   useEffect(() => {
-    // Only poll when recordings tab is open AND some items are still pending.
-    // Start at 30s (not 5s) to avoid constant refreshes.
     if (tab !== "recordings" || !userId) return;
-    const allSettled = recordings.length > 0 && recordings.every((r: any) =>
-      (r.recording_url || r.has_recording) && (r.transcript || r.ai_summary)
-    );
-    if (allSettled) return; // nothing pending — no polling needed
     let cancelled = false;
     let timer: number | null = null;
-    let delay = 30_000; // start at 30s
+    let delay = 5_000;
     const tick = async () => {
       await loadRecordings(true);
       if (cancelled) return;
       const pending = recordings.some((r: any) =>
         !r.recording_url || !r.has_recording || (!r.transcript && !r.ai_summary)
       );
-      delay = pending ? Math.min(delay * 2, 120_000) : 120_000; // max 2min
+      delay = pending ? Math.min(delay * 2, 60_000) : 60_000;
       timer = window.setTimeout(tick, delay);
     };
     timer = window.setTimeout(tick, delay);
@@ -392,7 +386,7 @@ export default function MCalls() {
         callsRefreshDebounceRef.current = window.setTimeout(() => {
           void load();
           if (tab === "recordings") void loadRecordings();
-        }, 8_000); // debounce 8s — évite les refreshes trop fréquents
+        }, 1_000);
       })
       .subscribe();
     return () => {
@@ -531,7 +525,7 @@ export default function MCalls() {
       </div>
 
       {/* Body */}
-      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
+      <div className="flex-1 overflow-y-auto">
         {tab === "recordings" ? (
 
           <>
@@ -1947,7 +1941,7 @@ function VoicemailsTab({
     <div className="px-3 pt-3 pb-4">
       {/* ElevenLabs Greeting Studio — text → voice → push to voicemail box */}
       {profile && (
-        <div className={`mb-3 rounded-2xl ${studioOpen ? "overflow-visible" : "overflow-hidden"}`}
+        <div className="mb-3 rounded-2xl overflow-hidden"
           style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)" }}>
           <button
             onClick={() => setStudioOpen((v) => !v)}
@@ -1968,7 +1962,7 @@ function VoicemailsTab({
             <div style={{ color: "var(--pp-text-muted)", fontSize: 18 }}>{studioOpen ? "−" : "+"}</div>
           </button>
           {studioOpen && (
-            <div className="min-h-0 overflow-visible" style={{ borderTop: "1px solid var(--pp-bg-border-2)" }}>
+            <div style={{ borderTop: "1px solid var(--pp-bg-border-2)" }}>
               <GreetingStudio profile={profile} onProfileChange={reloadProfile as any} />
             </div>
           )}

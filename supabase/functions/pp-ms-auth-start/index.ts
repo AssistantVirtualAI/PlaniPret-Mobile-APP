@@ -22,6 +22,19 @@ Deno.serve(async (req) => {
     );
     const cfg = await readMs365Config(admin);
 
+    // Configuration protection: never advertise a half-configured SSO setup.
+    const problems: string[] = [];
+    if (!cfg.clientId) problems.push("client_id manquant");
+    if (cfg.authMode === "confidential" && !cfg.clientSecret) problems.push("client_secret manquant pour le mode confidentiel");
+
+    if (problems.length) {
+      return json({
+        configured: false,
+        error: `Microsoft SSO mal configuré: ${problems.join(", ")}`,
+        problems,
+      });
+    }
+
     return json({
       configured: Boolean(cfg.clientId),
       client_id: cfg.clientId || null,
@@ -31,7 +44,11 @@ Deno.serve(async (req) => {
       authorize_endpoint: `https://login.microsoftonline.com/${cfg.tenant || "common"}/oauth2/v2.0/authorize`,
       redirect_uris: {
         web: ["/auth/microsoft/callback", "/auth/ms365/callback"],
-        native: ["https://avastatistic.ca/auth/microsoft/callback", "capacitor://localhost/auth/microsoft/callback"],
+        native: [
+          "capacitor://localhost/auth/microsoft/callback",
+          "planipret://auth/microsoft/callback",
+          "https://avastatistic.ca/auth/microsoft/callback",
+        ],
       },
     });
   } catch (error) {

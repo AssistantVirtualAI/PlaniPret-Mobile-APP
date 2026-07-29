@@ -39,7 +39,9 @@ export function useRealtimeManager(userId: string | undefined, handlers: Handler
           if (row.status === "completed" && prev?.status !== "completed") {
             const dur = row.duration_seconds ? `${Math.round(row.duration_seconds)}s` : "";
             toast.success(`Appel terminé${dur ? ` · ${dur}` : ""}`);
-            supabase.functions.invoke("ns-cdrs").catch(() => {});
+            const end = new Date().toISOString();
+            const start = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+            supabase.functions.invoke("pp-ns-cdr", { body: { action: "sync", start, end, limit: 50 } }).catch(() => {});
           }
           if (row.ai_summary && !prev?.ai_summary && !seenInsights.current.has(row.id)) {
             seenInsights.current.add(row.id);
