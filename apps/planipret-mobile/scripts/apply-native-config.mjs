@@ -50,8 +50,6 @@ const IOS_ENTITLEMENTS = `<?xml version="1.0" encoding="UTF-8"?>
 <dict>
 	<key>aps-environment</key>
 	<string>development</string>
-	<key>com.apple.developer.pushkit.unrestricted-voip</key>
-	<true/>
 </dict>
 </plist>
 `;
