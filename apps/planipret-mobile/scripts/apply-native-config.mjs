@@ -1507,6 +1507,35 @@ function patchAndroidNativeFiles() {
   console.log("[native-config] Android PpSipKeepAlive plugin applied.");
 }
 
+function patchIosSplash() {
+  let iosSplashDir = path.join(appDir, "ios", "App", "App", "Assets.xcassets", "Splash.imageset");
+  if (!fs.existsSync(iosSplashDir)) {
+    iosSplashDir = path.join(appDir, "..", "..", "ios", "App", "App", "Assets.xcassets", "Splash.imageset");
+  }
+  const nativeSplashDir = path.join(appDir, "native-config", "splash");
+  
+  if (!fs.existsSync(iosSplashDir) || !fs.existsSync(nativeSplashDir)) {
+    console.warn("[native-config] iOS Splash dir or native-config/splash not found, skipping splash patch.");
+    return;
+  }
+
+  const splash3x = path.join(nativeSplashDir, "splash-3x.png");
+  const splash2x = path.join(nativeSplashDir, "splash-2x.png");
+  const splash1x = path.join(nativeSplashDir, "splash-1x.png");
+
+  if (fs.existsSync(splash3x)) {
+    fs.copyFileSync(splash3x, path.join(iosSplashDir, "splash-2732x2732.png"));
+  }
+  if (fs.existsSync(splash2x)) {
+    fs.copyFileSync(splash2x, path.join(iosSplashDir, "splash-2732x2732-1.png"));
+  }
+  if (fs.existsSync(splash1x)) {
+    fs.copyFileSync(splash1x, path.join(iosSplashDir, "splash-2732x2732-2.png"));
+  }
+
+  console.log("[native-config] iOS Splash images applied from native-config/splash.");
+}
+
 function patchIosNativeFiles() {
   const iosApp = path.join(appDir, "ios", "App", "App");
   if (!fs.existsSync(iosApp)) {
@@ -1557,6 +1586,7 @@ patchIosEntitlements();
 patchAndroidManifest();
 patchAndroidNativeFiles();
 patchIosNativeFiles();
+patchIosSplash();
 
 // Guard: cap sync can regenerate native files — fail loudly if the UIScene /
 // SceneDelegate patch did not land.
