@@ -89,7 +89,7 @@ export default function MMore() {
     })();
   }, [profile?.id]);
 
-  const { sipConnected, reregister } = useMplanipretSoftphone();
+  const { sipConnected, reregister } = useMplanipretSoftphone(false);
   const nsConnected = !!(profile?.ns_extension ?? profile?.extension) && sipConnected;
   const isMs365Connected = ms365Connected(profile);
 
