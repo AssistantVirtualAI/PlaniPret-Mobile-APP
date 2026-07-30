@@ -76,7 +76,14 @@ export default function PermissionsPrimer({ extension, onDone }: Props) {
   return (
     <div
       className="fixed inset-0 z-[1000] flex flex-col"
-      style={{ background: "var(--pp-bg-base)" }}
+      style={{
+        // NOTE: --pp-bg-base is `transparent` inside the dark mobile scope
+        // (the phone frame paints the gradient), so this overlay must set its
+        // own opaque background or the home screen shows through.
+        background: "#060D1A",
+        backgroundImage:
+          "radial-gradient(ellipse 80% 50% at 0% 0%, rgba(34,211,238,0.10), transparent 60%), radial-gradient(ellipse 70% 50% at 100% 100%, rgba(99,102,241,0.10), transparent 60%)",
+      }}
       role="dialog"
       aria-modal="true"
     >
