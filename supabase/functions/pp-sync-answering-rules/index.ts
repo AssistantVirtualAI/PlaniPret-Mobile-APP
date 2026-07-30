@@ -106,73 +106,63 @@ Deno.serve(async (req) => {
     // device ever rings (observed CDR: answer == start, 2 SIP participants).
     // The rule now rings the user's REAL device AORs, read from NS
     // (/users/{ext}/devices), and keeps the ring-all flags as a hint only.
+    // NS-API v2 documented format (AnswerruleFeatureSimRing):
+    //   parameters: array of strings such as "1234wp", "3456;delay=15",
+    //   "confirm_18005551234;delay=20" or the special "<OwnDevices>".
+    // A full SIP URI ("sip:113_mobile@planipret.ca") is NOT a documented
+    // value: NS silently drops it, the sim-ring ends up with an EMPTY target
+    // list and the call terminates instantly on voicemail. That is the real
+    // "straight to voicemail" root cause and it affected every broker.
+    // We therefore send bare device AOR ids (ext + suffix, e.g. "113_mobile")
+    // plus "<OwnDevices>" so NS always forks to every registered device of
+    // {ext}@{domain}, whatever the device naming is on that broker.
+    const bareAor = (aor: string) => String(aor).replace(/^sip:/i, "").split("@")[0].trim();
+
+    const buildRuleParams = (deviceAors: string[]) => {
+      const ids = deviceAors
+        .map(bareAor)
+        .filter((v) => v && v !== "<OwnDevices>");
+      return [...new Set([...ids, "<OwnDevices>"])];
+    };
+
     const buildRulePayload = (ext: string, domain: string, deviceAors: string[]) => {
-      const destinations = deviceAors.map((aor) => ({ destination: aor, timeout: ring_timeout }));
+      const parameters = buildRuleParams(deviceAors);
       return {
         "time-frame": "*",
         "enabled": "yes",                    // voicemail fallback ON after no-answer
-        "do-not-disturb": "no",
-        "do-not-disturb-enabled": "no",
-        "call-screening": "no",
-        "call-screening-enabled": "no",
-        "phone-numbers-to-allow-enabled": "no",
-        "phone-numbers-to-reject-enabled": "no",
-        "reject-anonymous-calls-enabled": "no",
-        "anonymous-call-rejection-enabled": "no",
-        "anonymous-call-rejection": "no",
-        "forward-always-enabled": "no",
-        "forward-on-active-enabled": "no",
-        "forward-on-busy-enabled": "no",
-        "forward-on-dnd-enabled": "no",
-        "forward-when-unregistered-enabled": "no",
-        // --- nested v2 form ---
+        "do-not-disturb": { "enabled": "no" },
+        "call-screening": { "enabled": "no" },
+        "phone-numbers-to-allow": { "enabled": "no" },
+        "phone-numbers-to-reject": { "enabled": "no" },
         "forward-always": { "enabled": "no" },
         "forward-on-active": { "enabled": "no" },
         "forward-on-busy": { "enabled": "no" },
         "forward-on-dnd": { "enabled": "no" },
         "forward-when-unregistered": { "enabled": "no" },
+        "forward-on-spam-call": { "enabled": "no" },
         "simultaneous-ring": {
           "enabled": "yes",
-          "confirm": "no",
-          "timeout": ring_timeout,
-          // Do NOT include the base extension (sip:{ext}@domain). On this NS
-          // tenant it can resolve to a terminating application (SpeakAccount /
-          // voicemail) before the registered devices are forked.
-          "include-user-extension": "no",
-          // Fork to every registered device as well: if the mobile contact has
-          // expired (app backgrounded / OS suspended the WebView), the call must
-          // still reach any other registered terminal instead of dropping to
-          // voicemail after a 0s leg.
-          "ring-all-user-phones": "yes",
-          "parameters": deviceAors,
-          "destinations": destinations,
-          "list": deviceAors,
+          "parameters": parameters,
         },
-        "forward-no-answer": {
-          "enabled": "yes",
-          "destination": `vmail:${ext}`,
-          "target": `vmail:${ext}`,
-          "timeout": ring_timeout,
-        },
-        // --- flat-key aliases (legacy NS builds) ---
+        // No-answer fallback stays on the user record
+        // (ring-no-answer-timeout-seconds) so NS keeps ringing the devices for
+        // the full window before dropping into voicemail.
+        "forward-no-answer": { "enabled": "no" },
+        // --- flat-key aliases kept for legacy NS builds ---
         "simultaneous-ring-enabled": "yes",
-        "simultaneous-ring-confirm": "no",
-        "simultaneous-ring-include-user-extension": "no",
-        "simultaneous-ring-all-user-phones": "yes",
-        "simultaneous-ring-parameters": deviceAors,
-        "sim-ring-include-user-extension": "no",
-        "sim-ring-all-user-phones": "yes",
-        "sim-ring-parameters": deviceAors,
-        "simultaneous-ring-list": deviceAors,
-
-        "sim-ring-destinations": destinations,
-        "ring-timeout": ring_timeout,
-        "timeout": ring_timeout,
-        "forward-no-answer-enabled": "yes",
-        "forward-no-answer-target": `vmail:${ext}`,
-        "forward-no-answer-destination": `vmail:${ext}`,
+        "simultaneous-ring-parameters": parameters,
+        "sim-ring-parameters": parameters,
+        "do-not-disturb-enabled": "no",
+        "call-screening-enabled": "no",
+        "forward-always-enabled": "no",
+        "forward-on-active-enabled": "no",
+        "forward-on-busy-enabled": "no",
+        "forward-on-dnd-enabled": "no",
+        "forward-when-unregistered-enabled": "no",
+        "forward-no-answer-enabled": "no",
       };
     };
+
 
     const isRegisteredDevice = (row: any) => {
       const exp = Number(row?.expires ?? row?.["registration-expires"] ?? row?.["expires-seconds"] ?? 0);
@@ -448,6 +438,10 @@ Deno.serve(async (req) => {
           {
             method: "PUT",
             body: JSON.stringify({
+              // Ring window lives on the user record in NS-API v2. Without it
+              // the fork can time out after the tenant default (often 0-10s)
+              // and the caller lands on voicemail before the devices ring.
+              "ring-no-answer-timeout-seconds": ring_timeout,
               "do-not-disturb": "no",
               "do-not-disturb-enabled": "no",
               "call-screening-enabled": "no",
@@ -463,6 +457,7 @@ Deno.serve(async (req) => {
               "call-forward-busy": "",
               "call-forward-no-answer": "",
             }),
+
           },
           { functionName: "pp-sync-answering-rules" },
         );
@@ -561,14 +556,20 @@ Deno.serve(async (req) => {
           status: vRes.status,
           sim_ring_enabled: simOn,
           stored_targets: targets,
-          covers_mobile: targets.some((t) => t.includes(`${String(ext).toLowerCase()}_mobile`)),
+          covers_mobile: targets.some((t) => t.includes(`${String(ext).toLowerCase()}_mobile`) || t.includes("owndevices")),
           ring_timeout: Number(sim?.timeout ?? stored?.["ring-timeout"] ?? stored?.timeout ?? 0) || null,
           include_user_extension: String(sim?.["include-user-extension"] ?? stored?.["simultaneous-ring-include-user-extension"] ?? "").toLowerCase(),
-          honored: simOn && targets.length > 0 && !targets.some((t) => t === `sip:${String(ext).toLowerCase()}@${String(domain).toLowerCase()}` || t === `${String(ext).toLowerCase()}@${String(domain).toLowerCase()}`),
+          // Honored = sim-ring on with at least one usable fork target that is
+          // not a self-reference to the bare extension (which terminates on
+          // voicemail/SpeakAccount instead of forking to the devices).
+          honored: simOn && targets.length > 0 &&
+            targets.some((t) => t.includes("owndevices") || (t.startsWith(String(ext).toLowerCase()) && t !== String(ext).toLowerCase())) &&
+            !targets.some((t) => t === String(ext).toLowerCase() || t === `sip:${String(ext).toLowerCase()}@${String(domain).toLowerCase()}` || t === `${String(ext).toLowerCase()}@${String(domain).toLowerCase()}`),
         };
         if (!verify.honored) {
           console.error("[syncBroker] NS ignored sim-ring keys", JSON.stringify({ extension: ext, domain, verify, sent: devices.aors }));
         }
+
       } catch (e) {
         verify = { error: (e as Error).message };
       }
