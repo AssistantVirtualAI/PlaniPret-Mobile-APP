@@ -37,7 +37,18 @@ export default function PermissionsPrimer({ extension, onDone }: Props) {
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<PermissionsResult | null>(null);
 
+  const markBooted = () => {
+    try {
+      const w = window as unknown as { __PP_REACT_BOOTED__?: boolean; __PP_MARK_BOOT_READY__?: () => void };
+      w.__PP_REACT_BOOTED__ = true;
+      w.__PP_MARK_BOOT_READY__?.();
+    } catch { /* ignore */ }
+  };
+
   const handleContinue = async () => {
+    // Native permission dialogs freeze the WebView; make sure any boot watchdog
+    // is already satisfied so it can't paint a "startup interrupted" screen.
+    markBooted();
     setBusy(true);
     try {
       const r = await runPermissionFlow(extension);
