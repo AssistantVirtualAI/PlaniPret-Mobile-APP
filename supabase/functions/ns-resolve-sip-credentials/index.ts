@@ -417,8 +417,9 @@ Deno.serve(async (req) => {
     sip_proxy: coreServer,
     sip_core_server: coreServer,
     sip_uri: sipUri,
-    sip_ws_url: NS_SIP_WSS_URL,
-    sip_wss_url: NS_SIP_WSS_URL,
+    // Always edge-filtered: NS core nodes drain WSS clients (close 1001).
+    sip_ws_url: edgeWssUrls([NS_SIP_WSS_URL])[0],
+    sip_wss_url: edgeWssUrls([NS_SIP_WSS_URL])[0],
     sip_ws_urls: edgeWssUrls([NS_SIP_WSS_URL, `wss://${coreServer}:9002`]),
     sip_wss_urls: edgeWssUrls([NS_SIP_WSS_URL, `wss://${coreServer}:9002`]),
     display_name: brokerDisplayName,
