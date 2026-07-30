@@ -100,8 +100,8 @@ Deno.serve(async (req) => {
       if (!ext) return { broker_id: broker.user_id, success: false, error: "no_extension" };
 
       const sipPassword = await genPassword(broker.user_id);
-      const mobileId = `${ext}_mobile`;
-      const widgetId = `${ext}_web`;
+      const mobileId = `${ext}M`;
+      const widgetId = `${ext}W`;
       const base = `${NS_API_BASE_URL}/domains/${encodeURIComponent(domain)}/users/${encodeURIComponent(ext)}/devices`;
 
       const nsUser = await ensureNsUser(broker, ext, domain, sipPassword);
@@ -110,10 +110,13 @@ Deno.serve(async (req) => {
       const listRes = await fetch(base, { headers: nsHeaders });
       const existing: any[] = listRes.ok ? (await listRes.json().catch(() => [])) : [];
       const arr = Array.isArray(existing) ? existing : [];
-      const hasDev = (needle: string) => arr.some((d: any) => (d?.device ?? d?.aor ?? "").toString().toLowerCase().includes(needle));
+      const hasDev = (needle: string) => arr.some((d: any) => {
+        const id = (d?.device ?? d?.aor ?? "").toString().toLowerCase().replace(/^sip:/i, "").split("@")[0];
+        return id === needle.toLowerCase();
+      });
 
       const create = async (id: string, model: string, needle: string) => {
-        const isMobileDev = needle === "_mobile";
+        const isMobileDev = needle === "M";
         if (hasDev(needle)) {
           // Device exists — patch it to ensure WSS transport, empty user-agent filter,
           // and (critically) the 1800s registration expiry + automatic NAT traversal.
@@ -138,7 +141,7 @@ Deno.serve(async (req) => {
           return { existed: true, id, patched: !!r?.ok, status: r?.status ?? 0 };
         }
 
-        const isMobile = needle === "_mobile";
+        const isMobile = needle === "M";
         // core-server is MANDATORY — without it JsSIP/PJSIP cannot register.
         // Both mobile and web use WSS transport so JsSIP (WebRTC) can connect.
         // Empty device-sip-allowed-user-agent accepts any softphone (JsSIP, SIP.js, etc.).
@@ -172,8 +175,8 @@ Deno.serve(async (req) => {
         return { created: r.ok, status: r.status, id, data };
       };
 
-      const mobile = await create(mobileId, "Mobile Softphone", "_mobile");
-      const widget = await create(widgetId, "Web Softphone", "_web");
+      const mobile = await create(mobileId, "Mobile Softphone", "M");
+      const widget = await create(widgetId, "Web Softphone", "W");
 
       const secretName = `pp_sip_${broker.id ?? broker.user_id}_mobile`;
       try {

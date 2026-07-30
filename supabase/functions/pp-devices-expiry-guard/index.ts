@@ -103,7 +103,7 @@ Deno.serve(async (req) => {
         if (!res.ok) { stats.errors += 1; return { ext, error: `list_${res.status}` }; }
         const arr = await res.json().catch(() => []);
         const devices = Array.isArray(arr) ? arr : [];
-        const wanted = [`${ext}_mobile`, `${ext}_web`];
+        const wanted = [`${ext}M`, `${ext}W`];
         const out: any = { ext, broker: broker.full_name, devices: [] as any[] };
 
         for (const id of wanted) {
@@ -135,7 +135,7 @@ Deno.serve(async (req) => {
               body: JSON.stringify({
                 "device-sip-registration-expiry-seconds": TARGET_EXPIRY,
                 "device-sip-nat-traversal-enabled": "automatic",
-                "device-push-enabled": id.endsWith("_mobile") ? "yes" : "no",
+                "device-push-enabled": id.endsWith("M") ? "yes" : "no",
               }),
             }).catch(() => null);
             if (put?.ok) { stats.repaired += 1; entry.status = "repaired"; }
