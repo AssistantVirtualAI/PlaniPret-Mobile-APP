@@ -1,4 +1,5 @@
 // Planipret mobile — softphone hook bound to the NS-API PBX.
+import { edgeOnlyWssUrls } from "@/lib/planipret/sip/sipEdgePolicy";
 //
 // This is fully independent from the Lemtel softphone: registration uses the
 // NS-API SIP credentials returned by the `ns-resolve-sip-credentials` edge
@@ -240,12 +241,15 @@ export function useMplanipretSoftphone(enabled = true) {
         if (cancelled) return;
         if (error || !data || (data as any)?.error) return;
         const d = data as any;
-        const wssUrl = String(d.sip_wss_url ?? d.sip_ws_url ?? "").trim();
-        const wssUrls = Array.isArray(d.sip_wss_urls)
+        const rawWss = String(d.sip_wss_url ?? d.sip_ws_url ?? "").trim();
+        const rawWssList = Array.isArray(d.sip_wss_urls)
           ? d.sip_wss_urls
           : Array.isArray(d.sip_ws_urls)
             ? d.sip_ws_urls
-            : undefined;
+            : [];
+        // Never register against a NetSapiens core node (1001 close loop).
+        const wssUrls = edgeOnlyWssUrls([rawWss, ...rawWssList]);
+        const wssUrl = wssUrls[0];
         if (!wssUrl || !/^wss?:\/\//i.test(wssUrl)) {
           console.error("[softphone] invalid SIP WSS URL", { wssUrl, device_id: d.device_id });
           return;
@@ -278,14 +282,18 @@ export function useMplanipretSoftphone(enabled = true) {
           const webRes = await supabase.functions.invoke("ns-resolve-sip-credentials", { body: { client_type: "web" } });
           const w = webRes.data as any;
           if (!webRes.error && w && !w.error && w.sip_username && w.sip_password) {
-            const webWss = String(w.sip_wss_url ?? w.sip_ws_url ?? wssUrl).trim();
+            const webWssList = edgeOnlyWssUrls([
+              String(w.sip_wss_url ?? w.sip_ws_url ?? wssUrl).trim(),
+              ...(Array.isArray(w.sip_wss_urls) ? w.sip_wss_urls : wssUrls),
+            ]);
+            const webWss = webWssList[0];
             webConfig = {
               ...sipConfig,
               sipUsername: String(w.sip_username),
               password: String(w.sip_password),
               sipDomain: String(w.sip_domain || sipConfig.sipDomain),
-              wssUrl: /^wss?:\/\//i.test(webWss) ? webWss : wssUrl,
-              wssUrls: Array.isArray(w.sip_wss_urls) ? w.sip_wss_urls : wssUrls,
+              wssUrl: webWss,
+              wssUrls: webWssList,
             };
           } else {
             console.warn("[softphone] web device unavailable, falling back to mobile device for JsSIP");
