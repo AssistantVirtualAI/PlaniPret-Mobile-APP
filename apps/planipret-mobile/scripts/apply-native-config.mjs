@@ -563,9 +563,10 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private var verifyDelayMs: Double = 8000
     private var registerExpires: Int = 1800
     // NetSapiens closes the socket when it sees two REGISTERs for the same AoR
-    // back-to-back. Debounce every REGISTER for 2s after a 200 OK.
+    // back-to-back. Debounce non-challenge REGISTERs both before and after 200 OK.
+    private var lastRegisterSentTime: Date?
     private var lastRegisterOkTime: Date?
-    private let registerDebounceSec: TimeInterval = 2.0
+    private let registerDebounceSec: TimeInterval = 5.0
     private var reconnectPending = false
     private var backgroundHandoffWorkItem: DispatchWorkItem?
     private var pathMonitor: NWPathMonitor?
@@ -851,6 +852,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       sip += "Call-ID: " + callIdReg + "\\r\\nCSeq: " + String(seq) + " REGISTER\\r\\nContact: " + contact + ";expires=" + String(registerExpires) + "\\r\\nExpires: " + String(registerExpires) + "\\r\\nUser-Agent: Planipret iOS KeepAlive\\r\\nSupported: outbound,path,gruu\\r\\nAllow: INVITE,ACK,CANCEL,BYE,OPTIONS,MESSAGE,INFO,UPDATE,REGISTER\\r\\n"
       if let ch = challenge, !password.isEmpty { sip += (proxyAuth ? "Proxy-Authorization: " : "Authorization: ") + digest(challenge: ch) + "\\r\\n" }
       sip += "Content-Length: 0\\r\\n\\r\\n"
+      lastRegisterSentTime = Date()
       socket?.send(.string(sip)) { [weak self] err in
         DispatchQueue.main.async {
           guard let self = self else { return }
@@ -1512,11 +1514,22 @@ function patchIosInfoPlist() {
 \t\t<string>voip</string>
 \t\t<string>remote-notification</string>
 \t\t<string>fetch</string>
+\t\t<string>processing</string>
 \t</array>
 `;
     xml = xml.includes("<key>UIBackgroundModes</key>")
       ? xml.replace(/<key>UIBackgroundModes<\/key>\s*<array>[\s\S]*?<\/array>/, modes.trim())
       : xml.replace(/\n<\/dict>\s*\n<\/plist>\s*$/, `${modes}\n</dict>\n</plist>\n`);
+  }
+  // BGTaskSchedulerPermittedIdentifiers is required when UIBackgroundModes contains 'processing'.
+  if (!xml.includes("<key>BGTaskSchedulerPermittedIdentifiers</key>")) {
+    const bgTasks = `
+\t<key>BGTaskSchedulerPermittedIdentifiers</key>
+\t<array>
+\t\t<string>com.planipret.mobile.sip-keepalive</string>
+\t</array>
+`;
+    xml = xml.replace(/\n<\/dict>\s*\n<\/plist>\s*$/, `${bgTasks}\n</dict>\n</plist>\n`);
   }
 
   // App Review compliance keys: purpose strings + encryption export declaration.
@@ -1533,8 +1546,8 @@ function patchIosInfoPlist() {
       xml = xml.replace(/\n<\/dict>\s*\n<\/plist>\s*$/, `\n\t<key>${key}</key>\n\t<string>${value}</string>\n</dict>\n</plist>\n`);
     }
   }
-  // Portrait-only (matches the AppDelegate override below).
-  const portraitArray = "\n\t<key>UISupportedInterfaceOrientations</key>\n\t<array>\n\t\t<string>UIInterfaceOrientationPortrait</string>\n\t</array>\n\t<key>UISupportedInterfaceOrientations~ipad</key>\n\t<array>\n\t\t<string>UIInterfaceOrientationPortrait</string>\n\t</array>\n";
+  // iPhone: portrait-only. iPad: all 4 orientations (required by App Store for multitasking).
+  const portraitArray = "\n\t<key>UISupportedInterfaceOrientations</key>\n\t<array>\n\t\t<string>UIInterfaceOrientationPortrait</string>\n\t</array>\n\t<key>UISupportedInterfaceOrientations~ipad</key>\n\t<array>\n\t\t<string>UIInterfaceOrientationPortrait</string>\n\t\t<string>UIInterfaceOrientationPortraitUpsideDown</string>\n\t\t<string>UIInterfaceOrientationLandscapeLeft</string>\n\t\t<string>UIInterfaceOrientationLandscapeRight</string>\n\t</array>\n";
   xml = xml.replace(/\n\t?<key>UISupportedInterfaceOrientations(~ipad)?<\/key>\s*<array>[\s\S]*?<\/array>/g, "");
   xml = xml.replace(/\n<\/dict>\s*\n<\/plist>\s*$/, `${portraitArray}</dict>\n</plist>\n`);
 

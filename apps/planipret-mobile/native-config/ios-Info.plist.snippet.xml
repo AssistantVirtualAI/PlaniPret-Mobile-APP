@@ -11,13 +11,22 @@
 <key>NSContactsUsageDescription</key>
 <string>Planiprêt accède à vos contacts pour faciliter les appels et la gestion des clients.</string>
 
-<!-- Modes audio en arrière-plan (appels VoIP) -->
+<!-- Modes audio en arrière-plan (appels VoIP).
+     NOTE: 'processing' est requis pour BGTaskScheduler (App Store code 90771).
+-->
 <key>UIBackgroundModes</key>
 <array>
     <string>audio</string>
     <string>voip</string>
     <string>remote-notification</string>
     <string>fetch</string>
+    <string>processing</string>
+</array>
+<!-- BGTaskSchedulerPermittedIdentifiers est obligatoire quand UIBackgroundModes
+     contient 'processing' (App Store code 90771). -->
+<key>BGTaskSchedulerPermittedIdentifiers</key>
+<array>
+    <string>com.planipret.mobile.sip-keepalive</string>
 </array>
 
 <!-- Deep link schemes:
@@ -58,10 +67,18 @@
 <key>aps-environment</key>
 <string>production</string>
 
-<!-- Désactiver le zoom de l'interface -->
+<!-- iPhone: portrait seulement.
+     iPad: les 4 orientations sont requises par l'App Store pour le multitasking (code 90474). -->
 <key>UISupportedInterfaceOrientations</key>
 <array>
     <string>UIInterfaceOrientationPortrait</string>
+</array>
+<key>UISupportedInterfaceOrientations~ipad</key>
+<array>
+    <string>UIInterfaceOrientationPortrait</string>
+    <string>UIInterfaceOrientationPortraitUpsideDown</string>
+    <string>UIInterfaceOrientationLandscapeLeft</string>
+    <string>UIInterfaceOrientationLandscapeRight</string>
 </array>
 
 <!-- Export compliance: standard HTTPS/TLS + SRTP only -->
