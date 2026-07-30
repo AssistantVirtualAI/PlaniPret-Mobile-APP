@@ -673,6 +673,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private func releaseRegistration(_ why: String) {
       if !Thread.isMainThread { DispatchQueue.main.async { [weak self] in self?.releaseRegistration(why) }; return }
       backgroundHandoffWorkItem?.cancel(); backgroundHandoffWorkItem = nil
+      foregroundReleaseWorkItem?.cancel(); foregroundReleaseWorkItem = nil
       timer?.invalidate(); timer = nil
       socket?.cancel(with: .goingAway, reason: nil); socket = nil
       endBackgroundTask(); setStatus("idle", why)
@@ -691,11 +692,28 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       backgroundHandoffWorkItem = work
       DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
     }
+    // Cancellable work item that releases the native socket once JS is registered.
+    private var foregroundReleaseWorkItem: DispatchWorkItem?
     @objc private func onForeground() {
       appActive = true
-      // Hand the AOR back to JsSIP and ask the web layer to re-REGISTER.
-      releaseRegistration("foreground_js_owns")
+      // CRITICAL FIX (voicemail bug): Do NOT close the native socket immediately.
+      // JsSIP needs 5-15 s to reconnect + get REGISTER 200 OK from NetSapiens.
+      // Closing the native socket first leaves the extension UNREGISTERED,
+      // causing every inbound call to go straight to voicemail.
+      //
+      // Strategy: ask JsSIP to re-REGISTER, then keep the native socket alive
+      // for up to 20 s. stopSipService() (called by JS once registered) will
+      // cancel this timer and close the socket cleanly.
       notifyListeners("sipReregisterRequested", data: ["reason": "enter_foreground"])
+      foregroundReleaseWorkItem?.cancel()
+      let work = DispatchWorkItem { [weak self] in
+        guard let self = self else { return }
+        self.foregroundReleaseWorkItem = nil
+        // Hard-cap: release after 20 s even if JS never confirmed.
+        self.releaseRegistration("foreground_js_owns")
+      }
+      foregroundReleaseWorkItem = work
+      DispatchQueue.main.asyncAfter(deadline: .now() + 20.0, execute: work)
     }
 
     private func beginNativeOwnership(_ why: String) {
