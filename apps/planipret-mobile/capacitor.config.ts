@@ -28,7 +28,10 @@ const config: CapacitorConfig = {
       enabled: false,
     },
     SplashScreen: {
-      launchShowDuration: 1800,
+      // The web layer calls SplashScreen.hide() on first paint (src/index.tsx).
+      // Auto-hide is disabled so WebKit stops logging the splash timeout warning.
+      launchAutoHide: false,
+      launchShowDuration: 0,
       backgroundColor: '#0A1425',   // Bleu nuit Planiprêt
       showSpinner: false,
     },

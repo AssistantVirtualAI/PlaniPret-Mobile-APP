@@ -177,10 +177,15 @@ function deviceCreatePayload(id: string, isMobile: boolean, password: string, co
     "core-server": coreServer,
     "device-provisioning-registration-core-server": coreServer,
     "server-nat": isMobile ? "yes" : "no",
+    // Documented NS-API v2 device fields. The registration expiry default is 60s,
+    // which marks the softphone unregistered between re-REGISTERs (calls -> voicemail).
+    "device-sip-registration-expiry-seconds": 1800,
+    "device-sip-nat-traversal-enabled": "automatic",
     transport: "WSS",
     "device-srtp-enabled": "opportunistic",
     "device-sip-allowed-user-agent": "",
     "device-push-enabled": isMobile ? "yes" : "no",
+
   };
 }
 
@@ -362,9 +367,15 @@ Deno.serve(async (req) => {
       // Normalize every broker's device to the same transport/NAT/push profile.
       transport: "WSS",
       "server-nat": clientType === "mobile" ? "yes" : "no",
+      // Documented NS-API v2 keys — default expiry of 60s was dropping the
+      // registration between re-REGISTERs; "automatic" NAT traversal keeps the
+      // Contact rewritten for mobile networks.
+      "device-sip-registration-expiry-seconds": 1800,
+      "device-sip-nat-traversal-enabled": "automatic",
       "device-push-enabled": clientType === "mobile" ? "yes" : "no",
     },
   );
+
 
 
   return json({

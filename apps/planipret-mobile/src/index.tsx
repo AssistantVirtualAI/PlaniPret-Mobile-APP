@@ -49,7 +49,7 @@ function watchFirstPaint(container: HTMLElement) {
   const deadline = Date.now() + 20000;
   const tick = () => {
     const painted = container.children.length > 0 && !container.querySelector('[data-pp-boot-visible]');
-    if (painted) { markBootReady(); return; }
+    if (painted) { markBootReady(); void hideSplash('first-paint'); return; }
     if (Date.now() < deadline) window.setTimeout(tick, 150);
   };
   window.setTimeout(tick, 0);
@@ -130,18 +130,28 @@ if (typeof document !== 'undefined') {
   });
 }
 
-async function hideSplashSoon() {
+let splashHidden = false;
+/**
+ * Hide the native splash as soon as the web app is ready.
+ * `launchAutoHide` is disabled in capacitor.config.ts, so WebKit no longer
+ * logs the "SplashScreen timeout" warning: we own the hide, and a safety
+ * timer guarantees it always happens even if React never commits.
+ */
+async function hideSplash(reason: string) {
+  if (splashHidden) return;
+  splashHidden = true;
   try {
     const { SplashScreen } = await import('@capacitor/splash-screen');
     await SplashScreen.hide({ fadeOutDuration: 200 });
+    console.log('[PP] splash hidden', reason);
   } catch {}
 }
 
 async function bootstrap() {
   console.log('[PP] bootstrap:start', { native: Capacitor.isNativePlatform(), proto: window.location.protocol });
-  // Hide splash immediately so a render error can never leave the user staring
-  // at the launch image with no signal.
-  void hideSplashSoon();
+  // Safety net: never leave the user staring at the launch image, even if the
+  // first React commit never happens (render error, slow chunk, no network).
+  window.setTimeout(() => { void hideSplash('safety-timeout'); }, 4000);
   try {
     const container = document.getElementById('root');
     if (!container) throw new Error('Root element not found');
@@ -184,6 +194,7 @@ async function bootstrap() {
     console.error('[PP] Render failed:', e);
     const el = document.getElementById('root');
     if (el) {
+      void hideSplash('render-failed');
       el.innerHTML =
         '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0A1425;color:#E2E8F0;font-family:system-ui;padding:24px;text-align:center">Impossible de démarrer l\'application. Vérifiez votre connexion et relancez.</div>';
     }

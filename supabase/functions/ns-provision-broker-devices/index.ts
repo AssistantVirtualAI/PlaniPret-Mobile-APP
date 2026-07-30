@@ -141,10 +141,19 @@ Deno.serve(async (req) => {
             "core-server": "core1.cluster1.ucstack.io",
             "device-provisioning-registration-core-server": "core1.cluster1.ucstack.io",
             "server-nat": isMobile ? "yes" : "no",
+            // NS-API v2 documented fields (docs.ns-api.com/reference/createdevice):
+            // - device-sip-registration-expiry-seconds defaults to 60s: the device is
+            //   considered UNREGISTERED after 60s + grace, which is why softphones fell
+            //   off between re-REGISTERs and calls went straight to voicemail.
+            // - device-sip-nat-traversal-enabled "automatic" is the documented default
+            //   for virtually every device (replaces the legacy `server-nat` flag).
+            "device-sip-registration-expiry-seconds": 1800,
+            "device-sip-nat-traversal-enabled": "automatic",
             "transport": "WSS",
             "device-srtp-enabled": "opportunistic",
             "device-sip-allowed-user-agent": "",
             "device-push-enabled": isMobile ? "yes" : "no",
+
           }),
         });
         const data = await nsRead(r);
