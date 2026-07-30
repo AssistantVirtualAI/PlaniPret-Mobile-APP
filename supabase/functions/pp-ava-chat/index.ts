@@ -351,6 +351,21 @@ Deno.serve(async (req) => {
         }
       }
 
+      // Maestro clients/brokers directory (endpoints /users/{id}/clients|brokers)
+      if (/\bclients?\b|\bcourtiers?\b|\bbrokers?\b|\bdossiers?\b|\bportefeuille\b/i.test(userMessage)) {
+        try {
+          const isBroker = /\bcourtiers?\b|\bbrokers?\b/i.test(userMessage);
+          const r = await invokeFunction("maestro-actions", authHeader, {
+            action: isBroker ? "list_brokers" : "list_clients",
+            payload: { search: tokens.names[0], limit: 25 },
+          });
+          if (r.ok && (r.data as any)?.success) {
+            const list = (r.data as any).clients ?? (r.data as any).brokers ?? [];
+            dataBlocks.push(`${isBroker ? "Courtiers" : "Clients"} Maestro: ${JSON.stringify(list).slice(0, 3000)}`);
+          }
+        } catch (e) { console.error("pp-ava-chat maestro list fail", e); }
+      }
+
       if (dataBlocks.length) appContext += `\n${dataBlocks.join("\n")}`;
     }
 
@@ -388,6 +403,7 @@ SMS non lus: ${smsUnread ?? 0}`;
     : "LANGUAGE: ALWAYS answer 100% in English (including suggestion labels and titles), even if the underlying data or these instructions are in French. Never reply in French."}
  Réponds court et actionnable. Tu peux proposer jusqu'à 4 suggestions (kind: call/sms/email/reminder/maestro_action/ms365_action/open_voice/open_coach).
  Pour 'call' mets payload.number. Pour 'sms' mets payload.number et payload.message. Pour 'email' préfère ms365_action avec payload.action='send_email'. Pour 'reminder' payload.title/due_at. Pour 'maestro_action' payload.action et payload.* requis.
+ MAESTRO CLIENTS/COURTIERS: tu peux consulter la liste des clients et des courtiers du courtier ainsi que leurs profils détaillés. Utilise kind='maestro_action' avec payload.action parmi: list_clients (payload.search, payload.limit), client_profile (payload.client_id), list_brokers (payload.search), broker_profile (payload.broker_id). Si la section "Clients Maestro" ou "Courtiers Maestro" apparaît dans [Contexte], réponds directement avec ces données (nom, téléphone, courriel) sans redemander.
  Pour Microsoft utilise kind='ms365_action' et payload.action parmi: read_emails, read_email_detail, list_calendar_events, send_email, create_calendar_event, update_calendar_event, delete_calendar_event, send_teams_message, reply_teams_message, search_contact.
  RÉPERTOIRE: quand l'utilisateur demande d'envoyer un courriel/SMS/appel à une personne par son nom, cherche d'abord son adresse dans [Contexte] (section "Contacts trouvés" + "Contact Microsoft"). Si tu trouves une correspondance unique, propose directement l'action ms365_action send_email (payload.to = [email], subject, body) pour confirmation. Si plusieurs correspondances, liste-les et demande laquelle. Si aucune, propose un ms365_action search_contact avec payload.query = nom, ou demande l'adresse exacte.
  Pour créer un rendez-vous: payload.action='create_calendar_event' avec subject, start:{dateTime,timeZone}, end:{dateTime,timeZone}, attendees (array d'emails), isOnlineMeeting (défaut true = lien Teams auto).

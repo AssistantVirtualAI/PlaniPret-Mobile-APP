@@ -86,9 +86,12 @@ export async function applyAvaSuggestion(s: AvaSuggestion, ctx: AvaActionContext
         return { ok: true, message: "Rappel créé" };
       }
       case "maestro_action": {
-        const { data, error } = await supabase.functions.invoke("maestro-pipeline-orchestrator", {
-          body: s.payload ?? {},
-        });
+        const action = String(s.payload?.action ?? "");
+        const isDirectory = ["list_clients", "client_profile", "list_brokers", "broker_profile"].includes(action);
+        const { data, error } = await supabase.functions.invoke(
+          isDirectory ? "maestro-actions" : "maestro-pipeline-orchestrator",
+          { body: isDirectory ? { action, payload: s.payload ?? {} } : (s.payload ?? {}) },
+        );
         if (error) return { ok: false, message: error.message };
         return { ok: true, message: (data as any)?.message ?? "Action Maestro exécutée" };
       }

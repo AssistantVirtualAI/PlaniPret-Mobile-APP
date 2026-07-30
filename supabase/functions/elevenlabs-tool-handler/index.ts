@@ -102,6 +102,42 @@ Deno.serve(async (req) => {
         result = { success: true, voicemails: data ?? [], count: data?.length ?? 0 };
         break;
       }
+      case "list_clients":
+      case "list_my_clients": {
+        const r = await callFn("maestro-actions", authHeader, {
+          action: "list_clients",
+          payload: { search: parameters.search ?? parameters.query, limit: parameters.limit ?? 25 },
+        });
+        result = r?.success ? { success: true, clients: r.clients ?? [], count: (r.clients ?? []).length } : { success: false, error: r?.error ?? "Échec liste clients" };
+        break;
+      }
+      case "client_profile":
+      case "get_client_profile": {
+        const r = await callFn("maestro-actions", authHeader, {
+          action: "client_profile",
+          payload: { client_id: parameters.client_id ?? parameters.id },
+        });
+        result = r?.success ? { success: true, profile: r.profile ?? r.data ?? null } : { success: false, error: r?.error ?? "Échec profil client" };
+        break;
+      }
+      case "list_brokers":
+      case "list_my_brokers": {
+        const r = await callFn("maestro-actions", authHeader, {
+          action: "list_brokers",
+          payload: { search: parameters.search ?? parameters.query, limit: parameters.limit ?? 25 },
+        });
+        result = r?.success ? { success: true, brokers: r.brokers ?? [], count: (r.brokers ?? []).length } : { success: false, error: r?.error ?? "Échec liste courtiers" };
+        break;
+      }
+      case "broker_profile":
+      case "get_broker_profile": {
+        const r = await callFn("maestro-actions", authHeader, {
+          action: "broker_profile",
+          payload: { broker_id: parameters.broker_id ?? parameters.id },
+        });
+        result = r?.success ? { success: true, profile: r.profile ?? r.data ?? null } : { success: false, error: r?.error ?? "Échec profil courtier" };
+        break;
+      }
     }
 
     // Audit log

@@ -19,6 +19,8 @@ Tu as accès aux fonctionnalités suivantes :
 - Chercher des contacts (search_contact)
 - Écouter ton brief du jour (get_daily_briefing) ou un rapport de performance détaillé jour/semaine/mois (get_performance_report)
 - Lire les voicemails non écoutés (read_voicemails)
+- Consulter la liste des clients Maestro (list_clients) et le profil détaillé d'un client (client_profile avec client_id)
+- Consulter la liste des courtiers Maestro (list_brokers) et le profil d'un courtier (broker_profile avec broker_id)
 
 RÈGLES IMPORTANTES :
 - Avant toute action irréversible (appel, envoi courriel, création RDV, envoi SMS), demande TOUJOURS confirmation.
@@ -32,6 +34,7 @@ RÈGLES IMPORTANTES :
 const TOOLS = [
   "make_call", "send_sms", "send_email", "create_task", "create_calendar_event",
   "get_daily_briefing", "get_performance_report", "search_contact", "read_emails", "get_call_history", "read_voicemails",
+  "list_clients", "client_profile", "list_brokers", "broker_profile",
 ];
 
 Deno.serve(async (req) => {

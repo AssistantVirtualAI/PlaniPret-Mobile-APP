@@ -58,7 +58,14 @@ function extractDest(pn: any): { extension: string | null; type: string | null }
     pn?.["dest_type"] ?? pn?.["destination-type"] ?? pn?.dest_app ??
     pn?.["dial-rule-application"] ?? pn?.["dial_rule_application"] ?? null;
 
+  // NS-API v2 user route stores the target as dial-rule-parameter = "user_113".
+  const ruleParam = String(
+    pn?.["dial-rule-parameter"] ?? pn?.["dial_rule_parameter"] ?? "",
+  ).trim();
+  const paramUser = /^user_([a-z0-9._-]+)$/i.exec(ruleParam)?.[1] ?? null;
+
   const candidates: any[] = [
+    paramUser,
     pn?.["to-user"], pn?.["to_user"], pn?.["dest-user"], pn?.["dest_user"],
     pn?.dest, pn?.destination, pn?.["destination-user"], pn?.["destination_user"],
     pn?.["destination-user-name"], pn?.["destination_user_name"],
@@ -69,6 +76,7 @@ function extractDest(pn: any): { extension: string | null; type: string | null }
     pn?.["to-connection"], pn?.["forward-all-destination"], pn?.["dest-extension"],
     pn?.user, pn?.subscriber, pn?.extension, pn?.ext,
   ];
+
 
   let ext: string | null = null;
   for (const raw of candidates) {
@@ -131,15 +139,17 @@ function normalizeAssignment(input: any, domain: string) {
   };
 }
 
-function buildToUserDidPayload(ext: string, domain: string) {
+function buildToUserDidPayload(ext: string, _domain: string) {
   return {
-    // NS-API v2 Phonenumber user route.
+    // NS-API v2 Phonenumber user route: application + parameter only.
+    // Sending translation-destination-* rewrites the To-URI and breaks DID
+    // matching ("no subscriber at the number called").
     "dial-rule-application": "user",
     "dial-rule-parameter": `user_${ext}`,
-    "dial-rule-translation-destination-user": ext,
     enabled: "yes",
   };
 }
+
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -286,7 +296,68 @@ Deno.serve(async (req) => {
       });
     }
 
+    // Repair DIDs that are not routed to a user (e.g. "to-user-residential" with an
+    // empty parameter → caller hears "the subscriber you are trying to reach is not in
+    // service"). NS-API v2 requires dial-rule-application=user + dial-rule-parameter=user_<ext>.
+    if (action === "repair_dids") {
+      const r = await nsFetchFirstOk([
+        `/domains/${encodeURIComponent(domain)}/phonenumbers?limit=1000`,
+        `/domains/${encodeURIComponent(domain)}/phone-numbers?limit=1000`,
+      ]);
+      if (!r.ok) return jsonResponse({ success: false, error: `NS-API list failed (${r.status})`, detail: r.data }, 200);
+      const raw = Array.isArray(r.data) ? r.data : (r.data?.data ?? r.data?.items ?? []);
+      const numbers = (raw ?? []).map(normalizeNumber).filter((n: any) => n.raw);
+
+      const db = supaAdmin();
+      const { data: assigns } = await db
+        .from("planipret_did_assignments")
+        .select("phone_number_e164,phone_number_digits,extension")
+        .eq("domain", domain);
+      const byDigits = new Map<string, string>();
+      for (const a of (assigns ?? []) as any[]) {
+        const d = String(a.phone_number_digits ?? String(a.phone_number_e164 ?? "").replace(/\D/g, ""));
+        if (d) byDigits.set(d, String(a.extension));
+      }
+
+      const only = String(payload?.phone_number ?? "").replace(/\D/g, "");
+      const maxBatch = Math.max(1, Math.min(200, Number(payload?.limit ?? 40)));
+      const repaired: any[] = [];
+      const orphans: string[] = [];
+      const failed: any[] = [];
+      let remaining = 0;
+
+      for (const n of numbers) {
+        const digits = String(n.raw).replace(/\D/g, "");
+        if (only && digits !== only && digits !== `1${only}`) continue;
+        const app = String(n.application ?? "");
+        const okRoute = app === "user" && !!n.extension;
+        if (okRoute) continue;
+        const ext = n.extension ?? byDigits.get(digits) ?? byDigits.get(digits.replace(/^1/, "")) ?? null;
+        if (!ext) { orphans.push(digits); continue; }
+        if (repaired.length + failed.length >= maxBatch) { remaining++; continue; }
+        const put = await nsFetchFirstOk([
+          `/domains/${encodeURIComponent(domain)}/phonenumbers/${encodeURIComponent(digits)}`,
+          `/domains/${encodeURIComponent(domain)}/phone-numbers/${encodeURIComponent(digits)}`,
+        ], { method: "PUT", body: JSON.stringify(buildToUserDidPayload(String(ext), domain)) });
+        if (put.ok) repaired.push({ number: digits, extension: ext, was: app || null });
+        else failed.push({ number: digits, extension: ext, status: put.status, detail: put.data });
+      }
+
+      return jsonResponse({
+        success: true, domain,
+        checked: numbers.length,
+        repaired_count: repaired.length,
+        repaired,
+        remaining,
+        orphans_count: orphans.length,
+        orphans: orphans.slice(0, 50),
+        failed,
+      });
+
+    }
+
     if (action === "sync_assignments") {
+
 
       const assignments = Array.isArray(payload?.assignments) ? payload.assignments : [];
       const rows = assignments

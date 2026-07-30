@@ -246,15 +246,17 @@ Deno.serve(async (req) => {
       return digits.length === 10 ? `1${digits}` : digits;
     };
 
-    const buildDidPayload = (ext: string, domain: string) => ({
-      // Documented Phonenumber routing: application=user, parameter=user_<ext>.
-      // Do not mix undocumented aliases: NS may accept HTTP 202 while retaining
-      // the previous dial rule.
+    const buildDidPayload = (ext: string, _domain: string) => ({
+      // Documented Phonenumber routing (phonenumbers.md / updatephonenumberuser):
+      // ONLY application + parameter. Never send translation-* fields — writing
+      // either `<ext>` or the literal `[*]` rewrites the To-URI and NS answers
+      // "no subscriber at the number called".
       "dial-rule-application": "user",
       "dial-rule-parameter": `user_${ext}`,
-      "dial-rule-translation-destination-user": ext,
       enabled: "yes",
     });
+
+
 
     // Read a DID back from NS and decide whether it really routes to the user.
     const DID_DEST_FIELDS = [
@@ -291,13 +293,18 @@ Deno.serve(async (req) => {
       const dest = DID_DEST_FIELDS.map((f) => String(row?.[f] ?? "")).filter(Boolean).join(" ").toLowerCase();
       const badApp = /vmail|voicemail|speakaccount|speakeraccount|auto-?attendant|conference|queue/.test(`${app} ${dest}`);
       if (badApp) return false;
+      // Regression guard: a previous build wrote the extension into the
+      // translation destination-user, which broke DID matching ("number not in
+      // service"). Any value other than the documented `[*]` must be rewritten.
+      const transDest = String(row?.["dial-rule-translation-destination-user"] ?? "[*]").trim();
+      if (transDest && transDest !== "[*]") return false;
       const appOk = app === "user";
-      const extRe = new RegExp(`(^|[^0-9])${ext}([^0-9]|$)`);
       const destOk = dest.split(/\s+/).includes(`user_${ext.toLowerCase()}`) ||
         dest.split(/\s+/).includes(ext.toLowerCase()) ||
         dest.includes(`${ext.toLowerCase()}@${domain.toLowerCase()}`);
       return appOk && destOk;
     };
+
 
     const repairDidRoutes = async (ext: string, domain: string) => {
       if (!repair_dids) return { skipped: true, reason: "disabled" };
@@ -332,15 +339,13 @@ Deno.serve(async (req) => {
         }
 
         // 2) Write.
-        const endpoints = [
-          before.endpoint,
-          `/domains/${encodeURIComponent(domain)}/phonenumbers/${encodeURIComponent(pn)}`,
-          `/domains/${encodeURIComponent(domain)}/phone-numbers/${encodeURIComponent(pn)}`,
-          `/domains/${encodeURIComponent(domain)}/numbers/${encodeURIComponent(pn)}`,
-        ].filter(Boolean) as string[];
+        // Write ONLY to the endpoint that actually returned the number, so we
+        // never create/patch a phantom row on an alias path.
+        const endpoints = [before.endpoint].filter(Boolean) as string[];
         let lastStatus = 0;
         let ok = false;
         for (const endpoint of [...new Set(endpoints)]) {
+
           const res = await nsFetch(endpoint, { method: "PUT", body: JSON.stringify(payload) }, { functionName: "pp-sync-answering-rules" });
           lastStatus = res.status;
           await res.text().catch(() => {});

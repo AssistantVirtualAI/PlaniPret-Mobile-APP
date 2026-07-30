@@ -136,7 +136,10 @@ Deno.serve(async (req) => {
 
   // 4) DID inventory — probe domain-wide AND user-scoped endpoints (NS v1/v2 variants)
   const didProbes = [
-    await get(`/domains/${d}/phonenumbers`),
+    // The unpaginated NS endpoint silently returns only the first 100 DIDs.
+    // This tenant has 350+, so it produced false NO_DID_POINTING_TO_EXT
+    // verdicts for extensions whose number was beyond page one.
+    await get(`/domains/${d}/phonenumbers?limit=1000`),
     await get(`/domains/${d}/users/${e}/phonenumbers`),
     await get(`/domains/${d}/phonenumbers?user=${e}`),
   ];
@@ -186,7 +189,8 @@ Deno.serve(async (req) => {
   const ruleList = arrOf(rules.data).filter((r) => r && typeof r === "object");
   const tfOf = (r: any) => String(r?.["time-frame"] ?? r?.timeframe ?? r?.time_frame ?? "");
   const defaultRule = ruleList.find((r) => ["default", "*", "always"].includes(tfOf(r).toLowerCase()));
-  const activeRule = ruleList.find((r) => yes(r?.["active"]) ) ?? defaultRule;
+  // NS-API v2 exposes the computed active timeframe as `is-active`.
+  const activeRule = ruleList.find((r) => yes(r?.["is-active"])) ?? defaultRule;
 
   if (!ruleList.length) {
     verdicts.push("NO_ANSWERING_RULE");
@@ -197,7 +201,8 @@ Deno.serve(async (req) => {
   }
 
   const simRing = activeRule?.["simultaneous-ring"] ?? null;
-  const simList: any[] = arrOf(simRing?.destinations ?? simRing?.list ?? activeRule?.["simultaneous-ring-list"] ?? []);
+  // NS-API v2 AnswerruleFeatureSimRing stores destinations in `parameters`.
+  const simList: any[] = arrOf(simRing?.parameters ?? []);
   const simEnabled = yes(simRing?.enabled) || yes(activeRule?.["simultaneous-ring-enabled"]);
   const ringTimeout = Number(
     simRing?.timeout ?? activeRule?.["ring-timeout"] ?? activeRule?.["timeout"] ?? 0,
@@ -240,19 +245,26 @@ Deno.serve(async (req) => {
     verdicts.push("NO_REGISTRATION_VISIBLE");
     issues.push("NS-API ne montre aucune registration active pour cette extension (endpoint devices/subscriptions).");
   }
-  const mobileRegistered = [...registeredAors].some((a) => a.includes(`${ext.toLowerCase()}_mobile`));
+  const mobileAor = `${ext.toLowerCase()}m`;
+  const legacyMobileAor = `${ext.toLowerCase()}_mobile`;
+  const mobileRegistered = [...registeredAors].some((a) => {
+    const user = a.replace(/^sip:/, "").split("@")[0];
+    return user === mobileAor || user === legacyMobileAor;
+  });
   if (registeredAors.size && !mobileRegistered) {
     verdicts.push("MOBILE_DEVICE_NOT_REGISTERED");
-    issues.push(`Le device ${ext}_mobile n'apparaît pas enregistré côté NS.`);
+    issues.push(`Le device ${ext}M n'apparaît pas enregistré côté NS.`);
   }
 
   // sim-ring destinations vs registered devices
   const simTargets = simList.map((x) => String(x?.destination ?? x ?? "").toLowerCase()).filter(Boolean);
-  const simCoversMobile = simTargets.some((t) => t.includes(`${ext.toLowerCase()}_mobile`));
+  const simCoversMobile = simTargets.some((t) =>
+    t === "<owndevices>" || t.includes(`${ext.toLowerCase()}m`) || t.includes(`${ext.toLowerCase()}_mobile`)
+  );
   const simCoversExtOnly = simTargets.length > 0 && !simCoversMobile;
   if (simCoversExtOnly) {
     verdicts.push("SIM_RING_MISSING_MOBILE");
-    issues.push(`La sonnerie simultanée ne cible pas ${ext}_mobile: ${simTargets.join(", ")}`);
+    issues.push(`La sonnerie simultanée ne cible pas ${ext}M / <OwnDevices>: ${simTargets.join(", ")}`);
   }
 
   // DIDs pointing at this extension — dedupe by number, match on ANY destination-ish field
@@ -269,6 +281,7 @@ Deno.serve(async (req) => {
   });
   const destFields = [
     "destination", "dialrule-application", "dial-rule-application",
+    "dialrule-parameter", "dial-rule-parameter",
     "dialrule-destination", "dial-rule-destination", "application",
     "to-user", "users", "user", "dest-user", "destination-user",
     "dialrule-translation-destination", "dial-rule-translation-destination",

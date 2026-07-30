@@ -105,15 +105,17 @@ function sipToken(value: string): string {
 }
 
 function buildContactUri(cfg: PpSipConfig): string {
-  const user = sipToken(cfg.sipUsername || cfg.extension);
+  // Device AORs are case-sensitive in this NetSapiens tenant (`113M`, not
+  // `113m`). Do not pass the Contact user through sipToken(), which lowercases.
+  const user = String(cfg.sipUsername || cfg.extension || "pp")
+    .replace(/[^a-zA-Z0-9_.!~*'()%+-]/g, "-")
+    .slice(0, 64) || "pp";
   const ext = sipToken(cfg.extension || cfg.sipUsername);
   const domain = String(cfg.sipDomain || "").trim().toLowerCase();
-  // NetSapiens validates the Contact host: a `.invalid` pseudo-domain
-  // (RFC 7118) is rejected by some builds and the socket is closed with 1001
-  // before the REGISTER completes. Always advertise the real SIP domain and
-  // keep the device identity in a URI parameter instead of the host.
-  const host = /^[a-z0-9.-]+$/.test(domain) ? domain : `${ext}-web.planipret.invalid`;
-  return `sip:${user}@${host};transport=ws;pp-ua=web-${ext}`;
+  // NS-API v2 documents the registration URI as sip:[device]@[domain]. The
+  // edge SBC belongs only in the WSS transport URL, never in the SIP AOR.
+  const host = /^[a-z0-9.-]+$/.test(domain) ? domain : "planipret.ca";
+  return `sip:${user}@${host};transport=wss;pp-ua=web-${ext}`;
 }
 
 function isKnownJsSipParserCrash(value: unknown): boolean {

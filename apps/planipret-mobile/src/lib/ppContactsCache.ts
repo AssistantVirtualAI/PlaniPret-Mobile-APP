@@ -7,7 +7,8 @@
  */
 import { supabase } from "@/integrations/supabase/client";
 
-type Action = "list" | "shared" | "directory" | "maestro";
+type Action = "list" | "shared" | "directory" | "maestro" | "maestro_clients" | "maestro_brokers";
+const ALL_ACTIONS: Action[] = ["list", "shared", "directory", "maestro", "maestro_clients", "maestro_brokers"];
 type Entry = { at: number; value: any[] };
 
 const TTL_MS = 60_000;
@@ -35,7 +36,7 @@ function saveToDisk(action: Action, entry: Entry) {
 }
 
 // Seed in-memory cache from disk on module init (synchronous, no I/O beyond localStorage).
-(["list", "shared", "directory", "maestro"] as Action[]).forEach((a) => {
+ALL_ACTIONS.forEach((a) => {
   const disk = loadFromDisk(a);
   if (disk) cache.set(a, disk);
 });
@@ -47,7 +48,18 @@ function keyFor(payload: any): any[] {
 const isTransient = (msg: string) =>
   /failed to send a request|failed to fetch|networkerror|aborted|load failed/i.test(msg);
 
-async function fetchNs(action: Exclude<Action, "maestro">, limit: number): Promise<any[]> {
+/** Scott's new Maestro endpoints: /users/{id}/clients and /users/{id}/brokers. */
+async function fetchMaestroList(kind: "clients" | "brokers", limit: number): Promise<any[]> {
+  const { data, error } = await supabase.functions.invoke("maestro-actions", {
+    body: { action: kind === "clients" ? "list_clients" : "list_brokers", payload: { limit } },
+  });
+  const payload: any = data ?? {};
+  if (error && !payload?.success) throw new Error(payload?.error || error.message || kind);
+  const list = payload[kind];
+  return Array.isArray(list) ? list : [];
+}
+
+async function fetchNs(action: Exclude<Action, "maestro" | "maestro_clients" | "maestro_brokers">, limit: number): Promise<any[]> {
   // The directory payload is large; a suspended WebView or a route change can
   // abort the request mid-flight. Retry transient transport failures once
   // before surfacing an error so screens don't log false negatives.
@@ -105,6 +117,10 @@ export async function getPpContacts(
   const p = (async () => {
     const value = action === "maestro"
       ? await fetchMaestro()
+      : action === "maestro_clients"
+      ? await fetchMaestroList("clients", opts.limit ?? 500)
+      : action === "maestro_brokers"
+      ? await fetchMaestroList("brokers", opts.limit ?? 500)
       : await fetchNs(action, opts.limit ?? 500);
     const entry: Entry = { at: Date.now(), value };
     cache.set(action, entry);
@@ -124,7 +140,7 @@ export function invalidatePpContacts(action?: Action) {
   else {
     cache.clear();
     try {
-      (["list", "shared", "directory", "maestro"] as Action[]).forEach((a) => localStorage.removeItem(lsKey(a)));
+      ALL_ACTIONS.forEach((a) => localStorage.removeItem(lsKey(a)));
     } catch {}
   }
 }

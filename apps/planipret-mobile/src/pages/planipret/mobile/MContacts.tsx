@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { useOutletContext, useNavigate } from "react-router-dom";
-import { Search, Phone, MessageSquare, Mail, Users, UserCog, BookUser, X, Calendar, ListChecks, Loader2, ExternalLink, Sparkles, Plus, Star, Copy, Send, Filter, Check, AlertTriangle, History } from "lucide-react";
+import { Search, Phone, MessageSquare, Mail, Users, UserCog, BookUser, X, Calendar, ListChecks, Loader2, ExternalLink, Sparkles, Plus, Star, Copy, Send, Filter, Briefcase, Check, AlertTriangle, History } from "lucide-react";
 import { saveAppointment, loadAppointments, subscribeAppointments, type ApptHistoryEntry } from "@/lib/appointmentHistory";
 import AvaSummarizeSheet from "@/components/planipret/ava/AvaSummarizeSheet";
 import { supabase } from "@/integrations/supabase/client";
@@ -39,7 +39,7 @@ async function copyToClipboard(value: string, label: string) {
 }
 
 
-type Tab = "personal" | "favorites" | "directory";
+type Tab = "personal" | "favorites" | "directory" | "clients";
 
 // ---- Favorites (local, per-device) ----
 const FAV_KEY = "planipret.contacts.favorites.v1";
@@ -113,6 +113,7 @@ export default function MContacts() {
     return cached ? (cached as any[]).map(normalizeContact) : [];
   });
   const [directory, setDirectory] = useState<any[]>(() => peekPpContacts("directory") ?? []);
+  const [clients, setClients] = useState<any[]>(() => peekPpContacts("maestro_clients") ?? []);
   const [favorites, setFavorites] = useState<FavEntry[]>(() => loadFavs());
   const [loadingTab, setLoadingTab] = useState<Tab | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -156,15 +157,40 @@ export default function MContacts() {
     if (!opts.force && loadedTabsRef.current.has(which)) return;
     // If the shared cache already has data for this action, skip the spinner
     // and refresh in the background so the page renders instantly.
-    const cachedHint = which === "directory" ? peekPpContacts("directory") : peekPpContacts("list");
+    const cachedHint = which === "directory"
+      ? peekPpContacts("directory")
+      : which === "clients"
+      ? peekPpContacts("maestro_clients")
+      : peekPpContacts("list");
     const runBackground = opts.background || (!opts.force && !!cachedHint);
     if (!runBackground) setLoadingTab(which);
     setLoadError(null);
     try {
       const { getPpContacts } = await import("@/lib/ppContactsCache");
-      if (which === "directory") {
-        const rows = await getPpContacts("directory", { limit: opts.limit ?? 500, force: opts.force });
-        setDirectory(rows as any[]);
+      if (which === "clients") {
+        const rows = await getPpContacts("maestro_clients", { limit: opts.limit ?? 500, force: opts.force });
+        setClients((rows as any[]).map((c) => ({ ...c, __maestro_kind: "client" })));
+      } else if (which === "directory") {
+        const [dirRes, brokersRes] = await Promise.allSettled([
+          getPpContacts("directory", { limit: opts.limit ?? 500, force: opts.force }),
+          getPpContacts("maestro_brokers", { limit: opts.limit ?? 500, force: opts.force }),
+        ]);
+        const dirRows = dirRes.status === "fulfilled" ? (dirRes.value as any[]) : [];
+        const brokerRows = (brokersRes.status === "fulfilled" ? (brokersRes.value as any[]) : [])
+          .map((c) => ({ ...c, __maestro_kind: "broker" }));
+        const seen = new Set<string>();
+        const keyOf = (c: any) => String(c?.email ?? "").toLowerCase()
+          || String(c?.phone ?? c?.cell_phone ?? "").replace(/\D/g, "")
+          || String(c?.extension ?? "");
+        const merged: any[] = [];
+        for (const c of [...dirRows, ...brokerRows]) {
+          const k = keyOf(c);
+          if (k && seen.has(k)) continue;
+          if (k) seen.add(k);
+          merged.push(c);
+        }
+        setDirectory(merged);
+        if (dirRes.status === "rejected") throw dirRes.reason;
       } else {
         const [backend, device] = await Promise.allSettled([
           getPpContacts("list", { limit: opts.limit ?? 500, force: opts.force }),
@@ -202,7 +228,7 @@ export default function MContacts() {
   // Prefetch personal + directory in parallel after first paint so subsequent
   // tab switches render from memory. Dedup + TTL handled by ppContactsCache.
   useEffect(() => {
-    prefetchPpContacts(["list", "directory"], 500);
+    prefetchPpContacts(["list", "directory", "maestro_clients", "maestro_brokers"], 500);
     const quick = window.setTimeout(() => { void load("directory", { limit: 120, background: true }); }, 250);
     const full = window.setTimeout(() => { void load("directory", { force: true, limit: 500, background: true }); }, 1000);
     return () => { window.clearTimeout(quick); window.clearTimeout(full); };
@@ -245,7 +271,10 @@ export default function MContacts() {
 
 
   const list = useMemo(() => {
-    const src: any[] = tab === "personal" ? personal : tab === "favorites" ? favorites : directory;
+    const src: any[] = tab === "personal" ? personal
+      : tab === "favorites" ? favorites
+      : tab === "clients" ? clients
+      : directory;
     const tokens = tokenize(q);
     let out = src;
     if (tab === "directory") {
@@ -296,7 +325,7 @@ export default function MContacts() {
       }
     }
     return out;
-  }, [tab, personal, favorites, directory, q, filterDept, filterTeam, sortBy]);
+  }, [tab, personal, favorites, directory, clients, q, filterDept, filterTeam, sortBy]);
 
   const deptOptions = useMemo(() => {
     const s = new Set<string>();
@@ -409,6 +438,7 @@ export default function MContacts() {
           { id: "personal", label: t("contacts.personal") || "Personnels", Icon: Users },
           { id: "favorites", label: t("contacts.favorites") || "Favoris", Icon: Star },
           { id: "directory", label: t("contacts.directory") || "Annuaire", Icon: BookUser },
+          { id: "clients", label: t("contacts.clients") || "Clients", Icon: Briefcase },
         ] as const).map((p) => {
           const active = tab === p.id;
           return (
@@ -724,6 +754,7 @@ function ContactDetailSheet({
   const [smsOpen, setSmsOpen] = useState(false);
   const [emailOpen, setEmailOpen] = useState(false);
   const [apptOpen, setApptOpen] = useState(false);
+  const [mProfile, setMProfile] = useState<any | null>(null);
 
   const name = `${contact.first_name ?? ""} ${contact.last_name ?? ""}`.trim()
     || contact.name || contact.display_name || contact.phone || contact.email || "Contact";
@@ -738,6 +769,28 @@ function ContactDetailSheet({
   const phone: string | undefined = rawPhone || extension;
   const email: string | undefined = contact.email || contact.mail || contact.email_address;
   const maestroId: string | undefined = contact.maestro_client_id || contact.external_id || contact.id;
+
+  // Lazy-load the Maestro profile (/users/{id}/clients|brokers/{id}/profile)
+  const maestroKind: string | undefined = contact.__maestro_kind;
+  useEffect(() => {
+    let cancel = false;
+    setMProfile(null);
+    if (!maestroKind) return;
+    const targetId = contact.maestro_client_id ?? contact.id;
+    if (!targetId) return;
+    (async () => {
+      try {
+        const { data } = await supabase.functions.invoke("maestro-actions", {
+          body: {
+            action: maestroKind === "broker" ? "broker_profile" : "client_profile",
+            payload: maestroKind === "broker" ? { broker_id: targetId } : { client_id: targetId },
+          },
+        });
+        if (!cancel && (data as any)?.success) setMProfile((data as any).profile ?? null);
+      } catch { /* non-blocking */ }
+    })();
+    return () => { cancel = true; };
+  }, [maestroKind, contact.maestro_client_id, contact.id]);
 
   useEffect(() => {
     let cancel = false;
@@ -849,6 +902,29 @@ function ContactDetailSheet({
             style={{ background: "linear-gradient(135deg,#2D1A5A,#9B7FE8)" }}>
             <Sparkles className="w-3.5 h-3.5" /> Résumer l'historique avec AVA
           </button>
+        )}
+
+        {/* Maestro profile (clients / brokers endpoints) */}
+        {mProfile && (
+          <div className="mb-3 p-3 rounded-xl" style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)" }}>
+            <div className="text-[10px] font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--pp-text-muted)" }}>
+              {maestroKind === "broker" ? (t("contacts.brokerProfile") || "Profil courtier") : (t("contacts.clientProfile") || "Profil client")}
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {Object.entries(mProfile)
+                .filter(([k, v]) =>
+                  !k.startsWith("__") &&
+                  !["id", "name", "display_name", "first_name", "last_name", "maestro_client_id"].includes(k) &&
+                  v !== null && v !== "" && typeof v !== "object")
+                .slice(0, 12)
+                .map(([k, v]) => (
+                  <div key={k}>
+                    <div className="text-[9px] uppercase" style={{ color: "var(--pp-text-muted)" }}>{k.replace(/_/g, " ")}</div>
+                    <div className="text-xs" style={{ color: "var(--pp-text-primary)" }}>{String(v)}</div>
+                  </div>
+                ))}
+            </div>
+          </div>
         )}
 
 

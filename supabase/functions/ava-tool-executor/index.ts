@@ -51,6 +51,25 @@ async function maestroFetch(ctx: Ctx, path: string, init?: RequestInit) {
   return r.json().catch(() => ({}));
 }
 
+/** Call the maestro-actions edge function with service-role auth (Scott's /users/{id}/... endpoints). */
+async function maestroActions(ctx: Ctx, action: string, payload: Record<string, unknown> = {}) {
+  const { data: prof } = await ctx.admin
+    .from("planipret_profiles")
+    .select("maestro_broker_id")
+    .eq("id", ctx.profile.id)
+    .maybeSingle();
+  const userId = prof?.maestro_broker_id ?? ctx.profile.maestro_broker_id ?? null;
+  const r = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/maestro-actions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      apikey: Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
+    },
+    body: JSON.stringify({ action, payload: { ...payload, user_id: userId } }),
+  });
+  return await r.json().catch(() => ({ success: false, error: "invalid_response" }));
+}
+
 async function broadcastNav(ctx: Ctx, route: string, extra?: any) {
   // Use Supabase Realtime broadcast so the mobile app can navigate live.
   try {
@@ -414,6 +433,33 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
       const result = await maestroFetch(ctx, `/api/v1/clients/${p.client_id}/communications?limit=${p?.limit ?? 20}`);
       return { success: true, communications: result?.data ?? result, count: (result?.data ?? result)?.length ?? 0 };
     } catch (e) { return { success: false, error: String(e) }; }
+  },
+
+  // ===== MAESTRO — endpoints mobiles (/users/{id}/clients|brokers) =====
+  async list_my_clients(ctx, p) {
+    const r = await maestroActions(ctx, "list_clients", { search: p?.search, limit: p?.limit ?? 25 });
+    return r?.success
+      ? { success: true, clients: r.clients ?? [], count: (r.clients ?? []).length }
+      : { success: false, error: r?.error ?? "maestro_list_clients_failed" };
+  },
+
+  async get_maestro_client_profile(ctx, p) {
+    if (!p?.client_id) return { success: false, error: "client_id_required" };
+    const r = await maestroActions(ctx, "client_profile", { client_id: p.client_id });
+    return r?.success ? { success: true, profile: r.profile ?? r.data ?? null } : { success: false, error: r?.error ?? "maestro_client_profile_failed" };
+  },
+
+  async list_my_brokers(ctx, p) {
+    const r = await maestroActions(ctx, "list_brokers", { search: p?.search, limit: p?.limit ?? 25 });
+    return r?.success
+      ? { success: true, brokers: r.brokers ?? [], count: (r.brokers ?? []).length }
+      : { success: false, error: r?.error ?? "maestro_list_brokers_failed" };
+  },
+
+  async get_maestro_broker_profile(ctx, p) {
+    if (!p?.broker_id) return { success: false, error: "broker_id_required" };
+    const r = await maestroActions(ctx, "broker_profile", { broker_id: p.broker_id });
+    return r?.success ? { success: true, profile: r.profile ?? r.data ?? null } : { success: false, error: r?.error ?? "maestro_broker_profile_failed" };
   },
 
   async create_task(ctx, p) {
