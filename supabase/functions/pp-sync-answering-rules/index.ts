@@ -1,5 +1,5 @@
 // pp-sync-answering-rules — Apply the standard Planiprêt answering rule
-// (simultaneously ring {ext}_mobile, 25s timeout, then voicemail) to
+// (simultaneously ring {ext}M, 25s timeout, then voicemail) to
 // brokers in NetSapiens.
 //
 // Modes:
@@ -9,6 +9,7 @@
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { nsFetch } from "../_shared/planipret-ns.ts";
+import { mobileDeviceId, isMobileDeviceId } from "../_shared/pp-device-ids.ts";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -109,11 +110,11 @@ Deno.serve(async (req) => {
     // NS-API v2 documented format (AnswerruleFeatureSimRing):
     //   parameters: array of strings such as "1234wp", "3456;delay=15",
     //   "confirm_18005551234;delay=20" or the special "<OwnDevices>".
-    // A full SIP URI ("sip:113_mobile@planipret.ca") is NOT a documented
+    // A full SIP URI ("sip:113M@planipret.ca") is NOT a documented
     // value: NS silently drops it, the sim-ring ends up with an EMPTY target
     // list and the call terminates instantly on voicemail. That is the real
     // "straight to voicemail" root cause and it affected every broker.
-    // We therefore send bare device AOR ids (ext + suffix, e.g. "113_mobile")
+    // We therefore send bare device AOR ids (ext + suffix, e.g. "113M")
     // plus "<OwnDevices>" so NS always forks to every registered device of
     // {ext}@{domain}, whatever the device naming is on that broker.
     const bareAor = (aor: string) => String(aor).replace(/^sip:/i, "").split("@")[0].trim();
@@ -188,7 +189,7 @@ Deno.serve(async (req) => {
     // Keep every provisioned device as fallback so NS actually rings instead of
     // terminating at SpeakAccount/VMail after a 0-second leg.
     const mobileOnly = (aors: string[], ext: string) =>
-      aors.filter((a) => a.toLowerCase().includes(`${String(ext).toLowerCase()}_mobile`));
+      aors.filter((a) => isMobileDeviceId(a, ext));
 
     const mobileFirst = (aors: string[], ext: string) => {
       const mobile = mobileOnly(aors, ext);
@@ -200,7 +201,7 @@ Deno.serve(async (req) => {
       // Last-resort fallback: never leave the rule pointing at a single dead
       // convention AOR — `<OwnDevices>` makes NS fork to whatever the user has
       // actually registered instead of answering instantly with voicemail.
-      const fallback = [`sip:${ext}_mobile@${domain}`, "<OwnDevices>"];
+      const fallback = [`sip:${mobileDeviceId(ext)}@${domain}`, "<OwnDevices>"];
       try {
         const res = await nsFetch(
           `/domains/${encodeURIComponent(domain)}/users/${encodeURIComponent(ext)}/devices`,
@@ -570,7 +571,7 @@ Deno.serve(async (req) => {
           status: vRes.status,
           sim_ring_enabled: simOn,
           stored_targets: targets,
-          covers_mobile: targets.some((t) => t.includes(`${String(ext).toLowerCase()}_mobile`) || t.includes("owndevices")),
+          covers_mobile: targets.some((t) => isMobileDeviceId(t, ext) || t.includes("owndevices")),
           ring_timeout: Number(sim?.timeout ?? stored?.["ring-timeout"] ?? stored?.timeout ?? 0) || null,
           include_user_extension: String(sim?.["include-user-extension"] ?? stored?.["simultaneous-ring-include-user-extension"] ?? "").toLowerCase(),
           // Honored = sim-ring on with at least one usable fork target that is

@@ -348,13 +348,28 @@ export default function PAMobileDevices() {
     }
     setRows((report.data as any).rows ?? []);
     setStats((report.data as any).stats ?? { total: 0, ok: 0, missing: 0, error: 0, partial: 0 });
-    const provision = await supabase.functions.invoke("ns-provision-broker-devices", { body: { bulk: true, batch_size: 8, force: true } });
-    setSyncingDevices(false);
-    if (provision.error || !(provision.data as any)?.success) {
-      toast.error(t.toastProvisionDevicesError, { description: (provision.data as any)?.error || provision.error?.message });
-      return;
+    // Chunked loop: the edge function stops before the 150s platform timeout and
+    // returns `next_offset`; keep calling until it reports done.
+    let offset = 0;
+    let succeeded = 0;
+    let total = 0;
+    for (let guard = 0; guard < 50; guard++) {
+      const provision = await supabase.functions.invoke("ns-provision-broker-devices", {
+        body: { bulk: true, batch_size: 8, force: true, offset, max_ms: 90000 },
+      });
+      const res = provision.data as any;
+      if (provision.error || !res?.success) {
+        setSyncingDevices(false);
+        toast.error(t.toastProvisionDevicesError, { description: res?.error || provision.error?.message });
+        return;
+      }
+      succeeded += res.succeeded ?? 0;
+      total = res.total ?? total;
+      if (res.done || res.next_offset == null) break;
+      offset = res.next_offset;
     }
-    toast.success(t.toastSyncDone((provision.data as any)?.succeeded ?? 0, (provision.data as any)?.total ?? 0));
+    setSyncingDevices(false);
+    toast.success(t.toastSyncDone(succeeded, total));
     await refresh(true);
   }, [refresh, t]);
 

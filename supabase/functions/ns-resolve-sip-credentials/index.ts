@@ -10,6 +10,10 @@ import {
   isMaestroTelecomConfigured,
   maestroTelecomFetch,
 } from "../_shared/maestro-telecom.ts";
+import {
+  mobileDeviceId,
+  webDeviceId,
+} from "../_shared/pp-device-ids.ts";
 
 
 const corsHeaders = {
@@ -58,9 +62,10 @@ function normalizeClientType(v: unknown): ClientType {
   return "mobile";
 }
 
+// Naming convention: <ext>M (mobile) / <ext>W (web+widget). No underscore —
+// Snap Mobile provisioning and the web widget mangle `_` in the AOR user part.
 function deviceNameFor(ext: string, ct: ClientType): string {
-  if (ct === "web" || ct === "widget") return `${ext}W`;
-  return `${ext}M`;
+  return ct === "web" ? webDeviceId(ext) : mobileDeviceId(ext);
 }
 
 function deviceIdOf(d: any): string | null {
@@ -261,7 +266,7 @@ Deno.serve(async (req) => {
             ok: true,
             source: "maestro_telecom",
             client_type: clientType,
-            device_id: d.device_id ?? `${ext}_${clientType}`,
+            device_id: d.device_id ?? deviceNameFor(String(ext), clientType),
             sip_username: d.sip_username ?? ext,
             sip_auth_user: d.sip_auth_user ?? d.sip_username ?? ext,
             sip_password: pwd,

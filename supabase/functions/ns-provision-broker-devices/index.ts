@@ -3,6 +3,11 @@
 // Verifies caller is an admin before performing bulk operations.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import {
+  mobileDeviceId,
+  webDeviceId,
+  legacyDeviceIds,
+} from "../_shared/pp-device-ids.ts";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -15,6 +20,21 @@ const json = (b: unknown, s = 200) =>
 async function nsRead(res: Response) {
   const text = await res.text();
   try { return text ? JSON.parse(text) : null; } catch { return text; }
+}
+
+// NetSapiens closes idle keep-alive sockets abruptly; Deno surfaces this as
+// "connection closed before message completed". Retry transient network errors.
+async function nsFetch(url: string, init?: RequestInit, attempts = 3): Promise<Response> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fetch(url, { ...init, headers: { ...(init?.headers ?? {}), Connection: "close" } });
+    } catch (e) {
+      lastErr = e;
+      await new Promise((r) => setTimeout(r, 300 * (i + 1)));
+    }
+  }
+  throw lastErr;
 }
 
 Deno.serve(async (req) => {
@@ -81,16 +101,16 @@ Deno.serve(async (req) => {
 
     const ensureNsUser = async (broker: any, ext: string, domain: string, password: string) => {
       const userUrl = `${NS_API_BASE_URL}/domains/${encodeURIComponent(domain)}/users/${encodeURIComponent(ext)}`;
-      const direct = await fetch(userUrl, { headers: nsHeaders });
+      const direct = await nsFetch(userUrl, { headers: nsHeaders });
       if (direct.ok) return { ok: true, existed: true, status: direct.status };
-      const create = await fetch(`${NS_API_BASE_URL}/domains/${encodeURIComponent(domain)}/users`, {
+      const create = await nsFetch(`${NS_API_BASE_URL}/domains/${encodeURIComponent(domain)}/users`, {
         method: "POST",
         headers: nsHeaders,
         body: JSON.stringify(nsUserPayload(broker, ext, password)),
       });
       const data = await nsRead(create);
       if (!create.ok && create.status !== 409) return { ok: false, status: create.status, data };
-      const verify = await fetch(userUrl, { headers: nsHeaders });
+      const verify = await nsFetch(userUrl, { headers: nsHeaders });
       return { ok: verify.ok || create.ok || create.status === 409, created: create.ok, status: verify.status || create.status, data };
     };
 
@@ -100,29 +120,29 @@ Deno.serve(async (req) => {
       if (!ext) return { broker_id: broker.user_id, success: false, error: "no_extension" };
 
       const sipPassword = await genPassword(broker.user_id);
-      const mobileId = `${ext}M`;
-      const widgetId = `${ext}W`;
+      // Naming convention: <ext>M / <ext>W (no underscore — Snap Mobile and the
+      // web widget mangle `_` in the AOR user part). Legacy <ext>_mobile /
+      // <ext>_web devices are removed once the new pair exists.
+      const mobileId = mobileDeviceId(ext);
+      const widgetId = webDeviceId(ext);
       const base = `${NS_API_BASE_URL}/domains/${encodeURIComponent(domain)}/users/${encodeURIComponent(ext)}/devices`;
 
       const nsUser = await ensureNsUser(broker, ext, domain, sipPassword);
       if (!nsUser.ok) return { broker_id: broker.id ?? broker.user_id, success: false, error: "ns_user_create_failed", ns_user: nsUser };
 
-      const listRes = await fetch(base, { headers: nsHeaders });
+      const listRes = await nsFetch(base, { headers: nsHeaders });
       const existing: any[] = listRes.ok ? (await listRes.json().catch(() => [])) : [];
       const arr = Array.isArray(existing) ? existing : [];
-      const hasDev = (needle: string) => arr.some((d: any) => {
-        const id = (d?.device ?? d?.aor ?? "").toString().toLowerCase().replace(/^sip:/i, "").split("@")[0];
-        return id === needle.toLowerCase();
-      });
+      const hasDev = (id: string) =>
+        arr.some((d: any) => (d?.device ?? d?.aor ?? "").toString().replace(/^sip:/i, "").split("@")[0].trim().toLowerCase() === id.toLowerCase());
 
-      const create = async (id: string, model: string, needle: string) => {
-        const isMobileDev = needle === "M";
-        if (hasDev(needle)) {
+      const create = async (id: string, model: string, isMobile: boolean) => {
+        if (hasDev(id)) {
           // Device exists — patch it to ensure WSS transport, empty user-agent filter,
           // and (critically) the 1800s registration expiry + automatic NAT traversal.
           // Without this branch a bulk force:true never repaired existing devices,
           // which kept them on the NS default 60s expiry -> straight to voicemail.
-          const r = await fetch(`${base}/${encodeURIComponent(id)}`, {
+          const r = await nsFetch(`${base}/${encodeURIComponent(id)}`, {
             method: "PUT", headers: nsHeaders,
             body: JSON.stringify({
               "device-sip-registration-password": sipPassword,
@@ -135,17 +155,16 @@ Deno.serve(async (req) => {
               "device-provisioning-registration-core-server": "core1.cluster1.ucstack.io",
               "device-sip-registration-expiry-seconds": 1800,
               "device-sip-nat-traversal-enabled": "automatic",
-              "device-push-enabled": isMobileDev ? "yes" : "no",
+              "device-push-enabled": isMobile ? "yes" : "no",
             }),
           }).catch(() => null);
           return { existed: true, id, patched: !!r?.ok, status: r?.status ?? 0 };
         }
 
-        const isMobile = needle === "M";
         // core-server is MANDATORY — without it JsSIP/PJSIP cannot register.
         // Both mobile and web use WSS transport so JsSIP (WebRTC) can connect.
         // Empty device-sip-allowed-user-agent accepts any softphone (JsSIP, SIP.js, etc.).
-        const r = await fetch(base, {
+        const r = await nsFetch(base, {
           method: "POST", headers: nsHeaders,
           body: JSON.stringify({
             device: id,
@@ -175,8 +194,22 @@ Deno.serve(async (req) => {
         return { created: r.ok, status: r.status, id, data };
       };
 
-      const mobile = await create(mobileId, "Mobile Softphone", "M");
-      const widget = await create(widgetId, "Web Softphone", "W");
+      const mobile = await create(mobileId, "Mobile Softphone", true);
+      const widget = await create(widgetId, "Web Softphone", false);
+
+      // Rename migration: NS device names are immutable, so once <ext>M/<ext>W
+      // exist we delete the legacy <ext>_mobile / <ext>_web AORs. Leaving them
+      // registered would keep sim-ring forking to dead contacts.
+      const removed_legacy: any[] = [];
+      const newPairOk = (mobile.created || mobile.existed) && (widget.created || widget.existed);
+      if (newPairOk) {
+        for (const legacyId of legacyDeviceIds(ext)) {
+          if (!hasDev(legacyId)) continue;
+          const del = await nsFetch(`${base}/${encodeURIComponent(legacyId)}`, { method: "DELETE", headers: nsHeaders }).catch(() => null);
+          removed_legacy.push({ id: legacyId, deleted: !!del?.ok, status: del?.status ?? 0 });
+        }
+      }
+
 
       const secretName = `pp_sip_${broker.id ?? broker.user_id}_mobile`;
       try {
@@ -207,6 +240,7 @@ Deno.serve(async (req) => {
           domain,
           mobile: { id: mobileId, created: !!mobile.created, existed: !!mobile.existed, status: (mobile as any).status ?? null },
           widget: { id: widgetId, created: !!widget.created, existed: !!widget.existed, status: (widget as any).status ?? null },
+          removed_legacy,
           db_error: uErr?.message ?? null,
         },
       }).then(() => {}, () => {});
@@ -217,7 +251,7 @@ Deno.serve(async (req) => {
         extension: ext,
         success: ok,
         db_error: uErr?.message,
-        ns_user: nsUser, mobile, widget,
+        ns_user: nsUser, mobile, widget, removed_legacy,
         sip_credentials: { mobile_device_id: mobileId, widget_device_id: widgetId, password: sipPassword },
       };
     };
@@ -238,17 +272,26 @@ Deno.serve(async (req) => {
       // that exist in the DB but are broken/missing in NetSapiens). Otherwise we
       // only touch brokers that have never been provisioned.
       const force: boolean = !!body?.force;
+      // Chunked execution: the platform kills the request at 150s, so we only
+      // process brokers while we stay inside the time budget and hand back a
+      // `next_offset` the caller loops on.
+      const offset: number = Math.max(0, Number(body?.offset ?? 0));
+      const maxMs: number = Math.max(5_000, Math.min(110_000, Number(body?.max_ms ?? 90_000)));
+      const t0 = Date.now();
       let q = admin.from("planipret_profiles")
         .select("id, user_id, full_name, email, extension, ns_extension, ns_domain, ns_mobile_device_id, ns_widget_device_id, ns_sip_password_ref_mobile")
-        .not("ns_extension", "is", null);
+        .not("ns_extension", "is", null)
+        .order("id", { ascending: true });
       if (!force) q = q.or("ns_mobile_device_id.is.null,ns_widget_device_id.is.null,ns_sip_password_ref_mobile.is.null");
       const { data: brokers } = await q;
-      const list = brokers ?? [];
+      const fullList = brokers ?? [];
+      const list = fullList.slice(offset);
       if (list.length === 0) {
         return json({
           success: true,
           message: "Aucun courtier à provisionner (tous déjà provisionnés — utilisez force:true pour re-provisionner)",
-          count: 0, total: 0, processed: 0, succeeded: 0, failed: 0, forced: force,
+          count: 0, total: fullList.length, processed: 0, succeeded: 0, failed: 0, forced: force,
+          offset, next_offset: null, done: true,
         });
       }
 
@@ -256,14 +299,18 @@ Deno.serve(async (req) => {
       const startedAt = new Date().toISOString();
       const all: any[] = [];
       let succeeded = 0, failed = 0;
+      let consumed = 0;
       for (let i = 0; i < list.length; i += batch_size) {
         const batch = list.slice(i, i + batch_size);
-        const res = await Promise.all(batch.map((b) => provision(b)));
+        const res = await Promise.all(batch.map((b) => provision(b).catch((e) => ({ broker_id: b.id ?? b.user_id, success: false, error: String((e as Error)?.message ?? e) }))));
         all.push(...res);
+        consumed += batch.length;
         succeeded += res.filter((r) => r.success).length;
         failed += res.filter((r) => !r.success).length;
+        if (Date.now() - t0 > maxMs) break;
         if (i + batch_size < list.length) await new Promise((r) => setTimeout(r, 500));
       }
+      const nextOffset = offset + consumed < fullList.length ? offset + consumed : null;
 
       // Detailed device-level counters so the admin portal can show a real report
       // (created / patched / skipped / errors) instead of only succeeded/failed.
@@ -283,7 +330,8 @@ Deno.serve(async (req) => {
       }
 
       const summary = {
-        forced: force, total: list.length, processed: all.length, succeeded, failed,
+        forced: force, total: fullList.length, processed: all.length, succeeded, failed,
+        offset, next_offset: nextOffset, done: nextOffset === null,
         devices: devStats, errors_sample: errorSamples,
         expiry_seconds: 1800, nat_traversal: "automatic",
       };

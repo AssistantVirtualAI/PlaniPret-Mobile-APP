@@ -13,6 +13,7 @@
 // display synced / skipped / error counters.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { mobileDeviceId, webDeviceId, isMobileDeviceId } from "../_shared/pp-device-ids.ts";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -103,12 +104,12 @@ Deno.serve(async (req) => {
         if (!res.ok) { stats.errors += 1; return { ext, error: `list_${res.status}` }; }
         const arr = await res.json().catch(() => []);
         const devices = Array.isArray(arr) ? arr : [];
-        const wanted = [`${ext}M`, `${ext}W`];
+        const wanted = [mobileDeviceId(ext), webDeviceId(ext)];
         const out: any = { ext, broker: broker.full_name, devices: [] as any[] };
 
         for (const id of wanted) {
           const dev = devices.find((d: any) =>
-            String(d?.device ?? d?.aor ?? "").toLowerCase().includes(id.toLowerCase()));
+            String(d?.device ?? d?.aor ?? "").replace(/^sip:/i, "").split("@")[0].trim().toLowerCase() === id.toLowerCase());
           if (!dev) { stats.missing_device += 1; out.devices.push({ id, status: "missing" }); continue; }
           stats.checked += 1;
           const expiry = Number(
@@ -135,7 +136,7 @@ Deno.serve(async (req) => {
               body: JSON.stringify({
                 "device-sip-registration-expiry-seconds": TARGET_EXPIRY,
                 "device-sip-nat-traversal-enabled": "automatic",
-                "device-push-enabled": id.endsWith("M") ? "yes" : "no",
+                "device-push-enabled": isMobileDeviceId(id, ext) ? "yes" : "no",
               }),
             }).catch(() => null);
             if (put?.ok) { stats.repaired += 1; entry.status = "repaired"; }
