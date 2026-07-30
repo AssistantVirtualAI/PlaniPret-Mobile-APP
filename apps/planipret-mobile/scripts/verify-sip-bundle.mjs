@@ -39,6 +39,17 @@ const REQUIRED_MARKERS = [
   "sip reconnect #",
   "PP_SIP_RECONNECT_FLOOR_MS",
 ];
+const MIN_RECONNECT_GUARD_VERSION = 5;
+const FORBIDDEN_BUNDLE_MARKERS = [
+  {
+    label: "garde SIP v4 périmée",
+    value: "reconnect guard active v4",
+  },
+  {
+    label: "socket NetSapiens core interdit",
+    value: "wss://core1.cluster1.ucstack.io:9002",
+  },
+];
 
 function walk(dir, out = []) {
   if (!existsSync(dir)) return out;
@@ -60,13 +71,24 @@ function scan(label, files, { requireMarkers = false } = {}) {
     console.error(`❌ ${label}: vieux provider SIP détecté (${legacy.join(", ")}). Rebuild + cap sync requis.`);
     process.exit(1);
   }
+  const forbidden = FORBIDDEN_BUNDLE_MARKERS.filter((m) => corpus.includes(m.value)).map((m) => m.label);
+  if (forbidden.length) {
+    console.error(`❌ ${label}: bundle SIP périmé/interdit (${forbidden.join(", ")}). Rebuild + cap sync requis.`);
+    process.exit(1);
+  }
+  const guardVersions = Array.from(corpus.matchAll(new RegExp(GUARD_RE.source, "g"))).map((m) => Number(m[1]));
+  const staleGuard = guardVersions.find((v) => Number.isFinite(v) && v < MIN_RECONNECT_GUARD_VERSION);
+  if (staleGuard !== undefined) {
+    console.error(`❌ ${label}: reconnect guard active v${staleGuard} détecté; minimum requis v${MIN_RECONNECT_GUARD_VERSION}. Rebuild + cap sync requis.`);
+    process.exit(1);
+  }
   if (requireMarkers) {
     const guard = corpus.match(GUARD_RE);
-    const guardOk = guard && Number(guard[1]) >= 5;
+    const guardOk = guard && Number(guard[1]) >= MIN_RECONNECT_GUARD_VERSION;
     const missing = REQUIRED_MARKERS.filter((m) => !corpus.includes(m));
-    if (!guardOk) missing.push("reconnect guard active v5+");
+    if (!guardOk) missing.push(`reconnect guard active v${MIN_RECONNECT_GUARD_VERSION}+`);
     if (missing.length) {
-      console.error(`❌ ${label}: garde SIP v3 absent (${missing.join(", ")}).`);
+      console.error(`❌ ${label}: garde SIP moderne absente (${missing.join(", ")}).`);
       process.exit(1);
     }
   }

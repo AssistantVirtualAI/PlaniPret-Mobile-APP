@@ -1,6 +1,7 @@
 import { Capacitor, registerPlugin } from "@capacitor/core";
 import { getPpSipReconnectConfig } from "./ppSipReconnectConfig";
 import { addDedupedCapListener } from "./capListeners";
+import { edgeOnlyWssUrls } from "./sipEdgePolicy";
 import type { PpSipConfig } from "./ppSipProvider";
 
 export type PpNativeSipStatus = {
@@ -169,14 +170,18 @@ export async function reportPlanipretCallEnded(callId?: string, reason?: string)
 
 function parseWss(cfg: PpSipConfig) {
   try {
-    const url = new URL(cfg.wssUrl);
+    const edgeUrl = edgeOnlyWssUrls([cfg.wssUrl, ...(cfg.wssUrls ?? [])])[0];
+    const url = new URL(edgeUrl);
     return {
       host: url.hostname,
       port: Number(url.port || (url.protocol === "wss:" ? 443 : 80)),
       path: `${url.pathname || "/"}${url.search || ""}`,
+      wssUrl: edgeUrl,
     };
   } catch {
-    return { host: cfg.sipProxy || cfg.sipDomain, port: 443, path: "/" };
+    const edgeUrl = edgeOnlyWssUrls([])[0];
+    const url = new URL(edgeUrl);
+    return { host: url.hostname, port: Number(url.port || 443), path: `${url.pathname || "/"}${url.search || ""}`, wssUrl: edgeUrl };
   }
 }
 
@@ -187,9 +192,14 @@ export async function startPlanipretSipKeepAlive(cfg: PpSipConfig): Promise<PpNa
   if (_sipStartPending) return null;
   _sipStartPending = true;
   const wss = parseWss(cfg);
+  if (wss.wssUrl !== cfg.wssUrl) {
+    console.warn(`[pp-sip-native] core WSS blocked for native bridge → ${wss.wssUrl}`);
+  }
   try {
     const result = await NativePpSip.startSipService?.({
-      ...wss,
+      host: wss.host,
+      port: wss.port,
+      path: wss.path,
       extension: cfg.extension,
       username: cfg.sipUsername,
       login: cfg.sipUsername,
@@ -197,7 +207,7 @@ export async function startPlanipretSipKeepAlive(cfg: PpSipConfig): Promise<PpNa
       domain: cfg.sipDomain,
       displayName: cfg.displayName || cfg.extension,
       transport: "wss",
-      wssUrl: cfg.wssUrl,
+      wssUrl: wss.wssUrl,
       // Reconnection strategy is configured once in JS (config file / env vars)
       // and forwarded to the native keep-alive so iOS and Android behave the same.
       backoffMinMs: getPpSipReconnectConfig().nativeBackoffMinMs,
