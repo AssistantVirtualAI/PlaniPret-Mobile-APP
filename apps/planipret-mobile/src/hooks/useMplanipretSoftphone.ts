@@ -1,5 +1,5 @@
 // Planipret mobile — softphone hook bound to the NS-API PBX.
-import { edgeOnlyWssUrls } from "@/lib/planipret/sip/sipEdgePolicy";
+import { filterSipEdgeUrls } from "@/lib/planipret/sip/sipEdgePolicy";
 //
 // This is fully independent from the Lemtel softphone: registration uses the
 // NS-API SIP credentials returned by the `ns-resolve-sip-credentials` edge
@@ -248,7 +248,7 @@ export function useMplanipretSoftphone(enabled = true) {
             ? d.sip_ws_urls
             : [];
         // Never register against a NetSapiens core node (1001 close loop).
-        const wssUrls = edgeOnlyWssUrls([rawWss, ...rawWssList]);
+        const wssUrls = filterSipEdgeUrls([rawWss, ...rawWssList]);
         const wssUrl = wssUrls[0];
         if (!wssUrl || !/^wss?:\/\//i.test(wssUrl)) {
           console.error("[softphone] invalid SIP WSS URL", { wssUrl, device_id: d.device_id });
@@ -282,7 +282,7 @@ export function useMplanipretSoftphone(enabled = true) {
           const webRes = await supabase.functions.invoke("ns-resolve-sip-credentials", { body: { client_type: "web" } });
           const w = webRes.data as any;
           if (!webRes.error && w && !w.error && w.sip_username && w.sip_password) {
-            const webWssList = edgeOnlyWssUrls([
+            const webWssList = filterSipEdgeUrls([
               String(w.sip_wss_url ?? w.sip_ws_url ?? wssUrl).trim(),
               ...(Array.isArray(w.sip_wss_urls) ? w.sip_wss_urls : wssUrls),
             ]);
