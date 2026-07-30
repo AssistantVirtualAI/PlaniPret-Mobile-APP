@@ -117,20 +117,31 @@ Deno.serve(async (req) => {
     // We therefore send bare device AOR ids (ext + suffix, e.g. "113M")
     // plus "<OwnDevices>" so NS always forks to every registered device of
     // {ext}@{domain}, whatever the device naming is on that broker.
+    // NS-API v2 (AnswerruleFeatureSimRing) only accepts extensions / phone
+    // numbers / "confirm_…;delay=" strings / the literal "<OwnDevices>" token.
+    // Device AOR ids such as "113M" are NOT valid sim-ring parameters: NS
+    // stores them, fails to resolve them at call time and terminates the call
+    // on voicemail. The ONLY documented way to fork to the user's registered
+    // devices is "<OwnDevices>".
     const bareAor = (aor: string) => String(aor).replace(/^sip:/i, "").split("@")[0].trim();
 
-    const buildRuleParams = (deviceAors: string[]) => {
-      const ids = deviceAors
-        .map(bareAor)
-        .filter((v) => v && v !== "<OwnDevices>");
-      return [...new Set([...ids, "<OwnDevices>"])];
-    };
+    const buildRuleParams = (_deviceAors: string[]) => ["<OwnDevices>"];
+
 
     const buildRulePayload = (ext: string, domain: string, deviceAors: string[]) => {
       const parameters = buildRuleParams(deviceAors);
       return {
+        // NS-API v2 creates rules asynchronously unless synchronous is set.
+        // Waiting for the committed rule prevents a successful 202 from being
+        // mistaken for an applied routing change while the old targets remain.
+        "synchronous": true,
         "time-frame": "*",
         "enabled": "yes",                    // voicemail fallback ON after no-answer
+        // `*` defaults to order 99 (lowest priority); push it to the top so no
+        // stale rule (DND / forward-always) shadows it and sends the caller
+        // straight to voicemail.
+        "new-position": "top",
+
         "do-not-disturb": { "enabled": "no" },
         "call-screening": { "enabled": "no" },
         "phone-numbers-to-allow": { "enabled": "no" },
@@ -149,18 +160,6 @@ Deno.serve(async (req) => {
         // (ring-no-answer-timeout-seconds) so NS keeps ringing the devices for
         // the full window before dropping into voicemail.
         "forward-no-answer": { "enabled": "no" },
-        // --- flat-key aliases kept for legacy NS builds ---
-        "simultaneous-ring-enabled": "yes",
-        "simultaneous-ring-parameters": parameters,
-        "sim-ring-parameters": parameters,
-        "do-not-disturb-enabled": "no",
-        "call-screening-enabled": "no",
-        "forward-always-enabled": "no",
-        "forward-on-active-enabled": "no",
-        "forward-on-busy-enabled": "no",
-        "forward-on-dnd-enabled": "no",
-        "forward-when-unregistered-enabled": "no",
-        "forward-no-answer-enabled": "no",
       };
     };
 
@@ -248,30 +247,22 @@ Deno.serve(async (req) => {
     };
 
     const buildDidPayload = (ext: string, domain: string) => ({
-      "dest-application": "to-user",
-      "destination-application": "to-user",
-      "dial-rule-application": "to-user",
-      "dialrule-application": "to-user",
-      application: "to-user",
-      "to-user": `${ext}@${domain}`,
-      "dest-user": ext,
-      "destination-user": ext,
-      "dial-rule-destination": ext,
-      "dialrule-destination": ext,
-      "dial-rule-translation-destination": `sip:${ext}@${domain}`,
-      "dialrule-translation-destination": `sip:${ext}@${domain}`,
-      destination: ext,
-      dest: ext,
-      user: ext,
-      enable: "yes",
+      // Documented Phonenumber routing: application=user, parameter=user_<ext>.
+      // Do not mix undocumented aliases: NS may accept HTTP 202 while retaining
+      // the previous dial rule.
+      "dial-rule-application": "user",
+      "dial-rule-parameter": `user_${ext}`,
+      "dial-rule-translation-destination-user": ext,
       enabled: "yes",
     });
 
     // Read a DID back from NS and decide whether it really routes to the user.
     const DID_DEST_FIELDS = [
       "destination", "dest", "user", "to-user", "dest-user", "destination-user",
+      "dial-rule-parameter", "dialrule-parameter",
       "dial-rule-destination", "dialrule-destination",
       "dial-rule-translation-destination", "dialrule-translation-destination",
+      "dial-rule-translation-destination-user",
     ];
     const DID_APP_FIELDS = [
       "dest-application", "destination-application",
@@ -300,9 +291,11 @@ Deno.serve(async (req) => {
       const dest = DID_DEST_FIELDS.map((f) => String(row?.[f] ?? "")).filter(Boolean).join(" ").toLowerCase();
       const badApp = /vmail|voicemail|speakaccount|speakeraccount|auto-?attendant|conference|queue/.test(`${app} ${dest}`);
       if (badApp) return false;
-      const appOk = !app || ["to-user", "user", "sip", "to_user"].includes(app);
+      const appOk = app === "user";
       const extRe = new RegExp(`(^|[^0-9])${ext}([^0-9]|$)`);
-      const destOk = extRe.test(dest) || dest.includes(`${ext.toLowerCase()}@${domain.toLowerCase()}`);
+      const destOk = dest.split(/\s+/).includes(`user_${ext.toLowerCase()}`) ||
+        dest.split(/\s+/).includes(ext.toLowerCase()) ||
+        dest.includes(`${ext.toLowerCase()}@${domain.toLowerCase()}`);
       return appOk && destOk;
     };
 
@@ -372,8 +365,8 @@ Deno.serve(async (req) => {
         // after a write — the route IS correct (application field matches) but
         // the destination field has not propagated yet. Accept this as verified
         // to avoid false write_not_honored errors.
-        const appAccepted = ["to-user", "user", "sip", "to_user"].includes(afterApp);
-        const destAccepted = appAccepted && (!afterDest || afterDest.includes(ext.toLowerCase()));
+        const appAccepted = afterApp === "user";
+        const destAccepted = appAccepted && afterDest.includes(`user_${ext.toLowerCase()}`);
         const isVerified = (after.row && didRoutesToUser(after.row, ext, domain)) ||
           (appAccepted && destAccepted);
         if (isVerified) {
@@ -403,14 +396,63 @@ Deno.serve(async (req) => {
 
 
     // Local DID inventory for one extension (used for diagnostics + dry-run).
+    // PBX phonenumber inventory, fetched at most once per invocation.
+    let pbxNumbersCache: any[] | null = null;
+    const pbxNumbers = async (domain: string): Promise<any[]> => {
+      if (pbxNumbersCache) return pbxNumbersCache;
+      try {
+        const res = await nsFetch(
+          `/domains/${encodeURIComponent(domain)}/phonenumbers`,
+          { method: "GET" },
+          { functionName: "pp-sync-answering-rules" },
+        );
+        const data: any = await readBody(res);
+        pbxNumbersCache = Array.isArray(data) ? data : (data?.data ?? data?.items ?? []);
+      } catch { pbxNumbersCache = []; }
+      return pbxNumbersCache!;
+    };
+
+    // The PBX is the source of truth: if the local table has no DID for this
+    // extension, look the number up on NetSapiens and persist it.
+    const pbxDidsForExt = async (ext: string, domain: string): Promise<string[]> => {
+      const rows = await pbxNumbers(domain);
+      const found: string[] = [];
+      for (const n of rows) {
+        const dest = DID_DEST_FIELDS.map((f) => String(n?.[f] ?? "")).filter(Boolean).join(" ");
+        const m = dest.match(/(?:^|[^0-9])(\d{3,6})(?:@|[^0-9]|$)/);
+        if (!m || m[1] !== String(ext)) continue;
+        const digits = normalizeDigits(
+          String(n?.phonenumber ?? n?.["phone-number"] ?? n?.number ?? n?.did ?? "").trim(),
+        );
+        if (digits) found.push(digits);
+      }
+      if (found.length) {
+        await admin.from("planipret_did_assignments").upsert(
+          found.map((digits) => ({
+            phone_number_e164: `+${digits}`,
+            phone_number_digits: digits,
+            extension: String(ext),
+            domain,
+            source: "ns_live",
+            updated_at: new Date().toISOString(),
+          })),
+          { onConflict: "phone_number_e164" },
+        );
+      }
+      return found.map((d) => `+${d}`);
+    };
+
     const localDids = async (ext: string, domain: string) => {
       const { data } = await admin
         .from("planipret_did_assignments")
         .select("phone_number_e164, phone_number_digits")
         .eq("domain", domain)
         .eq("extension", ext);
-      return (data ?? []).map((r: any) => r.phone_number_e164 ?? r.phone_number_digits).filter(Boolean);
+      const local = (data ?? []).map((r: any) => r.phone_number_e164 ?? r.phone_number_digits).filter(Boolean);
+      if (local.length) return local;
+      return await pbxDidsForExt(String(ext), domain);
     };
+
 
     const applyRule = async (broker: any) => {
       const ext = broker.ns_extension ?? broker.extension;
@@ -505,18 +547,56 @@ Deno.serve(async (req) => {
         return tf === "default" || tf === "*" || tf === "always";
       });
 
-      // 2) Upsert
-      let opRes: Response;
-      let mode: "created" | "updated";
-      if (defaultRule) {
-        const ruleId = encodeURIComponent(String(defaultRule?.id ?? defaultRule?.["time-frame"] ?? "Default"));
-        opRes = await nsFetch(`${base}/${ruleId}`, { method: "PUT", body: JSON.stringify(payload) }, { functionName: "pp-sync-answering-rules" });
-        mode = "updated";
-      } else {
-        opRes = await nsFetch(base, { method: "POST", body: JSON.stringify(payload) }, { functionName: "pp-sync-answering-rules" });
-        mode = "created";
+      // 1b) Any OTHER enabled rule (custom timeframe) with DND or an always /
+      // no-answer forward outranks or short-circuits the default rule and sends
+      // inbound calls straight to voicemail. Disable those.
+      const shadowing: any[] = [];
+      for (const r of arr) {
+        if (r === defaultRule) continue;
+        const tf = String(r?.["time-frame"] ?? r?.timeframe ?? r?.time_frame ?? "").trim();
+        if (!tf) continue;
+        const on = (v: any) => ["yes", "true", "1"].includes(String(v?.enabled ?? v ?? "").toLowerCase());
+        const bad = on(r?.["do-not-disturb"]) || on(r?.["forward-always"]) ||
+          on(r?.["do-not-disturb-enabled"]) || on(r?.["forward-always-enabled"]);
+        if (!bad) continue;
+        try {
+          const dRes = await nsFetch(
+            `${base}/${encodeURIComponent(String(r?.id ?? tf))}`,
+            { method: "PUT", body: JSON.stringify({ enabled: "no", "do-not-disturb": { enabled: "no" }, "forward-always": { enabled: "no" } }) },
+            { functionName: "pp-sync-answering-rules" },
+          );
+          await dRes.text().catch(() => {});
+          shadowing.push({ time_frame: tf, status: dRes.status });
+        } catch { /* best-effort */ }
       }
-      const opBody = await readBody(opRes);
+
+
+
+      // 2) Upsert — retried: NS answers 202 but occasionally drops the socket
+      // (transient 5xx / connection reset) which surfaced as rule_write_failed.
+      let opRes!: Response;
+      let opBody: any = null;
+      let mode: "created" | "updated" = defaultRule ? "updated" : "created";
+      const ruleId = encodeURIComponent(String(defaultRule?.id ?? defaultRule?.["time-frame"] ?? "*"));
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          opRes = mode === "updated"
+            ? await nsFetch(`${base}/${ruleId}`, { method: "PUT", body: JSON.stringify(payload) }, { functionName: "pp-sync-answering-rules" })
+            : await nsFetch(base, { method: "POST", body: JSON.stringify(payload) }, { functionName: "pp-sync-answering-rules" });
+        } catch (e) {
+          opRes = new Response(JSON.stringify({ error: (e as Error).message }), { status: 599 });
+        }
+        opBody = await readBody(opRes);
+        if (opRes.ok) break;
+        // PUT on a rule NS no longer has → create it instead
+        if (mode === "updated" && opRes.status === 404) { mode = "created"; continue; }
+        if (opRes.status >= 500 || opRes.status === 429 || opRes.status === 0) {
+          await new Promise((r) => setTimeout(r, 600 * (attempt + 1)));
+          continue;
+        }
+        break;
+      }
+
       const bodySnippet = typeof opBody === "string" ? opBody.slice(0, 200) : JSON.stringify(opBody ?? null).slice(0, 200);
       const returnedHtml = typeof opBody === "string" && /^\s*<(?:!doctype|html)/i.test(opBody);
       const authFailed = opRes.status === 401 || opRes.status === 403 || listRes.status === 401 || listRes.status === 403;
@@ -530,7 +610,9 @@ Deno.serve(async (req) => {
           status: opRes.status,
           body: bodySnippet,
         },
+        ...shadowing.map((s) => ({ extension: ext, step: "disable_shadowing_rule", route: `PUT ${base}/${s.time_frame}`, http_status: s.status, status: s.status })),
       ];
+
 
 
 
@@ -548,39 +630,36 @@ Deno.serve(async (req) => {
         }));
       }
 
-      // 3) Read-after-write: confirm NS actually stored sim-ring + our targets.
+      // 3) Read-after-write: confirm NS committed the documented OwnDevices
+      // target. A stale 113M/113W target is not valid AnswerruleFeatureSimRing
+      // syntax and produces ForwardSRing -> No Dial Rule -> VMail.
       let verify: any = null;
       try {
-        const vRes = await nsFetch(base, { method: "GET" }, { functionName: "pp-sync-answering-rules" });
-        const vBody: any = await readBody(vRes);
-        const vArr: any[] = Array.isArray(vBody) ? vBody : (vBody?.data ?? vBody?.items ?? []);
-        const stored = vArr.find((r: any) => {
-          const tf = String(r?.["time-frame"] ?? r?.timeframe ?? r?.time_frame ?? "").toLowerCase();
-          return tf === "default" || tf === "*" || tf === "always";
-        }) ?? vArr[0] ?? null;
-        const sim = stored?.["simultaneous-ring"] ?? null;
-        // NS v2 returns the fork targets under `parameters` (array of AOR
-        // strings). Older/other builds use `destinations` / `list`.
-        const list: any[] = Array.isArray(sim?.parameters) ? sim.parameters
-          : (Array.isArray(sim?.destinations) ? sim.destinations
-          : (Array.isArray(sim?.list) ? sim.list
-          : (Array.isArray(stored?.["simultaneous-ring-list"]) ? stored["simultaneous-ring-list"] : [])));
-        const targets = list.map((x: any) => String(x?.destination ?? x ?? "").toLowerCase()).filter(Boolean);
-        const simOn = ["yes", "true", "1"].includes(String(sim?.enabled ?? stored?.["simultaneous-ring-enabled"] ?? "").toLowerCase());
-        verify = {
-          status: vRes.status,
-          sim_ring_enabled: simOn,
-          stored_targets: targets,
-          covers_mobile: targets.some((t) => isMobileDeviceId(t, ext) || t.includes("owndevices")),
-          ring_timeout: Number(sim?.timeout ?? stored?.["ring-timeout"] ?? stored?.timeout ?? 0) || null,
-          include_user_extension: String(sim?.["include-user-extension"] ?? stored?.["simultaneous-ring-include-user-extension"] ?? "").toLowerCase(),
-          // Honored = sim-ring on with at least one usable fork target that is
-          // not a self-reference to the bare extension (which terminates on
-          // voicemail/SpeakAccount instead of forking to the devices).
-          honored: simOn && targets.length > 0 &&
-            targets.some((t) => t.includes("owndevices") || (t.startsWith(String(ext).toLowerCase()) && t !== String(ext).toLowerCase())) &&
-            !targets.some((t) => t === String(ext).toLowerCase() || t === `sip:${String(ext).toLowerCase()}@${String(domain).toLowerCase()}` || t === `${String(ext).toLowerCase()}@${String(domain).toLowerCase()}`),
-        };
+        for (let verifyAttempt = 0; verifyAttempt < 5; verifyAttempt++) {
+          if (verifyAttempt > 0) await new Promise((r) => setTimeout(r, 1000 * verifyAttempt));
+          const vRes = await nsFetch(base, { method: "GET" }, { functionName: "pp-sync-answering-rules" });
+          const vBody: any = await readBody(vRes);
+          const vArr: any[] = Array.isArray(vBody) ? vBody : (vBody?.data ?? vBody?.items ?? []);
+          const stored = vArr.find((r: any) => {
+            const tf = String(r?.["time-frame"] ?? r?.timeframe ?? r?.time_frame ?? "").toLowerCase();
+            return tf === "default" || tf === "*" || tf === "always";
+          }) ?? null;
+          const sim = stored?.["simultaneous-ring"] ?? null;
+          const list: any[] = Array.isArray(sim?.parameters) ? sim.parameters : [];
+          const targets = list.map((x: any) => String(x?.destination ?? x ?? "").toLowerCase()).filter(Boolean);
+          const simOn = ["yes", "true", "1"].includes(String(sim?.enabled ?? "").toLowerCase());
+          const ownsDevices = targets.some((t) => t === "<owndevices>" || t === "owndevices");
+          verify = {
+            status: vRes.status,
+            sim_ring_enabled: simOn,
+            stored_targets: targets,
+            covers_mobile: ownsDevices,
+            ring_timeout: Number(sim?.timeout ?? stored?.["ring-timeout"] ?? stored?.timeout ?? 0) || null,
+            include_user_extension: String(sim?.["include-user-extension"] ?? "").toLowerCase(),
+            honored: simOn && ownsDevices,
+          };
+          if (verify.honored) break;
+        }
         if (!verify.honored) {
           console.error("[syncBroker] NS ignored sim-ring keys", JSON.stringify({ extension: ext, domain, verify, sent: devices.aors }));
         }

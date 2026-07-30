@@ -133,23 +133,10 @@ function normalizeAssignment(input: any, domain: string) {
 
 function buildToUserDidPayload(ext: string, domain: string) {
   return {
-    "dest-application": "to-user",
-    "destination-application": "to-user",
-    "dial-rule-application": "to-user",
-    "dialrule-application": "to-user",
-    application: "to-user",
-    "to-user": `${ext}@${domain}`,
-    "dest-user": ext,
-    "destination-user": ext,
-    "dial-rule-destination": ext,
-    "dialrule-destination": ext,
-    "dial-rule-translation-destination": `sip:${ext}@${domain}`,
-    "dialrule-translation-destination": `sip:${ext}@${domain}`,
-    destination: ext,
-    dest: ext,
-    user: ext,
-    "dest-type": "user",
-    enable: "yes",
+    // NS-API v2 Phonenumber user route.
+    "dial-rule-application": "user",
+    "dial-rule-parameter": `user_${ext}`,
+    "dial-rule-translation-destination-user": ext,
     enabled: "yes",
   };
 }

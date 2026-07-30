@@ -81,9 +81,19 @@ export function usePbxAutoSync(
     };
 
     // Kick off immediately, then poll.
-    runAll();
-    const timer = setInterval(runAll, intervalMs);
-    const onFocus = () => runAll();
+    let lastRun = 0;
+    const runAllThrottled = async () => {
+      const now = Date.now();
+      if (now - lastRun < intervalMs - 1_000) return;
+      lastRun = now;
+      await runAll();
+    };
+
+    runAllThrottled();
+    const timer = setInterval(runAllThrottled, intervalMs);
+    // Only resync on focus if the data is actually stale, otherwise every tab
+    // switch invalidates queries and every page visibly refreshes.
+    const onFocus = () => runAllThrottled();
     window.addEventListener('focus', onFocus);
     return () => {
       cancelled = true;

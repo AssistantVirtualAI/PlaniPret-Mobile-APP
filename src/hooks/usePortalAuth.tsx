@@ -53,10 +53,12 @@ export const usePortalAuth = () => {
   // Check Supabase auth on mount
   useEffect(() => {
     let initialCheckDone = false;
+    let lastUserId: string | null = null;
 
     const checkAuth = async () => {
       const { data: { user } } = await supabase.auth.getUser();
       setSupabaseUser(user);
+      lastUserId = user?.id ?? null;
 
       // Check super admin status server-side
       if (user?.id) {
@@ -73,7 +75,14 @@ export const usePortalAuth = () => {
     // IMPORTANT: keep this callback synchronous to avoid auth deadlocks
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       const user = session?.user || null;
+
+      // Token refreshes fire whenever the tab regains focus. If the identity did
+      // not change, do NOT touch state: re-setting supabaseUser / resetting
+      // isSuperAdminChecked remounts the whole portal and refetches every page.
+      if (initialCheckDone && user?.id && user.id === lastUserId) return;
+
       setSupabaseUser(user);
+      lastUserId = user?.id ?? null;
 
       // For INITIAL_SESSION, let checkAuth handle the super admin check
       // to avoid a race condition where the duplicate check overwrites the result
@@ -91,7 +100,7 @@ export const usePortalAuth = () => {
         return;
       }
 
-      // For subsequent auth changes (SIGNED_IN, TOKEN_REFRESHED, etc.), re-check
+      // Genuine identity change (sign-in as another user): re-check.
       if (initialCheckDone) {
         setIsSuperAdminChecked(false);
       }
@@ -101,6 +110,7 @@ export const usePortalAuth = () => {
         setIsSuperAdminChecked(true);
       }, 0);
     });
+
 
     return () => subscription.unsubscribe();
   }, []);

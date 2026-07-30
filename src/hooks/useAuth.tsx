@@ -41,12 +41,23 @@ export const useAuth = () => {
   const { toast } = useToast();
 
   useEffect(() => {
+    let lastUserId: string | null = null;
+
     // Set up auth state listener
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       (event, session) => {
-        setSession(session);
-        setUser(session?.user ?? null);
+        const nextUser = session?.user ?? null;
+        // Supabase refreshes the token every time the tab regains focus. Only
+        // propagate state when the identity actually changes, otherwise every
+        // consumer re-renders and each page refetches on tab switch.
+        const identityChanged = (nextUser?.id ?? null) !== lastUserId;
+        lastUserId = nextUser?.id ?? null;
+        if (identityChanged || event === "SIGNED_OUT") {
+          setSession(session);
+          setUser(nextUser);
+        }
         setLoading(false);
+
 
         // Auto-link Microsoft 365 tokens when the user signed in via Azure SSO.
         // We defer to avoid blocking the auth callback, and only fire on
