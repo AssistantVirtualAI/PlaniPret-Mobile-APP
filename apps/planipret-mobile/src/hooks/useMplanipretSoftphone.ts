@@ -186,6 +186,8 @@ export function useMplanipretSoftphone(enabled = true) {
   const [nativeStatus, setNativeStatus] = useState<PpNativeSipStatus | null>(null);
   const seenCallIds = useRef<Set<string>>(new Set());
   const mobileSipConfigRef = useRef<PpSipConfig | null>(null);
+  /** True when the `<ext>_web` device is unavailable → JsSIP is the only owner. */
+  const sameAorRef = useRef<boolean>(false);
 
   // Subscribe to the SIP snapshot.
   useEffect(() => ppSipProvider.subscribe(setSnap), []);
@@ -290,6 +292,15 @@ export function useMplanipretSoftphone(enabled = true) {
           }
         } catch {
           console.warn("[softphone] web credential lookup failed, using mobile device");
+        }
+        // If the `<ext>_web` device could not be resolved, JsSIP and the native
+        // keep-alive would share the SAME AOR. NetSapiens then closes the WSS
+        // sockets alternately (code 1001 loop). In that case the WebView stays
+        // the only SIP owner and the native service must never be started.
+        sameAorRef.current = webConfig.sipUsername === sipConfig.sipUsername;
+        if (sameAorRef.current) {
+          console.warn("[softphone] single-AOR mode: native keep-alive disabled to avoid WSS 1001 loop");
+          await stopPlanipretSipKeepAlive().catch(() => undefined);
         }
         if (cancelled) return;
         await ppSipProvider.init(webConfig);
@@ -481,11 +492,31 @@ export function useMplanipretSoftphone(enabled = true) {
     // and retry a few times — a single failed start was leaving the extension
     // unregistered as soon as the app left the foreground.
     let handoffSeq = 0;
+    let handoffTimer: ReturnType<typeof setTimeout> | null = null;
+    const cancelPendingHandoff = () => {
+      if (handoffTimer) { clearTimeout(handoffTimer); handoffTimer = null; }
+      handoffSeq++; // invalidate any in-flight handoff
+    };
+    /** iOS emits transient `isActive:false` (permission sheets, CallKit, push
+     *  prompts). Handing off instantly on each blip started/stopped the native
+     *  SIP stack every second and produced the NetSapiens WSS 1001 loop.
+     *  Only hand off once the app has really stayed in background. */
+    const scheduleHandoff = (delay = 2500) => {
+      if (sameAorRef.current) return;
+      if (handoffTimer) clearTimeout(handoffTimer);
+      handoffTimer = setTimeout(() => {
+        handoffTimer = null;
+        const stillHidden = typeof document === "undefined" || document.visibilityState === "hidden";
+        if (!stillHidden) return;
+        void handoffToNative();
+      }, delay);
+    };
     const handoffToNative = async () => {
       // Native must always own the dedicated `<ext>_mobile` AOR in background.
       // `ppSipProvider.getConfig()` is intentionally the foreground `<ext>_web`
       // config, so using it here makes native + JsSIP fight over the same AOR
       // on resume and recreates the NetSapiens 1001 disconnect loop.
+      if (sameAorRef.current) { try { ppSipProvider.forceReregister(); } catch {} return; }
       const cfg = mobileSipConfigRef.current ?? ppSipProvider.getConfig();
       if (!cfg) return;
       const seq = ++handoffSeq;
@@ -568,9 +599,9 @@ export function useMplanipretSoftphone(enabled = true) {
       } catch { /* noop */ }
       evaluate();
     };
-    const onVis = () => { if (document.visibilityState === "visible") onResume(); else void handoffToNative(); };
+    const onVis = () => { if (document.visibilityState === "visible") { cancelPendingHandoff(); onResume(); } else scheduleHandoff(); };
     document.addEventListener("visibilitychange", onVis);
-    const onBackgrounded = () => { void handoffToNative(); };
+    const onBackgrounded = () => { scheduleHandoff(); };
     window.addEventListener("pagehide", onBackgrounded);
     window.addEventListener("freeze", onBackgrounded as EventListener);
 
@@ -586,8 +617,10 @@ export function useMplanipretSoftphone(enabled = true) {
       try {
         removeAppStateListener = addDedupedCapListener("App", cap?.Plugins?.App, "appStateChange", (state: { isActive: boolean }) => {
           if (state?.isActive) {
-            // Keep native SIP alive until the WebView has confirmed REGISTERED;
-            // stopping it first creates a no-contact gap and sends calls to VM.
+            // Cancel any pending background handoff first: iOS fires transient
+            // isActive:false blips and a late handoff would restart the native
+            // stack while JsSIP is registered (WSS 1001 loop).
+            cancelPendingHandoff();
             try {
               const cfg = ppSipProvider.getConfig();
               if (cfg) {
@@ -605,7 +638,7 @@ export function useMplanipretSoftphone(enabled = true) {
             } catch { /* noop */ }
             evaluate();
           } else {
-            void handoffToNative();
+            scheduleHandoff();
           }
         });
       } catch { /* ignore */ }
@@ -616,7 +649,7 @@ export function useMplanipretSoftphone(enabled = true) {
     // watchdog escalates to forceReregister even without a subscribe callback.
     const heartbeat = window.setInterval(() => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") {
-        void handoffToNative();
+        scheduleHandoff(0);
         return;
       }
       evaluate();
@@ -626,6 +659,7 @@ export function useMplanipretSoftphone(enabled = true) {
     return () => {
       un();
       clearTimers();
+      cancelPendingHandoff();
       if (nativeStopTimer) clearTimeout(nativeStopTimer);
       window.clearInterval(heartbeat);
       document.removeEventListener("visibilitychange", onVis);
