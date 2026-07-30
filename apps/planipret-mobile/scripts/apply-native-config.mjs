@@ -1420,11 +1420,15 @@ function patchIosInfoPlist() {
       xml = xml.replace(/\n<\/dict>\s*\n<\/plist>\s*$/, `\n\t<key>${key}</key>\n\t<string>${value}</string>\n</dict>\n</plist>\n`);
     }
   }
-  // Portrait-only (matches the AppDelegate override below).
-  const portraitArray = "\n\t<key>UISupportedInterfaceOrientations</key>\n\t<array>\n\t\t<string>UIInterfaceOrientationPortrait</string>\n\t</array>\n\t<key>UISupportedInterfaceOrientations~ipad</key>\n\t<array>\n\t\t<string>UIInterfaceOrientationPortrait</string>\n\t</array>\n";
+  // Portrait-only for iPhone; iPad requires ALL 4 orientations for multitasking (App Store code 90474).
+  const portraitArray = "\n\t<key>UISupportedInterfaceOrientations</key>\n\t<array>\n\t\t<string>UIInterfaceOrientationPortrait</string>\n\t</array>\n\t<key>UISupportedInterfaceOrientations~ipad</key>\n\t<array>\n\t\t<string>UIInterfaceOrientationPortrait</string>\n\t\t<string>UIInterfaceOrientationPortraitUpsideDown</string>\n\t\t<string>UIInterfaceOrientationLandscapeLeft</string>\n\t\t<string>UIInterfaceOrientationLandscapeRight</string>\n\t</array>\n";
   xml = xml.replace(/\n\t?<key>UISupportedInterfaceOrientations(~ipad)?<\/key>\s*<array>[\s\S]*?<\/array>/g, "");
   xml = xml.replace(/\n<\/dict>\s*\n<\/plist>\s*$/, `${portraitArray}</dict>\n</plist>\n`);
 
+  // BGTaskSchedulerPermittedIdentifiers is required when UIBackgroundModes contains 'processing' (App Store code 90771).
+  if (!xml.includes("<key>BGTaskSchedulerPermittedIdentifiers</key>")) {
+    xml = xml.replace(/\n<\/dict>\s*\n<\/plist>\s*$/, "\n\t<key>BGTaskSchedulerPermittedIdentifiers</key>\n\t<array>\n\t\t<string>com.planipret.mobile.sip-refresh</string>\n\t</array>\n</dict>\n</plist>\n");
+  }
   if (!xml.includes("<key>ITSAppUsesNonExemptEncryption</key>")) {
     xml = xml.replace(/\n<\/dict>\s*\n<\/plist>\s*$/, "\n\t<key>ITSAppUsesNonExemptEncryption</key>\n\t<false/>\n</dict>\n</plist>\n");
   }
