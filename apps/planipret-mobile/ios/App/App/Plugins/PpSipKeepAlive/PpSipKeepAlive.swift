@@ -287,8 +287,9 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       if msg.hasPrefix("SIP/2.0 200") && msg.uppercased().contains(" REGISTER") {
         lastRegisterOkTime = Date()
         setStatus("registered", "native_register_200")
-        // NetSapiens accepts OPTIONS only after the dialog settles; too early can close WSS with 1001.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in self?.sendOptionsPing() }
+        // NOTE: sendOptionsPing() was removed — NS closes the WSS socket ~0.5s after
+        // receiving an un-authenticated OPTIONS, producing the ws_closed Code=57 loop.
+        // The REGISTER 200 OK itself proves the socket is alive; no ping needed.
         return
       }
       if msg.hasPrefix("INVITE ") {
@@ -332,24 +333,6 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       content.userInfo = ["pp_call_id": callId, "pp_incoming_call": true]
       let req = UNNotificationRequest(identifier: "pp_incoming_call", content: content, trigger: nil)
       UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
-    }
-
-    /// OPTIONS keep-alive sent right after the REGISTER 200 OK (never before:
-    /// an un-authenticated OPTIONS makes NetSapiens close the socket).
-    private func sendOptionsPing() {
-      guard let sock = socket, status == "registered", !domain.isEmpty else { return }
-      let seq = cseq; cseq += 1
-      let branch = "z9hG4bK" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
-      var sip = "OPTIONS sip:" + domain + " SIP/2.0\r\n"
-      sip += "Via: SIP/2.0/WSS " + domain + ";branch=" + branch + "\r\n"
-      sip += "From: <sip:" + login + "@" + domain + ">;tag=" + fromTag + "\r\n"
-      sip += "To: <sip:" + domain + ">\r\n"
-      sip += "Call-ID: " + UUID().uuidString + "@planipret-ios\r\n"
-      sip += "CSeq: " + String(seq) + " OPTIONS\r\n"
-      sip += "Max-Forwards: 70\r\nUser-Agent: Planipret iOS KeepAlive\r\nContent-Length: 0\r\n\r\n"
-      sock.send(.string(sip)) { err in
-        if let e = err { NSLog("[PpSipKeepAlive] OPTIONS ping failed: %@", String(describing: e)) }
-      }
     }
 
     private func sendRegister(challenge: String?, proxyAuth: Bool = false, force: Bool = false) {
