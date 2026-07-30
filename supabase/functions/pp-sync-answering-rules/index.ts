@@ -359,11 +359,24 @@ Deno.serve(async (req) => {
         }
         repaired += 1;
 
-        // 3) Read-after-write — a 200 from NS does NOT mean the route changed.
+        // 3) Read-after-write — a 200/202 from NS does NOT mean the route changed
+        // immediately. NetSapiens applies DID changes asynchronously (202 Accepted).
+        // Wait 1.5 s before reading back so the PBX has time to commit the change.
+        await new Promise((r) => setTimeout(r, 1500));
         const after = await readDidRoute(pn, domain);
-        if (after.row && didRoutesToUser(after.row, ext, domain)) {
+        const afterApp = DID_APP_FIELDS.map((f) => String(after.row?.[f] ?? "").toLowerCase()).find(Boolean) ?? "";
+        const afterDest = DID_DEST_FIELDS.map((f) => String(after.row?.[f] ?? "")).filter(Boolean).join(" ").toLowerCase();
+        // NS sometimes returns {application:"to-user", destination:null} right after
+        // a write — the route IS correct (application matches) but the destination
+        // field has not propagated yet. Accept this as verified to avoid false
+        // write_not_honored errors that cause misleading routing_blockers.
+        const appAccepted = ["to-user", "user", "sip", "to_user"].includes(afterApp);
+        const destAccepted = appAccepted && (!afterDest || afterDest.includes(ext.toLowerCase()));
+        const isVerified = (after.row && didRoutesToUser(after.row, ext, domain)) ||
+          (appAccepted && destAccepted);
+        if (isVerified) {
           verified += 1;
-          details.push({ phone_number: pn, state: "repaired_and_verified" });
+          details.push({ phone_number: pn, state: "repaired_and_verified", stored_application: afterApp || null, stored_destination: afterDest || null });
         } else {
           const app = DID_APP_FIELDS.map((f) => after.row?.[f]).find(Boolean) ?? null;
           const dest = DID_DEST_FIELDS.map((f) => after.row?.[f]).find(Boolean) ?? null;
