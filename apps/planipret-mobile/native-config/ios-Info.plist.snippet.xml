@@ -94,3 +94,6 @@
 <string>Planiprêt utilise le réseau local pour établir l'audio des appels VoIP.</string>
 <key>NSSpeechRecognitionUsageDescription</key>
 <string>Planiprêt transcrit vos appels enregistrés lorsque vous activez la transcription.</string>
+<!-- Requis par Capacitor/WebKit (ITMS-90683) — l'app n'utilise pas le Bluetooth. -->
+<key>NSBluetoothAlwaysUsageDescription</key>
+<string>Planiprêt n'utilise pas le Bluetooth. Cette chaîne est requise par un framework système.</string>

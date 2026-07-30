@@ -1540,6 +1540,8 @@ function patchIosInfoPlist() {
     ["NSPhotoLibraryUsageDescription", "Planipret accesses your photo library so you can pick a profile photo."],
     ["NSLocalNetworkUsageDescription", "Planipret uses the local network to establish VoIP call audio."],
     ["NSSpeechRecognitionUsageDescription", "Planipret transcribes your recorded calls when you enable transcription."],
+    // Required by Capacitor/WebKit Bluetooth APIs referenced at link time (ITMS-90683).
+    ["NSBluetoothAlwaysUsageDescription", "Planipret does not use Bluetooth. This string is required by a system framework."],
   ];
   for (const [key, value] of REQUIRED_PLIST_STRINGS) {
     if (!xml.includes(`<key>${key}</key>`)) {
