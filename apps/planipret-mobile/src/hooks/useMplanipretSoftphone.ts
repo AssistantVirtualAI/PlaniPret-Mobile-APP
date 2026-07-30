@@ -255,8 +255,34 @@ export function useMplanipretSoftphone(enabled = true) {
           password: String(d.sip_password),
           displayName: String(d.display_name || d.sip_display_name || d.sip_extension),
         };
+        // The native keep-alive service owns the `<ext>_mobile` device.
+        // The WebView (JsSIP) MUST register a DIFFERENT device (`<ext>_web`):
+        // registering the same AoR twice makes NetSapiens close one of the two
+        // WSS sockets with code 1001 in a loop (never reaching REGISTER).
         startPlanipretSipKeepAlive(sipConfig).then((s) => { if (s && !cancelled) setNativeStatus(s); }).catch(() => undefined);
-        await ppSipProvider.init(sipConfig);
+
+        let webConfig = sipConfig;
+        try {
+          const webRes = await supabase.functions.invoke("ns-resolve-sip-credentials", { body: { client_type: "web" } });
+          const w = webRes.data as any;
+          if (!webRes.error && w && !w.error && w.sip_username && w.sip_password) {
+            const webWss = String(w.sip_wss_url ?? w.sip_ws_url ?? wssUrl).trim();
+            webConfig = {
+              ...sipConfig,
+              sipUsername: String(w.sip_username),
+              password: String(w.sip_password),
+              sipDomain: String(w.sip_domain || sipConfig.sipDomain),
+              wssUrl: /^wss?:\/\//i.test(webWss) ? webWss : wssUrl,
+              wssUrls: Array.isArray(w.sip_wss_urls) ? w.sip_wss_urls : wssUrls,
+            };
+          } else {
+            console.warn("[softphone] web device unavailable, falling back to mobile device for JsSIP");
+          }
+        } catch {
+          console.warn("[softphone] web credential lookup failed, using mobile device");
+        }
+        if (cancelled) return;
+        await ppSipProvider.init(webConfig);
         void getPlanipretVoipPushToken().then((t) => {
           if (t?.token) void uploadPlanipretVoipToken(t.token, t.bundleId, sipConfig.extension, t.environment);
         });
