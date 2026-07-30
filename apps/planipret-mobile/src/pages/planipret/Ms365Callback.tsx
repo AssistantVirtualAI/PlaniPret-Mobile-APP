@@ -145,9 +145,17 @@ export default function Ms365Callback() {
         // can be empty when the WebView is recreated by the OAuth deep link.
         const redirect_uri = await getRememberedMs365RedirectUriAsync();
         const state = params.get("state");
-        const code_verifier = await getRememberedMs365CodeVerifierAsync(state);
+        // Retry up to 3 s — on iOS the native Preferences write from buildMs365AuthorizeUrl
+        // may not be readable yet when the WebView is recreated by the deep-link callback.
+        let code_verifier = await getRememberedMs365CodeVerifierAsync(state);
         if (!code_verifier) {
-          navigate("/mplanipret/home", { replace: true });
+          for (let attempt = 0; attempt < 6 && !code_verifier; attempt++) {
+            await new Promise<void>((r) => setTimeout(r, 500));
+            code_verifier = await getRememberedMs365CodeVerifierAsync(state);
+          }
+        }
+        if (!code_verifier) {
+          await failWithGuard("code_verifier introuvable — veuillez réessayer la connexion Microsoft");
           return;
         }
         const isMicrosoftLogin = (await getMicrosoftSignInIntentAsync()) === "login" || Boolean(state?.startsWith("login:"));
