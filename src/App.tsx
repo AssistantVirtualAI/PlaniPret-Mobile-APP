@@ -39,7 +39,11 @@ const MPipeline = lazyWithRetry(() => import("./pages/planipret/mobile/MPipeline
 const MSearch = lazyWithRetry(() => import("./pages/planipret/mobile/MSearch"));
 const MStats = lazyWithRetry(() => import("./pages/planipret/mobile/MStats"));
 const MAvaChat = lazyWithRetry(() => import("./pages/planipret/mobile/MAvaChat"));
+const MChangePassword = lazyWithRetry(() => import("./pages/planipret/mobile/MChangePassword"));
+
 const MAvaNotifications = lazyWithRetry(() => import("./pages/planipret/mobile/MAvaNotifications"));
+
+
 const MExtensionSync = lazyWithRetry(() => import("./pages/planipret/mobile/MExtensionSync"));
 const MSipDebug = lazyWithRetry(() => import("./pages/planipret/mobile/MSipDebug"));
 const MConnections = lazyWithRetry(() => import("./pages/planipret/mobile/MConnections"));
@@ -436,6 +440,7 @@ function NativeDeepLinkBridge() {
 
         if (isMs365Callback) {
           localStorage.setItem('pp_ms365_callback_url', rawUrl);
+          void import('@/lib/ms365CallbackStore').then((m) => m.rememberMs365CallbackUrl(rawUrl)).catch(() => {});
           // Dismiss the in-app browser (SFSafariViewController / Chrome Custom Tab)
           // so the user is returned to the app after Microsoft consent.
           import('@capacitor/browser')
@@ -550,6 +555,9 @@ const App = () => (
                   <Route path="search" element={<Suspense fallback={<MobilePageSkeleton />}><MSearch /></Suspense>} />
                   <Route path="stats" element={<Suspense fallback={<MobilePageSkeleton />}><MStats /></Suspense>} />
                   <Route path="ava" element={<Suspense fallback={<MobilePageSkeleton />}><MAvaChat /></Suspense>} />
+                  <Route path="change-password" element={<Suspense fallback={<MobilePageSkeleton />}><MChangePassword /></Suspense>} />
+                  <Route path="privacy" element={<Suspense fallback={<MobilePageSkeleton />}><PlanipretPrivacy /></Suspense>} />
+
                   <Route path="notifications" element={<Suspense fallback={<MobilePageSkeleton />}><MAvaNotifications /></Suspense>} />
                   <Route path="extension-sync" element={<Suspense fallback={<MobilePageSkeleton />}><MExtensionSync /></Suspense>} />
                   <Route path="sip-debug" element={<Suspense fallback={<MobilePageSkeleton />}><MSipDebug /></Suspense>} />

@@ -6,12 +6,12 @@
   "registerRetryBaseMs": 5000,
   "registerRetryMaxMs": 60000,
   "reRegisterDelayMs": 5000,
-  "registerExpiresSec": 1800,
-  "keepAliveMs": 45000,
+  "registerExpiresSec": 600,
+  "keepAliveMs": 30000,
   "voipTokenCheckMs": 600000,
   "nativeBackoffMinMs": 5000,
   "nativeBackoffMaxMs": 60000,
   "nativeVerifyDelayMs": 15000,
   "nativeHeartbeatSec": 300,
-  "nativeRegisterExpiresSec": 1800
+  "nativeRegisterExpiresSec": 600
 }

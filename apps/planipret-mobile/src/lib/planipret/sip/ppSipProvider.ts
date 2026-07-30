@@ -100,7 +100,13 @@ function sipToken(value: string): string {
 function buildContactUri(cfg: PpSipConfig): string {
   const user = sipToken(cfg.sipUsername || cfg.extension);
   const ext = sipToken(cfg.extension || cfg.sipUsername);
-  return `sip:${user}@${ext}-web.planipret.invalid;transport=ws`;
+  const domain = String(cfg.sipDomain || "").trim().toLowerCase();
+  // NetSapiens validates the Contact host: a `.invalid` pseudo-domain
+  // (RFC 7118) is rejected by some builds and the socket is closed with 1001
+  // before the REGISTER completes. Always advertise the real SIP domain and
+  // keep the device identity in a URI parameter instead of the host.
+  const host = /^[a-z0-9.-]+$/.test(domain) ? domain : `${ext}-web.planipret.invalid`;
+  return `sip:${user}@${host};transport=ws;pp-ua=web-${ext}`;
 }
 
 function isKnownJsSipParserCrash(value: unknown): boolean {
@@ -483,6 +489,7 @@ class PpSipProvider {
         this.releaseRecovery("registered");
         this.emitMetrics();
 
+        this.logGrantedExpires();
         this.startKeepAlive();
         if (this.regRetryTimer) { clearTimeout(this.regRetryTimer); this.regRetryTimer = null; }
         return this.update({ status: "registered", errorCause: undefined, lastRegistrationAt: Date.now() });
@@ -820,9 +827,32 @@ class PpSipProvider {
 
   /** NetSapiens closes idle WebSockets with code 1001 after ~60s.
    *  A periodic in-dialog OPTIONS ping keeps the socket alive. */
+  /**
+   * NetSapiens frequently overrides the requested REGISTER expiry (default 60s)
+   * in the 200 OK Contact header. JsSIP re-registers on the granted value, so we
+   * only surface it and make sure the OPTIONS keep-alive stays well below it.
+   */
+  private grantedExpiresSec = 0;
+
+  private logGrantedExpires() {
+    try {
+      const granted = Number((this.ua as any)?._registrator?._expires ?? 0);
+      if (!Number.isFinite(granted) || granted <= 0) return;
+      this.grantedExpiresSec = granted;
+      const asked = getPpSipReconnectConfig().registerExpiresSec;
+      if (granted < asked) {
+        this.log("warn", `PBX granted a shorter REGISTER expiry (${granted}s < ${asked}s requested)`);
+      } else {
+        this.log("info", `REGISTER expiry granted: ${granted}s`);
+      }
+    } catch { /* private JsSIP API guard */ }
+  }
+
   private startKeepAlive() {
     this.stopKeepAlive();
-    const period = getPpSipReconnectConfig().keepAliveMs;
+    let period = getPpSipReconnectConfig().keepAliveMs;
+    // Stay comfortably inside the expiry the PBX actually granted.
+    if (this.grantedExpiresSec > 0) period = Math.min(period, Math.max(15000, (this.grantedExpiresSec * 1000) / 3));
     if (!Number.isFinite(period) || period <= 0) return;
     const sendPing = () => {
       const ua = this.ua;

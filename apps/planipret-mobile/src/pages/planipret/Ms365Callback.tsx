@@ -4,6 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { AlertCircle, CheckCircle2, Loader2 } from "lucide-react";
 import { clearRememberedMs365RedirectUri, getRememberedMs365CodeVerifierAsync, getRememberedMs365RedirectUriAsync } from "@/lib/ms365OAuth";
 import { clearMs365Pending } from "@/lib/ms365Pending";
+import { clearMs365CallbackUrl, recoverMs365CallbackParams } from "@/lib/ms365CallbackStore";
 import { clearMicrosoftSignInIntentAsync, getMicrosoftSignInIntentAsync, getMicrosoftSignInNextAsync } from "@/lib/ms365AuthLogin";
 import { markOAuthCallbackCompleted } from "@/lib/deepLinkDebug";
 
@@ -137,25 +138,25 @@ export default function Ms365Callback() {
       try {
         closeNativeBrowserSoon();
         clearMs365Pending();
-        const code = params.get("code");
-        const err = params.get("error_description") ?? params.get("error");
+        // Recover code/state from the persisted deep-link URL when the app was
+        // cold-started by the custom scheme and the router lost the query.
+        const recovered = await recoverMs365CallbackParams(params);
+        const code = recovered.code;
+        const err = recovered.error;
         if (err) { await failWithGuard(err); return; }
         if (!code) { navigate("/mplanipret/home", { replace: true }); return; }
+        if (code !== currentCode && exchangedCodes.has(code)) {
+          navigate("/mplanipret/home", { replace: true });
+          return;
+        }
+        exchangedCodes.add(code);
         // Async getters also read native Preferences — sessionStorage/localStorage
         // can be empty when the WebView is recreated by the OAuth deep link.
         const redirect_uri = await getRememberedMs365RedirectUriAsync();
-        const state = params.get("state");
-        // Retry up to 3 s — on iOS the native Preferences write from buildMs365AuthorizeUrl
-        // may not be readable yet when the WebView is recreated by the deep-link callback.
-        let code_verifier = await getRememberedMs365CodeVerifierAsync(state);
+        const state = recovered.state;
+        const code_verifier = await getRememberedMs365CodeVerifierAsync(state);
         if (!code_verifier) {
-          for (let attempt = 0; attempt < 6 && !code_verifier; attempt++) {
-            await new Promise<void>((r) => setTimeout(r, 500));
-            code_verifier = await getRememberedMs365CodeVerifierAsync(state);
-          }
-        }
-        if (!code_verifier) {
-          await failWithGuard("code_verifier introuvable — veuillez réessayer la connexion Microsoft");
+          navigate("/mplanipret/home", { replace: true });
           return;
         }
         const isMicrosoftLogin = (await getMicrosoftSignInIntentAsync()) === "login" || Boolean(state?.startsWith("login:"));
@@ -172,7 +173,7 @@ export default function Ms365Callback() {
           if (!hydratedSession?.access_token) { await failWithGuard("Session Microsoft non finalisée — reconnectez-vous"); return; }
           clearRememberedMs365RedirectUri();
           markOAuthCallbackCompleted("ms365", window.location.search);
-          try { localStorage.removeItem("pp_ms365_callback_url"); } catch {}
+          void clearMs365CallbackUrl();
           const next = await getMicrosoftSignInNextAsync("/mplanipret/home");
           await clearMicrosoftSignInIntentAsync();
           try { void import("@/lib/native/requestPermissionsAfterLogin").then(m => m.requestPermissionsAfterLogin()); } catch {}
@@ -198,7 +199,7 @@ export default function Ms365Callback() {
         }
         clearRememberedMs365RedirectUri();
         markOAuthCallbackCompleted("ms365", window.location.search);
-        try { localStorage.removeItem("pp_ms365_callback_url"); } catch {}
+        void clearMs365CallbackUrl();
         supabase.functions.invoke("ms365-mail-webhook-setup", { body: {} }).then(({ error }) => {
           if (error) console.warn("ms365 webhook setup skipped", error.message);
         }).catch((err) => console.warn("ms365 webhook setup skipped", err?.message ?? err));

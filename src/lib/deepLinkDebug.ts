@@ -150,6 +150,7 @@ export async function handleIncomingDeepLink(
     if (isCompleted(key)) {
       logDeepLink({ kind: "handler", source, url: rawUrl, detail: `${kind} callback already completed — ignoring stale replay` });
       try { localStorage.removeItem(kind === "ms365" ? "pp_ms365_callback_url" : "pp_maestro_callback_url"); } catch {}
+      if (kind === "ms365") void import('@/lib/ms365CallbackStore').then((m) => m.clearMs365CallbackUrl()).catch(() => {});
       navigate?.(kind === "maestro" ? "/mplanipret/more" : "/mplanipret/home", { replace: true });
       return true;
     }
@@ -166,6 +167,7 @@ export async function handleIncomingDeepLink(
     }
     if (isMs365Callback) {
       try { localStorage.setItem('pp_ms365_callback_url', rawUrl); } catch {}
+      void import('@/lib/ms365CallbackStore').then((m) => m.rememberMs365CallbackUrl(rawUrl)).catch(() => {});
       navigate?.(`/auth/microsoft/callback${url.search}`, { replace: true });
     } else {
       try { localStorage.setItem('pp_maestro_callback_url', rawUrl); } catch {}
