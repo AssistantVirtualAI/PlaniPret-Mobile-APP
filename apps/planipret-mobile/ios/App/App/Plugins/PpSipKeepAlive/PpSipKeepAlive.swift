@@ -43,6 +43,9 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private let registerDebounceSec: TimeInterval = 5.0
     private var reconnectPending = false
     private var backgroundHandoffWorkItem: DispatchWorkItem?
+    // Dedup guard: onBackground and onForeground are each triggered by 3-4 notifications.
+    // Without this flag, beginBackgroundTask() fires 4x and releaseRegistration() fires 3x.
+    private var isInBackground = false
     private var pathMonitor: NWPathMonitor?
     private var networkUp = true
 
@@ -121,6 +124,8 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     }
 
     @objc private func onBackground() {
+      guard !isInBackground else { return }  // dedup: fired by up to 4 notifications
+      isInBackground = true
       appActive = false
       beginBackgroundTask()
       activateAudioSession()
@@ -134,6 +139,8 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
     }
     @objc private func onForeground() {
+      guard isInBackground else { return }  // dedup: fired by up to 3 notifications
+      isInBackground = false
       appActive = true
       // Hand the AOR back to JsSIP and ask the web layer to re-REGISTER.
       releaseRegistration("foreground_js_owns")
