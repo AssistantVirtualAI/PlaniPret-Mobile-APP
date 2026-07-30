@@ -34,16 +34,14 @@ export default function ActiveCallOverlay({ callId, onClosed }: { callId: string
   const [muted, setMuted] = useState(false);
   const [held, setHeld] = useState(false);
   const [speaker, setSpeaker] = useState(false);
-  const [keypadOpen, setKeypadOpen] = useState(false);
+  // Default keypad open so DTMF stays visible once the call is answered
+  // (users need to reach IVRs right after pickup).
+  const [keypadOpen, setKeypadOpen] = useState(true);
   const [dtmfBuffer, setDtmfBuffer] = useState("");
   const [transferOpen, setTransferOpen] = useState(false);
   const [transferMode, setTransferMode] = useState<"transfer" | "forward">("transfer");
   const [transferTo, setTransferTo] = useState("");
   const [elapsed, setElapsed] = useState(0);
-  const [dismissed, setDismissed] = useState(false);
-
-  // Reset dismissal whenever we're mounted for a different call.
-  useEffect(() => { setDismissed(false); }, [callId]);
 
   useEffect(() => {
     if (!callId) { setCall(null); return; }
@@ -74,7 +72,7 @@ export default function ActiveCallOverlay({ callId, onClosed }: { callId: string
     return () => clearInterval(id);
   }, [call?.id, call?.answered_at, call?.started_at]);
 
-  if (!callId || !call || dismissed) return null;
+  if (!callId || !call) return null;
 
   const isRinging = call.status === "ringing";
   const otherParty = call.direction === "inbound" ? call.from_number : call.to_number;
@@ -100,22 +98,7 @@ export default function ActiveCallOverlay({ callId, onClosed }: { callId: string
     }
   };
   const openTransfer = (mode: "transfer" | "forward") => { setTransferMode(mode); setTransferOpen(true); };
-  const hangup = async () => {
-    // Hide the overlay immediately — nothing the backend does can bring it back
-    // for this instance because `dismissed` short-circuits render.
-    setDismissed(true);
-    onClosed();
-    // Fire the disconnect in the background, then force the DB row ended.
-    void (async () => {
-      await invoke("disconnect");
-      try {
-        await supabase
-          .from("planipret_phone_calls")
-          .update({ status: "ended", ended_at: new Date().toISOString() } as any)
-          .or(`id.eq.${callId},ns_callid.eq.${callId},ns_call_id.eq.${callId}`);
-      } catch {}
-    })();
-  };
+  const hangup = async () => { await invoke("disconnect"); onClosed(); };
 
   const KEYS = ["1","2","3","4","5","6","7","8","9","*","0","#"];
 

@@ -168,12 +168,26 @@ export async function openMs365Authorize(cfg: {
   loginHint?: string;
 }): Promise<void> {
   const url = await buildMs365AuthorizeUrl(cfg);
+  const redirectUri = getMs365RedirectUri();
   try {
     const { Capacitor } = await import("@capacitor/core");
     if (Capacitor.isNativePlatform()) {
-      // On iOS/Android: use SFSafariViewController so the deep-link callback
-      // (capacitor://localhost/auth/microsoft/callback) is properly intercepted
-      // by App.addListener('appUrlOpen') in NativeDeepLinkBridge.
+      // iOS first: ASWebAuthenticationSession returns the custom-scheme callback
+      // straight to JS. SFSafariViewController instead shows the
+      // "Ouvrir cette page dans « Planiprêt Mobile » ?" prompt and relaunches the
+      // app through a deep link, which is what broke Microsoft SSO.
+      const { canUseNativeAuthSession, startNativeAuthSession } = await import("@/lib/ms365AuthSession");
+      if (canUseNativeAuthSession()) {
+        const callbackUrl = await startNativeAuthSession(url, redirectUri);
+        if (callbackUrl) {
+          const { rememberMs365CallbackUrl } = await import("@/lib/ms365CallbackStore");
+          await rememberMs365CallbackUrl(callbackUrl);
+          window.dispatchEvent(new CustomEvent("pp-oauth-callback", { detail: { url: callbackUrl } }));
+          return;
+        }
+        // cancelled or plugin unavailable → fall back to the browser flow
+      }
+      // Android / fallback: SFSafariViewController / Custom Tabs + appUrlOpen.
       const { Browser } = await import("@capacitor/browser");
       await Browser.open({ url, presentationStyle: "fullscreen" });
       return;

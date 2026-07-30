@@ -50,7 +50,6 @@ const IOS_ENTITLEMENTS = `<?xml version="1.0" encoding="UTF-8"?>
 <dict>
 	<key>aps-environment</key>
 	<string>development</string>
-
 </dict>
 </plist>
 `;
@@ -291,6 +290,9 @@ public class PpSipKeepAliveService extends Service {
   // Reconnection strategy (configurable from JS — see src/config/ppSipReconnect.json).
   private int backoffMinMs = 4000, backoffMaxMs = 60000, backoffMaxAttempts = 5, verifyDelayMs = 8000, heartbeatSec = 60, registerExpires = 1800;
   private int reconnectAttempts = 0; private volatile boolean reconnectPending = false;
+  private long lastRegisterSentMs = 0L;
+  private long lastRegisterOkMs = 0L;
+  private static final long REGISTER_DEBOUNCE_MS = 5000L;
 
   public static void start(Context c) { Intent i = new Intent(c, PpSipKeepAliveService.class); if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) c.startForegroundService(i); else c.startService(i); }
   public static void stop(Context c) { c.stopService(new Intent(c, PpSipKeepAliveService.class)); }
@@ -342,21 +344,19 @@ public class PpSipKeepAliveService extends Service {
     if (Build.VERSION.SDK_INT >= 34) ServiceCompat.startForeground(this, NOTIFICATION_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL);
     else startForeground(NOTIFICATION_ID, n);
     emitStatus("connecting", "native_register_start");
-    requestReregister(this, "service_start");
     executor.execute(this::connectAndRegister);
     if (heartbeat != null) heartbeat.cancel(false);
     heartbeat = executor.scheduleAtFixedRate(() -> {
       try { sendRegister(null); } catch (Exception e) { scheduleReconnect("register_retry"); }
-      requestReregister(this, "keepalive");
     }, heartbeatSec, heartbeatSec, TimeUnit.SECONDS);
     return START_STICKY;
   }
 
-  @Override public void onTaskRemoved(Intent rootIntent) { emitStatus("registered", "task_removed_keepalive"); requestReregister(this, "task_removed"); super.onTaskRemoved(rootIntent); }
+  @Override public void onTaskRemoved(Intent rootIntent) { emitStatus("registered", "task_removed_keepalive"); super.onTaskRemoved(rootIntent); }
   @Override public void onDestroy() { if (heartbeat != null) heartbeat.cancel(true); unregisterNetworkWatchdog(); closeWs(); try { if (wakeLock != null && wakeLock.isHeld()) wakeLock.release(); } catch (Exception ignored) {} try { if (wifiLock != null && wifiLock.isHeld()) wifiLock.release(); } catch (Exception ignored) {} executor.shutdownNow(); emitStatus("disconnected", "service_destroyed"); super.onDestroy(); }
   @Override public IBinder onBind(Intent intent) { return null; }
 
-  private void registerNetworkWatchdog() { try { cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE); NetworkRequest req = new NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(); networkCallback = new ConnectivityManager.NetworkCallback() { @Override public void onAvailable(Network n) { emitStatus("registered", "network_available"); requestReregister(PpSipKeepAliveService.this, "network_available"); } @Override public void onLost(Network n) { emitStatus("reconnecting", "network_lost"); } }; cm.registerNetworkCallback(req, networkCallback); } catch(Exception ignored) {} }
+  private void registerNetworkWatchdog() { try { cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE); NetworkRequest req = new NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(); networkCallback = new ConnectivityManager.NetworkCallback() { @Override public void onAvailable(Network n) { emitStatus("registered", "network_available"); scheduleReconnect("network_available"); } @Override public void onLost(Network n) { emitStatus("reconnecting", "network_lost"); } }; cm.registerNetworkCallback(req, networkCallback); } catch(Exception ignored) {} }
   private void unregisterNetworkWatchdog() { try { if (cm != null && networkCallback != null) cm.unregisterNetworkCallback(networkCallback); } catch(Exception ignored) {} networkCallback = null; }
 
   private void connectAndRegister() { synchronized (this) { try {
@@ -390,6 +390,7 @@ public class PpSipKeepAliveService extends Service {
       sendRegister(challenge); return;
     }
     if (msg.startsWith("SIP/2.0 200") && msg.toLowerCase(Locale.US).contains("cseq:") && msg.toUpperCase(Locale.US).contains(" REGISTER")) {
+      lastRegisterOkMs = System.currentTimeMillis();
       emitStatus("registered", "native_register_200"); return;
     }
     if (msg.startsWith("INVITE ")) {
@@ -407,7 +408,6 @@ public class PpSipKeepAliveService extends Service {
         .putExtra("fromUser", fromUser).putExtra("fromDisplay", fromDisplay));
       // Fire the full-screen "ringing" notification with Answer / Decline actions.
       showIncomingCallNotification(inviteCallId, fromHdr, fromUser, fromDisplay);
-      // re-REGISTER on INVITE suppressed: duplicate AoR causes NetSapiens to close WSS.
     }
   }
 
@@ -431,10 +431,12 @@ public class PpSipKeepAliveService extends Service {
     SharedPreferences p = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
     String login = p.getString("login", ""), domain = p.getString("domain", ""), display = p.getString("display_name", login), password = p.getString("password", "");
     if (login == null || login.length() == 0 || domain == null || domain.length() == 0) { emitStatus("error", "missing_credentials"); return; }
+    long now = System.currentTimeMillis();
+    if (challenge == null && (now - lastRegisterSentMs) < REGISTER_DEBOUNCE_MS) { emitStatus("connecting", "register_debounced_sent"); return; }
+    if (challenge == null && lastRegisterOkMs > 0 && (now - lastRegisterOkMs) < REGISTER_DEBOUNCE_MS) { emitStatus("registered", "register_debounced_ok"); return; }
     int seq = cseq++;
     String branch = "z9hG4bK" + UUID.randomUUID().toString().replace("-", "");
-    String safeLogin = login.toLowerCase().replaceAll("[^a-z0-9-]", "-");
-    String contact = "<sip:" + login + "@android-" + (safeLogin.isEmpty() ? "planipret" : safeLogin) + ".planipret.invalid;transport=wss>";
+    String contact = "<sip:" + login + "@android-" + stableToken(login) + ".planipret.invalid;transport=wss>";
     StringBuilder sip = new StringBuilder();
     sip.append("REGISTER sip:").append(domain).append(" SIP/2.0\\r\\n");
     sip.append("Via: SIP/2.0/WSS planipret-mobile.invalid;branch=").append(branch).append("\\r\\n");
@@ -446,11 +448,13 @@ public class PpSipKeepAliveService extends Service {
     sip.append("Contact: ").append(contact).append(";expires=").append(registerExpires).append("\\r\\nExpires: ").append(registerExpires).append("\\r\\nUser-Agent: Planipret Native KeepAlive\\r\\nSupported: outbound,path,gruu\\r\\nAllow: INVITE,ACK,CANCEL,BYE,OPTIONS,MESSAGE,INFO,UPDATE,REGISTER\\r\\n");
     if (challenge != null && password != null && password.length() > 0) sip.append("Authorization: ").append(digestAuth(challenge, login, password, domain)).append("\\r\\n");
     sip.append("Content-Length: 0\\r\\n\\r\\n");
+    lastRegisterSentMs = now;
     sendFrame(sip.toString());
     emitStatus("connecting", challenge == null ? "register_sent" : "register_auth_sent");
   }
 
   private String digestAuth(String challenge, String user, String pass, String domain) throws Exception { Map<String,String> m = parseDigest(challenge); String realm = m.containsKey("realm") ? m.get("realm") : domain, nonce = m.get("nonce"), qop = m.get("qop"), opaque = m.get("opaque"), uri = "sip:" + domain, nc = "00000001", cnonce = Long.toHexString(System.nanoTime()); String ha1 = md5(user + ":" + realm + ":" + pass), ha2 = md5("REGISTER:" + uri); String resp = qop != null && qop.contains("auth") ? md5(ha1 + ":" + nonce + ":" + nc + ":" + cnonce + ":auth:" + ha2) : md5(ha1 + ":" + nonce + ":" + ha2); StringBuilder a = new StringBuilder("Digest username=\\"").append(user).append("\\", realm=\\"").append(realm).append("\\", nonce=\\"").append(nonce).append("\\", uri=\\"").append(uri).append("\\", response=\\"").append(resp).append("\\", algorithm=MD5"); if (qop != null && qop.contains("auth")) a.append(", qop=auth, nc=").append(nc).append(", cnonce=\\"").append(cnonce).append("\\""); if (opaque != null) a.append(", opaque=\\"").append(opaque).append("\\""); return a.toString(); }
+  private String stableToken(String raw) { String s = raw == null ? "planipret" : raw.toLowerCase(Locale.US).replaceAll("[^a-z0-9-]", "-").replaceAll("-+", "-").replaceAll("^-|-$", ""); return s.length() == 0 ? "planipret" : s; }
   private Map<String,String> parseDigest(String h) { Map<String,String> out = new HashMap<>(); String s = h.replaceFirst("(?i)^Digest\\\\s+", ""); for (String part : s.split(",")) { int i = part.indexOf('='); if (i <= 0) continue; String k = part.substring(0, i).trim(); String v = part.substring(i + 1).trim(); if (v.startsWith("\\"") && v.endsWith("\\"")) v = v.substring(1, v.length() - 1); out.put(k, v); } return out; }
   private String header(String msg, String name) { for (String line : msg.split("\\r?\\n")) if (line.toLowerCase(Locale.US).startsWith(name.toLowerCase(Locale.US) + ":")) return line.substring(name.length() + 1).trim(); return null; }
   private String parseDisplay(String header) { if (header == null) return null; int lt = header.indexOf('<'); if (lt > 0) { String d = header.substring(0, lt).trim(); if (d.startsWith("\\"") && d.endsWith("\\"")) d = d.substring(1, d.length() - 1); return d.length() == 0 ? null : d; } return null; }
@@ -564,9 +568,6 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private let registerDebounceSec: TimeInterval = 2.0
     private var reconnectPending = false
     private var backgroundHandoffWorkItem: DispatchWorkItem?
-    // Dedup guard: onBackground and onForeground are each triggered by 3-4 notifications.
-    // Without this flag, beginBackgroundTask() fires 4x and releaseRegistration() fires 3x.
-    private var isInBackground = false
     private var pathMonitor: NWPathMonitor?
     private var networkUp = true
 
@@ -645,8 +646,6 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     }
 
     @objc private func onBackground() {
-      guard !isInBackground else { return }  // dedup: fired by up to 4 notifications
-      isInBackground = true
       appActive = false
       beginBackgroundTask()
       activateAudioSession()
@@ -660,8 +659,6 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
     }
     @objc private func onForeground() {
-      guard isInBackground else { return }  // dedup: fired by up to 3 notifications
-      isInBackground = false
       appActive = true
       // Hand the AOR back to JsSIP and ask the web layer to re-REGISTER.
       releaseRegistration("foreground_js_owns")
@@ -783,7 +780,6 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
           "callId": cidHdr, "from": fromHdr, "fromUser": fromUser, "fromDisplay": fromDisplay
         ])
         showIncomingCallBanner(callId: cidHdr, label: fromDisplay.isEmpty ? (fromUser.isEmpty ? "Appel entrant" : fromUser) : fromDisplay)
-        // re-REGISTER on INVITE suppressed: causes duplicate AoR on NetSapiens.
       }
     }
 
@@ -835,11 +831,14 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       if isForeground() { releaseRegistration("foreground_js_owns"); return }
       if socket == nil { connect(); return }
       // Two REGISTERs in a row on the same WSS connection make NetSapiens see a
-      // duplicate AoR and close the socket. Hold off for 2s after each 200 OK
+      // duplicate AoR and close the socket. Hold off after each send/200 OK
       // (auth challenge responses are exempt: they complete the same handshake).
+      if challenge == nil, let sentAt = lastRegisterSentTime, Date().timeIntervalSince(sentAt) <= registerDebounceSec {
+        NSLog("[PpSipKeepAlive] REGISTER debounced: %.2fs since sent (min %.1fs)", Date().timeIntervalSince(sentAt), registerDebounceSec)
+        return
+      }
       if challenge == nil, let okAt = lastRegisterOkTime, Date().timeIntervalSince(okAt) <= registerDebounceSec {
         NSLog("[PpSipKeepAlive] REGISTER debounced: %.2fs since 200 OK (min %.1fs)", Date().timeIntervalSince(okAt), registerDebounceSec)
-        sendOptionsPing()
         return
       }
       guard !login.isEmpty, !domain.isEmpty else { setStatus("error", "missing_credentials"); return }
@@ -1112,6 +1111,73 @@ CAP_PLUGIN(PpVoipCall, "PpVoipCall",
 )
 `;
 
+// ---------- PpAuthSession: iOS ASWebAuthenticationSession ----------
+// Microsoft SSO must come back into the app WITHOUT the Safari
+// "Ouvrir cette page dans Planiprêt Mobile ?" prompt. SFSafariViewController
+// (@capacitor/browser) cannot follow a custom-scheme redirect silently;
+// ASWebAuthenticationSession hands the callback URL straight back to JS.
+const IOS_AUTH_SESSION_PLUGIN = `import Foundation
+import Capacitor
+import UIKit
+import AuthenticationServices
+
+@objc(PpAuthSession)
+public class PpAuthSession: CAPPlugin, CAPBridgedPlugin, ASWebAuthenticationPresentationContextProviding {
+    public let identifier = "PpAuthSession"
+    public let jsName = "PpAuthSession"
+    public let pluginMethods: [CAPPluginMethod] = [
+      CAPPluginMethod(name: "start", returnType: CAPPluginReturnPromise)
+    ]
+
+    private var session: ASWebAuthenticationSession?
+
+    @objc func start(_ call: CAPPluginCall) {
+        guard let urlString = call.getString("url"), let url = URL(string: urlString) else {
+            call.reject("missing url"); return
+        }
+        let scheme = call.getString("scheme") ?? "capacitor"
+        DispatchQueue.main.async {
+            let authSession = ASWebAuthenticationSession(url: url, callbackURLScheme: scheme) { callbackUrl, error in
+                self.session = nil
+                if let error = error {
+                    let nsError = error as NSError
+                    if nsError.domain == ASWebAuthenticationSessionErrorDomain,
+                       nsError.code == ASWebAuthenticationSessionError.canceledLogin.rawValue {
+                        call.resolve(["cancelled": true])
+                        return
+                    }
+                    NSLog("[PpAuthSession] failed: %@", error.localizedDescription)
+                    call.reject(error.localizedDescription)
+                    return
+                }
+                guard let callbackUrl = callbackUrl else { call.resolve(["cancelled": true]); return }
+                NSLog("[PpAuthSession] callback received")
+                call.resolve(["url": callbackUrl.absoluteString])
+            }
+            authSession.presentationContextProvider = self
+            authSession.prefersEphemeralWebBrowserSession = false
+            self.session = authSession
+            if !authSession.start() {
+                self.session = nil
+                call.reject("cannot start auth session")
+            }
+        }
+    }
+
+    public func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        return self.bridge?.viewController?.view.window ?? ASPresentationAnchor()
+    }
+}
+`;
+
+const IOS_AUTH_SESSION_BRIDGE = `#import <Foundation/Foundation.h>
+#import <Capacitor/Capacitor.h>
+
+CAP_PLUGIN(PpAuthSession, "PpAuthSession",
+  CAP_PLUGIN_METHOD(start, CAPPluginReturnPromise);
+)
+`;
+
 const IOS_KEEPALIVE_BRIDGE_FILENAME = "PpSipKeepAlive.m";
 const IOS_KEEPALIVE_BRIDGE = `#import <Foundation/Foundation.h>
 #import <Capacitor/Capacitor.h>
@@ -1198,6 +1264,43 @@ function stripSwiftImports(swift) {
   return swift.replace(/^import\s+[^\n]+\n/gm, "").trim();
 }
 
+// Remove plugin class bodies that older versions of this script inlined into
+// the launch view controller (they now live in App/Plugins/*.swift).
+function stripInlinePlugins(swift) {
+  let next = swift;
+  const marker = "// MARK: - Inline Planiprêt native plugins";
+  const idx = next.indexOf(marker);
+  if (idx > -1) {
+    next = `${next.slice(0, idx).trimEnd()}\n`;
+    console.log("[native-config] Removed inline duplicate plugin classes from iOS view controller.");
+  }
+  // Defensive: drop any leftover @objc(PpSipKeepAlive)/@objc(PpVoipCall) class
+  // declarations still present in the controller file.
+  for (const name of ["PpSipKeepAlive", "PpVoipCall"]) {
+    const re = new RegExp(`@objc\\(${name}\\)\\s*\\n(public\\s+)?class\\s+${name}\\b`);
+    const m = re.exec(next);
+    if (!m) continue;
+    const start = m.index;
+    const braceStart = next.indexOf("{", start);
+    if (braceStart === -1) continue;
+    let depth = 0;
+    let end = -1;
+    for (let i = braceStart; i < next.length; i += 1) {
+      const ch = next[i];
+      if (ch === "{") depth += 1;
+      else if (ch === "}") {
+        depth -= 1;
+        if (depth === 0) { end = i + 1; break; }
+      }
+    }
+    if (end === -1) continue;
+    next = `${next.slice(0, start).trimEnd()}\n${next.slice(end).trimStart()}`;
+    console.log(`[native-config] Removed duplicate inline ${name} class from iOS view controller.`);
+  }
+  return next.trimEnd() + "\n";
+}
+
+
 function hasProjectReference(iosRoot, fileName) {
   const pbx = path.join(iosRoot, "App.xcodeproj", "project.pbxproj");
   if (!fs.existsSync(pbx)) return false;
@@ -1248,10 +1351,12 @@ function ensurePluginRegistration(swift) {
   let next = swift;
   const sipLine = "        bridge?.registerPluginInstance(PpSipKeepAlive())\n";
   const voipLine = "        bridge?.registerPluginInstance(PpVoipCall())\n";
+  const authLine = "        bridge?.registerPluginInstance(PpAuthSession())\n";
   const needsSip = !next.includes("PpSipKeepAlive()");
   const needsVoip = !next.includes("PpVoipCall()");
-  if (!needsSip && !needsVoip) return next;
-  const lines = `${needsSip ? sipLine : ""}${needsVoip ? voipLine : ""}`;
+  const needsAuth = !next.includes("PpAuthSession()");
+  if (!needsSip && !needsVoip && !needsAuth) return next;
+  const lines = `${needsSip ? sipLine : ""}${needsVoip ? voipLine : ""}${needsAuth ? authLine : ""}`;
   if (next.includes("registerPluginInstance")) {
     return next.replace(/(bridge\?\.registerPluginInstance\([^\n]+\)\n)/, `$1${lines}`);
   }
@@ -1333,6 +1438,7 @@ class AppBridgeViewController: CAPBridgeViewController {
     override func capacitorDidLoad() {
         bridge?.registerPluginInstance(PpSipKeepAlive())
         bridge?.registerPluginInstance(PpVoipCall())
+        bridge?.registerPluginInstance(PpAuthSession())
     }
 
     override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .portrait }
@@ -1427,15 +1533,11 @@ function patchIosInfoPlist() {
       xml = xml.replace(/\n<\/dict>\s*\n<\/plist>\s*$/, `\n\t<key>${key}</key>\n\t<string>${value}</string>\n</dict>\n</plist>\n`);
     }
   }
-  // Portrait-only for iPhone; iPad requires ALL 4 orientations for multitasking (App Store code 90474).
-  const portraitArray = "\n\t<key>UISupportedInterfaceOrientations</key>\n\t<array>\n\t\t<string>UIInterfaceOrientationPortrait</string>\n\t</array>\n\t<key>UISupportedInterfaceOrientations~ipad</key>\n\t<array>\n\t\t<string>UIInterfaceOrientationPortrait</string>\n\t\t<string>UIInterfaceOrientationPortraitUpsideDown</string>\n\t\t<string>UIInterfaceOrientationLandscapeLeft</string>\n\t\t<string>UIInterfaceOrientationLandscapeRight</string>\n\t</array>\n";
+  // Portrait-only (matches the AppDelegate override below).
+  const portraitArray = "\n\t<key>UISupportedInterfaceOrientations</key>\n\t<array>\n\t\t<string>UIInterfaceOrientationPortrait</string>\n\t</array>\n\t<key>UISupportedInterfaceOrientations~ipad</key>\n\t<array>\n\t\t<string>UIInterfaceOrientationPortrait</string>\n\t</array>\n";
   xml = xml.replace(/\n\t?<key>UISupportedInterfaceOrientations(~ipad)?<\/key>\s*<array>[\s\S]*?<\/array>/g, "");
   xml = xml.replace(/\n<\/dict>\s*\n<\/plist>\s*$/, `${portraitArray}</dict>\n</plist>\n`);
 
-  // BGTaskSchedulerPermittedIdentifiers is required when UIBackgroundModes contains 'processing' (App Store code 90771).
-  if (!xml.includes("<key>BGTaskSchedulerPermittedIdentifiers</key>")) {
-    xml = xml.replace(/\n<\/dict>\s*\n<\/plist>\s*$/, "\n\t<key>BGTaskSchedulerPermittedIdentifiers</key>\n\t<array>\n\t\t<string>com.planipret.mobile.sip-refresh</string>\n\t</array>\n</dict>\n</plist>\n");
-  }
   if (!xml.includes("<key>ITSAppUsesNonExemptEncryption</key>")) {
     xml = xml.replace(/\n<\/dict>\s*\n<\/plist>\s*$/, "\n\t<key>ITSAppUsesNonExemptEncryption</key>\n\t<false/>\n</dict>\n</plist>\n");
   }
@@ -1562,14 +1664,18 @@ function patchIosNativeFiles() {
   writeIfChanged(path.join(iosApp, "Plugins", "PpSipKeepAlive", IOS_KEEPALIVE_BRIDGE_FILENAME), IOS_KEEPALIVE_BRIDGE);
   writeIfChanged(path.join(iosApp, "Plugins", "PpVoipCall", "PpVoipCall.swift"), IOS_VOIP_CALL_PLUGIN);
   writeIfChanged(path.join(iosApp, "Plugins", "PpVoipCall", "PpVoipCall.m"), IOS_VOIP_CALL_BRIDGE);
+  writeIfChanged(path.join(iosApp, "Plugins", "PpAuthSession", "PpAuthSession.swift"), IOS_AUTH_SESSION_PLUGIN);
+  writeIfChanged(path.join(iosApp, "Plugins", "PpAuthSession", "PpAuthSession.m"), IOS_AUTH_SESSION_BRIDGE);
   const iosRoot = path.join(appDir, "ios", "App");
   ensureXcodeSourceFiles(iosRoot, [
     "App/Plugins/PpSipKeepAlive/PpSipKeepAlive.swift",
     "App/Plugins/PpSipKeepAlive/PpSipKeepAlive.m",
     "App/Plugins/PpVoipCall/PpVoipCall.swift",
     "App/Plugins/PpVoipCall/PpVoipCall.m",
+    "App/Plugins/PpAuthSession/PpAuthSession.swift",
+    "App/Plugins/PpAuthSession/PpAuthSession.m",
   ]);
-  const pluginFilesAreInProject = hasProjectReference(iosRoot, "PpSipKeepAlive.swift") && hasProjectReference(iosRoot, "PpVoipCall.swift");
+  const pluginFilesAreInProject = hasProjectReference(iosRoot, "PpSipKeepAlive.swift") && hasProjectReference(iosRoot, "PpVoipCall.swift") && hasProjectReference(iosRoot, "PpAuthSession.swift");
   patchIosAppDelegate(iosApp);
   ensureIosBridgeController(iosApp, pluginFilesAreInProject);
   ensureIosSceneDelegate(iosApp);
@@ -1579,57 +1685,54 @@ function patchIosNativeFiles() {
     let swift = fs.readFileSync(file, "utf8");
     const before = swift;
     swift = ensurePluginRegistrationOrThrow(swift, file);
-    if (!pluginFilesAreInProject && !swift.includes("@objc(PpSipKeepAlive)")) {
-      swift = ensureSwiftImports(swift, ["Foundation", "Capacitor", "UIKit", "AVFoundation", "CryptoKit", "UserNotifications", "PushKit", "CallKit"]);
-      swift = `${swift.trim()}\n\n// MARK: - Inline Planiprêt native plugins\n${stripSwiftImports(IOS_PLUGIN)}\n\n${stripSwiftImports(IOS_VOIP_CALL_PLUGIN)}\n`;
+    if (pluginFilesAreInProject) {
+      // Older runs inlined the plugin classes into the controller. Now that the
+      // standalone Plugins/*.swift files are in the Xcode target, keeping the
+      // inline copy causes "Invalid redeclaration of 'PpSipKeepAlive'".
+      swift = stripInlinePlugins(swift);
+    } else if (!swift.includes("@objc(PpSipKeepAlive)")) {
+      swift = ensureSwiftImports(swift, ["Foundation", "Capacitor", "UIKit", "AVFoundation", "CryptoKit", "UserNotifications", "PushKit", "CallKit", "AuthenticationServices"]);
+      swift = `${swift.trim()}\n\n// MARK: - Inline Planiprêt native plugins\n${stripSwiftImports(IOS_PLUGIN)}\n\n${stripSwiftImports(IOS_VOIP_CALL_PLUGIN)}\n\n${stripSwiftImports(IOS_AUTH_SESSION_PLUGIN)}\n`;
       console.log("[native-config] iOS native plugins embedded into existing ViewController target.");
     }
     if (swift !== before) writeIfChanged(file, swift);
   }
+
   const bridge = path.join(iosApp, "AppBridgeViewController.swift");
   const storyboard = path.join(iosApp, "Base.lproj", "Main.storyboard");
   const storyboardText = fs.existsSync(storyboard) ? fs.readFileSync(storyboard, "utf8") : "";
   const bridgeText = fs.existsSync(bridge) ? fs.readFileSync(bridge, "utf8") : "";
-  if (!bridgeText.includes("PpSipKeepAlive()") || !bridgeText.includes("PpVoipCall()") || !storyboardText.includes('customClass="AppBridgeViewController"')) {
-    throw new Error("[native-config] iOS native plugins are not wired into the launch ViewController; aborting sync so SIP/VoIP cannot ship UNIMPLEMENTED.");
+  if (!bridgeText.includes("PpSipKeepAlive()") || !bridgeText.includes("PpVoipCall()") || !bridgeText.includes("PpAuthSession()") || !storyboardText.includes('customClass="AppBridgeViewController"')) {
+    throw new Error("[native-config] iOS native plugins are not wired into the launch ViewController; aborting sync so SIP/VoIP/OAuth cannot ship UNIMPLEMENTED.");
   }
-  console.log("[native-config] iOS PpSipKeepAlive + PpVoipCall plugins applied.");
+  console.log("[native-config] iOS PpSipKeepAlive + PpVoipCall + PpAuthSession plugins applied.");
 }
 
 function patchIosSplash() {
-  // Résoudre le dossier ios — soit dans appDir/ios (après cap sync) soit ../../ios (racine du repo)
-  let iosRoot = path.join(appDir, "ios", "App", "App");
-  if (!fs.existsSync(iosRoot)) iosRoot = path.join(appDir, "..", "..", "ios", "App", "App");
-  if (!fs.existsSync(iosRoot)) { console.log("[native-config] iOS splash: dossier ios/App/App introuvable — ignoré."); return; }
-  const splashDir = path.join(iosRoot, "Assets.xcassets", "Splash.imageset");
-  const srcDir = path.join(appDir, "native-config", "splash");
-  if (!fs.existsSync(srcDir)) { console.log("[native-config] iOS splash: native-config/splash absent — ignoré."); return; }
-  fs.mkdirSync(splashDir, { recursive: true });
-  // Écrire Contents.json si absent ou incomplet
-  const contentsJson = path.join(splashDir, "Contents.json");
-  const contentsExpected = JSON.stringify({ images: [
-    { idiom: "universal", filename: "splash-2732x2732-2.png", scale: "1x" },
-    { idiom: "universal", filename: "splash-2732x2732-1.png", scale: "2x" },
-    { idiom: "universal", filename: "splash-2732x2732.png",   scale: "3x" }
-  ], info: { version: 1, author: "xcode" } }, null, 2);
-  writeIfChanged(contentsJson, contentsExpected);
-  // Écrire Assets.xcassets/Contents.json si absent
-  const assetsContents = path.join(iosRoot, "Assets.xcassets", "Contents.json");
-  if (!fs.existsSync(assetsContents)) {
-    fs.writeFileSync(assetsContents, JSON.stringify({ info: { version: 1, author: "xcode" } }, null, 2));
+  const splashSrc = path.join(appDir, "native-config", "splash");
+  const splashDst = path.join(appDir, "ios", "App", "App", "Assets.xcassets", "Splash.imageset");
+  if (!fs.existsSync(splashSrc)) {
+    console.log("[native-config] Splash source not found — skipping.");
+    return;
   }
-  // Copier les images splash
-  const copies = [
-    ["splash-1x.png", "splash-2732x2732-2.png"],
-    ["splash-2x.png", "splash-2732x2732-1.png"],
-    ["splash-3x.png", "splash-2732x2732.png"],
-  ];
-  for (const [src, dst] of copies) {
-    const srcFile = path.join(srcDir, src);
-    const dstFile = path.join(splashDir, dst);
-    if (fs.existsSync(srcFile)) fs.copyFileSync(srcFile, dstFile);
+  if (!fs.existsSync(splashDst)) {
+    fs.mkdirSync(splashDst, { recursive: true });
   }
-  console.log("[native-config] iOS Splash AVA AI 3D appliqué depuis native-config/splash.");
+  for (const f of ["splash-1x.png", "splash-2x.png", "splash-3x.png"]) {
+    const src = path.join(splashSrc, f);
+    const dst = path.join(splashDst, f);
+    if (fs.existsSync(src)) fs.copyFileSync(src, dst);
+  }
+  const contents = JSON.stringify({
+    images: [
+      { idiom: "universal", scale: "1x", filename: "splash-1x.png" },
+      { idiom: "universal", scale: "2x", filename: "splash-2x.png" },
+      { idiom: "universal", scale: "3x", filename: "splash-3x.png" },
+    ],
+    info: { version: 1, author: "xcode" },
+  }, null, 2);
+  writeIfChanged(path.join(splashDst, "Contents.json"), contents);
+  console.log("[native-config] iOS Splash AVA AI 3D applied.");
 }
 
 patchCopiedWebBundles();

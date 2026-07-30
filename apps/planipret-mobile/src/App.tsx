@@ -72,6 +72,13 @@ function NativeDeepLinkBridge() {
       await handleIncomingDeepLink(rawUrl, source, navigate);
     };
 
+    // ASWebAuthenticationSession (iOS) returns the callback URL in-process
+    // instead of re-opening the app through a deep link.
+    const onAuthSessionCallback = (e: Event) => {
+      const url = (e as CustomEvent<{ url?: string }>).detail?.url;
+      void routeFromUrl(url, "authSession");
+    };
+    window.addEventListener("pp-oauth-callback", onAuthSessionCallback);
 
     let unsubscribe: null | (() => void) = null;
     (async () => {
@@ -93,7 +100,10 @@ function NativeDeepLinkBridge() {
       }
     })();
 
-    return () => unsubscribe?.();
+    return () => {
+      window.removeEventListener("pp-oauth-callback", onAuthSessionCallback);
+      unsubscribe?.();
+    };
   }, [navigate]);
 
   return null;
