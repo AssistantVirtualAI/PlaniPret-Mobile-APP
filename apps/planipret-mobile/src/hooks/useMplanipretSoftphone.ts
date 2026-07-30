@@ -30,9 +30,11 @@ import {
   onPlanipretIncomingInvite,
   onPlanipretNativeReregister,
   onPlanipretSipKeepAliveStatus,
+  onPlanipretVoipIncomingCall,
   onPlanipretVoipPushToken,
   onPlanipretVoipPushTokenInvalidated,
   refreshPlanipretVoipPushToken,
+  wakePlanipretNativeSipForIncomingCall,
   reportPlanipretCallEnded,
   requestPlanipretBatteryOptimizationExemption,
   startPlanipretSipKeepAlive,
@@ -378,6 +380,17 @@ export function useMplanipretSoftphone(enabled = true) {
     document.addEventListener("visibilitychange", onVisibleVoip);
     const voipRecheck = window.setInterval(verifyVoipToken, getPpSipReconnectConfig().voipTokenCheckMs);
 
+    // PushKit is the only reliable iOS background wake: as soon as the VoIP push
+    // creates the CallKit call, force the native keep-alive to re-REGISTER (the
+    // WSS socket is usually dead after suspension) instead of waiting on it.
+    let cleanupVoipIncoming: (() => void) | undefined;
+    onPlanipretVoipIncomingCall((data) => {
+      console.log("[pp-voip] incoming VoIP push → waking native SIP", data?.callId);
+      void wakePlanipretNativeSipForIncomingCall("voip_push");
+      try { ppSipProvider.forceReregister(); } catch {}
+      try { (window as any).__ppPendingAnswer = { callId: data?.callId, ts: Date.now() }; } catch {}
+    }).then((fn) => { cleanupVoipIncoming = fn; }).catch(() => undefined);
+
     onPlanipretIncomingCallAnswered((data) => {
       try { (window as any).__ppPendingAnswer = { callId: data?.callId, ts: Date.now() }; } catch {}
       try { ppSipProvider.forceReregister(); } catch {}
@@ -406,6 +419,7 @@ export function useMplanipretSoftphone(enabled = true) {
       window.clearInterval(voipRecheck);
       cleanupVoipToken?.();
       cleanupVoipInvalid?.();
+      cleanupVoipIncoming?.();
       cleanupVoipAnswer?.();
       cleanupVoipReject?.();
     };
@@ -463,25 +477,47 @@ export function useMplanipretSoftphone(enabled = true) {
       const cfg = ppSipProvider.getConfig();
       if (!cfg) return;
       const seq = ++handoffSeq;
+      // Wait for the native service to report a real PBX REGISTER 200 OK
+      // ("registered"/"protected") before dropping the WebView contact. Any
+      // earlier release leaves a window with zero registered AOR => voicemail.
+      const waitForNativeRegistered = async (): Promise<boolean> => {
+        for (let i = 0; i < 12; i++) {
+          if (seq !== handoffSeq) return false;
+          const st = await getPlanipretSipKeepAliveStatus().catch(() => null);
+          if (st) setNativeStatus(st);
+          const v = String(st?.status ?? "");
+          // Only a real PBX 200 OK counts. "protected" alone just means the
+          // background task is held, so require loggedIn on that path.
+          if (v === "registered") return true;
+          if (v === "protected" && st?.loggedIn === true) return true;
+          if (v === "error") return false;
+          await new Promise((r) => setTimeout(r, 1_000));
+        }
+        return false;
+      };
       for (let attempt = 0; attempt < 3; attempt++) {
         if (seq !== handoffSeq) return;
         try {
           const s = await startPlanipretSipKeepAlive(cfg);
           if (s) setNativeStatus(s);
           const st = String(s?.status ?? "");
-          if (s?.ok !== false && (st === "registered" || st === "protected" || st === "connecting" || st === "reconnecting")) {
-            // Native owns the registration now — drop the WebView contact so
-            // NetSapiens stops forking inbound calls to a suspended WebSocket
-            // (that fork fails instantly => "straight to voicemail").
-            try { await ppSipProvider.releaseForBackground(); } catch { /* noop */ }
-            return;
+          if (s?.ok !== false && st !== "error") {
+            const confirmed = await waitForNativeRegistered();
+            if (seq !== handoffSeq) return;
+            if (confirmed) {
+              // Native owns a confirmed registration — now it is safe to drop
+              // the WebView contact so NetSapiens stops forking inbound calls
+              // to a suspended WebSocket.
+              try { await ppSipProvider.releaseForBackground(); } catch { /* noop */ }
+              return;
+            }
           }
         } catch { /* retry */ }
         await new Promise((r) => setTimeout(r, 2_000 * (attempt + 1)));
       }
-      // Native keep-alive unavailable (plugin missing / start refused):
-      // keep the WebView registration alive instead of leaving the extension
-      // unregistered, otherwise every inbound call drops to voicemail.
+      // Native keep-alive never confirmed a 200 OK: keep the WebView
+      // registration alive instead of leaving the extension unregistered,
+      // otherwise every inbound call drops to voicemail.
       try { ppSipProvider.forceReregister(); } catch { /* noop */ }
     };
     const stopNativeAfterWebRegistered = () => {

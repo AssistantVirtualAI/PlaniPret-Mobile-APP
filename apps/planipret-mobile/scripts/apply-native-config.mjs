@@ -436,10 +436,10 @@ public class PpSipKeepAliveService extends Service {
     if (challenge == null && lastRegisterOkMs > 0 && (now - lastRegisterOkMs) < REGISTER_DEBOUNCE_MS) { emitStatus("registered", "register_debounced_ok"); return; }
     int seq = cseq++;
     String branch = "z9hG4bK" + UUID.randomUUID().toString().replace("-", "");
-    String contact = "<sip:" + login + "@android-" + stableToken(login) + ".planipret.invalid;transport=wss>";
+    String contact = "<sip:" + login + "@" + domain + ";transport=wss>";
     StringBuilder sip = new StringBuilder();
     sip.append("REGISTER sip:").append(domain).append(" SIP/2.0\\r\\n");
-    sip.append("Via: SIP/2.0/WSS planipret-mobile.invalid;branch=").append(branch).append("\\r\\n");
+    sip.append("Via: SIP/2.0/WSS ").append(domain).append(";branch=").append(branch).append("\\r\\n");
     sip.append("Max-Forwards: 70\\r\\n");
     sip.append("To: <sip:").append(login).append("@").append(domain).append(">\\r\\n");
     sip.append("From: \\"").append(display == null ? login : display.replace("\\"", "")).append("\\" <sip:").append(login).append("@").append(domain).append(">;tag=").append(fromTag).append("\\r\\n");
@@ -542,6 +542,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       CAPPluginMethod(name: "getSipServiceStatus", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "triggerReregister", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "acknowledgeIncoming", returnType: CAPPluginReturnPromise),
+      CAPPluginMethod(name: "wakeForIncomingCall", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "addListener", returnType: CAPPluginReturnCallback),
       CAPPluginMethod(name: "removeAllListeners", returnType: CAPPluginReturnPromise)
     ]
@@ -563,10 +564,10 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private var verifyDelayMs: Double = 8000
     private var registerExpires: Int = 1800
     // NetSapiens closes the socket when it sees two REGISTERs for the same AoR
-    // back-to-back. Debounce non-challenge REGISTERs both before and after 200 OK.
-    private var lastRegisterSentTime: Date?
+    // back-to-back. Debounce every REGISTER for 2s after a 200 OK.
     private var lastRegisterOkTime: Date?
-    private let registerDebounceSec: TimeInterval = 5.0
+    private var lastRegisterSentTime: Date?
+    private let registerDebounceSec: TimeInterval = 2.0
     private var reconnectPending = false
     private var backgroundHandoffWorkItem: DispatchWorkItem?
     private var pathMonitor: NWPathMonitor?
@@ -588,6 +589,10 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         NotificationCenter.default.addObserver(self, selector: #selector(onBackground), name: UIScene.willDeactivateNotification, object: nil)
       }
       // Ask for notification permission so the incoming-call banner can ring.
+      // PushKit (PpVoipCall) posts this when an incoming-call VoIP push lands:
+      // this is the ONLY reliable iOS background wake, so re-REGISTER immediately
+      // instead of relying on a long-lived WSS socket.
+      NotificationCenter.default.addObserver(self, selector: #selector(onVoipPushWake(_:)), name: Notification.Name("PpVoipIncomingPush"), object: nil)
       UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
     }
     deinit { NotificationCenter.default.removeObserver(self); timer?.invalidate(); socket?.cancel(with: .goingAway, reason: nil) }
@@ -625,6 +630,33 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     @objc func acknowledgeIncoming(_ call: CAPPluginCall) {
       UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["pp_incoming_call"])
       call.resolve(["ok": true])
+    }
+    @objc func wakeForIncomingCall(_ call: CAPPluginCall) {
+      let why = call.getString("reason") ?? "js"
+      DispatchQueue.main.async { [weak self] in
+        guard let self = self else { call.resolve(["ok": false]); return }
+        self.wakeForPush(why)
+        call.resolve(self.snapshot(ok: true))
+      }
+    }
+    @objc private func onVoipPushWake(_ note: Notification) {
+      DispatchQueue.main.async { [weak self] in self?.wakeForPush("voip_push") }
+    }
+    /// Immediate, debounce-free REGISTER triggered by a VoIP push. Apple only
+    /// guarantees background execution through PushKit, so this is the path that
+    /// must bring the AOR back before the PBX times out to voicemail.
+    private func wakeForPush(_ why: String) {
+      NSLog("[PpSipKeepAlive] VoIP push wake (%@)", why)
+      beginBackgroundTask()
+      activateAudioSession()
+      lastRegisterOkTime = nil
+      lastRegisterSentTime = nil
+      if isForeground() {
+        notifyListeners("sipReregisterRequested", data: ["reason": "voip_push"])
+        return
+      }
+      if socket == nil { connect() } else { sendRegister(challenge: nil, force: true) }
+      setStatus(status == "registered" ? "registered" : "protected", "voip_push_wake")
     }
 
     // NEVER touch UIApplication/UIScene off the main thread: it triggers
@@ -817,7 +849,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       let seq = cseq; cseq += 1
       let branch = "z9hG4bK" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
       var sip = "OPTIONS sip:" + domain + " SIP/2.0\\r\\n"
-      sip += "Via: SIP/2.0/WSS planipret-ios.invalid;branch=" + branch + "\\r\\n"
+      sip += "Via: SIP/2.0/WSS " + domain + ";branch=" + branch + "\\r\\n"
       sip += "From: <sip:" + login + "@" + domain + ">;tag=" + fromTag + "\\r\\n"
       sip += "To: <sip:" + domain + ">\\r\\n"
       sip += "Call-ID: " + UUID().uuidString + "@planipret-ios\\r\\n"
@@ -828,17 +860,17 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       }
     }
 
-    private func sendRegister(challenge: String?, proxyAuth: Bool = false) {
+    private func sendRegister(challenge: String?, proxyAuth: Bool = false, force: Bool = false) {
       if isForeground() { releaseRegistration("foreground_js_owns"); return }
       if socket == nil { connect(); return }
       // Two REGISTERs in a row on the same WSS connection make NetSapiens see a
       // duplicate AoR and close the socket. Hold off after each send/200 OK
       // (auth challenge responses are exempt: they complete the same handshake).
-      if challenge == nil, let sentAt = lastRegisterSentTime, Date().timeIntervalSince(sentAt) <= registerDebounceSec {
+      if !force, challenge == nil, let sentAt = lastRegisterSentTime, Date().timeIntervalSince(sentAt) <= registerDebounceSec {
         NSLog("[PpSipKeepAlive] REGISTER debounced: %.2fs since sent (min %.1fs)", Date().timeIntervalSince(sentAt), registerDebounceSec)
         return
       }
-      if challenge == nil, let okAt = lastRegisterOkTime, Date().timeIntervalSince(okAt) <= registerDebounceSec {
+      if !force, challenge == nil, let okAt = lastRegisterOkTime, Date().timeIntervalSince(okAt) <= registerDebounceSec {
         NSLog("[PpSipKeepAlive] REGISTER debounced: %.2fs since 200 OK (min %.1fs)", Date().timeIntervalSince(okAt), registerDebounceSec)
         return
       }
@@ -847,16 +879,16 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       let branch = "z9hG4bK" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
       let contact = "<sip:" + login + "@" + stableContactHost() + ";transport=wss>"
       var sip = "REGISTER sip:" + domain + " SIP/2.0\\r\\n"
-      sip += "Via: SIP/2.0/WSS planipret-ios.invalid;branch=" + branch + "\\r\\nMax-Forwards: 70\\r\\n"
+      sip += "Via: SIP/2.0/WSS " + domain + ";branch=" + branch + "\\r\\nMax-Forwards: 70\\r\\n"
       sip += "To: <sip:" + login + "@" + domain + ">\\r\\nFrom: \\"" + displayName.replacingOccurrences(of: "\\"", with: "") + "\\" <sip:" + login + "@" + domain + ">;tag=" + fromTag + "\\r\\n"
       sip += "Call-ID: " + callIdReg + "\\r\\nCSeq: " + String(seq) + " REGISTER\\r\\nContact: " + contact + ";expires=" + String(registerExpires) + "\\r\\nExpires: " + String(registerExpires) + "\\r\\nUser-Agent: Planipret iOS KeepAlive\\r\\nSupported: outbound,path,gruu\\r\\nAllow: INVITE,ACK,CANCEL,BYE,OPTIONS,MESSAGE,INFO,UPDATE,REGISTER\\r\\n"
       if let ch = challenge, !password.isEmpty { sip += (proxyAuth ? "Proxy-Authorization: " : "Authorization: ") + digest(challenge: ch) + "\\r\\n" }
       sip += "Content-Length: 0\\r\\n\\r\\n"
-      lastRegisterSentTime = Date()
       socket?.send(.string(sip)) { [weak self] err in
         DispatchQueue.main.async {
           guard let self = self else { return }
           if err == nil {
+            self.lastRegisterSentTime = Date()
             self.setStatus("connecting", challenge == nil ? "register_sent" : "register_auth_sent")
           } else {
             NSLog("[PpSipKeepAlive] REGISTER send failed: %@", String(describing: err))
@@ -870,13 +902,8 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     }
 
     private func stableContactHost() -> String {
-      let raw = (login.isEmpty ? "planipret" : login).lowercased()
-      let safe = raw.map { ch -> Character in
-        if ch.isLetter || ch.isNumber || ch == "-" { return ch }
-        return "-"
-      }
-      let token = String(safe).split(separator: "-").joined(separator: "-")
-      return "ios-" + (token.isEmpty ? "planipret" : token) + ".planipret.invalid"
+      // RFC-routable Contact host: always the real SIP domain (never .invalid)
+      return domain.isEmpty ? "planipret.ca" : domain
     }
 
     private func digest(challenge: String) -> String { let m = parseDigest(challenge); let realm = m["realm"] ?? domain; let nonce = m["nonce"] ?? ""; let qop = m["qop"] ?? ""; let uri = "sip:" + domain; let nc = "00000001"; let cnonce = String(Int(Date().timeIntervalSince1970 * 1000), radix: 16); let ha1 = md5(login + ":" + realm + ":" + password); let ha2 = md5("REGISTER:" + uri); let response = qop.contains("auth") ? md5(ha1 + ":" + nonce + ":" + nc + ":" + cnonce + ":auth:" + ha2) : md5(ha1 + ":" + nonce + ":" + ha2); var out = "Digest username=\\"" + login + "\\", realm=\\"" + realm + "\\", nonce=\\"" + nonce + "\\", uri=\\"" + uri + "\\", response=\\"" + response + "\\", algorithm=MD5"; if qop.contains("auth") { out += ", qop=auth, nc=" + nc + ", cnonce=\\"" + cnonce + "\\"" }; if let opaque = m["opaque"] { out += ", opaque=\\"" + opaque + "\\"" }; return out }
@@ -1043,6 +1070,10 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         let callerName = (dict["callerName"] as? String) ?? (dict["from_number"] as? String) ?? (dict["from"] as? String) ?? "Appel entrant"
         let callerNumber = (dict["callerNumber"] as? String) ?? (dict["from_number"] as? String) ?? (dict["from_user"] as? String) ?? ""
 
+        // Wake the native SIP keep-alive FIRST: iOS may have killed the WSS
+        // socket while suspended, and only this push guarantees runtime.
+        NotificationCenter.default.post(name: Notification.Name("PpVoipIncomingPush"), object: nil, userInfo: ["callId": callId])
+
         let uuid = UUID()
         activeCallUUID = uuid
         activeCallId = callId
@@ -1190,6 +1221,7 @@ CAP_PLUGIN(PpSipKeepAlive, "PpSipKeepAlive",
   CAP_PLUGIN_METHOD(getSipServiceStatus, CAPPluginReturnPromise);
   CAP_PLUGIN_METHOD(triggerReregister, CAPPluginReturnPromise);
   CAP_PLUGIN_METHOD(acknowledgeIncoming, CAPPluginReturnPromise);
+  CAP_PLUGIN_METHOD(wakeForIncomingCall, CAPPluginReturnPromise);
   CAP_PLUGIN_METHOD(addListener, CAPPluginReturnCallback);
   CAP_PLUGIN_METHOD(removeAllListeners, CAPPluginReturnPromise);
 )
@@ -1514,22 +1546,11 @@ function patchIosInfoPlist() {
 \t\t<string>voip</string>
 \t\t<string>remote-notification</string>
 \t\t<string>fetch</string>
-\t\t<string>processing</string>
 \t</array>
 `;
     xml = xml.includes("<key>UIBackgroundModes</key>")
       ? xml.replace(/<key>UIBackgroundModes<\/key>\s*<array>[\s\S]*?<\/array>/, modes.trim())
       : xml.replace(/\n<\/dict>\s*\n<\/plist>\s*$/, `${modes}\n</dict>\n</plist>\n`);
-  }
-  // BGTaskSchedulerPermittedIdentifiers is required when UIBackgroundModes contains 'processing'.
-  if (!xml.includes("<key>BGTaskSchedulerPermittedIdentifiers</key>")) {
-    const bgTasks = `
-\t<key>BGTaskSchedulerPermittedIdentifiers</key>
-\t<array>
-\t\t<string>com.planipret.mobile.sip-keepalive</string>
-\t</array>
-`;
-    xml = xml.replace(/\n<\/dict>\s*\n<\/plist>\s*$/, `${bgTasks}\n</dict>\n</plist>\n`);
   }
 
   // App Review compliance keys: purpose strings + encryption export declaration.
@@ -1540,16 +1561,14 @@ function patchIosInfoPlist() {
     ["NSPhotoLibraryUsageDescription", "Planipret accesses your photo library so you can pick a profile photo."],
     ["NSLocalNetworkUsageDescription", "Planipret uses the local network to establish VoIP call audio."],
     ["NSSpeechRecognitionUsageDescription", "Planipret transcribes your recorded calls when you enable transcription."],
-    // Required by Capacitor/WebKit Bluetooth APIs referenced at link time (ITMS-90683).
-    ["NSBluetoothAlwaysUsageDescription", "Planipret does not use Bluetooth. This string is required by a system framework."],
   ];
   for (const [key, value] of REQUIRED_PLIST_STRINGS) {
     if (!xml.includes(`<key>${key}</key>`)) {
       xml = xml.replace(/\n<\/dict>\s*\n<\/plist>\s*$/, `\n\t<key>${key}</key>\n\t<string>${value}</string>\n</dict>\n</plist>\n`);
     }
   }
-  // iPhone: portrait-only. iPad: all 4 orientations (required by App Store for multitasking).
-  const portraitArray = "\n\t<key>UISupportedInterfaceOrientations</key>\n\t<array>\n\t\t<string>UIInterfaceOrientationPortrait</string>\n\t</array>\n\t<key>UISupportedInterfaceOrientations~ipad</key>\n\t<array>\n\t\t<string>UIInterfaceOrientationPortrait</string>\n\t\t<string>UIInterfaceOrientationPortraitUpsideDown</string>\n\t\t<string>UIInterfaceOrientationLandscapeLeft</string>\n\t\t<string>UIInterfaceOrientationLandscapeRight</string>\n\t</array>\n";
+  // Portrait-only (matches the AppDelegate override below).
+  const portraitArray = "\n\t<key>UISupportedInterfaceOrientations</key>\n\t<array>\n\t\t<string>UIInterfaceOrientationPortrait</string>\n\t</array>\n\t<key>UISupportedInterfaceOrientations~ipad</key>\n\t<array>\n\t\t<string>UIInterfaceOrientationPortrait</string>\n\t</array>\n";
   xml = xml.replace(/\n\t?<key>UISupportedInterfaceOrientations(~ipad)?<\/key>\s*<array>[\s\S]*?<\/array>/g, "");
   xml = xml.replace(/\n<\/dict>\s*\n<\/plist>\s*$/, `${portraitArray}</dict>\n</plist>\n`);
 
@@ -1724,30 +1743,36 @@ function patchIosNativeFiles() {
 }
 
 function patchIosSplash() {
-  const splashSrc = path.join(appDir, "native-config", "splash");
-  const splashDst = path.join(appDir, "ios", "App", "App", "Assets.xcassets", "Splash.imageset");
-  if (!fs.existsSync(splashSrc)) {
-    console.log("[native-config] Splash source not found — skipping.");
-    return;
+  // Résoudre le dossier ios — soit dans appDir/ios (après cap sync) soit ../../ios (racine du repo)
+  let iosRoot = path.join(appDir, "ios", "App", "App");
+  if (!fs.existsSync(iosRoot)) iosRoot = path.join(appDir, "..", "..", "ios", "App", "App");
+  if (!fs.existsSync(iosRoot)) { console.log("[native-config] iOS splash: dossier ios/App/App introuvable — ignoré."); return; }
+  const splashDir = path.join(iosRoot, "Assets.xcassets", "Splash.imageset");
+  const srcDir = path.join(appDir, "native-config", "splash");
+  if (!fs.existsSync(srcDir)) { console.log("[native-config] iOS splash: native-config/splash absent — ignoré."); return; }
+  fs.mkdirSync(splashDir, { recursive: true });
+  const contentsJson = path.join(splashDir, "Contents.json");
+  const contentsExpected = JSON.stringify({ images: [
+    { idiom: "universal", filename: "splash-2732x2732-2.png", scale: "1x" },
+    { idiom: "universal", filename: "splash-2732x2732-1.png", scale: "2x" },
+    { idiom: "universal", filename: "splash-2732x2732.png",   scale: "3x" }
+  ], info: { version: 1, author: "xcode" } }, null, 2);
+  writeIfChanged(contentsJson, contentsExpected);
+  const assetsContents = path.join(iosRoot, "Assets.xcassets", "Contents.json");
+  if (!fs.existsSync(assetsContents)) {
+    fs.writeFileSync(assetsContents, JSON.stringify({ info: { version: 1, author: "xcode" } }, null, 2));
   }
-  if (!fs.existsSync(splashDst)) {
-    fs.mkdirSync(splashDst, { recursive: true });
+  const copies = [
+    ["splash-1x.png", "splash-2732x2732-2.png"],
+    ["splash-2x.png", "splash-2732x2732-1.png"],
+    ["splash-3x.png", "splash-2732x2732.png"],
+  ];
+  for (const [src, dst] of copies) {
+    const srcFile = path.join(srcDir, src);
+    const dstFile = path.join(splashDir, dst);
+    if (fs.existsSync(srcFile)) fs.copyFileSync(srcFile, dstFile);
   }
-  for (const f of ["splash-1x.png", "splash-2x.png", "splash-3x.png"]) {
-    const src = path.join(splashSrc, f);
-    const dst = path.join(splashDst, f);
-    if (fs.existsSync(src)) fs.copyFileSync(src, dst);
-  }
-  const contents = JSON.stringify({
-    images: [
-      { idiom: "universal", scale: "1x", filename: "splash-1x.png" },
-      { idiom: "universal", scale: "2x", filename: "splash-2x.png" },
-      { idiom: "universal", scale: "3x", filename: "splash-3x.png" },
-    ],
-    info: { version: 1, author: "xcode" },
-  }, null, 2);
-  writeIfChanged(path.join(splashDst, "Contents.json"), contents);
-  console.log("[native-config] iOS Splash AVA AI 3D applied.");
+  console.log("[native-config] iOS Splash AVA AI 3D appliqué depuis native-config/splash.");
 }
 
 patchCopiedWebBundles();

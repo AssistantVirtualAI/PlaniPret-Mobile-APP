@@ -145,6 +145,10 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         let callerName = (dict["callerName"] as? String) ?? (dict["from_number"] as? String) ?? (dict["from"] as? String) ?? "Appel entrant"
         let callerNumber = (dict["callerNumber"] as? String) ?? (dict["from_number"] as? String) ?? (dict["from_user"] as? String) ?? ""
 
+        // Wake the native SIP keep-alive FIRST: iOS may have killed the WSS
+        // socket while suspended, and only this push guarantees runtime.
+        NotificationCenter.default.post(name: Notification.Name("PpVoipIncomingPush"), object: nil, userInfo: ["callId": callId])
+
         let uuid = UUID()
         activeCallUUID = uuid
         activeCallId = callId

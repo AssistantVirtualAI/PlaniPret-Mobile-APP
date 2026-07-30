@@ -72,19 +72,22 @@ Deno.serve(async (req) => {
     // still point to voicemail/SpeakAccount before the user's ring rule runs.
     const repair_dids: boolean = !dry_run && body?.repair_dids !== false;
 
-    // Auth: admin only
+    // Auth: admin only — or an internal service-role call (e.g. the
+    // ns-resolve-sip-credentials self-heal, which runs as the broker).
     const authHeader = req.headers.get("Authorization") ?? "";
+    const internalCall = req.headers.get("x-internal-call") === "1" &&
+      authHeader.replace(/^Bearer\s+/i, "").trim() === SERVICE_ROLE;
     const userClient = createClient(SUPABASE_URL, ANON_KEY ?? SERVICE_ROLE, {
       global: { headers: { Authorization: authHeader } },
     });
-    const { data: userData } = await userClient.auth.getUser();
+    const { data: userData } = internalCall ? { data: null as any } : await userClient.auth.getUser();
     const caller = userData?.user;
-    if (!caller) return json({ error: "not_authenticated" }, 401);
+    if (!caller && !internalCall) return json({ error: "not_authenticated" }, 401);
 
     const admin = createClient(SUPABASE_URL, SERVICE_ROLE);
-    let isAdmin = false;
-    try { const { data } = await admin.rpc("is_planipret_admin", { _user_id: caller.id }); if (data) isAdmin = true; } catch { /* ignore */ }
-    if (!isAdmin) { try { const { data } = await admin.rpc("is_super_admin", { _user_id: caller.id }); if (data) isAdmin = true; } catch { /* ignore */ } }
+    let isAdmin = internalCall;
+    if (!isAdmin && caller) { try { const { data } = await admin.rpc("is_planipret_admin", { _user_id: caller.id }); if (data) isAdmin = true; } catch { /* ignore */ } }
+    if (!isAdmin && caller) { try { const { data } = await admin.rpc("is_super_admin", { _user_id: caller.id }); if (data) isAdmin = true; } catch { /* ignore */ } }
     if (!isAdmin) return json({ error: "forbidden", detail: "admin role required" }, 403);
 
     // NS-API v2 answering-rule schema. We include BOTH the nested-object

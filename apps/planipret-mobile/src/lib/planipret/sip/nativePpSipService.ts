@@ -32,6 +32,7 @@ type PpSipKeepAlivePlugin = {
   requestBatteryOptimizationExemption?: () => Promise<PpNativeSipStatus>;
   triggerReregister?: () => Promise<PpNativeSipStatus>;
   acknowledgeIncoming?: () => Promise<{ ok: boolean }>;
+  wakeForIncomingCall?: (opts?: { reason?: string }) => Promise<PpNativeSipStatus>;
   addListener?: (
     event: "sipServiceStatus" | "sipReregisterRequested" | "sipIncomingInvite",
     cb: (data: any) => void,
@@ -135,6 +136,30 @@ export async function onPlanipretIncomingCallRejected(cb: (data: { callUUID: str
   return addDedupedCapListener("PpVoipCall", NativePpVoipCall, "incomingCallRejected", (data: any) => cb(data ?? {}));
 }
 
+
+/**
+ * iOS cannot keep a WSS socket alive while suspended: PushKit is the only
+ * guaranteed wake. When a VoIP push lands, ask the native keep-alive to
+ * re-REGISTER immediately (debounce-free) so the INVITE can be delivered.
+ */
+export async function wakePlanipretNativeSipForIncomingCall(reason = "voip_push"): Promise<PpNativeSipStatus | null> {
+  if (!isPlanipretNativeSipAvailable()) return null;
+  try { return (await NativePpSip.wakeForIncomingCall?.({ reason })) ?? null; }
+  catch (e) {
+    if (!markUnavailable("sip", e, "pp-sip-keepalive")) console.warn("[pp-sip] wakeForIncomingCall failed", e);
+    return null;
+  }
+}
+
+/** Fired by PpVoipCall when a VoIP push produced a CallKit incoming call. */
+export async function onPlanipretVoipIncomingCall(
+  cb: (data: { callId?: string; callUUID?: string; callerName?: string; callerNumber?: string }) => void,
+): Promise<() => void> {
+  if (platform() !== "ios") return () => undefined;
+  return addDedupedCapListener("PpVoipCall", NativePpVoipCall, "callKitReady", (data: any) => {
+    if (data?.callId) cb(data);
+  });
+}
 
 export async function reportPlanipretCallEnded(callId?: string, reason?: string): Promise<void> {
   if (platform() !== "ios") return;
