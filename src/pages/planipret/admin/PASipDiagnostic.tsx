@@ -8,7 +8,7 @@ import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 const DICT = {
   fr: {
     title: "Portail diagnostic",
-    subtitle: "Teste l'enregistrement SIP.js sur le device web via wss://core1.cluster1.ucstack.io:9002, et diagnostique les enregistrements NS-API.",
+    subtitle: "Teste l'enregistrement SIP.js sur le device web via wss://voice.ava-telecom.ca:9002, et diagnostique les enregistrements NS-API.",
     resolveFailed: "Résolution échouée",
     credsUnavailable: "Credentials indisponibles",
     notAuthenticated: "Non authentifié",
@@ -44,7 +44,7 @@ const DICT = {
   },
   en: {
     title: "Diagnostic portal",
-    subtitle: "Tests SIP.js registration on the web device via wss://core1.cluster1.ucstack.io:9002, and diagnoses NS-API registrations.",
+    subtitle: "Tests SIP.js registration on the web device via wss://voice.ava-telecom.ca:9002, and diagnoses NS-API registrations.",
     resolveFailed: "Resolution failed",
     credsUnavailable: "Credentials unavailable",
     notAuthenticated: "Not authenticated",

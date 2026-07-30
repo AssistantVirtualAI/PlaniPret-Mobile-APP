@@ -8,6 +8,13 @@
 
 import JsSIP from "jssip";
 import { getPpSipReconnectConfig, ppSipBackoffDelay, PP_SIP_RECONNECT_FLOOR_MS } from "./ppSipReconnectConfig";
+import { filterSipEdgeUrls } from "./sipEdgePolicy";
+
+/** Gap between tearing down a UA and starting its replacement. NetSapiens kills
+ *  the older socket (1001) when the same AOR registers twice, so the swap must
+ *  never overlap. */
+const PP_SIP_UA_SWAP_DELAY_MS = 800;
+
 
 export type PpSipStatus = "idle" | "connecting" | "connected" | "registered" | "disconnected" | "error";
 export type PpCallState = "idle" | "ringing-out" | "ringing-in" | "active" | "held" | "ended";
@@ -396,10 +403,10 @@ class PpSipProvider {
 
     try {
       ppSipInitInFlight = true;
-      const urls = Array.from(new Set([cleanCfg.wssUrl, ...(cleanCfg.wssUrls || [])]
-        .map((u) => String(u ?? "").trim())
-        .filter((u) => /^wss?:\/\//i.test(u)))) as string[];
+      const urls = filterSipEdgeUrls([cleanCfg.wssUrl, ...(cleanCfg.wssUrls || [])], (msg) =>
+        this.log("warn", msg));
       if (!urls.length) throw new Error("No valid SIP WSS URL");
+
       const sockets = urls.map((u) => new (JsSIP as any).WebSocketInterface(u));
       this.reconnectMetrics.socketsCreated += sockets.length;
       this.pushHistory("socket", `sockets_created:${urls.join(",")}`);
@@ -428,6 +435,17 @@ class PpSipProvider {
         connection_recovery_max_interval: Math.max(3, Math.ceil(reconnectConfig.socketBackoffMaxMs / 1000)),
         user_agent: "Planipret Softphone 1.0",
       });
+
+      // ---------------------------------------------------------------------
+      // Stale-UA guard. Verified live against NetSapiens (2026-05): a SECOND
+      // REGISTER on the same AOR makes the SBC close the previous WebSocket
+      // with code 1001 "Going Away" — even with an identical Contact URI and
+      // +sip.instance. So two UAs (or a UA being replaced) always kill each
+      // other: the dying UA emits "disconnected", the shared provider schedules
+      // yet another reconnect, and the loop never ends.
+      // Events coming from a UA that is no longer `this.ua` must be ignored.
+      // ---------------------------------------------------------------------
+      const isStale = () => this.ua !== null && this.ua !== ua;
 
       // Definitive REGISTER guard: JsSIP already auto-REGISTERs when
       // `register:true`. App-resume, token-refresh and watchdog events were also
@@ -459,8 +477,9 @@ class PpSipProvider {
         }
       } catch { /* private JsSIP API guard */ }
 
-      ua.on("connecting", () => { this.connectingSince = Date.now(); this.update({ status: "connecting" }); });
+      ua.on("connecting", () => { if (isStale()) return; this.connectingSince = Date.now(); this.update({ status: "connecting" }); });
       ua.on("connected", () => {
+        if (isStale()) return;
         // Do not reset wsFailures until REGISTER succeeds. NetSapiens can accept
         // the TCP/WSS connection and still close it before REGISTER 200 OK; if we
         // reset here every drop becomes attempt #1 forever.
@@ -472,6 +491,7 @@ class PpSipProvider {
         this.update({ status: "connected" });
       });
       ua.on("disconnected", (e: any) => {
+        if (isStale()) { this.log("warn", "stale UA disconnect ignored"); return; }
         this.log("warn", "ws disconnected", e);
         this.lastWsDisconnectedAt = Date.now();
         this.stopKeepAlive();
@@ -479,6 +499,7 @@ class PpSipProvider {
         this.scheduleSocketReconnect(String(e?.reason || "ws_disconnected"));
       });
       ua.on("registered", () => {
+        if (isStale()) return;
         this.regFailures = 0;
         this.wsFailures = 0;
         this.reconnectMetrics.attempt = 0;
@@ -496,6 +517,7 @@ class PpSipProvider {
         return this.update({ status: "registered", errorCause: undefined, lastRegistrationAt: Date.now() });
       });
       ua.on("unregistered", () => {
+        if (isStale()) return;
         const rc = getPpSipReconnectConfig();
         const recentlyDisconnected = Date.now() - this.lastWsDisconnectedAt < rc.socketVerifyDelayMs;
         // When the transport is already down, the socket reconnect loop owns
@@ -520,6 +542,7 @@ class PpSipProvider {
         }, Math.max(PP_SIP_RECONNECT_FLOOR_MS, rc.reRegisterDelayMs));
       });
       ua.on("registrationFailed", (e: any) => {
+        if (isStale()) return;
         const cause = e?.cause || e?.response?.reason_phrase || "registration_failed";
         this.log("error", `registration failed: ${cause}`);
         this.update({ status: "error", errorCause: cause });
@@ -544,7 +567,7 @@ class PpSipProvider {
           } catch {}
         }, Math.max(PP_SIP_RECONNECT_FLOOR_MS, Math.min(rc.registerRetryMaxMs, rc.registerRetryBaseMs * this.regFailures)));
       });
-      ua.on("newRTCSession", (e: any) => this.attachSession(e.session, e.originator));
+      ua.on("newRTCSession", (e: any) => { if (isStale()) return; this.attachSession(e.session, e.originator); });
 
       this.ua = ua;
       ua.start();
@@ -784,12 +807,19 @@ class PpSipProvider {
           const cfg = this.cfg;
           if (cfg) {
             this.log("warn", "sip reconnect rebuilding UA after JsSIP recovery window");
-            try { ua.stop(); } catch {}
+            // Drop the old UA reference FIRST so its teardown events are seen as
+            // stale, then force the transport down. Registering the new UA while
+            // the previous socket is still bound would make NetSapiens close one
+            // of them with 1001 and restart the loop.
             this.ua = null;
             this.session = null;
+            this.hardStopUa(ua);
             this.reconnectMetrics.uaRebuilds += 1;
             this.pushHistory("socket", "ua_rebuild");
-            void this.init(cfg);
+            setTimeout(() => {
+              if (this.ua) return; // another owner already rebuilt the UA
+              void this.init(cfg);
+            }, PP_SIP_UA_SWAP_DELAY_MS);
           } else {
             ua.start();
           }
@@ -809,6 +839,19 @@ class PpSipProvider {
   }
 
 
+
+  /** Fully tears down a UA: no un-REGISTER race, socket closed immediately. */
+  private hardStopUa(ua: any) {
+    try {
+      const transport = ua?._transport;
+      if (transport) {
+        transport._reconnect = () => {};
+        try { transport.disconnect?.(); } catch {}
+        try { transport.socket?.disconnect?.(); } catch {}
+      }
+    } catch {}
+    try { ua?.stop?.(); } catch {}
+  }
 
   /** Reconnect immediately when the device regains connectivity. */
   private installNetworkWatch() {

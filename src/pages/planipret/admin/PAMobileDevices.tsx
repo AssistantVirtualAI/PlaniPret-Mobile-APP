@@ -8,6 +8,7 @@ import {
 import { toast } from "sonner";
 import { Loader2, RefreshCw, PhoneCall, CheckCircle2, AlertTriangle, XCircle, Zap, Search, Smartphone, MonitorSmartphone, ShieldCheck, Stethoscope } from "lucide-react";
 import Pagination from "@/components/planipret/admin/Pagination";
+import DeviceExpiryGuardCard from "@/components/planipret/admin/DeviceExpiryGuardCard";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 
 const ACCENT = "#2E9BDC";
@@ -545,6 +546,8 @@ export default function PAMobileDevices() {
           </button>
         </div>
       </div>
+
+      <DeviceExpiryGuardCard />
 
       {rulesDiag && (
         <div className="rounded-xl p-4 text-sm" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)" }}>

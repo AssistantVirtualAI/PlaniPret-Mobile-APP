@@ -113,20 +113,31 @@ Deno.serve(async (req) => {
       const hasDev = (needle: string) => arr.some((d: any) => (d?.device ?? d?.aor ?? "").toString().toLowerCase().includes(needle));
 
       const create = async (id: string, model: string, needle: string) => {
+        const isMobileDev = needle === "_mobile";
         if (hasDev(needle)) {
-          // Device exists — patch it to ensure WSS transport and empty user-agent filter.
-          await fetch(`${base}/${encodeURIComponent(id)}`, {
+          // Device exists — patch it to ensure WSS transport, empty user-agent filter,
+          // and (critically) the 1800s registration expiry + automatic NAT traversal.
+          // Without this branch a bulk force:true never repaired existing devices,
+          // which kept them on the NS default 60s expiry -> straight to voicemail.
+          const r = await fetch(`${base}/${encodeURIComponent(id)}`, {
             method: "PUT", headers: nsHeaders,
             body: JSON.stringify({
               "device-sip-registration-password": sipPassword,
               "transport": "WSS",
+              // SIP-level transport: without this NS closes the WSS socket with
+              // code 1001 right after the REGISTER 200 OK.
+              "device-sip-transport-type": "WSS",
               "device-srtp-enabled": "opportunistic",
               "device-sip-allowed-user-agent": "",
               "device-provisioning-registration-core-server": "core1.cluster1.ucstack.io",
+              "device-sip-registration-expiry-seconds": 1800,
+              "device-sip-nat-traversal-enabled": "automatic",
+              "device-push-enabled": isMobileDev ? "yes" : "no",
             }),
-          }).catch(() => {});
-          return { existed: true, id };
+          }).catch(() => null);
+          return { existed: true, id, patched: !!r?.ok, status: r?.status ?? 0 };
         }
+
         const isMobile = needle === "_mobile";
         // core-server is MANDATORY — without it JsSIP/PJSIP cannot register.
         // Both mobile and web use WSS transport so JsSIP (WebRTC) can connect.
@@ -150,6 +161,7 @@ Deno.serve(async (req) => {
             "device-sip-registration-expiry-seconds": 1800,
             "device-sip-nat-traversal-enabled": "automatic",
             "transport": "WSS",
+            "device-sip-transport-type": "WSS",
             "device-srtp-enabled": "opportunistic",
             "device-sip-allowed-user-agent": "",
             "device-push-enabled": isMobile ? "yes" : "no",
@@ -238,6 +250,7 @@ Deno.serve(async (req) => {
       }
 
 
+      const startedAt = new Date().toISOString();
       const all: any[] = [];
       let succeeded = 0, failed = 0;
       for (let i = 0; i < list.length; i += batch_size) {
@@ -248,7 +261,40 @@ Deno.serve(async (req) => {
         failed += res.filter((r) => !r.success).length;
         if (i + batch_size < list.length) await new Promise((r) => setTimeout(r, 500));
       }
-      return json({ success: true, total: list.length, processed: all.length, succeeded, failed, results: all });
+
+      // Detailed device-level counters so the admin portal can show a real report
+      // (created / patched / skipped / errors) instead of only succeeded/failed.
+      const devStats = { created: 0, patched: 0, skipped: 0, errors: 0 };
+      const errorSamples: any[] = [];
+      for (const r of all) {
+        for (const d of [r.mobile, r.widget]) {
+          if (!d) { devStats.errors += 1; continue; }
+          if (d.created) devStats.created += 1;
+          else if (d.existed && d.patched) devStats.patched += 1;
+          else if (d.existed) devStats.skipped += 1;
+          else devStats.errors += 1;
+        }
+        if (!r.success && errorSamples.length < 25) {
+          errorSamples.push({ broker_id: r.broker_id, broker_name: r.broker_name, extension: r.extension, error: r.error ?? r.db_error ?? null });
+        }
+      }
+
+      const summary = {
+        forced: force, total: list.length, processed: all.length, succeeded, failed,
+        devices: devStats, errors_sample: errorSamples,
+        expiry_seconds: 1800, nat_traversal: "automatic",
+      };
+      await admin.from("planipret_edge_function_runs").insert({
+        function_name: "ns-provision-broker-devices",
+        started_at: startedAt,
+        finished_at: new Date().toISOString(),
+        status: failed === 0 ? "ok" : (succeeded > 0 ? "partial" : "error"),
+        summary,
+        triggered_by: caller.id,
+      }).then(() => {}, () => {});
+
+      return json({ success: true, ...summary, results: all });
+
     }
 
     return json({ error: "provide broker_id or bulk:true" }, 400);
