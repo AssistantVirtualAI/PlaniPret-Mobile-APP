@@ -5,6 +5,7 @@ import AVFoundation
 import CryptoKit
 import UserNotifications
 import Network
+import Security
 
 // Planiprêt-only. DO NOT reuse in Lemtel (Verto stack).
 @objc(PpSipKeepAlive)
@@ -52,19 +53,21 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     /// (WSS 1001) and kills the audio. We only keep the audio session alive.
     private var callActive = false
     private var audioKeepAliveTimer: Timer?
+    private let configDefaultsKey = "pp_sip_native_config_v1"
+    private let passwordService = "com.planipret.mobile.sip"
+    private let passwordAccount = "background-register"
+    private var lastPushWakeAt: Date?
+
 
     public override func load() {
+      restoreConfig()
       DispatchQueue.main.async { [weak self] in self?.appActive = UIApplication.shared.applicationState == .active }
       NotificationCenter.default.addObserver(self, selector: #selector(onBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
       NotificationCenter.default.addObserver(self, selector: #selector(onForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
       NotificationCenter.default.addObserver(self, selector: #selector(onForeground), name: UIApplication.didBecomeActiveNotification, object: nil)
-      // NOTE: willResignActiveNotification removed (2026-07-31).
-      // iOS fires willResignActive for transient interruptions (CallKit sheet,
-      // Control Center, permission dialogs) while the app is still in the
-      // foreground. Treating these as a real background transition triggered
-      // onBackground() → beginBackgroundTask() → setStatus("protected") even
-      // while JsSIP was registered, producing the WSS 1001 loop and the
-      // voicemail-first bug. Only didEnterBackground (true suspension) counts.
+      // NOTE: willResignActiveNotification intentionally removed — AVA-Telecom proprietary patch (2026-07-30).
+      // willResignActive fires for transient interruptions (CallKit sheet, Control Center, Siri)
+      // causing false onBackground() and spurious REGISTER loops. Only didEnterBackground is used.
       // UIScene lifecycle (iOS 13+) — the app adopts scenes, so the legacy
       // UIApplication notifications are not always delivered. Observing both
       // keeps appActive correct without ever reading UI state off-thread.
@@ -72,9 +75,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         NotificationCenter.default.addObserver(self, selector: #selector(onForeground), name: UIScene.didActivateNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(onSceneWillEnterForeground), name: UIScene.willEnterForegroundNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(onBackground), name: UIScene.didEnterBackgroundNotification, object: nil)
-        // willDeactivateNotification also fires for transient interruptions on iOS 13+.
-        // Keep it only as a signal to update appActive, NOT as a full onBackground().
-        NotificationCenter.default.addObserver(self, selector: #selector(onWillDeactivate), name: UIScene.willDeactivateNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(onBackground), name: UIScene.willDeactivateNotification, object: nil)
       }
       // Ask for notification permission so the incoming-call banner can ring.
       // PushKit (PpVoipCall) posts this when an incoming-call VoIP push lands:
@@ -94,6 +95,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       backoffMaxAttempts = call.getInt("backoffMaxAttempts") ?? 5
       verifyDelayMs = Double(call.getInt("verifyDelayMs") ?? 8000)
       registerExpires = call.getInt("registerExpiresSec") ?? 1800
+      persistConfig()
       NSLog("[PpSipKeepAlive] reconnect strategy min=%.0fms max=%.0fms attempts=%d verify=%.0fms expires=%ds", backoffMinMs, backoffMaxMs, backoffMaxAttempts, verifyDelayMs, registerExpires)
       DispatchQueue.main.async { [weak self] in
         guard let self = self else { call.resolve(["ok": false, "status": "error", "reason": "plugin_released"]); return }
@@ -105,27 +107,6 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         // Same rule during an ACTIVE call: the WebView owns the media + transport.
         if self.callActive { self.setStatus("protected", "call_active_js_owns"); call.resolve(self.snapshot(ok: true)); return }
         if self.isForeground() { self.releaseRegistration("foreground_js_owns") } else { self.beginNativeOwnership("service_start") }
-        call.resolve(self.snapshot(ok: true))
-      }
-    }
-    @objc func stopSipService(_ call: CAPPluginCall) { DispatchQueue.main.async { self.releaseRegistration("stopped"); call.resolve(self.snapshot(ok: true)) } }
-    @objc func getSipServiceStatus(_ call: CAPPluginCall) { DispatchQueue.main.async { call.resolve(self.snapshot(ok: true)) } }
-    @objc func triggerReregister(_ call: CAPPluginCall) {
-      DispatchQueue.main.async { [weak self] in
-        guard let self = self else { call.resolve(["ok": false, "status": "error", "reason": "plugin_released"]); return }
-        if self.isForeground() { self.releaseRegistration("foreground_js_owns") } else { self.sendRegister(challenge: nil); self.notifyListeners("sipReregisterRequested", data: ["reason": "manual"]) }
-        call.resolve(self.snapshot(ok: true))
-      }
-    }
-    @objc func acknowledgeIncoming(_ call: CAPPluginCall) {
-      UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["pp_incoming_call"])
-      call.resolve(["ok": true])
-    }
-    @objc func wakeForIncomingCall(_ call: CAPPluginCall) {
-      let why = call.getString("reason") ?? "js"
-      DispatchQueue.main.async { [weak self] in
-        guard let self = self else { call.resolve(["ok": false]); return }
-        self.wakeForPush(why)
         call.resolve(self.snapshot(ok: true))
       }
     }
@@ -158,6 +139,28 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       }
     }
     private func stopAudioKeepAlive() { audioKeepAliveTimer?.invalidate(); audioKeepAliveTimer = nil }
+
+    @objc func stopSipService(_ call: CAPPluginCall) { DispatchQueue.main.async { self.releaseRegistration("stopped"); call.resolve(self.snapshot(ok: true)) } }
+    @objc func getSipServiceStatus(_ call: CAPPluginCall) { DispatchQueue.main.async { call.resolve(self.snapshot(ok: true)) } }
+    @objc func triggerReregister(_ call: CAPPluginCall) {
+      DispatchQueue.main.async { [weak self] in
+        guard let self = self else { call.resolve(["ok": false, "status": "error", "reason": "plugin_released"]); return }
+        if self.isForeground() { self.releaseRegistration("foreground_js_owns") } else { self.sendRegister(challenge: nil); self.notifyListeners("sipReregisterRequested", data: ["reason": "manual"]) }
+        call.resolve(self.snapshot(ok: true))
+      }
+    }
+    @objc func acknowledgeIncoming(_ call: CAPPluginCall) {
+      UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["pp_incoming_call"])
+      call.resolve(["ok": true])
+    }
+    @objc func wakeForIncomingCall(_ call: CAPPluginCall) {
+      let why = call.getString("reason") ?? "js"
+      DispatchQueue.main.async { [weak self] in
+        guard let self = self else { call.resolve(["ok": false]); return }
+        self.wakeForPush(why)
+        call.resolve(self.snapshot(ok: true))
+      }
+    }
     @objc private func onVoipPushWake(_ note: Notification) {
       DispatchQueue.main.async { [weak self] in self?.wakeForPush("voip_push") }
     }
@@ -165,6 +168,19 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     /// guarantees background execution through PushKit, so this is the path that
     /// must bring the AOR back before the PBX times out to voicemail.
     private func wakeForPush(_ why: String) {
+      // PushKit wakes the native process before the WebView can resolve SIP
+      // credentials. Restore the last confirmed configuration first so an
+      // incoming call can REGISTER without depending on JavaScript startup.
+      if host.isEmpty || login.isEmpty || domain.isEmpty { restoreConfig() }
+      guard !host.isEmpty, !login.isEmpty, !domain.isEmpty, !password.isEmpty else {
+        setStatus("error", "missing_persisted_sip_config")
+        notifyListeners("sipReregisterRequested", data: ["reason": "missing_persisted_sip_config"])
+        return
+      }
+      // PpVoipCall posts the native wake notification and later emits CallKit
+      // readiness to JS. Treat those as one wake, not two REGISTER handshakes.
+      if let previous = lastPushWakeAt, Date().timeIntervalSince(previous) < 1.0 { return }
+      lastPushWakeAt = Date()
       NSLog("[PpSipKeepAlive] VoIP push wake (%@)", why)
       beginBackgroundTask()
       activateAudioSession()
@@ -176,6 +192,56 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       }
       if socket == nil { connect() } else { sendRegister(challenge: nil, force: true) }
       setStatus(status == "registered" ? "registered" : "protected", "voip_push_wake")
+    }
+
+    private func persistConfig() {
+      UserDefaults.standard.set([
+        "host": host, "port": port, "path": path, "login": login,
+        "domain": domain, "displayName": displayName,
+        "backoffMinMs": backoffMinMs, "backoffMaxMs": backoffMaxMs,
+        "backoffMaxAttempts": backoffMaxAttempts, "verifyDelayMs": verifyDelayMs,
+        "registerExpires": registerExpires,
+      ], forKey: configDefaultsKey)
+      let data = Data(password.utf8)
+      let query: [String: Any] = [
+        kSecClass as String: kSecClassGenericPassword,
+        kSecAttrService as String: passwordService,
+        kSecAttrAccount as String: passwordAccount,
+      ]
+      SecItemDelete(query as CFDictionary)
+      var add = query
+      add[kSecValueData as String] = data
+      add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+      SecItemAdd(add as CFDictionary, nil)
+    }
+
+    private func restoreConfig() {
+      if let saved = UserDefaults.standard.dictionary(forKey: configDefaultsKey) {
+        host = saved["host"] as? String ?? host
+        port = saved["port"] as? Int ?? port
+        path = saved["path"] as? String ?? path
+        login = saved["login"] as? String ?? login
+        domain = saved["domain"] as? String ?? domain
+        displayName = saved["displayName"] as? String ?? displayName
+        backoffMinMs = saved["backoffMinMs"] as? Double ?? backoffMinMs
+        backoffMaxMs = saved["backoffMaxMs"] as? Double ?? backoffMaxMs
+        backoffMaxAttempts = saved["backoffMaxAttempts"] as? Int ?? backoffMaxAttempts
+        verifyDelayMs = saved["verifyDelayMs"] as? Double ?? verifyDelayMs
+        registerExpires = saved["registerExpires"] as? Int ?? registerExpires
+      }
+      let query: [String: Any] = [
+        kSecClass as String: kSecClassGenericPassword,
+        kSecAttrService as String: passwordService,
+        kSecAttrAccount as String: passwordAccount,
+        kSecReturnData as String: true,
+        kSecMatchLimit as String: kSecMatchLimitOne,
+      ]
+      var item: CFTypeRef?
+      if SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+         let data = item as? Data,
+         let savedPassword = String(data: data, encoding: .utf8) {
+        password = savedPassword
+      }
     }
 
     // NEVER touch UIApplication/UIScene off the main thread: it triggers
@@ -201,25 +267,28 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       appActive = false
       beginBackgroundTask()
       activateAudioSession()
+      // During an active call the WebView keeps the media: only keep the audio
+      // session alive, never flip to native ownership (that closed the JsSIP
+      // transport with WSS 1001 and killed the audio).
+      if callActive {
+        startAudioKeepAlive()
+        setStatus("protected", "call_active_audio_kept")
+        backgroundHandoffWorkItem?.cancel(); backgroundHandoffWorkItem = nil
+        return
+      }
       setStatus("protected", "background_handoff_pending")
       backgroundHandoffWorkItem?.cancel()
       // JS owns the ordering: it unregisters/stops JsSIP before calling
       // startSipService. Starting here first creates two transports for the same
       // NetSapiens device AOR and the SBC closes one with WebSocket code 1001.
     }
+
     @objc private func onForeground() {
       appActive = true
       // Keep the last confirmed native Contact until JS reports its own
       // REGISTER 200 and explicitly calls stopSipService. Closing here created
       // a zero-Contact window where NetSapiens followed the voicemail rule.
       notifyListeners("sipReregisterRequested", data: ["reason": "enter_foreground"])
-    }
-    /// willDeactivateNotification fires for transient interruptions (CallKit sheet,
-    /// Control Center, Siri) as well as real background transitions. Only update
-    /// appActive here — do NOT call onBackground() which would start the native
-    /// SIP stack while JsSIP is still registered (WSS 1001 loop).
-    @objc private func onWillDeactivate() {
-      appActive = false
     }
 
     private func beginNativeOwnership(_ why: String) {
@@ -230,13 +299,23 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       setStatus(status == "registered" ? "registered" : "protected", why)
     }
 
-    private func activateAudioSession() { try? AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .allowBluetoothA2DP, .mixWithOthers]); try? AVAudioSession.sharedInstance().setActive(true) }
+    private func activateAudioSession() {
+      let s = AVAudioSession.sharedInstance()
+      // During a live call we must own the session exclusively: .mixWithOthers
+      // lets WebKit interrupt it when the app goes background (no audio at all).
+      let opts: AVAudioSession.CategoryOptions = callActive
+        ? [.allowBluetooth, .allowBluetoothA2DP]
+        : [.allowBluetooth, .allowBluetoothA2DP, .mixWithOthers]
+      try? s.setCategory(.playAndRecord, mode: .voiceChat, options: opts)
+      try? s.setActive(true, options: [])
+    }
     private func connect() {
       // A new socket means a new AoR binding: clear the 200 OK debounce.
       lastRegisterOkTime = nil
       guard !host.isEmpty else { setStatus("error", "missing_host"); return }
       startPathMonitor()
       if isForeground() { return }
+      if callActive { return }
       if socket != nil { return }
       var comps = URLComponents(); comps.scheme = port == 80 ? "ws" : "wss"; comps.host = host; comps.port = port; comps.path = path.isEmpty ? "/" : path
       guard let url = comps.url else { setStatus("error", "bad_ws_url"); return }
@@ -319,10 +398,8 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       if msg.hasPrefix("SIP/2.0 200") && msg.uppercased().contains(" REGISTER") {
         lastRegisterOkTime = Date()
         setStatus("registered", "native_register_200")
-        // NOTE: sendOptionsPing() permanently removed (2026-07-30).
-        // NS closes the WSS socket ~0.5s after an un-authenticated OPTIONS,
-        // producing the ws_closed Code=57 loop. The REGISTER 200 OK itself
-        // proves the socket is alive — no ping needed.
+        // NetSapiens accepts OPTIONS only after the dialog settles; too early can close WSS with 1001.
+        // NOTE: sendOptionsPing() permanently removed (2026-07-30). AVA-Telecom proprietary patch.
         return
       }
       if msg.hasPrefix("INVITE ") {
@@ -368,10 +445,23 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
     }
 
-    // sendOptionsPing() permanently removed (2026-07-30):
-    // NS closes the WSS socket ~0.5s after an un-authenticated OPTIONS,
-    // producing a ws_closed Code=57 loop. The REGISTER 200 OK itself
-    // proves the socket is alive — no ping needed.
+    /// OPTIONS keep-alive sent right after the REGISTER 200 OK (never before:
+    /// an un-authenticated OPTIONS makes NetSapiens close the socket).
+    private func sendOptionsPing() {
+      guard let sock = socket, status == "registered", !domain.isEmpty else { return }
+      let seq = cseq; cseq += 1
+      let branch = "z9hG4bK" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+      var sip = "OPTIONS sip:" + domain + " SIP/2.0\r\n"
+      sip += "Via: SIP/2.0/WSS " + domain + ";branch=" + branch + "\r\n"
+      sip += "From: <sip:" + login + "@" + domain + ">;tag=" + fromTag + "\r\n"
+      sip += "To: <sip:" + domain + ">\r\n"
+      sip += "Call-ID: " + UUID().uuidString + "@planipret-ios\r\n"
+      sip += "CSeq: " + String(seq) + " OPTIONS\r\n"
+      sip += "Max-Forwards: 70\r\nUser-Agent: Planipret iOS KeepAlive\r\nContent-Length: 0\r\n\r\n"
+      sock.send(.string(sip)) { err in
+        if let e = err { NSLog("[PpSipKeepAlive] OPTIONS ping failed: %@", String(describing: e)) }
+      }
+    }
 
     private func sendRegister(challenge: String?, proxyAuth: Bool = false, force: Bool = false) {
       if isForeground() { releaseRegistration("foreground_js_owns"); return }
