@@ -65,7 +65,11 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       NotificationCenter.default.addObserver(self, selector: #selector(onBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
       NotificationCenter.default.addObserver(self, selector: #selector(onForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
       NotificationCenter.default.addObserver(self, selector: #selector(onForeground), name: UIApplication.didBecomeActiveNotification, object: nil)
-      NotificationCenter.default.addObserver(self, selector: #selector(onBackground), name: UIApplication.willResignActiveNotification, object: nil)
+      // AVA-Telecom patch #5: willResignActiveNotification removed — fires on transient
+      // interruptions (lock screen, notification banner, permission sheet) and caused
+      // background_handoff_pending to trigger while the app was still in foreground.
+      // Only UIApplication.didEnterBackgroundNotification + UIScene.didEnterBackgroundNotification
+      // are used to trigger onBackground().
       // UIScene lifecycle (iOS 13+) — the app adopts scenes, so the legacy
       // UIApplication notifications are not always delivered. Observing both
       // keeps appActive correct without ever reading UI state off-thread.

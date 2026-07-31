@@ -657,15 +657,15 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       NotificationCenter.default.addObserver(self, selector: #selector(onBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
       NotificationCenter.default.addObserver(self, selector: #selector(onForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
       NotificationCenter.default.addObserver(self, selector: #selector(onForeground), name: UIApplication.didBecomeActiveNotification, object: nil)
-      NotificationCenter.default.addObserver(self, selector: #selector(onBackground), name: UIApplication.willResignActiveNotification, object: nil)
-      // UIScene lifecycle (iOS 13+) — the app adopts scenes, so the legacy
-      // UIApplication notifications are not always delivered. Observing both
-      // keeps appActive correct without ever reading UI state off-thread.
+      // AVA-Telecom patch #5: willResignActiveNotification removed.
+      // AVA-Telecom patch #4: willDeactivateNotification removed.
+      // Both fire on transient interruptions (lock screen, banners, CallKit sheet)
+      // and caused background_handoff_pending loops while the app was in foreground.
+      // Only didEnterBackgroundNotification + UIScene.didEnterBackgroundNotification trigger onBackground().
       if #available(iOS 13.0, *) {
         NotificationCenter.default.addObserver(self, selector: #selector(onForeground), name: UIScene.didActivateNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(onSceneWillEnterForeground), name: UIScene.willEnterForegroundNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(onBackground), name: UIScene.didEnterBackgroundNotification, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(onBackground), name: UIScene.willDeactivateNotification, object: nil)
       }
       // Ask for notification permission so the incoming-call banner can ring.
       // PushKit (PpVoipCall) posts this when an incoming-call VoIP push lands:
