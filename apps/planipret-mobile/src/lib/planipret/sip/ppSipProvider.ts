@@ -652,14 +652,59 @@ class PpSipProvider {
     session.on("muted", () => this.update({ muted: true }));
     session.on("unmuted", () => this.update({ muted: false }));
 
-    const pc: RTCPeerConnection | undefined = session.connection;
-    if (pc) {
-      pc.addEventListener("track", (ev: any) => {
-        if (this.audioEl && ev.streams[0]) {
-          this.audioEl.srcObject = ev.streams[0];
-          this.audioEl.play().catch(() => {});
-        }
-      });
+    // --- Remote audio wiring -------------------------------------------
+    // The peer connection may not exist yet (incoming calls create it on
+    // answer), so listen for JsSIP's "peerconnection" event as well.
+    const wire = (pc: RTCPeerConnection | undefined | null) => {
+      if (!pc || (pc as any).__ppAudioWired) return;
+      (pc as any).__ppAudioWired = true;
+      const attach = () => this.attachRemoteAudio(pc);
+      pc.addEventListener("track", attach);
+      (pc as any).addEventListener?.("addstream", attach);
+      attach();
+    };
+    wire(session.connection);
+    session.on("peerconnection", (e: any) => wire(e?.peerconnection || session.connection));
+    session.on("accepted", () => this.attachRemoteAudio(session.connection));
+    session.on("confirmed", () => this.attachRemoteAudio(session.connection));
+  }
+
+  /** Hidden, always-available audio sink so remote audio never depends on a screen being mounted. */
+  private ensureAudioEl(): HTMLAudioElement | null {
+    if (this.audioEl) return this.audioEl;
+    if (typeof document === "undefined") return null;
+    const el = document.createElement("audio");
+    el.autoplay = true;
+    (el as any).playsInline = true;
+    el.setAttribute("playsinline", "true");
+    el.style.display = "none";
+    document.body.appendChild(el);
+    this.audioEl = el;
+    return el;
+  }
+
+  private attachRemoteAudio(pc: RTCPeerConnection | undefined | null) {
+    try {
+      if (!pc) return;
+      const el = this.ensureAudioEl();
+      if (!el) return;
+      let stream: MediaStream | null = null;
+      const receivers = pc.getReceivers?.() ?? [];
+      const tracks = receivers.map((r) => r.track).filter((t) => t && t.kind === "audio") as MediaStreamTrack[];
+      if (tracks.length) stream = new MediaStream(tracks);
+      else {
+        const remotes = (pc as any).getRemoteStreams?.();
+        if (remotes?.length) stream = remotes[0];
+      }
+      if (!stream) return;
+      if (el.srcObject !== stream) el.srcObject = stream;
+      el.muted = false;
+      el.volume = 1;
+      const p = el.play();
+      if (p?.catch) p.catch(() => { setTimeout(() => el.play().catch(() => {}), 300); });
+      this.log("info", `remote audio attached (${stream.getAudioTracks().length} track(s))`);
+    } catch (e: any) {
+      this.log("error", `attachRemoteAudio failed: ${e?.message || e}`);
     }
   }
 

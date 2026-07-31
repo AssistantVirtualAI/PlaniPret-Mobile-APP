@@ -44,6 +44,7 @@ import {
   type PpNativeSipStatus,
 } from "@/lib/planipret/sip/nativePpSipService";
 import { addDedupedCapListener } from "@/lib/planipret/sip/capListeners";
+import { checkSipBackendRegistration } from "@/lib/planipret/sip/sipBackendCheck";
 import {
   upsertRingingSession,
   claimCall,
@@ -652,6 +653,21 @@ export function useMplanipretSoftphone(enabled = true) {
        } catch { /* noop */ }
        finally { resumePending = false; }
        evaluate();
+       // Backend fallback: the client can look "registered" while NS holds no
+       // live binding. Ask the backend for the real state and self-heal.
+       void checkSipBackendRegistration().then((check) => {
+         if (!check || check.healthy) return;
+         console.warn("[pp-sip] backend registration check unhealthy", check);
+         if (check.actions?.includes("reregister")) {
+           ppSipProvider.forceReregister();
+           handedOffToNative = false;
+         }
+         if (check.actions?.includes("refresh_push_token")) {
+           lastVoipToken = null;
+           try { localStorage.removeItem(VOIP_TOKEN_STORAGE_KEY); } catch { /* noop */ }
+           void refreshPlanipretVoipPushToken();
+         }
+       });
       })();
     };
     const onResume = () => resumeSip();
@@ -936,7 +952,9 @@ export function useMplanipretSoftphone(enabled = true) {
     unhold: () => restCall?.id ? void restControl("unhold") : ppSipProvider.unhold(),
     sendDTMF: (k: string) => restCall?.id ? void restControl("dtmf", { digit: k }) : ppSipProvider.sendDTMF(k),
     transfer: (t: string) => restCall?.id ? void restControl("transfer", { destination: t, target: t }) : ppSipProvider.transfer(t),
-    setAudioEl: (el: HTMLAudioElement | null) => { ppSipProvider.audioEl = el; },
+    // The provider owns a persistent hidden <audio> sink; screens must not
+    // detach it on unmount (that killed remote audio mid-call).
+    setAudioEl: (_el: HTMLAudioElement | null) => {},
     forceHandover: () => handoverController.forceHandover(),
   }), [effectiveSnap, loading, net, quality, nativeStatus, sipConnected, placeCall, answer, hangup, answeredElsewhere, attachRestCall, restCall?.id, restControl]);
 

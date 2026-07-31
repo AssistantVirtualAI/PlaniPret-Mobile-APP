@@ -92,7 +92,7 @@ Deno.serve(async (req) => {
       Accept: "application/json",
     };
 
-    const stats = { checked: 0, compliant: 0, drifted: 0, repaired: 0, repair_failed: 0, missing_device: 0, errors: 0 };
+    const stats = { checked: 0, compliant: 0, drifted: 0, repaired: 0, repair_failed: 0, missing_device: 0, push_disabled: 0, push_repaired: 0, errors: 0 };
     const details: any[] = [];
 
     const checkBroker = async (broker: any) => {
@@ -112,23 +112,49 @@ Deno.serve(async (req) => {
             String(d?.device ?? d?.aor ?? "").replace(/^sip:/i, "").split("@")[0].trim().toLowerCase() === id.toLowerCase());
           if (!dev) { stats.missing_device += 1; out.devices.push({ id, status: "missing" }); continue; }
           stats.checked += 1;
+          const isMobile = isMobileDeviceId(id, ext);
           const expiry = Number(
             dev["device-sip-registration-expiry-seconds"] ?? dev["sip-registration-expiry-seconds"] ?? 0,
           );
           const nat = String(dev["device-sip-nat-traversal-enabled"] ?? "");
           const registered = String(dev["device-sip-registration-state"] ?? dev["registration-status"] ?? "");
           const expires = dev["device-sip-registration-expires-datetime"] ?? null;
+
+          // `device-push-enabled` is CRITICAL on mobile devices: when it is "no",
+          // NetSapiens never fires the APNs VoIP push, the suspended app is never
+          // woken, and the inbound call falls through to voicemail
+          // (docs/netsapiens/devices.md). The LIST endpoint does not always return
+          // the field, so read it from the device DETAIL endpoint for mobile AORs.
+          let push = String(dev["device-push-enabled"] ?? "");
+          if (isMobile && push === "") {
+            const detail = await fetch(`${base}/${encodeURIComponent(id)}`, { headers: nsHeaders }).catch(() => null);
+            if (detail?.ok) {
+              const dj = await detail.json().catch(() => null);
+              const row = Array.isArray(dj) ? dj[0] : (Array.isArray(dj?.data) ? dj.data[0] : dj);
+              push = String(row?.["device-push-enabled"] ?? "");
+            }
+          }
+          const pushOk = isMobile
+            ? (push === "" ? true : ["yes", "true", "1", "on"].includes(push.toLowerCase()))
+            : true;
+          if (isMobile && !pushOk) stats.push_disabled += 1;
+
           // The device LIST endpoint does not always return the NAT field; only
           // treat it as drift when it is present AND wrong.
           const natOk = nat === "" || nat === "automatic";
-          const compliant = expiry === TARGET_EXPIRY && natOk;
+          const compliant = expiry === TARGET_EXPIRY && natOk && pushOk;
           if (compliant) {
             stats.compliant += 1;
-            out.devices.push({ id, status: "ok", expiry, nat, registered, expires });
+            out.devices.push({ id, status: "ok", expiry, nat, push: push || null, registered, expires });
             continue;
           }
           stats.drifted += 1;
-          const entry: any = { id, status: "drift", expiry, nat, registered, expires };
+          const reasons = [
+            expiry !== TARGET_EXPIRY ? "expiry" : null,
+            !natOk ? "nat" : null,
+            !pushOk ? "push_disabled" : null,
+          ].filter(Boolean);
+          const entry: any = { id, status: "drift", reasons, expiry, nat, push: push || null, registered, expires };
           if (fix) {
             const put = await fetch(`${base}/${encodeURIComponent(id)}`, {
               method: "PUT",
@@ -136,14 +162,19 @@ Deno.serve(async (req) => {
               body: JSON.stringify({
                 "device-sip-registration-expiry-seconds": TARGET_EXPIRY,
                 "device-sip-nat-traversal-enabled": "automatic",
-                "device-push-enabled": isMobileDeviceId(id, ext) ? "yes" : "no",
+                "device-push-enabled": isMobile ? "yes" : "no",
               }),
             }).catch(() => null);
-            if (put?.ok) { stats.repaired += 1; entry.status = "repaired"; }
+            if (put?.ok) {
+              stats.repaired += 1;
+              entry.status = "repaired";
+              if (!pushOk) stats.push_repaired += 1;
+            }
             else { stats.repair_failed += 1; entry.status = "repair_failed"; entry.http = put?.status ?? 0; }
           }
           out.devices.push(entry);
         }
+
         return out;
       } catch (e: any) {
         stats.errors += 1;
@@ -187,3 +218,4 @@ Deno.serve(async (req) => {
     return json({ error: e?.message ?? String(e) }, 500);
   }
 });
+

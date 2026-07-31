@@ -1,5 +1,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
+import { normalizeNsEvents, nsCallKey, shouldProcessCall } from "../_shared/ns-call-events.ts";
+
 
 declare const EdgeRuntime: { waitUntil: (p: Promise<unknown>) => void };
 
@@ -25,11 +27,16 @@ async function apnsJwt(teamId: string, keyId: string, privateKeyPem: string) {
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
-  // FIX 2 — strict shared-secret validation
+  // FIX 2 — strict shared-secret validation.
+  // NetSapiens v2 subscriptions cannot send custom headers (docs: verification
+  // is IP allowlist + X-Correlation-ID), so the secret also travels in the
+  // post-url query string that ns-webhook-setup registers.
   const expected = Deno.env.get("NS_WEBHOOK_SECRET");
+  const url = new URL(req.url);
   const got = req.headers.get("x-webhook-secret")
     ?? req.headers.get("authorization")?.replace("Bearer ", "")
-    ?? req.headers.get("x-ns-secret");
+    ?? req.headers.get("x-ns-secret")
+    ?? url.searchParams.get("secret");
   if (!expected || got !== expected) {
     return new Response(JSON.stringify({ error: "Unauthorized" }), {
       status: 401,
@@ -37,11 +44,22 @@ Deno.serve(async (req) => {
     });
   }
 
-  let event: any;
-  try { event = await req.json(); } catch { return ok(); }
+
+  let body: any;
+  try { body = await req.json(); } catch { return ok(); }
+
+  // NS-API v2 posts an ARRAY of resource objects (docs/netsapiens/webhooks.md).
+  const events = normalizeNsEvents(body);
+  if (!events.length) return ok();
 
   // FIX 4 — return 200 immediately, process async
-  EdgeRuntime.waitUntil(processEvent(event).catch((e) => console.error("ns-webhook async error", e)));
+  EdgeRuntime.waitUntil(
+    (async () => {
+      for (const ev of events) {
+        try { await processEvent(ev); } catch (e) { console.error("ns-webhook async error", e); }
+      }
+    })(),
+  );
   return ok();
 });
 
@@ -51,6 +69,14 @@ async function processEvent(event: any) {
 
   const type = event?.type ?? event?.event?.type;
   const data = event?.data ?? event?.payload ?? event;
+
+  // The `call` model fires on every state change — only the first ringing
+  // event for a given SIP Call-ID may trigger a VoIP push.
+  if (type === "call.inbound" && !shouldProcessCall(nsCallKey(data))) {
+    console.log("[ns-webhook] duplicate call event ignored", { call_id: nsCallKey(data) });
+    return;
+  }
+
 
   const ext = data?.extension ?? data?.user ?? data?.to ?? data?.callee ?? null;
   let userId: string | null = null;
@@ -102,28 +128,50 @@ async function processEvent(event: any) {
         console.error("[ns-webhook] APNs VoIP missing bundle id", { token_id: row.id, call_id: payload?.call_id });
         return { ok: false, skipped: "missing_bundle_id" };
       }
-      const host = row.environment === "sandbox" ? "api.sandbox.push.apple.com" : "api.push.apple.com";
-      const res = await fetch(`https://${host}/3/device/${row.device_token}`, {
-        method: "POST",
-        headers: {
-          authorization: `bearer ${jwt}`,
-          "apns-topic": `${bundleId}.voip`,
-          "apns-push-type": "voip",
-          "apns-priority": "10",
-          "content-type": "application/json",
+      // Apple VoIP requirements: push-type `voip`, topic `<bundle>.voip`,
+      // priority 10 and expiration 0 (immediate delivery only — a stored VoIP
+      // push delivered late is rejected by iOS and kills the app).
+      const send = (env: string) => fetch(
+        `https://${env === "sandbox" ? "api.sandbox.push.apple.com" : "api.push.apple.com"}/3/device/${row.device_token}`,
+        {
+          method: "POST",
+          headers: {
+            authorization: `bearer ${jwt}`,
+            "apns-topic": `${bundleId}.voip`,
+            "apns-push-type": "voip",
+            "apns-priority": "10",
+            "apns-expiration": "0",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ aps: { "content-available": 1 }, ...payload }),
         },
-        body: JSON.stringify({ aps: { "content-available": 1 }, ...payload }),
-      });
+      );
+
+      const primary = row.environment === "sandbox" ? "sandbox" : "production";
+      let env = primary;
+      let res = await send(env);
+      let body = res.ok ? "" : await res.text().catch(() => "");
+      // Dev-signed builds (aps-environment=development) hold sandbox tokens; a
+      // stored `production` environment then yields BadDeviceToken. Retry once
+      // on the other APNs host before discarding the token.
+      if (!res.ok && (body.includes("BadDeviceToken") || body.includes("DeviceTokenNotForTopic"))) {
+        env = primary === "sandbox" ? "production" : "sandbox";
+        res = await send(env);
+        body = res.ok ? "" : await res.text().catch(() => "");
+        if (res.ok) {
+          await admin.from("planipret_voip_push_tokens").update({ environment: env }).eq("id", row.id);
+        }
+      }
       if (!res.ok) {
-        const body = await res.text().catch(() => "");
-        console.error("[ns-webhook] APNs VoIP failed", { status: res.status, body, token_id: row.id, env: row.environment, bundle_id: bundleId, call_id: payload?.call_id });
-        if (res.status === 410 || body.includes("BadDeviceToken") || body.includes("Unregistered")) {
+        console.error("[ns-webhook] APNs VoIP failed", { status: res.status, body, token_id: row.id, env, bundle_id: bundleId, call_id: payload?.call_id });
+        if (res.status === 410 || body.includes("Unregistered")) {
           await admin.from("planipret_voip_push_tokens").delete().eq("id", row.id);
         }
         return { ok: false, status: res.status };
       }
-      console.log("[ns-webhook] APNs VoIP sent", { token_id: row.id, env: row.environment, bundle_id: bundleId, call_id: payload?.call_id });
+      console.log("[ns-webhook] APNs VoIP sent", { token_id: row.id, env, bundle_id: bundleId, call_id: payload?.call_id });
       return { ok: true };
+
     }));
     const sent = results.filter((r) => r.status === "fulfilled" && (r.value as any)?.ok).length;
     if (!sent) console.warn("[ns-webhook] APNs VoIP delivered to 0 tokens", { user_id: uid, call_id: payload?.call_id, token_count: tokens.length });
@@ -289,3 +337,4 @@ async function processEvent(event: any) {
     }
   }
 }
+
