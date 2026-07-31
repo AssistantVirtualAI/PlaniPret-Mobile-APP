@@ -63,6 +63,18 @@ export default function PpActiveCallScreen({
 
   useEffect(() => { setAudioEl(audioRef.current); return () => setAudioEl(null); }, [setAudioEl]);
 
+  // Jouer le message d'enregistrement pendant la sonnerie entrante
+  const recordingNoticeRef = useRef<HTMLAudioElement | null>(null);
+  useEffect(() => {
+    if (snap.callState === "ringing-in") {
+      const audio = new Audio("/audio/recording-notice.mp3");
+      audio.volume = 0.85;
+      recordingNoticeRef.current = audio;
+      audio.play().catch(() => {});
+      return () => { audio.pause(); audio.currentTime = 0; recordingNoticeRef.current = null; };
+    }
+  }, [snap.callState]);
+
   const active = snap.callState === "ringing-out" || snap.callState === "ringing-in"
     || snap.callState === "active" || snap.callState === "held";
 
@@ -190,6 +202,12 @@ export default function PpActiveCallScreen({
             <div className="text-2xl font-semibold tracking-tight text-center">{displayName}</div>
             {displayNumber && <div className="text-sm text-white/60 mt-1">{displayNumber}</div>}
             <div className="mt-3 text-sm text-white/70">{statusText}</div>
+            {isIncoming && (
+              <div className="mt-3 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs" style={{ background: "rgba(255,165,0,0.15)", border: "1px solid rgba(255,165,0,0.35)", color: "rgba(255,200,100,0.9)" }}>
+                <span style={{ fontSize: 10 }}>⏺</span>
+                <span>Cet appel sera enregistré</span>
+              </div>
+            )}
             {dtmfBuf && <div className="mt-2 text-xs text-white/50">DTMF: {dtmfBuf}</div>}
             {snap.errorCause && <div className="mt-2 text-xs" style={{ color: "#FCA5A5" }}>{snap.errorCause}</div>}
           </div>

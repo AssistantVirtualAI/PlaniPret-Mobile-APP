@@ -17,6 +17,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       CAPPluginMethod(name: "triggerReregister", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "acknowledgeIncoming", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "wakeForIncomingCall", returnType: CAPPluginReturnPromise),
+      CAPPluginMethod(name: "setCallActive", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "addListener", returnType: CAPPluginReturnCallback),
       CAPPluginMethod(name: "removeAllListeners", returnType: CAPPluginReturnPromise)
     ]
@@ -46,6 +47,11 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private var backgroundHandoffWorkItem: DispatchWorkItem?
     private var pathMonitor: NWPathMonitor?
     private var networkUp = true
+    /// True while the WebView (JsSIP) has a live call. During a call the native
+    /// stack must NEVER take the AOR over: doing so closes the JsSIP transport
+    /// (WSS 1001) and kills the audio. We only keep the audio session alive.
+    private var callActive = false
+    private var audioKeepAliveTimer: Timer?
 
     public override func load() {
       DispatchQueue.main.async { [weak self] in self?.appActive = UIApplication.shared.applicationState == .active }
@@ -96,6 +102,8 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         // JsSIP web layer owns the registration. Registering natively at the same
         // time made NetSapiens close the JsSIP socket (1001), producing an endless
         // disconnect/reconnect loop. Store the credentials and stay idle instead.
+        // Same rule during an ACTIVE call: the WebView owns the media + transport.
+        if self.callActive { self.setStatus("protected", "call_active_js_owns"); call.resolve(self.snapshot(ok: true)); return }
         if self.isForeground() { self.releaseRegistration("foreground_js_owns") } else { self.beginNativeOwnership("service_start") }
         call.resolve(self.snapshot(ok: true))
       }
@@ -121,6 +129,35 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         call.resolve(self.snapshot(ok: true))
       }
     }
+    /// JS marks the call lifecycle. While a call is up we keep the audio session
+    /// active in background (WebKit otherwise interrupts it => one-way / no audio)
+    /// and never take the SIP AOR over.
+    @objc func setCallActive(_ call: CAPPluginCall) {
+      let active = call.getBool("active") ?? false
+      DispatchQueue.main.async { [weak self] in
+        guard let self = self else { call.resolve(["ok": false]); return }
+        self.callActive = active
+        if active {
+          self.beginBackgroundTask()
+          self.activateAudioSession()
+          self.startAudioKeepAlive()
+          // Never hold a second transport while the WebView carries the call.
+          self.backgroundHandoffWorkItem?.cancel(); self.backgroundHandoffWorkItem = nil
+          if self.socket != nil { self.releaseRegistration("call_active_js_owns") }
+        } else {
+          self.stopAudioKeepAlive()
+        }
+        call.resolve(self.snapshot(ok: true))
+      }
+    }
+    private func startAudioKeepAlive() {
+      audioKeepAliveTimer?.invalidate()
+      audioKeepAliveTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+        guard let self = self, self.callActive else { return }
+        self.activateAudioSession()
+      }
+    }
+    private func stopAudioKeepAlive() { audioKeepAliveTimer?.invalidate(); audioKeepAliveTimer = nil }
     @objc private func onVoipPushWake(_ note: Notification) {
       DispatchQueue.main.async { [weak self] in self?.wakeForPush("voip_push") }
     }

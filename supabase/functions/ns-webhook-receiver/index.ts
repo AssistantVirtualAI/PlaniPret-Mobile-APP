@@ -17,7 +17,23 @@ function b64url(input: ArrayBuffer | string) {
 async function apnsJwt(teamId: string, keyId: string, privateKeyPem: string) {
   const header = b64url(JSON.stringify({ alg: "ES256", kid: keyId }));
   const claims = b64url(JSON.stringify({ iss: teamId, iat: Math.floor(Date.now() / 1000) }));
-  const pem = privateKeyPem.replace(/-----BEGIN PRIVATE KEY-----|-----END PRIVATE KEY-----|\s/g, "");
+  // Lovable Cloud secrets may preserve a pasted .p8 key with literal `\n`
+  // sequences or surrounding JSON quotes. Normalize both representations
+  // before decoding the PKCS#8 body. The previous whitespace-only cleanup left
+  // the backslash characters in place, making every VoIP push fail with
+  // `InvalidCharacterError: Failed to decode base64`.
+  let normalized = String(privateKeyPem ?? "").trim();
+  if (normalized.startsWith('"') && normalized.endsWith('"')) {
+    try { normalized = JSON.parse(normalized); } catch { /* keep original */ }
+  }
+  normalized = normalized.replace(/\\r\\n|\\n|\\r/g, "\n");
+  const pem = normalized
+    .replace(/-----BEGIN (?:EC )?PRIVATE KEY-----/g, "")
+    .replace(/-----END (?:EC )?PRIVATE KEY-----/g, "")
+    .replace(/\s/g, "");
+  if (!pem || !/^[A-Za-z0-9+/]+={0,2}$/.test(pem)) {
+    throw new Error("APNS_PRIVATE_KEY is not a valid PKCS#8 .p8 key");
+  }
   const raw = Uint8Array.from(atob(pem), (c) => c.charCodeAt(0));
   const key = await crypto.subtle.importKey("pkcs8", raw, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
   const sig = await crypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, key, new TextEncoder().encode(`${header}.${claims}`));
