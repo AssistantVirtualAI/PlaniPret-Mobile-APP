@@ -540,18 +540,30 @@ export function useMplanipretSoftphone(enabled = true) {
       // Native did not confirm registration. The VoIP-push wake path will retry;
       // do not reopen JsSIP while iOS is hidden and create concurrent ownership.
     };
+    let nativeStopTimer: ReturnType<typeof setTimeout> | null = null;
     const stopNativeAfterWebRegistered = (force = false) => {
-      // Foreground = single owner (JsSIP). Stop the native keep-alive right away:
-      // waiting for the WebView to reach "registered" first created a deadlock —
-      // the two SIP stacks kept kicking each other off the PBX (WSS 1001 loop)
-      // so the WebView never stabilised and the native service never stopped.
-      if (!force && typeof document !== "undefined" && document.visibilityState === "hidden") return;
-      void getPlanipretSipKeepAliveStatus()
-        .then((status) => {
-          if (status?.status === "idle") return;
-          return stopPlanipretSipKeepAlive();
-        })
-        .catch(() => undefined);
+      // NetSapiens keeps ONE registration per AOR (doc: registrations.md).
+      // Never drop the native registration before JsSIP has a confirmed
+      // REGISTER 200 OK: that gap is what sends inbound calls to voicemail and
+      // only rings the app once the WebView finally re-registers.
+      if (nativeStopTimer) clearTimeout(nativeStopTimer);
+      let tries = 0;
+      const tick = () => {
+        nativeStopTimer = null;
+        if (!force && typeof document !== "undefined" && document.visibilityState === "hidden") return;
+        if (ppSipProvider.getSnapshot().status !== "registered") {
+          if (tries++ >= 20) return; // keep native registered — safest state
+          nativeStopTimer = setTimeout(tick, 1_000);
+          return;
+        }
+        void getPlanipretSipKeepAliveStatus()
+          .then((status) => {
+            if (status?.status === "idle") return;
+            return stopPlanipretSipKeepAlive();
+          })
+          .catch(() => undefined);
+      };
+      tick();
     };
 
     const un = ppSipProvider.subscribe(() => evaluate());
@@ -580,13 +592,14 @@ export function useMplanipretSoftphone(enabled = true) {
         }
         const cfg = ppSipProvider.getConfig();
         if (cfg) {
-          await stopPlanipretSipKeepAlive().catch(() => undefined);
-          await new Promise((r) => setTimeout(r, 500));
+          // Keep the native registration alive while JsSIP rebuilds: stopping
+          // it first left the AOR unregistered (=> voicemail on inbound).
           if (!acquireSipInitLock(4000)) return;
           await ppSipProvider.init(cfg).finally(() => {
             handedOffToNative = false;
             releaseSipInitLock();
           });
+          stopNativeAfterWebRegistered(true);
         } else {
           ppSipProvider.forceReregister();
           handedOffToNative = false;
@@ -633,7 +646,7 @@ export function useMplanipretSoftphone(enabled = true) {
     // watchdog escalates to forceReregister even without a subscribe callback.
     const heartbeat = window.setInterval(() => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") {
-        scheduleHandoff(0);
+        scheduleHandoff();
         return;
       }
       evaluate();

@@ -567,17 +567,23 @@ export function useMplanipretSoftphone(enabled = true) {
       try { ppSipProvider.forceReregister(); } catch { /* noop */ }
     };
     const stopNativeAfterWebRegistered = (force = false) => {
-      // Foreground = single owner (JsSIP). Stop the native keep-alive right away:
-      // waiting for the WebView to reach "registered" first created a deadlock —
-      // the two SIP stacks kept kicking each other off the PBX (WSS 1001 loop)
-      // so the WebView never stabilised and the native service never stopped.
+      // NetSapiens keeps ONE registration per AOR (doc: registrations.md).
+      // Never drop the native registration before JsSIP has a confirmed
+      // REGISTER 200 OK: the gap between the two stacks is exactly what makes
+      // an inbound call hit voicemail and only ring the app afterwards.
       if (nativeStopTimer) clearTimeout(nativeStopTimer);
-      if (!force && typeof document !== "undefined" && document.visibilityState === "hidden") return;
-      void stopPlanipretSipKeepAlive().catch(() => undefined);
-      nativeStopTimer = setTimeout(() => {
+      let tries = 0;
+      const tick = () => {
+        nativeStopTimer = null;
         if (!force && typeof document !== "undefined" && document.visibilityState === "hidden") return;
-        void stopPlanipretSipKeepAlive().catch(() => undefined);
-      }, 3_000);
+        if (ppSipProvider.getSnapshot().status === "registered") {
+          void stopPlanipretSipKeepAlive().catch(() => undefined);
+          return;
+        }
+        if (tries++ >= 20) return; // keep native registered — safest state
+        nativeStopTimer = setTimeout(tick, 1_000);
+      };
+      tick();
     };
 
     const un = ppSipProvider.subscribe(() => evaluate());
@@ -603,7 +609,7 @@ export function useMplanipretSoftphone(enabled = true) {
         }
         const cfg = ppSipProvider.getConfig();
         if (cfg) {
-          stopNativeAfterWebRegistered(true);
+          // Do NOT stop native here: JsSIP is not registered yet.
           if (!acquireSipInitLock(4000)) return;
           void ppSipProvider.init(cfg).finally(() => {
             handedOffToNative = false;
@@ -654,7 +660,7 @@ export function useMplanipretSoftphone(enabled = true) {
     // watchdog escalates to forceReregister even without a subscribe callback.
     const heartbeat = window.setInterval(() => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") {
-        scheduleHandoff(0);
+        scheduleHandoff();
         return;
       }
       evaluate();
