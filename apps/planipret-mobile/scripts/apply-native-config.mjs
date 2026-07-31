@@ -1498,6 +1498,14 @@ function stripInlinePlugins(swift) {
 
 function hasProjectReference(iosRoot, fileName) {
   const pbx = path.join(iosRoot, "App.xcodeproj", "project.pbxproj");
+  // AVA-Telecom patch #5: also treat the file as "in project" when the
+  // standalone Plugins/*.swift file already exists on disk. This prevents
+  // inlining the class into AppBridgeViewController when project.pbxproj is
+  // absent (e.g. apps/planipret-mobile/ios before `npx cap add ios` on the
+  // host), which caused "Invalid redeclaration of 'PpSipKeepAlive'/'PpVoipCall'".
+  const baseName = fileName.replace(/\.swift$/, "");
+  const standaloneFile = path.join(iosRoot, "App", "Plugins", baseName, fileName);
+  if (fs.existsSync(standaloneFile)) return true;
   if (!fs.existsSync(pbx)) return false;
   return fs.readFileSync(pbx, "utf8").includes(fileName);
 }

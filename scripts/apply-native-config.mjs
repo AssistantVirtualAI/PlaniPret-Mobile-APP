@@ -254,9 +254,9 @@ public class PpSipKeepAliveService extends Service {
     CHANNEL_ID = "pp_sip_keepalive_channel",
     CHANNEL_INCOMING_ID = "pp_sip_incoming_channel",
     PREFS_NAME = "pp_sip_keepalive",
-    ACTION_STATUS = "com.planipret.mobile.PP_SIP_STATUS",
-    ACTION_REREGISTER = "com.planipret.mobile.PP_SIP_REREGISTER",
-    ACTION_INCOMING_INVITE = "com.planipret.mobile.PP_SIP_INCOMING_INVITE";
+    ACTION_STATUS = "${pkg}.PP_SIP_STATUS",
+    ACTION_REREGISTER = "${pkg}.PP_SIP_REREGISTER",
+    ACTION_INCOMING_INVITE = "${pkg}.PP_SIP_INCOMING_INVITE";
   public static final int NOTIFICATION_ID = 2201, INCOMING_NOTIFICATION_ID = 2202;
   public static final String KEY_STATUS = "status", KEY_REASON = "reason", KEY_UPDATED_AT = "updated_at", KEY_WAKE_HELD = "wake_held", KEY_WIFI_HELD = "wifi_held", KEY_LOGGED_IN = "logged_in";
   private final ScheduledExecutorService executor = Executors.newScheduledThreadPool(2);
@@ -267,6 +267,10 @@ public class PpSipKeepAliveService extends Service {
   private int cseq = 1;
   private final String callId = UUID.randomUUID().toString() + "@planipret-mobile";
   private final String fromTag = Long.toHexString(System.nanoTime());
+  // instanceId STABLE: calcule une seule fois a la creation du service.
+  // Un UUID aleatoire a chaque REGISTER ferait croire a NS qu'il s'agit d'un
+  // nouvel appareil -> NS ferme le WS (code 1001) -> boucle infinie.
+  private final String instanceId = UUID.randomUUID().toString().replace("-", "");
   private volatile boolean readerRunning = false;
 
   public static void start(Context c) { Intent i = new Intent(c, PpSipKeepAliveService.class); if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) c.startForegroundService(i); else c.startService(i); }
@@ -294,10 +298,19 @@ public class PpSipKeepAliveService extends Service {
     requestReregister(this, "service_start");
     executor.execute(this::connectAndRegister);
     if (heartbeat != null) heartbeat.cancel(false);
+    // Heartbeat toutes les 120s (2 min) -- bien avant l'expiration du REGISTER (1800s)
+    // Garantit que le SIP reste enregistre en permanence, meme en arriere-plan
     heartbeat = executor.scheduleAtFixedRate(() -> {
-      try { sendRegister(null); } catch (Exception e) { emitStatus("reconnecting", "register_retry"); connectAndRegister(); }
+      try {
+        if (wsSocket == null || wsSocket.isClosed() || !wsSocket.isConnected()) {
+          emitStatus("reconnecting", "ws_closed_reconnecting");
+          connectAndRegister();
+        } else {
+          sendRegister(null);
+        }
+      } catch (Exception e) { emitStatus("reconnecting", "register_retry"); connectAndRegister(); }
       requestReregister(this, "keepalive");
-    }, 60, 60, TimeUnit.SECONDS);
+    }, 120, 120, TimeUnit.SECONDS);
     return START_STICKY;
   }
 
@@ -311,14 +324,25 @@ public class PpSipKeepAliveService extends Service {
   private void connectAndRegister() { synchronized (this) { try {
     closeWs();
     SharedPreferences p = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-    String host = p.getString("host", ""); int port = p.getInt("port", 443); String path = p.getString("path", "/");
+    String rawConnHost = p.getString("host", "voice.ava-telecom.ca");
+    // Edge SBC policy: redirect core/cluster ucstack.io to edge SBC (aligned with sipEdgePolicy.ts)
+    String host = (rawConnHost != null && rawConnHost.matches(".*core\\d*\\.cluster\\d*\\.ucstack\\.io.*")) ? "voice.ava-telecom.ca" : rawConnHost;
+    int port = p.getInt("port", 443); String path = p.getString("path", "/");
     if (host == null || host.length() == 0) { emitStatus("error", "missing_host"); return; }
     Socket raw = port == 443 ? SSLSocketFactory.getDefault().createSocket(host, port) : new Socket(host, port);
-    raw.setKeepAlive(true);
-    raw.setSoTimeout(90000);
+    raw.setSoTimeout(65000);
     wsSocket = raw; wsIn = raw.getInputStream(); wsOut = raw.getOutputStream();
     String key = websocketKey();
-    String req = "GET " + (path == null || path.length() == 0 ? "/" : path) + " HTTP/1.1\r\nHost: " + host + ":" + port + "\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: " + key + "\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Protocol: sip\r\nOrigin: https://" + host + "\r\n\r\n";
+    String wsPath = (path == null || path.length() == 0) ? "/" : path;
+    String req = "GET " + wsPath + " HTTP/1.1\r\n"
+      + "Host: " + host + ":" + port + "\r\n"
+      + "Upgrade: websocket\r\n"
+      + "Connection: Upgrade\r\n"
+      + "Sec-WebSocket-Key: " + key + "\r\n"
+      + "Sec-WebSocket-Version: 13\r\n"
+      + "Sec-WebSocket-Protocol: sip\r\n"
+      + "Origin: https://" + host + "\r\n"
+      + "\r\n";
     wsOut.write(req.getBytes(StandardCharsets.UTF_8)); wsOut.flush();
     String headers = readHttpHeaders();
     if (!headers.contains(" 101 ")) { emitStatus("error", "ws_handshake_failed"); return; }
@@ -331,30 +355,25 @@ public class PpSipKeepAliveService extends Service {
     while (wsSocket != null && wsSocket.isConnected() && !wsSocket.isClosed()) {
       String msg = readFrame(); if (msg == null) break; handleSipMessage(msg);
     }
-  } catch(Exception ignored) {} finally { readerRunning = false; emitStatus("reconnecting", "ws_reader_closed"); closeWs(); executor.schedule(this::connectAndRegister, 2, TimeUnit.SECONDS); } }
+  } catch(Exception ignored) {} finally { readerRunning = false; emitStatus("reconnecting", "ws_reader_closed"); if (wsSocket != null && !wsSocket.isClosed()) executor.schedule(this::connectAndRegister, 5, TimeUnit.SECONDS); } }
 
   private void handleSipMessage(String msg) throws Exception {
     if (msg.startsWith("SIP/2.0 401") || msg.startsWith("SIP/2.0 407")) {
-      String challenge = header(msg, msg.startsWith("SIP/2.0 407") ? "Proxy-Authenticate" : "WWW-Authenticate");
-      sendRegister(challenge); return;
+      sendRegister(msg); return;
     }
     if (msg.startsWith("SIP/2.0 200") && msg.toLowerCase(Locale.US).contains("cseq:") && msg.toUpperCase(Locale.US).contains(" REGISTER")) {
       emitStatus("registered", "native_register_200"); return;
     }
     if (msg.startsWith("INVITE ")) {
       emitStatus("registered", "incoming_invite");
-      // Parse caller identity + Call-ID + Via/From/To for a 180 Ringing reply.
       String fromHdr = header(msg, "From"); String toHdr = header(msg, "To");
       String viaHdr = header(msg, "Via"); String inviteCallId = header(msg, "Call-ID");
       String inviteCSeq = header(msg, "CSeq");
       String fromDisplay = parseDisplay(fromHdr); String fromUser = parseUser(fromHdr);
-      // Send 180 Ringing so the PBX keeps the INVITE alive while the app wakes.
       try { sendRinging(viaHdr, fromHdr, toHdr, inviteCallId, inviteCSeq); } catch (Exception ignored) {}
-      // Broadcast to the JS plugin.
       sendBroadcast(new Intent(ACTION_INCOMING_INVITE).setPackage(getPackageName())
         .putExtra("callId", inviteCallId).putExtra("from", fromHdr)
         .putExtra("fromUser", fromUser).putExtra("fromDisplay", fromDisplay));
-      // Fire the full-screen "ringing" notification with Answer / Decline actions.
       showIncomingCallNotification(inviteCallId, fromHdr, fromUser, fromDisplay);
       requestReregister(this, "incoming_invite");
     }
@@ -362,47 +381,125 @@ public class PpSipKeepAliveService extends Service {
 
   private void sendRinging(String via, String from, String to, String cid, String cseqHeader) throws Exception {
     if (via == null || from == null || to == null || cid == null || cseqHeader == null) return;
-    // Add a to-tag if none, so upstream proxies don't reject.
     String toWithTag = to.contains(";tag=") ? to : to + ";tag=" + Long.toHexString(System.nanoTime());
-    StringBuilder r = new StringBuilder();
-    r.append("SIP/2.0 180 Ringing\r\n")
-     .append("Via: ").append(via).append("\r\n")
-     .append("From: ").append(from).append("\r\n")
-     .append("To: ").append(toWithTag).append("\r\n")
-     .append("Call-ID: ").append(cid).append("\r\n")
-     .append("CSeq: ").append(cseqHeader).append("\r\n")
-     .append("User-Agent: Planipret Native KeepAlive\r\n")
-     .append("Content-Length: 0\r\n\r\n");
-    sendFrame(r.toString());
+    String r = "SIP/2.0 180 Ringing\r\n"
+      + "Via: " + via + "\r\n"
+      + "From: " + from + "\r\n"
+      + "To: " + toWithTag + "\r\n"
+      + "Call-ID: " + cid + "\r\n"
+      + "CSeq: " + cseqHeader + "\r\n"
+      + "User-Agent: Planipret Native KeepAlive\r\n"
+      + "Content-Length: 0\r\n"
+      + "\r\n";
+    sendFrame(r);
   }
 
   private void sendRegister(String challenge) throws Exception {
     SharedPreferences p = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-    String login = p.getString("login", ""), domain = p.getString("domain", ""), display = p.getString("display_name", login), password = p.getString("password", "");
+    String login = p.getString("login", ""), domain = p.getString("domain", "");
+    String display = p.getString("display_name", login), password = p.getString("password", "");
     if (login == null || login.length() == 0 || domain == null || domain.length() == 0) { emitStatus("error", "missing_credentials"); return; }
     int seq = cseq++;
     String branch = "z9hG4bK" + UUID.randomUUID().toString().replace("-", "");
-    String contact = "<sip:" + login + "@" + UUID.randomUUID().toString().replace("-", "") + ".invalid;transport=wss>";
+    // Edge SBC policy: never use core/cluster ucstack.io directly (aligned with sipEdgePolicy.ts)
+    String rawHost = p.getString("host", "voice.ava-telecom.ca");
+    String sipHost = (rawHost != null && rawHost.matches(".*core\\d*\\.cluster\\d*\\.ucstack\\.io.*")) ? "voice.ava-telecom.ca" : rawHost;
+    int sipPort = p.getInt("port", 443);
+    // Contact STABLE avec instanceId fixe -- pas de .invalid aleatoire a chaque REGISTER.
+    String contact = "<sip:" + login + "@" + instanceId + ".planipret-mobile.invalid;transport=wss>";
+    // Sanitize display name
+    String safeDisplay = (display == null || display.length() == 0) ? login : display.replace("\"", "");
     StringBuilder sip = new StringBuilder();
     sip.append("REGISTER sip:").append(domain).append(" SIP/2.0\r\n");
     sip.append("Via: SIP/2.0/WSS planipret-mobile.invalid;branch=").append(branch).append("\r\n");
     sip.append("Max-Forwards: 70\r\n");
     sip.append("To: <sip:").append(login).append("@").append(domain).append(">\r\n");
-    sip.append("From: \"").append(display == null ? login : display.replace("\"", "")).append("\" <sip:").append(login).append("@").append(domain).append(">;tag=").append(fromTag).append("\r\n");
+    sip.append("From: \"").append(safeDisplay).append("\" <sip:").append(login).append("@").append(domain).append(">;tag=").append(fromTag).append("\r\n");
     sip.append("Call-ID: ").append(callId).append("\r\n");
     sip.append("CSeq: ").append(seq).append(" REGISTER\r\n");
-    sip.append("Contact: ").append(contact).append(";expires=1800\r\nExpires: 1800\r\nUser-Agent: Planipret Native KeepAlive\r\nSupported: outbound,path,gruu\r\nAllow: INVITE,ACK,CANCEL,BYE,OPTIONS,MESSAGE,INFO,UPDATE,REGISTER\r\n");
-    if (challenge != null && password != null && password.length() > 0) sip.append("Authorization: ").append(digestAuth(challenge, login, password, domain)).append("\r\n");
-    sip.append("Content-Length: 0\r\n\r\n");
+    sip.append("Contact: ").append(contact).append(";expires=1800\r\n");
+    sip.append("Expires: 1800\r\n");
+    sip.append("User-Agent: Planipret Native KeepAlive\r\n");
+    sip.append("Supported: outbound,path,gruu\r\n");
+    sip.append("Allow: INVITE,ACK,CANCEL,BYE,OPTIONS,MESSAGE,INFO,UPDATE,REGISTER\r\n");
+    if (challenge != null && password != null && password.length() > 0) {
+      // Route header (use_preloaded_route RFC 3327): NS route les INVITEs entrants via le WebSocket.
+      sip.append("Route: <sip:").append(sipHost).append(":").append(sipPort).append(";transport=wss;lr>\r\n");
+      // RFC 3261 S22.3: NS proxy -> 407 -> Proxy-Authorization requis (pas Authorization)
+      boolean isProxy = challenge.toLowerCase(Locale.US).contains("proxy-authenticate:");
+      String authHeader = isProxy ? "Proxy-Authorization" : "Authorization";
+      sip.append(authHeader).append(": ").append(digestAuth(challenge, login, password, domain)).append("\r\n");
+    }
+    sip.append("Content-Length: 0\r\n");
+    sip.append("\r\n");
     sendFrame(sip.toString());
     emitStatus("connecting", challenge == null ? "register_sent" : "register_auth_sent");
   }
 
-  private String digestAuth(String challenge, String user, String pass, String domain) throws Exception { Map<String,String> m = parseDigest(challenge); String realm = m.containsKey("realm") ? m.get("realm") : domain, nonce = m.get("nonce"), qop = m.get("qop"), opaque = m.get("opaque"), uri = "sip:" + domain, nc = "00000001", cnonce = Long.toHexString(System.nanoTime()); String ha1 = md5(user + ":" + realm + ":" + pass), ha2 = md5("REGISTER:" + uri); String resp = qop != null && qop.contains("auth") ? md5(ha1 + ":" + nonce + ":" + nc + ":" + cnonce + ":auth:" + ha2) : md5(ha1 + ":" + nonce + ":" + ha2); StringBuilder a = new StringBuilder("Digest username=\"").append(user).append("\", realm=\"").append(realm).append("\", nonce=\"").append(nonce).append("\", uri=\"").append(uri).append("\", response=\"").append(resp).append("\", algorithm=MD5"); if (qop != null && qop.contains("auth")) a.append(", qop=auth, nc=").append(nc).append(", cnonce=\"").append(cnonce).append("\""); if (opaque != null) a.append(", opaque=\"").append(opaque).append("\""); return a.toString(); }
-  private Map<String,String> parseDigest(String h) { Map<String,String> out = new HashMap<>(); String s = h.replaceFirst("(?i)^Digest\\\\s+", ""); for (String part : s.split(",")) { int i = part.indexOf('='); if (i <= 0) continue; String k = part.substring(0, i).trim(); String v = part.substring(i + 1).trim(); if (v.startsWith("\"") && v.endsWith("\"")) v = v.substring(1, v.length() - 1); out.put(k, v); } return out; }
-  private String header(String msg, String name) { for (String line : msg.split("\\r?\\n")) if (line.toLowerCase(Locale.US).startsWith(name.toLowerCase(Locale.US) + ":")) return line.substring(name.length() + 1).trim(); return null; }
-  private String parseDisplay(String header) { if (header == null) return null; int lt = header.indexOf('<'); if (lt > 0) { String d = header.substring(0, lt).trim(); if (d.startsWith("\"") && d.endsWith("\"")) d = d.substring(1, d.length() - 1); return d.length() == 0 ? null : d; } return null; }
-  private String parseUser(String header) { if (header == null) return null; int lt = header.indexOf('<'); String uri = lt >= 0 ? header.substring(lt + 1, Math.max(lt + 1, header.indexOf('>', lt))) : header; if (uri.startsWith("sip:")) uri = uri.substring(4); else if (uri.startsWith("sips:")) uri = uri.substring(5); int at = uri.indexOf('@'); if (at > 0) uri = uri.substring(0, at); int semi = uri.indexOf(';'); if (semi > 0) uri = uri.substring(0, semi); return uri; }
+  private String digestAuth(String challenge, String user, String pass, String domain) throws Exception {
+    Map<String,String> m = parseDigest(challenge);
+    String realm = m.containsKey("realm") ? m.get("realm") : domain;
+    String nonce = m.get("nonce"), qop = m.get("qop"), opaque = m.get("opaque");
+    String uri = "sip:" + domain, nc = "00000001", cnonce = Long.toHexString(System.nanoTime());
+    String ha1 = md5(user + ":" + realm + ":" + pass), ha2 = md5("REGISTER:" + uri);
+    String resp = qop != null && qop.contains("auth")
+      ? md5(ha1 + ":" + nonce + ":" + nc + ":" + cnonce + ":auth:" + ha2)
+      : md5(ha1 + ":" + nonce + ":" + ha2);
+    StringBuilder a = new StringBuilder("Digest username=\"").append(user)
+      .append("\", realm=\"").append(realm)
+      .append("\", nonce=\"").append(nonce)
+      .append("\", uri=\"").append(uri)
+      .append("\", response=\"").append(resp)
+      .append("\", algorithm=MD5");
+    if (qop != null && qop.contains("auth"))
+      a.append(", qop=auth, nc=").append(nc).append(", cnonce=\"").append(cnonce).append("\"");
+    if (opaque != null)
+      a.append(", opaque=\"").append(opaque).append("\"");
+    return a.toString();
+  }
+
+  private Map<String,String> parseDigest(String h) {
+    Map<String,String> out = new HashMap<>();
+    String s = h.replaceFirst("(?i)^(Proxy-Authenticate|WWW-Authenticate):\\s*Digest\\s+", "");
+    for (String part : s.split(",")) {
+      int i = part.indexOf('='); if (i <= 0) continue;
+      String k = part.substring(0, i).trim();
+      String v = part.substring(i + 1).trim();
+      if (v.startsWith("\"") && v.endsWith("\"")) v = v.substring(1, v.length() - 1);
+      out.put(k, v);
+    }
+    return out;
+  }
+
+  private String header(String msg, String name) {
+    for (String line : msg.split("\r?\n"))
+      if (line.toLowerCase(Locale.US).startsWith(name.toLowerCase(Locale.US) + ":"))
+        return line.substring(name.length() + 1).trim();
+    return null;
+  }
+
+  private String parseDisplay(String header) {
+    if (header == null) return null;
+    int lt = header.indexOf('<');
+    if (lt > 0) {
+      String d = header.substring(0, lt).trim();
+      if (d.startsWith("\"") && d.endsWith("\"")) d = d.substring(1, d.length() - 1);
+      return d.length() == 0 ? null : d;
+    }
+    return null;
+  }
+
+  private String parseUser(String header) {
+    if (header == null) return null;
+    int lt = header.indexOf('<');
+    String uri = lt >= 0 ? header.substring(lt + 1, Math.max(lt + 1, header.indexOf('>', lt))) : header;
+    if (uri.startsWith("sip:")) uri = uri.substring(4);
+    else if (uri.startsWith("sips:")) uri = uri.substring(5);
+    int at = uri.indexOf('@'); if (at > 0) uri = uri.substring(0, at);
+    int semi = uri.indexOf(';'); if (semi > 0) uri = uri.substring(0, semi);
+    return uri;
+  }
+
   private String md5(String s) throws Exception { MessageDigest md = MessageDigest.getInstance("MD5"); byte[] b = md.digest(s.getBytes(StandardCharsets.UTF_8)); StringBuilder sb = new StringBuilder(); for (byte x : b) sb.append(String.format(Locale.US, "%02x", x & 0xff)); return sb.toString(); }
   private String websocketKey() { byte[] b = new byte[16]; new SecureRandom().nextBytes(b); return Base64.encodeToString(b, Base64.NO_WRAP); }
   private String readHttpHeaders() throws IOException { ByteArrayOutputStream b = new ByteArrayOutputStream(); int prev3 = -1, prev2 = -1, prev1 = -1, cur; while ((cur = wsIn.read()) != -1) { b.write(cur); if (prev3 == '\r' && prev2 == '\n' && prev1 == '\r' && cur == '\n') break; prev3 = prev2; prev2 = prev1; prev1 = cur; } return b.toString("UTF-8"); }
@@ -448,7 +545,12 @@ public class PpSipKeepAliveService extends Service {
     } catch (Exception ignored) {}
   }
 
-  private void emitStatus(String status, String reason) { long now = System.currentTimeMillis(); boolean wake = wakeLock != null && wakeLock.isHeld(), wifi = wifiLock != null && wifiLock.isHeld(), logged = status.equals("registered") || status.equals("protected"); getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putString(KEY_STATUS, status).putString(KEY_REASON, reason).putLong(KEY_UPDATED_AT, now).putBoolean(KEY_WAKE_HELD, wake).putBoolean(KEY_WIFI_HELD, wifi).putBoolean(KEY_LOGGED_IN, logged).apply(); sendBroadcast(new Intent(ACTION_STATUS).setPackage(getPackageName()).putExtra("status", status).putExtra("reason", reason).putExtra("updatedAt", now).putExtra("wakeLockHeld", wake).putExtra("wifiLockHeld", wifi).putExtra("loggedIn", logged)); }
+  private void emitStatus(String status, String reason) {
+    long now = System.currentTimeMillis();
+    boolean wake = wakeLock != null && wakeLock.isHeld(), wifi = wifiLock != null && wifiLock.isHeld();
+    // loggedIn = registered only (aligned with iOS fix 2026-07-31: protected no longer counts as logged-in)
+    boolean logged = status.equals("registered");
+    getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putString(KEY_STATUS, status).putString(KEY_REASON, reason).putLong(KEY_UPDATED_AT, now).putBoolean(KEY_WAKE_HELD, wake).putBoolean(KEY_WIFI_HELD, wifi).putBoolean(KEY_LOGGED_IN, logged).apply(); sendBroadcast(new Intent(ACTION_STATUS).setPackage(getPackageName()).putExtra("status", status).putExtra("reason", reason).putExtra("updatedAt", now).putExtra("wakeLockHeld", wake).putExtra("wifiLockHeld", wifi).putExtra("loggedIn", logged)); }
   private Notification buildOngoingNotification(String text) { return new NotificationCompat.Builder(this, CHANNEL_ID).setContentTitle("Planipret Mobile").setContentText(text).setSmallIcon(android.R.drawable.ic_menu_call).setPriority(NotificationCompat.PRIORITY_LOW).setOngoing(true).setSilent(true).build(); }
   private void createChannels() {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;

@@ -65,9 +65,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       NotificationCenter.default.addObserver(self, selector: #selector(onBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
       NotificationCenter.default.addObserver(self, selector: #selector(onForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
       NotificationCenter.default.addObserver(self, selector: #selector(onForeground), name: UIApplication.didBecomeActiveNotification, object: nil)
-      // NOTE: willResignActiveNotification intentionally removed — AVA-Telecom proprietary patch (2026-07-30).
-      // willResignActive fires for transient interruptions (CallKit sheet, Control Center, Siri)
-      // causing false onBackground() and spurious REGISTER loops. Only didEnterBackground is used.
+      NotificationCenter.default.addObserver(self, selector: #selector(onBackground), name: UIApplication.willResignActiveNotification, object: nil)
       // UIScene lifecycle (iOS 13+) — the app adopts scenes, so the legacy
       // UIApplication notifications are not always delivered. Observing both
       // keeps appActive correct without ever reading UI state off-thread.
@@ -75,10 +73,9 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         NotificationCenter.default.addObserver(self, selector: #selector(onForeground), name: UIScene.didActivateNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(onSceneWillEnterForeground), name: UIScene.willEnterForegroundNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(onBackground), name: UIScene.didEnterBackgroundNotification, object: nil)
-        // NOTE: UIScene.willDeactivateNotification intentionally removed — AVA-Telecom proprietary patch (2026-07-31).
-        // willDeactivateNotification fires for transient interruptions (CallKit sheet, Control Center, notifications)
-        // causing spurious background_handoff_pending → loggedIn:false loops even when app is in foreground.
-        // Only UIScene.didEnterBackgroundNotification is used (mirrors UIApplication.didEnterBackgroundNotification).
+        // AVA-Telecom patch #4: willDeactivateNotification removed — it fires on
+        // transient interruptions (CallKit sheet, Control Center) and caused
+        // background_handoff_pending to trigger while the app was still in foreground.
       }
       // Ask for notification permission so the incoming-call banner can ring.
       // PushKit (PpVoipCall) posts this when an incoming-call VoIP push lands:
@@ -171,17 +168,14 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     /// guarantees background execution through PushKit, so this is the path that
     /// must bring the AOR back before the PBX times out to voicemail.
     private func wakeForPush(_ why: String) {
-      // PushKit wakes the native process before the WebView can resolve SIP
-      // credentials. Restore the last confirmed configuration first so an
-      // incoming call can REGISTER without depending on JavaScript startup.
+      // PushKit can wake iOS before the WebView has loaded. Restore the last
+      // confirmed SIP configuration so REGISTER never depends on JS startup.
       if host.isEmpty || login.isEmpty || domain.isEmpty { restoreConfig() }
       guard !host.isEmpty, !login.isEmpty, !domain.isEmpty, !password.isEmpty else {
         setStatus("error", "missing_persisted_sip_config")
         notifyListeners("sipReregisterRequested", data: ["reason": "missing_persisted_sip_config"])
         return
       }
-      // PpVoipCall posts the native wake notification and later emits CallKit
-      // readiness to JS. Treat those as one wake, not two REGISTER handshakes.
       if let previous = lastPushWakeAt, Date().timeIntervalSince(previous) < 1.0 { return }
       lastPushWakeAt = Date()
       NSLog("[PpSipKeepAlive] VoIP push wake (%@)", why)
@@ -402,7 +396,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         lastRegisterOkTime = Date()
         setStatus("registered", "native_register_200")
         // NetSapiens accepts OPTIONS only after the dialog settles; too early can close WSS with 1001.
-        // NOTE: sendOptionsPing() permanently removed (2026-07-30). AVA-Telecom proprietary patch.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in self?.sendOptionsPing() }
         return
       }
       if msg.hasPrefix("INVITE ") {
