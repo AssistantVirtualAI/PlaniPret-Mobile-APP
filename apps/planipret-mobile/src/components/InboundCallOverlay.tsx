@@ -7,7 +7,15 @@ import { startSelectedRingtone } from "@/lib/planipret/audio/ringtonePresets";
 
 export type InboundCall = { call_id?: string; from_number?: string; caller_name?: string } | null;
 
-export default function InboundCallOverlay({ call, onClose }: { call: InboundCall; onClose: () => void }) {
+export default function InboundCallOverlay({ call, onClose, onAnswer, onReject }: {
+  call: InboundCall;
+  onClose: () => void;
+  /** When provided, answering delegates to the softphone so the in-call screen
+   *  (with keypad) opens instead of navigating to the call history page. */
+  onAnswer?: () => void | Promise<void>;
+  onReject?: () => void | Promise<void>;
+}) {
+
   const navigate = useNavigate();
   const [busy, setBusy] = useState(false);
   const [contact, setContact] = useState<{ id?: string; full_name?: string; company?: string; avatar_url?: string; tags?: string[] } | null>(null);
@@ -50,6 +58,20 @@ export default function InboundCallOverlay({ call, onClose }: { call: InboundCal
     if (busy) return;
     setBusy(true);
     try {
+      if (action === "answer" && onAnswer) {
+        // Let the softphone pick up: the full-screen in-call UI (with keypad)
+        // takes over immediately — no navigation away from the call.
+        stopRef.current?.();
+        await onAnswer();
+        onClose();
+        return;
+      }
+      if (action === "reject" && onReject) {
+        stopRef.current?.();
+        await onReject();
+        onClose();
+        return;
+      }
       await supabase.functions.invoke("pp-ns-calls", { body: { action, call_id: call?.call_id } });
       handleClose();
       if (action === "answer") navigate(`/mplanipret/calls?call=${call?.call_id ?? ""}`);
@@ -59,6 +81,7 @@ export default function InboundCallOverlay({ call, onClose }: { call: InboundCal
       setBusy(false);
     }
   };
+
 
   const sendToVoicemail = async () => {
     if (busy) return;

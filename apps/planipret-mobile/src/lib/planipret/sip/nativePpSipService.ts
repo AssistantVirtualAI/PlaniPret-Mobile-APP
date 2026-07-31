@@ -34,6 +34,7 @@ type PpSipKeepAlivePlugin = {
   triggerReregister?: () => Promise<PpNativeSipStatus>;
   acknowledgeIncoming?: () => Promise<{ ok: boolean }>;
   wakeForIncomingCall?: (opts?: { reason?: string }) => Promise<PpNativeSipStatus>;
+  setCallActive?: (opts: { active: boolean }) => Promise<PpNativeSipStatus>;
   addListener?: (
     event: "sipServiceStatus" | "sipReregisterRequested" | "sipIncomingInvite",
     cb: (data: any) => void,
@@ -250,6 +251,21 @@ export async function stopPlanipretSipKeepAlive(): Promise<void> {
   try { await NativePpSip.stopSipService?.(); }
   catch (e) { console.warn("[pp-sip-native] stop failed", e); }
 }
+
+/**
+ * Tell the native layer a WebRTC call is live. It then keeps the iOS audio
+ * session active in background (WebKit otherwise interrupts it => no audio)
+ * and never takes the SIP AOR over while the call is up.
+ */
+export async function setPlanipretNativeCallActive(active: boolean): Promise<void> {
+  if (!isPlanipretNativeSipAvailable()) return;
+  try { await NativePpSip.setCallActive?.({ active }); }
+  catch (e) {
+    if (!markUnavailable("sip", e, "pp-sip-native")) console.warn("[pp-sip-native] setCallActive failed", e);
+  }
+}
+
+
 
 export async function requestPlanipretBatteryOptimizationExemption(): Promise<void> {
   if (platform() !== "android" || isTemporarilyUnavailable("sip")) return;

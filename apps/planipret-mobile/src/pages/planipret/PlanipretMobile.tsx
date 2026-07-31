@@ -486,6 +486,10 @@ export default function PlanipretMobile() {
   // Wait for the profile before SIP init so cold starts do not race auth/profile boot.
   const softphone = useMplanipretSoftphone(Boolean(profile?.user_id));
   const attachRestCall = (softphone as any).attachRestCall as ((a: any) => void) | undefined;
+  const sipCallLive = ["ringing-in", "ringing-out", "active", "held"].includes(
+    String(softphone.snap.callState),
+  );
+
   const [loading, setLoading] = useState(true);
   const [accessError, setAccessError] = useState<"unauthenticated" | "missing_profile" | "load_failed" | null>(null);
   const [profileErrorDetail, setProfileErrorDetail] = useState<string>("");
@@ -1131,7 +1135,16 @@ export default function PlanipretMobile() {
 
         <Dialer open={dialerOpen} autoDial={dialerAutoDial} onClose={() => { setDialerOpen(false); setDialerAutoDial(false); }} initial={dialerInit} openMessages={(n) => { setDialerOpen(false); openSmsComposer({ number: n }); }} softphone={softphone} maestroConfigured={Boolean(profile?.maestro_broker_id)} />
         <PpActiveCallScreen softphone={softphone} />
-        <InboundCallOverlay call={inbound} onClose={() => setInbound(null)} />
+        {/* A live WebRTC session owns the UI: PpActiveCallScreen already shows
+            the ringing/answer + keypad screen, so the REST overlay must not
+            steal the tap. */}
+        <InboundCallOverlay
+          call={sipCallLive ? null : inbound}
+          onClose={() => setInbound(null)}
+          onAnswer={async () => { await softphone.answer(); }}
+          onReject={() => { softphone.hangup(); }}
+        />
+
         {avaOpen && profile?.user_id && (
           profile.voice_agent_enabled && avaMode === "voice"
             ? (
