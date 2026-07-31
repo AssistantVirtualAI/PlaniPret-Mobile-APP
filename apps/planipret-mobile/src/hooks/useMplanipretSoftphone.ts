@@ -216,6 +216,9 @@ export function useMplanipretSoftphone(enabled = true) {
   const [brokerId, setBrokerId] = useState<string | null>(null);
   const [answeredElsewhere, setAnsweredElsewhere] = useState<AnsweredBy | null>(null);
   const [restCall, setRestCall] = useState<RestCallAttachment | null>(null);
+  // Appel entrant annoncé par le push VoIP (CallKit) avant l'arrivée du INVITE.
+  // Permet d'afficher immédiatement l'écran "ça sonne" avec Répondre/Raccrocher.
+  const [pushRing, setPushRing] = useState<{ callId: string; from: string } | null>(null);
   const [nativeStatus, setNativeStatus] = useState<PpNativeSipStatus | null>(null);
   const seenCallIds = useRef<Set<string>>(new Set());
   const mobileSipConfigRef = useRef<PpSipConfig | null>(null);
@@ -426,9 +429,13 @@ export function useMplanipretSoftphone(enabled = true) {
     // creates the CallKit call, force the native keep-alive to re-REGISTER (the
     // WSS socket is usually dead after suspension) instead of waiting on it.
     let cleanupVoipIncoming: (() => void) | undefined;
-    onPlanipretVoipIncomingCall((data) => {
+    onPlanipretVoipIncomingCall((data: any) => {
       console.log("[pp-voip] incoming VoIP push → waking native SIP", data?.callId);
       void wakePlanipretNativeSipForIncomingCall("voip_push");
+      const from = String(data?.from ?? data?.handle ?? data?.caller ?? data?.callerName ?? "");
+      setPushRing({ callId: String(data?.callId ?? ""), from });
+      // Sécurité : si aucun INVITE n'arrive, on retire l'écran après 40 s.
+      window.setTimeout(() => setPushRing((cur) => (cur && cur.callId === String(data?.callId ?? "") ? null : cur)), 40_000);
     }).then((fn) => { cleanupVoipIncoming = fn; }).catch(() => undefined);
 
     onPlanipretIncomingCallAnswered((data) => {
@@ -439,6 +446,7 @@ export function useMplanipretSoftphone(enabled = true) {
 
     onPlanipretIncomingCallRejected((data) => {
       try { ppSipProvider.hangup(); } catch {}
+      setPushRing(null);
       void acknowledgePlanipretIncoming();
       try { window.dispatchEvent(new CustomEvent("pp:sip-callkit-rejected", { detail: data })); } catch {}
     }).then((fn) => { cleanupVoipReject = fn; }).catch(() => undefined);
@@ -805,11 +813,27 @@ export function useMplanipretSoftphone(enabled = true) {
   const hasLiveSipSession = snap.callState === "ringing-in" || snap.callState === "ringing-out"
     || snap.callState === "active" || snap.callState === "held";
 
+  // Dès qu'une vraie session SIP existe, le push n'a plus à piloter l'écran.
+  useEffect(() => { if (hasLiveSipSession || snap.callState === "ended") setPushRing(null); }, [hasLiveSipSession, snap.callState]);
+
   const effectiveSnap = useMemo<PpSipSnapshot>(() => {
     const base: PpSipSnapshot = (nativeOwnsRegistration && snap.status !== "registered" && snap.status !== "connected")
       ? ({ ...snap, status: "registered", lastError: null } as PpSipSnapshot)
       : snap;
-    if (!restCall?.id || hasLiveSipSession) return base;
+    if (!restCall?.id || hasLiveSipSession) {
+      // Écran "ça sonne" piloté par le push VoIP tant que l'INVITE n'est pas là.
+      if (!hasLiveSipSession && pushRing) {
+        return {
+          ...base,
+          callState: "ringing-in",
+          callId: pushRing.callId || base.callId,
+          remoteIdentity: pushRing.from || "",
+          remoteNumber: pushRing.from || "",
+          direction: "in",
+        } as PpSipSnapshot;
+      }
+      return base;
+    }
     const state = normalizeRestState(restCall.status);
     return {
       ...base,
@@ -821,7 +845,7 @@ export function useMplanipretSoftphone(enabled = true) {
       startedAt: restCall.startedAt ?? base.startedAt ?? Date.now(),
       onHold: state === "held",
     };
-  }, [snap, restCall, normalizeRestState, nativeOwnsRegistration, hasLiveSipSession]);
+  }, [snap, restCall, normalizeRestState, nativeOwnsRegistration, hasLiveSipSession, pushRing]);
 
 
   const restControl = useCallback(async (action: string, extra: Record<string, unknown> = {}) => {
@@ -899,6 +923,13 @@ export function useMplanipretSoftphone(enabled = true) {
   // lose (widget answered first), don't pick up — the winner already has audio.
   const answer = useCallback(async () => {
     if (restCall?.id && !hasLiveSipSession) return await restControl("answer");
+    // Push VoIP reçu mais INVITE pas encore arrivé : on bufferise la réponse,
+    // ppSipProvider répondra dès que la session SIP se présente.
+    if (!hasLiveSipSession && pushRing) {
+      try { ppSipProvider.forceReregister(); } catch {}
+      ppSipProvider.requestAnswer(pushRing.callId || undefined);
+      return true;
+    }
     const callId = ppSipProvider.getSnapshot().callId;
     const won = await claimCall(callId, "mobile");
     if (!won) {
@@ -910,7 +941,7 @@ export function useMplanipretSoftphone(enabled = true) {
     // Clear the REST/DB attachment so the in-call UI follows the live session.
     if (ok && restCall?.id) setRestCall(null);
     return ok;
-  }, [restCall?.id, restControl, hasLiveSipSession]);
+  }, [restCall?.id, restControl, hasLiveSipSession, pushRing]);
 
   const hangup = useCallback(() => {
     if (restCall?.id && !hasLiveSipSession) {
@@ -921,6 +952,7 @@ export function useMplanipretSoftphone(enabled = true) {
     }
     const callId = ppSipProvider.getSnapshot().callId;
     ppSipProvider.hangup();
+    setPushRing(null);
     if (restCall?.id) setRestCall(null);
     if (callId) {
       void endSession(callId, "hangup");

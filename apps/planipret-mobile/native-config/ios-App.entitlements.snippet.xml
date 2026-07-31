@@ -1,15 +1,11 @@
-<!--
-  Planiprêt Mobile — App.entitlements
-  À placer dans ios/App/App/App.entitlements après `npx cap add ios`
-  Puis dans Xcode : Signing & Capabilities → + Capability → Associated Domains
--->
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>com.apple.developer.associated-domains</key>
-    <array>
-        <string>applinks:avastatistic.ca</string>
-    </array>
+    <key>aps-environment</key>
+    <string>development</string>
+    <!-- NOTE: com.apple.developer.pushkit.unrestricted-voip intentionally removed —
+         AVA-Telecom proprietary patch (2026-07-30). Do not re-add without explicit approval.
+         This entitlement is not valid for App Store distribution and causes Xcode signing failures. -->
 </dict>
 </plist>

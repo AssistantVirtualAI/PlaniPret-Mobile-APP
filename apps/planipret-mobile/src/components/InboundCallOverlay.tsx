@@ -4,6 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { startSelectedRingtone } from "@/lib/planipret/audio/ringtonePresets";
+import { formatSipParty } from "@/lib/planipret/sip/formatSipParty";
 
 export type InboundCall = { call_id?: string; from_number?: string; caller_name?: string } | null;
 
@@ -98,7 +99,8 @@ export default function InboundCallOverlay({ call, onClose, onAnswer, onReject }
   };
 
   if (!call) return null;
-  const displayName = contact?.full_name || call.caller_name || call.from_number || "Inconnu";
+  const displayName = contact?.full_name
+    || formatSipParty(call.caller_name, "fr", call.from_number).name;
   const initials = displayName.split(/\s+/).slice(0, 2).map((w) => w[0]).join("").toUpperCase();
 
   return (
