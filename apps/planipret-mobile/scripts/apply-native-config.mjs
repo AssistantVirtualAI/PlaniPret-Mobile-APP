@@ -50,11 +50,12 @@ const IOS_ENTITLEMENTS = `<?xml version="1.0" encoding="UTF-8"?>
 <dict>
 	<key>aps-environment</key>
 	<string>development</string>
-	<key>com.apple.developer.pushkit.unrestricted-voip</key>
-	<true/>
 </dict>
 </plist>
 `;
+// NOTE: com.apple.developer.pushkit.unrestricted-voip intentionally removed —
+// Apple does not allow this entitlement in automatic provisioning profiles.
+// PushKit VoIP push is handled via the standard voip push type in Info.plist.
 
 const ANDROID_INTENT_FILTERS = `
             <!-- Planiprêt OAuth deep links: Maestro + Microsoft mobile callbacks -->
