@@ -376,18 +376,18 @@ export function useMplanipretSoftphone(enabled = true) {
     // MActiveCall / MHome can pop the ringing sheet even if the WebView slept.
     let cleanupInvite: (() => void) | undefined;
     onPlanipretIncomingInvite((invite) => {
-      try { ppSipProvider.forceReregister(); } catch {}
-      try {
-        window.dispatchEvent(new CustomEvent("pp:sip-incoming-invite", { detail: invite }));
-      } catch {}
       // If the user already tapped Answer on the notification, mark the intent
-      // so the softphone auto-answers the JsSIP-side INVITE as soon as it lands.
+      // before re-registering, so a fast JsSIP INVITE cannot beat the flag.
       if (invite?.action === "answer") {
         try { (window as any).__ppPendingAnswer = { callId: invite.callId, ts: Date.now() }; } catch {}
       } else if (invite?.action === "decline") {
         try { ppSipProvider.hangup(); } catch {}
         void acknowledgePlanipretIncoming();
       }
+      try { ppSipProvider.forceReregister(); } catch {}
+      try {
+        window.dispatchEvent(new CustomEvent("pp:sip-incoming-invite", { detail: invite }));
+      } catch {}
     }).then((fn) => { cleanupInvite = fn; }).catch(() => undefined);
 
 

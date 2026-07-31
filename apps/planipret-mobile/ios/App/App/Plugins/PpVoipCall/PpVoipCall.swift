@@ -116,6 +116,21 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         call.resolve(["ok": true])
     }
 
+    @objc func completeAnswer(_ call: CAPPluginCall) {
+        let callId = call.getString("callId") ?? ""
+        let ok = call.getBool("ok") ?? false
+        // Push webhook IDs and the final SIP Call-ID are not guaranteed to be
+        // identical. CallKit is configured for one call only, so the pending
+        // CXAnswerCallAction is the authoritative correlation token.
+        guard let action = pendingAnswerAction else {
+            call.resolve(["ok": false, "reason": "no_pending_answer"])
+            return
+        }
+        pendingAnswerAction = nil
+        if ok { action.fulfill() } else { action.fail() }
+        call.resolve(["ok": true])
+    }
+
     // MARK: - PKPushRegistryDelegate
     public func pushRegistry(_ registry: PKPushRegistry, didUpdate credentials: PKPushCredentials, for type: PKPushType) {
         guard type == .voIP else { return }
@@ -177,19 +192,6 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             ])
             completion()
         }
-    }
-
-    @objc func completeAnswer(_ call: CAPPluginCall) {
-        let callId = call.getString("callId") ?? ""
-        let ok = call.getBool("ok") ?? false
-        guard let action = pendingAnswerAction,
-              callId.isEmpty || activeCallId == nil || activeCallId == callId else {
-            call.resolve(["ok": false, "reason": "call_id_mismatch"])
-            return
-        }
-        pendingAnswerAction = nil
-        if ok { action.fulfill() } else { action.fail() }
-        call.resolve(["ok": true])
     }
 
     // MARK: - CXProviderDelegate

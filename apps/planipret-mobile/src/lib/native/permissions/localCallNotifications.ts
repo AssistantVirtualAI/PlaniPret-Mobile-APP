@@ -3,6 +3,7 @@
 import { isNative } from "./platform";
 
 let actionTypeRegistered = false;
+export const INCOMING_CALL_ACTION_TYPE = "PP_INCOMING_CALL";
 
 export async function ensureIncomingCallActionType() {
   if (actionTypeRegistered) return;
@@ -11,7 +12,10 @@ export async function ensureIncomingCallActionType() {
     const { LocalNotifications } = await import("@capacitor/local-notifications");
     await LocalNotifications.registerActionTypes({
       types: [{
-        id: "INCOMING_CALL",
+        // Must match the categoryIdentifier used by PpSipKeepAlive.swift.
+        // A mismatch makes iOS show a plain notification with no Answer /
+        // Decline controls.
+        id: INCOMING_CALL_ACTION_TYPE,
         actions: [
           { id: "answer", title: "Answer" },
           { id: "decline", title: "Decline", destructive: true },
@@ -32,7 +36,7 @@ export async function showIncomingCallNotification(args: { callId: string; from:
         id: Math.floor(Math.random() * 2_000_000_000),
         title: "Incoming call",
         body: args.from || "Unknown caller",
-        actionTypeId: "INCOMING_CALL",
+        actionTypeId: INCOMING_CALL_ACTION_TYPE,
         extra: { callId: args.callId, type: "incoming_call" },
         smallIcon: "ic_stat_icon_config_sample",
         sound: "beep.wav",

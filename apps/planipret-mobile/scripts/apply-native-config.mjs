@@ -854,9 +854,9 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       if msg.hasPrefix("SIP/2.0 200") && msg.uppercased().contains(" REGISTER") {
         lastRegisterOkTime = Date()
         setStatus("registered", "native_register_200")
+        // NetSapiens accepts OPTIONS only after the dialog settles; too early can close WSS with 1001.
         // NOTE: sendOptionsPing() permanently removed (2026-07-30).
         // OPTIONS pings caused NetSapiens to close the WSS socket with 1001.
-        // The JsSIP keep-alive handles this via the watchdog instead.
         return
       }
       if msg.hasPrefix("INVITE ") {
@@ -1104,9 +1104,11 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     @objc func completeAnswer(_ call: CAPPluginCall) {
         let callId = call.getString("callId") ?? ""
         let ok = call.getBool("ok") ?? false
-        guard let action = pendingAnswerAction,
-              callId.isEmpty || activeCallId == nil || activeCallId == callId else {
-            call.resolve(["ok": false, "reason": "call_id_mismatch"])
+        // Push webhook IDs and the final SIP Call-ID are not guaranteed to be
+        // identical. CallKit is configured for one call only, so the pending
+        // CXAnswerCallAction is the authoritative correlation token.
+        guard let action = pendingAnswerAction else {
+            call.resolve(["ok": false, "reason": "no_pending_answer"])
             return
         }
         pendingAnswerAction = nil
