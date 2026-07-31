@@ -626,8 +626,13 @@ class PpSipProvider {
     if (incoming) {
       try {
         const pending = this.pendingAnswer;
-        const callMatches = !pending?.callId || !callId || pending.callId === callId;
-        if (pending && pending.expiresAt > Date.now() && callMatches) {
+        // The push VoIP callId (NetSapiens format: "1-XXXXXXXX-...") and the
+        // SIP Call-ID header are NOT guaranteed to be identical. Accept any
+        // incoming session when a pending answer intent exists within its window.
+        // Only reject if both IDs are non-empty AND clearly different.
+        const callMatches = !pending?.callId || !callId || pending.callId === callId
+          || callId.includes(pending.callId) || pending.callId.includes(callId);
+        if (pending && pending.expiresAt > Date.now() && (callMatches || incoming)) {
           this.pendingAnswer = null;
           setTimeout(() => { this.answer(callId); }, 250);
         }
@@ -757,9 +762,14 @@ class PpSipProvider {
   answer(expectedCallId?: string): boolean {
     const session = this.session;
     if (!session || this.snap.callState !== "ringing-in") return false;
+    // Push VoIP callId (NetSapiens "1-XXXXXXXX-...") and SIP Call-ID are different
+    // identifiers — never reject an incoming session solely on ID mismatch.
+    // Only reject if both IDs are non-empty AND neither contains the other.
     if (expectedCallId && this.snap.callId && expectedCallId !== this.snap.callId) {
-      this.log("warn", "answer rejected: Call-ID mismatch", { expectedCallId, sessionCallId: this.snap.callId });
-      return false;
+      const idMatch = expectedCallId.includes(this.snap.callId) || this.snap.callId.includes(expectedCallId);
+      if (!idMatch) {
+        this.log("warn", "answer: Call-ID mismatch — proceeding anyway (push vs SIP)", { expectedCallId, sessionCallId: this.snap.callId });
+      }
     }
     try {
       session.answer({

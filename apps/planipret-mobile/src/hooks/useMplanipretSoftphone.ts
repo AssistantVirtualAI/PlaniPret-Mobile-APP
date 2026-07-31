@@ -953,8 +953,15 @@ export function useMplanipretSoftphone(enabled = true) {
     const callId = ppSipProvider.getSnapshot().callId;
     ppSipProvider.hangup();
     setPushRing(null);
-    if (restCall?.id) setRestCall(null);
-    if (callId) {
+    // Always send REST disconnect so the PBX terminates the call even if
+    // the SIP BYE/CANCEL was not delivered (e.g. WebSocket dropped or
+    // session never reached "active" due to push/SIP callId mismatch).
+    if (restCall?.id) {
+      const id = restCall.id;
+      void restControl("disconnect");
+      setRestCall(null);
+      maestroLog(() => maestroTelecom.updateCall(id, { status: "ended", ended_reason: "completed" }));
+    } else if (callId) {
       void endSession(callId, "hangup");
       maestroLog(() => maestroTelecom.updateCall(callId, { status: "ended", ended_reason: "completed" }));
     }
