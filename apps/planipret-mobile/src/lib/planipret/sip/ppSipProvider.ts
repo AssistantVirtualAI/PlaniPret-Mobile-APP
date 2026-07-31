@@ -8,7 +8,7 @@
 
 import JsSIP from "jssip";
 import { getPpSipReconnectConfig, ppSipBackoffDelay, PP_SIP_RECONNECT_FLOOR_MS } from "./ppSipReconnectConfig";
-import { edgeOnlyWssUrls, isCoreWssUrl } from "./sipEdgePolicy";
+import { edgeOnlyWssUrls, isPortalWssUrl } from "./sipEdgePolicy";
 
 // Let the SBC finish removing the previous Contact before a replacement UA
 // REGISTERs the same AOR. Without this gap NetSapiens closes one WSS with 1001.
@@ -371,11 +371,11 @@ class PpSipProvider {
       this.update({ status: "error", errorCause: "invalid_config" });
       return;
     }
-    // Core nodes close the socket with 1001 right after the 200 OK — registrations
-    // must go to the SBC edge only.
+    // Registrations must live on a call-processing core node (core1/core2);
+    // the portal server accepts REGISTER but does not deliver inbound calls.
     const edgeUrls = edgeOnlyWssUrls([rawWssUrl, ...(cfg.wssUrls || [])]);
-    if (isCoreWssUrl(rawWssUrl)) {
-      this.log("warn", `core WSS target rejected (${rawWssUrl}) -> using edge ${edgeUrls[0]}`);
+    if (isPortalWssUrl(rawWssUrl)) {
+      this.log("warn", `portal WSS target rejected (${rawWssUrl}) -> using core ${edgeUrls[0]}`);
     }
     const wssUrl = edgeUrls[0];
     const cleanCfg = { ...cfg, wssUrl, wssUrls: edgeUrls };

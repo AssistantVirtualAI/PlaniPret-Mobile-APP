@@ -32,25 +32,32 @@ const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 
 type ClientType = "mobile" | "web" | "widget";
 
-// Point WSS at the same core cluster the widget uses as its Outbound Proxy.
-const NS_SIP_WSS_URL = Deno.env.get("NS_SIP_WSS_URL") ?? "wss://voice.ava-telecom.ca:9002";
+// Registrations must land on a call-processing core node, not the portal.
+const NS_SIP_WSS_URL = Deno.env.get("NS_SIP_WSS_URL") ?? "wss://core1.cluster1.ucstack.io:9002";
+// Single pinned core node: never mix core1/core2 for the same AOR.
 
 /**
- * NetSapiens core nodes (core1.cluster1.ucstack.io …) accept the REGISTER and
- * then close the WebSocket with 1001 "Going Away" ~10-15s later: client
- * registrations must live on the SBC edge. Verified live 2026-05.
- * Never advertise a core node as a client WSS target.
+ * Carrier rule (2026-07): SIP clients must register to core1/core2, never to
+ * the portal server (`portal*.ucstack.io`, reached via voice.ava-telecom.ca).
+ * A registration held by the portal is not used for inbound call delivery →
+ * calls go straight to voicemail.
  */
+const isPortalWss = (u: string) => {
+  try { return /(^|\.)(portal\d*|voice)[^/]*\.(ucstack\.io|ava-telecom\.ca)$/i.test(new URL(u).hostname); }
+  catch { return /portal\d*\.|voice\.ava-telecom\.ca/i.test(u); }
+};
 const isCoreWss = (u: string) => {
-  try { return /(^|\.)(core\d*|cluster\d*)[^/]*\.ucstack\.io$/i.test(new URL(u).hostname); }
-  catch { return /ucstack\.io/i.test(u); }
+  try { return /(^|\.)core\d+\.[^/]*ucstack\.io$/i.test(new URL(u).hostname); }
+  catch { return /core\d+\./i.test(u); }
 };
 const edgeWssUrls = (candidates: (string | undefined | null)[]): string[] => {
   const kept = Array.from(new Set(candidates
     .map((u) => String(u ?? "").trim())
     .filter((u) => /^wss?:\/\//i.test(u))))
-    .filter((u) => !isCoreWss(u));
-  return kept.length ? kept : ["wss://voice.ava-telecom.ca:9002"];
+    .filter((u) => !isPortalWss(u))
+    .filter(isCoreWss);
+  // Pin to a SINGLE core node (no core1/core2 alternation).
+  return [kept[0] ?? NS_SIP_WSS_URL];
 };
 
 function json(b: unknown, s = 200) {
@@ -417,11 +424,11 @@ Deno.serve(async (req) => {
     sip_proxy: coreServer,
     sip_core_server: coreServer,
     sip_uri: sipUri,
-    // Always edge-filtered: NS core nodes drain WSS clients (close 1001).
+    // Single pinned core node (no core1/core2 alternation).
     sip_ws_url: edgeWssUrls([NS_SIP_WSS_URL])[0],
     sip_wss_url: edgeWssUrls([NS_SIP_WSS_URL])[0],
-    sip_ws_urls: edgeWssUrls([NS_SIP_WSS_URL, `wss://${coreServer}:9002`]),
-    sip_wss_urls: edgeWssUrls([NS_SIP_WSS_URL, `wss://${coreServer}:9002`]),
+    sip_ws_urls: edgeWssUrls([NS_SIP_WSS_URL]),
+    sip_wss_urls: edgeWssUrls([NS_SIP_WSS_URL]),
     display_name: brokerDisplayName,
     sip_state: sipState,
     device_registered: sipState === "registered",

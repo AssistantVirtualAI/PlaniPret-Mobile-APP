@@ -46,8 +46,8 @@ const FORBIDDEN_BUNDLE_MARKERS = [
     value: "reconnect guard active v4",
   },
   {
-    label: "socket NetSapiens core interdit",
-    value: "wss://core1.cluster1.ucstack.io:9002",
+    label: "socket portail NetSapiens interdit (doit être core1/core2)",
+    value: "wss://voice.ava-telecom.ca:9002",
   },
 ];
 

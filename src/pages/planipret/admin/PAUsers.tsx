@@ -195,7 +195,7 @@ const DICT = {
     importing: "Import...",
     importDid: "Importer DID",
     syncDidPbx: "Sync DID (PBX)",
-    didPbxSynced: (n: number, r: number) => `${n} DID synchronisés depuis le PBX (${r} retirés)`,
+    didPbxSynced: (n: number, r: number) => `${n} DID réassignés et vérifiés dans le PBX (${r} échecs)`,
 
     addAdminBtn: "Ajouter un admin",
     addBroker: "Ajouter un courtier",
@@ -368,7 +368,7 @@ const DICT = {
     importing: "Importing...",
     importDid: "Import DID",
     syncDidPbx: "Sync DID (PBX)",
-    didPbxSynced: (n: number, r: number) => `${n} DIDs synced from the PBX (${r} removed)`,
+    didPbxSynced: (n: number, r: number) => `${n} DIDs reassigned and verified in the PBX (${r} failures)`,
 
     addAdminBtn: "Add an admin",
     addBroker: "Add a broker",
@@ -571,9 +571,18 @@ export default function PAUsers() {
 
   const loadNumbers = async () => {
     setNumbersLoading(true);
-    const { data, error } = await supabase.functions.invoke("pp-admin-phonenumbers", {
+    const primary = await supabase.functions.invoke("pp-admin-phonenumbers", {
       body: { action: "list" },
     });
+    let data = primary.data;
+    let error = primary.error;
+    if (error || !(data as any)?.success) {
+      const fallback = await supabase.functions.invoke("pp-admin-did-assignments", {
+        body: { domain: "planipret.ca" },
+      });
+      data = fallback.data;
+      error = fallback.error;
+    }
     setNumbersLoading(false);
     if (error || !(data as any)?.success) {
       setNumbersError((data as any)?.error ?? error?.message ?? t.genericError);
@@ -584,19 +593,35 @@ export default function PAUsers() {
     setAllNumbers(((data as any).numbers ?? []) as NsNumber[]);
   };
 
-  // Mirror the live PBX DID inventory into planipret_did_assignments
+  // Restore every DID from the approved broker mapping using the documented
+  // NS-API v2 user route, with server-side read-back verification per DID.
   const syncDidsFromPbx = async () => {
     setSyncingDids(true);
-    const { data, error } = await supabase.functions.invoke("pp-admin-phonenumbers", {
-      body: { action: "sync_from_pbx" },
-    });
-    setSyncingDids(false);
-    if (error || !(data as any)?.success) {
-      toast.error((data as any)?.error ?? error?.message ?? t.genericError);
-      return;
+    try {
+      let offset = 0;
+      let applied = 0;
+      let failed = 0;
+      while (true) {
+        const { data, error } = await supabase.functions.invoke("pp-did-restore", {
+          body: { action: "sweep", domain: "planipret.ca", offset, limit: 25 },
+        });
+        if (error || !(data as any)?.success) {
+          throw new Error((data as any)?.error ?? error?.message ?? t.genericError);
+        }
+        applied += Number((data as any).applied ?? 0);
+        failed += Array.isArray((data as any).failed) ? (data as any).failed.length : 0;
+        const nextOffset = (data as any).next_offset;
+        if (nextOffset == null) break;
+        offset = Number(nextOffset);
+      }
+      if (failed > 0) toast.error(t.didPbxSynced(applied, failed));
+      else toast.success(t.didPbxSynced(applied, 0));
+      await loadNumbers();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t.genericError);
+    } finally {
+      setSyncingDids(false);
     }
-    toast.success(t.didPbxSynced((data as any).synced ?? 0, (data as any).removed ?? 0));
-    await loadNumbers();
   };
 
 

@@ -139,13 +139,19 @@ function normalizeAssignment(input: any, domain: string) {
   };
 }
 
-function buildToUserDidPayload(ext: string, _domain: string) {
+// GARDE-FOU (incident 2026-07-30) : une charge utile sans
+// `dial-rule-translation-destination-user` laisse la Destination VIDE dans le
+// PBX => "il n'y a pas d'abonnés à ce numéro". Toute écriture DID doit passer
+// par cette fonction, et toute réparation de masse par `pp-did-guardian`.
+function buildToUserDidPayload(ext: string, domain: string) {
+  const e = String(ext ?? "").trim();
+  if (!/^[0-9]{2,10}$/.test(e)) throw new Error(`DID write refused: invalid extension "${ext}"`);
   return {
-    // NS-API v2 Phonenumber user route: application + parameter only.
-    // Sending translation-destination-* rewrites the To-URI and breaks DID
-    // matching ("no subscriber at the number called").
-    "dial-rule-application": "user",
-    "dial-rule-parameter": `user_${ext}`,
+    "dial-rule-application": "to-user-residential",
+    "dial-rule-parameter": `user_${e}`,
+    "dial-rule-translation-destination-user": e,
+    "dial-rule-translation-destination-host": domain,
+    "dial-rule-translation-source-name": "[*]",
     enabled: "yes",
   };
 }
@@ -296,10 +302,73 @@ Deno.serve(async (req) => {
       });
     }
 
-    // Repair DIDs that are not routed to a user (e.g. "to-user-residential" with an
-    // empty parameter → caller hears "the subscriber you are trying to reach is not in
-    // service"). NS-API v2 requires dial-rule-application=user + dial-rule-parameter=user_<ext>.
+    // DISABLED: bulk DID repair rewrote NetSapiens DID→user assignments and
+    // destroyed the carrier-side source of truth. DID assignment is managed in
+    // the NetSapiens portal only. Do not re-enable without written approval.
     if (action === "repair_dids") {
+      return jsonResponse({
+        success: false,
+        disabled: true,
+        error: "bulk_did_repair_disabled",
+        message: "DID assignments are managed in the NetSapiens portal. Automated bulk DID rewrites are permanently disabled.",
+      }, 200);
+    }
+
+    // READ-ONLY audit: compares live NS routing with our last known DID→extension
+    // map so the team can restore the broken assignments in the NetSapiens portal.
+    // Never writes to NetSapiens.
+    if (action === "audit_dids") {
+      const r = await nsFetchFirstOk([
+        `/domains/${encodeURIComponent(domain)}/phonenumbers?limit=1000`,
+        `/domains/${encodeURIComponent(domain)}/phone-numbers?limit=1000`,
+      ]);
+      if (!r.ok) return jsonResponse({ success: false, error: `NS-API list failed (${r.status})`, detail: r.data }, 200);
+      const rawList = Array.isArray(r.data) ? r.data : (r.data?.data ?? r.data?.items ?? []);
+      const live = (rawList ?? []).map(normalizeNumber).filter((n: any) => n.raw);
+
+      const db = supaAdmin();
+      const { data: assigns } = await db
+        .from("planipret_did_assignments")
+        .select("phone_number_e164,phone_number_digits,extension,callerid_name")
+        .eq("domain", domain);
+      const expected = new Map<string, any>();
+      for (const a of (assigns ?? []) as any[]) {
+        if (a.phone_number_digits) expected.set(String(a.phone_number_digits), a);
+        if (a.phone_number_e164) expected.set(String(a.phone_number_e164).replace(/\D/g, ""), a);
+      }
+
+      const rows = live.map((n: any) => {
+        const digits = String(n.raw ?? "").replace(/\D/g, "");
+        const exp = expected.get(digits) ?? expected.get(digits.length === 10 ? `1${digits}` : digits);
+        const expectedExt = exp?.extension ? String(exp.extension) : null;
+        const currentExt = n.extension ? String(n.extension) : null;
+        let status: "ok" | "unrouted" | "mismatch" | "unknown";
+        if (!currentExt) status = expectedExt ? "unrouted" : "unknown";
+        else if (!expectedExt) status = "ok";
+        else status = currentExt === expectedExt ? "ok" : "mismatch";
+        return {
+          phone_number: n.raw,
+          e164: n.e164,
+          pretty: n.pretty,
+          application: n.application,
+          current_extension: currentExt,
+          expected_extension: expectedExt,
+          callerid_name: exp?.callerid_name ?? null,
+          active: n.active,
+          status,
+        };
+      });
+
+      const summary = rows.reduce((acc: any, x: any) => { acc[x.status] = (acc[x.status] ?? 0) + 1; return acc; }, {});
+      const csv = [
+        "phone_number,e164,current_extension,expected_extension,application,status,callerid_name",
+        ...rows.map((x: any) => [x.phone_number, x.e164, x.current_extension ?? "", x.expected_extension ?? "", x.application ?? "", x.status, (x.callerid_name ?? "").replace(/,/g, " ")].join(",")),
+      ].join("\n");
+
+      return jsonResponse({ success: true, domain, count: rows.length, summary, rows, csv });
+    }
+
+    if (action === "__never_repair_dids") {
       const r = await nsFetchFirstOk([
         `/domains/${encodeURIComponent(domain)}/phonenumbers?limit=1000`,
         `/domains/${encodeURIComponent(domain)}/phone-numbers?limit=1000`,

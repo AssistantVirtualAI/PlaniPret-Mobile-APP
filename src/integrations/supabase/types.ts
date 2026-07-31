@@ -8650,6 +8650,48 @@ export type Database = {
         }
         Relationships: []
       }
+      planipret_did_routing_snapshots: {
+        Row: {
+          created_at: string
+          description: string | null
+          destination_user: string | null
+          dial_rule_application: string | null
+          dial_rule_parameter: string | null
+          domain: string
+          enabled: string | null
+          id: string
+          phone_number: string
+          source: string
+          taken_at: string
+        }
+        Insert: {
+          created_at?: string
+          description?: string | null
+          destination_user?: string | null
+          dial_rule_application?: string | null
+          dial_rule_parameter?: string | null
+          domain: string
+          enabled?: string | null
+          id?: string
+          phone_number: string
+          source?: string
+          taken_at?: string
+        }
+        Update: {
+          created_at?: string
+          description?: string | null
+          destination_user?: string | null
+          dial_rule_application?: string | null
+          dial_rule_parameter?: string | null
+          domain?: string
+          enabled?: string | null
+          id?: string
+          phone_number?: string
+          source?: string
+          taken_at?: string
+        }
+        Relationships: []
+      }
       planipret_edge_function_runs: {
         Row: {
           created_at: string

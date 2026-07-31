@@ -1,51 +1,47 @@
 /**
- * NetSapiens WSS endpoint policy.
+ * NetSapiens WSS endpoint policy (updated 2026-07, per carrier instruction).
  *
- * Verified against the live platform (2026-05): registering on the core node
- * `core1.cluster1.ucstack.io:9002` returns `200 OK` and then the server closes
- * the WebSocket with code **1001 (Going Away)** ~10-15 s later — core nodes are
- * not meant to carry client registrations, they drain them to the SBC edge.
- * The SBC edge `voice.ava-telecom.ca:9002` keeps the same registration alive.
+ * SIP clients MUST register on a call-processing core node
+ * (`core1.cluster1.ucstack.io` / `core2.cluster1.ucstack.io`), NOT on the
+ * portal server. `voice.ava-telecom.ca` resolves to `portal1.cluster1.ucstack.io`,
+ * which accepts the REGISTER but does not carry the registration for call
+ * delivery — inbound calls then go straight to voicemail.
  *
- * Any core/cluster host must therefore never be offered to JsSIP as a socket:
- * a single core socket in the list is enough to produce the endless
- * REGISTER -> 1001 -> reconnect loop, because JsSIP round-robins the sockets.
+ * So: portal hosts are dropped, core hosts are preferred.
  */
-const SIP_CORE_HOST_PATTERN = /(^|\.)(core\d*|cluster\d*)[^/]*\.ucstack\.io$/i;
+export const PP_SIP_CORE_PRIMARY = "wss://core1.cluster1.ucstack.io:9002";
+export const PP_SIP_CORE_SECONDARY = "wss://core2.cluster1.ucstack.io:9002";
+export const PP_SIP_EDGE_FALLBACK = PP_SIP_CORE_PRIMARY;
 
-export const PP_SIP_EDGE_FALLBACK = "wss://voice.ava-telecom.ca:9002";
+const PORTAL_HOST = /(^|\.)(portal\d*|voice)[^/]*\.(ucstack\.io|ava-telecom\.ca)$/i;
+const CORE_HOST = /(^|\.)core\d+\.[^/]*ucstack\.io$/i;
 
-export function isSipCoreWssUrl(url: string): boolean {
-  try {
-    return SIP_CORE_HOST_PATTERN.test(new URL(url).hostname);
-  } catch {
-    return /ucstack\.io/i.test(url);
-  }
+function hostOf(u: string): string {
+  try { return new URL(u).hostname; } catch { return ""; }
 }
 
-/**
- * Normalizes, de-duplicates and strips core-node URLs from a candidate list.
- * Falls back to the SBC edge when every candidate was a core node.
- */
-export function filterSipEdgeUrls(
-  candidates: (string | undefined | null)[],
-  onDrop?: (message: string) => void,
-): string[] {
-  const all = Array.from(
+/** True for portal / non-call-processing hosts that must never carry a REGISTER. */
+export function isPortalWssUrl(u: string): boolean {
+  const h = hostOf(u);
+  return h ? PORTAL_HOST.test(h) : /voice\.ava-telecom\.ca|portal\d*\./i.test(u);
+}
+
+/** True for a call-processing core node (valid registration target). */
+export function isCoreWssUrl(u: string): boolean {
+  const h = hostOf(u);
+  return h ? CORE_HOST.test(h) : /core\d+\./i.test(u);
+}
+
+/** Keep a SINGLE core WSS target (no core1/core2 alternation). */
+export function edgeOnlyWssUrls(candidates: (string | null | undefined)[]): string[] {
+  const kept = Array.from(
     new Set(
       candidates
         .map((u) => String(u ?? "").trim())
-        .filter((u) => /^wss?:\/\//i.test(u)),
-    ),
+        .filter((u) => /^wss?:\/\//i.test(u))
+        .filter((u) => !isPortalWssUrl(u))
+        .filter(isCoreWssUrl)
+    )
   );
-  const dropped = all.filter(isSipCoreWssUrl);
-  const kept = all.filter((u) => !isSipCoreWssUrl(u));
-  if (dropped.length) {
-    onDrop?.(`sip core node(s) dropped (1001 Going Away): ${dropped.join(", ")}`);
-  }
-  if (!kept.length) {
-    onDrop?.(`no SBC edge URL resolved → falling back to ${PP_SIP_EDGE_FALLBACK}`);
-    return [PP_SIP_EDGE_FALLBACK];
-  }
-  return kept;
+  return [kept[0] ?? PP_SIP_CORE_PRIMARY];
 }

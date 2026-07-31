@@ -69,9 +69,9 @@ Deno.serve(async (req) => {
     const dry_run: boolean = !!body?.dry_run;
     const batch_size: number = Math.max(1, Math.min(20, Number(body?.batch_size ?? 10)));
     const ring_timeout: number = Math.max(20, Math.min(120, Number(body?.ring_timeout ?? 35)));
-    // DID routing must be verified/repaired on real syncs; otherwise a DID can
-    // still point to voicemail/SpeakAccount before the user's ring rule runs.
-    const repair_dids: boolean = !dry_run && body?.repair_dids !== false;
+    // DID ROUTING IS READ-ONLY. NetSapiens owns DID→user assignments; automated
+    // rewrites clobbered the portal's assignments. Never write phonenumbers here.
+    const repair_dids = false as boolean;
 
     // Auth: admin only — or an internal service-role call (e.g. the
     // ns-resolve-sip-credentials self-heal, which runs as the broker).
@@ -246,15 +246,21 @@ Deno.serve(async (req) => {
       return digits.length === 10 ? `1${digits}` : digits;
     };
 
-    const buildDidPayload = (ext: string, _domain: string) => ({
-      // Documented Phonenumber routing (phonenumbers.md / updatephonenumberuser):
-      // ONLY application + parameter. Never send translation-* fields — writing
-      // either `<ext>` or the literal `[*]` rewrites the To-URI and NS answers
-      // "no subscriber at the number called".
-      "dial-rule-application": "user",
-      "dial-rule-parameter": `user_${ext}`,
-      enabled: "yes",
-    });
+    // GARDE-FOU (incident 2026-07-30) : `dial-rule-translation-destination-user`
+    // est OBLIGATOIRE, sinon la Destination reste vide dans le PBX et les appels
+    // entrants échouent ("aucun abonné"). Voir pp-did-guardian.
+    const buildDidPayload = (ext: string, domain: string) => {
+      const e = String(ext ?? "").trim();
+      if (!/^[0-9]{2,10}$/.test(e)) throw new Error(`DID write refused: invalid extension "${ext}"`);
+      return {
+        "dial-rule-application": "to-user-residential",
+        "dial-rule-parameter": `user_${e}`,
+        "dial-rule-translation-destination-user": e,
+        "dial-rule-translation-destination-host": domain,
+        "dial-rule-translation-source-name": "[*]",
+        enabled: "yes",
+      };
+    };
 
 
 
