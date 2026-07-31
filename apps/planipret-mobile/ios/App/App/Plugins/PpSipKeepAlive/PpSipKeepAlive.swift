@@ -52,7 +52,13 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       NotificationCenter.default.addObserver(self, selector: #selector(onBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
       NotificationCenter.default.addObserver(self, selector: #selector(onForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
       NotificationCenter.default.addObserver(self, selector: #selector(onForeground), name: UIApplication.didBecomeActiveNotification, object: nil)
-      NotificationCenter.default.addObserver(self, selector: #selector(onBackground), name: UIApplication.willResignActiveNotification, object: nil)
+      // NOTE: willResignActiveNotification removed (2026-07-31).
+      // iOS fires willResignActive for transient interruptions (CallKit sheet,
+      // Control Center, permission dialogs) while the app is still in the
+      // foreground. Treating these as a real background transition triggered
+      // onBackground() → beginBackgroundTask() → setStatus("protected") even
+      // while JsSIP was registered, producing the WSS 1001 loop and the
+      // voicemail-first bug. Only didEnterBackground (true suspension) counts.
       // UIScene lifecycle (iOS 13+) — the app adopts scenes, so the legacy
       // UIApplication notifications are not always delivered. Observing both
       // keeps appActive correct without ever reading UI state off-thread.
@@ -60,7 +66,9 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         NotificationCenter.default.addObserver(self, selector: #selector(onForeground), name: UIScene.didActivateNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(onSceneWillEnterForeground), name: UIScene.willEnterForegroundNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(onBackground), name: UIScene.didEnterBackgroundNotification, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(onBackground), name: UIScene.willDeactivateNotification, object: nil)
+        // willDeactivateNotification also fires for transient interruptions on iOS 13+.
+        // Keep it only as a signal to update appActive, NOT as a full onBackground().
+        NotificationCenter.default.addObserver(self, selector: #selector(onWillDeactivate), name: UIScene.willDeactivateNotification, object: nil)
       }
       // Ask for notification permission so the incoming-call banner can ring.
       // PushKit (PpVoipCall) posts this when an incoming-call VoIP push lands:
@@ -168,6 +176,13 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       // Hand the AOR back to JsSIP and ask the web layer to re-REGISTER.
       releaseRegistration("foreground_js_owns")
       notifyListeners("sipReregisterRequested", data: ["reason": "enter_foreground"])
+    }
+    /// willDeactivateNotification fires for transient interruptions (CallKit sheet,
+    /// Control Center, Siri) as well as real background transitions. Only update
+    /// appActive here — do NOT call onBackground() which would start the native
+    /// SIP stack while JsSIP is still registered (WSS 1001 loop).
+    @objc private func onWillDeactivate() {
+      appActive = false
     }
 
     private func beginNativeOwnership(_ why: String) {

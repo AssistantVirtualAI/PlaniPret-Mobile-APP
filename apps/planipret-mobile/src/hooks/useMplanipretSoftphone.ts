@@ -61,6 +61,15 @@ const maestroLog = (fn: () => Promise<unknown>) => {
 // Last VoIP token pushed to the backend — used to detect rotations (restore,
 // reinstall, APNs re-issue) and re-arm the SIP registration when it changes.
 let lastVoipToken: string | null = null;
+let voipTokenRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
+function scheduleVoipTokenRetry(token: string, bundleId?: string, extension?: string | null, environment?: string) {
+  if (voipTokenRetryTimer) return;
+  voipTokenRetryTimer = setTimeout(() => {
+    voipTokenRetryTimer = null;
+    void uploadPlanipretVoipToken(token, bundleId, extension, environment);
+  }, 2_000);
+}
 
 async function uploadPlanipretVoipToken(token: string, bundleId?: string, extension?: string | null, environment?: string) {
   if (!token) return;
@@ -70,7 +79,20 @@ async function uploadPlanipretVoipToken(token: string, bundleId?: string, extens
   else if (lastVoipToken === null) console.info("[pp-voip] VoIP token registered", { suffix: token.slice(-6) });
   lastVoipToken = token;
   try {
+    let { data: { session } } = await supabase.auth.getSession();
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (!session || (session.expires_at && session.expires_at - nowSec < 120)) {
+      try { session = (await supabase.auth.refreshSession()).data.session ?? session; }
+      catch { /* ignore */ }
+    }
+    const accessToken = session?.access_token;
+    if (!accessToken) {
+      console.info("[pp-voip] token upload deferred: auth session not ready", { suffix: token.slice(-6) });
+      scheduleVoipTokenRetry(token, bundleId, extension, environment);
+      return;
+    }
     const { error } = await supabase.functions.invoke("pp-voip-push-token", {
+      headers: { Authorization: `Bearer ${accessToken}` },
       body: {
         deviceToken: token,
         platform: "ios",
@@ -79,11 +101,16 @@ async function uploadPlanipretVoipToken(token: string, bundleId?: string, extens
         environment: environment || undefined,
       },
     });
-    if (error) console.warn("[pp-voip] token upload failed", error);
-    else if (changed || firstSeen) {
+    if (error) {
+      console.warn("[pp-voip] token upload failed", error);
+      scheduleVoipTokenRetry(token, bundleId, extension, environment);
+    } else if (changed || firstSeen) {
       try { ppSipProvider.forceReregister(); } catch {}
     }
-  } catch (e) { console.warn("[pp-voip] token upload failed", e); }
+  } catch (e) {
+    console.warn("[pp-voip] token upload failed", e);
+    scheduleVoipTokenRetry(token, bundleId, extension, environment);
+  }
 }
 
 let softphoneOwnerId: string | null = null;
@@ -175,7 +202,7 @@ type RestCallAttachment = {
 };
 
 export function useMplanipretSoftphone(enabled = true) {
-  const { user } = useAuth();
+  const { user, session, loading: authLoading } = useAuth();
   const ownerIdRef = useRef<string>(`pp-softphone-${++softphoneOwnerSeq}`);
   const [snap, setSnap] = useState<PpSipSnapshot>(() => ppSipProvider.getSnapshot());
   const [loading, setLoading] = useState(false);
@@ -226,7 +253,7 @@ export function useMplanipretSoftphone(enabled = true) {
   // freshly-created `{ext}_mobile` device actually REGISTERs and shows up in
   // NetSapiens with IP/User-Agent instead of empty columns.
   useEffect(() => {
-    if (!enabled || !user) { setLoading(false); return; }
+    if (!enabled || !user || authLoading) { setLoading(false); return; }
     const ownerId = ownerIdRef.current;
     if (!acquireSoftphoneOwner(ownerId, user.id)) { setLoading(false); return; }
     let cancelled = false;
@@ -314,12 +341,12 @@ export function useMplanipretSoftphone(enabled = true) {
       window.removeEventListener("pp:sip-force-reregister", onForce as any);
       releaseSoftphoneOwner(ownerId);
     };
-  }, [enabled, user?.id]);
+  }, [enabled, user?.id, authLoading, session?.access_token]);
 
   // Native guard: Android keeps a foreground keep-alive service with WakeLock / WifiLock;
   // iOS receives native background refresh requests and re-registers as soon as execution resumes.
   useEffect(() => {
-    if (!enabled || !user) return;
+    if (!enabled || !user || authLoading) return;
     if (softphoneOwnerId !== ownerIdRef.current) return;
     let cleanupStatus: (() => void) | undefined;
     let cleanupReregister: (() => void) | undefined;
@@ -424,7 +451,7 @@ export function useMplanipretSoftphone(enabled = true) {
       cleanupVoipAnswer?.();
       cleanupVoipReject?.();
     };
-  }, [enabled, user?.id]);
+  }, [enabled, user?.id, authLoading, session?.access_token]);
 
   // Watchdog: keep the SIP registration alive. If we drift into
   // `disconnected` / `error` for more than 10s, force a re-REGISTER. If still
@@ -432,7 +459,7 @@ export function useMplanipretSoftphone(enabled = true) {
   // trigger an immediate re-register on visibility/online/focus resume so the
   // user never sees "Offline" while a call is ringing.
   useEffect(() => {
-    if (!enabled || !user) return;
+    if (!enabled || !user || authLoading) return;
     if (softphoneOwnerId !== ownerIdRef.current) return;
     let softTimer: ReturnType<typeof setTimeout> | null = null;
     let hardTimer: ReturnType<typeof setTimeout> | null = null;
@@ -489,7 +516,7 @@ export function useMplanipretSoftphone(enabled = true) {
       handoffTimer = setTimeout(() => {
         handoffTimer = null;
         const stillHidden = typeof document === "undefined" || document.visibilityState === "hidden";
-        if (!stillHidden) return;
+        if (!stillHidden || handedOffToNative) return;
         void handoffToNative();
       }, delay);
     };
@@ -499,9 +526,19 @@ export function useMplanipretSoftphone(enabled = true) {
       const cfg = mobileSipConfigRef.current ?? ppSipProvider.getConfig();
       if (!cfg) return;
       const seq = ++handoffSeq;
+      // Short-circuit: if native already owns the AOR, mark as handed off and skip.
+      const existingNative = await getPlanipretSipKeepAliveStatus().catch(() => null);
+      if (existingNative) setNativeStatus(existingNative);
+      const existingStatus = String(existingNative?.status ?? "");
+      const nativeAlreadyOwns = existingStatus === "registered"
+        || (existingStatus === "protected" && existingNative?.loggedIn === true);
       try { await ppSipProvider.releaseForBackground(); } catch { /* noop */ }
       await new Promise((r) => setTimeout(r, 500));
       if (seq !== handoffSeq) return;
+      if (nativeAlreadyOwns) {
+        handedOffToNative = true;
+        return;
+      }
       // Wait for the native service to report a real PBX REGISTER 200 OK
       // ("registered"/"protected") before dropping the WebView contact. Any
       // earlier release leaves a window with zero registered AOR => voicemail.
@@ -558,8 +595,11 @@ export function useMplanipretSoftphone(enabled = true) {
         }
         void getPlanipretSipKeepAliveStatus()
           .then((status) => {
-            if (status?.status === "idle") return;
-            return stopPlanipretSipKeepAlive();
+            if (status?.status === "idle") {
+              handedOffToNative = false;
+              return;
+            }
+            return stopPlanipretSipKeepAlive().then(() => { handedOffToNative = false; });
           })
           .catch(() => undefined);
       };
@@ -646,7 +686,7 @@ export function useMplanipretSoftphone(enabled = true) {
     // watchdog escalates to forceReregister even without a subscribe callback.
     const heartbeat = window.setInterval(() => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") {
-        scheduleHandoff();
+        if (!handedOffToNative) scheduleHandoff();
         return;
       }
       evaluate();
@@ -666,7 +706,7 @@ export function useMplanipretSoftphone(enabled = true) {
       try { removeAppStateListener(); } catch {}
     };
 
-  }, [enabled, user?.id]);
+  }, [enabled, user?.id, authLoading]);
 
 
   // Live call quality only while a call is active.
