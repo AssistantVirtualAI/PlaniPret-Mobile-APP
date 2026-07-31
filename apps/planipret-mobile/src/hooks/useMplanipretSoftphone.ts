@@ -247,7 +247,8 @@ export function useMplanipretSoftphone(enabled = true) {
           : Array.isArray(d.sip_ws_urls)
             ? d.sip_ws_urls
             : [];
-        // Never register against a NetSapiens core node (1001 close loop).
+        // NetSapiens requires the mobile AOR to register on one call-processing
+        // core. edgeOnlyWssUrls pins that AOR to a single core (core1 by default).
         const wssUrls = edgeOnlyWssUrls([rawWss, ...rawWssList]);
         const wssUrl = wssUrls[0];
         if (!wssUrl || !/^wss?:\/\//i.test(wssUrl)) {
@@ -269,12 +270,13 @@ export function useMplanipretSoftphone(enabled = true) {
         // in background. Running it while the WebView (JsSIP) is registered makes
         // NetSapiens close the sockets alternately (code 1001 loop, hundreds of
         // sockets). In foreground the JS provider is the single owner.
-        const appIsForeground = typeof document === "undefined" || document.visibilityState !== "hidden";
-        if (appIsForeground) {
-          await stopPlanipretSipKeepAlive().catch(() => undefined);
-        } else {
-          startPlanipretSipKeepAlive(sipConfig).then((s) => { if (s && !cancelled) setNativeStatus(s); }).catch(() => undefined);
-        }
+        // Always prime the native bridge with the resolved core host and SIP
+        // credentials. In foreground startSipService only stores this config and
+        // remains idle (`foreground_js_owns`); once iOS backgrounds the app it can
+        // take ownership without failing with `missing_host`.
+        startPlanipretSipKeepAlive(sipConfig)
+          .then((s) => { if (s && !cancelled) setNativeStatus(s); })
+          .catch(() => undefined);
 
 
         // This is the mobile application: both foreground JsSIP and the native

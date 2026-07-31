@@ -50,6 +50,8 @@ const IOS_ENTITLEMENTS = `<?xml version="1.0" encoding="UTF-8"?>
 <dict>
 	<key>aps-environment</key>
 	<string>development</string>
+	<key>com.apple.developer.pushkit.unrestricted-voip</key>
+	<true/>
 </dict>
 </plist>
 `;
@@ -673,7 +675,6 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private func releaseRegistration(_ why: String) {
       if !Thread.isMainThread { DispatchQueue.main.async { [weak self] in self?.releaseRegistration(why) }; return }
       backgroundHandoffWorkItem?.cancel(); backgroundHandoffWorkItem = nil
-      foregroundReleaseWorkItem?.cancel(); foregroundReleaseWorkItem = nil
       timer?.invalidate(); timer = nil
       socket?.cancel(with: .goingAway, reason: nil); socket = nil
       endBackgroundTask(); setStatus("idle", why)
@@ -685,35 +686,15 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       activateAudioSession()
       setStatus("protected", "background_handoff_pending")
       backgroundHandoffWorkItem?.cancel()
-      let work = DispatchWorkItem { [weak self] in
-        guard let self = self, !self.isForeground() else { return }
-        self.beginNativeOwnership("background_handoff")
-      }
-      backgroundHandoffWorkItem = work
-      DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
+      // JS owns the ordering: it unregisters/stops JsSIP before calling
+      // startSipService. Starting here first creates two transports for the same
+      // NetSapiens device AOR and the SBC closes one with WebSocket code 1001.
     }
-    // Cancellable work item that releases the native socket once JS is registered.
-    private var foregroundReleaseWorkItem: DispatchWorkItem?
     @objc private func onForeground() {
       appActive = true
-      // CRITICAL FIX (voicemail bug): Do NOT close the native socket immediately.
-      // JsSIP needs 5-15 s to reconnect + get REGISTER 200 OK from NetSapiens.
-      // Closing the native socket first leaves the extension UNREGISTERED,
-      // causing every inbound call to go straight to voicemail.
-      //
-      // Strategy: ask JsSIP to re-REGISTER, then keep the native socket alive
-      // for up to 20 s. stopSipService() (called by JS once registered) will
-      // cancel this timer and close the socket cleanly.
+      // Hand the AOR back to JsSIP and ask the web layer to re-REGISTER.
+      releaseRegistration("foreground_js_owns")
       notifyListeners("sipReregisterRequested", data: ["reason": "enter_foreground"])
-      foregroundReleaseWorkItem?.cancel()
-      let work = DispatchWorkItem { [weak self] in
-        guard let self = self else { return }
-        self.foregroundReleaseWorkItem = nil
-        // Hard-cap: release after 20 s even if JS never confirmed.
-        self.releaseRegistration("foreground_js_owns")
-      }
-      foregroundReleaseWorkItem = work
-      DispatchQueue.main.asyncAfter(deadline: .now() + 20.0, execute: work)
     }
 
     private func beginNativeOwnership(_ why: String) {
@@ -1760,46 +1741,12 @@ function patchIosNativeFiles() {
   console.log("[native-config] iOS PpSipKeepAlive + PpVoipCall + PpAuthSession plugins applied.");
 }
 
-function patchIosSplash() {
-  // Résoudre le dossier ios — soit dans appDir/ios (après cap sync) soit ../../ios (racine du repo)
-  let iosRoot = path.join(appDir, "ios", "App", "App");
-  if (!fs.existsSync(iosRoot)) iosRoot = path.join(appDir, "..", "..", "ios", "App", "App");
-  if (!fs.existsSync(iosRoot)) { console.log("[native-config] iOS splash: dossier ios/App/App introuvable — ignoré."); return; }
-  const splashDir = path.join(iosRoot, "Assets.xcassets", "Splash.imageset");
-  const srcDir = path.join(appDir, "native-config", "splash");
-  if (!fs.existsSync(srcDir)) { console.log("[native-config] iOS splash: native-config/splash absent — ignoré."); return; }
-  fs.mkdirSync(splashDir, { recursive: true });
-  const contentsJson = path.join(splashDir, "Contents.json");
-  const contentsExpected = JSON.stringify({ images: [
-    { idiom: "universal", filename: "splash-2732x2732-2.png", scale: "1x" },
-    { idiom: "universal", filename: "splash-2732x2732-1.png", scale: "2x" },
-    { idiom: "universal", filename: "splash-2732x2732.png",   scale: "3x" }
-  ], info: { version: 1, author: "xcode" } }, null, 2);
-  writeIfChanged(contentsJson, contentsExpected);
-  const assetsContents = path.join(iosRoot, "Assets.xcassets", "Contents.json");
-  if (!fs.existsSync(assetsContents)) {
-    fs.writeFileSync(assetsContents, JSON.stringify({ info: { version: 1, author: "xcode" } }, null, 2));
-  }
-  const copies = [
-    ["splash-1x.png", "splash-2732x2732-2.png"],
-    ["splash-2x.png", "splash-2732x2732-1.png"],
-    ["splash-3x.png", "splash-2732x2732.png"],
-  ];
-  for (const [src, dst] of copies) {
-    const srcFile = path.join(srcDir, src);
-    const dstFile = path.join(splashDir, dst);
-    if (fs.existsSync(srcFile)) fs.copyFileSync(srcFile, dstFile);
-  }
-  console.log("[native-config] iOS Splash AVA AI 3D appliqué depuis native-config/splash.");
-}
-
 patchCopiedWebBundles();
 patchIosInfoPlist();
 patchIosEntitlements();
 patchAndroidManifest();
 patchAndroidNativeFiles();
 patchIosNativeFiles();
-patchIosSplash();
 
 // Guard: cap sync can regenerate native files — fail loudly if the UIScene /
 // SceneDelegate patch did not land.

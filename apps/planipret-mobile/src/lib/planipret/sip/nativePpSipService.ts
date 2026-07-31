@@ -193,7 +193,7 @@ export async function startPlanipretSipKeepAlive(cfg: PpSipConfig): Promise<PpNa
   _sipStartPending = true;
   const wss = parseWss(cfg);
   if (wss.wssUrl !== cfg.wssUrl) {
-    console.warn(`[pp-sip-native] core WSS blocked for native bridge → ${wss.wssUrl}`);
+    console.warn(`[pp-sip-native] non-core WSS replaced with pinned core → ${wss.wssUrl}`);
   }
   try {
     const result = await NativePpSip.startSipService?.({
