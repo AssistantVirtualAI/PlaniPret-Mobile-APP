@@ -1,7 +1,7 @@
 import { Capacitor, registerPlugin } from "@capacitor/core";
 import { getPpSipReconnectConfig } from "./ppSipReconnectConfig";
 import { addDedupedCapListener } from "./capListeners";
-import { filterSipEdgeUrls } from "./sipEdgePolicy";
+import { edgeOnlyWssUrls } from "./sipEdgePolicy";
 import type { PpSipConfig } from "./ppSipProvider";
 
 export type PpNativeSipStatus = {
@@ -170,7 +170,7 @@ export async function reportPlanipretCallEnded(callId?: string, reason?: string)
 
 function parseWss(cfg: PpSipConfig) {
   try {
-    const edgeUrl = filterSipEdgeUrls([cfg.wssUrl, ...(cfg.wssUrls ?? [])])[0];
+    const edgeUrl = edgeOnlyWssUrls([cfg.wssUrl, ...(cfg.wssUrls ?? [])])[0];
     const url = new URL(edgeUrl);
     return {
       host: url.hostname,
@@ -179,7 +179,7 @@ function parseWss(cfg: PpSipConfig) {
       wssUrl: edgeUrl,
     };
   } catch {
-    const edgeUrl = filterSipEdgeUrls([])[0];
+    const edgeUrl = edgeOnlyWssUrls([])[0];
     const url = new URL(edgeUrl);
     return { host: url.hostname, port: Number(url.port || 443), path: `${url.pathname || "/"}${url.search || ""}`, wssUrl: edgeUrl };
   }
