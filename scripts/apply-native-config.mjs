@@ -225,7 +225,7 @@ public class PpIncomingActionReceiver extends BroadcastReceiver {
 }
 `;
 
-const ANDROID_SERVICE_JAVA = (pkg) => `package ${pkg};
+const ANDROID_SERVICE_JAVA = (pkg) => String.raw`package ${pkg};
 
 // Planipret-only background SIP keep-alive over WSS (NetSapiens).
 // DO NOT reuse or unify with Lemtel's SipConnectionService (FreeSWITCH/Verto).
@@ -334,15 +334,15 @@ public class PpSipKeepAliveService extends Service {
     wsSocket = raw; wsIn = raw.getInputStream(); wsOut = raw.getOutputStream();
     String key = websocketKey();
     String wsPath = (path == null || path.length() == 0) ? "/" : path;
-    String req = "GET " + wsPath + " HTTP/1.1\r\n"
-      + "Host: " + host + ":" + port + "\r\n"
-      + "Upgrade: websocket\r\n"
-      + "Connection: Upgrade\r\n"
-      + "Sec-WebSocket-Key: " + key + "\r\n"
-      + "Sec-WebSocket-Version: 13\r\n"
-      + "Sec-WebSocket-Protocol: sip\r\n"
-      + "Origin: https://" + host + "\r\n"
-      + "\r\n";
+    String req = "GET " + wsPath + " HTTP/1.1\\r\\n"
+      + "Host: " + host + ":" + port + "\\r\\n"
+      + "Upgrade: websocket\\r\\n"
+      + "Connection: Upgrade\\r\\n"
+      + "Sec-WebSocket-Key: " + key + "\\r\\n"
+      + "Sec-WebSocket-Version: 13\\r\\n"
+      + "Sec-WebSocket-Protocol: sip\\r\\n"
+      + "Origin: https://" + host + "\\r\\n"
+      + "\\r\\n";
     wsOut.write(req.getBytes(StandardCharsets.UTF_8)); wsOut.flush();
     String headers = readHttpHeaders();
     if (!headers.contains(" 101 ")) { emitStatus("error", "ws_handshake_failed"); return; }
@@ -382,15 +382,15 @@ public class PpSipKeepAliveService extends Service {
   private void sendRinging(String via, String from, String to, String cid, String cseqHeader) throws Exception {
     if (via == null || from == null || to == null || cid == null || cseqHeader == null) return;
     String toWithTag = to.contains(";tag=") ? to : to + ";tag=" + Long.toHexString(System.nanoTime());
-    String r = "SIP/2.0 180 Ringing\r\n"
-      + "Via: " + via + "\r\n"
-      + "From: " + from + "\r\n"
-      + "To: " + toWithTag + "\r\n"
-      + "Call-ID: " + cid + "\r\n"
-      + "CSeq: " + cseqHeader + "\r\n"
-      + "User-Agent: Planipret Native KeepAlive\r\n"
-      + "Content-Length: 0\r\n"
-      + "\r\n";
+    String r = "SIP/2.0 180 Ringing\\r\\n"
+      + "Via: " + via + "\\r\\n"
+      + "From: " + from + "\\r\\n"
+      + "To: " + toWithTag + "\\r\\n"
+      + "Call-ID: " + cid + "\\r\\n"
+      + "CSeq: " + cseqHeader + "\\r\\n"
+      + "User-Agent: Planipret Native KeepAlive\\r\\n"
+      + "Content-Length: 0\\r\\n"
+      + "\\r\\n";
     sendFrame(r);
   }
 
@@ -410,28 +410,28 @@ public class PpSipKeepAliveService extends Service {
     // Sanitize display name
     String safeDisplay = (display == null || display.length() == 0) ? login : display.replace("\"", "");
     StringBuilder sip = new StringBuilder();
-    sip.append("REGISTER sip:").append(domain).append(" SIP/2.0\r\n");
-    sip.append("Via: SIP/2.0/WSS planipret-mobile.invalid;branch=").append(branch).append("\r\n");
-    sip.append("Max-Forwards: 70\r\n");
-    sip.append("To: <sip:").append(login).append("@").append(domain).append(">\r\n");
-    sip.append("From: \"").append(safeDisplay).append("\" <sip:").append(login).append("@").append(domain).append(">;tag=").append(fromTag).append("\r\n");
-    sip.append("Call-ID: ").append(callId).append("\r\n");
-    sip.append("CSeq: ").append(seq).append(" REGISTER\r\n");
-    sip.append("Contact: ").append(contact).append(";expires=1800\r\n");
-    sip.append("Expires: 1800\r\n");
-    sip.append("User-Agent: Planipret Native KeepAlive\r\n");
-    sip.append("Supported: outbound,path,gruu\r\n");
-    sip.append("Allow: INVITE,ACK,CANCEL,BYE,OPTIONS,MESSAGE,INFO,UPDATE,REGISTER\r\n");
+    sip.append("REGISTER sip:").append(domain).append(" SIP/2.0\\r\\n");
+    sip.append("Via: SIP/2.0/WSS planipret-mobile.invalid;branch=").append(branch).append("\\r\\n");
+    sip.append("Max-Forwards: 70\\r\\n");
+    sip.append("To: <sip:").append(login).append("@").append(domain).append(">\\r\\n");
+    sip.append("From: \"").append(safeDisplay).append("\" <sip:").append(login).append("@").append(domain).append(">;tag=").append(fromTag).append("\\r\\n");
+    sip.append("Call-ID: ").append(callId).append("\\r\\n");
+    sip.append("CSeq: ").append(seq).append(" REGISTER\\r\\n");
+    sip.append("Contact: ").append(contact).append(";expires=1800\\r\\n");
+    sip.append("Expires: 1800\\r\\n");
+    sip.append("User-Agent: Planipret Native KeepAlive\\r\\n");
+    sip.append("Supported: outbound,path,gruu\\r\\n");
+    sip.append("Allow: INVITE,ACK,CANCEL,BYE,OPTIONS,MESSAGE,INFO,UPDATE,REGISTER\\r\\n");
     if (challenge != null && password != null && password.length() > 0) {
       // Route header (use_preloaded_route RFC 3327): NS route les INVITEs entrants via le WebSocket.
-      sip.append("Route: <sip:").append(sipHost).append(":").append(sipPort).append(";transport=wss;lr>\r\n");
+      sip.append("Route: <sip:").append(sipHost).append(":").append(sipPort).append(";transport=wss;lr>\\r\\n");
       // RFC 3261 S22.3: NS proxy -> 407 -> Proxy-Authorization requis (pas Authorization)
       boolean isProxy = challenge.toLowerCase(Locale.US).contains("proxy-authenticate:");
       String authHeader = isProxy ? "Proxy-Authorization" : "Authorization";
-      sip.append(authHeader).append(": ").append(digestAuth(challenge, login, password, domain)).append("\r\n");
+      sip.append(authHeader).append(": ").append(digestAuth(challenge, login, password, domain)).append("\\r\\n");
     }
-    sip.append("Content-Length: 0\r\n");
-    sip.append("\r\n");
+    sip.append("Content-Length: 0\\r\\n");
+    sip.append("\\r\\n");
     sendFrame(sip.toString());
     emitStatus("connecting", challenge == null ? "register_sent" : "register_auth_sent");
   }
