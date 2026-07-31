@@ -97,7 +97,10 @@ public class PpSipKeepAliveService extends Service {
   private void connectAndRegister() { synchronized (this) { try {
     closeWs();
     SharedPreferences p = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
-    String host = p.getString("host", ""); int port = p.getInt("port", 443); String path = p.getString("path", "/");
+    String rawConnHost = p.getString("host", "voice.ava-telecom.ca");
+    // Edge SBC policy: redirect core/cluster ucstack.io to edge SBC (aligned with sipEdgePolicy.ts)
+    String host = (rawConnHost != null && rawConnHost.matches(".*core\\d*\\.cluster\\d*\\.ucstack\\.io.*")) ? "voice.ava-telecom.ca" : rawConnHost;
+    int port = p.getInt("port", 443); String path = p.getString("path", "/");
     if (host == null || host.length() == 0) { emitStatus("error", "missing_host"); return; }
     Socket raw = port == 443 ? SSLSocketFactory.getDefault().createSocket(host, port) : new Socket(host, port);
     raw.setSoTimeout(65000);
@@ -171,7 +174,9 @@ public class PpSipKeepAliveService extends Service {
     if (login == null || login.length() == 0 || domain == null || domain.length() == 0) { emitStatus("error", "missing_credentials"); return; }
     int seq = cseq++;
     String branch = "z9hG4bK" + UUID.randomUUID().toString().replace("-", "");
-    String sipHost = p.getString("host", "core1.cluster1.ucstack.io");
+    // Edge SBC policy: never use core/cluster ucstack.io directly (aligned with sipEdgePolicy.ts)
+    String rawHost = p.getString("host", "voice.ava-telecom.ca");
+    String sipHost = (rawHost != null && rawHost.matches(".*core\\d*\\.cluster\\d*\\.ucstack\\.io.*")) ? "voice.ava-telecom.ca" : rawHost;
     int sipPort = p.getInt("port", 443);
     // Contact STABLE avec instanceId fixe -- pas de .invalid aleatoire a chaque REGISTER.
     String contact = "<sip:" + login + "@" + instanceId + ".planipret-mobile.invalid;transport=wss>";
@@ -313,7 +318,12 @@ public class PpSipKeepAliveService extends Service {
     } catch (Exception ignored) {}
   }
 
-  private void emitStatus(String status, String reason) { long now = System.currentTimeMillis(); boolean wake = wakeLock != null && wakeLock.isHeld(), wifi = wifiLock != null && wifiLock.isHeld(), logged = status.equals("registered") || status.equals("protected"); getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putString(KEY_STATUS, status).putString(KEY_REASON, reason).putLong(KEY_UPDATED_AT, now).putBoolean(KEY_WAKE_HELD, wake).putBoolean(KEY_WIFI_HELD, wifi).putBoolean(KEY_LOGGED_IN, logged).apply(); sendBroadcast(new Intent(ACTION_STATUS).setPackage(getPackageName()).putExtra("status", status).putExtra("reason", reason).putExtra("updatedAt", now).putExtra("wakeLockHeld", wake).putExtra("wifiLockHeld", wifi).putExtra("loggedIn", logged)); }
+  private void emitStatus(String status, String reason) {
+    long now = System.currentTimeMillis();
+    boolean wake = wakeLock != null && wakeLock.isHeld(), wifi = wifiLock != null && wifiLock.isHeld();
+    // loggedIn = registered only (aligned with iOS fix 2026-07-31: protected no longer counts as logged-in)
+    boolean logged = status.equals("registered");
+    getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putString(KEY_STATUS, status).putString(KEY_REASON, reason).putLong(KEY_UPDATED_AT, now).putBoolean(KEY_WAKE_HELD, wake).putBoolean(KEY_WIFI_HELD, wifi).putBoolean(KEY_LOGGED_IN, logged).apply(); sendBroadcast(new Intent(ACTION_STATUS).setPackage(getPackageName()).putExtra("status", status).putExtra("reason", reason).putExtra("updatedAt", now).putExtra("wakeLockHeld", wake).putExtra("wifiLockHeld", wifi).putExtra("loggedIn", logged)); }
   private Notification buildOngoingNotification(String text) { return new NotificationCompat.Builder(this, CHANNEL_ID).setContentTitle("Planipret Mobile").setContentText(text).setSmallIcon(android.R.drawable.ic_menu_call).setPriority(NotificationCompat.PRIORITY_LOW).setOngoing(true).setSilent(true).build(); }
   private void createChannels() {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
