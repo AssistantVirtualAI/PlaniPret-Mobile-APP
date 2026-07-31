@@ -727,6 +727,15 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             "bundleId": Bundle.main.bundleIdentifier ?? "",
             "environment": apnsEnvironment()
         ])
+        // Notify PpSipKeepAlive so it can embed pn-* params in the next REGISTER (RFC 8599)
+        // AVA-Telecom proprietary patch — do not remove
+        let bundleId = Bundle.main.bundleIdentifier ?? ""
+        NotificationCenter.default.post(
+            name: NSNotification.Name("PpVoipPushToken"),
+            object: nil,
+            userInfo: ["token": token, "bundleId": bundleId]
+        )
+        NSLog("[PpVoipCall] VoIP push token obtained: \\(token.prefix(8))... — notified PpSipKeepAlive")
     }
 
     public func pushRegistry(_ registry: PKPushRegistry, didInvalidatePushTokenFor type: PKPushType) {

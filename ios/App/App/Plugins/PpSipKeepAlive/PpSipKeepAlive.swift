@@ -60,7 +60,9 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         NotificationCenter.default.addObserver(self, selector: #selector(onForeground), name: UIScene.didActivateNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(onSceneWillEnterForeground), name: UIScene.willEnterForegroundNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(onBackground), name: UIScene.didEnterBackgroundNotification, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(onBackground), name: UIScene.willDeactivateNotification, object: nil)
+        // NOTE: UIScene.willDeactivateNotification intentionally removed — AVA-Telecom patch #4
+        // It fires on every transient interruption (CallKit sheet, Control Center, banners)
+        // and caused spurious background_handoff_pending loops while the app was in foreground.
       }
       // Ask for notification permission so the incoming-call banner can ring.
       // PushKit (PpVoipCall) posts this when an incoming-call VoIP push lands:
