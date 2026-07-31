@@ -24,6 +24,7 @@ import { getAudioConstraints, type NCMode } from "@/lib/planipret/audio/audioCon
 import { ensureMicPermission, type MicPermissionState } from "@/lib/planipret/audio/micPermission";
 import {
   acknowledgePlanipretIncoming,
+  completePlanipretCallKitAnswer,
   getPlanipretSipKeepAliveStatus,
   getPlanipretVoipPushToken,
   onPlanipretIncomingCallAnswered,
@@ -61,56 +62,57 @@ const maestroLog = (fn: () => Promise<unknown>) => {
 // Last VoIP token pushed to the backend — used to detect rotations (restore,
 // reinstall, APNs re-issue) and re-arm the SIP registration when it changes.
 let lastVoipToken: string | null = null;
-let voipTokenRetryTimer: ReturnType<typeof setTimeout> | null = null;
-
-function scheduleVoipTokenRetry(token: string, bundleId?: string, extension?: string | null, environment?: string) {
-  if (voipTokenRetryTimer) return;
-  voipTokenRetryTimer = setTimeout(() => {
-    voipTokenRetryTimer = null;
-    void uploadPlanipretVoipToken(token, bundleId, extension, environment);
-  }, 2_000);
-}
+let voipTokenUpload: Promise<boolean> | null = null;
+let voipTokenUploadKey = "";
+let voipTokenRetry: ReturnType<typeof setTimeout> | null = null;
+const VOIP_TOKEN_STORAGE_KEY = "pp.voip-token-confirmed.v1";
 
 async function uploadPlanipretVoipToken(token: string, bundleId?: string, extension?: string | null, environment?: string) {
   if (!token) return;
-  const firstSeen = lastVoipToken === null;
-  const changed = lastVoipToken !== null && lastVoipToken !== token;
-  if (changed) console.info("[pp-voip] VoIP token changed → re-registering SIP", { suffix: token.slice(-6) });
-  else if (lastVoipToken === null) console.info("[pp-voip] VoIP token registered", { suffix: token.slice(-6) });
-  lastVoipToken = token;
+  const key = `${token}|${bundleId ?? ""}|${extension ?? ""}|${environment ?? ""}`;
   try {
-    let { data: { session } } = await supabase.auth.getSession();
-    const nowSec = Math.floor(Date.now() / 1000);
-    if (!session || (session.expires_at && session.expires_at - nowSec < 120)) {
-      try { session = (await supabase.auth.refreshSession()).data.session ?? session; }
-      catch { /* ignore */ }
-    }
-    const accessToken = session?.access_token;
-    if (!accessToken) {
-      console.info("[pp-voip] token upload deferred: auth session not ready", { suffix: token.slice(-6) });
-      scheduleVoipTokenRetry(token, bundleId, extension, environment);
+    if (localStorage.getItem(VOIP_TOKEN_STORAGE_KEY) === key) {
+      lastVoipToken = token;
       return;
     }
-    const { error } = await supabase.functions.invoke("pp-voip-push-token", {
-      headers: { Authorization: `Bearer ${accessToken}` },
-      body: {
-        deviceToken: token,
-        platform: "ios",
-        bundleId,
-        extension: extension ?? (ppSipProvider.getConfig?.() as any)?.extension ?? null,
-        environment: environment || undefined,
-      },
-    });
-    if (error) {
-      console.warn("[pp-voip] token upload failed", error);
-      scheduleVoipTokenRetry(token, bundleId, extension, environment);
-    } else if (changed || firstSeen) {
-      try { ppSipProvider.forceReregister(); } catch {}
-    }
-  } catch (e) {
-    console.warn("[pp-voip] token upload failed", e);
-    scheduleVoipTokenRetry(token, bundleId, extension, environment);
+  } catch { /* storage unavailable */ }
+  if (voipTokenUpload && voipTokenUploadKey === key) {
+    await voipTokenUpload;
+    return;
   }
+  voipTokenUploadKey = key;
+  voipTokenUpload = (async () => {
+    try {
+      const { data, error } = await supabase.functions.invoke("pp-voip-push-token", {
+        body: {
+          deviceToken: token,
+          platform: "ios",
+          bundleId,
+          extension: extension ?? ppSipProvider.getConfig()?.extension ?? null,
+          environment: environment || undefined,
+        },
+      });
+      if (error || (data as { ok?: boolean } | null)?.ok !== true) throw error ?? new Error("token_not_persisted");
+      const changed = lastVoipToken !== null && lastVoipToken !== token;
+      lastVoipToken = token;
+      try { localStorage.setItem(VOIP_TOKEN_STORAGE_KEY, key); } catch { /* storage unavailable */ }
+      if (voipTokenRetry) { clearTimeout(voipTokenRetry); voipTokenRetry = null; }
+      console.info("[pp-voip] VoIP token confirmed", { changed, suffix: token.slice(-6) });
+      return true;
+    } catch (error) {
+      console.warn("[pp-voip] token upload failed; retry scheduled", error);
+      if (!voipTokenRetry) {
+        voipTokenRetry = setTimeout(() => {
+          voipTokenRetry = null;
+          void uploadPlanipretVoipToken(token, bundleId, extension, environment);
+        }, 15_000);
+      }
+      return false;
+    } finally {
+      if (voipTokenUploadKey === key) voipTokenUpload = null;
+    }
+  })();
+  await voipTokenUpload;
 }
 
 let softphoneOwnerId: string | null = null;
@@ -416,13 +418,15 @@ export function useMplanipretSoftphone(enabled = true) {
       console.log("[pp-voip] incoming VoIP push → waking native SIP", data?.callId);
       void wakePlanipretNativeSipForIncomingCall("voip_push");
       try { ppSipProvider.forceReregister(); } catch {}
-      try { (window as any).__ppPendingAnswer = { callId: data?.callId, ts: Date.now() }; } catch {}
     }).then((fn) => { cleanupVoipIncoming = fn; }).catch(() => undefined);
 
     onPlanipretIncomingCallAnswered((data) => {
-      try { (window as any).__ppPendingAnswer = { callId: data?.callId, ts: Date.now() }; } catch {}
+      const callId: string | undefined = data?.callId;
       try { ppSipProvider.forceReregister(); } catch {}
-      try { ppSipProvider.answer(); } catch {}
+      const answered = ppSipProvider.requestAnswer(callId);
+      if (answered) {
+        void completePlanipretCallKitAnswer(callId, true);
+      }
       try { window.dispatchEvent(new CustomEvent("pp:sip-callkit-answered", { detail: data })); } catch {}
     }).then((fn) => { cleanupVoipAnswer = fn; }).catch(() => undefined);
 
@@ -716,6 +720,17 @@ export function useMplanipretSoftphone(enabled = true) {
     const un = callQualitySampler.subscribe(setQuality);
     return () => { un(); };
   }, [snap.callState]);
+
+  // When JsSIP confirms the call as active (SIP 200 OK received), tell CallKit
+  // that the answer is complete. This fulfills the pending CXAnswerCallAction
+  // that was held until the INVITE was actually answered by JsSIP.
+  const prevCallStateRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (snap.callState === "active" && prevCallStateRef.current === "ringing-in") {
+      void completePlanipretCallKitAnswer(snap.callId ?? undefined, true);
+    }
+    prevCallStateRef.current = snap.callState;
+  }, [snap.callState, snap.callId]);
 
   // Cross-device call session sync (mobile ↔ widget via SIP Call-ID).
   useEffect(() => {

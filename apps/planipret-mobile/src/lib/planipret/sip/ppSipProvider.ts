@@ -201,6 +201,7 @@ class PpSipProvider {
   /** Single-owner recovery guard: only one mechanism may drive a reconnect. */
   private recoveryOwner: PpSipRecoveryOwner = "none";
   private recoveryOwnerSince = 0;
+  private pendingAnswer: { callId: string; expiresAt: number } | null = null;
 
   getReconnectMetrics(): PpSipReconnectMetrics {
     return { ...this.reconnectMetrics, recoveryOwner: this.recoveryOwner, history: [...this.reconnectMetrics.history] };
@@ -601,10 +602,11 @@ class PpSipProvider {
     // the session arrives (within a 30s intent window).
     if (incoming) {
       try {
-        const pending = (typeof window !== "undefined") ? (window as any).__ppPendingAnswer : null;
-        if (pending && (Date.now() - (pending.ts || 0)) < 30_000) {
-          (window as any).__ppPendingAnswer = null;
-          setTimeout(() => { try { this.answer(); } catch {} }, 250);
+        const pending = this.pendingAnswer;
+        const callMatches = !pending?.callId || !callId || pending.callId === callId;
+        if (pending && pending.expiresAt > Date.now() && callMatches) {
+          this.pendingAnswer = null;
+          setTimeout(() => { this.answer(callId); }, 250);
         }
       } catch {}
     }
@@ -613,10 +615,12 @@ class PpSipProvider {
     session.on("progress", () => { if (!incoming) this.update({ callState: "ringing-out" }); });
     session.on("confirmed", () => this.update({ callState: "active", startedAt: Date.now() }));
     session.on("failed", (e: any) => {
+      if (this.pendingAnswer?.callId === callId) this.pendingAnswer = null;
       this.update({ callState: "ended", errorCause: e?.cause || "failed" });
       setTimeout(() => this.resetCall(), 2000);
     });
     session.on("ended", () => {
+      if (this.pendingAnswer?.callId === callId) this.pendingAnswer = null;
       this.update({ callState: "ended" });
       setTimeout(() => this.resetCall(), 2000);
     });
@@ -675,12 +679,31 @@ class PpSipProvider {
     }
   }
 
-  answer() {
-    if (!this.session) return;
-    this.session.answer({
-      mediaConstraints: { audio: true, video: false },
-      rtcAnswerConstraints: { offerToReceiveAudio: true, offerToReceiveVideo: false },
-    });
+  requestAnswer(callId?: string): boolean {
+    if (this.answer(callId)) return true;
+    this.pendingAnswer = { callId: String(callId ?? ""), expiresAt: Date.now() + 30_000 };
+    this.log("info", "answer intent queued until matching INVITE", { callId: callId ?? "" });
+    return false;
+  }
+
+  answer(expectedCallId?: string): boolean {
+    const session = this.session;
+    if (!session || this.snap.callState !== "ringing-in") return false;
+    if (expectedCallId && this.snap.callId && expectedCallId !== this.snap.callId) {
+      this.log("warn", "answer rejected: Call-ID mismatch", { expectedCallId, sessionCallId: this.snap.callId });
+      return false;
+    }
+    try {
+      session.answer({
+        mediaConstraints: { audio: true, video: false },
+        rtcAnswerConstraints: { offerToReceiveAudio: true, offerToReceiveVideo: false },
+      });
+      this.pendingAnswer = null;
+      return true;
+    } catch (error) {
+      this.log("error", "answer failed", error);
+      return false;
+    }
   }
   hangup() { try { this.session?.terminate(); } catch {} }
   mute() { this.session?.mute({ audio: true }); }
@@ -920,6 +943,7 @@ class PpSipProvider {
     try { this.ua?.stop(); } catch {}
     this.ua = null;
     this.session = null;
+    this.pendingAnswer = null;
     this.update({ status: "disconnected", callState: "idle", direction: null, startedAt: null });
   }
 

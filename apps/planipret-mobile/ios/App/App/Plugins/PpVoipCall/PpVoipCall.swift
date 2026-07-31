@@ -12,6 +12,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
       CAPPluginMethod(name: "getVoipPushToken", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "refreshVoipPushToken", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "reportCallEnded", returnType: CAPPluginReturnPromise),
+      CAPPluginMethod(name: "completeAnswer", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "addListener", returnType: CAPPluginReturnCallback),
       CAPPluginMethod(name: "removeAllListeners", returnType: CAPPluginReturnPromise)
     ]
@@ -23,6 +24,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     private var lastReportedToken: String?
     private var activeCallUUID: UUID?
     private var activeCallId: String?
+    private var pendingAnswerAction: CXAnswerCallAction?
 
     private func apnsEnvironment() -> String {
         #if DEBUG
@@ -177,8 +179,22 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         }
     }
 
+    @objc func completeAnswer(_ call: CAPPluginCall) {
+        let callId = call.getString("callId") ?? ""
+        let ok = call.getBool("ok") ?? false
+        guard let action = pendingAnswerAction,
+              callId.isEmpty || activeCallId == nil || activeCallId == callId else {
+            call.resolve(["ok": false, "reason": "call_id_mismatch"])
+            return
+        }
+        pendingAnswerAction = nil
+        if ok { action.fulfill() } else { action.fail() }
+        call.resolve(["ok": true])
+    }
+
     // MARK: - CXProviderDelegate
     public func providerDidReset(_ provider: CXProvider) {
+        pendingAnswerAction?.fail(); pendingAnswerAction = nil
         activeCallUUID = nil; activeCallId = nil
     }
 
@@ -189,10 +205,17 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             "callUUID": action.callUUID.uuidString,
             "callId": activeCallId ?? ""
         ])
-        action.fulfill()
+        pendingAnswerAction?.fail()
+        pendingAnswerAction = action
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30.0) { [weak self, weak action] in
+            guard let self = self, let action = action, self.pendingAnswerAction === action else { return }
+            self.pendingAnswerAction = nil
+            action.fail()
+        }
     }
 
     public func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
+        pendingAnswerAction?.fail(); pendingAnswerAction = nil
         notifyListeners("incomingCallRejected", data: [
             "callUUID": action.callUUID.uuidString,
             "callId": activeCallId ?? ""

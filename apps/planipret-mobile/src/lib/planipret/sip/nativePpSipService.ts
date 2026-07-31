@@ -44,6 +44,7 @@ type PpVoipCallPlugin = {
   getVoipPushToken?: () => Promise<{ token: string | null; platform: string; bundleId?: string; environment?: string }>;
   refreshVoipPushToken?: () => Promise<{ ok: boolean; token?: string }>;
   reportCallEnded?: (opts: { callId?: string; reason?: string }) => Promise<{ ok: boolean }>;
+  completeAnswer?: (opts: { callId?: string; ok: boolean }) => Promise<{ ok: boolean; reason?: string }>;
   addListener?: (
     event:
       | "voipPushToken"
@@ -166,6 +167,12 @@ export async function reportPlanipretCallEnded(callId?: string, reason?: string)
   if (platform() !== "ios") return;
   try { await NativePpVoipCall.reportCallEnded?.({ callId, reason }); }
   catch { /* noop */ }
+}
+
+export async function completePlanipretCallKitAnswer(callId: string | undefined, ok: boolean): Promise<void> {
+  if (platform() !== "ios") return;
+  try { await NativePpVoipCall.completeAnswer?.({ callId, ok }); }
+  catch (error) { console.warn("[pp-voip-call] completeAnswer failed", error); }
 }
 
 function parseWss(cfg: PpSipConfig) {
