@@ -102,8 +102,8 @@ export default function PASyncedCalls() {
   const linkBrokers = useCallback(async () => {
     setLinking(true);
     try {
-      const { data, error } = await supabase.functions.invoke("pp-maestro-broker-backfill", {
-        body: { only_missing: true, max_id: 800 },
+      const { data, error } = await supabase.functions.invoke("pp-maestro-broker-link", {
+        body: { only_missing: true, skip_sip: true },
       });
       if (error) throw error;
       const d = data as { matched?: number; updated?: number; unmatched?: number };

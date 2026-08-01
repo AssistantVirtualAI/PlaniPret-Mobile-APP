@@ -1,6 +1,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { normalizeNsEvents, nsCallKey, shouldProcessCall } from "../_shared/ns-call-events.ts";
+import { parseServiceAccount, sendFcmDataMessage } from "../_shared/fcm.ts";
 
 
 declare const EdgeRuntime: { waitUntil: (p: Promise<unknown>) => void };
@@ -20,8 +21,8 @@ async function apnsJwt(teamId: string, keyId: string, privateKeyPem: string) {
   // Lovable Cloud secrets may preserve a pasted .p8 key with literal `\n`
   // sequences or surrounding JSON quotes. Normalize both representations
   // before decoding the PKCS#8 body. The previous whitespace-only cleanup left
-  // the backslash characters in place, making every VoIP push fail with
-  // `InvalidCharacterError: Failed to decode base64`.
+  // the backslash characters in place, making every terminated-app VoIP push
+  // fail with `InvalidCharacterError: Failed to decode base64`.
   let normalized = String(privateKeyPem ?? "").trim();
   if (normalized.startsWith('"') && normalized.endsWith('"')) {
     try { normalized = JSON.parse(normalized); } catch { /* keep original */ }
@@ -193,6 +194,51 @@ async function processEvent(event: any) {
     if (!sent) console.warn("[ns-webhook] APNs VoIP delivered to 0 tokens", { user_id: uid, call_id: payload?.call_id, token_count: tokens.length });
   };
 
+  // Android counterpart of sendVoipPush: a high-priority FCM data message wakes
+  // PpSipKeepAliveService, which re-registers SIP and raises the full-screen
+  // incoming-call notification. No-op (with a log) when FCM is not configured.
+  const sendAndroidCallPush = async (uid: string, payload: Record<string, unknown>) => {
+    const { data: tokens } = await admin
+      .from("mobile_push_tokens")
+      .select("id,token,extension")
+      .eq("user_id", uid)
+      .eq("platform", "android");
+    if (!tokens?.length) {
+      console.warn("[ns-webhook] no Android push tokens for inbound call", { user_id: uid, call_id: payload?.call_id });
+      return;
+    }
+
+    const { data: secrets } = await admin
+      .from("planipret_integration_secrets").select("config").eq("provider", "mobile_app").maybeSingle();
+    const rawSa = (secrets?.config as Record<string, string> | null)?.fcm_service_account_json
+      ?? Deno.env.get("FCM_SERVICE_ACCOUNT_JSON");
+    const sa = parseServiceAccount(rawSa);
+    if (!sa) {
+      console.warn("[ns-webhook] FCM not configured — Android wake-up skipped", { user_id: uid, call_id: payload?.call_id });
+      return;
+    }
+
+    const data: Record<string, string> = {};
+    for (const [k, v] of Object.entries(payload)) data[k] = v == null ? "" : String(v);
+
+    const results = await Promise.allSettled(tokens.map(async (row: any) => {
+      const res = await sendFcmDataMessage(sa, row.token, data, {
+        collapseKey: String(payload?.call_id ?? ""),
+        ttlSeconds: 30,
+      });
+      if (!res.ok) {
+        console.error("[ns-webhook] FCM push failed", { token_id: row.id, status: res.status, error: res.error, call_id: payload?.call_id });
+        if (res.unregistered) await admin.from("mobile_push_tokens").delete().eq("id", row.id);
+      } else {
+        console.log("[ns-webhook] FCM push sent", { token_id: row.id, call_id: payload?.call_id });
+      }
+      return res;
+    }));
+    const delivered = results.filter((r) => r.status === "fulfilled" && (r.value as any)?.ok).length;
+    if (!delivered) console.warn("[ns-webhook] FCM delivered to 0 tokens", { user_id: uid, call_id: payload?.call_id, token_count: tokens.length });
+  };
+
+
   function isDndActive(p: any): boolean {
     if (!p) return false;
     if (p.dnd_enabled) return true;
@@ -274,7 +320,7 @@ async function processEvent(event: any) {
       });
       if (brokerProfile?.notif_calls !== false) {
         const inboundCallId = callId ? String(callId) : crypto.randomUUID();
-        await sendVoipPush(userId, {
+        const inboundPushPayload = {
           call_id: inboundCallId,
           callId: inboundCallId,
           from_number: data.from_number ?? data.from ?? "Inconnu",
@@ -284,7 +330,9 @@ async function processEvent(event: any) {
           from_user: data.from_number ?? data.from ?? "",
           to_number: data.to_number ?? data.to ?? ext,
           type: "incoming_call",
-        });
+        };
+        await sendVoipPush(userId, inboundPushPayload);
+        await sendAndroidCallPush(userId, inboundPushPayload);
         sendPush(userId, {
           title: "📞 Appel entrant",
           body: data.from_number ?? data.from ?? "Inconnu",
@@ -353,4 +401,3 @@ async function processEvent(event: any) {
     }
   }
 }
-

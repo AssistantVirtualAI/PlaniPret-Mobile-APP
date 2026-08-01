@@ -88,7 +88,7 @@
         <!-- stopWithTask="false" : le service survit même si l'utilisateur swipe l'app -->
         <service
             android:name=".PpSipKeepAliveService"
-            android:foregroundServiceType="phoneCall"
+            android:foregroundServiceType="phoneCall|microphone"
             android:exported="false"
             android:stopWithTask="false" />
 

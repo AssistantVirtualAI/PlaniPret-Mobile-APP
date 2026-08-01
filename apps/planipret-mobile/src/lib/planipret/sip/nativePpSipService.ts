@@ -145,7 +145,11 @@ export async function onPlanipretIncomingCallRejected(cb: (data: { callUUID: str
  * guaranteed wake. When a VoIP push lands, ask the native keep-alive to
  * re-REGISTER immediately (debounce-free) so the INVITE can be delivered.
  */
-export async function wakePlanipretNativeSipForIncomingCall(reason = "voip_push"): Promise<PpNativeSipStatus | null> {
+export type PpSipWakeReason = "voip_push" | "fcm_push" | (string & {});
+
+/** iOS PushKit ("voip_push") and Android FCM data message ("fcm_push") share
+ *  the exact same wake path: force an immediate re-REGISTER. */
+export async function wakePlanipretNativeSipForIncomingCall(reason: PpSipWakeReason = "voip_push"): Promise<PpNativeSipStatus | null> {
   if (!isPlanipretNativeSipAvailable()) return null;
   try { return (await NativePpSip.wakeForIncomingCall?.({ reason })) ?? null; }
   catch (e) {

@@ -1,6 +1,7 @@
 import { Capacitor, registerPlugin } from "@capacitor/core";
 import { getPpSipReconnectConfig } from "./ppSipReconnectConfig";
 import { addDedupedCapListener } from "./capListeners";
+import { edgeOnlyWssUrls } from "./sipEdgePolicy";
 import type { PpSipConfig } from "./ppSipProvider";
 
 export type PpNativeSipStatus = {
@@ -33,6 +34,7 @@ type PpSipKeepAlivePlugin = {
   triggerReregister?: () => Promise<PpNativeSipStatus>;
   acknowledgeIncoming?: () => Promise<{ ok: boolean }>;
   wakeForIncomingCall?: (opts?: { reason?: string }) => Promise<PpNativeSipStatus>;
+  setCallActive?: (opts: { active: boolean }) => Promise<PpNativeSipStatus>;
   addListener?: (
     event: "sipServiceStatus" | "sipReregisterRequested" | "sipIncomingInvite",
     cb: (data: any) => void,
@@ -43,6 +45,7 @@ type PpVoipCallPlugin = {
   getVoipPushToken?: () => Promise<{ token: string | null; platform: string; bundleId?: string; environment?: string }>;
   refreshVoipPushToken?: () => Promise<{ ok: boolean; token?: string }>;
   reportCallEnded?: (opts: { callId?: string; reason?: string }) => Promise<{ ok: boolean }>;
+  completeAnswer?: (opts: { callId?: string; ok: boolean }) => Promise<{ ok: boolean; reason?: string }>;
   addListener?: (
     event:
       | "voipPushToken"
@@ -142,7 +145,11 @@ export async function onPlanipretIncomingCallRejected(cb: (data: { callUUID: str
  * guaranteed wake. When a VoIP push lands, ask the native keep-alive to
  * re-REGISTER immediately (debounce-free) so the INVITE can be delivered.
  */
-export async function wakePlanipretNativeSipForIncomingCall(reason = "voip_push"): Promise<PpNativeSipStatus | null> {
+export type PpSipWakeReason = "voip_push" | "fcm_push" | (string & {});
+
+/** iOS PushKit ("voip_push") and Android FCM data message ("fcm_push") share
+ *  the exact same wake path: force an immediate re-REGISTER. */
+export async function wakePlanipretNativeSipForIncomingCall(reason: PpSipWakeReason = "voip_push"): Promise<PpNativeSipStatus | null> {
   if (!isPlanipretNativeSipAvailable()) return null;
   try { return (await NativePpSip.wakeForIncomingCall?.({ reason })) ?? null; }
   catch (e) {
@@ -167,16 +174,26 @@ export async function reportPlanipretCallEnded(callId?: string, reason?: string)
   catch { /* noop */ }
 }
 
+export async function completePlanipretCallKitAnswer(callId: string | undefined, ok: boolean): Promise<void> {
+  if (platform() !== "ios") return;
+  try { await NativePpVoipCall.completeAnswer?.({ callId, ok }); }
+  catch (error) { console.warn("[pp-voip-call] completeAnswer failed", error); }
+}
+
 function parseWss(cfg: PpSipConfig) {
   try {
-    const url = new URL(cfg.wssUrl);
+    const edgeUrl = edgeOnlyWssUrls([cfg.wssUrl, ...(cfg.wssUrls ?? [])])[0];
+    const url = new URL(edgeUrl);
     return {
       host: url.hostname,
       port: Number(url.port || (url.protocol === "wss:" ? 443 : 80)),
       path: `${url.pathname || "/"}${url.search || ""}`,
+      wssUrl: edgeUrl,
     };
   } catch {
-    return { host: cfg.sipProxy || cfg.sipDomain, port: 443, path: "/" };
+    const edgeUrl = edgeOnlyWssUrls([])[0];
+    const url = new URL(edgeUrl);
+    return { host: url.hostname, port: Number(url.port || 443), path: `${url.pathname || "/"}${url.search || ""}`, wssUrl: edgeUrl };
   }
 }
 
@@ -187,9 +204,14 @@ export async function startPlanipretSipKeepAlive(cfg: PpSipConfig): Promise<PpNa
   if (_sipStartPending) return null;
   _sipStartPending = true;
   const wss = parseWss(cfg);
+  if (wss.wssUrl !== cfg.wssUrl) {
+    console.warn(`[pp-sip-native] non-core WSS replaced with pinned core → ${wss.wssUrl}`);
+  }
   try {
     const result = await NativePpSip.startSipService?.({
-      ...wss,
+      host: wss.host,
+      port: wss.port,
+      path: wss.path,
       extension: cfg.extension,
       username: cfg.sipUsername,
       login: cfg.sipUsername,
@@ -197,7 +219,7 @@ export async function startPlanipretSipKeepAlive(cfg: PpSipConfig): Promise<PpNa
       domain: cfg.sipDomain,
       displayName: cfg.displayName || cfg.extension,
       transport: "wss",
-      wssUrl: cfg.wssUrl,
+      wssUrl: wss.wssUrl,
       // Reconnection strategy is configured once in JS (config file / env vars)
       // and forwarded to the native keep-alive so iOS and Android behave the same.
       backoffMinMs: getPpSipReconnectConfig().nativeBackoffMinMs,
@@ -233,6 +255,21 @@ export async function stopPlanipretSipKeepAlive(): Promise<void> {
   try { await NativePpSip.stopSipService?.(); }
   catch (e) { console.warn("[pp-sip-native] stop failed", e); }
 }
+
+/**
+ * Tell the native layer a WebRTC call is live. It then keeps the iOS audio
+ * session active in background (WebKit otherwise interrupts it => no audio)
+ * and never takes the SIP AOR over while the call is up.
+ */
+export async function setPlanipretNativeCallActive(active: boolean): Promise<void> {
+  if (!isPlanipretNativeSipAvailable()) return;
+  try { await NativePpSip.setCallActive?.({ active }); }
+  catch (e) {
+    if (!markUnavailable("sip", e, "pp-sip-native")) console.warn("[pp-sip-native] setCallActive failed", e);
+  }
+}
+
+
 
 export async function requestPlanipretBatteryOptimizationExemption(): Promise<void> {
   if (platform() !== "android" || isTemporarilyUnavailable("sip")) return;
