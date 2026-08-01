@@ -56,6 +56,7 @@ import {
   type AnsweredBy,
 } from "@/lib/planipret/calls/callSessionSync";
 import { maestroTelecom } from "@/lib/planipret/maestroTelecom";
+import { postCallToMaestro, updateCallIfPosted } from "@/lib/planipret/maestroCallPosting";
 
 // Fire-and-forget Maestro logging — never blocks the call flow.
 const maestroLog = (fn: () => Promise<unknown>) => {
@@ -765,6 +766,11 @@ export function useMplanipretSoftphone(enabled = true) {
     if (seenCallIds.current.has(callId)) return;
     seenCallIds.current.add(callId);
     setAnsweredElsewhere(null);
+    // Règle 3 : appel entrant depuis client → POST Maestro.
+    // Règle 4 : appel entrant depuis broker VoIP → postCallToMaestro skip automatiquement.
+    if (snap.direction === "in" && snap.remoteNumber) {
+      void postCallToMaestro(callId, "inbound", snap.remoteNumber);
+    }
     void upsertRingingSession({
       callId,
       brokerId,
@@ -882,12 +888,8 @@ export function useMplanipretSoftphone(enabled = true) {
         status: "ringing-out",
         startedAt: Date.now(),
       });
-      maestroLog(() => maestroTelecom.createCall({
-        provider_call_id: callId,
-        to_user_number: destination,
-        status: "dialing",
-        direction: "outbound",
-      }));
+      // Règle 1 (client) ou Règle 2 (broker VoIP) — postCallToMaestro classe automatiquement.
+      void postCallToMaestro(callId, "outbound", destination);
     }
     return { via: "pbx", ok: true, callId };
   }, []);
@@ -947,7 +949,7 @@ export function useMplanipretSoftphone(enabled = true) {
     if (restCall?.id && !hasLiveSipSession) {
       const id = restCall.id;
       void restControl("disconnect");
-      maestroLog(() => maestroTelecom.updateCall(id, { status: "ended", ended_reason: "completed" }));
+      void updateCallIfPosted(id, { status: "ended", ended_reason: "completed" });
       return;
     }
     const callId = ppSipProvider.getSnapshot().callId;
@@ -960,10 +962,10 @@ export function useMplanipretSoftphone(enabled = true) {
       const id = restCall.id;
       void restControl("disconnect");
       setRestCall(null);
-      maestroLog(() => maestroTelecom.updateCall(id, { status: "ended", ended_reason: "completed" }));
+      void updateCallIfPosted(id, { status: "ended", ended_reason: "completed" });
     } else if (callId) {
       void endSession(callId, "hangup");
-      maestroLog(() => maestroTelecom.updateCall(callId, { status: "ended", ended_reason: "completed" }));
+      void updateCallIfPosted(callId, { status: "ended", ended_reason: "completed" });
     }
   }, [restCall?.id, restControl, hasLiveSipSession]);
 
