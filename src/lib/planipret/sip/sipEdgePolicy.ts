@@ -54,3 +54,14 @@ export function filterSipEdgeUrls(
   }
   return [cores[0]];
 }
+
+/**
+ * Alias de filterSipEdgeUrls — retourne uniquement les URLs core (sans portail).
+ * Utilisé par nativePpSipService.ts pour résoudre l'URL WSS native.
+ */
+export function edgeOnlyWssUrls(
+  candidates: (string | undefined | null)[],
+  onDrop?: (message: string) => void,
+): string[] {
+  return filterSipEdgeUrls(candidates, onDrop);
+}
