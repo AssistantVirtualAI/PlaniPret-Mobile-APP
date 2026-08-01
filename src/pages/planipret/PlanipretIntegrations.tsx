@@ -380,8 +380,8 @@ export default function PlanipretIntegrations() {
           const edgeCallbackUrl = `${supabaseUrl}/functions/v1/ms365-auth-callback`;
           const origin = typeof window !== "undefined" ? window.location.origin : "";
           const webCallbackUrl = `${origin}/auth/microsoft/callback`;
-          const iosScheme = "msauth.com.assistantvirtualai.softphone://auth";
-          const androidScheme = "msauth://com.assistantvirtualai.softphone/callback";
+          const iosScheme = "msauth.com.lemtel.softphone://auth";
+          const androidScheme = "msauth://com.lemtel.softphone/callback";
           return (
         <IntegrationCard
           integrationKey="ms365" name="Microsoft 365"
