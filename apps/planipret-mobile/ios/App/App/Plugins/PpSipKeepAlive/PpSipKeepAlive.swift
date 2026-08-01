@@ -318,14 +318,17 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private func sendRinging(via: String, from: String, to: String, cid: String, cseq: String) {
       guard socket != nil, !via.isEmpty, !cid.isEmpty else { return }
       let toWithTag = to.contains(";tag=") ? to : to + ";tag=" + String(Int(Date().timeIntervalSince1970 * 1000), radix: 16)
-      var r = "SIP/2.0 180 Ringing\r\n"
-      r += "Via: " + via + "\r\n"
-      r += "From: " + from + "\r\n"
-      r += "To: " + toWithTag + "\r\n"
-      r += "Call-ID: " + cid + "\r\n"
-      r += "CSeq: " + cseq + "\r\n"
-      r += "User-Agent: Planipret iOS KeepAlive\r\n"
-      r += "Content-Length: 0\r\n\r\n"
+      let cr = String(UnicodeScalar(13)!)
+      let lf = String(UnicodeScalar(10)!)
+      let crlf = cr + lf
+      var r = "SIP/2.0 180 Ringing" + crlf
+      r += "Via: " + via + crlf
+      r += "From: " + from + crlf
+      r += "To: " + toWithTag + crlf
+      r += "Call-ID: " + cid + crlf
+      r += "CSeq: " + cseq + crlf
+      r += "User-Agent: Planipret iOS KeepAlive" + crlf
+      r += "Content-Length: 0" + crlf + crlf
       socket?.send(.string(r)) { _ in }
     }
 
@@ -342,29 +345,32 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     }
 
     private func sendRegister(challenge: String?, proxyAuth: Bool = false, force: Bool = false) {
-      if isForeground() { releaseRegistration("foreground_js_owns"); return }
-      if socket == nil { connect(); return }
-      // Two REGISTERs in a row on the same WSS connection make NetSapiens see a
-      // duplicate AoR and close the socket. Hold off after each send/200 OK
-      // (auth challenge responses are exempt: they complete the same handshake).
-      if !force, challenge == nil, let sentAt = lastRegisterSentTime, Date().timeIntervalSince(sentAt) <= registerDebounceSec {
-        NSLog("[PpSipKeepAlive] REGISTER debounced: %.2fs since sent (min %.1fs)", Date().timeIntervalSince(sentAt), registerDebounceSec)
-        return
-      }
-      if !force, challenge == nil, let okAt = lastRegisterOkTime, Date().timeIntervalSince(okAt) <= registerDebounceSec {
-        NSLog("[PpSipKeepAlive] REGISTER debounced: %.2fs since 200 OK (min %.1fs)", Date().timeIntervalSince(okAt), registerDebounceSec)
-        return
-      }
+      guard socket != nil else { scheduleReconnect("register_no_socket"); return }
+      if !force, let t = lastRegisterOkTime, Date().timeIntervalSince(t) < registerDebounceSec { return }
+      if !force, let t = lastRegisterSentTime, Date().timeIntervalSince(t) < registerDebounceSec { return }
       guard !login.isEmpty, !domain.isEmpty else { setStatus("error", "missing_credentials"); return }
       let seq = cseq; cseq += 1
       let branch = "z9hG4bK" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
       let contact = "<sip:" + login + "@" + stableContactHost() + ";transport=wss>"
-      var sip = "REGISTER sip:" + domain + " SIP/2.0\r\n"
-      sip += "Via: SIP/2.0/WSS " + domain + ";branch=" + branch + "\r\nMax-Forwards: 70\r\n"
-      sip += "To: <sip:" + login + "@" + domain + ">\r\nFrom: \"" + displayName.replacingOccurrences(of: "\"", with: "") + "\" <sip:" + login + "@" + domain + ">;tag=" + fromTag + "\r\n"
-      sip += "Call-ID: " + callIdReg + "\r\nCSeq: " + String(seq) + " REGISTER\r\nContact: " + contact + ";expires=" + String(registerExpires) + "\r\nExpires: " + String(registerExpires) + "\r\nUser-Agent: Planipret iOS KeepAlive\r\nSupported: outbound,path,gruu\r\nAllow: INVITE,ACK,CANCEL,BYE,OPTIONS,MESSAGE,INFO,UPDATE,REGISTER\r\n"
-      if let ch = challenge, !password.isEmpty { sip += (proxyAuth ? "Proxy-Authorization: " : "Authorization: ") + digest(challenge: ch) + "\r\n" }
-      sip += "Content-Length: 0\r\n\r\n"
+      let cr = String(UnicodeScalar(13)!)
+      let lf = String(UnicodeScalar(10)!)
+      let crlf = cr + lf
+      let dq = String(UnicodeScalar(34)!)
+      var sip = "REGISTER sip:" + domain + " SIP/2.0" + crlf
+      sip += "Via: SIP/2.0/WSS " + domain + ";branch=" + branch + crlf
+      sip += "Max-Forwards: 70" + crlf
+      sip += "To: <sip:" + login + "@" + domain + ">" + crlf
+      let safeDisplay = displayName.replacingOccurrences(of: dq, with: "")
+      sip += "From: " + dq + safeDisplay + dq + " <sip:" + login + "@" + domain + ">;tag=" + fromTag + crlf
+      sip += "Call-ID: " + callIdReg + crlf
+      sip += "CSeq: " + String(seq) + " REGISTER" + crlf
+      sip += "Contact: " + contact + ";expires=" + String(registerExpires) + crlf
+      sip += "Expires: " + String(registerExpires) + crlf
+      sip += "User-Agent: Planipret iOS KeepAlive" + crlf
+      sip += "Supported: outbound,path,gruu" + crlf
+      sip += "Allow: INVITE,ACK,CANCEL,BYE,OPTIONS,MESSAGE,INFO,UPDATE,REGISTER" + crlf
+      if let ch = challenge, !password.isEmpty { sip += (proxyAuth ? "Proxy-Authorization: " : "Authorization: ") + digest(challenge: ch) + crlf }
+      sip += "Content-Length: 0" + crlf + crlf
       socket?.send(.string(sip)) { [weak self] err in
         DispatchQueue.main.async {
           guard let self = self else { return }
@@ -387,7 +393,6 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       return domain.isEmpty ? "planipret.ca" : domain
     }
 
-
     private func digest(challenge: String) -> String {
         let m = parseDigest(challenge)
         let realm = m["realm"] ?? domain
@@ -404,17 +409,17 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         } else {
             response = md5(ha1 + ":" + nonce + ":" + ha2)
         }
-        var out = "Digest username=\"" + login + "\", realm=\"" + realm + "\", nonce=\"" + nonce
-                + "\", uri=\"" + uri + "\", response=\"" + response + "\", algorithm=MD5"
+        let dq3 = String(UnicodeScalar(34)!)
+        var out = "Digest username=" + dq3 + login + dq3 + ", realm=" + dq3 + realm + dq3 + ", nonce=" + dq3 + nonce
+                + dq3 + ", uri=" + dq3 + uri + dq3 + ", response=" + dq3 + response + dq3 + ", algorithm=MD5"
         if qop.contains("auth") {
-            out += ", qop=auth, nc=" + nc + ", cnonce=\"" + cnonce + "\""
+            out += ", qop=auth, nc=" + nc + ", cnonce=" + dq3 + cnonce + dq3
         }
         if let opaque = m["opaque"] {
-            out += ", opaque=\"" + opaque + "\""
+            out += ", opaque=" + dq3 + opaque + dq3
         }
         return out
     }
-
     private func parseDigest(_ h: String) -> [String: String] {
         var out: [String: String] = [:]
         let s = h.replacingOccurrences(of: "Digest ", with: "", options: .caseInsensitive)
@@ -422,40 +427,222 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
             let pieces = part.split(separator: "=", maxSplits: 1)
             if pieces.count == 2 {
                 var v = pieces[1].trimmingCharacters(in: .whitespaces)
-                if v.hasPrefix("\"") && v.hasSuffix("\"") { v.removeFirst(); v.removeLast() }
+                let dq2 = String(UnicodeScalar(34)!); if v.hasPrefix(dq2) && v.hasSuffix(dq2) { v.removeFirst(); v.removeLast() }
                 out[pieces[0].trimmingCharacters(in: .whitespaces)] = v
             }
         }
         return out
     }
-    private func headerVal(_ msg: String, _ name: String) -> String? {
-        for line in msg.components(separatedBy: .newlines) {
-            if line.lowercased().hasPrefix(name.lowercased() + ":") {
-                return String(line.dropFirst(name.count + 1)).trimmingCharacters(in: .whitespaces)
-            }
-        }
-        return nil
-    }
+    private func headerVal(_ msg: String, _ name: String) -> String? { for line in msg.components(separatedBy: .newlines) { if line.lowercased().hasPrefix(name.lowercased() + ":") { return String(line.dropFirst(name.count + 1)).trimmingCharacters(in: .whitespaces) } }; return nil }
     private func parseDisplay(_ hdr: String) -> String {
         guard let lt = hdr.firstIndex(of: "<") else { return "" }
         var d = String(hdr[..<lt]).trimmingCharacters(in: .whitespaces)
-        if d.hasPrefix("\"") && d.hasSuffix("\"") { d.removeFirst(); d.removeLast() }
+        let dq = String(UnicodeScalar(34)!)
+        if d.hasPrefix(dq) && d.hasSuffix(dq) { d.removeFirst(); d.removeLast() }
         return d
     }
-    private func parseUser(_ hdr: String) -> String {
-        var uri = hdr
-        if let lt = hdr.firstIndex(of: "<"), let gt = hdr[lt...].firstIndex(of: ">") {
-            uri = String(hdr[hdr.index(after: lt)..<gt])
-        }
-        if uri.hasPrefix("sip:")  { uri = String(uri.dropFirst(4)) }
-        else if uri.hasPrefix("sips:") { uri = String(uri.dropFirst(5)) }
-        if let at = uri.firstIndex(of: "@") { uri = String(uri[..<at]) }
-        if let semi = uri.firstIndex(of: ";") { uri = String(uri[..<semi]) }
-        return uri
-    }
+    private func parseUser(_ hdr: String) -> String { var uri = hdr; if let lt = hdr.firstIndex(of: "<"), let gt = hdr[lt...].firstIndex(of: ">") { uri = String(hdr[hdr.index(after: lt)..<gt]) }; if uri.hasPrefix("sip:") { uri = String(uri.dropFirst(4)) } else if uri.hasPrefix("sips:") { uri = String(uri.dropFirst(5)) }; if let at = uri.firstIndex(of: "@") { uri = String(uri[..<at]) }; if let semi = uri.firstIndex(of: ";") { uri = String(uri[..<semi]) }; return uri }
     private func md5(_ s: String) -> String { let d = Insecure.MD5.hash(data: Data(s.utf8)); return d.map { String(format: "%02hhx", $0) }.joined() }
     private func beginBackgroundTask() { if bgTask != .invalid { return }; bgTask = UIApplication.shared.beginBackgroundTask(withName: "PlanipretSIPKeepAlive") { [weak self] in self?.endBackgroundTask(); self?.setStatus("protected", "background_task_expired") }; DispatchQueue.main.asyncAfter(deadline: .now() + 25) { [weak self] in self?.sendRegister(challenge: nil); self?.endBackgroundTask() } }
     private func endBackgroundTask() { if bgTask != .invalid { UIApplication.shared.endBackgroundTask(bgTask); bgTask = .invalid } }
     private func setStatus(_ next: String, _ nextReason: String) { status = next; reason = nextReason; updatedAt = Date().timeIntervalSince1970 * 1000; DispatchQueue.main.async { self.notifyListeners("sipServiceStatus", data: self.snapshot(ok: true)) } }
-    private func snapshot(ok: Bool) -> [String: Any] { ["ok": ok, "status": status, "reason": reason, "updatedAt": updatedAt, "backgroundTaskActive": bgTask != .invalid, "loggedIn": status == "registered"] }
+    private func snapshot(ok: Bool) -> [String: Any] { ["ok": ok, "status": status, "reason": reason, "updatedAt": updatedAt, "backgroundTaskActive": bgTask != .invalid, "loggedIn": status == "registered" || status == "protected"] }
 }
+
+// ---------- PpVoipCall: iOS PushKit + CallKit ----------
+// Planiprêt only. Renders the native iOS incoming-call screen from a VoIP push,
+// even when the app is killed or the phone is locked. Runs alongside
+// PpSipKeepAlive (which owns the SIP socket). Do NOT reuse in Lemtel.
+const IOS_VOIP_CALL_PLUGIN = `import Foundation
+import Capacitor
+import UIKit
+import PushKit
+import CallKit
+import AVFoundation
+
+@objc(PpVoipCall)
+public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CXProviderDelegate {
+    public let identifier = "PpVoipCall"; public let jsName = "PpVoipCall"
+    public let pluginMethods: [CAPPluginMethod] = [
+      CAPPluginMethod(name: "getVoipPushToken", returnType: CAPPluginReturnPromise),
+      CAPPluginMethod(name: "reportCallEnded", returnType: CAPPluginReturnPromise),
+      CAPPluginMethod(name: "addListener", returnType: CAPPluginReturnCallback),
+      CAPPluginMethod(name: "removeAllListeners", returnType: CAPPluginReturnPromise)
+    ]
+
+    private var pushRegistry: PKPushRegistry?
+    private var provider: CXProvider?
+    private var callController = CXCallController()
+    private var voipToken: String?
+    private var activeCallUUID: UUID?
+    private var activeCallId: String?
+
+    private func apnsEnvironment() -> String {
+        #if DEBUG
+        return "sandbox"
+        #else
+        return "production"
+        #endif
+    }
+
+    public override func load() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            self.setupCallKit()
+            self.setupPushKit()
+            self.notifyListeners("callKitReady", data: ["ok": true])
+        }
+    }
+
+    private func setupCallKit() {
+        let cfg = CXProviderConfiguration(localizedName: "Planiprêt")
+        cfg.supportsVideo = false
+        cfg.maximumCallsPerCallGroup = 1
+        cfg.maximumCallGroups = 1
+        cfg.supportedHandleTypes = [.phoneNumber, .generic]
+        cfg.includesCallsInRecents = true
+        if let img = UIImage(named: "AppIcon") { cfg.iconTemplateImageData = img.pngData() }
+        let p = CXProvider(configuration: cfg)
+        p.setDelegate(self, queue: nil)
+        self.provider = p
+    }
+
+    private func setupPushKit() {
+        let registry = PKPushRegistry(queue: .main)
+        registry.delegate = self
+        registry.desiredPushTypes = [.voIP]
+        self.pushRegistry = registry
+    }
+
+    // MARK: - JS ↔ Native
+    @objc func getVoipPushToken(_ call: CAPPluginCall) {
+        call.resolve([
+            "token": voipToken ?? "",
+            "platform": "ios",
+            "bundleId": Bundle.main.bundleIdentifier ?? "",
+            "environment": apnsEnvironment()
+        ])
+    }
+
+    @objc func reportCallEnded(_ call: CAPPluginCall) {
+        if let uuid = activeCallUUID {
+            let end = CXEndCallAction(call: uuid)
+            callController.request(CXTransaction(action: end)) { _ in }
+            activeCallUUID = nil
+            activeCallId = nil
+        }
+        call.resolve(["ok": true])
+    }
+
+    // MARK: - PKPushRegistryDelegate
+    public func pushRegistry(_ registry: PKPushRegistry, didUpdate credentials: PKPushCredentials, for type: PKPushType) {
+        guard type == .voIP else { return }
+        let token = credentials.token.map { String(format: "%02x", $0) }.joined()
+        self.voipToken = token
+        notifyListeners("voipPushToken", data: [
+            "token": token,
+            "bundleId": Bundle.main.bundleIdentifier ?? "",
+            "environment": apnsEnvironment()
+        ])
+        // Notify PpSipKeepAlive so it can embed pn-* params in the next REGISTER (RFC 8599)
+        // AVA-Telecom proprietary patch — do not remove
+        let bundleId = Bundle.main.bundleIdentifier ?? ""
+        NotificationCenter.default.post(
+            name: NSNotification.Name("PpVoipPushToken"),
+            object: nil,
+            userInfo: ["token": token, "bundleId": bundleId]
+        )
+        NSLog("[PpVoipCall] VoIP push token obtained: \\(token.prefix(8))... — notified PpSipKeepAlive")
+    }
+
+    public func pushRegistry(_ registry: PKPushRegistry, didInvalidatePushTokenFor type: PKPushType) {
+        self.voipToken = nil
+    }
+
+    public func pushRegistry(_ registry: PKPushRegistry, didReceiveIncomingPushWith payload: PKPushPayload, for type: PKPushType, completion: @escaping () -> Void) {
+        guard type == .voIP else { completion(); return }
+        let dict = payload.dictionaryPayload
+        let callId = (dict["callId"] as? String) ?? (dict["call_id"] as? String) ?? UUID().uuidString
+        let callerName = (dict["callerName"] as? String) ?? (dict["from_number"] as? String) ?? (dict["from"] as? String) ?? "Appel entrant"
+        let callerNumber = (dict["callerNumber"] as? String) ?? (dict["from_number"] as? String) ?? (dict["from_user"] as? String) ?? ""
+
+        let uuid = UUID()
+        activeCallUUID = uuid
+        activeCallId = callId
+
+        let update = CXCallUpdate()
+        let handle: CXHandle = callerNumber.isEmpty
+            ? CXHandle(type: .generic, value: callerName)
+            : CXHandle(type: .phoneNumber, value: callerNumber)
+        update.remoteHandle = handle
+        update.localizedCallerName = callerName
+        update.hasVideo = false
+        update.supportsHolding = true
+        update.supportsDTMF = true
+
+        provider?.reportNewIncomingCall(with: uuid, update: update) { [weak self] error in
+            if let error = error {
+                NSLog("[PpVoipCall] reportNewIncomingCall failed: \\(error.localizedDescription)")
+            }
+            self?.notifyListeners("callKitReady", data: [
+                "callUUID": uuid.uuidString,
+                "callId": callId,
+                "callerName": callerName,
+                "callerNumber": callerNumber
+            ])
+            completion()
+        }
+    }
+
+    // MARK: - CXProviderDelegate
+    public func providerDidReset(_ provider: CXProvider) {
+        activeCallUUID = nil; activeCallId = nil
+    }
+
+    public func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
+        try? AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .allowBluetoothA2DP])
+        try? AVAudioSession.sharedInstance().setActive(true)
+        notifyListeners("incomingCallAnswered", data: [
+            "callUUID": action.callUUID.uuidString,
+            "callId": activeCallId ?? ""
+        ])
+        action.fulfill()
+    }
+
+    public func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
+        notifyListeners("incomingCallRejected", data: [
+            "callUUID": action.callUUID.uuidString,
+            "callId": activeCallId ?? ""
+        ])
+        activeCallUUID = nil; activeCallId = nil
+        action.fulfill()
+    }
+
+    public func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
+        try? audioSession.setActive(true)
+    }
+}
+
+const IOS_VOIP_CALL_BRIDGE = `#import <Foundation/Foundation.h>
+#import <Capacitor/Capacitor.h>
+
+CAP_PLUGIN(PpVoipCall, "PpVoipCall",
+  CAP_PLUGIN_METHOD(getVoipPushToken, CAPPluginReturnPromise);
+  CAP_PLUGIN_METHOD(reportCallEnded, CAPPluginReturnPromise);
+  CAP_PLUGIN_METHOD(addListener, CAPPluginReturnCallback);
+  CAP_PLUGIN_METHOD(removeAllListeners, CAPPluginReturnPromise);
+)
+
+const IOS_KEEPALIVE_BRIDGE_FILENAME = "PpSipKeepAlive.m";
+const IOS_KEEPALIVE_BRIDGE = `#import <Foundation/Foundation.h>
+#import <Capacitor/Capacitor.h>
+
+CAP_PLUGIN(PpSipKeepAlive, "PpSipKeepAlive",
+  CAP_PLUGIN_METHOD(startSipService, CAPPluginReturnPromise);
+  CAP_PLUGIN_METHOD(stopSipService, CAPPluginReturnPromise);
+  CAP_PLUGIN_METHOD(getSipServiceStatus, CAPPluginReturnPromise);
+  CAP_PLUGIN_METHOD(triggerReregister, CAPPluginReturnPromise);
+  CAP_PLUGIN_METHOD(acknowledgeIncoming, CAPPluginReturnPromise);
+  CAP_PLUGIN_METHOD(addListener, CAPPluginReturnCallback);
+  CAP_PLUGIN_METHOD(removeAllListeners, CAPPluginReturnPromise);
+)

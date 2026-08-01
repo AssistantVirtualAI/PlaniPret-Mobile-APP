@@ -980,13 +980,14 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         } else {
             response = md5(ha1 + ":" + nonce + ":" + ha2)
         }
-        var out = "Digest username=\\\"" + login + "\\\", realm=\\\"" + realm + "\\\", nonce=\\\"" + nonce
-                + "\\\", uri=\\\"" + uri + "\\\", response=\\\"" + response + "\\\", algorithm=MD5"
+        let dq3 = String(UnicodeScalar(34)!)
+        var out = "Digest username=" + dq3 + login + dq3 + ", realm=" + dq3 + realm + dq3 + ", nonce=" + dq3 + nonce
+                + dq3 + ", uri=" + dq3 + uri + dq3 + ", response=" + dq3 + response + dq3 + ", algorithm=MD5"
         if qop.contains("auth") {
-            out += ", qop=auth, nc=" + nc + ", cnonce=\\\"" + cnonce + "\\\""
+            out += ", qop=auth, nc=" + nc + ", cnonce=" + dq3 + cnonce + dq3
         }
         if let opaque = m["opaque"] {
-            out += ", opaque=\\\"" + opaque + "\\\""
+            out += ", opaque=" + dq3 + opaque + dq3
         }
         return out
     }
@@ -997,14 +998,20 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
             let pieces = part.split(separator: "=", maxSplits: 1)
             if pieces.count == 2 {
                 var v = pieces[1].trimmingCharacters(in: .whitespaces)
-                if v.hasPrefix("\\\"") && v.hasSuffix("\\\"") { v.removeFirst(); v.removeLast() }
+                let dq2 = String(UnicodeScalar(34)!); if v.hasPrefix(dq2) && v.hasSuffix(dq2) { v.removeFirst(); v.removeLast() }
                 out[pieces[0].trimmingCharacters(in: .whitespaces)] = v
             }
         }
         return out
     }
     private func headerVal(_ msg: String, _ name: String) -> String? { for line in msg.components(separatedBy: .newlines) { if line.lowercased().hasPrefix(name.lowercased() + ":") { return String(line.dropFirst(name.count + 1)).trimmingCharacters(in: .whitespaces) } }; return nil }
-    private func parseDisplay(_ hdr: String) -> String { guard let lt = hdr.firstIndex(of: "<") else { return "" }; var d = String(hdr[..<lt]).trimmingCharacters(in: .whitespaces); if d.hasPrefix("\"") && d.hasSuffix("\"") { d.removeFirst(); d.removeLast() }; return d }
+    private func parseDisplay(_ hdr: String) -> String {
+        guard let lt = hdr.firstIndex(of: "<") else { return "" }
+        var d = String(hdr[..<lt]).trimmingCharacters(in: .whitespaces)
+        let dq = String(UnicodeScalar(34)!)
+        if d.hasPrefix(dq) && d.hasSuffix(dq) { d.removeFirst(); d.removeLast() }
+        return d
+    }
     private func parseUser(_ hdr: String) -> String { var uri = hdr; if let lt = hdr.firstIndex(of: "<"), let gt = hdr[lt...].firstIndex(of: ">") { uri = String(hdr[hdr.index(after: lt)..<gt]) }; if uri.hasPrefix("sip:") { uri = String(uri.dropFirst(4)) } else if uri.hasPrefix("sips:") { uri = String(uri.dropFirst(5)) }; if let at = uri.firstIndex(of: "@") { uri = String(uri[..<at]) }; if let semi = uri.firstIndex(of: ";") { uri = String(uri[..<semi]) }; return uri }
     private func md5(_ s: String) -> String { let d = Insecure.MD5.hash(data: Data(s.utf8)); return d.map { String(format: "%02hhx", $0) }.joined() }
     private func beginBackgroundTask() { if bgTask != .invalid { return }; bgTask = UIApplication.shared.beginBackgroundTask(withName: "PlanipretSIPKeepAlive") { [weak self] in self?.endBackgroundTask(); self?.setStatus("protected", "background_task_expired") }; DispatchQueue.main.asyncAfter(deadline: .now() + 25) { [weak self] in self?.sendRegister(challenge: nil); self?.endBackgroundTask() } }
@@ -1012,7 +1019,6 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private func setStatus(_ next: String, _ nextReason: String) { status = next; reason = nextReason; updatedAt = Date().timeIntervalSince1970 * 1000; DispatchQueue.main.async { self.notifyListeners("sipServiceStatus", data: self.snapshot(ok: true)) } }
     private func snapshot(ok: Bool) -> [String: Any] { ["ok": ok, "status": status, "reason": reason, "updatedAt": updatedAt, "backgroundTaskActive": bgTask != .invalid, "loggedIn": status == "registered" || status == "protected"] }
 }
-`;
 
 // ---------- PpVoipCall: iOS PushKit + CallKit ----------
 // Planiprêt only. Renders the native iOS incoming-call screen from a VoIP push,
@@ -1187,7 +1193,6 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         try? audioSession.setActive(true)
     }
 }
-`;
 
 const IOS_VOIP_CALL_BRIDGE = `#import <Foundation/Foundation.h>
 #import <Capacitor/Capacitor.h>
@@ -1198,7 +1203,6 @@ CAP_PLUGIN(PpVoipCall, "PpVoipCall",
   CAP_PLUGIN_METHOD(addListener, CAPPluginReturnCallback);
   CAP_PLUGIN_METHOD(removeAllListeners, CAPPluginReturnPromise);
 )
-`;
 
 const IOS_KEEPALIVE_BRIDGE_FILENAME = "PpSipKeepAlive.m";
 const IOS_KEEPALIVE_BRIDGE = `#import <Foundation/Foundation.h>
