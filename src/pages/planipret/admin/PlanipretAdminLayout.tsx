@@ -70,6 +70,31 @@ const NAV: Array<{ sectionKey: SectionKey; items: Array<{ to: string; key: NavKe
   },
 ];
 
+/** Emails with unrestricted (super admin) sidebar access. */
+const SUPER_ADMIN_EMAILS = ["mhassoun@assistantvirtualai.com"];
+
+/** Reduced navigation for regular org admins (Marc, Gilles, etc.). */
+const NAV_REGULAR: typeof NAV = [
+  {
+    sectionKey: "pilotage",
+    items: [
+      { to: "/planipret/admin/overview", key: "overview", Icon: LayoutDashboard },
+      { to: "/planipret/admin/reports",  key: "reports",  Icon: BarChart3 },
+      { to: "/planipret/admin/ava",      key: "ava",      Icon: Sparkles },
+    ],
+  },
+  {
+    sectionKey: "communications",
+    items: [
+      { to: "/planipret/admin/users",      key: "brokers",     Icon: Users, badge: "brokers" },
+      { to: "/planipret/admin/calls",      key: "calls",       Icon: Phone, badge: "missed" },
+      { to: "/planipret/admin/messages",   key: "messages",    Icon: MessageSquare },
+      { to: "/planipret/admin/recordings", key: "recordings",  Icon: Mic },
+      { to: "/planipret/admin/hold-music", key: "holdMusic",   Icon: Music },
+    ],
+  },
+];
+
 const PAGE_KEY_BY_PATH: Record<string, PageKey> = {
   "/planipret/admin/overview": "overview",
   "/planipret/admin/users": "users",
@@ -101,6 +126,7 @@ export default function PlanipretAdminLayout() {
   const navigate = useNavigate();
   const location = useLocation();
   const [profile, setProfile] = useState<any>(null);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [missingIntegrations, setMissingIntegrations] = useState(0);
   const [missedCalls, setMissedCalls] = useState(0);
@@ -153,6 +179,7 @@ export default function PlanipretAdminLayout() {
       const { data } = await supabase.from("planipret_profiles").select(PLANIPRET_PROFILE_SAFE_COLUMNS).eq("user_id", user.id).maybeSingle();
       if (cancelled) return;
       if (data && data.role && data.role !== "admin") { navigate("/mplanipret", { replace: true }); return; }
+      setUserEmail((user.email ?? "").toLowerCase());
       setProfile(data ?? { full_name: user.email, role: "admin" });
       setLoading(false);
       if (data && (data.language === "fr" || data.language === "en")) {
@@ -236,7 +263,9 @@ export default function PlanipretAdminLayout() {
   const pageKey = PAGE_KEY_BY_PATH[location.pathname];
   const title = pageKey ? tt(`adminPortal.pageTitles.${pageKey}`) : tt("adminPortal.dashboardTitle");
   const dateLabel = new Date().toLocaleDateString(lang === "en" ? "en-CA" : "fr-CA", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
-  const sectionKey = NAV.find((g) => g.items.some((i) => i.to === location.pathname))?.sectionKey;
+  const isSuperAdmin = !!userEmail && SUPER_ADMIN_EMAILS.includes(userEmail);
+  const navGroups = isSuperAdmin ? NAV : NAV_REGULAR;
+  const sectionKey = navGroups.find((g) => g.items.some((i) => i.to === location.pathname))?.sectionKey;
   const sectionLabel = sectionKey ? tt(`adminPortal.sections.${sectionKey}`) : tt("adminPortal.administration");
 
   const renderBadge = (b?: NavBadge) => {
@@ -316,7 +345,7 @@ export default function PlanipretAdminLayout() {
 
         {/* Nav groups */}
         <nav className="flex-1 py-2 overflow-y-auto">
-          {NAV.map((group) => (
+          {navGroups.map((group) => (
             <div key={group.sectionKey}>
               <div className="pp-nav-section">{tt(`adminPortal.sections.${group.sectionKey}`)}</div>
               {group.items.map(({ to, key, Icon, badge }) => {

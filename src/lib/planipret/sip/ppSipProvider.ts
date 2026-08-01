@@ -8,13 +8,11 @@
 
 import JsSIP from "jssip";
 import { getPpSipReconnectConfig, ppSipBackoffDelay, PP_SIP_RECONNECT_FLOOR_MS } from "./ppSipReconnectConfig";
-import { filterSipEdgeUrls } from "./sipEdgePolicy";
+import { edgeOnlyWssUrls, isPortalWssUrl } from "./sipEdgePolicy";
 
-/** Gap between tearing down a UA and starting its replacement. NetSapiens kills
- *  the older socket (1001) when the same AOR registers twice, so the swap must
- *  never overlap. */
+// Let the SBC finish removing the previous Contact before a replacement UA
+// REGISTERs the same AOR. Without this gap NetSapiens closes one WSS with 1001.
 const PP_SIP_UA_SWAP_DELAY_MS = 800;
-
 
 export type PpSipStatus = "idle" | "connecting" | "connected" | "registered" | "disconnected" | "error";
 export type PpCallState = "idle" | "ringing-out" | "ringing-in" | "active" | "held" | "ended";
@@ -203,6 +201,7 @@ class PpSipProvider {
   /** Single-owner recovery guard: only one mechanism may drive a reconnect. */
   private recoveryOwner: PpSipRecoveryOwner = "none";
   private recoveryOwnerSince = 0;
+  private pendingAnswer: { callId: string; expiresAt: number } | null = null;
 
   getReconnectMetrics(): PpSipReconnectMetrics {
     return { ...this.reconnectMetrics, recoveryOwner: this.recoveryOwner, history: [...this.reconnectMetrics.history] };
@@ -350,14 +349,26 @@ class PpSipProvider {
     }, delay);
   }
 
-
   private guardedRegister(reason: string): boolean {
     const ua = this.ua;
     if (!ua?.isConnected?.()) {
       this.scheduleSocketReconnect(`${reason}_transport_down`);
       return false;
     }
+    const now = Date.now();
+    const minGap = Math.max(5000, getPpSipReconnectConfig().reRegisterDelayMs);
+    if (now - this.lastRegisterAttemptAt < minGap) {
+      this.log("warn", `explicit REGISTER suppressed (${now - this.lastRegisterAttemptAt}ms < ${minGap}ms)`);
+      this.pushHistory("blocked", "register_debounce");
+      this.emitMetrics();
+      return false;
+    }
     try {
+      // Debounce only application-triggered refreshes. Never wrap ua.register():
+      // JsSIP calls it once before transport connection and again after WSS is
+      // ready. Suppressing the second internal call left foreground resume stuck
+      // until the app was force-quit.
+      this.lastRegisterAttemptAt = now;
       ua.register();
       return true;
     } catch {
@@ -369,23 +380,36 @@ class PpSipProvider {
   async init(cfg: PpSipConfig) {
     if (ppSipInitInFlight) return;
     installSipParserGuard();
-    const wssUrl = String(cfg.wssUrl ?? "").trim();
-    if (!cfg.extension || !cfg.sipDomain || !wssUrl || wssUrl === "undefined" || !/^wss?:\/\//i.test(wssUrl) || !cfg.password) {
+    const rawWssUrl = String(cfg.wssUrl ?? "").trim();
+    if (!cfg.extension || !cfg.sipDomain || !rawWssUrl || rawWssUrl === "undefined" || !/^wss?:\/\//i.test(rawWssUrl) || !cfg.password) {
       this.update({ status: "error", errorCause: "invalid_config" });
       return;
     }
-    const cleanCfg = { ...cfg, wssUrl };
+    // Registrations must live on a call-processing core node (core1/core2);
+    // the portal server accepts REGISTER but does not deliver inbound calls.
+    const edgeUrls = edgeOnlyWssUrls([rawWssUrl, ...(cfg.wssUrls || [])]);
+    if (isPortalWssUrl(rawWssUrl)) {
+      this.log("warn", `portal WSS target rejected (${rawWssUrl}) -> using core ${edgeUrls[0]}`);
+    }
+    const wssUrl = edgeUrls[0];
+    const cleanCfg = { ...cfg, wssUrl, wssUrls: edgeUrls };
     const sig = `${cleanCfg.extension}|${cleanCfg.sipDomain}|${cleanCfg.wssUrl}|${cleanCfg.password}`;
     if (this.ua && sig === this.lastSig && this.snap.status === "registered") {
       return;
     }
+
     // Never tear down a UA that is still in its initial connect/REGISTER
     // handshake — doing so closed the WebSocket (code 1001) before NetSapiens
     // could answer, which surfaced as an endless "registration failed:
     // Connection Error" loop on iOS.
     if (this.ua && sig === this.lastSig) {
       const busyConnecting = this.snap.status === "connecting" && Date.now() - this.connectingSince < 20_000;
-      const tooSoon = Date.now() - this.lastStartAt < 15_000;
+      // A dead transport must never be protected by the startup debounce.
+      // Foreground resume after a 1001 needs to rebuild immediately instead of
+      // logging "duplicate init ignored" while no reachable Contact exists.
+      const tooSoon = this.snap.status !== "disconnected"
+        && this.snap.status !== "error"
+        && Date.now() - this.lastStartAt < 15_000;
       if (busyConnecting || tooSoon) {
         this.log("warn", `duplicate init ignored while SIP is ${this.snap.status || "starting"}`);
         return;
@@ -395,7 +419,10 @@ class PpSipProvider {
         return;
       }
     }
-    if (this.ua) this.stop();
+    if (this.ua) {
+      this.stop();
+      await new Promise((resolve) => setTimeout(resolve, PP_SIP_UA_SWAP_DELAY_MS));
+    }
     this.cfg = cleanCfg;
     this.lastSig = sig;
     this.connectingSince = Date.now();
@@ -405,10 +432,10 @@ class PpSipProvider {
 
     try {
       ppSipInitInFlight = true;
-      const urls = filterSipEdgeUrls([cleanCfg.wssUrl, ...(cleanCfg.wssUrls || [])], (msg) =>
-        this.log("warn", msg));
+      const urls = Array.from(new Set([cleanCfg.wssUrl, ...(cleanCfg.wssUrls || [])]
+        .map((u) => String(u ?? "").trim())
+        .filter((u) => /^wss?:\/\//i.test(u)))) as string[];
       if (!urls.length) throw new Error("No valid SIP WSS URL");
-
       const sockets = urls.map((u) => new (JsSIP as any).WebSocketInterface(u));
       this.reconnectMetrics.socketsCreated += sockets.length;
       this.pushHistory("socket", `sockets_created:${urls.join(",")}`);
@@ -438,50 +465,23 @@ class PpSipProvider {
         user_agent: "Planipret Softphone 1.0",
       });
 
-      // ---------------------------------------------------------------------
-      // Stale-UA guard. Verified live against NetSapiens (2026-05): a SECOND
-      // REGISTER on the same AOR makes the SBC close the previous WebSocket
-      // with code 1001 "Going Away" — even with an identical Contact URI and
-      // +sip.instance. So two UAs (or a UA being replaced) always kill each
-      // other: the dying UA emits "disconnected", the shared provider schedules
-      // yet another reconnect, and the loop never ends.
-      // Events coming from a UA that is no longer `this.ua` must be ignored.
-      // ---------------------------------------------------------------------
-      const isStale = () => this.ua !== null && this.ua !== ua;
-
-      // Definitive REGISTER guard: JsSIP already auto-REGISTERs when
-      // `register:true`. App-resume, token-refresh and watchdog events were also
-      // calling register(), causing duplicate REGISTER bursts on the same WSS
-      // connection. Throttle every call path, including JsSIP internal callers.
-      try {
-        const rawRegister = ua.register.bind(ua);
-        ua.register = (...args: any[]) => {
-          const now = Date.now();
-          const minGap = Math.max(5000, getPpSipReconnectConfig().reRegisterDelayMs);
-          if (now - this.lastRegisterAttemptAt < minGap) {
-            this.log("warn", `REGISTER suppressed (${now - this.lastRegisterAttemptAt}ms < ${minGap}ms)`);
-            this.pushHistory("blocked", "register_debounce");
-            this.emitMetrics();
-            return undefined;
-          }
-          this.lastRegisterAttemptAt = now;
-          return rawRegister(...args);
-        };
-      } catch { /* JsSIP API guard */ }
-
       try {
         const transport = (ua as any)?._transport;
         if (transport && typeof transport._reconnect === "function") {
           transport._reconnect = () => {
             this.log("warn", "JsSIP built-in recovery suppressed; watchdog owns reconnect");
-            this.scheduleSocketReconnect("jssip_recovery_suppressed");
           };
         }
       } catch { /* private JsSIP API guard */ }
 
-      ua.on("connecting", () => { if (isStale()) return; this.connectingSince = Date.now(); this.update({ status: "connecting" }); });
+      const isCurrentUa = () => this.ua === ua;
+      ua.on("connecting", () => {
+        if (!isCurrentUa()) return;
+        this.connectingSince = Date.now();
+        this.update({ status: "connecting" });
+      });
       ua.on("connected", () => {
-        if (isStale()) return;
+        if (!isCurrentUa()) return;
         // Do not reset wsFailures until REGISTER succeeds. NetSapiens can accept
         // the TCP/WSS connection and still close it before REGISTER 200 OK; if we
         // reset here every drop becomes attempt #1 forever.
@@ -493,7 +493,13 @@ class PpSipProvider {
         this.update({ status: "connected" });
       });
       ua.on("disconnected", (e: any) => {
-        if (isStale()) { this.log("warn", "stale UA disconnect ignored"); return; }
+        // ua.stop() may emit `disconnected` after the replacement UA has already
+        // REGISTERed. Never let that stale event mark the new core1 transport as
+        // disconnected or start another rebuild (the observed post-REGISTER 1001 loop).
+        if (!isCurrentUa()) {
+          this.log("warn", "stale UA disconnect ignored", { code: e?.code, reason: e?.reason });
+          return;
+        }
         this.log("warn", "ws disconnected", e);
         this.lastWsDisconnectedAt = Date.now();
         this.stopKeepAlive();
@@ -501,7 +507,7 @@ class PpSipProvider {
         this.scheduleSocketReconnect(String(e?.reason || "ws_disconnected"));
       });
       ua.on("registered", () => {
-        if (isStale()) return;
+        if (!isCurrentUa()) return;
         this.regFailures = 0;
         this.wsFailures = 0;
         this.reconnectMetrics.attempt = 0;
@@ -519,7 +525,7 @@ class PpSipProvider {
         return this.update({ status: "registered", errorCause: undefined, lastRegistrationAt: Date.now() });
       });
       ua.on("unregistered", () => {
-        if (isStale()) return;
+        if (!isCurrentUa()) return;
         const rc = getPpSipReconnectConfig();
         const recentlyDisconnected = Date.now() - this.lastWsDisconnectedAt < rc.socketVerifyDelayMs;
         // When the transport is already down, the socket reconnect loop owns
@@ -544,7 +550,7 @@ class PpSipProvider {
         }, Math.max(PP_SIP_RECONNECT_FLOOR_MS, rc.reRegisterDelayMs));
       });
       ua.on("registrationFailed", (e: any) => {
-        if (isStale()) return;
+        if (!isCurrentUa()) return;
         const cause = e?.cause || e?.response?.reason_phrase || "registration_failed";
         this.log("error", `registration failed: ${cause}`);
         this.update({ status: "error", errorCause: cause });
@@ -569,7 +575,10 @@ class PpSipProvider {
           } catch {}
         }, Math.max(PP_SIP_RECONNECT_FLOOR_MS, Math.min(rc.registerRetryMaxMs, rc.registerRetryBaseMs * this.regFailures)));
       });
-      ua.on("newRTCSession", (e: any) => { if (isStale()) return; this.attachSession(e.session, e.originator); });
+      ua.on("newRTCSession", (e: any) => {
+        if (!isCurrentUa()) return;
+        this.attachSession(e.session, e.originator);
+      });
 
       this.ua = ua;
       ua.start();
@@ -608,23 +617,39 @@ class PpSipProvider {
     // before JsSIP had a chance to receive the INVITE, auto-answer as soon as
     // the session arrives (within a 30s intent window).
     if (incoming) {
+      this.log("info", "incoming INVITE attached", { sipCallId: callId, from: remoteUri });
       try {
-        const pending = (typeof window !== "undefined") ? (window as any).__ppPendingAnswer : null;
-        if (pending && (Date.now() - (pending.ts || 0)) < 30_000) {
-          (window as any).__ppPendingAnswer = null;
-          setTimeout(() => { try { this.answer(); } catch {} }, 250);
+        // NOTE: the VoIP push callId (NetSapiens `1-XXXXXXXX-...`) and the SIP
+        // Call-ID are two different identifier spaces — never compare them.
+        // Any incoming INVITE within the 30s answer-intent window is answered.
+        const pending = this.pendingAnswer;
+        if (pending && pending.expiresAt > Date.now()) {
+          this.pendingAnswer = null;
+          this.log("info", "pending answer intent active → auto-answering INVITE", {
+            pushCallId: pending.callId || null, sipCallId: callId,
+          });
+          setTimeout(() => {
+            const ok = this.answer();
+            this.log(ok ? "info" : "error", `auto-answer ${ok ? "sent 200 OK" : "FAILED"}`, { sipCallId: callId });
+          }, 250);
+        } else if (pending) {
+          this.log("warn", "answer intent expired before INVITE arrived");
+          this.pendingAnswer = null;
         }
       } catch {}
     }
 
 
+
     session.on("progress", () => { if (!incoming) this.update({ callState: "ringing-out" }); });
     session.on("confirmed", () => this.update({ callState: "active", startedAt: Date.now() }));
     session.on("failed", (e: any) => {
+      if (this.pendingAnswer?.callId === callId) this.pendingAnswer = null;
       this.update({ callState: "ended", errorCause: e?.cause || "failed" });
       setTimeout(() => this.resetCall(), 2000);
     });
     session.on("ended", () => {
+      if (this.pendingAnswer?.callId === callId) this.pendingAnswer = null;
       this.update({ callState: "ended" });
       setTimeout(() => this.resetCall(), 2000);
     });
@@ -633,16 +658,62 @@ class PpSipProvider {
     session.on("muted", () => this.update({ muted: true }));
     session.on("unmuted", () => this.update({ muted: false }));
 
-    const pc: RTCPeerConnection | undefined = session.connection;
-    if (pc) {
-      pc.addEventListener("track", (ev: any) => {
-        if (this.audioEl && ev.streams[0]) {
-          this.audioEl.srcObject = ev.streams[0];
-          this.audioEl.play().catch(() => {});
-        }
-      });
+    // --- Remote audio wiring -------------------------------------------
+    // The peer connection may not exist yet (incoming calls create it on
+    // answer), so listen for JsSIP's "peerconnection" event as well.
+    const wire = (pc: RTCPeerConnection | undefined | null) => {
+      if (!pc || (pc as any).__ppAudioWired) return;
+      (pc as any).__ppAudioWired = true;
+      const attach = () => this.attachRemoteAudio(pc);
+      pc.addEventListener("track", attach);
+      (pc as any).addEventListener?.("addstream", attach);
+      attach();
+    };
+    wire(session.connection);
+    session.on("peerconnection", (e: any) => wire(e?.peerconnection || session.connection));
+    session.on("accepted", () => this.attachRemoteAudio(session.connection));
+    session.on("confirmed", () => this.attachRemoteAudio(session.connection));
+  }
+
+  /** Hidden, always-available audio sink so remote audio never depends on a screen being mounted. */
+  private ensureAudioEl(): HTMLAudioElement | null {
+    if (this.audioEl) return this.audioEl;
+    if (typeof document === "undefined") return null;
+    const el = document.createElement("audio");
+    el.autoplay = true;
+    (el as any).playsInline = true;
+    el.setAttribute("playsinline", "true");
+    el.style.display = "none";
+    document.body.appendChild(el);
+    this.audioEl = el;
+    return el;
+  }
+
+  private attachRemoteAudio(pc: RTCPeerConnection | undefined | null) {
+    try {
+      if (!pc) return;
+      const el = this.ensureAudioEl();
+      if (!el) return;
+      let stream: MediaStream | null = null;
+      const receivers = pc.getReceivers?.() ?? [];
+      const tracks = receivers.map((r) => r.track).filter((t) => t && t.kind === "audio") as MediaStreamTrack[];
+      if (tracks.length) stream = new MediaStream(tracks);
+      else {
+        const remotes = (pc as any).getRemoteStreams?.();
+        if (remotes?.length) stream = remotes[0];
+      }
+      if (!stream) return;
+      if (el.srcObject !== stream) el.srcObject = stream;
+      el.muted = false;
+      el.volume = 1;
+      const p = el.play();
+      if (p?.catch) p.catch(() => { setTimeout(() => el.play().catch(() => {}), 300); });
+      this.log("info", `remote audio attached (${stream.getAudioTracks().length} track(s))`);
+    } catch (e: any) {
+      this.log("error", `attachRemoteAudio failed: ${e?.message || e}`);
     }
   }
+
 
   private resetCall() {
     this.session = null;
@@ -683,12 +754,30 @@ class PpSipProvider {
     }
   }
 
-  answer() {
-    if (!this.session) return;
-    this.session.answer({
-      mediaConstraints: { audio: true, video: false },
-      rtcAnswerConstraints: { offerToReceiveAudio: true, offerToReceiveVideo: false },
-    });
+  requestAnswer(callId?: string): boolean {
+    if (this.answer(callId)) return true;
+    this.pendingAnswer = { callId: String(callId ?? ""), expiresAt: Date.now() + 30_000 };
+    this.log("info", "answer intent queued until matching INVITE", { callId: callId ?? "" });
+    return false;
+  }
+
+  answer(_expectedCallId?: string): boolean {
+    const session = this.session;
+    if (!session || this.snap.callState !== "ringing-in") return false;
+    // Never reject on a Call-ID mismatch: the VoIP push id and the SIP Call-ID
+    // belong to different identifier spaces on NetSapiens.
+
+    try {
+      session.answer({
+        mediaConstraints: { audio: true, video: false },
+        rtcAnswerConstraints: { offerToReceiveAudio: true, offerToReceiveVideo: false },
+      });
+      this.pendingAnswer = null;
+      return true;
+    } catch (error) {
+      this.log("error", "answer failed", error);
+      return false;
+    }
   }
   hangup() { try { this.session?.terminate(); } catch {} }
   mute() { this.session?.mute({ audio: true }); }
@@ -809,19 +898,14 @@ class PpSipProvider {
           const cfg = this.cfg;
           if (cfg) {
             this.log("warn", "sip reconnect rebuilding UA after JsSIP recovery window");
-            // Drop the old UA reference FIRST so its teardown events are seen as
-            // stale, then force the transport down. Registering the new UA while
-            // the previous socket is still bound would make NetSapiens close one
-            // of them with 1001 and restart the loop.
+            // Detach ownership before stop(): JsSIP may emit disconnected either
+            // synchronously or later. In both cases the old UA event is stale.
             this.ua = null;
+            try { ua.stop(); } catch {}
             this.session = null;
-            this.hardStopUa(ua);
             this.reconnectMetrics.uaRebuilds += 1;
             this.pushHistory("socket", "ua_rebuild");
-            setTimeout(() => {
-              if (this.ua) return; // another owner already rebuilt the UA
-              void this.init(cfg);
-            }, PP_SIP_UA_SWAP_DELAY_MS);
+            setTimeout(() => { void this.init(cfg); }, PP_SIP_UA_SWAP_DELAY_MS);
           } else {
             ua.start();
           }
@@ -841,19 +925,6 @@ class PpSipProvider {
   }
 
 
-
-  /** Fully tears down a UA: no un-REGISTER race, socket closed immediately. */
-  private hardStopUa(ua: any) {
-    try {
-      const transport = ua?._transport;
-      if (transport) {
-        transport._reconnect = () => {};
-        try { transport.disconnect?.(); } catch {}
-        try { transport.socket?.disconnect?.(); } catch {}
-      }
-    } catch {}
-    try { ua?.stop?.(); } catch {}
-  }
 
   /** Reconnect immediately when the device regains connectivity. */
   private installNetworkWatch() {
@@ -948,6 +1019,7 @@ class PpSipProvider {
     try { this.ua?.stop(); } catch {}
     this.ua = null;
     this.session = null;
+    this.pendingAnswer = null;
     this.update({ status: "disconnected", callState: "idle", direction: null, startedAt: null });
   }
 

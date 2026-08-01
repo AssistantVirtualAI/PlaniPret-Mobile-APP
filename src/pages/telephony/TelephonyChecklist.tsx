@@ -218,7 +218,7 @@ const sections: Section[] = [
         fixHref: '/org/lemtel/telephony/extensions', fixLabel: 'Go to Extensions',
         run: async () => {
           const { count } = await (supabase as any).from('pbx_softphone_users')
-            .select('*', { count: 'exact', head: true })
+            .select('id', { count: 'exact', head: true })
             .eq('organization_id', LEMTEL_ORG_ID);
           if (!count) return { status: 'warn' as const, detail: 'ℹ️ 0 softphone users configured — create users in Extensions → Enable Softphone' };
           return { status: 'pass' as const, detail: `${count} softphone users` };
@@ -238,7 +238,7 @@ const sections: Section[] = [
         fixLabel: 'Enable Softphone',
         run: async () => {
           const { count } = await (supabase as any).from('pbx_softphone_users')
-            .select('*', { count: 'exact', head: true })
+            .select('id', { count: 'exact', head: true })
             .eq('organization_id', LEMTEL_ORG_ID).eq('extension', '300');
           if (!count) return { status: 'fail' as const, detail: 'No softphone user — enable softphone for ext 300' };
           return { status: 'pass' as const, detail: 'Softphone user configured for ext 300' };

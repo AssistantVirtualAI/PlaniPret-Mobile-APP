@@ -14,6 +14,7 @@ import { SiriShortcutsCard } from "@/components/planipret/SiriShortcutsCard";
 import { safeEdgeFunction } from "@/lib/safeEdgeFunction";
 import MNetworkSection from "@/components/planipret/mobile/MNetworkSection";
 import MaestroConnectCard from "@/components/planipret/mobile/MaestroConnectCard";
+import MaestroRelinkButton from "@/components/planipret/mobile/MaestroRelinkButton";
 import MCallAudioSettings from "@/components/planipret/mobile/MCallAudioSettings";
 import MRingtoneSettings from "@/components/planipret/mobile/MRingtoneSettings";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
@@ -332,6 +333,7 @@ export default function MMore() {
         )}
         <div style={{ padding: 8 }}>
           <MaestroConnectCard />
+          <MaestroRelinkButton lang={lang === "fr" ? "fr" : "en"} className="mt-3" />
         </div>
       </Section>
 
