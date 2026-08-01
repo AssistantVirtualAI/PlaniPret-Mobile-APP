@@ -1,11 +1,6 @@
 import Foundation
 import UIKit
 import Capacitor
-import AVFoundation
-import CryptoKit
-import UserNotifications
-import PushKit
-import CallKit
 
 class AppBridgeViewController: CAPBridgeViewController {
     override func capacitorDidLoad() {

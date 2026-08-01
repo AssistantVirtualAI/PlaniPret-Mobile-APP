@@ -25,6 +25,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     private var activeCallUUID: UUID?
     private var activeCallId: String?
     private var pendingAnswerAction: CXAnswerCallAction?
+    private let voipTokenDefaultsKey = "pp.voip.push-token.v1"
 
     private func apnsEnvironment() -> String {
         #if DEBUG
@@ -37,6 +38,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     public override func load() {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
+            self.voipToken = UserDefaults.standard.string(forKey: self.voipTokenDefaultsKey)
             self.setupCallKit()
             self.setupPushKit()
             self.notifyListeners("callKitReady", data: ["ok": true])
@@ -57,6 +59,10 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     }
 
     private func setupPushKit() {
+        guard pushRegistry == nil else {
+            pushRegistry?.desiredPushTypes = [.voIP]
+            return
+        }
         let registry = PKPushRegistry(queue: .main)
         registry.delegate = self
         registry.desiredPushTypes = [.voIP]
@@ -65,11 +71,9 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
 
     // MARK: - JS ↔ Native
     @objc func getVoipPushToken(_ call: CAPPluginCall) {
-        // If PushKit has not handed us a token yet, re-arm the registry: after a
-        // restore/reinstall the first didUpdate can be missed entirely.
-        if (voipToken ?? "").isEmpty {
-            NSLog("[PpVoipCall] no VoIP token cached, re-arming PushKit")
-            DispatchQueue.main.async { [weak self] in self?.setupPushKit() }
+        if pushRegistry == nil {
+            NSLog("[PpVoipCall] PushKit registry missing, creating it")
+            setupPushKit()
         }
         call.resolve([
             "token": voipToken ?? "",
@@ -79,30 +83,15 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         ])
     }
 
-    /// Force PushKit to re-issue the VoIP token (used on app resume and when the
-    /// backend reports the stored token as invalid/unregistered).
+    /// Keep one registry alive; replacing it while APNs registration is pending
+    /// prevents the delegate callback from ever delivering the token.
     @objc func refreshVoipPushToken(_ call: CAPPluginCall) {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { call.resolve(["ok": false]); return }
-            let previous = self.voipToken
-            self.pushRegistry?.desiredPushTypes = []
-            self.pushRegistry = nil
             self.setupPushKit()
-            NSLog("[PpVoipCall] VoIP token refresh requested (had token: %@)", previous == nil ? "no" : "yes")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-                guard let self = self else { return }
-                let current = self.voipToken ?? ""
-                let changed = current != (previous ?? "")
-                NSLog("[PpVoipCall] VoIP token after refresh changed=%@ empty=%@", changed ? "yes" : "no", current.isEmpty ? "yes" : "no")
-                self.notifyListeners("voipPushToken", data: [
-                    "token": current,
-                    "bundleId": Bundle.main.bundleIdentifier ?? "",
-                    "environment": self.apnsEnvironment(),
-                    "changed": changed,
-                    "source": "refresh"
-                ])
-            }
-            call.resolve(["ok": true, "token": previous ?? ""])
+            let current = self.voipToken ?? ""
+            NSLog("[PpVoipCall] PushKit registry armed (cached token: %@)", current.isEmpty ? "no" : "yes")
+            call.resolve(["ok": true, "token": current])
         }
     }
 
@@ -138,6 +127,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         let changed = token != (lastReportedToken ?? "")
         self.voipToken = token
         self.lastReportedToken = token
+        UserDefaults.standard.set(token, forKey: voipTokenDefaultsKey)
         NSLog("[PpVoipCall] VoIP token updated changed=%@ suffix=%@", changed ? "yes" : "no", String(token.suffix(6)))
         notifyListeners("voipPushToken", data: [
             "token": token,
@@ -151,8 +141,9 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     public func pushRegistry(_ registry: PKPushRegistry, didInvalidatePushTokenFor type: PKPushType) {
         NSLog("[PpVoipCall] VoIP token invalidated — re-arming PushKit")
         self.voipToken = nil
+        UserDefaults.standard.removeObject(forKey: voipTokenDefaultsKey)
         notifyListeners("voipPushTokenInvalidated", data: ["platform": "ios"])
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in self?.setupPushKit() }
+        DispatchQueue.main.async { [weak self] in self?.setupPushKit() }
     }
 
     public func pushRegistry(_ registry: PKPushRegistry, didReceiveIncomingPushWith payload: PKPushPayload, for type: PKPushType, completion: @escaping () -> Void) {
@@ -162,9 +153,8 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         let callerName = (dict["callerName"] as? String) ?? (dict["from_number"] as? String) ?? (dict["from"] as? String) ?? "Appel entrant"
         let callerNumber = (dict["callerNumber"] as? String) ?? (dict["from_number"] as? String) ?? (dict["from_user"] as? String) ?? ""
 
-        // NetSapiens may retry the same call event while the device is waking.
-        // Keep the original CallKit UUID/action instead of creating a second
-        // incoming-call screen and making the first Answer button stale.
+        // NetSapiens can retry a call event while iOS is waking. Preserve the
+        // first CallKit UUID so its Answer action never becomes stale.
         if callId == activeCallId, activeCallUUID != nil {
             NSLog("[PpVoipCall] duplicate VoIP push ignored callId=%@", callId)
             completion()

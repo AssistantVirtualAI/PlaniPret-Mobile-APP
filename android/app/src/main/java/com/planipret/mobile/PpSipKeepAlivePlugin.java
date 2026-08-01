@@ -1,6 +1,6 @@
 package com.planipret.mobile;
 
-// Planipret-only Capacitor plugin. DO NOT reuse in Lemtel (Verto stack).
+// Planiprêt-only Capacitor plugin. DO NOT reuse in Lemtel (Verto stack).
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -63,6 +63,14 @@ public class PpSipKeepAlivePlugin extends Plugin {
       call.getString("domain", ""),
       call.getString("displayName", call.getString("extension", "")),
       call.getString("password", ""));
+    // Same reconnection strategy as iOS, pushed from the JS config file / env vars.
+    PpSipKeepAliveService.saveStrategy(getContext(),
+      call.getInt("backoffMinMs", 4000),
+      call.getInt("backoffMaxMs", 60000),
+      call.getInt("backoffMaxAttempts", 5),
+      call.getInt("verifyDelayMs", 8000),
+      call.getInt("heartbeatSec", 60),
+      call.getInt("registerExpiresSec", 1800));
     PpSipKeepAliveService.start(getContext());
     call.resolve(readStatus().put("ok", true));
   }
@@ -77,6 +85,39 @@ public class PpSipKeepAlivePlugin extends Plugin {
       boolean ignored = pm != null && pm.isIgnoringBatteryOptimizations(getContext().getPackageName());
       if (!ignored) getContext().startActivity(new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).setData(Uri.parse("package:" + getContext().getPackageName())).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
       call.resolve(new JSObject().put("ok", true).put("ignored", ignored).put("requested", !ignored));
+    } catch (Exception e) { call.reject(e.getMessage()); }
+  }
+  @PluginMethod public void setAudioRoute(PluginCall call) {
+    String route = call.getString("route", "earpiece");
+    try {
+      android.media.AudioManager am = (android.media.AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
+      if (am != null) {
+        am.setMode(android.media.AudioManager.MODE_IN_COMMUNICATION);
+        if ("speaker".equals(route)) {
+          try { am.stopBluetoothSco(); } catch (Exception ignored) {}
+          am.setBluetoothScoOn(false);
+          am.setSpeakerphoneOn(true);
+        } else if ("bluetooth".equals(route)) {
+          am.setSpeakerphoneOn(false);
+          try { am.startBluetoothSco(); } catch (Exception ignored) {}
+        } else { // earpiece
+          try { am.stopBluetoothSco(); } catch (Exception ignored) {}
+          am.setBluetoothScoOn(false);
+          am.setSpeakerphoneOn(false);
+        }
+      }
+      call.resolve(new JSObject().put("ok", true).put("route", route));
+    } catch (Exception e) { call.reject(e.getMessage()); }
+  }
+  @PluginMethod public void getAudioRoute(PluginCall call) {
+    try {
+      android.media.AudioManager am = (android.media.AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
+      String route = "earpiece";
+      if (am != null) {
+        if (am.isSpeakerphoneOn()) route = "speaker";
+        else if (am.isBluetoothScoOn()) route = "bluetooth";
+      }
+      call.resolve(new JSObject().put("ok", true).put("route", route));
     } catch (Exception e) { call.reject(e.getMessage()); }
   }
   private JSObject statusFromIntent(Intent i) { return new JSObject().put("status", i.getStringExtra("status")).put("reason", i.getStringExtra("reason")).put("updatedAt", i.getLongExtra("updatedAt", 0)).put("wakeLockHeld", i.getBooleanExtra("wakeLockHeld", false)).put("wifiLockHeld", i.getBooleanExtra("wifiLockHeld", false)).put("loggedIn", i.getBooleanExtra("loggedIn", false)); }

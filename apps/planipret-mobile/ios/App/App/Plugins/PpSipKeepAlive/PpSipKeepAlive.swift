@@ -65,21 +65,15 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       NotificationCenter.default.addObserver(self, selector: #selector(onBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
       NotificationCenter.default.addObserver(self, selector: #selector(onForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
       NotificationCenter.default.addObserver(self, selector: #selector(onForeground), name: UIApplication.didBecomeActiveNotification, object: nil)
-      // AVA-Telecom patch #5: willResignActiveNotification removed — fires on transient
-      // interruptions (lock screen, notification banner, permission sheet) and caused
-      // background_handoff_pending to trigger while the app was still in foreground.
-      // Only UIApplication.didEnterBackgroundNotification + UIScene.didEnterBackgroundNotification
-      // are used to trigger onBackground().
       // UIScene lifecycle (iOS 13+) — the app adopts scenes, so the legacy
-      // UIApplication notifications are not always delivered. Observing both
-      // keeps appActive correct without ever reading UI state off-thread.
+      // UIApplication notifications are not always delivered. Only the actual
+      // didEnterBackground transition may transfer SIP ownership. The transient
+      // willDeactivate/willResignActive events also fire for CallKit, Control
+      // Center and notification interruptions and previously caused handoff loops.
       if #available(iOS 13.0, *) {
         NotificationCenter.default.addObserver(self, selector: #selector(onForeground), name: UIScene.didActivateNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(onSceneWillEnterForeground), name: UIScene.willEnterForegroundNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(onBackground), name: UIScene.didEnterBackgroundNotification, object: nil)
-        // AVA-Telecom patch #4: willDeactivateNotification removed — it fires on
-        // transient interruptions (CallKit sheet, Control Center) and caused
-        // background_handoff_pending to trigger while the app was still in foreground.
       }
       // Ask for notification permission so the incoming-call banner can ring.
       // PushKit (PpVoipCall) posts this when an incoming-call VoIP push lands:
@@ -143,6 +137,44 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       }
     }
     private func stopAudioKeepAlive() { audioKeepAliveTimer?.invalidate(); audioKeepAliveTimer = nil }
+
+    // MARK: - Audio route (speaker / earpiece / bluetooth)
+    // Stored so we can re-assert the route after every activateAudioSession() call
+    // (iOS resets overrideOutputAudioPort on each setActive).
+    private var preferredRoute: String = "earpiece"
+
+    @objc func setAudioRoute(_ call: CAPPluginCall) {
+      let route = call.getString("route") ?? "earpiece"
+      preferredRoute = route
+      applyAudioRoute(route)
+      call.resolve(["ok": true, "route": route])
+    }
+
+    @objc func getAudioRoute(_ call: CAPPluginCall) {
+      let s = AVAudioSession.sharedInstance()
+      let current: String
+      if s.currentRoute.outputs.contains(where: { $0.portType == .bluetoothHFP || $0.portType == .bluetoothA2DP || $0.portType == .bluetoothLE }) {
+        current = "bluetooth"
+      } else if s.currentRoute.outputs.contains(where: { $0.portType == .builtInSpeaker }) {
+        current = "speaker"
+      } else {
+        current = "earpiece"
+      }
+      call.resolve(["ok": true, "route": current])
+    }
+
+    private func applyAudioRoute(_ route: String) {
+      let s = AVAudioSession.sharedInstance()
+      switch route {
+      case "speaker":
+        try? s.overrideOutputAudioPort(.speaker)
+      case "bluetooth":
+        try? s.overrideOutputAudioPort(.none)
+        // Bluetooth SCO is handled by AVAudioSession category options (.allowBluetooth)
+      default: // earpiece
+        try? s.overrideOutputAudioPort(.none)
+      }
+    }
 
     @objc func stopSipService(_ call: CAPPluginCall) { DispatchQueue.main.async { self.releaseRegistration("stopped"); call.resolve(self.snapshot(ok: true)) } }
     @objc func getSipServiceStatus(_ call: CAPPluginCall) { DispatchQueue.main.async { call.resolve(self.snapshot(ok: true)) } }
@@ -309,6 +341,8 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         : [.allowBluetooth, .allowBluetoothA2DP, .mixWithOthers]
       try? s.setCategory(.playAndRecord, mode: .voiceChat, options: opts)
       try? s.setActive(true, options: [])
+      // Re-assert the preferred route: iOS resets overrideOutputAudioPort on each setActive.
+      applyAudioRoute(preferredRoute)
     }
     private func connect() {
       // A new socket means a new AoR binding: clear the 200 OK debounce.
@@ -324,7 +358,14 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       socket = session.webSocketTask(with: req); socket?.resume(); setStatus("connecting", "ws_connecting"); receiveLoop()
       DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in self?.sendRegister(challenge: nil) }
     }
-    private func scheduleRegister() { timer?.invalidate(); timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in self?.sendRegister(challenge: nil) }; RunLoop.main.add(timer!, forMode: .common) }
+    private func scheduleRegister() {
+      timer?.invalidate()
+      // Refresh once near expiry, not every minute. NetSapiens treats repeated
+      // REGISTER handshakes on one AOR as competing bindings.
+      let refreshInterval = max(60.0, Double(registerExpires) * 0.8)
+      timer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { [weak self] _ in self?.sendRegister(challenge: nil) }
+      if let timer = timer { RunLoop.main.add(timer, forMode: .common) }
+    }
     private func receiveLoop() {
       socket?.receive { [weak self] result in
         guard let self = self else { return }
@@ -391,7 +432,11 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     }
 
     private func handle(_ msg: String) {
-      if msg.hasPrefix("SIP/2.0 401") || msg.hasPrefix("SIP/2.0 407") {
+      // A 401/407 only authenticates REGISTER when the response CSeq says so.
+      // NetSapiens can challenge OPTIONS too; treating that as a REGISTER
+      // challenge created a REGISTER → OPTIONS → 407 → REGISTER loop every 3s.
+      let responseCSeq = (headerVal(msg, "CSeq") ?? "").uppercased()
+      if (msg.hasPrefix("SIP/2.0 401") || msg.hasPrefix("SIP/2.0 407")) && responseCSeq.contains("REGISTER") {
         let isProxyAuth = msg.hasPrefix("SIP/2.0 407")
         sendRegister(challenge: headerVal(msg, isProxyAuth ? "Proxy-Authenticate" : "WWW-Authenticate"), proxyAuth: isProxyAuth)
         return

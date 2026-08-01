@@ -1,6 +1,6 @@
 package com.planipret.mobile;
 
-// Planipret-only. DO NOT reuse in Lemtel.
+// Planiprêt-only. DO NOT reuse in Lemtel.
 import android.app.NotificationManager;
 import android.content.BroadcastReceiver;
 import android.content.Context;
