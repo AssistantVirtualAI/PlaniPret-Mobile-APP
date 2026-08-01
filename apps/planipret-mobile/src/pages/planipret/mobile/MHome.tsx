@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { loadBriefCache, saveBriefCache, isBriefFresh } from "@/lib/planipret/avaBriefCache";
 
 import { useOutletContext, useNavigate } from "react-router-dom";
@@ -89,9 +89,10 @@ export default function MHome() {
   const [statsLoading, setStatsLoading] = useState(true);
   const [brief, setBrief] = useState<any | null>(null);
   const [briefLoading, setBriefLoading] = useState(false);
-  const [briefErr, setBriefErr] = useState<string | null>(null);
   const [briefAt, setBriefAt] = useState<number | null>(null);
+  const [briefErr, setBriefErr] = useState<string | null>(null);
   const briefInFlight = useRef(false);
+
 
 
   useMaestroPipelineToasts(profile?.user_id);
@@ -281,15 +282,8 @@ export default function MHome() {
     saveBriefCache(profile?.user_id, period, data, lang);
   };
 
-
   useEffect(() => { loadStats(); loadBrief(false); /* eslint-disable-next-line */ }, [profile?.user_id, period]);
-  // Regenerate the brief in the language selected in the app.
-  const firstLangRun = useRef(true);
-  useEffect(() => {
-    if (firstLangRun.current) { firstLangRun.current = false; return; }
-    loadBrief(true);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lang]);
+
   useEffect(() => {
     registerRefresh(async () => { await Promise.all([loadStats(), loadBrief(true)]); });
     return () => registerRefresh(null);
@@ -546,6 +540,7 @@ export default function MHome() {
         loading={msCalendarLoading}
         error={msCalendarError}
         lang={lang}
+        reloadProfile={reloadProfile}
       />
 
       {/* ===== SIP DEBUG SHORTCUT ===== */}
@@ -692,15 +687,16 @@ function Kpi({ icon, value, label, accent, pulse, onClick }: {
   );
 }
 
-function MsCalendarSection({ profile, events, loading, error, lang }: {
+function MsCalendarSection({ profile, events, loading, error, lang, reloadProfile }: {
   profile: any; events: any[]; loading: boolean; error: string | null; lang: string;
+  reloadProfile?: () => void | Promise<void>;
 }) {
   const { t } = useMplanipretLang();
   const today = new Date(); today.setHours(0,0,0,0);
   const [cursor, setCursor] = useState(() => { const d=new Date(); d.setDate(1); d.setHours(0,0,0,0); return d; });
   const [selected, setSelected] = useState<Date>(today);
   const [showCreate, setShowCreate] = useState(false);
-  const { state: ms365Status, errorMessage: ms365StatusError } = useMs365Status(profile);
+  const { state: ms365Status, errorMessage: ms365StatusError } = useMs365Status(profile, reloadProfile);
 
   const locale = lang === "en" ? "en-CA" : "fr-CA";
 

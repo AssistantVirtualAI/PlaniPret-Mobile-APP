@@ -540,6 +540,7 @@ export default function MHome() {
         loading={msCalendarLoading}
         error={msCalendarError}
         lang={lang}
+        reloadProfile={reloadProfile}
       />
 
       {/* ===== SIP DEBUG SHORTCUT ===== */}
@@ -686,15 +687,16 @@ function Kpi({ icon, value, label, accent, pulse, onClick }: {
   );
 }
 
-function MsCalendarSection({ profile, events, loading, error, lang }: {
+function MsCalendarSection({ profile, events, loading, error, lang, reloadProfile }: {
   profile: any; events: any[]; loading: boolean; error: string | null; lang: string;
+  reloadProfile?: () => void | Promise<void>;
 }) {
   const { t } = useMplanipretLang();
   const today = new Date(); today.setHours(0,0,0,0);
   const [cursor, setCursor] = useState(() => { const d=new Date(); d.setDate(1); d.setHours(0,0,0,0); return d; });
   const [selected, setSelected] = useState<Date>(today);
   const [showCreate, setShowCreate] = useState(false);
-  const { state: ms365Status, errorMessage: ms365StatusError } = useMs365Status(profile);
+  const { state: ms365Status, errorMessage: ms365StatusError } = useMs365Status(profile, reloadProfile);
 
   const locale = lang === "en" ? "en-CA" : "fr-CA";
 

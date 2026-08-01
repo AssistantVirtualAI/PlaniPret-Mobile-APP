@@ -199,6 +199,17 @@ export default function Ms365Callback() {
       try {
         void supabase.functions.invoke("ms365-full-import", { body: { mode: "initial" } }).catch(() => {});
       } catch {}
+      // The exchange stored a fresh access/refresh token server-side. Clear the
+      // stale failure marker and tell every mounted screen to reload its cached
+      // profile, otherwise MHome/MMessages keep rendering the "session expired"
+      // reconnect banner from the pre-exchange profile snapshot.
+      try {
+        const { setMs365Error } = await import("@/hooks/useMs365Status");
+        setMs365Error(null);
+      } catch {}
+      try {
+        window.dispatchEvent(new CustomEvent("pp:ms365-changed", { detail: { state: "connected" } }));
+      } catch {}
       setStatus("ok");
       navigate("/mplanipret/home?ms365=ok", { replace: true });
     } finally {
