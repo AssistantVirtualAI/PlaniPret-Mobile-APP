@@ -73,7 +73,10 @@ export function useMplanipretLang() {
   const t = useCallback(
     (path: string): string => {
       const dict = MP_DICT[lang] as unknown as Record<string, any>;
-      const v = path.split(".").reduce<any>((acc, k) => (acc ? acc[k] : undefined), dict);
+      const get = (root: any) => path.split(".").reduce<any>((acc, k) => (acc ? acc[k] : undefined), root);
+      // Screen dictionaries live under `screens.*`; allow both
+      // t("avaChat.chatTab") and t("screens.avaChat.chatTab").
+      const v = get(dict) ?? get(dict?.screens);
       return typeof v === "string" ? v : path;
     },
     [lang]

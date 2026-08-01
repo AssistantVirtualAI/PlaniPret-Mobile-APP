@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { useMplanipretSoftphone } from "@/hooks/useMplanipretSoftphone";
+import { audioRouter } from "@/lib/planipret/audio/audioRouter";
 import NetworkQualityBadge from "@/components/planipret/mobile/NetworkQualityBadge";
 import HandoverIndicator from "@/components/planipret/mobile/HandoverIndicator";
 
@@ -34,14 +35,16 @@ export default function ActiveCallOverlay({ callId, onClosed }: { callId: string
   const [muted, setMuted] = useState(false);
   const [held, setHeld] = useState(false);
   const [speaker, setSpeaker] = useState(false);
-  // Default keypad open so DTMF stays visible once the call is answered
-  // (users need to reach IVRs right after pickup).
-  const [keypadOpen, setKeypadOpen] = useState(true);
+  const [keypadOpen, setKeypadOpen] = useState(false);
   const [dtmfBuffer, setDtmfBuffer] = useState("");
   const [transferOpen, setTransferOpen] = useState(false);
   const [transferMode, setTransferMode] = useState<"transfer" | "forward">("transfer");
   const [transferTo, setTransferTo] = useState("");
   const [elapsed, setElapsed] = useState(0);
+  const [dismissed, setDismissed] = useState(false);
+
+  // Reset dismissal whenever we're mounted for a different call.
+  useEffect(() => { setDismissed(false); }, [callId]);
 
   useEffect(() => {
     if (!callId) { setCall(null); return; }
@@ -63,6 +66,13 @@ export default function ActiveCallOverlay({ callId, onClosed }: { callId: string
     return () => { cancelled = true; supabase.removeChannel(ch); };
   }, [callId, onClosed]);
 
+  // Never auto-start on the loudspeaker when the call connects.
+  useEffect(() => {
+    if (!callId) return;
+    setSpeaker(false);
+    void audioRouter.startCallAudio();
+  }, [callId]);
+
   useEffect(() => {
     if (!call) return;
     const start = call.answered_at ? new Date(call.answered_at).getTime() : (call.started_at ? new Date(call.started_at).getTime() : Date.now());
@@ -72,7 +82,7 @@ export default function ActiveCallOverlay({ callId, onClosed }: { callId: string
     return () => clearInterval(id);
   }, [call?.id, call?.answered_at, call?.started_at]);
 
-  if (!callId || !call) return null;
+  if (!callId || !call || dismissed) return null;
 
   const isRinging = call.status === "ringing";
   const otherParty = call.direction === "inbound" ? call.from_number : call.to_number;
@@ -87,7 +97,11 @@ export default function ActiveCallOverlay({ callId, onClosed }: { callId: string
 
   const toggleMute = async () => { const next = !muted; if (await invoke("mute", { muted: next })) setMuted(next); };
   const toggleHold = async () => { const next = !held; if (await invoke(next ? "hold" : "resume")) setHeld(next); };
-  const toggleSpeaker = () => setSpeaker((v) => !v); // client-side hint only
+  const toggleSpeaker = async () => {
+    const next = !speaker;
+    setSpeaker(next);
+    try { await audioRouter.setRoute(next ? "speaker" : "earpiece"); } catch {}
+  };
   const sendDtmf = async (d: string) => { setDtmfBuffer((b) => (b + d).slice(-16)); await invoke("dtmf", { digit: d }); };
   const doTransfer = async () => {
     if (!transferTo.trim()) return;
@@ -98,7 +112,22 @@ export default function ActiveCallOverlay({ callId, onClosed }: { callId: string
     }
   };
   const openTransfer = (mode: "transfer" | "forward") => { setTransferMode(mode); setTransferOpen(true); };
-  const hangup = async () => { await invoke("disconnect"); onClosed(); };
+  const hangup = async () => {
+    // Hide the overlay immediately — nothing the backend does can bring it back
+    // for this instance because `dismissed` short-circuits render.
+    setDismissed(true);
+    onClosed();
+    // Fire the disconnect in the background, then force the DB row ended.
+    void (async () => {
+      await invoke("disconnect");
+      try {
+        await supabase
+          .from("planipret_phone_calls")
+          .update({ status: "ended", ended_at: new Date().toISOString() } as any)
+          .or(`id.eq.${callId},ns_callid.eq.${callId},ns_call_id.eq.${callId}`);
+      } catch {}
+    })();
+  };
 
   const KEYS = ["1","2","3","4","5","6","7","8","9","*","0","#"];
 

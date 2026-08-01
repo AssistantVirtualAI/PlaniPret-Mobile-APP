@@ -9,8 +9,11 @@ function bridge(): any {
   return plugins?.PpSipKeepAlive ?? plugins?.CapacitorSip ?? null;
 }
 
+let currentRoute: AudioRoute = "earpiece";
+
 export const audioRouter = {
   async setRoute(route: AudioRoute): Promise<void> {
+    currentRoute = route;
     const b = bridge();
     if (b?.setAudioRoute) {
       try { await b.setAudioRoute({ route }); return; } catch {}
@@ -28,8 +31,26 @@ export const audioRouter = {
   async getCurrentRoute(): Promise<AudioRoute> {
     const b = bridge();
     if (b?.getAudioRoute) {
-      try { const r = await b.getAudioRoute(); return (r?.route as AudioRoute) ?? "earpiece"; } catch {}
+      try {
+        const r = await b.getAudioRoute();
+        if (r?.route) { currentRoute = r.route as AudioRoute; return currentRoute; }
+      } catch {}
     }
-    return "earpiece";
+    return currentRoute;
+  },
+
+  /**
+   * Called when a call becomes active. iOS/Android WebRTC in a WebView defaults
+   * to the loudspeaker; a phone call must start on the earpiece (or a connected
+   * Bluetooth headset) until the user taps the speaker button.
+   */
+  async startCallAudio(): Promise<AudioRoute> {
+    const route: AudioRoute = currentRoute === "bluetooth" ? "bluetooth" : "earpiece";
+    currentRoute = route;
+    await audioRouter.setRoute(route);
+    // Some stacks (CallKit / AudioFocus) re-apply their own route ~1s after the
+    // media session activates, so re-assert once.
+    setTimeout(() => { void audioRouter.setRoute(route); }, 1200);
+    return route;
   },
 };

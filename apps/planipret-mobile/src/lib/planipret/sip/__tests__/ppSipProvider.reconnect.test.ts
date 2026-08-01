@@ -88,7 +88,7 @@ describe("ppSipProvider — transport recovery guard", () => {
     await bootRegistered();
     expect(created.sockets).toHaveLength(1);
     expect(liveUAs()).toHaveLength(1);
-    expect(created.uas[0].config.contact_uri).toBe("sip:113@pbx.example.com;transport=ws;pp-ua=web-113");
+    expect(created.uas[0].config.contact_uri).toBe("sip:113@pbx.example.com;transport=wss;pp-ua=web-113");
     expect(provider.getSnapshot().status).toBe("registered");
   });
 
@@ -113,6 +113,41 @@ describe("ppSipProvider — transport recovery guard", () => {
     }
   });
 
+  it("ignores a delayed disconnect from the replaced UA", async () => {
+    const oldUa = await bootRegistered();
+    oldUa.connected = false;
+    oldUa.emit("disconnected", { reason: "ws_disconnected", code: 1001 });
+
+    await vi.advanceTimersByTimeAsync(5_800);
+    const replacement = created.uas[1];
+    expect(replacement).toBeTruthy();
+    replacement.connected = true;
+    replacement.emit("connected");
+    replacement.emit("registered");
+
+    // URLSession/JsSIP can deliver the old socket's close callback after the
+    // replacement REGISTER 200 OK. It must not poison the current UA state.
+    oldUa.emit("disconnected", { reason: "", code: 1001 });
+    expect(provider.getSnapshot().status).toBe("registered");
+    expect(provider.getReconnectMetrics().recoveryOwner).toBe("none");
+  });
+
+  it("does not suppress init when the current transport is disconnected", async () => {
+    const oldUa = await bootRegistered();
+    oldUa.connected = false;
+    oldUa.emit("disconnected", { reason: "ws_disconnected", code: 1001 });
+
+    // A foreground resume can immediately request init with the same config.
+    // It must replace the dead UA even inside the 15-second startup window.
+    const resumedInit = provider.init({ ...CFG });
+    await vi.advanceTimersByTimeAsync(800);
+    await resumedInit;
+
+    expect(oldUa.stopped).toBe(true);
+    expect(created.uas).toHaveLength(2);
+    expect(liveUAs()).toHaveLength(1);
+  });
+
   it("never re-schedules a reconnect at 1000ms", async () => {
     const ua = await bootRegistered();
     scheduledDelays = [];
@@ -125,7 +160,8 @@ describe("ppSipProvider — transport recovery guard", () => {
     expect(m.subThresholdHits).toBe(0);
     expect(m.minDelayObservedMs === null || m.minDelayObservedMs >= 5000).toBe(true);
     // No recovery timer may ever be armed at the legacy 1000ms cadence.
-    const recoveryDelays = scheduledDelays.filter((d) => d >= 500 && d < 3000);
+    // The intentional 800ms UA handoff gap is not a recovery cadence.
+    const recoveryDelays = scheduledDelays.filter((d) => d >= 1000 && d < 3000);
     expect(recoveryDelays).toEqual([]);
   });
 
@@ -139,6 +175,22 @@ describe("ppSipProvider — transport recovery guard", () => {
 
     expect(ua.registerCalls).toBeLessThanOrEqual(1);
     expect(provider.getReconnectMetrics().history.some((h: any) => h.reason === "register_debounce")).toBe(true);
+  });
+
+  it("never suppresses JsSIP's internal REGISTER after WSS connects", async () => {
+    await provider.init({ ...CFG });
+    const ua = created.uas[0];
+
+    // JsSIP owns these calls during start/connect. The app-level debounce must
+    // not monkey-patch register(), otherwise the post-connect REGISTER can be
+    // dropped and foreground resume remains disconnected until force-quit.
+    ua.register();
+    ua.connected = true;
+    ua.emit("connected");
+    ua.register();
+
+    expect(ua.registerCalls).toBe(2);
+    expect(provider.getReconnectMetrics().history.some((h: any) => h.reason === "register_debounce")).toBe(false);
   });
 
   it("exports an analyzable incident report", async () => {

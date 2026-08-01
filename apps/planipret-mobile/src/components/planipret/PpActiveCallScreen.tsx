@@ -13,6 +13,7 @@ import {
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import type { useMplanipretSoftphone } from "@/hooks/useMplanipretSoftphone";
 import { audioRouter } from "@/lib/planipret/audio/audioRouter";
+import { playRecordingNotice, resetRecordingNotice } from "@/lib/planipret/audio/recordingNotice";
 import { formatSipParty } from "@/lib/planipret/sip/formatSipParty";
 import PpCallDiagnosticPanel from "./PpCallDiagnosticPanel";
 
@@ -64,31 +65,6 @@ export default function PpActiveCallScreen({
 
   useEffect(() => { setAudioEl(audioRef.current); return () => setAudioEl(null); }, [setAudioEl]);
 
-  // Force earpiece at call start — prevents WebRTC/iOS from auto-routing to speaker.
-  // Reset speakerOn state each new call so the button reflects reality.
-  useEffect(() => {
-    if (snap.callState === "active") {
-      setSpeakerOn(false);
-      audioRouter.setRoute("earpiece").catch(() => {});
-    }
-  }, [snap.callId]); // run once per call (callId changes each new call)
-
-  const recordingNoticeRef = useRef<HTMLAudioElement | null>(null);
-  const recordingNoticePlayed = useRef(false);
-  useEffect(() => {
-    if (snap.callState === "ringing-in" && !recordingNoticePlayed.current) {
-      recordingNoticePlayed.current = true;
-      const audio = new Audio("/audio/recording-notice.mp3");
-      audio.volume = 0.85;
-      recordingNoticeRef.current = audio;
-      audio.play().catch(() => {});
-      return () => { audio.pause(); audio.currentTime = 0; recordingNoticeRef.current = null; };
-    }
-    if (snap.callState === "idle" || snap.callState === "ended") {
-      recordingNoticePlayed.current = false;
-    }
-  }, [snap.callState]);
-
   const active = snap.callState === "ringing-out" || snap.callState === "ringing-in"
     || snap.callState === "active" || snap.callState === "held";
 
@@ -96,6 +72,29 @@ export default function PpActiveCallScreen({
   useEffect(() => {
     if (!active) { setView("main"); setDtmfBuf(""); setTransferQuery(""); setElapsed(0); }
   }, [active]);
+
+  // A call must never start on the loudspeaker: WebKit/WebRTC defaults to it
+  // once the remote party answers, so we force the earpiece on connect.
+  useEffect(() => {
+    if (snap.callState !== "active") return;
+    setSpeakerOn(false);
+    void audioRouter.startCallAudio();
+  }, [snap.callState, snap.callId]);
+
+  // Recording notice — played once per call as soon as it connects.
+  // Dedup lives in the module (recordingNotice.ts), so remounting this screen
+  // (navigation, re-render) never replays or skips the notice.
+  useEffect(() => {
+    if (snap.callState !== "active") return;
+    const key = snap.callId || String(snap.startedAt ?? "");
+    void playRecordingNotice(key);
+  }, [snap.callState, snap.callId, snap.startedAt]);
+
+  // Free the dedup slot when the call is over so the next call plays it again.
+  useEffect(() => {
+    if (snap.callState === "idle" || snap.callState === "ended") resetRecordingNotice();
+  }, [snap.callState]);
+
 
   // Duration timer for connected calls
   useEffect(() => {
@@ -219,12 +218,6 @@ export default function PpActiveCallScreen({
             <div className="text-2xl font-semibold tracking-tight text-center">{displayName}</div>
             {displayNumber && <div className="text-sm text-white/60 mt-1">{displayNumber}</div>}
             <div className="mt-3 text-sm text-white/70">{statusText}</div>
-            {isIncoming && (
-              <div className="mt-3 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs" style={{ background: "rgba(255,165,0,0.15)", border: "1px solid rgba(255,165,0,0.35)", color: "rgba(255,200,100,0.9)" }}>
-                <span style={{ fontSize: 10 }}>⏺</span>
-                <span>Cet appel sera enregistré</span>
-              </div>
-            )}
             {dtmfBuf && <div className="mt-2 text-xs text-white/50">DTMF: {dtmfBuf}</div>}
             {snap.errorCause && <div className="mt-2 text-xs" style={{ color: "#FCA5A5" }}>{snap.errorCause}</div>}
           </div>

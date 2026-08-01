@@ -73,9 +73,22 @@ export async function registerPushListeners(extension?: string) {
     PushNotifications.addListener("pushNotificationReceived", async (notif) => {
       const data = (notif.data ?? {}) as Record<string, string>;
       if (data.type === "incoming_call") {
+        // Android counterpart of the iOS PushKit wake: the FCM data message is
+        // the only reliable way to get the app running again, so ask the native
+        // keep-alive service to re-REGISTER before the INVITE arrives.
+        if (platform === "android") {
+          try {
+            const { wakePlanipretNativeSipForIncomingCall } = await import(
+              "@/lib/planipret/sip/nativePpSipService"
+            );
+            await wakePlanipretNativeSipForIncomingCall("fcm_push");
+          } catch (e) {
+            console.warn("[push] native SIP wake failed", e);
+          }
+        }
         await showIncomingCallNotification({
           callId: data.call_id ?? data.ns_callid ?? "",
-          from: data.from ?? notif.title ?? "Unknown caller",
+          from: data.from ?? data.callerName ?? notif.title ?? "Unknown caller",
         });
       }
     });

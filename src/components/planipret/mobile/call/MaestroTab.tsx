@@ -76,28 +76,12 @@ export default function MaestroTab({ call, onUpdated }: { call: MaestroCall; onU
 
   useEffect(() => {
     (async () => {
-      const [{ data }, sessionRes] = await Promise.all([
-        supabase
+      const { data } = await supabase
         .from("planipret_integration_config")
         .select("integration_key,is_enabled")
-          .in("integration_key", ["maestro", "maestro_telecom"]),
-        supabase.auth.getSession(),
-      ]);
-      const globallyEnabled = Array.isArray(data) && data.some((row: any) => row?.is_enabled);
-      if (globallyEnabled) {
-        setConfigured(true);
-        return;
-      }
-      try {
-        const token = sessionRes.data.session?.access_token;
-        const { data: status } = await supabase.functions.invoke("maestro-oauth-status", {
-          body: {},
-          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-        });
-        setConfigured(!!((status as any)?.connected || (status as any)?.status === "connected"));
-      } catch {
-        setConfigured(false);
-      }
+        .eq("integration_key", "maestro")
+        .maybeSingle();
+      setConfigured(!!(data as any)?.is_enabled);
     })();
   }, []);
 

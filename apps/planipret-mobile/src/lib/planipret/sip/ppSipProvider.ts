@@ -355,7 +355,20 @@ class PpSipProvider {
       this.scheduleSocketReconnect(`${reason}_transport_down`);
       return false;
     }
+    const now = Date.now();
+    const minGap = Math.max(5000, getPpSipReconnectConfig().reRegisterDelayMs);
+    if (now - this.lastRegisterAttemptAt < minGap) {
+      this.log("warn", `explicit REGISTER suppressed (${now - this.lastRegisterAttemptAt}ms < ${minGap}ms)`);
+      this.pushHistory("blocked", "register_debounce");
+      this.emitMetrics();
+      return false;
+    }
     try {
+      // Debounce only application-triggered refreshes. Never wrap ua.register():
+      // JsSIP calls it once before transport connection and again after WSS is
+      // ready. Suppressing the second internal call left foreground resume stuck
+      // until the app was force-quit.
+      this.lastRegisterAttemptAt = now;
       ua.register();
       return true;
     } catch {
@@ -452,26 +465,6 @@ class PpSipProvider {
         user_agent: "Planipret Softphone 1.0",
       });
 
-      // Definitive REGISTER guard: JsSIP already auto-REGISTERs when
-      // `register:true`. App-resume, token-refresh and watchdog events were also
-      // calling register(), causing duplicate REGISTER bursts on the same WSS
-      // connection. Throttle every call path, including JsSIP internal callers.
-      try {
-        const rawRegister = ua.register.bind(ua);
-        ua.register = (...args: any[]) => {
-          const now = Date.now();
-          const minGap = Math.max(5000, getPpSipReconnectConfig().reRegisterDelayMs);
-          if (now - this.lastRegisterAttemptAt < minGap) {
-            this.log("warn", `REGISTER suppressed (${now - this.lastRegisterAttemptAt}ms < ${minGap}ms)`);
-            this.pushHistory("blocked", "register_debounce");
-            this.emitMetrics();
-            return undefined;
-          }
-          this.lastRegisterAttemptAt = now;
-          return rawRegister(...args);
-        };
-      } catch { /* JsSIP API guard */ }
-
       try {
         const transport = (ua as any)?._transport;
         if (transport && typeof transport._reconnect === "function") {
@@ -501,7 +494,7 @@ class PpSipProvider {
       });
       ua.on("disconnected", (e: any) => {
         // ua.stop() may emit `disconnected` after the replacement UA has already
-        // REGISTERed. Never let that stale event mark the new transport as
+        // REGISTERed. Never let that stale event mark the new core1 transport as
         // disconnected or start another rebuild (the observed post-REGISTER 1001 loop).
         if (!isCurrentUa()) {
           this.log("warn", "stale UA disconnect ignored", { code: e?.code, reason: e?.reason });
@@ -624,20 +617,28 @@ class PpSipProvider {
     // before JsSIP had a chance to receive the INVITE, auto-answer as soon as
     // the session arrives (within a 30s intent window).
     if (incoming) {
+      this.log("info", "incoming INVITE attached", { sipCallId: callId, from: remoteUri });
       try {
+        // NOTE: the VoIP push callId (NetSapiens `1-XXXXXXXX-...`) and the SIP
+        // Call-ID are two different identifier spaces — never compare them.
+        // Any incoming INVITE within the 30s answer-intent window is answered.
         const pending = this.pendingAnswer;
-        // The push VoIP callId (NetSapiens format: "1-XXXXXXXX-...") and the
-        // SIP Call-ID header are NOT guaranteed to be identical. Accept any
-        // incoming session when a pending answer intent exists within its window.
-        // Only reject if both IDs are non-empty AND clearly different.
-        const callMatches = !pending?.callId || !callId || pending.callId === callId
-          || callId.includes(pending.callId) || pending.callId.includes(callId);
-        if (pending && pending.expiresAt > Date.now() && (callMatches || incoming)) {
+        if (pending && pending.expiresAt > Date.now()) {
           this.pendingAnswer = null;
-          setTimeout(() => { this.answer(callId); }, 250);
+          this.log("info", "pending answer intent active → auto-answering INVITE", {
+            pushCallId: pending.callId || null, sipCallId: callId,
+          });
+          setTimeout(() => {
+            const ok = this.answer();
+            this.log(ok ? "info" : "error", `auto-answer ${ok ? "sent 200 OK" : "FAILED"}`, { sipCallId: callId });
+          }, 250);
+        } else if (pending) {
+          this.log("warn", "answer intent expired before INVITE arrived");
+          this.pendingAnswer = null;
         }
       } catch {}
     }
+
 
 
     session.on("progress", () => { if (!incoming) this.update({ callState: "ringing-out" }); });
@@ -713,6 +714,7 @@ class PpSipProvider {
     }
   }
 
+
   private resetCall() {
     this.session = null;
     this.update({
@@ -759,18 +761,12 @@ class PpSipProvider {
     return false;
   }
 
-  answer(expectedCallId?: string): boolean {
+  answer(_expectedCallId?: string): boolean {
     const session = this.session;
     if (!session || this.snap.callState !== "ringing-in") return false;
-    // Push VoIP callId (NetSapiens "1-XXXXXXXX-...") and SIP Call-ID are different
-    // identifiers — never reject an incoming session solely on ID mismatch.
-    // Only reject if both IDs are non-empty AND neither contains the other.
-    if (expectedCallId && this.snap.callId && expectedCallId !== this.snap.callId) {
-      const idMatch = expectedCallId.includes(this.snap.callId) || this.snap.callId.includes(expectedCallId);
-      if (!idMatch) {
-        this.log("warn", "answer: Call-ID mismatch — proceeding anyway (push vs SIP)", { expectedCallId, sessionCallId: this.snap.callId });
-      }
-    }
+    // Never reject on a Call-ID mismatch: the VoIP push id and the SIP Call-ID
+    // belong to different identifier spaces on NetSapiens.
+
     try {
       session.answer({
         mediaConstraints: { audio: true, video: false },

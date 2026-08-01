@@ -71,18 +71,12 @@ export default function GreetingStudio({ profile, onProfileChange }: { profile: 
 
   // Load voices
   useEffect(() => {
-    let cancelled = false;
-    const timeout = window.setTimeout(() => {
-      if (!cancelled) setVoicesError(t("greeting.voiceLoadFailed") || "voice_load_timeout");
-    }, 10_000);
     supabase.functions.invoke("pp-greeting-voices").then(({ data, error }) => {
-      if (cancelled) return;
       if (error) { setVoicesError(error.message); return; }
       if ((data as any)?.success) setVoices((data as any).voices);
       else setVoicesError((data as any)?.error ?? "unknown_error");
-    }).finally(() => window.clearTimeout(timeout));
-    return () => { cancelled = true; window.clearTimeout(timeout); };
-  }, [t]);
+    });
+  }, []);
 
   // Sign current greeting URL if it's a storage path
   useEffect(() => {
@@ -153,7 +147,7 @@ export default function GreetingStudio({ profile, onProfileChange }: { profile: 
   };
 
   return (
-    <div className="space-y-4 pb-[calc(2rem+env(safe-area-inset-bottom))] overflow-visible">
+    <div className="space-y-4 pb-8">
       {/* Header */}
       <div>
         <h2 className="text-[18px] font-bold" style={{ color: TOKENS.text }}>{t("greeting.title")}</h2>
@@ -246,7 +240,7 @@ export default function GreetingStudio({ profile, onProfileChange }: { profile: 
             return <div className="text-[12px] p-3 rounded-xl text-center" style={{ background: TOKENS.card, color: TOKENS.muted, border: `1px solid ${TOKENS.border}` }}>Aucune voix ne correspond à ces filtres.</div>;
           }
           return (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pr-1" role="radiogroup" aria-label={t("greeting.selectVoice")}>
+          <div className="grid grid-cols-2 gap-2 max-h-72 overflow-y-auto pr-1" role="radiogroup" aria-label={t("greeting.selectVoice")}>
             {filtered.map((v) => (
               <div
                 key={v.voice_id}

@@ -1,85 +1,107 @@
 /**
- * MaestroCallPostingPanel
- * ─────────────────────────
- * Affiche dans la page Connexions (MConnections) un résumé du statut
- * du posting automatique des appels vers Maestro CRM.
+ * MaestroCallPostingPanel — live status of the Maestro `POST /calls` rules.
  *
- * Les 4 règles Scott :
- *  1. Appel sortant vers un client → posté
- *  2. Appel sortant vers un numéro VoIP de courtier → posté
- *  3. Appel entrant depuis un client → posté
- *  4. Appel entrant depuis un numéro VoIP de courtier → ignoré (l'appelant poste)
+ * Shows, for the current and recent calls, whether the inbound/outbound event
+ * was posted, skipped (and why), retried, or blocked at end-of-call.
  */
-import { CheckCircle2, PhoneCall, Info } from "lucide-react";
+import { useEffect, useState } from "react";
+import { CheckCircle2, XCircle, Clock, SkipForward, PhoneIncoming, PhoneOutgoing } from "lucide-react";
+import {
+  getMaestroPostingRecords,
+  subscribeMaestroPosting,
+  type MaestroPostRecord,
+  type MaestroPostState,
+} from "@/lib/planipret/maestroCallPosting";
 
-interface Props {
-  lang?: "fr" | "en";
-}
-
-const LABELS = {
-  fr: {
-    title: "Posting automatique Maestro",
-    subtitle: "Les appels sont automatiquement enregistrés dans Maestro CRM selon les règles suivantes :",
-    rules: [
-      "Appel sortant vers un client → enregistré",
-      "Appel sortant vers un courtier VoIP → enregistré",
-      "Appel entrant depuis un client → enregistré",
-      "Appel entrant depuis un courtier VoIP → ignoré (l'appelant enregistre)",
-    ],
-    dedup: "Déduplication 90 s · Retry 3× · Fire-and-forget",
-  },
-  en: {
-    title: "Maestro Auto Call Posting",
-    subtitle: "Calls are automatically recorded in Maestro CRM according to the following rules:",
-    rules: [
-      "Outbound call to a client → posted",
-      "Outbound call to a broker VoIP number → posted",
-      "Inbound call from a client → posted",
-      "Inbound call from a broker VoIP number → skipped (caller posts)",
-    ],
-    dedup: "90 s dedup · 3× retry · Fire-and-forget",
-  },
+const STATE_TONE: Record<MaestroPostState, string> = {
+  posted: "#2EDC78",
+  pending: "#F5A623",
+  skipped: "#8FA8C0",
+  failed: "#E84C4C",
 };
 
-export default function MaestroCallPostingPanel({ lang = "fr" }: Props) {
-  const L = LABELS[lang] ?? LABELS.fr;
+const REASONS: Record<string, { fr: string; en: string }> = {
+  posted: { fr: "Publié dans Maestro", en: "Posted to Maestro" },
+  posting: { fr: "Envoi en cours…", en: "Posting…" },
+  queued: { fr: "En attente", en: "Queued" },
+  classifying: { fr: "Classification de l'appelant…", en: "Classifying caller…" },
+  rule_4_inbound_from_broker_voip: {
+    fr: "Règle 4 — entrant depuis un numéro VoIP de courtier (l'appelant crée l'enregistrement)",
+    en: "Rule 4 — inbound from a broker VoIP number (the caller creates the record)",
+  },
+  classification_unavailable_posted: {
+    fr: "Classification indisponible — publié quand même (POST /calls est idempotent)",
+    en: "Classification unavailable — posted anyway (POST /calls is idempotent)",
+  },
+  post_failed: { fr: "Échec après 3 tentatives", en: "Failed after 3 attempts" },
+};
+
+function reasonLabel(reason: string, lang: "fr" | "en") {
+  if (REASONS[reason]) return REASONS[reason][lang];
+  const m = /^posting_attempt_(\d+)$/.exec(reason);
+  if (m) return lang === "fr" ? `Envoi — tentative ${m[1]}` : `Posting — attempt ${m[1]}`;
+  return reason;
+}
+
+const ENDED: Record<MaestroPostRecord["endedUpdate"], { fr: string; en: string }> = {
+  none: { fr: "aucune mise à jour de fin", en: "no end-of-call update" },
+  sent: { fr: "fin d'appel envoyée", en: "end-of-call sent" },
+  failed: { fr: "fin d'appel échouée", en: "end-of-call failed" },
+  blocked: { fr: "fin d'appel bloquée (jamais publié)", en: "end-of-call blocked (never posted)" },
+};
+
+export default function MaestroCallPostingPanel({ lang = "fr" }: { lang?: "fr" | "en" }) {
+  const [rows, setRows] = useState<MaestroPostRecord[]>(() => getMaestroPostingRecords());
+
+  useEffect(() => subscribeMaestroPosting(() => setRows(getMaestroPostingRecords())), []);
 
   return (
-    <section
-      className="rounded-2xl p-4 mt-4"
-      style={{
-        background: "rgba(255,255,255,0.04)",
-        border: "1px solid rgba(255,255,255,0.08)",
-      }}
-    >
+    <section className="mt-5 rounded-xl p-3" style={{ background: "#0A1628", border: "1px solid #0E2A45" }}>
       <div className="flex items-center gap-2 mb-2">
-        <PhoneCall className="w-4 h-4 shrink-0" style={{ color: "var(--pp-brand-accent)" }} />
-        <span className="text-[13px] font-semibold" style={{ color: "var(--pp-text-primary)" }}>
-          {L.title}
+        <span className="text-sm font-semibold flex-1">
+          {lang === "fr" ? "Publication des appels Maestro" : "Maestro call posting"}
+        </span>
+        <span className="text-[10px]" style={{ color: "#5E7A96" }}>
+          {rows.length} {lang === "fr" ? "appel(s)" : "call(s)"}
         </span>
       </div>
-      <p className="text-[11px] mb-3" style={{ color: "var(--pp-text-muted)" }}>
-        {L.subtitle}
-      </p>
-      <ul className="space-y-1.5">
-        {L.rules.map((rule, i) => (
-          <li key={i} className="flex items-start gap-2">
-            <CheckCircle2
-              className="w-3.5 h-3.5 mt-0.5 shrink-0"
-              style={{ color: i === 3 ? "var(--pp-text-muted)" : "var(--pp-brand-accent)" }}
-            />
-            <span className="text-[11px]" style={{ color: "var(--pp-text-secondary)" }}>
-              {rule}
-            </span>
-          </li>
-        ))}
+
+      {rows.length === 0 && (
+        <p className="text-xs" style={{ color: "#8FA8C0" }}>
+          {lang === "fr"
+            ? "Aucun appel depuis l'ouverture de l'application."
+            : "No calls since the app was opened."}
+        </p>
+      )}
+
+      <ul className="space-y-2">
+        {rows.map((r) => {
+          const tone = STATE_TONE[r.state];
+          const StateIcon =
+            r.state === "posted" ? CheckCircle2 : r.state === "failed" ? XCircle : r.state === "pending" ? Clock : SkipForward;
+          const DirIcon = r.direction === "inbound" ? PhoneIncoming : PhoneOutgoing;
+          return (
+            <li key={r.callId} className="rounded-lg p-2.5" style={{ background: "#081120", border: "1px solid #0E2A45" }}>
+              <div className="flex items-center gap-2">
+                <DirIcon className="w-3.5 h-3.5 shrink-0" style={{ color: "#5EC2FF" }} />
+                <span className="text-xs font-semibold flex-1 truncate">{r.number || (lang === "fr" ? "Numéro inconnu" : "Unknown number")}</span>
+                <StateIcon className="w-3.5 h-3.5 shrink-0" style={{ color: tone }} />
+                <span className="text-[10px] font-semibold uppercase" style={{ color: tone }}>{r.state}</span>
+              </div>
+              <p className="text-[11px] mt-1" style={{ color: "#8FA8C0" }}>{reasonLabel(r.reason, lang)}</p>
+              {r.lastError && (
+                <p className="text-[10px] mt-0.5 break-words" style={{ color: "#E84C4C" }}>{r.lastError}</p>
+              )}
+              <p className="text-[10px] mt-1 break-all" style={{ color: "#5E7A96" }}>
+                {r.direction} · {r.classification} · {lang === "fr" ? "tentatives" : "attempts"} {r.attempts} · {ENDED[r.endedUpdate][lang]}
+              </p>
+              <p className="text-[10px] break-all" style={{ color: "#40597A" }}>
+                dedup: {r.dedupKey} · id: {r.callId}
+              </p>
+            </li>
+          );
+        })}
       </ul>
-      <div className="flex items-center gap-1.5 mt-3">
-        <Info className="w-3 h-3 shrink-0" style={{ color: "var(--pp-text-muted)" }} />
-        <span className="text-[10px]" style={{ color: "var(--pp-text-muted)" }}>
-          {L.dedup}
-        </span>
-      </div>
     </section>
   );
 }

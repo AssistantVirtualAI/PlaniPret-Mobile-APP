@@ -13,6 +13,8 @@ import {
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import type { useMplanipretSoftphone } from "@/hooks/useMplanipretSoftphone";
 import { audioRouter } from "@/lib/planipret/audio/audioRouter";
+import { playRecordingNotice, resetRecordingNotice } from "@/lib/planipret/audio/recordingNotice";
+import { formatSipParty } from "@/lib/planipret/sip/formatSipParty";
 import PpCallDiagnosticPanel from "./PpCallDiagnosticPanel";
 
 type Contact = {
@@ -70,6 +72,29 @@ export default function PpActiveCallScreen({
   useEffect(() => {
     if (!active) { setView("main"); setDtmfBuf(""); setTransferQuery(""); setElapsed(0); }
   }, [active]);
+
+  // A call must never start on the loudspeaker: WebKit/WebRTC defaults to it
+  // once the remote party answers, so we force the earpiece on connect.
+  useEffect(() => {
+    if (snap.callState !== "active") return;
+    setSpeakerOn(false);
+    void audioRouter.startCallAudio();
+  }, [snap.callState, snap.callId]);
+
+  // Recording notice — played once per call as soon as it connects.
+  // Dedup lives in the module (recordingNotice.ts), so remounting this screen
+  // (navigation, re-render) never replays or skips the notice.
+  useEffect(() => {
+    if (snap.callState !== "active") return;
+    const key = snap.callId || String(snap.startedAt ?? "");
+    void playRecordingNotice(key);
+  }, [snap.callState, snap.callId, snap.startedAt]);
+
+  // Free the dedup slot when the call is over so the next call plays it again.
+  useEffect(() => {
+    if (snap.callState === "idle" || snap.callState === "ended") resetRecordingNotice();
+  }, [snap.callState]);
+
 
   // Duration timer for connected calls
   useEffect(() => {
@@ -139,8 +164,11 @@ export default function PpActiveCallScreen({
   const isIncoming = snap.callState === "ringing-in";
   const isOutgoingRinging = snap.callState === "ringing-out";
   const isHeld = snap.callState === "held";
-  const displayName = snap.remoteIdentity || snap.remoteNumber || "—";
-  const displayNumber = snap.remoteNumber && snap.remoteNumber !== displayName ? snap.remoteNumber : null;
+  // Normalisation universelle : la même UI marche pour n'importe quel broker
+  // et n'importe quel format d'appelant (SIP URI, tel:, E.164, poste, masqué).
+  const party = formatSipParty(snap.remoteIdentity, "fr", snap.remoteNumber);
+  const displayName = party.name;
+  const displayNumber = party.subtitle || null;
   const statusText = isIncoming ? (t("call.incoming") || "Appel entrant")
     : isOutgoingRinging ? (t("call.ringing") || "Sonnerie…")
     : isHeld ? (t("call.onHold") || "En attente")

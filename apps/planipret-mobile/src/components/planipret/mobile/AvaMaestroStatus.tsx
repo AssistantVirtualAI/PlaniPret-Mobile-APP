@@ -1,56 +1,71 @@
-/**
- * AvaMaestroStatus
- * Affiche une bannière discrète dans MAvaChat indiquant si Maestro CRM est connecté.
- * Si non connecté, propose un lien vers la page Connexions.
- */
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { AlertCircle, CheckCircle2 } from "lucide-react";
+import { CheckCircle2, AlertTriangle, RefreshCw, Loader2 } from "lucide-react";
 
-interface Props {
-  lang?: "fr" | "en";
-}
+type Status = {
+  linked: boolean;
+  maestro_broker_id: string | null;
+  clients_total: number | null;
+  chat: { ok: boolean; detail: string };
+  voice: { ok: boolean; detail: string };
+  healthy: boolean;
+};
 
-export default function AvaMaestroStatus({ lang = "fr" }: Props) {
-  const [connected, setConnected] = useState<boolean | null>(null);
+export default function AvaMaestroStatus({ lang = "fr" }: { lang?: "fr" | "en" }) {
+  const [status, setStatus] = useState<Status | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [open, setOpen] = useState(false);
+  const L = (fr: string, en: string) => (lang === "en" ? en : fr);
 
-  useEffect(() => {
-    let cancelled = false;
-    supabase.auth.getUser().then(({ data: { user } }) => {
-      if (!user || cancelled) return;
-      supabase
-        .from("planipret_profiles")
-        .select("maestro_broker_id")
-        .eq("user_id", user.id)
-        .maybeSingle()
-        .then(({ data }) => {
-          if (!cancelled) setConnected(!!data?.maestro_broker_id);
-        });
-    });
-    return () => { cancelled = true; };
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("pp-ava-maestro-status", { body: {} });
+      if (error) throw error;
+      setStatus(data as Status);
+    } catch {
+      setStatus(null);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  // Ne rien afficher tant qu'on ne sait pas
-  if (connected === null) return null;
-  // Si connecté, pas de bannière (AVA a accès au portefeuille)
-  if (connected) return null;
+  useEffect(() => { void load(); }, [load]);
 
-  const msg =
-    lang === "en"
-      ? "Maestro not connected — portfolio tools unavailable."
-      : "Maestro non connecté — outils portefeuille indisponibles.";
+  const ok = !!status?.healthy;
+  const tone = loading ? "var(--pp-text-muted)" : ok ? "#10b981" : "#f59e0b";
 
   return (
-    <div
-      className="mx-4 mb-2 flex items-center gap-2 rounded-xl px-3 py-2 text-[12px]"
-      style={{
-        background: "rgba(255,180,0,0.08)",
-        border: "1px solid rgba(255,180,0,0.25)",
-        color: "var(--pp-text-muted)",
-      }}
-    >
-      <AlertCircle className="w-3.5 h-3.5 shrink-0 text-yellow-400" />
-      <span>{msg}</span>
+    <div className="px-4 pt-2">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center gap-2 rounded-xl px-3 py-2 text-left"
+        style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)" }}
+      >
+        {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" style={{ color: tone }} />
+          : ok ? <CheckCircle2 className="w-3.5 h-3.5" style={{ color: tone }} />
+            : <AlertTriangle className="w-3.5 h-3.5" style={{ color: tone }} />}
+        <span className="text-[12px] font-semibold flex-1 min-w-0 truncate" style={{ color: "var(--pp-text-primary)" }}>
+          Maestro — {loading ? L("vérification…", "checking…")
+            : ok ? L("connecté", "connected")
+              : status?.linked ? L("problème d'accès", "access issue") : L("compte non lié", "account not linked")}
+        </span>
+        <RefreshCw
+          className="w-3.5 h-3.5"
+          style={{ color: "var(--pp-text-muted)" }}
+          onClick={(e) => { e.stopPropagation(); void load(); }}
+        />
+      </button>
+
+      {open && status && (
+        <div className="mt-1.5 rounded-xl px-3 py-2 space-y-1 text-[11px]"
+          style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-muted)" }}>
+          <div>{L("ID courtier", "Broker ID")}: {status.maestro_broker_id ?? "—"}</div>
+          {status.clients_total !== null && <div>{L("Clients", "Clients")}: {status.clients_total}</div>}
+          <div style={{ color: status.chat.ok ? "#10b981" : "#f59e0b" }}>Chatbot: {status.chat.detail}</div>
+          <div style={{ color: status.voice.ok ? "#10b981" : "#f59e0b" }}>Voice bot: {status.voice.detail}</div>
+        </div>
+      )}
     </div>
   );
 }

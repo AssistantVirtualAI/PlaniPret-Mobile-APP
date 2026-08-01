@@ -32,6 +32,8 @@ const DICT = {
     drifted: "En dérive",
     repaired: "Réparés",
     errors: "Erreurs",
+    pushOff: "Push mobile OFF",
+
     noRun: "Aucune exécution enregistrée pour l'instant.",
     lastRuns: "Dernières exécutions",
     running: "Exécution en cours…",
@@ -50,6 +52,8 @@ const DICT = {
     drifted: "Drifted",
     repaired: "Repaired",
     errors: "Errors",
+    pushOff: "Mobile push OFF",
+
     noRun: "No run recorded yet.",
     lastRuns: "Recent runs",
     running: "Running…",
@@ -128,13 +132,15 @@ export default function DeviceExpiryGuardCard() {
       </div>
 
       {last ? (
-        <div className="grid grid-cols-2 gap-2 md:grid-cols-5">
+        <div className="grid grid-cols-2 gap-2 md:grid-cols-6">
           {stat(t.checked, s.checked ?? 0, "var(--pp-text-primary)")}
           {stat(t.compliant, s.compliant ?? 0, SUCCESS)}
           {stat(t.drifted, s.drifted ?? 0, WARNING)}
+          {stat(t.pushOff, s.push_disabled ?? 0, (s.push_disabled ?? 0) > 0 ? DANGER : SUCCESS)}
           {stat(t.repaired, s.repaired ?? 0, ACCENT)}
           {stat(t.errors, (s.errors ?? 0) + (s.repair_failed ?? 0), DANGER)}
         </div>
+
       ) : (
         <div style={{ fontSize: 12, color: "var(--pp-text-secondary)" }}>{busy ? t.running : t.noRun}</div>
       )}

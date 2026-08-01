@@ -420,7 +420,7 @@ export default function MAvaChat() {
                 {m.role === "assistant" ? (
                   <div className="max-w-[92%] space-y-2">
                     <div className="flex items-start gap-2.5">
-                      <div className="w-8 h-8 min-w-[2rem] rounded-xl flex items-center justify-center shrink-0 overflow-hidden" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)" }}>
+                      <div className="w-8 h-8 rounded-xl flex items-center justify-center shrink-0 overflow-hidden" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)" }}>
                         <img src={avaLogo.url} alt="AVA" className="w-full h-full object-contain" />
                       </div>
                       <div className="flex-1 min-w-0 rounded-2xl rounded-tl-md px-3.5 py-3" style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", boxShadow: "0 8px 24px rgba(0,0,0,0.18)" }}>

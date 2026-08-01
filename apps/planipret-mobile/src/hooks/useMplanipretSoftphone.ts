@@ -56,7 +56,7 @@ import {
   type AnsweredBy,
 } from "@/lib/planipret/calls/callSessionSync";
 import { maestroTelecom } from "@/lib/planipret/maestroTelecom";
-import { postCallToMaestro, updateCallIfPosted } from "@/lib/planipret/maestroCallPosting";
+import { postOutboundCall, postInboundCall, updateCallIfPosted } from "@/lib/planipret/maestroCallPosting";
 
 // Fire-and-forget Maestro logging — never blocks the call flow.
 const maestroLog = (fn: () => Promise<unknown>) => {
@@ -716,13 +716,11 @@ export function useMplanipretSoftphone(enabled = true) {
       } catch { /* ignore */ }
     }
 
-    // Heartbeat: SIP transport can go silent without emitting a status event
-    // (background tab, radio switch, NS keepalive drop). Poll every 15s so the
-    // watchdog escalates to forceReregister even without a subscribe callback.
+    // Foreground-only watchdog. Background ownership is transferred exactly
+    // once by the real lifecycle events above; a periodic handoff restarted the
+    // native service every 15s and caused competing NetSapiens AOR bindings.
     const heartbeat = window.setInterval(() => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") {
-        if (callInProgress()) { void setPlanipretNativeCallActive(true); return; }
-        scheduleHandoff();
         return;
       }
       evaluate();
@@ -766,11 +764,6 @@ export function useMplanipretSoftphone(enabled = true) {
     if (seenCallIds.current.has(callId)) return;
     seenCallIds.current.add(callId);
     setAnsweredElsewhere(null);
-    // Règle 3 : appel entrant depuis client → POST Maestro.
-    // Règle 4 : appel entrant depuis broker VoIP → postCallToMaestro skip automatiquement.
-    if (snap.direction === "in" && snap.remoteNumber) {
-      void postCallToMaestro(callId, "inbound", snap.remoteNumber);
-    }
     void upsertRingingSession({
       callId,
       brokerId,
@@ -786,6 +779,27 @@ export function useMplanipretSoftphone(enabled = true) {
     });
     return () => { unsub(); };
   }, [snap.callId, snap.callState, snap.direction, snap.remoteNumber, brokerId]);
+
+  // Maestro call records (Scott's rules): outbound always, inbound only when
+  // the caller is not another broker's VoIP number.
+  useEffect(() => {
+    const callId = snap.callId;
+    if (!callId) return;
+    const ringing = snap.callState === "ringing-in" || snap.callState === "ringing-out" || snap.callState === "active";
+    if (!ringing) return;
+    if (snap.direction === "out") {
+      postOutboundCall({ providerCallId: callId, number: snap.remoteNumber || snap.remoteIdentity || "" });
+    } else if (snap.direction === "in") {
+      postInboundCall({ providerCallId: callId, number: snap.remoteNumber || snap.remoteIdentity || "" });
+    }
+  }, [snap.callId, snap.callState, snap.direction, snap.remoteNumber, snap.remoteIdentity]);
+
+  // Push VoIP ring arrives before the INVITE — post the inbound call as soon as
+  // we know the caller (rule 3), de-duplicated by provider_call_id.
+  useEffect(() => {
+    if (!pushRing?.callId) return;
+    postInboundCall({ providerCallId: pushRing.callId, number: pushRing.from || "" });
+  }, [pushRing?.callId, pushRing?.from]);
 
   // Mark session ended when local call ends.
   useEffect(() => {
@@ -872,6 +886,34 @@ export function useMplanipretSoftphone(enabled = true) {
     return true;
   }, [restCall?.id]);
 
+  // Best-effort REST teardown with exponential backoff. Used on hangup so the
+  // PBX always drops the leg even when the SIP WebSocket is down and the BYE
+  // never leaves the device.
+  const restDisconnectWithRetry = useCallback(async (callId: string | null | undefined) => {
+    const id = callId || restCall?.id;
+    if (!id) { console.info("[hangup] no PBX call id → REST disconnect skipped"); return false; }
+    const delays = [0, 800, 2000, 5000];
+    for (let i = 0; i < delays.length; i++) {
+      if (delays[i]) await new Promise((r) => window.setTimeout(r, delays[i]));
+      try {
+        const { data, error } = await supabase.functions.invoke("pp-ns-calls", {
+          body: { action: "disconnect", call_id: id },
+        });
+        if (!error && (data as any)?.success !== false) {
+          console.info(`[hangup] NetSapiens confirmed call termination (call_id=${id}, attempt=${i + 1})`);
+          setRestCall((cur) => (cur?.id === id ? null : cur));
+          return true;
+        }
+        console.warn(`[hangup] REST disconnect attempt ${i + 1}/${delays.length} failed`, (error as any)?.message ?? (data as any)?.message ?? "unknown");
+      } catch (e: any) {
+        console.warn(`[hangup] REST disconnect attempt ${i + 1}/${delays.length} threw`, e?.message ?? e);
+      }
+    }
+    console.error(`[hangup] NetSapiens did NOT confirm termination after ${delays.length} attempts (call_id=${id})`);
+    return false;
+  }, [restCall?.id]);
+
+
   const callViaPBX = useCallback(async (destination: string): Promise<OutboundResult> => {
     const { data, error } = await supabase.functions.invoke("pp-ns-calls", { body: { action: "start", to_number: destination, client_type: "mobile" } });
     if (error || (data as any)?.success === false) {
@@ -888,8 +930,8 @@ export function useMplanipretSoftphone(enabled = true) {
         status: "ringing-out",
         startedAt: Date.now(),
       });
-      // Règle 1 (client) ou Règle 2 (broker VoIP) — postCallToMaestro classe automatiquement.
-      void postCallToMaestro(callId, "outbound", destination);
+      // Rules 1 & 2 — always post outbound calls to Maestro.
+      postOutboundCall({ providerCallId: callId, number: destination });
     }
     return { via: "pbx", ok: true, callId };
   }, []);
@@ -923,62 +965,96 @@ export function useMplanipretSoftphone(enabled = true) {
 
   // Wrapped answer: race to claim the call before actually picking up. If we
   // lose (widget answered first), don't pick up — the winner already has audio.
+  // Every branch is logged so the exact route to answer() is visible in Xcode /
+  // Logcat when debugging a VoIP-push answer.
   const answer = useCallback(async () => {
-    if (restCall?.id && !hasLiveSipSession) return await restControl("answer");
+    const sipSnap = ppSipProvider.getSnapshot();
+    console.info("[answer] tapped", {
+      hasLiveSipSession,
+      sipCallState: sipSnap.callState,
+      sipCallId: sipSnap.callId || null,
+      pushCallId: pushRing?.callId ?? null,
+      restCallId: restCall?.id ?? null,
+    });
+
+    if (restCall?.id && !hasLiveSipSession) {
+      console.info("[answer] route=REST (pp-ns-calls answer)", { call_id: restCall.id });
+      const ok = await restControl("answer");
+      console.info(`[answer] REST answer ${ok ? "accepted" : "REJECTED"} by NetSapiens`);
+      return ok;
+    }
+
     // Push VoIP reçu mais INVITE pas encore arrivé : on bufferise la réponse,
-    // ppSipProvider répondra dès que la session SIP se présente.
+    // ppSipProvider répondra dès que la session SIP se présente (aucune
+    // comparaison de Call-ID : push id ≠ SIP Call-ID).
     if (!hasLiveSipSession && pushRing) {
+      console.info("[answer] route=PUSH-PENDING → forceReregister + requestAnswer", {
+        pushCallId: pushRing.callId ?? null,
+      });
       try { ppSipProvider.forceReregister(); } catch {}
-      ppSipProvider.requestAnswer(pushRing.callId || undefined);
+      const immediate = ppSipProvider.requestAnswer(pushRing.callId || undefined);
+      console.info(`[answer] requestAnswer → ${immediate ? "answered immediately" : "intent queued (30s window)"}`);
       return true;
     }
-    const callId = ppSipProvider.getSnapshot().callId;
+
+    const callId = sipSnap.callId;
+    console.info("[answer] route=SIP → claiming call", { callId });
     const won = await claimCall(callId, "mobile");
     if (!won) {
+      console.warn("[answer] claim lost → answered elsewhere (widget)");
       setAnsweredElsewhere("widget");
       try { ppSipProvider.hangup(); } catch {}
       return false;
     }
     const ok = await ppSipProvider.answer(callId);
+    console.info(`[answer] ppSipProvider.answer → ${ok ? "SIP 200 OK sent" : "FAILED"}`, { callId });
     // Clear the REST/DB attachment so the in-call UI follows the live session.
     if (ok && restCall?.id) setRestCall(null);
     return ok;
   }, [restCall?.id, restControl, hasLiveSipSession, pushRing]);
 
   const hangup = useCallback(() => {
-    if (restCall?.id && !hasLiveSipSession) {
-      const id = restCall.id;
-      void restControl("disconnect");
-      void updateCallIfPosted(id, { status: "ended", ended_reason: "completed" });
+    const callId = ppSipProvider.getSnapshot().callId;
+    const restId = restCall?.id ?? null;
+    console.info("[hangup] requested", { sipCallId: callId || null, restCallId: restId, hasLiveSipSession });
+    // Always signal the PBX over REST as well, with retry + backoff: the SIP BYE
+    // can be lost when the WebSocket dropped or the session never reached
+    // "active", which would leave the call up on NetSapiens.
+    void restDisconnectWithRetry(restId);
+    if (restId && !hasLiveSipSession) {
+      void updateCallIfPosted(restId, { status: "ended", ended_reason: "completed" });
+      setRestCall(null);
+      setPushRing(null);
       return;
     }
-    const callId = ppSipProvider.getSnapshot().callId;
-    ppSipProvider.hangup();
+    try { ppSipProvider.hangup(); console.info("[hangup] SIP BYE sent"); }
+    catch (e: any) { console.warn("[hangup] SIP BYE failed", e?.message ?? e); }
     setPushRing(null);
-    // Always send REST disconnect so the PBX terminates the call even if
-    // the SIP BYE/CANCEL was not delivered (e.g. WebSocket dropped or
-    // session never reached "active" due to push/SIP callId mismatch).
-    if (restCall?.id) {
-      const id = restCall.id;
-      void restControl("disconnect");
-      setRestCall(null);
-      void updateCallIfPosted(id, { status: "ended", ended_reason: "completed" });
-    } else if (callId) {
+    if (restId) setRestCall(null);
+    if (callId) {
       void endSession(callId, "hangup");
       void updateCallIfPosted(callId, { status: "ended", ended_reason: "completed" });
     }
-  }, [restCall?.id, restControl, hasLiveSipSession]);
+  }, [restCall?.id, restDisconnectWithRetry, hasLiveSipSession]);
+
 
 
 
   const attachRestCall = useCallback((attachment: RestCallAttachment | null) => {
     if (!attachment?.id) { setRestCall(null); return; }
+    const direction = attachment.direction ?? "out";
     setRestCall({
       ...attachment,
-      direction: attachment.direction ?? "out",
+      direction,
       status: attachment.status ?? "active",
       startedAt: attachment.startedAt ?? Date.now(),
     });
+    // Scott's rules also apply to calls attached from the PBX live-call list:
+    // outbound always posts (1 & 2), inbound posts unless the caller is a
+    // broker VoIP number (3 & 4). De-duplicated by provider_call_id.
+    const number = attachment.number ?? attachment.other ?? "";
+    if (direction === "out") postOutboundCall({ providerCallId: attachment.id, number });
+    else postInboundCall({ providerCallId: attachment.id, number });
   }, []);
 
   const sipConnected = snap.status === "registered" || snap.status === "connected";

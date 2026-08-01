@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { useMplanipretSoftphone } from "@/hooks/useMplanipretSoftphone";
+import { audioRouter } from "@/lib/planipret/audio/audioRouter";
 import NetworkQualityBadge from "@/components/planipret/mobile/NetworkQualityBadge";
 import HandoverIndicator from "@/components/planipret/mobile/HandoverIndicator";
 
@@ -29,7 +30,7 @@ function formatDuration(sec: number) {
 
 export default function ActiveCallOverlay({ callId, onClosed }: { callId: string | null; onClosed: () => void }) {
   const { t } = useMplanipretLang();
-  const { net, quality } = useMplanipretSoftphone(false);
+  const { net, quality } = useMplanipretSoftphone();
   const [call, setCall] = useState<Call | null>(null);
   const [muted, setMuted] = useState(false);
   const [held, setHeld] = useState(false);
@@ -65,6 +66,13 @@ export default function ActiveCallOverlay({ callId, onClosed }: { callId: string
     return () => { cancelled = true; supabase.removeChannel(ch); };
   }, [callId, onClosed]);
 
+  // Never auto-start on the loudspeaker when the call connects.
+  useEffect(() => {
+    if (!callId) return;
+    setSpeaker(false);
+    void audioRouter.startCallAudio();
+  }, [callId]);
+
   useEffect(() => {
     if (!call) return;
     const start = call.answered_at ? new Date(call.answered_at).getTime() : (call.started_at ? new Date(call.started_at).getTime() : Date.now());
@@ -89,7 +97,11 @@ export default function ActiveCallOverlay({ callId, onClosed }: { callId: string
 
   const toggleMute = async () => { const next = !muted; if (await invoke("mute", { muted: next })) setMuted(next); };
   const toggleHold = async () => { const next = !held; if (await invoke(next ? "hold" : "resume")) setHeld(next); };
-  const toggleSpeaker = () => setSpeaker((v) => !v); // client-side hint only
+  const toggleSpeaker = async () => {
+    const next = !speaker;
+    setSpeaker(next);
+    try { await audioRouter.setRoute(next ? "speaker" : "earpiece"); } catch {}
+  };
   const sendDtmf = async (d: string) => { setDtmfBuffer((b) => (b + d).slice(-16)); await invoke("dtmf", { digit: d }); };
   const doTransfer = async () => {
     if (!transferTo.trim()) return;
