@@ -29,6 +29,21 @@ const OutputSchema = z.object({
 
 const MUTATING_MS365 = new Set(["send_email", "create_calendar_event", "update_calendar_event", "delete_calendar_event", "send_teams_message", "reply_teams_message"]);
 const MS365_ACTIONS = new Set(["connection_status", "read_emails", "read_email_detail", "list_calendar_events", "send_email", "create_calendar_event", "update_calendar_event", "delete_calendar_event", "send_teams_message", "reply_teams_message", "search_contact"]);
+const MAESTRO_READ_ACTIONS = new Set(["list_clients", "client_profile", "list_brokers", "broker_profile", "list_contacts"]);
+const MAESTRO_ACTIONS = new Set([...MAESTRO_READ_ACTIONS, "create_task", "create_event"]);
+
+const MAESTRO_PAGE_SIZE = 10;
+
+function fmtMaestroList(rows: any[], lang: "fr" | "en", offset = 0) {
+  if (!rows.length) return lang === "fr" ? "Aucun résultat." : "No results.";
+  return rows.map((c: any, i: number) => {
+    const name = c.name ?? c.full_name ?? [c.first_name, c.last_name].filter(Boolean).join(" ") ?? c.email ?? `#${c.id}`;
+    const bits = [c.phone ?? c.mobile, c.email].filter(Boolean).join(" · ");
+    return `${offset + i + 1}. ${name}${bits ? ` — ${bits}` : ""}`;
+  }).join("\n");
+}
+
+
 
 async function invokeFunction(name: string, authHeader: string, body: Record<string, unknown>) {
   const r = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/${name}`, {
@@ -222,6 +237,91 @@ Deno.serve(async (req) => {
           result: exec.data, suggestions: [],
         }, ok ? 200 : 200);
       }
+      if (kind === "maestro_action") {
+        const action = String(payload.action ?? "");
+        if (!MAESTRO_ACTIONS.has(action)) {
+          return json({ reply: L("Action Maestro inconnue.", "Unknown Maestro action."), suggestions: [] }, 400);
+        }
+        if (!MAESTRO_READ_ACTIONS.has(action) && body?.approved !== true) {
+          return json({ reply: L("Cette action Maestro nécessite votre confirmation.", "This Maestro action requires your confirmation."), suggestions: [confirmAction] });
+        }
+        const isList = action === "list_clients" || action === "list_brokers" || action === "list_contacts";
+        const offset = Math.max(0, Number(payload.offset ?? 0) || 0);
+        const pageSize = Math.max(1, Math.min(50, Number(payload.page_size ?? MAESTRO_PAGE_SIZE)));
+        const execPayload = isList ? { ...payload, offset, page_size: pageSize } : payload;
+        const exec = await invokeFunction("maestro-actions", authHeader, { action, payload: execPayload });
+        const d: any = exec.data ?? {};
+        const ok = !!d.success && exec.ok;
+        await logAvaAction(admin, profile, u.user.id, `maestro_${action}`, execPayload, ok, d, ok ? null : (d.error ?? `HTTP ${exec.status}`));
+
+        if (!ok) {
+          const err = String(d.error ?? `HTTP ${exec.status}`);
+          const reply = /maestro_user_id_unresolved|maestro_not_connected|maestro_not_configured/.test(err)
+            ? L("Ton compte n'est pas encore lié à Maestro. Va dans Plus → Connexions pour connecter Maestro, puis réessaie.",
+                "Your account isn't linked to Maestro yet. Go to More → Connections to connect Maestro, then try again.")
+            : `${L("Action Maestro échouée", "Maestro action failed")}: ${err}`;
+          return json({ reply, result: d, suggestions: [] });
+        }
+
+        if (isList) {
+          const rows: any[] = d.clients ?? d.brokers ?? d.contacts ?? d.data ?? [];
+          const total = Number(d.total ?? rows.length);
+          const title = action === "list_brokers"
+            ? L("Courtiers Maestro", "Maestro brokers")
+            : L("Clients Maestro", "Maestro clients");
+          const from = rows.length ? offset + 1 : 0;
+          const to = offset + rows.length;
+          const pageNo = Number(d.page ?? Math.floor(offset / pageSize) + 1);
+          const pageCount = Number(d.page_count ?? Math.max(1, Math.ceil(total / pageSize)));
+          const header = total > rows.length
+            ? `${title} — ${from}-${to} ${L("sur", "of")} ${total} (${L("page", "page")} ${pageNo}/${pageCount})`
+            : `${title} (${rows.length})`;
+          const prevOffset = d.prev_offset ?? (offset > 0 ? Math.max(0, offset - pageSize) : null);
+          const suggestions: any[] = [];
+          if (prevOffset !== null && prevOffset !== undefined) {
+            suggestions.push({
+              id: `maestro-prev-${action}-${prevOffset}`,
+              label: L("◀ Page précédente", "◀ Previous page"),
+              kind: "maestro_action",
+              payload: { ...payload, action, offset: prevOffset, page_size: pageSize },
+            });
+          }
+          if (d.has_more) {
+            suggestions.push({
+              id: `maestro-next-${action}-${d.next_offset}`,
+              label: L("Page suivante ▶", "Next page ▶"),
+              kind: "maestro_action",
+              payload: { ...payload, action, offset: d.next_offset, page_size: pageSize },
+            });
+          }
+          return json({
+            reply: `${header}:\n${fmtMaestroList(rows, lang, offset)}`,
+            result: d,
+            pagination: {
+              offset, page_size: pageSize, total,
+              page: pageNo, page_count: pageCount,
+              has_more: !!d.has_more, next_offset: d.next_offset ?? null,
+              has_prev: prevOffset !== null && prevOffset !== undefined, prev_offset: prevOffset ?? null,
+              action, search: payload.search ?? null,
+            },
+            suggestions,
+          });
+        }
+
+        if (action === "client_profile" || action === "broker_profile") {
+          const p = d.profile ?? d.data ?? d;
+          const name = p?.name ?? p?.full_name ?? [p?.first_name, p?.last_name].filter(Boolean).join(" ");
+          const lines = [
+            name && `${L("Nom", "Name")}: ${name}`,
+            p?.email && `${L("Courriel", "Email")}: ${p.email}`,
+            (p?.phone ?? p?.mobile) && `${L("Téléphone", "Phone")}: ${p.phone ?? p.mobile}`,
+            p?.status && `${L("Statut", "Status")}: ${p.status}`,
+          ].filter(Boolean).join("\n");
+          return json({ reply: lines || L("Profil Maestro récupéré.", "Maestro profile loaded."), result: d, suggestions: [] });
+        }
+        return json({ reply: L("Action Maestro exécutée.", "Maestro action completed."), result: d, suggestions: [] });
+      }
+
       if (kind === "sms") {
         const to = String(payload.number ?? payload.to ?? "");
         const message = String(payload.text ?? payload.message ?? "");
@@ -352,7 +452,7 @@ Deno.serve(async (req) => {
       }
 
       // Maestro clients/brokers directory (endpoints /users/{id}/clients|brokers)
-      if (/\bclients?\b|\bcourtiers?\b|\bbrokers?\b|\bdossiers?\b|\bportefeuille\b/i.test(userMessage)) {
+      if (/\bclients?\b|\bcourtiers?\b|\bbrokers?\b|\bdossiers?\b|\bportefeuille\b|\bmaestro\b|\bprospects?\b|\bpipeline\b|\bcustomers?\b|\bmes\s+clients\b|\bmy\s+clients\b|\bliste\b|\blist\b/i.test(userMessage)) {
         try {
           const isBroker = /\bcourtiers?\b|\bbrokers?\b/i.test(userMessage);
           const r = await invokeFunction("maestro-actions", authHeader, {
@@ -362,6 +462,11 @@ Deno.serve(async (req) => {
           if (r.ok && (r.data as any)?.success) {
             const list = (r.data as any).clients ?? (r.data as any).brokers ?? [];
             dataBlocks.push(`${isBroker ? "Courtiers" : "Clients"} Maestro: ${JSON.stringify(list).slice(0, 3000)}`);
+          } else {
+            const err = String((r.data as any)?.error ?? `HTTP ${r.status}`);
+            dataBlocks.push(/maestro_user_id_unresolved|maestro_not_connected|maestro_not_configured/.test(err)
+              ? `Maestro: compte NON lié (${err}). Dis clairement au courtier que son compte n'est pas encore lié à Maestro et qu'il doit le connecter dans Plus → Connexions.`
+              : `Maestro: erreur lors de la récupération (${err}). Dis-le clairement au lieu de proposer un bouton.`);
           }
         } catch (e) { console.error("pp-ava-chat maestro list fail", e); }
       }
@@ -403,7 +508,7 @@ SMS non lus: ${smsUnread ?? 0}`;
     : "LANGUAGE: ALWAYS answer 100% in English (including suggestion labels and titles), even if the underlying data or these instructions are in French. Never reply in French."}
  Réponds court et actionnable. Tu peux proposer jusqu'à 4 suggestions (kind: call/sms/email/reminder/maestro_action/ms365_action/open_voice/open_coach).
  Pour 'call' mets payload.number. Pour 'sms' mets payload.number et payload.message. Pour 'email' préfère ms365_action avec payload.action='send_email'. Pour 'reminder' payload.title/due_at. Pour 'maestro_action' payload.action et payload.* requis.
- MAESTRO CLIENTS/COURTIERS: tu peux consulter la liste des clients et des courtiers du courtier ainsi que leurs profils détaillés. Utilise kind='maestro_action' avec payload.action parmi: list_clients (payload.search, payload.limit), client_profile (payload.client_id), list_brokers (payload.search), broker_profile (payload.broker_id). Si la section "Clients Maestro" ou "Courtiers Maestro" apparaît dans [Contexte], réponds directement avec ces données (nom, téléphone, courriel) sans redemander.
+ MAESTRO CLIENTS/COURTIERS: tu peux consulter la liste des clients et des courtiers du courtier ainsi que leurs profils détaillés. Utilise kind='maestro_action' avec payload.action parmi: list_clients (payload.search, payload.offset pour pagination, payload.limit), client_profile (payload.client_id), list_brokers (payload.search, payload.offset pour pagination), broker_profile (payload.broker_id). Si la section "Clients Maestro" ou "Courtiers Maestro" apparaît dans [Contexte], réponds directement avec ces données (nom, téléphone, courriel) sans redemander.
  Pour Microsoft utilise kind='ms365_action' et payload.action parmi: read_emails, read_email_detail, list_calendar_events, send_email, create_calendar_event, update_calendar_event, delete_calendar_event, send_teams_message, reply_teams_message, search_contact.
  RÉPERTOIRE: quand l'utilisateur demande d'envoyer un courriel/SMS/appel à une personne par son nom, cherche d'abord son adresse dans [Contexte] (section "Contacts trouvés" + "Contact Microsoft"). Si tu trouves une correspondance unique, propose directement l'action ms365_action send_email (payload.to = [email], subject, body) pour confirmation. Si plusieurs correspondances, liste-les et demande laquelle. Si aucune, propose un ms365_action search_contact avec payload.query = nom, ou demande l'adresse exacte.
  Pour créer un rendez-vous: payload.action='create_calendar_event' avec subject, start:{dateTime,timeZone}, end:{dateTime,timeZone}, attendees (array d'emails), isOnlineMeeting (défaut true = lien Teams auto).

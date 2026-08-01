@@ -17,6 +17,8 @@ import {
 } from "@/lib/planipret/connectionRecovery";
 import { connectMs365 } from "@/lib/ms365Connect";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import MaestroCallPostingPanel from "@/components/planipret/MaestroCallPostingPanel";
+import MaestroRelinkButton from "@/components/planipret/mobile/MaestroRelinkButton";
 
 const TONE = {
   ok: "#2EDC78",
@@ -143,6 +145,8 @@ export default function MConnections() {
           )}
         </div>
 
+        <MaestroRelinkButton lang={lang === "fr" ? "fr" : "en"} className="mt-4" />
+
         <button
           onClick={() => nav("/mplanipret/maestro-sync")}
           className="mt-4 w-full rounded-xl p-3 flex items-center gap-3 text-left"
@@ -180,6 +184,8 @@ export default function MConnections() {
             </ul>
           )}
         </section>
+
+        <MaestroCallPostingPanel lang={lang === "fr" ? "fr" : "en"} />
       </div>
     </div>
   );

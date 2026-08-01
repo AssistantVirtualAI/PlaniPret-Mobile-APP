@@ -17,6 +17,8 @@ const TOOL_NAMES = [
   "search_client", "get_client_profile", "get_client_history",
   "create_task", "create_appointment", "get_pending_tasks",
   "get_upcoming_appointments", "update_client", "create_client",
+  // Maestro mobile (portefeuille courtier)
+  "list_my_clients", "get_maestro_client_profile", "list_my_brokers", "get_maestro_broker_profile",
   // M365 Mail + Calendar
   "read_emails", "get_unread_emails", "get_recent_emails",
   "send_email", "summarize_email",
@@ -83,6 +85,9 @@ IA: analyze_call, get_hot_leads, get_coaching_summary
 MAESTRO (CRM interne uniquement): search_client, get_client_profile, get_client_history, create_task,
   create_appointment (⚠️ crée un RDV Maestro + miroir Outlook automatique si MS365 connecté),
   get_pending_tasks, get_upcoming_appointments, update_client, create_client
+MAESTRO PORTEFEUILLE (endpoints /users/{id}/clients|brokers): list_my_clients (payload: search, limit, offset),
+  get_maestro_client_profile (payload: client_id), list_my_brokers (payload: search, limit, offset),
+  get_maestro_broker_profile (payload: broker_id) — utilise offset pour paginer les résultats
 M365 MAIL & CALENDAR: read_emails, get_unread_emails, get_recent_emails, summarize_email, send_email, get_calendar_today, get_calendar_week, get_upcoming_meetings, create_calendar_event, move_calendar_event, cancel_calendar_event
 M365 CONTACTS: find_contact (cherche dans contacts locaux + Maestro + Microsoft People/Contacts)
 M365 TEAMS: list_teams_chats, create_teams_chat, send_teams_message

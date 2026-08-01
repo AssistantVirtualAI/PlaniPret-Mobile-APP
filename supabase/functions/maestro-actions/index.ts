@@ -1,6 +1,8 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { getMaestroTelecomConfig, isMaestroTelecomConfigured, maestroTelecomFetch } from "../_shared/maestro-telecom.ts";
+import { linkBrokerIdByEmail, loadBrokerDirectory, findByEmail } from "../_shared/maestro-broker-directory.ts";
+
 
 async function getMaestroConfig(admin: any) {
   const { data } = await admin.from("planipret_integration_secrets").select("config").eq("provider", "maestro").maybeSingle();
@@ -46,6 +48,26 @@ function normalizeContact(c: any) {
     maestro_client_id: c.client_id ?? id,
   };
 }
+
+/* ------------------------------------------------------------------ *
+ * Lightweight in-memory cache for the Maestro mobile list endpoints.
+ * Chat + voice tools hit /users/{id}/clients and /users/{id}/brokers
+ * repeatedly while paginating; upstream has no offset support so we
+ * fetch the full list once and page locally from the cached copy.
+ * ------------------------------------------------------------------ */
+const CACHE_TTL = 90_000; // 90 secondes
+const _listCache = new Map<string, { ts: number; data: unknown }>();
+function cacheGet(key: string) {
+  const e = _listCache.get(key);
+  return e && Date.now() - e.ts < CACHE_TTL ? e.data : null;
+}
+function cacheSet(key: string, data: unknown) {
+  _listCache.set(key, { ts: Date.now(), data });
+}
+function cacheInvalidate(prefix: string) {
+  for (const k of [..._listCache.keys()]) if (k.startsWith(prefix)) _listCache.delete(k);
+}
+
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -157,6 +179,36 @@ Deno.serve(async (req) => {
         }
         return j({ success: false, error: "user_not_found", debug: results }, 404);
       }
+      // Link a broker's Maestro telecom id from their (Microsoft) email using
+      // GET /users/{seed}/brokers. Called after Microsoft sign-in.
+      case "link_broker_by_email": {
+        const authHeader = req.headers.get("Authorization") ?? "";
+        let callerId: string | null = null;
+        if (authHeader) {
+          const { data: u } = await admin.auth.getUser(authHeader.replace(/^Bearer\s+/i, ""));
+          callerId = u?.user?.id ?? null;
+        }
+        const targetUser = callerId ?? (payload.auth_user_id ? String(payload.auth_user_id) : null);
+        if (targetUser) {
+          const { data: prof } = await admin
+            .from("planipret_profiles")
+            .select("id, maestro_broker_id, email, ms365_email, extension, phone")
+            .or(`user_id.eq.${targetUser},id.eq.${targetUser}`)
+            .limit(1)
+            .maybeSingle();
+          if (!prof) return j({ success: false, error: "profile_not_found" }, 404);
+          const r = await linkBrokerIdByEmail(admin, prof as any, { force: payload.force === true });
+          return j({ success: r.ok, maestro_broker_id: r.maestro_broker_id, matched_by: r.matched_by, error: r.error });
+        }
+        const email = String(payload.email ?? "").trim().toLowerCase();
+        if (!email) return j({ success: false, error: "email_required" }, 400);
+        const dir = await loadBrokerDirectory(admin);
+        const hit = findByEmail(dir.entries, email);
+        return hit
+          ? j({ success: true, maestro_broker_id: hit.id, matched_by: "email", broker: hit })
+          : j({ success: false, error: dir.error ?? "no_directory_match" }, 404);
+      }
+
       case "list_clients":
       case "client_profile":
       case "list_brokers":
@@ -173,23 +225,32 @@ Deno.serve(async (req) => {
         }
         let telecomUserId: string | null = null;
         let isAdmin = false;
+        let linkInfo: { matched_by: string | null; error?: string } | null = null;
         if (callerId) {
           const { data: prof } = await admin
             .from("planipret_profiles")
-            .select("id, maestro_broker_id, role")
+            .select("id, maestro_broker_id, role, email, ms365_email, extension, phone")
             .or(`user_id.eq.${callerId},id.eq.${callerId}`)
             .limit(1)
             .maybeSingle();
           telecomUserId = prof?.maestro_broker_id ? String(prof.maestro_broker_id).trim() : null;
           isAdmin = prof?.role === "admin";
+          // Not linked yet → resolve from the Maestro broker directory using
+          // the broker's Microsoft email (Scott's /users/{id}/brokers).
+          if ((!telecomUserId || !/^\d+$/.test(telecomUserId)) && prof) {
+            const linked = await linkBrokerIdByEmail(admin, prof as any);
+            linkInfo = { matched_by: linked.matched_by, error: linked.error };
+            if (linked.ok && linked.maestro_broker_id) telecomUserId = linked.maestro_broker_id;
+          }
         }
         const requested = payload.user_id !== undefined && payload.user_id !== null
           ? String(payload.user_id).trim()
           : null;
         if (requested && (isAdmin || !callerId)) telecomUserId = requested;
         if (!telecomUserId || !/^\d+$/.test(telecomUserId)) {
-          return j({ success: false, error: "maestro_user_id_unresolved" }, 400);
+          return j({ success: false, error: "maestro_user_id_unresolved", link: linkInfo }, 400);
         }
+
 
         const qs: string[] = [];
         if (payload.search) qs.push(`search=${encodeURIComponent(String(payload.search))}`);
@@ -209,25 +270,82 @@ Deno.serve(async (req) => {
           path = `/users/${telecomUserId}/brokers/${encodeURIComponent(bid)}/profile`;
         }
 
+        const isList = action === "list_clients" || action === "list_brokers";
+        const cacheKey = `${action}:${telecomUserId}:${String(payload.search ?? "")}:${Number(payload.limit ?? 25)}:${Number(payload.offset ?? 0)}`;
+        const refresh = payload.refresh === true || payload.no_cache === true;
+
+        if (isList && !refresh) {
+          const cached = cacheGet(cacheKey);
+          if (cached) return j({ success: true, ...(cached as object), cached: true });
+        }
+
+        let all: any[] | null = null;
+        let totalFromResponse: number | undefined;
+
+        if (!isList) {
+          const r = await maestroTelecomFetch(tCfg, path, { method: "GET", timeoutMs: 10000 });
+          if (!r.ok) {
+            console.error(`[maestro-actions] ${action} failed`, r.status, JSON.stringify(r.data)?.slice(0, 400));
+            return j({ success: false, error: `maestro ${action} failed`, status: r.status, details: r.data }, r.status && r.status >= 400 ? r.status : 502);
+          }
+          const d: any = r.data;
+          const obj = d?.profile ?? d?.client ?? d?.broker ?? d?.data ?? d;
+          return j({ success: true, profile: normalizeContact(obj), raw: obj });
+        }
+
         const r = await maestroTelecomFetch(tCfg, path, { method: "GET", timeoutMs: 10000 });
         if (!r.ok) {
           console.error(`[maestro-actions] ${action} failed`, r.status, JSON.stringify(r.data)?.slice(0, 400));
           return j({ success: false, error: `maestro ${action} failed`, status: r.status, details: r.data }, r.status && r.status >= 400 ? r.status : 502);
         }
         const d: any = r.data;
-        if (action === "client_profile" || action === "broker_profile") {
-          const obj = d?.profile ?? d?.client ?? d?.broker ?? d?.data ?? d;
-          return j({ success: true, profile: normalizeContact(obj), raw: obj });
-        }
-        const listRaw = Array.isArray(d)
-          ? d
-          : (d?.clients ?? d?.brokers ?? d?.data ?? d?.results ?? []);
-        const list = Array.isArray(listRaw) ? listRaw : [];
-        return j({
-          success: true,
-          [action === "list_clients" ? "clients" : "brokers"]: list.map(normalizeContact),
-          count: list.length,
-        });
+        const listRaw = Array.isArray(d) ? d : (d?.clients ?? d?.brokers ?? d?.data ?? d?.results ?? []);
+        all = Array.isArray(listRaw) ? listRaw : [];
+        totalFromResponse = d?.total_count ?? d?.total;
+
+        const offset = Number(payload.offset ?? 0);
+        const limit = Number(payload.limit ?? 25);
+        const total = totalFromResponse ?? all.length;
+        const list = all.slice(offset, offset + limit);
+        const has_more = offset + list.length < total;
+        const next_offset = has_more ? offset + limit : null;
+        const prev_offset = offset > 0 ? Math.max(0, offset - limit) : null;
+        const page = Math.floor(offset / limit) + 1;
+        const page_count = Math.ceil(total / limit);
+
+        const response = action === "list_clients"
+          ? {
+              success: true,
+              clients: list.map(normalizeContact),
+              total,
+              has_more,
+              next_offset,
+              prev_offset,
+              page,
+              page_count,
+              offset,
+              limit,
+              count: list.length,
+            }
+          : {
+              success: true,
+              brokers: list.map(normalizeContact),
+              total,
+              has_more,
+              next_offset,
+              prev_offset,
+              page,
+              page_count,
+              offset,
+              limit,
+              count: list.length,
+            };
+
+        if (refresh) cacheInvalidate(`${action}:${telecomUserId}:`);
+        cacheSet(cacheKey, response);
+
+        return j({ ...response, cached: false });
+
       }
       case "test": {
         const r = await fetch(`${cfg.url}/contacts?limit=1`, { headers: h });

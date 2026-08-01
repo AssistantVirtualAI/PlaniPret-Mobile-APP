@@ -6,16 +6,26 @@ import { Button } from "@/components/ui/button";
 
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { toast } from "sonner";
-import { Send, Plus, Menu, Loader2, Sparkles, Mic, Square, Volume2, VolumeX, CheckCircle2, MessageSquare, Radio } from "lucide-react";
+import { Send, Plus, Menu, Loader2, Sparkles, Mic, Square, Volume2, VolumeX, CheckCircle2, MessageSquare, Radio, ChevronLeft, ChevronRight } from "lucide-react";
 import AvaVoiceAgent from "@/components/planipret/mobile/AvaVoiceAgent";
 import AvaOrb from "@/components/planipret/mobile/AvaOrb";
+import AvaMaestroStatus from "@/components/planipret/mobile/AvaMaestroStatus";
 import VoiceSettingsSheet from "@/components/planipret/mobile/VoiceSettingsSheet";
 import avaLogo from "@/assets/ava-statistics-logo.png.asset.json";
 import { useAvaContext } from "@/hooks/useAvaContext";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 
 type AvaSuggestion = { id: string; label: string; kind: string; payload?: Record<string, any> };
-type Msg = { id: string; role: "user" | "assistant"; message: string; created_at: string; suggestions?: AvaSuggestion[] };
+type AvaPagination = {
+  offset: number; page_size: number; total: number;
+  page?: number; page_count?: number;
+  has_more?: boolean; next_offset?: number | null;
+  has_prev?: boolean; prev_offset?: number | null;
+  action?: string; search?: string | null;
+};
+type Msg = { id: string; role: "user" | "assistant"; message: string; created_at: string; suggestions?: AvaSuggestion[]; pagination?: AvaPagination };
+
+const isPagerSuggestion = (s: AvaSuggestion) => s.id.startsWith("maestro-prev-") || s.id.startsWith("maestro-next-");
 type Session = { id: string; title: string; last_message_at: string };
 
 const MUTATING_ACTIONS = new Set(["send_email", "create_calendar_event", "update_calendar_event", "delete_calendar_event", "send_teams_message", "reply_teams_message"]);
@@ -137,7 +147,7 @@ export default function MAvaChat() {
           ? t("avaChat.smsConfirmPrompt").replace("{contact}", String(immediate.payload?.number ?? immediate.payload?.to ?? immediate.payload?.phone ?? t("avaChat.thisContact")))
           : parsedReply.text;
       const replyId = `a-${Date.now()}`;
-      setMessages((m) => [...m, { id: replyId, role: "assistant", message: replyText, suggestions: parsedReply.suggestions, created_at: new Date().toISOString() }]);
+      setMessages((m) => [...m, { id: replyId, role: "assistant", message: replyText, suggestions: parsedReply.suggestions, pagination: d.pagination ?? undefined, created_at: new Date().toISOString() }]);
       if (immediate) setPendingConfirm(immediate);
       if (speakReplies) speak(replyId, replyText);
     } catch (e: any) {
@@ -219,7 +229,14 @@ export default function MAvaChat() {
       });
       if (error) throw error;
       const replyText = String((data as any)?.reply ?? t("avaChat.actionDone"));
-      setMessages((m) => [...m, { id: `act-${Date.now()}`, role: "assistant", message: replyText, created_at: new Date().toISOString() }]);
+      const nextSuggestions: AvaSuggestion[] = Array.isArray((data as any)?.suggestions) ? (data as any).suggestions : [];
+      setMessages((m) => [
+        // Remove the clicked suggestion so the same prompt can't be replayed.
+        ...m.map((msg) => (msg.suggestions?.some((x) => x.id === suggestion.id)
+          ? { ...msg, suggestions: msg.suggestions.filter((x) => x.id !== suggestion.id) }
+          : msg)),
+        { id: `act-${Date.now()}`, role: "assistant" as const, message: replyText, suggestions: nextSuggestions, pagination: (data as any)?.pagination ?? undefined, created_at: new Date().toISOString() },
+      ]);
       if ((data as any)?.result?.ok === false || (data as any)?.result?.success === false) {
         toast.error(t("avaChat.actionFailedPrefix") + ((data as any)?.result?.error ?? t("avaChat.actionUnknownError")));
       } else {
@@ -372,6 +389,8 @@ export default function MAvaChat() {
 
 
 
+      <AvaMaestroStatus lang={lang === "en" ? "en" : "fr"} />
+
       <div className="flex-1 min-h-0 overflow-hidden">
         <div ref={scrollRef} className="h-full overflow-y-auto px-4 py-4 pb-6 space-y-4 max-w-3xl w-full mx-auto">
           {messages.length === 0 && (
@@ -418,22 +437,66 @@ export default function MAvaChat() {
                         </button>
                       </div>
                     </div>
-                    {m.suggestions && m.suggestions.length > 0 && (
-                      <div className="ml-9 flex flex-wrap gap-1.5">
-                        {m.suggestions.map((s) => (
-                          <button
-                            key={s.id}
-                            onClick={() => runSuggestion(s)}
-                            disabled={!!runningSuggestion}
-                            className="text-xs px-3 py-1.5 rounded-full flex items-center gap-1.5 disabled:opacity-50 transition"
-                            style={{ background: "rgba(34,211,238,0.10)", border: "1px solid rgba(34,211,238,0.30)", color: "var(--pp-brand-accent)" }}
-                          >
-                            {runningSuggestion === s.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle2 className="w-3 h-3" />}
-                            {s.label}
-                          </button>
-                        ))}
-                      </div>
-                    )}
+                    {(() => {
+                      const all = m.suggestions ?? [];
+                      const pagers = all.filter(isPagerSuggestion);
+                      const normal = all.filter((s) => !isPagerSuggestion(s));
+                      const pg = m.pagination;
+                      const prev = pagers.find((s) => s.id.startsWith("maestro-prev-"));
+                      const next = pagers.find((s) => s.id.startsWith("maestro-next-"));
+                      return (
+                        <>
+                          {(prev || next || (pg && (pg.total ?? 0) > (pg.page_size ?? 0))) && (
+                            <div
+                              className="ml-9 mt-1.5 flex items-center gap-2 rounded-xl px-2 py-1.5"
+                              style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}
+                            >
+                              <button
+                                id={`maestro-prev-${m.id}`}
+                                onClick={() => prev && runSuggestion(prev)}
+                                disabled={!prev || pg?.prev_offset === null || !!runningSuggestion}
+                                aria-label={lang === "fr" ? "Page précédente" : "Previous page"}
+                                className="w-7 h-7 rounded-full flex items-center justify-center disabled:opacity-30 transition"
+                                style={{ background: "rgba(34,211,238,0.12)", color: "var(--pp-brand-accent)" }}
+                              >
+                                {runningSuggestion === prev?.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ChevronLeft className="w-4 h-4" />}
+                              </button>
+                              <span className="flex-1 text-center text-[11px] font-semibold" style={{ color: "var(--pp-text-muted)" }}>
+                                {pg
+                                  ? `${(pg.offset ?? 0) + 1}–${(pg.offset ?? 0) + Math.min(pg.page_size ?? 0, Math.max(0, (pg.total ?? 0) - (pg.offset ?? 0)))} ${lang === "fr" ? "sur" : "of"} ${pg.total ?? 0}`
+                                  : lang === "fr" ? "Navigation" : "Navigation"}
+                              </span>
+                              <button
+                                id={`maestro-next-${m.id}`}
+                                onClick={() => next && runSuggestion(next)}
+                                disabled={!next || pg?.has_more === false || !!runningSuggestion}
+                                aria-label={lang === "fr" ? "Page suivante" : "Next page"}
+                                className="w-7 h-7 rounded-full flex items-center justify-center disabled:opacity-30 transition"
+                                style={{ background: "rgba(34,211,238,0.12)", color: "var(--pp-brand-accent)" }}
+                              >
+                                {runningSuggestion === next?.id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ChevronRight className="w-4 h-4" />}
+                              </button>
+                            </div>
+                          )}
+                          {normal.length > 0 && (
+                            <div className="ml-9 flex flex-wrap gap-1.5">
+                              {normal.map((s) => (
+                                <button
+                                  key={s.id}
+                                  onClick={() => runSuggestion(s)}
+                                  disabled={!!runningSuggestion}
+                                  className="text-xs px-3 py-1.5 rounded-full flex items-center gap-1.5 disabled:opacity-50 transition"
+                                  style={{ background: "rgba(34,211,238,0.10)", border: "1px solid rgba(34,211,238,0.30)", color: "var(--pp-brand-accent)" }}
+                                >
+                                  {runningSuggestion === s.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle2 className="w-3 h-3" />}
+                                  {s.label}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </>
+                      );
+                    })()}
                   </div>
                 ) : (
                   <div
