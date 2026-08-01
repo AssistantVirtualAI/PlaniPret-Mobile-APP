@@ -78,7 +78,14 @@ export async function runAvaE2ECheck(): Promise<AvaE2EResult | null> {
     body: {},
     headers: await authHeaders(),
   });
-  if (error || !data || (data as any).error) return null;
+  // A missing/undeployed function must never surface as a connection failure:
+  // the end-to-end diagnostic is optional, so degrade silently on 404.
+  if (error) {
+    const msg = `${(error as any)?.message ?? ""} ${(error as any)?.context?.status ?? ""}`;
+    if (/404|NOT_FOUND_FUNCTION_BLOB|not found/i.test(msg)) return null;
+    return null;
+  }
+  if (!data || (data as any).error) return null;
   const result = data as AvaE2EResult;
   try {
     localStorage.setItem(E2E_KEY, JSON.stringify({ ...result, at: Date.now() }));

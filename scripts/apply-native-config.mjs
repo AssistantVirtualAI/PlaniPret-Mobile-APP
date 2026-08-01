@@ -582,6 +582,8 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       CAPPluginMethod(name: "acknowledgeIncoming", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "wakeForIncomingCall", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "setCallActive", returnType: CAPPluginReturnPromise),
+      CAPPluginMethod(name: "setAudioRoute", returnType: CAPPluginReturnPromise),
+      CAPPluginMethod(name: "getAudioRoute", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "addListener", returnType: CAPPluginReturnCallback),
       CAPPluginMethod(name: "removeAllListeners", returnType: CAPPluginReturnPromise)
     ]
@@ -589,6 +591,10 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private var bgTask: UIBackgroundTaskIdentifier = .invalid
     private var host = ""; private var port = 443; private var path = "/"; private var login = ""; private var domain = ""; private var displayName = ""; private var password = ""
     private var socket: URLSessionWebSocketTask?
+    /// Only true once the WSS handshake completed. Sending a REGISTER before
+    /// that fails with POSIX 57 "Socket is not connected".
+    private var socketOpen = false
+    private var registerOnOpen = false
     private lazy var session = URLSession(configuration: .default, delegate: self, delegateQueue: OperationQueue())
     private var timer: Timer?
     private var cseq = 1
@@ -611,6 +617,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private var backgroundHandoffWorkItem: DispatchWorkItem?
     private var pathMonitor: NWPathMonitor?
     private var networkUp = true
+    private var lastPathChangeAt: Date?
     /// True while the WebView (JsSIP) has a live call. During a call the native
     /// stack must NEVER take the AOR over: doing so closes the JsSIP transport
     /// (WSS 1001) and kills the audio. We only keep the audio session alive.
@@ -708,22 +715,25 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
 
     @objc func setAudioRoute(_ call: CAPPluginCall) {
       let route = call.getString("route") ?? "earpiece"
-      preferredRoute = route
-      applyAudioRoute(route)
-      call.resolve(["ok": true, "route": route])
+      DispatchQueue.main.async { [weak self] in
+        guard let self = self else { call.resolve(["ok": false]); return }
+        self.preferredRoute = route
+        self.applyAudioRoute(route)
+        call.resolve(["ok": true, "route": self.preferredRoute])
+      }
     }
 
     @objc func getAudioRoute(_ call: CAPPluginCall) {
-      let s = AVAudioSession.sharedInstance()
-      let current: String
-      if s.currentRoute.outputs.contains(where: { $0.portType == .bluetoothHFP || $0.portType == .bluetoothA2DP || $0.portType == .bluetoothLE }) {
-        current = "bluetooth"
-      } else if s.currentRoute.outputs.contains(where: { $0.portType == .builtInSpeaker }) {
-        current = "speaker"
-      } else {
-        current = "earpiece"
+      DispatchQueue.main.async { [weak self] in
+        call.resolve(["ok": true, "route": self?.currentAudioRoute() ?? "earpiece"])
       }
-      call.resolve(["ok": true, "route": current])
+    }
+
+    private func currentAudioRoute() -> String {
+      let outs = AVAudioSession.sharedInstance().currentRoute.outputs
+      if outs.contains(where: { $0.portType == .bluetoothHFP || $0.portType == .bluetoothA2DP || $0.portType == .bluetoothLE }) { return "bluetooth" }
+      if outs.contains(where: { $0.portType == .builtInSpeaker }) { return "speaker" }
+      return "earpiece"
     }
 
     private func applyAudioRoute(_ route: String) {
@@ -733,7 +743,9 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         try? s.overrideOutputAudioPort(.speaker)
       case "bluetooth":
         try? s.overrideOutputAudioPort(.none)
-        // Bluetooth SCO is handled by AVAudioSession category options (.allowBluetoothHFP)
+        // Bluetooth SCO needs the HFP input explicitly selected, the category
+        // options alone do not move the route on every device.
+        if let bt = s.availableInputs?.first(where: { $0.portType == .bluetoothHFP }) { try? s.setPreferredInput(bt) }
       default: // earpiece
         try? s.overrideOutputAudioPort(.none)
       }
@@ -918,8 +930,36 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       var comps = URLComponents(); comps.scheme = port == 80 ? "ws" : "wss"; comps.host = host; comps.port = port; comps.path = path.isEmpty ? "/" : path
       guard let url = comps.url else { setStatus("error", "bad_ws_url"); return }
       var req = URLRequest(url: url); req.setValue("sip", forHTTPHeaderField: "Sec-WebSocket-Protocol")
+      socketOpen = false
+      registerOnOpen = true
       socket = session.webSocketTask(with: req); socket?.resume(); setStatus("connecting", "ws_connecting"); receiveLoop()
-      DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in self?.sendRegister(challenge: nil) }
+      // Safety net: if didOpen never fires within 10s, drop the socket and let
+      // the reconnect watchdog take over. No REGISTER is sent in that case.
+      let pending = socket
+      DispatchQueue.main.asyncAfter(deadline: .now() + 10.0) { [weak self] in
+        guard let self = self, let pending = pending, pending === self.socket, !self.socketOpen else { return }
+        NSLog("[PpSipKeepAlive] ws open timeout - cancelling socket")
+        self.registerOnOpen = false
+        self.socket?.cancel(with: .goingAway, reason: nil); self.socket = nil
+        self.setStatus("reconnecting", "ws_open_timeout"); self.scheduleReconnect("ws_open_timeout")
+      }
+    }
+    public func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
+      DispatchQueue.main.async { [weak self] in
+        guard let self = self, webSocketTask === self.socket else { return }
+        self.socketOpen = true
+        NSLog("[PpSipKeepAlive] ws open")
+        if self.registerOnOpen { self.registerOnOpen = false; self.sendRegister(challenge: nil, force: true) }
+      }
+    }
+    public func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
+      DispatchQueue.main.async { [weak self] in
+        guard let self = self, webSocketTask === self.socket else { return }
+        self.socketOpen = false
+        self.socket = nil
+        NSLog("[PpSipKeepAlive] ws closed code=%ld", closeCode.rawValue)
+        if !self.isForeground() { self.setStatus("reconnecting", "ws_closed"); self.scheduleReconnect("ws_closed") }
+      }
     }
     private func scheduleRegister() {
       timer?.invalidate()
@@ -977,16 +1017,19 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         guard let self = self else { return }
         let up = path.status == .satisfied
         let wasUp = self.networkUp
+        if up == wasUp { return }
+        if let last = self.lastPathChangeAt, Date().timeIntervalSince(last) < 2.0 { return }
+        self.lastPathChangeAt = Date()
         self.networkUp = up
         NSLog("[PpSipKeepAlive] network %@", up ? "available" : "lost")
-        if up && !wasUp {
+        if up {
           self.reconnectAttempts = 0
           DispatchQueue.main.async { [weak self] in
             guard let self = self, !self.isForeground() else { return }
-            self.socket?.cancel(with: .goingAway, reason: nil); self.socket = nil
-            self.connect(); self.sendRegister(challenge: nil)
+            self.socket?.cancel(with: .goingAway, reason: nil); self.socket = nil; self.socketOpen = false
+            self.connect()
           }
-        } else if !up {
+        } else {
           self.setStatus("reconnecting", "network_lost")
         }
       }
@@ -1075,6 +1118,11 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private func sendRegister(challenge: String?, proxyAuth: Bool = false, force: Bool = false) {
       if isForeground() { releaseRegistration("foreground_js_owns"); return }
       if socket == nil { connect(); return }
+      if !socketOpen {
+        registerOnOpen = true
+        if !force { NSLog("[PpSipKeepAlive] REGISTER skipped: ws_not_open") }
+        return
+      }
       // Two REGISTERs in a row on the same WSS connection make NetSapiens see a
       // duplicate AoR and close the socket. Hold off after each send/200 OK
       // (auth challenge responses are exempt: they complete the same handshake).

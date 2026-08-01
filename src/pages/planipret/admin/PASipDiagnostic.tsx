@@ -4,11 +4,12 @@ import { ppSipProvider, type PpSipSnapshot } from "@/lib/planipret/sip/ppSipProv
 import { Loader2, PlugZap, Wifi, WifiOff, AlertTriangle, CheckCircle2, Zap, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import { PP_SIP_CORE_PRIMARY } from "@/lib/planipret/sip/sipEdgePolicy";
 
 const DICT = {
   fr: {
     title: "Portail diagnostic",
-    subtitle: "Teste l'enregistrement SIP.js sur le device web via wss://voice.ava-telecom.ca:9002, et diagnostique les enregistrements NS-API.",
+    subtitle: `Teste l'enregistrement SIP.js sur le device web via ${PP_SIP_CORE_PRIMARY}, et diagnostique les enregistrements NS-API.`,
     resolveFailed: "Résolution échouée",
     credsUnavailable: "Credentials indisponibles",
     notAuthenticated: "Non authentifié",
@@ -44,7 +45,7 @@ const DICT = {
   },
   en: {
     title: "Diagnostic portal",
-    subtitle: "Tests SIP.js registration on the web device via wss://voice.ava-telecom.ca:9002, and diagnoses NS-API registrations.",
+    subtitle: `Tests SIP.js registration on the web device via ${PP_SIP_CORE_PRIMARY}, and diagnoses NS-API registrations.`,
     resolveFailed: "Resolution failed",
     credsUnavailable: "Credentials unavailable",
     notAuthenticated: "Not authenticated",
