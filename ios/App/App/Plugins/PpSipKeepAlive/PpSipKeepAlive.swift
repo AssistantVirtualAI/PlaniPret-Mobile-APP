@@ -204,7 +204,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       setStatus(status == "registered" ? "registered" : "protected", why)
     }
 
-    private func activateAudioSession() { try? AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .allowBluetoothA2DP, .mixWithOthers]); try? AVAudioSession.sharedInstance().setActive(true) }
+    private func activateAudioSession() { try? AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .allowBluetoothA2DP, .mixWithOthers]); try? AVAudioSession.sharedInstance().setActive(true) }
     private func connect() {
       // A new socket means a new AoR binding: clear the 200 OK debounce.
       lastRegisterOkTime = nil
@@ -318,14 +318,17 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private func sendRinging(via: String, from: String, to: String, cid: String, cseq: String) {
       guard socket != nil, !via.isEmpty, !cid.isEmpty else { return }
       let toWithTag = to.contains(";tag=") ? to : to + ";tag=" + String(Int(Date().timeIntervalSince1970 * 1000), radix: 16)
-      var r = "SIP/2.0 180 Ringing\r\n"
-      r += "Via: " + via + "\r\n"
-      r += "From: " + from + "\r\n"
-      r += "To: " + toWithTag + "\r\n"
-      r += "Call-ID: " + cid + "\r\n"
-      r += "CSeq: " + cseq + "\r\n"
-      r += "User-Agent: Planipret iOS KeepAlive\r\n"
-      r += "Content-Length: 0\r\n\r\n"
+      let cr = String(UnicodeScalar(13)!)
+      let lf = String(UnicodeScalar(10)!)
+      let crlf = cr + lf
+      var r = "SIP/2.0 180 Ringing" + crlf
+      r += "Via: " + via + crlf
+      r += "From: " + from + crlf
+      r += "To: " + toWithTag + crlf
+      r += "Call-ID: " + cid + crlf
+      r += "CSeq: " + cseq + crlf
+      r += "User-Agent: Planipret iOS KeepAlive" + crlf
+      r += "Content-Length: 0" + crlf + crlf
       socket?.send(.string(r)) { _ in }
     }
 
@@ -342,29 +345,32 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     }
 
     private func sendRegister(challenge: String?, proxyAuth: Bool = false, force: Bool = false) {
-      if isForeground() { releaseRegistration("foreground_js_owns"); return }
-      if socket == nil { connect(); return }
-      // Two REGISTERs in a row on the same WSS connection make NetSapiens see a
-      // duplicate AoR and close the socket. Hold off after each send/200 OK
-      // (auth challenge responses are exempt: they complete the same handshake).
-      if !force, challenge == nil, let sentAt = lastRegisterSentTime, Date().timeIntervalSince(sentAt) <= registerDebounceSec {
-        NSLog("[PpSipKeepAlive] REGISTER debounced: %.2fs since sent (min %.1fs)", Date().timeIntervalSince(sentAt), registerDebounceSec)
-        return
-      }
-      if !force, challenge == nil, let okAt = lastRegisterOkTime, Date().timeIntervalSince(okAt) <= registerDebounceSec {
-        NSLog("[PpSipKeepAlive] REGISTER debounced: %.2fs since 200 OK (min %.1fs)", Date().timeIntervalSince(okAt), registerDebounceSec)
-        return
-      }
+      guard socket != nil else { scheduleReconnect("register_no_socket"); return }
+      if !force, let t = lastRegisterOkTime, Date().timeIntervalSince(t) < registerDebounceSec { return }
+      if !force, let t = lastRegisterSentTime, Date().timeIntervalSince(t) < registerDebounceSec { return }
       guard !login.isEmpty, !domain.isEmpty else { setStatus("error", "missing_credentials"); return }
       let seq = cseq; cseq += 1
       let branch = "z9hG4bK" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
       let contact = "<sip:" + login + "@" + stableContactHost() + ";transport=wss>"
-      var sip = "REGISTER sip:" + domain + " SIP/2.0\r\n"
-      sip += "Via: SIP/2.0/WSS " + domain + ";branch=" + branch + "\r\nMax-Forwards: 70\r\n"
-      sip += "To: <sip:" + login + "@" + domain + ">\r\nFrom: "" + displayName.replacingOccurrences(of: """, with: "") + "" <sip:" + login + "@" + domain + ">;tag=" + fromTag + "\r\n"
-      sip += "Call-ID: " + callIdReg + "\r\nCSeq: " + String(seq) + " REGISTER\r\nContact: " + contact + ";expires=" + String(registerExpires) + "\r\nExpires: " + String(registerExpires) + "\r\nUser-Agent: Planipret iOS KeepAlive\r\nSupported: outbound,path,gruu\r\nAllow: INVITE,ACK,CANCEL,BYE,OPTIONS,MESSAGE,INFO,UPDATE,REGISTER\r\n"
-      if let ch = challenge, !password.isEmpty { sip += (proxyAuth ? "Proxy-Authorization: " : "Authorization: ") + digest(challenge: ch) + "\r\n" }
-      sip += "Content-Length: 0\r\n\r\n"
+      let cr = String(UnicodeScalar(13)!)
+      let lf = String(UnicodeScalar(10)!)
+      let crlf = cr + lf
+      let dq = String(UnicodeScalar(34)!)
+      var sip = "REGISTER sip:" + domain + " SIP/2.0" + crlf
+      sip += "Via: SIP/2.0/WSS " + domain + ";branch=" + branch + crlf
+      sip += "Max-Forwards: 70" + crlf
+      sip += "To: <sip:" + login + "@" + domain + ">" + crlf
+      let safeDisplay = displayName.replacingOccurrences(of: dq, with: "")
+      sip += "From: " + dq + safeDisplay + dq + " <sip:" + login + "@" + domain + ">;tag=" + fromTag + crlf
+      sip += "Call-ID: " + callIdReg + crlf
+      sip += "CSeq: " + String(seq) + " REGISTER" + crlf
+      sip += "Contact: " + contact + ";expires=" + String(registerExpires) + crlf
+      sip += "Expires: " + String(registerExpires) + crlf
+      sip += "User-Agent: Planipret iOS KeepAlive" + crlf
+      sip += "Supported: outbound,path,gruu" + crlf
+      sip += "Allow: INVITE,ACK,CANCEL,BYE,OPTIONS,MESSAGE,INFO,UPDATE,REGISTER" + crlf
+      if let ch = challenge, !password.isEmpty { sip += (proxyAuth ? "Proxy-Authorization: " : "Authorization: ") + digest(challenge: ch) + crlf }
+      sip += "Content-Length: 0" + crlf + crlf
       socket?.send(.string(sip)) { [weak self] err in
         DispatchQueue.main.async {
           guard let self = self else { return }
