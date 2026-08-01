@@ -65,3 +65,6 @@ export function edgeOnlyWssUrls(
 ): string[] {
   return filterSipEdgeUrls(candidates, onDrop);
 }
+
+/** @deprecated use isSipPortalWssUrl */
+export const isPortalWssUrl = isSipPortalWssUrl;
