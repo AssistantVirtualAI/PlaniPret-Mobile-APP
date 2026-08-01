@@ -64,6 +64,15 @@ export default function PpActiveCallScreen({
 
   useEffect(() => { setAudioEl(audioRef.current); return () => setAudioEl(null); }, [setAudioEl]);
 
+  // Force earpiece at call start — prevents WebRTC/iOS from auto-routing to speaker.
+  // Reset speakerOn state each new call so the button reflects reality.
+  useEffect(() => {
+    if (snap.callState === "active") {
+      setSpeakerOn(false);
+      audioRouter.setRoute("earpiece").catch(() => {});
+    }
+  }, [snap.callId]); // run once per call (callId changes each new call)
+
   const recordingNoticeRef = useRef<HTMLAudioElement | null>(null);
   const recordingNoticePlayed = useRef(false);
   useEffect(() => {
