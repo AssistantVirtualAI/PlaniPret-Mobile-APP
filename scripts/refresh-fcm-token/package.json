@@ -1,0 +1,9 @@
+{
+  "name": "refresh-fcm-token",
+  "version": "1.0.0",
+  "description": "Cloud Function — renouvelle FCM_ACCESS_TOKEN dans Supabase toutes les 55 min",
+  "main": "index.js",
+  "dependencies": {
+    "google-auth-library": "^9.0.0"
+  }
+}
