@@ -98,6 +98,43 @@ export type FcmSendResult = {
 };
 
 /**
+ * Send via FCM Legacy HTTP API (server key) — fallback when service account is unavailable.
+ */
+export async function sendFcmDataMessageLegacy(
+  serverKey: string,
+  token: string,
+  data: Record<string, string>,
+): Promise<FcmSendResult> {
+  try {
+    const res = await fetch("https://fcm.googleapis.com/fcm/send", {
+      method: "POST",
+      headers: {
+        Authorization: `key=${serverKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        to: token,
+        priority: "high",
+        data,
+      }),
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      return { ok: false, status: res.status, error: text.slice(0, 300) };
+    }
+    const body = await res.json();
+    if (body.failure > 0) {
+      const err = body.results?.[0]?.error ?? "unknown";
+      const unregistered = err === "NotRegistered" || err === "InvalidRegistration";
+      return { ok: false, unregistered, error: err };
+    }
+    return { ok: true, status: res.status };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
  * Send a high-priority DATA-ONLY message. Data-only lets the app build its own
  * full-screen incoming-call notification (PpSipKeepAliveService) instead of
  * letting the system show a plain banner.
