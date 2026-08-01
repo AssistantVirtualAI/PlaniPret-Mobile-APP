@@ -1,16 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Base application theme — edge-to-edge, status bar transparente -->
-    <!-- windowTranslucentStatus=true active safe-area-inset-top dans la WebView -->
-    <!-- Le header React utilise env(safe-area-inset-top) comme sur iOS -->
+    <!--
+        ── Recommandation Google Play #1 : Edge-to-edge (API 36) ───────────────
+        Android 15+ (API 35+) force l'edge-to-edge pour toutes les apps.
+        Les APIs windowTranslucentStatus / windowTranslucentNavigation sont
+        dépréciées depuis API 35 et causent l'avertissement Play Console.
+
+        Remplacement par la méthode recommandée :
+        - android:windowOptOutEdgeToEdgeEnforcement="false" → accepte l'edge-to-edge
+        - android:statusBarColor + android:navigationBarColor → transparents
+        - android:windowDrawsSystemBarBackgrounds="true" → l'app dessine derrière
+        La WebView Capacitor gère déjà env(safe-area-inset-*) via CSS.
+    -->
     <style name="AppTheme" parent="Theme.AppCompat.Light.NoActionBar">
         <item name="colorPrimary">@color/colorPrimary</item>
         <item name="colorPrimaryDark">@color/colorPrimaryDark</item>
         <item name="colorAccent">@color/colorAccent</item>
-        <!-- Status bar transparente — le contenu passe dessous (edge-to-edge) -->
-        <item name="android:windowTranslucentStatus">true</item>
-        <!-- Navigation bar transparente -->
-        <item name="android:windowTranslucentNavigation">true</item>
+        <!-- Edge-to-edge : barre de statut et de navigation transparentes (API 35+) -->
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
         <!-- Pas d'ActionBar native -->
         <item name="windowNoTitle">true</item>
         <item name="windowActionBar">false</item>

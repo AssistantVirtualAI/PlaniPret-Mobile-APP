@@ -18,14 +18,31 @@
         android:usesCleartextTraffic="false"
         android:networkSecurityConfig="@xml/network_security_config">
 
+        <!--
+            ── Recommandation Google Play #3 : Large Screen / resizability ──────
+            resizeableActivity="true" permet à l'app de s'afficher sur tablettes,
+            Chromebooks et en mode multi-fenêtres (obligatoire pour API 36+).
+            screenOrientation retiré : Google Play pénalise le verrouillage portrait
+            sur les grands écrans. L'orientation est gérée côté React/CSS.
+
+            ── Recommandation Google Play #2 : Picture-in-Picture ───────────────
+            supportsPictureInPicture="true" + configChanges="screenSize|smallestScreenSize"
+            permettent à l'écran d'appel actif de passer en PiP quand l'utilisateur
+            quitte l'app pendant un appel.
+
+            ── Recommandation Google Play #1 : Edge-to-edge ─────────────────────
+            configChanges inclut "density" (requis API 36) pour éviter les recréations
+            d'activité lors des changements de densité (API dépréciée corrigée).
+        -->
         <activity
-            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|density"
             android:name=".MainActivity"
             android:label="@string/title_activity_main"
             android:theme="@style/AppTheme.NoActionBarLaunch"
             android:launchMode="singleTask"
             android:exported="true"
-            android:screenOrientation="portrait"
+            android:resizeableActivity="true"
+            android:supportsPictureInPicture="true"
             android:showWhenLocked="true"
             android:turnScreenOn="true">
 

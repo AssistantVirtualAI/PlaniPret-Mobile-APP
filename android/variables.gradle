@@ -2,13 +2,15 @@ ext {
     minSdkVersion = 26
     compileSdkVersion = 36
     targetSdkVersion = 36
-    androidxActivityVersion = '1.9.0'
+    // androidx.activity 1.10.0+ requis pour EdgeToEdge.enable()
+    androidxActivityVersion = '1.10.1'
     androidxAppCompatVersion = '1.7.0'
     androidxCoordinatorLayoutVersion = '1.2.0'
-    androidxCoreVersion = '1.13.1'
-    androidxFragmentVersion = '1.8.1'
+    // androidx.core 1.15.0+ requis pour WindowCompat.setDecorFitsSystemWindows()
+    androidxCoreVersion = '1.15.0'
+    androidxFragmentVersion = '1.8.6'
     coreSplashScreenVersion = '1.0.1'
-    androidxWebkitVersion = '1.11.0'
+    androidxWebkitVersion = '1.13.0'
     junitVersion = '4.13.2'
     androidxJunitVersion = '1.2.1'
     androidxEspressoCoreVersion = '3.6.1'

@@ -2,6 +2,7 @@ package com.planipret.mobile;
 
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
+import android.app.PictureInPictureParams;
 import android.content.Context;
 import android.content.pm.PackageManager;
 import android.media.AudioAttributes;
@@ -10,12 +11,15 @@ import android.net.Uri;
 import android.media.RingtoneManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.util.Rational;
 import android.webkit.PermissionRequest;
 import android.webkit.WebChromeClient;
 import android.webkit.WebView;
 
+import androidx.activity.EdgeToEdge;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import androidx.core.view.WindowCompat;
 
 import com.getcapacitor.BridgeActivity;
 
@@ -27,6 +31,14 @@ public class MainActivity extends BridgeActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         registerPlugin(PpSipKeepAlivePlugin.class);
+
+        // ── Recommandation Google Play #1 : Edge-to-edge (API 35+) ───────────
+        // EdgeToEdge.enable() remplace windowTranslucentStatus/Navigation (dépréciés).
+        // WindowCompat.setDecorFitsSystemWindows(false) laisse le contenu passer
+        // derrière les barres système — Capacitor WebView gère env(safe-area-inset-*).
+        EdgeToEdge.enable(this);
+        WindowCompat.setDecorFitsSystemWindows(getWindow(), false);
+
         super.onCreate(savedInstanceState);
 
         audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
@@ -63,6 +75,24 @@ public class MainActivity extends BridgeActivity {
                 return super.onShowFileChooser(webView2, filePathCallback, fileChooserParams);
             }
         });
+    }
+
+    // ── Recommandation Google Play #2 : Picture-in-Picture ───────────────────
+    // Quand l'utilisateur appuie sur Home pendant un appel actif, l'app passe
+    // automatiquement en mode PiP (fenêtre flottante 16:9).
+    @Override
+    public void onUserLeaveHint() {
+        super.onUserLeaveHint();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            try {
+                PictureInPictureParams params = new PictureInPictureParams.Builder()
+                    .setAspectRatio(new Rational(16, 9))
+                    .build();
+                enterPictureInPictureMode(params);
+            } catch (Exception ignored) {
+                // PiP non supporté sur cet appareil — on ignore silencieusement
+            }
+        }
     }
 
     /**

@@ -39,11 +39,21 @@ android {
     }
     buildTypes {
         release {
-            minifyEnabled false
-            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            // ── Recommandation Google Play #5 : R8 optimization ──────────────
+            // minifyEnabled=true active R8 (shrink + obfuscate + optimize).
+            // shrinkResources=true supprime les ressources inutilisées du .aab.
+            // proguard-android-optimize.txt (vs proguard-android.txt) active
+            // les optimisations avancées de R8 (inlining, dead-code removal).
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
             if (project.hasProperty('PLANIPRET_KEYSTORE_FILE')) {
                 signingConfig signingConfigs.release
             }
+        }
+        debug {
+            minifyEnabled false
+            shrinkResources false
         }
     }
     compileOptions {
@@ -70,6 +80,8 @@ dependencies {
     implementation "androidx.fragment:fragment:$androidxFragmentVersion"
     implementation "androidx.webkit:webkit:$androidxWebkitVersion"
     implementation "androidx.activity:activity:$androidxActivityVersion"
+    // androidx.core requis pour WindowCompat.setDecorFitsSystemWindows() (edge-to-edge)
+    implementation "androidx.core:core:$androidxCoreVersion"
 }
 
 apply from: 'capacitor.build.gradle'
