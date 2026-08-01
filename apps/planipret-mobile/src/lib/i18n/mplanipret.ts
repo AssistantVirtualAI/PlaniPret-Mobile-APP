@@ -7,6 +7,8 @@ export type MpLang = "fr" | "en";
 export const MP_DICT = {
   fr: {
     screens: SCREENS_FR,
+    // Expose avaChat/avaNotifications/avaBrief at root so t('avaChat.chatTab') resolves
+    ...SCREENS_FR,
     common: {
 
       loading: "Chargement…",
@@ -1046,7 +1048,8 @@ export const MP_DICT = {
   },
   en: {
     screens: SCREENS_EN,
-
+    // Expose avaChat/avaNotifications/avaBrief at root so t('avaChat.chatTab') resolves
+    ...SCREENS_EN,
     common: {
       loading: "Loading…",
       retry: "Retry",
