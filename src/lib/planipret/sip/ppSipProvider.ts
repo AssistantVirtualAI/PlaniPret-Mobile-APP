@@ -202,6 +202,8 @@ class PpSipProvider {
   private recoveryOwner: PpSipRecoveryOwner = "none";
   private recoveryOwnerSince = 0;
   private pendingAnswer: { callId: string; expiresAt: number } | null = null;
+  private pendingDecline: { callId: string; expiresAt: number } | null = null;
+  private answerInFlight: Promise<boolean> | null = null;
 
   getReconnectMetrics(): PpSipReconnectMetrics {
     return { ...this.reconnectMetrics, recoveryOwner: this.recoveryOwner, history: [...this.reconnectMetrics.history] };
@@ -622,16 +624,29 @@ class PpSipProvider {
         // NOTE: the VoIP push callId (NetSapiens `1-XXXXXXXX-...`) and the SIP
         // Call-ID are two different identifier spaces — never compare them.
         // Any incoming INVITE within the 30s answer-intent window is answered.
+        const decline = this.pendingDecline;
+        if (decline && decline.expiresAt > Date.now()) {
+          this.pendingDecline = null;
+          this.pendingAnswer = null;
+          this.log("info", "pending decline intent active → rejecting INVITE", { sipCallId: callId });
+          setTimeout(() => {
+            try { session.terminate({ status_code: 603, reason_phrase: "Decline" }); } catch {}
+          }, 50);
+        } else if (decline) {
+          this.pendingDecline = null;
+        }
         const pending = this.pendingAnswer;
-        if (pending && pending.expiresAt > Date.now()) {
+        if (!decline && pending && pending.expiresAt > Date.now()) {
           this.pendingAnswer = null;
           this.log("info", "pending answer intent active → auto-answering INVITE", {
             pushCallId: pending.callId || null, sipCallId: callId,
           });
+          // Arbitration belongs to the hook (mobile vs widget). Never answer
+          // directly here or a late INVITE can bypass pp_claim_call.
           setTimeout(() => {
-            const ok = this.answer();
-            this.log(ok ? "info" : "error", `auto-answer ${ok ? "sent 200 OK" : "FAILED"}`, { sipCallId: callId });
-          }, 250);
+            try { window.dispatchEvent(new CustomEvent("pp:sip-pending-answer-ready", { detail: { callId } })); } catch {}
+          }, 50);
+
         } else if (pending) {
           this.log("warn", "answer intent expired before INVITE arrived");
           this.pendingAnswer = null;
@@ -754,31 +769,72 @@ class PpSipProvider {
     }
   }
 
-  requestAnswer(callId?: string): boolean {
-    if (this.answer(callId)) return true;
+  async requestAnswer(callId?: string): Promise<boolean> {
+    if (await this.answer(callId)) return true;
     this.pendingAnswer = { callId: String(callId ?? ""), expiresAt: Date.now() + 30_000 };
     this.log("info", "answer intent queued until matching INVITE", { callId: callId ?? "" });
     return false;
   }
 
-  answer(_expectedCallId?: string): boolean {
+  requestDecline(callId?: string): boolean {
+    if (this.session && this.snap.callState === "ringing-in") {
+      try {
+        this.session.terminate({ status_code: 603, reason_phrase: "Decline" });
+        return true;
+      } catch { /* queue below */ }
+    }
+    this.pendingAnswer = null;
+    this.pendingDecline = { callId: String(callId ?? ""), expiresAt: Date.now() + 30_000 };
+    this.log("info", "decline intent queued until incoming INVITE", { callId: callId ?? "" });
+    return false;
+  }
+
+  /**
+   * Answering MUST provide its own microphone stream: when the app was woken by
+   * a VoIP push, JsSIP's internal getUserMedia races the iOS audio session and
+   * silently fails, so no 200 OK is ever sent (the caller keeps hearing the
+   * greeting while the UI says "answered").
+   */
+  async answer(_expectedCallId?: string): Promise<boolean> {
+    if (this.answerInFlight) return this.answerInFlight;
+    const run = this.answerOnce(_expectedCallId);
+    this.answerInFlight = run;
+    void run.finally(() => { if (this.answerInFlight === run) this.answerInFlight = null; });
+    return run;
+  }
+
+  private async answerOnce(_expectedCallId?: string): Promise<boolean> {
     const session = this.session;
     if (!session || this.snap.callState !== "ringing-in") return false;
     // Never reject on a Call-ID mismatch: the VoIP push id and the SIP Call-ID
     // belong to different identifier spaces on NetSapiens.
 
+    let mediaStream: MediaStream | undefined;
+    try {
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: false,
+      });
+    } catch (e: any) {
+      this.log("error", `answer: microphone unavailable (${e?.name || e?.message || e})`);
+      mediaStream = undefined;
+    }
+
     try {
       session.answer({
+        ...(mediaStream ? { mediaStream } : {}),
         mediaConstraints: { audio: true, video: false },
         rtcAnswerConstraints: { offerToReceiveAudio: true, offerToReceiveVideo: false },
       });
       this.pendingAnswer = null;
+      this.log("info", "200 OK sent (answer)", { withStream: !!mediaStream });
       return true;
     } catch (error) {
       this.log("error", "answer failed", error);
       return false;
     }
   }
+
   hangup() { try { this.session?.terminate(); } catch {} }
   mute() { this.session?.mute({ audio: true }); }
   unmute() { this.session?.unmute({ audio: true }); }

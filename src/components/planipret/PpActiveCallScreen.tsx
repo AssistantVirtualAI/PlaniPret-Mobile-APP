@@ -79,6 +79,10 @@ export default function PpActiveCallScreen({
     if (snap.callState !== "active") return;
     setSpeakerOn(false);
     void audioRouter.startCallAudio();
+    // startCallAudio() arms a 1200ms re-assert timer. Cancel it when the call
+    // ends or the screen unmounts: a stale timer would otherwise re-apply the
+    // earpiece route on top of the next call, or fight the user's speaker tap.
+    return () => { audioRouter.stopCallAudio(); };
   }, [snap.callState, snap.callId]);
 
   // Recording notice — played once per call as soon as it connects.

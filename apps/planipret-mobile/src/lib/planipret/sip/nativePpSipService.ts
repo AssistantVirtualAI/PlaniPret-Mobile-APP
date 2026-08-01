@@ -23,7 +23,7 @@ export type PpIncomingInvite = {
   fromUser?: string;
   fromDisplay?: string;
   /** Present only when user tapped Answer / Decline on the native notification. */
-  action?: "answer" | "decline";
+  action?: "answer" | "decline" | "cancelled";
 };
 
 type PpSipKeepAlivePlugin = {

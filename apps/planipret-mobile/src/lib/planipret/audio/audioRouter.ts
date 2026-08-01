@@ -10,9 +10,13 @@ function bridge(): any {
 }
 
 let currentRoute: AudioRoute = "earpiece";
+let reassertTimer: ReturnType<typeof setTimeout> | null = null;
+let routeGeneration = 0;
 
 export const audioRouter = {
   async setRoute(route: AudioRoute): Promise<void> {
+    routeGeneration += 1;
+    if (reassertTimer) { clearTimeout(reassertTimer); reassertTimer = null; }
     currentRoute = route;
     const b = bridge();
     if (b?.setAudioRoute) {
@@ -50,7 +54,17 @@ export const audioRouter = {
     await audioRouter.setRoute(route);
     // Some stacks (CallKit / AudioFocus) re-apply their own route ~1s after the
     // media session activates, so re-assert once.
-    setTimeout(() => { void audioRouter.setRoute(route); }, 1200);
+    const generation = routeGeneration;
+    reassertTimer = setTimeout(() => {
+      reassertTimer = null;
+      if (generation !== routeGeneration) return;
+      void audioRouter.setRoute(route);
+    }, 1200);
     return route;
+  },
+
+  stopCallAudio(): void {
+    routeGeneration += 1;
+    if (reassertTimer) { clearTimeout(reassertTimer); reassertTimer = null; }
   },
 };

@@ -650,6 +650,13 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       // this is the ONLY reliable iOS background wake, so re-REGISTER immediately
       // instead of relying on a long-lived WSS socket.
       NotificationCenter.default.addObserver(self, selector: #selector(onVoipPushWake(_:)), name: Notification.Name("PpVoipIncomingPush"), object: nil)
+      // CallKit Answer tapped: hold the transport + audio session up so the
+      // WebView can complete the SIP 200 OK while still in the background.
+      NotificationCenter.default.addObserver(forName: Notification.Name("PpVoipCallAnswered"), object: nil, queue: .main) { [weak self] _ in
+        guard let self = self else { return }
+        self.callActive = true
+        self.activateAudioSession()
+      }
       UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
     }
     deinit { NotificationCenter.default.removeObserver(self); timer?.invalidate(); socket?.cancel(with: .goingAway, reason: nil) }
@@ -1368,12 +1375,15 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             if let error = error {
                 NSLog("[PpVoipCall] reportNewIncomingCall failed: \\(error.localizedDescription)")
             }
+            // retainUntilConsumed: the VoIP push often lands while the WebView
+            // is suspended; without it the event is dropped and the JS layer
+            // never learns about the incoming call.
             self?.notifyListeners("callKitReady", data: [
                 "callUUID": uuid.uuidString,
                 "callId": callId,
                 "callerName": callerName,
                 "callerNumber": callerNumber
-            ])
+            ], retainUntilConsumed: true)
             completion()
         }
     }
@@ -1385,17 +1395,30 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     }
 
     public func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
-        try? AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .allowBluetoothA2DP])
-        try? AVAudioSession.sharedInstance().setActive(true)
+        // Prepare the route but let CallKit own activation (didActivate:).
+        // Activating the session here races the system session and produces a
+        // connected CallKit call with no audio path.
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .allowBluetoothA2DP])
+        // Pin the SIP transport + audio session up while the WebView performs
+        // the actual SIP answer, possibly still in the background.
+        NotificationCenter.default.post(name: Notification.Name("PpVoipCallAnswered"), object: nil, userInfo: ["callId": activeCallId ?? ""])
+        // retainUntilConsumed: Answer can be tapped from the lock screen while
+        // the WebView is suspended; without it the event is dropped and the
+        // call is never picked up on the SIP side.
         notifyListeners("incomingCallAnswered", data: [
             "callUUID": action.callUUID.uuidString,
             "callId": activeCallId ?? ""
-        ])
-        pendingAnswerAction?.fail()
+        ], retainUntilConsumed: true)
+        pendingAnswerAction?.fulfill()
         pendingAnswerAction = action
-        DispatchQueue.main.asyncAfter(deadline: .now() + 30.0) { [weak self, weak action] in
+        // Safety net: never present a falsely connected CallKit call. 12s is
+        // deliberately longer than the JS watchdogs (8s push path / 4s SIP
+        // path) so completeAnswer() always reports the real outcome first.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 12.0) { [weak self, weak action] in
             guard let self = self, let action = action, self.pendingAnswerAction === action else { return }
             self.pendingAnswerAction = nil
+            NSLog("[PpVoipCall] answer action timed out \u{2014} SIP dialog not confirmed")
             action.fail()
         }
     }

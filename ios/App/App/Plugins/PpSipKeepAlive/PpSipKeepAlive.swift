@@ -87,6 +87,13 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       // this is the ONLY reliable iOS background wake, so re-REGISTER immediately
       // instead of relying on a long-lived WSS socket.
       NotificationCenter.default.addObserver(self, selector: #selector(onVoipPushWake(_:)), name: Notification.Name("PpVoipIncomingPush"), object: nil)
+      // CallKit Answer tapped: hold the transport + audio session up so the
+      // WebView can complete the SIP 200 OK while still in the background.
+      NotificationCenter.default.addObserver(forName: Notification.Name("PpVoipCallAnswered"), object: nil, queue: .main) { [weak self] _ in
+        guard let self = self else { return }
+        self.callActive = true
+        self.activateAudioSession()
+      }
       UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
     }
     deinit { NotificationCenter.default.removeObserver(self); timer?.invalidate(); socket?.cancel(with: .goingAway, reason: nil) }
