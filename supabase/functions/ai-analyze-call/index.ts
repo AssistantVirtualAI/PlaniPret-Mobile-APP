@@ -1,6 +1,8 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { mirrorCallAnalysisToMaestro } from "../_shared/maestro-telecom.ts";
+import { callAnthropic } from "../_shared/anthropic.ts";
+
 
 const SYSTEM_PROMPT = `Tu es un analyste IA spécialisé en appels téléphoniques et coaching d'agents.
 Analyse cette transcription d'appel et retourne UNIQUEMENT un JSON valide, sans texte avant ou après, avec cette structure exacte:
@@ -114,26 +116,24 @@ Deno.serve(async (req) => {
       };
 
       if (apiKey) {
-        const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
-          method: "POST",
-          headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-          body: JSON.stringify({
-            model: "claude-sonnet-4-5-20250929",
-            max_tokens: 2000,
-            system: SYSTEM_PROMPT,
-            messages: [{ role: "user", content: userContent }],
-          }),
+        const claudeRes = await callAnthropic({
+          apiKey,
+          model: "claude-sonnet-4-5-20250929",
+          max_tokens: 2000,
+          system: SYSTEM_PROMPT, // static → prompt-cached
+          messages: [{ role: "user", content: userContent }],
+          label: "ai-analyze-call",
         });
         if (!claudeRes.ok) {
-          const errText = await claudeRes.text();
+          const errText = String(claudeRes.error ?? "");
           console.error("Claude error, falling back to OpenAI", claudeRes.status, errText);
           if (openaiKey) { const r = await callOpenAI(); text = r.text; usedModel = r.model; }
           else return new Response(JSON.stringify({ success: false, error: "Claude API error", details: errText }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
         } else {
-          const claudeData = await claudeRes.json();
-          text = claudeData.content?.[0]?.text ?? "{}";
+          text = claudeRes.text || "{}";
           usedModel = "claude-sonnet-4-5-20250929";
         }
+
       } else {
         const r = await callOpenAI(); text = r.text; usedModel = r.model;
       }
@@ -287,26 +287,24 @@ ${String(transcript).slice(0, 18000)}`;
     // Prefer Claude, then Lovable Gateway (Gemini), then OpenAI as final fallback.
     if (apiKey) {
       modelUsed = "claude-sonnet-4-5-20250929";
-      const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-        body: JSON.stringify({
-          model: modelUsed,
-          max_tokens: 3000,
-          system: COACHING_SYSTEM,
-          messages: [{ role: "user", content: userMsg }],
-        }),
+      const claudeRes = await callAnthropic({
+        apiKey,
+        model: modelUsed,
+        max_tokens: 3000,
+        system: COACHING_SYSTEM, // static → prompt-cached
+        messages: [{ role: "user", content: userMsg }],
+        label: "ai-analyze-call:coaching",
       });
       if (!claudeRes.ok) {
-        const errText = await claudeRes.text();
+        const errText = String(claudeRes.error ?? "");
         console.error("Claude error, trying fallbacks", claudeRes.status, errText);
         if (openaiKey) { try { await tryOpenAI(); } catch (e) { return new Response(JSON.stringify({ success: false, error: "Claude+OpenAI failed", details: (e as Error).message }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }); } }
         else return new Response(JSON.stringify({ success: false, error: "Claude API error", details: errText.slice(0, 500) }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
       } else {
-        const claudeData = await claudeRes.json();
-        const raw = claudeData.content?.[0]?.text ?? "{}";
+        const raw = claudeRes.text || "{}";
         try { analysis = JSON.parse(raw); } catch { analysis = JSON.parse(raw.match(/\{[\s\S]*\}/)?.[0] ?? "{}"); }
       }
+
     } else if (lovableKey) {
       modelUsed = "google/gemini-2.5-pro";
       const aiRes = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {

@@ -13,7 +13,6 @@ type BootWindow = Window & {
   __PP_REACT_BOOT_ATTEMPTED__?: boolean;
   __PP_REACT_MOUNT_CALLED__?: boolean;
   __PP_MARK_BOOT_READY__?: () => void;
-  __PP_SHOW_BOOT_FALLBACK__?: (message?: string) => void;
 };
 
 function isIgnorableNativeStartupError(raw: unknown): boolean {
@@ -29,18 +28,10 @@ function isIgnorableNativeStartupError(raw: unknown): boolean {
   return code === 'UNIMPLEMENTED' && /not implemented/i.test(message);
 }
 
-function showNativeBootFallback(message?: string) {
-  try {
-    ((window as BootWindow).__PP_SHOW_BOOT_FALLBACK__ ?? (() => undefined))(message);
-  } catch {}
-}
-
 function markBootReady() {
   try {
     const win = window as BootWindow;
     win.__PP_REACT_BOOTED__ = true;
-    const fallback = document.getElementById('pp-native-boot-fallback');
-    if (fallback) fallback.style.display = 'none';
   } catch {}
 }
 
@@ -71,7 +62,7 @@ class NativeRootRecoveryBoundary extends React.Component<{ children: React.React
       this.setState((state) => {
         const nextRetryKey = state.retryKey + 1;
         if (nextRetryKey > 3) {
-          showNativeBootFallback('Le démarrage natif a été interrompu plusieurs fois. Relancez l’application.');
+          console.warn('[PP] native startup artifact repeated; keeping current tree');
           return { error: null, retryKey: state.retryKey };
         }
         return { error: null, retryKey: nextRetryKey };
@@ -100,19 +91,11 @@ if (typeof window !== 'undefined') {
     if (!isIgnorableNativeStartupError((event as ErrorEvent).error) && !isIgnorableNativeStartupError((event as ErrorEvent).message)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    window.setTimeout(() => {
-      const root = document.getElementById('root');
-      if (root && !root.textContent?.trim()) showNativeBootFallback('Le démarrage natif a été interrompu avant le premier écran.');
-    }, 250);
   }, true);
   window.addEventListener('unhandledrejection', (event) => {
     if (!isIgnorableNativeStartupError(event.reason)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
-    window.setTimeout(() => {
-      const root = document.getElementById('root');
-      if (root && !root.textContent?.trim()) showNativeBootFallback('Le démarrage natif a été interrompu avant le premier écran.');
-    }, 250);
   }, true);
 }
 
@@ -170,6 +153,10 @@ async function bootstrap() {
     // path for Capacitor only and keep createRoot for web/dev preview.
     if (Capacitor.isNativePlatform() || window.location.protocol === 'capacitor:') {
       legacyRender(appTree, container);
+      // React has committed the tree synchronously here. Mark boot ready right
+      // away so the index.html watchdog can never show the "Relancer" overlay
+      // for an app that is actually starting normally.
+      markBootReady();
       window.setTimeout(() => { (window as BootWindow).__PP_REACT_MOUNT_CALLED__ = true; }, 0);
       return;
     }
@@ -184,6 +171,7 @@ async function bootstrap() {
       },
     });
     root.render(appTree);
+    markBootReady();
     window.setTimeout(() => { (window as BootWindow).__PP_REACT_MOUNT_CALLED__ = true; }, 0);
   } catch (e) {
     console.error('[PP] Render failed:', e);

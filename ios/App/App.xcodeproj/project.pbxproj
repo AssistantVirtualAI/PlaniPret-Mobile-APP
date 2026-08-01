@@ -21,6 +21,14 @@
 		9D2796A320A9C3E642B75C49 /* PpVoipCall.m in Sources */ = {isa = PBXBuildFile; fileRef = 80C02AA92B02E8CBBFABD68D /* PpVoipCall.m */; };
 		257147657CE44817A2BFEE48 /* PpAuthSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B3066BAB62141AAAC641336 /* PpAuthSession.swift */; };
 		1B6EAF7AFCF947F2AE8435A3 /* PpAuthSession.m in Sources */ = {isa = PBXBuildFile; fileRef = A391B46D0ACA492E9B130C51 /* PpAuthSession.m */; };
+		42362910FBF3BE8C8FFAEE1D /* PpSipKeepAlive.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF38123FE329F0689C57A660 /* PpSipKeepAlive.swift */; };
+		0D90751E78616A71D77AF959 /* PpSipKeepAlive.m in Sources */ = {isa = PBXBuildFile; fileRef = 05E32A144EEFCEEBDBA5F666 /* PpSipKeepAlive.m */; };
+		E1247484A68376F0A563773E /* PpVoipCall.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28001EA15B4C8F71EDCDEC42 /* PpVoipCall.swift */; };
+		0DA71F936E7945C949ECE564 /* PpVoipCall.m in Sources */ = {isa = PBXBuildFile; fileRef = 17144FC6CC8F06B6A3EE8673 /* PpVoipCall.m */; };
+		0C0BE939681BCEC84BC37B4C /* PpAuthSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD9AFF8FEE995F95527022F2 /* PpAuthSession.swift */; };
+		A67A91CDB97F4155A9CF7A2B /* PpAuthSession.m in Sources */ = {isa = PBXBuildFile; fileRef = FB0760C292020F72E8F7FD3A /* PpAuthSession.m */; };
+		5090EB0312657394EB79FE66 /* AppBridgeViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = CAF00CC67D920856D30D4008 /* AppBridgeViewController.swift */; };
+		9B0D688E85318487D3AD90FF /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94BA8A12802872FFF9452AFA /* SceneDelegate.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -43,6 +51,14 @@
 		0B3066BAB62141AAAC641336 /* PpAuthSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PpAuthSession.swift; sourceTree = "<group>"; };
 		A391B46D0ACA492E9B130C51 /* PpAuthSession.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = PpAuthSession.m; sourceTree = "<group>"; };
 		EBBF3EA4B38EC3CFA8D421BB /* App.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = App.entitlements; sourceTree = "<group>"; };
+		AF38123FE329F0689C57A660 /* PpSipKeepAlive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/Plugins/PpSipKeepAlive/PpSipKeepAlive.swift; sourceTree = SOURCE_ROOT; };
+		05E32A144EEFCEEBDBA5F666 /* PpSipKeepAlive.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = App/Plugins/PpSipKeepAlive/PpSipKeepAlive.m; sourceTree = SOURCE_ROOT; };
+		28001EA15B4C8F71EDCDEC42 /* PpVoipCall.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/Plugins/PpVoipCall/PpVoipCall.swift; sourceTree = SOURCE_ROOT; };
+		17144FC6CC8F06B6A3EE8673 /* PpVoipCall.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = App/Plugins/PpVoipCall/PpVoipCall.m; sourceTree = SOURCE_ROOT; };
+		DD9AFF8FEE995F95527022F2 /* PpAuthSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/Plugins/PpAuthSession/PpAuthSession.swift; sourceTree = SOURCE_ROOT; };
+		FB0760C292020F72E8F7FD3A /* PpAuthSession.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = App/Plugins/PpAuthSession/PpAuthSession.m; sourceTree = SOURCE_ROOT; };
+		CAF00CC67D920856D30D4008 /* AppBridgeViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/AppBridgeViewController.swift; sourceTree = SOURCE_ROOT; };
+		94BA8A12802872FFF9452AFA /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/SceneDelegate.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -271,7 +287,9 @@
 				0E0C85E5E14918B74C0843FE /* PpSipKeepAlive.swift in Sources */,
 				472E50053CEB7AD4769E8FEB /* PpSipKeepAlive.m in Sources */,
 				3C507B763F308588CB7727AA /* PpVoipCall.swift in Sources */,
-				9D2796A320A9C3E642B75C49 /* PpVoipCall.m in Sources */,
+				9D2796A320A9C3E642B75C49 /* PpVoipCall.m in Sources */,				5090EB0312657394EB79FE66 /* AppBridgeViewController.swift in Sources */,				9B0D688E85318487D3AD90FF /* SceneDelegate.swift in Sources */,
+
+
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

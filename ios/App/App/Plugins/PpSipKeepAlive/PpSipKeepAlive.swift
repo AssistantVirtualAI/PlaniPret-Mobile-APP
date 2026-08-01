@@ -5,6 +5,7 @@ import AVFoundation
 import CryptoKit
 import UserNotifications
 import Network
+import Security
 
 // Planiprêt-only. DO NOT reuse in Lemtel (Verto stack).
 @objc(PpSipKeepAlive)
@@ -17,6 +18,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       CAPPluginMethod(name: "triggerReregister", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "acknowledgeIncoming", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "wakeForIncomingCall", returnType: CAPPluginReturnPromise),
+      CAPPluginMethod(name: "setCallActive", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "addListener", returnType: CAPPluginReturnCallback),
       CAPPluginMethod(name: "removeAllListeners", returnType: CAPPluginReturnPromise)
     ]
@@ -46,27 +48,32 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private var backgroundHandoffWorkItem: DispatchWorkItem?
     private var pathMonitor: NWPathMonitor?
     private var networkUp = true
+    /// True while the WebView (JsSIP) has a live call. During a call the native
+    /// stack must NEVER take the AOR over: doing so closes the JsSIP transport
+    /// (WSS 1001) and kills the audio. We only keep the audio session alive.
+    private var callActive = false
+    private var audioKeepAliveTimer: Timer?
+    private let configDefaultsKey = "pp_sip_native_config_v1"
+    private let passwordService = "com.planipret.mobile.sip"
+    private let passwordAccount = "background-register"
+    private var lastPushWakeAt: Date?
+
 
     public override func load() {
+      restoreConfig()
       DispatchQueue.main.async { [weak self] in self?.appActive = UIApplication.shared.applicationState == .active }
       NotificationCenter.default.addObserver(self, selector: #selector(onBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
       NotificationCenter.default.addObserver(self, selector: #selector(onForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
       NotificationCenter.default.addObserver(self, selector: #selector(onForeground), name: UIApplication.didBecomeActiveNotification, object: nil)
-      // AVA-Telecom patch #5: willResignActiveNotification removed — fires on transient
-      // interruptions (lock screen, notification banner, permission sheet) and caused
-      // background_handoff_pending to trigger while the app was still in foreground.
-      // Only UIApplication.didEnterBackgroundNotification + UIScene.didEnterBackgroundNotification
-      // are used to trigger onBackground().
       // UIScene lifecycle (iOS 13+) — the app adopts scenes, so the legacy
-      // UIApplication notifications are not always delivered. Observing both
-      // keeps appActive correct without ever reading UI state off-thread.
+      // UIApplication notifications are not always delivered. Only the actual
+      // didEnterBackground transition may transfer SIP ownership. The transient
+      // willDeactivate/willResignActive events also fire for CallKit, Control
+      // Center and notification interruptions and previously caused handoff loops.
       if #available(iOS 13.0, *) {
         NotificationCenter.default.addObserver(self, selector: #selector(onForeground), name: UIScene.didActivateNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(onSceneWillEnterForeground), name: UIScene.willEnterForegroundNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(onBackground), name: UIScene.didEnterBackgroundNotification, object: nil)
-        // NOTE: UIScene.willDeactivateNotification intentionally removed — AVA-Telecom patch #4
-        // It fires on every transient interruption (CallKit sheet, Control Center, banners)
-        // and caused spurious background_handoff_pending loops while the app was in foreground.
       }
       // Ask for notification permission so the incoming-call banner can ring.
       // PushKit (PpVoipCall) posts this when an incoming-call VoIP push lands:
@@ -86,6 +93,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       backoffMaxAttempts = call.getInt("backoffMaxAttempts") ?? 5
       verifyDelayMs = Double(call.getInt("verifyDelayMs") ?? 8000)
       registerExpires = call.getInt("registerExpiresSec") ?? 1800
+      persistConfig()
       NSLog("[PpSipKeepAlive] reconnect strategy min=%.0fms max=%.0fms attempts=%d verify=%.0fms expires=%ds", backoffMinMs, backoffMaxMs, backoffMaxAttempts, verifyDelayMs, registerExpires)
       DispatchQueue.main.async { [weak self] in
         guard let self = self else { call.resolve(["ok": false, "status": "error", "reason": "plugin_released"]); return }
@@ -94,10 +102,80 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         // JsSIP web layer owns the registration. Registering natively at the same
         // time made NetSapiens close the JsSIP socket (1001), producing an endless
         // disconnect/reconnect loop. Store the credentials and stay idle instead.
+        // Same rule during an ACTIVE call: the WebView owns the media + transport.
+        if self.callActive { self.setStatus("protected", "call_active_js_owns"); call.resolve(self.snapshot(ok: true)); return }
         if self.isForeground() { self.releaseRegistration("foreground_js_owns") } else { self.beginNativeOwnership("service_start") }
         call.resolve(self.snapshot(ok: true))
       }
     }
+    /// JS marks the call lifecycle. While a call is up we keep the audio session
+    /// active in background (WebKit otherwise interrupts it => one-way / no audio)
+    /// and never take the SIP AOR over.
+    @objc func setCallActive(_ call: CAPPluginCall) {
+      let active = call.getBool("active") ?? false
+      DispatchQueue.main.async { [weak self] in
+        guard let self = self else { call.resolve(["ok": false]); return }
+        self.callActive = active
+        if active {
+          self.beginBackgroundTask()
+          self.activateAudioSession()
+          self.startAudioKeepAlive()
+          // Never hold a second transport while the WebView carries the call.
+          self.backgroundHandoffWorkItem?.cancel(); self.backgroundHandoffWorkItem = nil
+          if self.socket != nil { self.releaseRegistration("call_active_js_owns") }
+        } else {
+          self.stopAudioKeepAlive()
+        }
+        call.resolve(self.snapshot(ok: true))
+      }
+    }
+    private func startAudioKeepAlive() {
+      audioKeepAliveTimer?.invalidate()
+      audioKeepAliveTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+        guard let self = self, self.callActive else { return }
+        self.activateAudioSession()
+      }
+    }
+    private func stopAudioKeepAlive() { audioKeepAliveTimer?.invalidate(); audioKeepAliveTimer = nil }
+
+    // MARK: - Audio route (speaker / earpiece / bluetooth)
+    // Stored so we can re-assert the route after every activateAudioSession() call
+    // (iOS resets overrideOutputAudioPort on each setActive).
+    private var preferredRoute: String = "earpiece"
+
+    @objc func setAudioRoute(_ call: CAPPluginCall) {
+      let route = call.getString("route") ?? "earpiece"
+      preferredRoute = route
+      applyAudioRoute(route)
+      call.resolve(["ok": true, "route": route])
+    }
+
+    @objc func getAudioRoute(_ call: CAPPluginCall) {
+      let s = AVAudioSession.sharedInstance()
+      let current: String
+      if s.currentRoute.outputs.contains(where: { $0.portType == .bluetoothHFP || $0.portType == .bluetoothA2DP || $0.portType == .bluetoothLE }) {
+        current = "bluetooth"
+      } else if s.currentRoute.outputs.contains(where: { $0.portType == .builtInSpeaker }) {
+        current = "speaker"
+      } else {
+        current = "earpiece"
+      }
+      call.resolve(["ok": true, "route": current])
+    }
+
+    private func applyAudioRoute(_ route: String) {
+      let s = AVAudioSession.sharedInstance()
+      switch route {
+      case "speaker":
+        try? s.overrideOutputAudioPort(.speaker)
+      case "bluetooth":
+        try? s.overrideOutputAudioPort(.none)
+        // Bluetooth SCO is handled by AVAudioSession category options (.allowBluetoothHFP)
+      default: // earpiece
+        try? s.overrideOutputAudioPort(.none)
+      }
+    }
+
     @objc func stopSipService(_ call: CAPPluginCall) { DispatchQueue.main.async { self.releaseRegistration("stopped"); call.resolve(self.snapshot(ok: true)) } }
     @objc func getSipServiceStatus(_ call: CAPPluginCall) { DispatchQueue.main.async { call.resolve(self.snapshot(ok: true)) } }
     @objc func triggerReregister(_ call: CAPPluginCall) {
@@ -126,6 +204,16 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     /// guarantees background execution through PushKit, so this is the path that
     /// must bring the AOR back before the PBX times out to voicemail.
     private func wakeForPush(_ why: String) {
+      // PushKit can wake iOS before the WebView has loaded. Restore the last
+      // confirmed SIP configuration so REGISTER never depends on JS startup.
+      if host.isEmpty || login.isEmpty || domain.isEmpty { restoreConfig() }
+      guard !host.isEmpty, !login.isEmpty, !domain.isEmpty, !password.isEmpty else {
+        setStatus("error", "missing_persisted_sip_config")
+        notifyListeners("sipReregisterRequested", data: ["reason": "missing_persisted_sip_config"])
+        return
+      }
+      if let previous = lastPushWakeAt, Date().timeIntervalSince(previous) < 1.0 { return }
+      lastPushWakeAt = Date()
       NSLog("[PpSipKeepAlive] VoIP push wake (%@)", why)
       beginBackgroundTask()
       activateAudioSession()
@@ -137,6 +225,56 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       }
       if socket == nil { connect() } else { sendRegister(challenge: nil, force: true) }
       setStatus(status == "registered" ? "registered" : "protected", "voip_push_wake")
+    }
+
+    private func persistConfig() {
+      UserDefaults.standard.set([
+        "host": host, "port": port, "path": path, "login": login,
+        "domain": domain, "displayName": displayName,
+        "backoffMinMs": backoffMinMs, "backoffMaxMs": backoffMaxMs,
+        "backoffMaxAttempts": backoffMaxAttempts, "verifyDelayMs": verifyDelayMs,
+        "registerExpires": registerExpires,
+      ], forKey: configDefaultsKey)
+      let data = Data(password.utf8)
+      let query: [String: Any] = [
+        kSecClass as String: kSecClassGenericPassword,
+        kSecAttrService as String: passwordService,
+        kSecAttrAccount as String: passwordAccount,
+      ]
+      SecItemDelete(query as CFDictionary)
+      var add = query
+      add[kSecValueData as String] = data
+      add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+      SecItemAdd(add as CFDictionary, nil)
+    }
+
+    private func restoreConfig() {
+      if let saved = UserDefaults.standard.dictionary(forKey: configDefaultsKey) {
+        host = saved["host"] as? String ?? host
+        port = saved["port"] as? Int ?? port
+        path = saved["path"] as? String ?? path
+        login = saved["login"] as? String ?? login
+        domain = saved["domain"] as? String ?? domain
+        displayName = saved["displayName"] as? String ?? displayName
+        backoffMinMs = saved["backoffMinMs"] as? Double ?? backoffMinMs
+        backoffMaxMs = saved["backoffMaxMs"] as? Double ?? backoffMaxMs
+        backoffMaxAttempts = saved["backoffMaxAttempts"] as? Int ?? backoffMaxAttempts
+        verifyDelayMs = saved["verifyDelayMs"] as? Double ?? verifyDelayMs
+        registerExpires = saved["registerExpires"] as? Int ?? registerExpires
+      }
+      let query: [String: Any] = [
+        kSecClass as String: kSecClassGenericPassword,
+        kSecAttrService as String: passwordService,
+        kSecAttrAccount as String: passwordAccount,
+        kSecReturnData as String: true,
+        kSecMatchLimit as String: kSecMatchLimitOne,
+      ]
+      var item: CFTypeRef?
+      if SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+         let data = item as? Data,
+         let savedPassword = String(data: data, encoding: .utf8) {
+        password = savedPassword
+      }
     }
 
     // NEVER touch UIApplication/UIScene off the main thread: it triggers
@@ -153,7 +291,6 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private func releaseRegistration(_ why: String) {
       if !Thread.isMainThread { DispatchQueue.main.async { [weak self] in self?.releaseRegistration(why) }; return }
       backgroundHandoffWorkItem?.cancel(); backgroundHandoffWorkItem = nil
-      foregroundReleaseWorkItem?.cancel(); foregroundReleaseWorkItem = nil
       timer?.invalidate(); timer = nil
       socket?.cancel(with: .goingAway, reason: nil); socket = nil
       endBackgroundTask(); setStatus("idle", why)
@@ -163,37 +300,28 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       appActive = false
       beginBackgroundTask()
       activateAudioSession()
+      // During an active call the WebView keeps the media: only keep the audio
+      // session alive, never flip to native ownership (that closed the JsSIP
+      // transport with WSS 1001 and killed the audio).
+      if callActive {
+        startAudioKeepAlive()
+        setStatus("protected", "call_active_audio_kept")
+        backgroundHandoffWorkItem?.cancel(); backgroundHandoffWorkItem = nil
+        return
+      }
       setStatus("protected", "background_handoff_pending")
       backgroundHandoffWorkItem?.cancel()
-      let work = DispatchWorkItem { [weak self] in
-        guard let self = self, !self.isForeground() else { return }
-        self.beginNativeOwnership("background_handoff")
-      }
-      backgroundHandoffWorkItem = work
-      DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
+      // JS owns the ordering: it unregisters/stops JsSIP before calling
+      // startSipService. Starting here first creates two transports for the same
+      // NetSapiens device AOR and the SBC closes one with WebSocket code 1001.
     }
-    // Cancellable work item that releases the native socket once JS is registered.
-    private var foregroundReleaseWorkItem: DispatchWorkItem?
+
     @objc private func onForeground() {
       appActive = true
-      // CRITICAL FIX (voicemail bug): Do NOT close the native socket immediately.
-      // JsSIP needs 5-15 s to reconnect + get REGISTER 200 OK from NetSapiens.
-      // Closing the native socket first leaves the extension UNREGISTERED,
-      // causing every inbound call to go straight to voicemail.
-      //
-      // Strategy: ask JsSIP to re-REGISTER, then keep the native socket alive
-      // for up to 20 s. stopSipService() (called by JS once registered) will
-      // cancel this timer and close the socket cleanly.
+      // Keep the last confirmed native Contact until JS reports its own
+      // REGISTER 200 and explicitly calls stopSipService. Closing here created
+      // a zero-Contact window where NetSapiens followed the voicemail rule.
       notifyListeners("sipReregisterRequested", data: ["reason": "enter_foreground"])
-      foregroundReleaseWorkItem?.cancel()
-      let work = DispatchWorkItem { [weak self] in
-        guard let self = self else { return }
-        self.foregroundReleaseWorkItem = nil
-        // Hard-cap: release after 20 s even if JS never confirmed.
-        self.releaseRegistration("foreground_js_owns")
-      }
-      foregroundReleaseWorkItem = work
-      DispatchQueue.main.asyncAfter(deadline: .now() + 20.0, execute: work)
     }
 
     private func beginNativeOwnership(_ why: String) {
@@ -204,13 +332,25 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       setStatus(status == "registered" ? "registered" : "protected", why)
     }
 
-    private func activateAudioSession() { try? AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .allowBluetoothA2DP, .mixWithOthers]); try? AVAudioSession.sharedInstance().setActive(true) }
+    private func activateAudioSession() {
+      let s = AVAudioSession.sharedInstance()
+      // During a live call we must own the session exclusively: .mixWithOthers
+      // lets WebKit interrupt it when the app goes background (no audio at all).
+      let opts: AVAudioSession.CategoryOptions = callActive
+        ? [.allowBluetoothHFP, .allowBluetoothA2DP]
+        : [.allowBluetoothHFP, .allowBluetoothA2DP, .mixWithOthers]
+      try? s.setCategory(.playAndRecord, mode: .voiceChat, options: opts)
+      try? s.setActive(true, options: [])
+      // Re-assert the preferred route: iOS resets overrideOutputAudioPort on each setActive.
+      applyAudioRoute(preferredRoute)
+    }
     private func connect() {
       // A new socket means a new AoR binding: clear the 200 OK debounce.
       lastRegisterOkTime = nil
       guard !host.isEmpty else { setStatus("error", "missing_host"); return }
       startPathMonitor()
       if isForeground() { return }
+      if callActive { return }
       if socket != nil { return }
       var comps = URLComponents(); comps.scheme = port == 80 ? "ws" : "wss"; comps.host = host; comps.port = port; comps.path = path.isEmpty ? "/" : path
       guard let url = comps.url else { setStatus("error", "bad_ws_url"); return }
@@ -218,7 +358,14 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       socket = session.webSocketTask(with: req); socket?.resume(); setStatus("connecting", "ws_connecting"); receiveLoop()
       DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in self?.sendRegister(challenge: nil) }
     }
-    private func scheduleRegister() { timer?.invalidate(); timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in self?.sendRegister(challenge: nil) }; RunLoop.main.add(timer!, forMode: .common) }
+    private func scheduleRegister() {
+      timer?.invalidate()
+      // Refresh once near expiry, not every minute. NetSapiens treats repeated
+      // REGISTER handshakes on one AOR as competing bindings.
+      let refreshInterval = max(60.0, Double(registerExpires) * 0.8)
+      timer = Timer.scheduledTimer(withTimeInterval: refreshInterval, repeats: true) { [weak self] _ in self?.sendRegister(challenge: nil) }
+      if let timer = timer { RunLoop.main.add(timer, forMode: .common) }
+    }
     private func receiveLoop() {
       socket?.receive { [weak self] result in
         guard let self = self else { return }
@@ -285,7 +432,11 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     }
 
     private func handle(_ msg: String) {
-      if msg.hasPrefix("SIP/2.0 401") || msg.hasPrefix("SIP/2.0 407") {
+      // A 401/407 only authenticates REGISTER when the response CSeq says so.
+      // NetSapiens can challenge OPTIONS too; treating that as a REGISTER
+      // challenge created a REGISTER → OPTIONS → 407 → REGISTER loop every 3s.
+      let responseCSeq = (headerVal(msg, "CSeq") ?? "").uppercased()
+      if (msg.hasPrefix("SIP/2.0 401") || msg.hasPrefix("SIP/2.0 407")) && responseCSeq.contains("REGISTER") {
         let isProxyAuth = msg.hasPrefix("SIP/2.0 407")
         sendRegister(challenge: headerVal(msg, isProxyAuth ? "Proxy-Authenticate" : "WWW-Authenticate"), proxyAuth: isProxyAuth)
         return
@@ -293,9 +444,8 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       if msg.hasPrefix("SIP/2.0 200") && msg.uppercased().contains(" REGISTER") {
         lastRegisterOkTime = Date()
         setStatus("registered", "native_register_200")
-        // NOTE: sendOptionsPing() was removed — NS closes the WSS socket ~0.5s after
-        // receiving an un-authenticated OPTIONS, producing the ws_closed Code=57 loop.
-        // The REGISTER 200 OK itself proves the socket is alive; no ping needed.
+        // NetSapiens accepts OPTIONS only after the dialog settles; too early can close WSS with 1001.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in self?.sendOptionsPing() }
         return
       }
       if msg.hasPrefix("INVITE ") {
@@ -318,17 +468,14 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private func sendRinging(via: String, from: String, to: String, cid: String, cseq: String) {
       guard socket != nil, !via.isEmpty, !cid.isEmpty else { return }
       let toWithTag = to.contains(";tag=") ? to : to + ";tag=" + String(Int(Date().timeIntervalSince1970 * 1000), radix: 16)
-      let cr = String(UnicodeScalar(13)!)
-      let lf = String(UnicodeScalar(10)!)
-      let crlf = cr + lf
-      var r = "SIP/2.0 180 Ringing" + crlf
-      r += "Via: " + via + crlf
-      r += "From: " + from + crlf
-      r += "To: " + toWithTag + crlf
-      r += "Call-ID: " + cid + crlf
-      r += "CSeq: " + cseq + crlf
-      r += "User-Agent: Planipret iOS KeepAlive" + crlf
-      r += "Content-Length: 0" + crlf + crlf
+      var r = "SIP/2.0 180 Ringing\r\n"
+      r += "Via: " + via + "\r\n"
+      r += "From: " + from + "\r\n"
+      r += "To: " + toWithTag + "\r\n"
+      r += "Call-ID: " + cid + "\r\n"
+      r += "CSeq: " + cseq + "\r\n"
+      r += "User-Agent: Planipret iOS KeepAlive\r\n"
+      r += "Content-Length: 0\r\n\r\n"
       socket?.send(.string(r)) { _ in }
     }
 
@@ -344,33 +491,48 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
     }
 
+    /// OPTIONS keep-alive sent right after the REGISTER 200 OK (never before:
+    /// an un-authenticated OPTIONS makes NetSapiens close the socket).
+    private func sendOptionsPing() {
+      guard let sock = socket, status == "registered", !domain.isEmpty else { return }
+      let seq = cseq; cseq += 1
+      let branch = "z9hG4bK" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+      var sip = "OPTIONS sip:" + domain + " SIP/2.0\r\n"
+      sip += "Via: SIP/2.0/WSS " + domain + ";branch=" + branch + "\r\n"
+      sip += "From: <sip:" + login + "@" + domain + ">;tag=" + fromTag + "\r\n"
+      sip += "To: <sip:" + domain + ">\r\n"
+      sip += "Call-ID: " + UUID().uuidString + "@planipret-ios\r\n"
+      sip += "CSeq: " + String(seq) + " OPTIONS\r\n"
+      sip += "Max-Forwards: 70\r\nUser-Agent: Planipret iOS KeepAlive\r\nContent-Length: 0\r\n\r\n"
+      sock.send(.string(sip)) { err in
+        if let e = err { NSLog("[PpSipKeepAlive] OPTIONS ping failed: %@", String(describing: e)) }
+      }
+    }
+
     private func sendRegister(challenge: String?, proxyAuth: Bool = false, force: Bool = false) {
-      guard socket != nil else { scheduleReconnect("register_no_socket"); return }
-      if !force, let t = lastRegisterOkTime, Date().timeIntervalSince(t) < registerDebounceSec { return }
-      if !force, let t = lastRegisterSentTime, Date().timeIntervalSince(t) < registerDebounceSec { return }
+      if isForeground() { releaseRegistration("foreground_js_owns"); return }
+      if socket == nil { connect(); return }
+      // Two REGISTERs in a row on the same WSS connection make NetSapiens see a
+      // duplicate AoR and close the socket. Hold off after each send/200 OK
+      // (auth challenge responses are exempt: they complete the same handshake).
+      if !force, challenge == nil, let sentAt = lastRegisterSentTime, Date().timeIntervalSince(sentAt) <= registerDebounceSec {
+        NSLog("[PpSipKeepAlive] REGISTER debounced: %.2fs since sent (min %.1fs)", Date().timeIntervalSince(sentAt), registerDebounceSec)
+        return
+      }
+      if !force, challenge == nil, let okAt = lastRegisterOkTime, Date().timeIntervalSince(okAt) <= registerDebounceSec {
+        NSLog("[PpSipKeepAlive] REGISTER debounced: %.2fs since 200 OK (min %.1fs)", Date().timeIntervalSince(okAt), registerDebounceSec)
+        return
+      }
       guard !login.isEmpty, !domain.isEmpty else { setStatus("error", "missing_credentials"); return }
       let seq = cseq; cseq += 1
       let branch = "z9hG4bK" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
       let contact = "<sip:" + login + "@" + stableContactHost() + ";transport=wss>"
-      let cr = String(UnicodeScalar(13)!)
-      let lf = String(UnicodeScalar(10)!)
-      let crlf = cr + lf
-      let dq = String(UnicodeScalar(34)!)
-      var sip = "REGISTER sip:" + domain + " SIP/2.0" + crlf
-      sip += "Via: SIP/2.0/WSS " + domain + ";branch=" + branch + crlf
-      sip += "Max-Forwards: 70" + crlf
-      sip += "To: <sip:" + login + "@" + domain + ">" + crlf
-      let safeDisplay = displayName.replacingOccurrences(of: dq, with: "")
-      sip += "From: " + dq + safeDisplay + dq + " <sip:" + login + "@" + domain + ">;tag=" + fromTag + crlf
-      sip += "Call-ID: " + callIdReg + crlf
-      sip += "CSeq: " + String(seq) + " REGISTER" + crlf
-      sip += "Contact: " + contact + ";expires=" + String(registerExpires) + crlf
-      sip += "Expires: " + String(registerExpires) + crlf
-      sip += "User-Agent: Planipret iOS KeepAlive" + crlf
-      sip += "Supported: outbound,path,gruu" + crlf
-      sip += "Allow: INVITE,ACK,CANCEL,BYE,OPTIONS,MESSAGE,INFO,UPDATE,REGISTER" + crlf
-      if let ch = challenge, !password.isEmpty { sip += (proxyAuth ? "Proxy-Authorization: " : "Authorization: ") + digest(challenge: ch) + crlf }
-      sip += "Content-Length: 0" + crlf + crlf
+      var sip = "REGISTER sip:" + domain + " SIP/2.0\r\n"
+      sip += "Via: SIP/2.0/WSS " + domain + ";branch=" + branch + "\r\nMax-Forwards: 70\r\n"
+      sip += "To: <sip:" + login + "@" + domain + ">\r\nFrom: \"" + displayName.replacingOccurrences(of: "\"", with: "") + "\" <sip:" + login + "@" + domain + ">;tag=" + fromTag + "\r\n"
+      sip += "Call-ID: " + callIdReg + "\r\nCSeq: " + String(seq) + " REGISTER\r\nContact: " + contact + ";expires=" + String(registerExpires) + "\r\nExpires: " + String(registerExpires) + "\r\nUser-Agent: Planipret iOS KeepAlive\r\nSupported: outbound,path,gruu\r\nAllow: INVITE,ACK,CANCEL,BYE,OPTIONS,MESSAGE,INFO,UPDATE,REGISTER\r\n"
+      if let ch = challenge, !password.isEmpty { sip += (proxyAuth ? "Proxy-Authorization: " : "Authorization: ") + digest(challenge: ch) + "\r\n" }
+      sip += "Content-Length: 0\r\n\r\n"
       socket?.send(.string(sip)) { [weak self] err in
         DispatchQueue.main.async {
           guard let self = self else { return }
@@ -393,58 +555,14 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       return domain.isEmpty ? "planipret.ca" : domain
     }
 
-    private func digest(challenge: String) -> String {
-        let m = parseDigest(challenge)
-        let realm = m["realm"] ?? domain
-        let nonce = m["nonce"] ?? ""
-        let qop   = m["qop"]   ?? ""
-        let uri   = "sip:" + domain
-        let nc    = "00000001"
-        let cnonce = String(Int(Date().timeIntervalSince1970 * 1000), radix: 16)
-        let ha1 = md5(login + ":" + realm + ":" + password)
-        let ha2 = md5("REGISTER:" + uri)
-        let response: String
-        if qop.contains("auth") {
-            response = md5(ha1 + ":" + nonce + ":" + nc + ":" + cnonce + ":auth:" + ha2)
-        } else {
-            response = md5(ha1 + ":" + nonce + ":" + ha2)
-        }
-        let dq3 = String(UnicodeScalar(34)!)
-        var out = "Digest username=" + dq3 + login + dq3 + ", realm=" + dq3 + realm + dq3 + ", nonce=" + dq3 + nonce
-                + dq3 + ", uri=" + dq3 + uri + dq3 + ", response=" + dq3 + response + dq3 + ", algorithm=MD5"
-        if qop.contains("auth") {
-            out += ", qop=auth, nc=" + nc + ", cnonce=" + dq3 + cnonce + dq3
-        }
-        if let opaque = m["opaque"] {
-            out += ", opaque=" + dq3 + opaque + dq3
-        }
-        return out
-    }
-    private func parseDigest(_ h: String) -> [String: String] {
-        var out: [String: String] = [:]
-        let s = h.replacingOccurrences(of: "Digest ", with: "", options: .caseInsensitive)
-        for part in s.split(separator: ",") {
-            let pieces = part.split(separator: "=", maxSplits: 1)
-            if pieces.count == 2 {
-                var v = pieces[1].trimmingCharacters(in: .whitespaces)
-                let dq2 = String(UnicodeScalar(34)!); if v.hasPrefix(dq2) && v.hasSuffix(dq2) { v.removeFirst(); v.removeLast() }
-                out[pieces[0].trimmingCharacters(in: .whitespaces)] = v
-            }
-        }
-        return out
-    }
+    private func digest(challenge: String) -> String { let m = parseDigest(challenge); let realm = m["realm"] ?? domain; let nonce = m["nonce"] ?? ""; let qop = m["qop"] ?? ""; let uri = "sip:" + domain; let nc = "00000001"; let cnonce = String(Int(Date().timeIntervalSince1970 * 1000), radix: 16); let ha1 = md5(login + ":" + realm + ":" + password); let ha2 = md5("REGISTER:" + uri); let response = qop.contains("auth") ? md5(ha1 + ":" + nonce + ":" + nc + ":" + cnonce + ":auth:" + ha2) : md5(ha1 + ":" + nonce + ":" + ha2); var out = "Digest username=\"" + login + "\", realm=\"" + realm + "\", nonce=\"" + nonce + "\", uri=\"" + uri + "\", response=\"" + response + "\", algorithm=MD5"; if qop.contains("auth") { out += ", qop=auth, nc=" + nc + ", cnonce=\"" + cnonce + "\"" }; if let opaque = m["opaque"] { out += ", opaque=\"" + opaque + "\"" }; return out }
+    private func parseDigest(_ h: String) -> [String:String] { var out: [String:String] = [:]; let s = h.replacingOccurrences(of: "Digest ", with: "", options: .caseInsensitive); for part in s.split(separator: ",") { let pieces = part.split(separator: "=", maxSplits: 1); if pieces.count == 2 { var v = pieces[1].trimmingCharacters(in: .whitespaces); if v.hasPrefix("\"") && v.hasSuffix("\"") { v.removeFirst(); v.removeLast() }; out[pieces[0].trimmingCharacters(in: .whitespaces)] = v } }; return out }
     private func headerVal(_ msg: String, _ name: String) -> String? { for line in msg.components(separatedBy: .newlines) { if line.lowercased().hasPrefix(name.lowercased() + ":") { return String(line.dropFirst(name.count + 1)).trimmingCharacters(in: .whitespaces) } }; return nil }
-    private func parseDisplay(_ hdr: String) -> String {
-        guard let lt = hdr.firstIndex(of: "<") else { return "" }
-        var d = String(hdr[..<lt]).trimmingCharacters(in: .whitespaces)
-        let dq = String(UnicodeScalar(34)!)
-        if d.hasPrefix(dq) && d.hasSuffix(dq) { d.removeFirst(); d.removeLast() }
-        return d
-    }
+    private func parseDisplay(_ hdr: String) -> String { guard let lt = hdr.firstIndex(of: "<") else { return "" }; var d = String(hdr[..<lt]).trimmingCharacters(in: .whitespaces); if d.hasPrefix("\"") && d.hasSuffix("\"") { d.removeFirst(); d.removeLast() }; return d }
     private func parseUser(_ hdr: String) -> String { var uri = hdr; if let lt = hdr.firstIndex(of: "<"), let gt = hdr[lt...].firstIndex(of: ">") { uri = String(hdr[hdr.index(after: lt)..<gt]) }; if uri.hasPrefix("sip:") { uri = String(uri.dropFirst(4)) } else if uri.hasPrefix("sips:") { uri = String(uri.dropFirst(5)) }; if let at = uri.firstIndex(of: "@") { uri = String(uri[..<at]) }; if let semi = uri.firstIndex(of: ";") { uri = String(uri[..<semi]) }; return uri }
     private func md5(_ s: String) -> String { let d = Insecure.MD5.hash(data: Data(s.utf8)); return d.map { String(format: "%02hhx", $0) }.joined() }
     private func beginBackgroundTask() { if bgTask != .invalid { return }; bgTask = UIApplication.shared.beginBackgroundTask(withName: "PlanipretSIPKeepAlive") { [weak self] in self?.endBackgroundTask(); self?.setStatus("protected", "background_task_expired") }; DispatchQueue.main.asyncAfter(deadline: .now() + 25) { [weak self] in self?.sendRegister(challenge: nil); self?.endBackgroundTask() } }
     private func endBackgroundTask() { if bgTask != .invalid { UIApplication.shared.endBackgroundTask(bgTask); bgTask = .invalid } }
     private func setStatus(_ next: String, _ nextReason: String) { status = next; reason = nextReason; updatedAt = Date().timeIntervalSince1970 * 1000; DispatchQueue.main.async { self.notifyListeners("sipServiceStatus", data: self.snapshot(ok: true)) } }
-    private func snapshot(ok: Bool) -> [String: Any] { ["ok": ok, "status": status, "reason": reason, "updatedAt": updatedAt, "backgroundTaskActive": bgTask != .invalid, "loggedIn": status == "registered" || status == "protected"] }
+    private func snapshot(ok: Bool) -> [String: Any] { ["ok": ok, "status": status, "reason": reason, "updatedAt": updatedAt, "backgroundTaskActive": bgTask != .invalid, "loggedIn": status == "registered"] }
 }

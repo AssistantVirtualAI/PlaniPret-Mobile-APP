@@ -14,12 +14,16 @@ import {
   setPipelineStep,
   updateCallPipeline,
 } from "../_shared/maestro.ts";
+import { callAnthropic } from "../_shared/anthropic.ts";
 
 
-const ANALYSIS_SYSTEM = `Tu es un expert en coaching de courtiers hypothécaires. Analyse cette transcription d'appel et retourne UNIQUEMENT un JSON valide sans markdown, sans bloc de code, sans commentaire — juste l'objet JSON brut.`;
 
-const ANALYSIS_USER = (transcript: string) =>
-  `Transcription:\n${transcript}\n\nRetourne ce JSON exact (champs obligatoires, valeurs en français):
+// Static instructions + output schema live in the SYSTEM prompt so the whole
+// prefix is byte-identical on every call and can be prompt-cached (0.1x reads).
+// Only the transcript varies, and it stays in the user message.
+const ANALYSIS_SYSTEM = `Tu es un expert en coaching de courtiers hypothécaires. Analyse cette transcription d'appel et retourne UNIQUEMENT un JSON valide sans markdown, sans bloc de code, sans commentaire — juste l'objet JSON brut.
+
+Retourne ce JSON exact (champs obligatoires, valeurs en français):
 {
   "summary_text": "2-5 phrases résumant l'appel",
   "key_points": ["3 à 5 points importants"],
@@ -46,30 +50,19 @@ const ANALYSIS_USER = (transcript: string) =>
   "lead_score_reason": "1 phrase"
 }`;
 
-async function callClaude(transcript: string): Promise<any> {
-  const key = Deno.env.get("ANTHROPIC_API_KEY");
-  if (!key) throw new Error("ANTHROPIC_API_KEY missing");
+const ANALYSIS_USER = (transcript: string) => `Transcription:\n${transcript}`;
 
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "x-api-key": key,
-      "anthropic-version": "2023-06-01",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-5-20250929",
-      max_tokens: 2000,
-      system: ANALYSIS_SYSTEM,
-      messages: [{ role: "user", content: ANALYSIS_USER(transcript) }],
-    }),
+async function callClaude(transcript: string): Promise<any> {
+  const res = await callAnthropic({
+    model: "claude-sonnet-4-5-20250929",
+    max_tokens: 2000,
+    system: ANALYSIS_SYSTEM,
+    messages: [{ role: "user", content: ANALYSIS_USER(transcript) }],
+    label: "maestro-ai-analysis",
   });
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`Claude ${res.status}: ${text.slice(0, 500)}`);
-  }
-  const data = JSON.parse(text);
-  const raw = data?.content?.[0]?.text ?? "";
+  if (!res.ok) throw new Error(`Claude ${res.status}: ${String(res.error ?? "").slice(0, 500)}`);
+  const raw = res.text ?? "";
+
   // Strip any accidental code fences
   const cleaned = raw.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
   try {

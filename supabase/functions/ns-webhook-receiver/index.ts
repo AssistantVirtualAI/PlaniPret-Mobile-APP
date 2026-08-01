@@ -1,7 +1,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { normalizeNsEvents, nsCallKey, shouldProcessCall } from "../_shared/ns-call-events.ts";
-import { parseServiceAccount, sendFcmDataMessage, sendFcmDataMessageLegacy, sendFcmDataMessageWithToken } from "../_shared/fcm.ts";
+import { parseServiceAccount, sendFcmDataMessage } from "../_shared/fcm.ts";
 
 
 declare const EdgeRuntime: { waitUntil: (p: Promise<unknown>) => void };
@@ -213,10 +213,8 @@ async function processEvent(event: any) {
     const rawSa = (secrets?.config as Record<string, string> | null)?.fcm_service_account_json
       ?? Deno.env.get("FCM_SERVICE_ACCOUNT_JSON");
     const sa = parseServiceAccount(rawSa);
-    const accessToken = Deno.env.get("FCM_ACCESS_TOKEN");
-    const serverKey = Deno.env.get("FCM_SERVER_KEY");
-    if (!sa && !accessToken && !serverKey) {
-      console.warn("[ns-webhook] FCM not configured — Android wake-up skipped (set FCM_SERVICE_ACCOUNT_JSON, FCM_ACCESS_TOKEN, or FCM_SERVER_KEY)", { user_id: uid, call_id: payload?.call_id });
+    if (!sa) {
+      console.warn("[ns-webhook] FCM not configured — Android wake-up skipped", { user_id: uid, call_id: payload?.call_id });
       return;
     }
 
@@ -224,12 +222,10 @@ async function processEvent(event: any) {
     for (const [k, v] of Object.entries(payload)) data[k] = v == null ? "" : String(v);
 
     const results = await Promise.allSettled(tokens.map(async (row: any) => {
-      // Priority: service account JSON > direct access token > legacy server key
-      const res = sa
-        ? await sendFcmDataMessage(sa, row.token, data, { collapseKey: String(payload?.call_id ?? ""), ttlSeconds: 30 })
-        : accessToken
-        ? await sendFcmDataMessageWithToken(accessToken, "lemtel-softphone", row.token, data, { collapseKey: String(payload?.call_id ?? ""), ttlSeconds: 30 })
-        : await sendFcmDataMessageLegacy(serverKey!, row.token, data);
+      const res = await sendFcmDataMessage(sa, row.token, data, {
+        collapseKey: String(payload?.call_id ?? ""),
+        ttlSeconds: 30,
+      });
       if (!res.ok) {
         console.error("[ns-webhook] FCM push failed", { token_id: row.id, status: res.status, error: res.error, call_id: payload?.call_id });
         if (res.unregistered) await admin.from("mobile_push_tokens").delete().eq("id", row.id);

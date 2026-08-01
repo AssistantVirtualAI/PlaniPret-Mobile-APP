@@ -1,6 +1,8 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { MS365_DELEGATED_SCOPES, refreshMicrosoftAccessToken } from "../_shared/ms365.ts";
+import { callAnthropic } from "../_shared/anthropic.ts";
+
 
 const GRAPH = "https://graph.microsoft.com/v1.0";
 
@@ -403,18 +405,17 @@ Deno.serve(async (req) => {
         const apiKey = (ant?.config as any)?.api_key ?? Deno.env.get("ANTHROPIC_API_KEY");
         let briefing = `Bonjour ${profile.full_name ?? ""}, voici votre résumé du ${today.toLocaleDateString("fr-CA")}. Vous avez ${emails.length} courriels non lus et ${events.length} rendez-vous aujourd'hui.`;
         if (apiKey) {
-          const cr = await fetch("https://api.anthropic.com/v1/messages", {
-            method: "POST",
-            headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-            body: JSON.stringify({
-              model: "claude-sonnet-4-5-20250929",
-              max_tokens: 600,
-              system: "Tu es un assistant pour courtier hypothécaire. Génère un briefing matinal court et professionnel en français.",
-              messages: [{ role: "user", content: `Courtier: ${profile.full_name}\nDate: ${today.toLocaleDateString("fr-CA")}\nCourriels non lus: ${JSON.stringify(emails)}\nRendez-vous: ${JSON.stringify(events)}\n\nGénère un briefing oral de 3-4 phrases.` }],
-            }),
+          const cr = await callAnthropic({
+            apiKey,
+            model: "claude-sonnet-4-5-20250929",
+            max_tokens: 600,
+            system: "Tu es un assistant pour courtier hypothécaire. Génère un briefing matinal court et professionnel en français.",
+            messages: [{ role: "user", content: `Courtier: ${profile.full_name}\nDate: ${today.toLocaleDateString("fr-CA")}\nCourriels non lus: ${JSON.stringify(emails)}\nRendez-vous: ${JSON.stringify(events)}\n\nGénère un briefing oral de 3-4 phrases.` }],
+            label: "ms365-briefing",
           });
-          if (cr.ok) { const cd = await cr.json(); briefing = cd.content?.[0]?.text ?? briefing; }
+          if (cr.ok && cr.text) briefing = cr.text;
         }
+
         return j({ success: true, briefing_text: briefing, emails_count: emails.length, events_count: events.length });
       }
       case "search_contact": {

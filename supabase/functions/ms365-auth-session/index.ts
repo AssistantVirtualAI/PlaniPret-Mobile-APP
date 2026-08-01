@@ -1,6 +1,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { MS365_DELEGATED_SCOPES, microsoftOAuthErrorMessage, readMs365Config, requestMicrosoftToken } from "../_shared/ms365.ts";
+import { linkBrokerIdByEmail } from "../_shared/maestro-broker-directory.ts";
 
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), {
@@ -87,6 +88,16 @@ Deno.serve(async (req) => {
       ms365_display_name: me?.displayName ?? null,
       auth_method: "microsoft",
     }).eq("id", profile.id);
+
+    // Link the broker's Maestro telecom id from their Microsoft email.
+    try {
+      const { data: prof2 } = await admin
+        .from("planipret_profiles")
+        .select("id, email, ms365_email, extension, phone, maestro_broker_id")
+        .eq("id", profile.id)
+        .maybeSingle();
+      if (prof2) await linkBrokerIdByEmail(admin, prof2 as any);
+    } catch (e) { console.warn("[ms365-auth-session] maestro link failed", (e as Error).message); }
 
     const { data: link, error: linkError } = await admin.auth.admin.generateLink({
       type: "magiclink",

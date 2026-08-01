@@ -32,21 +32,55 @@ Deno.serve(async (req) => {
 
     const body = await req.json().catch(() => ({}));
     const dryRun: boolean = !!body?.dry_run;
+    // When true (default), users with no stored SIP password get one generated
+    // so every softphone user in every domain ends up with a working credential.
+    const fillMissing: boolean = body?.fill_missing !== false;
+
+    const genPwd = (len = 14) => {
+      const chars = "abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+      const arr = new Uint32Array(len);
+      crypto.getRandomValues(arr);
+      return Array.from(arr, (n) => chars[n % chars.length]).join("");
+    };
 
     const { data: rows, error } = await admin
       .from("pbx_softphone_users")
       .select("id, organization_id, extension, portal_user_id, sip_password")
-      .not("portal_user_id", "is", null)
-      .not("sip_password", "is", null);
+      .not("portal_user_id", "is", null);
     if (error) return json({ error: "QUERY_FAILED", message: error.message }, 500);
 
-    let updated = 0, skipped = 0;
+    let updated = 0, skipped = 0, generated = 0;
     const errors: any[] = [];
 
     for (const r of rows || []) {
-      const pwd = (r as any).sip_password;
+      let pwd = (r as any).sip_password;
       const uid = (r as any).portal_user_id;
-      if (!pwd || !uid || pwd.length < 6) { skipped++; continue; }
+      if (!uid) { skipped++; continue; }
+      if (!pwd || pwd.length < 6) {
+        if (!fillMissing) { skipped++; continue; }
+        pwd = genPwd();
+        if (!dryRun) {
+          const { error: gErr } = await admin
+            .from("pbx_softphone_users")
+            .update({ sip_password: pwd, updated_at: new Date().toISOString() })
+            .eq("id", r.id);
+          if (gErr) { errors.push({ id: r.id, ext: r.extension, err: gErr.message }); continue; }
+          // Best-effort: push the new secret to the PBX extension.
+          try {
+            const { data: extRow } = await admin
+              .from("pbx_extensions").select("pbx_uuid")
+              .eq("organization_id", r.organization_id).eq("extension", r.extension).maybeSingle();
+            await admin.functions.invoke("fusionpbx-proxy", {
+              body: {
+                action: "update-extension",
+                organization_id: r.organization_id,
+                params: { extension_uuid: extRow?.pbx_uuid || undefined, extension: String(r.extension), password: pwd },
+              },
+            });
+          } catch (_e) { /* non-fatal */ }
+        }
+        generated++;
+      }
       if (dryRun) { updated++; continue; }
       try {
         const { error: uErr } = await admin.auth.admin.updateUserById(uid, { password: pwd });
@@ -76,7 +110,7 @@ Deno.serve(async (req) => {
       }
     }
 
-    return json({ success: true, dry_run: dryRun, total: rows?.length || 0, updated, skipped, errors });
+    return json({ success: true, dry_run: dryRun, total: rows?.length || 0, updated, generated, skipped, errors });
   } catch (e: any) {
     return json({ error: "BACKFILL_FAILED", message: e?.message || String(e) }, 500);
   }

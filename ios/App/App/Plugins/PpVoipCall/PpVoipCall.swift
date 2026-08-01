@@ -200,7 +200,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     }
 
     public func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
-        try? AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .allowBluetoothA2DP])
+        try? AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .allowBluetoothA2DP])
         try? AVAudioSession.sharedInstance().setActive(true)
         notifyListeners("incomingCallAnswered", data: [
             "callUUID": action.callUUID.uuidString,

@@ -1,5 +1,6 @@
 // @ts-nocheck
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { callAnthropic } from "../_shared/anthropic.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -15,6 +16,27 @@ const json = (body: unknown, status = 200) =>
 
 const ELEVEN_KEY = Deno.env.get("ELEVENLABS_API_KEY") ?? "";
 const LOVABLE_KEY = Deno.env.get("LOVABLE_API_KEY") ?? "";
+
+/**
+ * Static (cacheable) prompts — keep byte-identical across calls so Anthropic
+ * prompt caching can re-read the prefix at 0.1x input price.
+ */
+const CLEANUP_SYSTEM = `You clean up raw speech-to-text output of telephone voicemails (French or English).
+
+Rules:
+- Keep the original language. Never translate.
+- Fix punctuation, casing, obvious ASR errors, and normalize phone numbers to a readable format.
+- Do not add, remove or summarize any information.
+- Return ONLY the cleaned transcript text, with no preamble, quotes or markdown.`;
+
+const SUMMARY_SYSTEM = `You summarize telephone voicemails for a business phone system.
+
+Rules:
+- Write the summary in the language of the voicemail (French or English).
+- Maximum 3 sentences, factual, no preamble.
+- Include the caller's intent and any callback number or deadline mentioned.
+- tags: up to 5 short lowercase keywords (e.g. "rappel", "urgent", "devis").
+- Return ONLY a JSON object: {"summary": string, "tags": string[]}. No markdown fences.`;
 
 async function transcribeAudio(blob: Blob): Promise<string> {
   if (!ELEVEN_KEY) throw new Error("missing_elevenlabs_key");
@@ -32,7 +54,45 @@ async function transcribeAudio(blob: Blob): Promise<string> {
   return j.text ?? "";
 }
 
+/** Claude pass over the raw ASR text (cached system prefix). Falls back to raw. */
+async function cleanupTranscript(raw: string): Promise<string> {
+  if (!raw.trim() || !Deno.env.get("ANTHROPIC_API_KEY")) return raw;
+  const res = await callAnthropic({
+    model: "claude-sonnet-4-5-20250929",
+    max_tokens: 1500,
+    system: CLEANUP_SYSTEM,
+    messages: [{ role: "user", content: raw.slice(0, 12000) }],
+    label: "vm-cleanup",
+  });
+  return res.ok && res.text.trim() ? res.text.trim() : raw;
+}
+
 async function summarizeText(text: string): Promise<{ summary: string; tags: string[] }> {
+  if (!text.trim()) return { summary: "", tags: [] };
+
+  // 1) Anthropic with prompt caching on the static instructions.
+  if (Deno.env.get("ANTHROPIC_API_KEY")) {
+    const res = await callAnthropic({
+      model: "claude-sonnet-4-5-20250929",
+      max_tokens: 500,
+      system: SUMMARY_SYSTEM,
+      messages: [{ role: "user", content: text.slice(0, 12000) }],
+      label: "vm-summary",
+    });
+    if (res.ok && res.text) {
+      try {
+        const parsed = JSON.parse(res.text.replace(/^```(?:json)?|```$/g, "").trim());
+        return {
+          summary: parsed.summary ?? "",
+          tags: Array.isArray(parsed.tags) ? parsed.tags.slice(0, 5) : [],
+        };
+      } catch {
+        return { summary: res.text.trim(), tags: [] };
+      }
+    }
+  }
+
+  // 2) Fallback: Lovable AI Gateway.
   if (!LOVABLE_KEY) return { summary: "", tags: [] };
   const r = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
     method: "POST",
@@ -43,8 +103,8 @@ async function summarizeText(text: string): Promise<{ summary: string; tags: str
     body: JSON.stringify({
       model: "google/gemini-3-flash-preview",
       messages: [
-        { role: "system", content: "You summarize voicemails in <=3 sentences. Return JSON {summary:string, tags:string[]}. tags: short keywords (max 5)." },
-        { role: "user", content: text || "(empty transcript)" },
+        { role: "system", content: SUMMARY_SYSTEM },
+        { role: "user", content: text },
       ],
       response_format: { type: "json_object" },
     }),
@@ -138,7 +198,8 @@ Deno.serve(async (req) => {
       if (!vm.audio_storage_path) return json({ error: "no_audio" }, 400);
       const { data: file, error } = await admin.storage.from("voicemail-audio").download(vm.audio_storage_path);
       if (error) throw error;
-      const transcript = await transcribeAudio(file);
+      const raw = await transcribeAudio(file);
+      const transcript = await cleanupTranscript(raw);
       await admin.from("pbx_voicemails").update({ transcript }).eq("id", payload.id);
       return json({ transcript });
     }

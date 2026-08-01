@@ -4,6 +4,8 @@
 
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { callAnthropic } from "../_shared/anthropic.ts";
+
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -205,33 +207,24 @@ Direction: ${row.direction ?? "?"} · Durée: ${row.duration_seconds ?? "?"}s`;
     async function callClaude(): Promise<{ ok: boolean; content?: string; status?: number; error?: string }> {
       if (!ANTHROPIC_API_KEY) return { ok: false, error: "no_anthropic_key" };
       const model = Deno.env.get("PP_COACH_CLAUDE_MODEL") ?? "claude-sonnet-4-5-20250929";
-      const r = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "x-api-key": ANTHROPIC_API_KEY,
-          "anthropic-version": "2023-06-01",
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model,
-          max_tokens: 12000,
-          system: SYSTEM_PROMPT,
-          tools: [ANALYSIS_TOOL],
-          tool_choice: { type: "tool", name: "record_call_analysis" },
-          messages: [{ role: "user", content: userPrompt }],
-        }),
+      // Prompt caching: the large tool schema + system prompt are identical on
+      // every call → cached prefix, only the transcript is billed at full rate.
+      const res = await callAnthropic({
+        apiKey: ANTHROPIC_API_KEY,
+        model,
+        max_tokens: 12000,
+        system: SYSTEM_PROMPT,
+        tools: [ANALYSIS_TOOL],
+        tool_choice: { type: "tool", name: "record_call_analysis" },
+        messages: [{ role: "user", content: userPrompt }],
+        label: "pp-coach-call",
       });
-      const rawText = await r.text();
-      if (!r.ok) { console.error("[claude] http", r.status, rawText.slice(0, 500)); return { ok: false, status: r.status, error: rawText }; }
-      let j: any = null;
-      try { j = JSON.parse(rawText); } catch (e) { console.error("[claude] parse fail", (e as Error).message); return { ok: false, error: "parse" }; }
-      console.log("[claude] content types:", Array.isArray(j?.content) ? j.content.map((b: any) => b?.type).join(",") : "none");
-      const toolBlock = Array.isArray(j?.content) ? j.content.find((b: any) => b?.type === "tool_use") : null;
-      if (toolBlock?.input) return { ok: true, content: JSON.stringify(toolBlock.input) };
-      const textContent = Array.isArray(j?.content) ? j.content.map((b: any) => b?.text ?? "").join("") : "";
-      console.log("[claude] no tool_use, text length:", textContent.length);
-      return { ok: true, content: textContent };
+      if (!res.ok) return { ok: false, status: res.status, error: res.error };
+      if (res.toolInput) return { ok: true, content: JSON.stringify(res.toolInput) };
+      console.log("[claude] no tool_use, text length:", res.text.length);
+      return { ok: true, content: res.text };
     }
+
 
     async function callLovable(): Promise<{ ok: boolean; content?: string; status?: number; error?: string }> {
       if (!LOVABLE_API_KEY) return { ok: false, error: "no_lovable_key" };

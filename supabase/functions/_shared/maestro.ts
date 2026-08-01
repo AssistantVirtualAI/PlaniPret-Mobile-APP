@@ -1,6 +1,7 @@
 // Shared Maestro/Kanguru helper — used by all maestro-* edge functions.
 import { createClient, SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { getUserMaestroAccessToken } from "./maestro-oauth.ts";
+import { resolveMaestroIdForUser } from "./maestro-broker-directory.ts";
 
 export const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -247,6 +248,15 @@ export async function getBrokerAuth(
       // a network hiccup there would discard a perfectly valid broker id.
       diag.stored_broker_id_valid = true;
       diag.reason = "ok";
+    }
+    // Prefer the Maestro broker directory (email match) before falling back to
+    // the expensive /users/{id}/sip probing loop.
+    if (!brokerId) {
+      const dir = await resolveMaestroIdForUser(admin, userId).catch(() => null);
+      if (dir?.maestro_broker_id) {
+        brokerId = dir.maestro_broker_id;
+        diag.sip_probe_result = `directory_match_${dir.matched_by ?? "email"}`;
+      }
     }
     if (!brokerId) brokerId = await resolveBrokerIdFromTelecom(admin, userId, cfg, 250, diag);
     if (brokerId) diag.reason = "ok";

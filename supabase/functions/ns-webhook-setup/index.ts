@@ -80,4 +80,3 @@ Deno.serve(async (req) => {
     return jsonResponse({ success: false, error: "Connexion perdue", code: 0 }, 200);
   }
 });
-

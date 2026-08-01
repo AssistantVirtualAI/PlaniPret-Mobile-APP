@@ -1,0 +1,1 @@
+CREATE POLICY "pbx_audio_read_authenticated" ON storage.objects FOR SELECT TO authenticated USING (bucket_id = 'pbx-audio');

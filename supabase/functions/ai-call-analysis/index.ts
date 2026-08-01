@@ -1,4 +1,6 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { callAnthropic } from "../_shared/anthropic.ts";
+
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -28,19 +30,17 @@ Deno.serve(async (req) => {
 
     await admin.from("lemtel_cdrs_cache").update({ ai_processing: true }).eq("call_uuid", call_uuid);
 
-    const claudeRes = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "x-api-key": anthropicKey, "anthropic-version": "2023-06-01", "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-5-20250929",
-        max_tokens: 1024,
-        system: "You are a call analysis expert. Analyze this call transcript and return ONLY valid JSON with these exact fields: { sentiment: 'positive'|'neutral'|'negative', topics: string[], action_items: string[], summary: string (2 sentences max), satisfaction_score: number (1-5), escalation_needed: boolean, key_phrases: string[] }",
-        messages: [{ role: "user", content: transcript }],
-      }),
+    const claudeRes = await callAnthropic({
+      apiKey: anthropicKey,
+      model: "claude-sonnet-4-5-20250929",
+      max_tokens: 1024,
+      system: "You are a call analysis expert. Analyze this call transcript and return ONLY valid JSON with these exact fields: { sentiment: 'positive'|'neutral'|'negative', topics: string[], action_items: string[], summary: string (2 sentences max), satisfaction_score: number (1-5), escalation_needed: boolean, key_phrases: string[] }",
+      messages: [{ role: "user", content: transcript }],
+      label: "ai-call-analysis",
     });
-    const data = await claudeRes.json();
-    const text = data.content?.[0]?.text || "{}";
+    const text = claudeRes.text || "{}";
     const analysis = JSON.parse(text.replace(/```json|```/g, "").trim());
+
 
     await admin.from("lemtel_transcriptions").insert({
       call_uuid, transcript_text: transcript,

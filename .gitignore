@@ -32,3 +32,4 @@ postcss.config.mjs
 *.bak_*
 lemtel-live-fusionpbx-patch.sh
 apps/planipret-mobile/reports/
+android/app/src/main/assets/public

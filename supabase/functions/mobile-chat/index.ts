@@ -2,6 +2,21 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { streamText, generateText, convertToModelMessages } from "npm:ai";
 import { createLovableAiGatewayProvider } from "../_shared/ai-gateway.ts";
+import { callAnthropic } from "../_shared/anthropic.ts";
+
+/**
+ * Static (cacheable) part of the prompt. Keep this byte-identical across calls
+ * so Anthropic prompt caching can re-read it at 0.1x input price.
+ */
+const AVA_SYSTEM = `You are AVA, the AI assistant inside the Lemtel Softphone mobile app.
+You help the user with their phone system: calls, queues, extensions, voicemail, recordings and settings.
+
+Rules:
+- Answer concisely: max 4 sentences, no preamble, no markdown headings.
+- Answer in the language of the user's last message (French or English).
+- Use the live PBX context provided in the first user message when relevant.
+- Never invent extensions, queue names or numbers that are not in the context.
+- If the data needed is not in the context, say so in one sentence and suggest where to find it in the app.`;
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -49,7 +64,7 @@ Deno.serve(async (req) => {
     const openaiKey = Deno.env.get("OPENAI_API_KEY");
     if (!key && !openaiKey) return json({ answer: "AVA is not configured yet (missing AI key)." });
 
-    const systemPrompt = `You are AVA, the AI assistant inside the AVA Softphone mobile app. Answer concisely (max 4 sentences) about the user's phone system. Use the data below when relevant.\n\n${context}`;
+    const systemPrompt = `${AVA_SYSTEM}\n\nLive PBX context: ${context}`;
     const chatMessages: any[] = [
       { role: "system", content: systemPrompt },
       ...history.filter((h: any) => h && (h.role === "user" || h.role === "assistant") && typeof h.content === "string").map((h: any) => ({ role: h.role, content: h.content })),
@@ -69,7 +84,29 @@ Deno.serve(async (req) => {
       return String(d?.choices?.[0]?.message?.content ?? "");
     };
 
+    // 1) Anthropic first (prompt caching on the static system prefix → ~90% cheaper reads).
+    const anthropicKey = Deno.env.get("ANTHROPIC_API_KEY");
     let text = "";
+    if (anthropicKey) {
+      const claudeMessages = [
+        { role: "user" as const, content: `Live PBX context:\n${context || "(no PBX data available)"}` },
+        { role: "assistant" as const, content: "Understood. How can I help with your phone system?" },
+        ...history
+          .filter((h: any) => h && (h.role === "user" || h.role === "assistant") && typeof h.content === "string")
+          .map((h: any) => ({ role: h.role as "user" | "assistant", content: h.content })),
+        { role: "user" as const, content: message },
+      ];
+      const res = await callAnthropic({
+        model: "claude-sonnet-4-5-20250929",
+        max_tokens: 600,
+        system: AVA_SYSTEM,
+        messages: claudeMessages,
+        label: "mobile-chat",
+      });
+      if (res.ok && res.text) return json({ answer: res.text });
+      console.warn("[mobile-chat] anthropic failed, falling back", res.error?.slice?.(0, 200));
+    }
+
     if (key) {
       try {
         const gateway = createLovableAiGatewayProvider(key);

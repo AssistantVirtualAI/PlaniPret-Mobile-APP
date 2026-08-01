@@ -3,6 +3,10 @@
 // planipret_ava_conversations.
 import { authBroker, corsHeaders, jsonResponse, nsBrokerFetch } from "../_shared/ns-broker.ts";
 import { normalizePhoneE164 } from "../_shared/phone-normalize.ts";
+import { linkBrokerIdByEmail } from "../_shared/maestro-broker-directory.ts";
+import { claudeText } from "../_shared/anthropic.ts";
+
+
 
 const DOMAIN = "planipret.ca";
 
@@ -55,11 +59,18 @@ async function maestroFetch(ctx: Ctx, path: string, init?: RequestInit) {
 async function maestroActions(ctx: Ctx, action: string, payload: Record<string, unknown> = {}) {
   const { data: prof } = await ctx.admin
     .from("planipret_profiles")
-    .select("maestro_broker_id")
+    .select("id, maestro_broker_id, email, ms365_email, extension, phone")
     .eq("id", ctx.profile.id)
     .maybeSingle();
-  const userId = prof?.maestro_broker_id ?? ctx.profile.maestro_broker_id ?? null;
+  let userId = prof?.maestro_broker_id ?? ctx.profile.maestro_broker_id ?? null;
+  // Auto-link from the Maestro broker directory (Microsoft email) when the
+  // broker has never been matched yet.
+  if ((!userId || !/^\d+$/.test(String(userId).trim())) && prof) {
+    const linked = await linkBrokerIdByEmail(ctx.admin, prof as any);
+    if (linked.ok && linked.maestro_broker_id) userId = linked.maestro_broker_id;
+  }
   const r = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/maestro-actions`, {
+
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -139,15 +150,14 @@ async function resolveContact(ctx: Ctx, name: string, want: "phone" | "email"): 
 }
 
 async function callClaude(system: string, userText: string): Promise<string | null> {
-  const key = Deno.env.get("ANTHROPIC_API_KEY");
-  if (key) {
-    const r = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" },
-      body: JSON.stringify({ model: "claude-sonnet-4-5-20250929", max_tokens: 1200, system, messages: [{ role: "user", content: userText }] }),
-    });
-    if (r.ok) { const j = await r.json(); return j.content?.[0]?.text ?? null; }
-  }
+  // Prompt caching: `system` is the static prefix → cached for 5 min at 0.1x.
+  const res = await claudeText(system, userText, {
+    model: "claude-sonnet-4-5-20250929",
+    max_tokens: 1200,
+    label: "ava-tool-executor",
+  });
+  if (res) return res;
+
   // fallback Lovable AI
   const lk = Deno.env.get("LOVABLE_API_KEY");
   if (!lk) return null;

@@ -1,4 +1,6 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { callAnthropic } from "../_shared/anthropic.ts";
+
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -421,31 +423,23 @@ Deno.serve(async (req) => {
       const anthropicKey = Deno.env.get("ANTHROPIC_API_KEY");
       if (!anthropicKey) return { text: raw, used: false, error: "no-anthropic-key" };
       try {
-        const r = await fetch("https://api.anthropic.com/v1/messages", {
-          method: "POST",
-          headers: {
-            "x-api-key": anthropicKey,
-            "anthropic-version": "2023-06-01",
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            model: "claude-3-5-sonnet-20241022",
-            max_tokens: 8000,
-            system: "You clean up phone-call transcripts. Preserve the original language (French or English). Label speakers as 'Agent:' and 'Caller:' on separate lines. Keep meaning intact, remove duplicate stutters, fix obvious STT errors. Return ONLY the cleaned transcript — no preamble, no markdown, no commentary.",
-            messages: [{ role: "user", content: `Clean and re-label this transcript:\n\n${raw}` }],
-          }),
+        const res = await callAnthropic({
+          apiKey: anthropicKey,
+          model: "claude-3-5-sonnet-20241022",
+          max_tokens: 8000,
+          system: "You clean up phone-call transcripts. Preserve the original language (French or English). Label speakers as 'Agent:' and 'Caller:' on separate lines. Keep meaning intact, remove duplicate stutters, fix obvious STT errors. Return ONLY the cleaned transcript — no preamble, no markdown, no commentary.",
+          messages: [{ role: "user", content: `Clean and re-label this transcript:\n\n${raw}` }],
+          label: "transcribe-cleanup",
         });
-        if (!r.ok) {
-          const errTxt = await r.text();
-          console.error("claude cleanup error", r.status, errTxt.slice(0, 300));
-          return { text: raw, used: false, error: errTxt.slice(0, 400), status: r.status };
+        if (!res.ok) {
+          return { text: raw, used: false, error: String(res.error ?? "").slice(0, 400), status: res.status };
         }
-        const d = await r.json();
-        const cleaned = String(d?.content?.[0]?.text || "").trim();
+        const cleaned = res.text.trim();
         return cleaned ? { text: cleaned, used: true } : { text: raw, used: false, error: "empty-cleanup" };
       } catch (e: any) {
         return { text: raw, used: false, error: e?.message || "err" };
       }
+
     };
 
     const disableClaude = body?.disable_claude === true;

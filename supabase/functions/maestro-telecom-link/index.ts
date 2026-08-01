@@ -18,6 +18,8 @@ import {
   getMaestroTelecomConfig,
   isMaestroTelecomConfigured,
 } from "../_shared/maestro-telecom.ts";
+import { linkBrokerIdByEmail } from "../_shared/maestro-broker-directory.ts";
+
 
 function j(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -54,7 +56,7 @@ Deno.serve(async (req) => {
 
     const { data: profile } = await admin
       .from("planipret_profiles")
-      .select("id, user_id, email, ms365_email, maestro_broker_id")
+      .select("id, user_id, email, ms365_email, extension, phone, maestro_broker_id")
       .eq("user_id", userId)
       .maybeSingle();
     if (!profile) return j({ ok: false, error: "profile_not_found" });
@@ -66,6 +68,15 @@ Deno.serve(async (req) => {
 
     const cfg = await getMaestroTelecomConfig(admin);
     if (!isMaestroTelecomConfigured(cfg)) return j({ ok: false, error: "not_configured" });
+
+    // PRIMARY: match the broker's Microsoft email against Maestro's broker
+    // directory (GET /users/{seed}/brokers). This is Scott's new mobile
+    // endpoint and is exact — no SIP probing, no /users/me guessing.
+    const byDirectory = await linkBrokerIdByEmail(admin, profile as any, { force: body?.force === true });
+    if (byDirectory.ok && byDirectory.maestro_broker_id) {
+      return j({ ok: true, maestro_id: byDirectory.maestro_broker_id, matched_by: byDirectory.matched_by, source: "brokers_directory" });
+    }
+
 
     const url = `${cfg.url}/users/me?machine=1`;
     const attempts: Array<{ label: string; token: string }> = [

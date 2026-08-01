@@ -44,22 +44,23 @@ Deno.serve(async (req) => {
       ? normalizePhone(msg.from_number)
       : normalizePhone(msg.to_number);
 
-    // Scott API: POST /users/{brokerId}/messages
-    const msgPath = auth.brokerId
-      ? `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/messages`
-      : `/api/v1/users/me/messages`;
     const t0 = Date.now();
     const res = await maestroFetchScoped(cfg, {
       method: "POST",
-      path: msgPath,
+      path: "/api/v1/messages",
       token: auth.token,
       brokerId: auth.brokerId,
       idempotencyKey: msg.id,
       body: {
-        to_user_number: contact,
-        message: msg.body ?? "",
+        message_id: msg.ns_message_id ?? msg.id,
+        maestro_broker_id: auth.brokerId,
         direction: msg.direction,
+        from_number: msg.from_number,
+        to_number: msg.to_number,
+        contact_number: contact,
+        body: msg.body ?? "",
         sent_at: msg.sent_at ?? msg.created_at,
+        channel: "sms",
       },
     });
 

@@ -3,6 +3,7 @@
 // linking against NS-API. Called by the mobile app right after SSO redirect.
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
+import { linkBrokerIdByEmail } from "../_shared/maestro-broker-directory.ts";
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -41,7 +42,19 @@ Deno.serve(async (req) => {
       linked = linkRes.data ?? null;
     } catch (_) { /* ignore */ }
 
-    return new Response(JSON.stringify({ success: true, expiry, linked }), {
+    // Best-effort: link the broker's Maestro telecom id from their Microsoft
+    // email (Scott's GET /users/{id}/brokers directory).
+    let maestroLink: unknown = null;
+    try {
+      const { data: prof } = await admin
+        .from("planipret_profiles")
+        .select("id, email, ms365_email, extension, phone, maestro_broker_id")
+        .eq("user_id", userId)
+        .maybeSingle();
+      if (prof) maestroLink = await linkBrokerIdByEmail(admin, prof as any);
+    } catch (e) { console.warn("[ms365-store-session] maestro link failed", (e as Error).message); }
+
+    return new Response(JSON.stringify({ success: true, expiry, linked, maestro_link: maestroLink }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (e) {

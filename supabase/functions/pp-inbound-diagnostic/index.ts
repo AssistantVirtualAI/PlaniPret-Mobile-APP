@@ -256,6 +256,24 @@ Deno.serve(async (req) => {
     issues.push(`Le device ${ext}M n'apparaît pas enregistré côté NS.`);
   }
 
+  // device-push-enabled (docs/netsapiens/devices.md): a mobile client that is
+  // suspended in the background only rings if NS is allowed to push-wake it.
+  // READ-ONLY: we never write this back automatically.
+  const pushFlags = deviceList.map((d: any) => ({
+    aor: String(d?.aor ?? d?.device ?? d?.["device-aor"] ?? d?.name ?? "").replace(/^sip:/, ""),
+    pushEnabled: String(d?.["device-push-enabled"] ?? d?.push_enabled ?? "").toLowerCase(),
+    regState: String(d?.["device-sip-registration-state"] ?? d?.["registration-status"] ?? "").toLowerCase(),
+  })).filter((d) => d.aor);
+  const mobilePush = pushFlags.find((d) => {
+    const user = d.aor.split("@")[0].toLowerCase();
+    return user === mobileAor || user === legacyMobileAor;
+  });
+  if (mobilePush && mobilePush.pushEnabled === "no") {
+    verdicts.push("MOBILE_PUSH_DISABLED");
+    issues.push(`device-push-enabled=no sur ${mobilePush.aor} : NS ne réveillera pas l'app en arrière-plan. À corriger manuellement dans le portail.`);
+  }
+
+
   // sim-ring destinations vs registered devices
   const simTargets = simList.map((x) => String(x?.destination ?? x ?? "").toLowerCase()).filter(Boolean);
   const simCoversMobile = simTargets.some((t) =>
@@ -415,6 +433,9 @@ Deno.serve(async (req) => {
       ring_timeout: ringTimeout || null,
       registered_aors: [...registeredAors],
       mobile_registered: mobileRegistered,
+      device_push_flags: pushFlags,
+      mobile_push_enabled: mobilePush ? mobilePush.pushEnabled || "unknown" : "unknown",
+
       dids_total_read: numbers.length,
       dids_matching_extension: mine.map(numOf).filter(Boolean),
       inbound_cdrs: cdrSummary,

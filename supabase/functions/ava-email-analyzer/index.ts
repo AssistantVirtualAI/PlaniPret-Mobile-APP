@@ -4,6 +4,8 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { MS365_DELEGATED_SCOPES, refreshMicrosoftAccessToken } from "../_shared/ms365.ts";
+import { callAnthropic } from "../_shared/anthropic.ts";
+
 
 const GRAPH = "https://graph.microsoft.com/v1.0";
 
@@ -118,34 +120,29 @@ Reçu: ${email.receivedDateTime ?? ""}
 Corps:
 ${bodyText}`;
 
-  const systemFinal = learnedPreferences
-    ? `${SYSTEM_PROMPT}\n\nPRÉFÉRENCES APPRISES DE CE COURTIER (à respecter en priorité) :\n${learnedPreferences}`
-    : SYSTEM_PROMPT;
-
-  const r = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-5-20250929",
-      max_tokens: 2000,
-      system: systemFinal,
-      messages: [{ role: "user", content: userContent }],
-    }),
-  });
-  if (!r.ok) {
-    const txt = await r.text();
-    console.error("[ava-email-analyzer] Claude error", r.status, txt);
-    throw new Error(`Claude ${r.status}: ${txt.slice(0, 200)}`);
+  // System = static prefix (shared prompt + this broker's learned preferences).
+  // Both are stable across requests → cached; only the email body varies.
+  const systemBlocks: any[] = [{ type: "text", text: SYSTEM_PROMPT }];
+  if (learnedPreferences) {
+    systemBlocks.push({
+      type: "text",
+      text: `PRÉFÉRENCES APPRISES DE CE COURTIER (à respecter en priorité) :\n${learnedPreferences}`,
+    });
   }
-  const d = await r.json();
-  const text = d.content?.[0]?.text ?? "";
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
+
+  const res = await callAnthropic({
+    apiKey,
+    model: "claude-sonnet-4-5-20250929",
+    max_tokens: 2000,
+    system: systemBlocks,
+    messages: [{ role: "user", content: userContent }],
+    label: "ava-email-analyzer",
+  });
+  if (!res.ok) throw new Error(`Claude ${res.status}: ${String(res.error ?? "").slice(0, 200)}`);
+  const jsonMatch = res.text.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error("Claude did not return JSON");
-  return { parsed: JSON.parse(jsonMatch[0]), raw: d };
+  return { parsed: JSON.parse(jsonMatch[0]), raw: res.data };
+
 }
 
 
