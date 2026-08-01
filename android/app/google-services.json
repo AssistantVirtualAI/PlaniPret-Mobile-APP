@@ -1,13 +1,32 @@
 {
   "project_info": {
-    "project_number": "000000000000",
-    "project_id": "planipret-mobile-placeholder",
-    "storage_bucket": "planipret-mobile-placeholder.appspot.com"
+    "project_number": "816316097179",
+    "project_id": "lemtel-softphone",
+    "storage_bucket": "lemtel-softphone.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:000000000000:android:0000000000000000000000",
+        "mobilesdk_app_id": "1:816316097179:android:6741dd03357e42d1271c3e",
+        "android_client_info": {
+          "package_name": "com.lemtel.softphone"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD5rXTYBXCBbkjAVdMidSdLjORg8LwI1B4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:816316097179:android:809c0afbc2cd2fcd271c3e",
         "android_client_info": {
           "package_name": "com.planipret.mobile"
         }
@@ -15,7 +34,7 @@
       "oauth_client": [],
       "api_key": [
         {
-          "current_key": "PLACEHOLDER_REPLACE_WITH_REAL_FIREBASE_KEY"
+          "current_key": "AIzaSyD5rXTYBXCBbkjAVdMidSdLjORg8LwI1B4"
         }
       ],
       "services": {
