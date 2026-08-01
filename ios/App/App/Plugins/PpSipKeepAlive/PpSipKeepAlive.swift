@@ -204,7 +204,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       setStatus(status == "registered" ? "registered" : "protected", why)
     }
 
-    private func activateAudioSession() { try? AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .allowBluetoothA2DP, .mixWithOthers]); try? AVAudioSession.sharedInstance().setActive(true) }
+    private func activateAudioSession() { try? AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .allowBluetoothA2DP, .mixWithOthers]); try? AVAudioSession.sharedInstance().setActive(true) }
     private func connect() {
       // A new socket means a new AoR binding: clear the 200 OK debounce.
       lastRegisterOkTime = nil
@@ -361,7 +361,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       let contact = "<sip:" + login + "@" + stableContactHost() + ";transport=wss>"
       var sip = "REGISTER sip:" + domain + " SIP/2.0\r\n"
       sip += "Via: SIP/2.0/WSS " + domain + ";branch=" + branch + "\r\nMax-Forwards: 70\r\n"
-      sip += "To: <sip:" + login + "@" + domain + ">\r\nFrom: \"" + displayName.replacingOccurrences(of: "\"", with: "") + "\" <sip:" + login + "@" + domain + ">;tag=" + fromTag + "\r\n"
+      sip += "To: <sip:" + login + "@" + domain + ">\r\nFrom: "" + displayName.replacingOccurrences(of: """, with: "") + "" <sip:" + login + "@" + domain + ">;tag=" + fromTag + "\r\n"
       sip += "Call-ID: " + callIdReg + "\r\nCSeq: " + String(seq) + " REGISTER\r\nContact: " + contact + ";expires=" + String(registerExpires) + "\r\nExpires: " + String(registerExpires) + "\r\nUser-Agent: Planipret iOS KeepAlive\r\nSupported: outbound,path,gruu\r\nAllow: INVITE,ACK,CANCEL,BYE,OPTIONS,MESSAGE,INFO,UPDATE,REGISTER\r\n"
       if let ch = challenge, !password.isEmpty { sip += (proxyAuth ? "Proxy-Authorization: " : "Authorization: ") + digest(challenge: ch) + "\r\n" }
       sip += "Content-Length: 0\r\n\r\n"
@@ -386,7 +386,6 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       // RFC-routable Contact host: always the real SIP domain (never .invalid)
       return domain.isEmpty ? "planipret.ca" : domain
     }
-
 
     private func digest(challenge: String) -> String {
         let m = parseDigest(challenge)
@@ -414,7 +413,6 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         }
         return out
     }
-
     private func parseDigest(_ h: String) -> [String: String] {
         var out: [String: String] = [:]
         let s = h.replacingOccurrences(of: "Digest ", with: "", options: .caseInsensitive)
@@ -428,34 +426,12 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         }
         return out
     }
-    private func headerVal(_ msg: String, _ name: String) -> String? {
-        for line in msg.components(separatedBy: .newlines) {
-            if line.lowercased().hasPrefix(name.lowercased() + ":") {
-                return String(line.dropFirst(name.count + 1)).trimmingCharacters(in: .whitespaces)
-            }
-        }
-        return nil
-    }
-    private func parseDisplay(_ hdr: String) -> String {
-        guard let lt = hdr.firstIndex(of: "<") else { return "" }
-        var d = String(hdr[..<lt]).trimmingCharacters(in: .whitespaces)
-        if d.hasPrefix("\"") && d.hasSuffix("\"") { d.removeFirst(); d.removeLast() }
-        return d
-    }
-    private func parseUser(_ hdr: String) -> String {
-        var uri = hdr
-        if let lt = hdr.firstIndex(of: "<"), let gt = hdr[lt...].firstIndex(of: ">") {
-            uri = String(hdr[hdr.index(after: lt)..<gt])
-        }
-        if uri.hasPrefix("sip:")  { uri = String(uri.dropFirst(4)) }
-        else if uri.hasPrefix("sips:") { uri = String(uri.dropFirst(5)) }
-        if let at = uri.firstIndex(of: "@") { uri = String(uri[..<at]) }
-        if let semi = uri.firstIndex(of: ";") { uri = String(uri[..<semi]) }
-        return uri
-    }
+    private func headerVal(_ msg: String, _ name: String) -> String? { for line in msg.components(separatedBy: .newlines) { if line.lowercased().hasPrefix(name.lowercased() + ":") { return String(line.dropFirst(name.count + 1)).trimmingCharacters(in: .whitespaces) } }; return nil }
+    private func parseDisplay(_ hdr: String) -> String { guard let lt = hdr.firstIndex(of: "<") else { return "" }; var d = String(hdr[..<lt]).trimmingCharacters(in: .whitespaces); if d.hasPrefix(""") && d.hasSuffix(""") { d.removeFirst(); d.removeLast() }; return d }
+    private func parseUser(_ hdr: String) -> String { var uri = hdr; if let lt = hdr.firstIndex(of: "<"), let gt = hdr[lt...].firstIndex(of: ">") { uri = String(hdr[hdr.index(after: lt)..<gt]) }; if uri.hasPrefix("sip:") { uri = String(uri.dropFirst(4)) } else if uri.hasPrefix("sips:") { uri = String(uri.dropFirst(5)) }; if let at = uri.firstIndex(of: "@") { uri = String(uri[..<at]) }; if let semi = uri.firstIndex(of: ";") { uri = String(uri[..<semi]) }; return uri }
     private func md5(_ s: String) -> String { let d = Insecure.MD5.hash(data: Data(s.utf8)); return d.map { String(format: "%02hhx", $0) }.joined() }
     private func beginBackgroundTask() { if bgTask != .invalid { return }; bgTask = UIApplication.shared.beginBackgroundTask(withName: "PlanipretSIPKeepAlive") { [weak self] in self?.endBackgroundTask(); self?.setStatus("protected", "background_task_expired") }; DispatchQueue.main.asyncAfter(deadline: .now() + 25) { [weak self] in self?.sendRegister(challenge: nil); self?.endBackgroundTask() } }
     private func endBackgroundTask() { if bgTask != .invalid { UIApplication.shared.endBackgroundTask(bgTask); bgTask = .invalid } }
     private func setStatus(_ next: String, _ nextReason: String) { status = next; reason = nextReason; updatedAt = Date().timeIntervalSince1970 * 1000; DispatchQueue.main.async { self.notifyListeners("sipServiceStatus", data: self.snapshot(ok: true)) } }
-    private func snapshot(ok: Bool) -> [String: Any] { ["ok": ok, "status": status, "reason": reason, "updatedAt": updatedAt, "backgroundTaskActive": bgTask != .invalid, "loggedIn": status == "registered"] }
+    private func snapshot(ok: Bool) -> [String: Any] { ["ok": ok, "status": status, "reason": reason, "updatedAt": updatedAt, "backgroundTaskActive": bgTask != .invalid, "loggedIn": status == "registered" || status == "protected"] }
 }

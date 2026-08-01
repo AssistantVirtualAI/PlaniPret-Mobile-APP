@@ -889,14 +889,14 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private func sendRinging(via: String, from: String, to: String, cid: String, cseq: String) {
       guard socket != nil, !via.isEmpty, !cid.isEmpty else { return }
       let toWithTag = to.contains(";tag=") ? to : to + ";tag=" + String(Int(Date().timeIntervalSince1970 * 1000), radix: 16)
-      var r = "SIP/2.0 180 Ringing\r\n"
-      r += "Via: " + via + "\r\n"
-      r += "From: " + from + "\r\n"
-      r += "To: " + toWithTag + "\r\n"
-      r += "Call-ID: " + cid + "\r\n"
-      r += "CSeq: " + cseq + "\r\n"
-      r += "User-Agent: Planipret iOS KeepAlive\r\n"
-      r += "Content-Length: 0\r\n\r\n"
+      var r = "SIP/2.0 180 Ringing\\r\\n"
+      r += "Via: " + via + "\\r\\n"
+      r += "From: " + from + "\\r\\n"
+      r += "To: " + toWithTag + "\\r\\n"
+      r += "Call-ID: " + cid + "\\r\\n"
+      r += "CSeq: " + cseq + "\\r\\n"
+      r += "User-Agent: Planipret iOS KeepAlive\\r\\n"
+      r += "Content-Length: 0\\r\\n\\r\\n"
       socket?.send(.string(r)) { _ in }
     }
 
@@ -930,12 +930,12 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       let seq = cseq; cseq += 1
       let branch = "z9hG4bK" + UUID().uuidString.replacingOccurrences(of: "-", with: "")
       let contact = "<sip:" + login + "@" + stableContactHost() + ";transport=wss>"
-      var sip = "REGISTER sip:" + domain + " SIP/2.0\r\n"
-      sip += "Via: SIP/2.0/WSS " + domain + ";branch=" + branch + "\r\nMax-Forwards: 70\r\n"
-      sip += "To: <sip:" + login + "@" + domain + ">\r\nFrom: \"" + displayName.replacingOccurrences(of: "\"", with: "") + "\" <sip:" + login + "@" + domain + ">;tag=" + fromTag + "\r\n"
-      sip += "Call-ID: " + callIdReg + "\r\nCSeq: " + String(seq) + " REGISTER\r\nContact: " + contact + ";expires=" + String(registerExpires) + "\r\nExpires: " + String(registerExpires) + "\r\nUser-Agent: Planipret iOS KeepAlive\r\nSupported: outbound,path,gruu\r\nAllow: INVITE,ACK,CANCEL,BYE,OPTIONS,MESSAGE,INFO,UPDATE,REGISTER\r\n"
-      if let ch = challenge, !password.isEmpty { sip += (proxyAuth ? "Proxy-Authorization: " : "Authorization: ") + digest(challenge: ch) + "\r\n" }
-      sip += "Content-Length: 0\r\n\r\n"
+      var sip = "REGISTER sip:" + domain + " SIP/2.0\\r\\n"
+      sip += "Via: SIP/2.0/WSS " + domain + ";branch=" + branch + "\\r\\nMax-Forwards: 70\\r\\n"
+      sip += "To: <sip:" + login + "@" + domain + ">\\r\\nFrom: \"" + displayName.replacingOccurrences(of: "\"", with: "") + "\" <sip:" + login + "@" + domain + ">;tag=" + fromTag + "\\r\\n"
+      sip += "Call-ID: " + callIdReg + "\\r\\nCSeq: " + String(seq) + " REGISTER\\r\\nContact: " + contact + ";expires=" + String(registerExpires) + "\\r\\nExpires: " + String(registerExpires) + "\\r\\nUser-Agent: Planipret iOS KeepAlive\\r\\nSupported: outbound,path,gruu\\r\\nAllow: INVITE,ACK,CANCEL,BYE,OPTIONS,MESSAGE,INFO,UPDATE,REGISTER\\r\\n"
+      if let ch = challenge, !password.isEmpty { sip += (proxyAuth ? "Proxy-Authorization: " : "Authorization: ") + digest(challenge: ch) + "\\r\\n" }
+      sip += "Content-Length: 0\\r\\n\\r\\n"
       socket?.send(.string(sip)) { [weak self] err in
         DispatchQueue.main.async {
           guard let self = self else { return }
@@ -958,8 +958,45 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       return domain.isEmpty ? "planipret.ca" : domain
     }
 
-    private func digest(challenge: String) -> String { let m = parseDigest(challenge); let realm = m["realm"] ?? domain; let nonce = m["nonce"] ?? ""; let qop = m["qop"] ?? ""; let uri = "sip:" + domain; let nc = "00000001"; let cnonce = String(Int(Date().timeIntervalSince1970 * 1000), radix: 16); let ha1 = md5(login + ":" + realm + ":" + password); let ha2 = md5("REGISTER:" + uri); let response = qop.contains("auth") ? md5(ha1 + ":" + nonce + ":" + nc + ":" + cnonce + ":auth:" + ha2) : md5(ha1 + ":" + nonce + ":" + ha2); var out = "Digest username=\"" + login + "\", realm=\"" + realm + "\", nonce=\"" + nonce + "\", uri=\"" + uri + "\", response=\"" + response + "\", algorithm=MD5"; if qop.contains("auth") { out += ", qop=auth, nc=" + nc + ", cnonce=\"" + cnonce + "\"" }; if let opaque = m["opaque"] { out += ", opaque=\"" + opaque + "\"" }; return out }
-    private func parseDigest(_ h: String) -> [String:String] { var out: [String:String] = [:]; let s = h.replacingOccurrences(of: "Digest ", with: "", options: .caseInsensitive); for part in s.split(separator: ",") { let pieces = part.split(separator: "=", maxSplits: 1); if pieces.count == 2 { var v = pieces[1].trimmingCharacters(in: .whitespaces); if v.hasPrefix("\"") && v.hasSuffix("\"") { v.removeFirst(); v.removeLast() }; out[pieces[0].trimmingCharacters(in: .whitespaces)] = v } }; return out }
+    private func digest(challenge: String) -> String {
+        let m = parseDigest(challenge)
+        let realm = m["realm"] ?? domain
+        let nonce = m["nonce"] ?? ""
+        let qop   = m["qop"]   ?? ""
+        let uri   = "sip:" + domain
+        let nc    = "00000001"
+        let cnonce = String(Int(Date().timeIntervalSince1970 * 1000), radix: 16)
+        let ha1 = md5(login + ":" + realm + ":" + password)
+        let ha2 = md5("REGISTER:" + uri)
+        let response: String
+        if qop.contains("auth") {
+            response = md5(ha1 + ":" + nonce + ":" + nc + ":" + cnonce + ":auth:" + ha2)
+        } else {
+            response = md5(ha1 + ":" + nonce + ":" + ha2)
+        }
+        var out = "Digest username=\\\"" + login + "\\\", realm=\\\"" + realm + "\\\", nonce=\\\"" + nonce
+                + "\\\", uri=\\\"" + uri + "\\\", response=\\\"" + response + "\\\", algorithm=MD5"
+        if qop.contains("auth") {
+            out += ", qop=auth, nc=" + nc + ", cnonce=\\\"" + cnonce + "\\\""
+        }
+        if let opaque = m["opaque"] {
+            out += ", opaque=\\\"" + opaque + "\\\""
+        }
+        return out
+    }
+    private func parseDigest(_ h: String) -> [String: String] {
+        var out: [String: String] = [:]
+        let s = h.replacingOccurrences(of: "Digest ", with: "", options: .caseInsensitive)
+        for part in s.split(separator: ",") {
+            let pieces = part.split(separator: "=", maxSplits: 1)
+            if pieces.count == 2 {
+                var v = pieces[1].trimmingCharacters(in: .whitespaces)
+                if v.hasPrefix("\\\"") && v.hasSuffix("\\\"") { v.removeFirst(); v.removeLast() }
+                out[pieces[0].trimmingCharacters(in: .whitespaces)] = v
+            }
+        }
+        return out
+    }
     private func headerVal(_ msg: String, _ name: String) -> String? { for line in msg.components(separatedBy: .newlines) { if line.lowercased().hasPrefix(name.lowercased() + ":") { return String(line.dropFirst(name.count + 1)).trimmingCharacters(in: .whitespaces) } }; return nil }
     private func parseDisplay(_ hdr: String) -> String { guard let lt = hdr.firstIndex(of: "<") else { return "" }; var d = String(hdr[..<lt]).trimmingCharacters(in: .whitespaces); if d.hasPrefix("\"") && d.hasSuffix("\"") { d.removeFirst(); d.removeLast() }; return d }
     private func parseUser(_ hdr: String) -> String { var uri = hdr; if let lt = hdr.firstIndex(of: "<"), let gt = hdr[lt...].firstIndex(of: ">") { uri = String(hdr[hdr.index(after: lt)..<gt]) }; if uri.hasPrefix("sip:") { uri = String(uri.dropFirst(4)) } else if uri.hasPrefix("sips:") { uri = String(uri.dropFirst(5)) }; if let at = uri.firstIndex(of: "@") { uri = String(uri[..<at]) }; if let semi = uri.firstIndex(of: ";") { uri = String(uri[..<semi]) }; return uri }
