@@ -19,6 +19,8 @@
 		472E50053CEB7AD4769E8FEB /* PpSipKeepAlive.m in Sources */ = {isa = PBXBuildFile; fileRef = 79DE5EF1EF3EB5113E087253 /* PpSipKeepAlive.m */; };
 		3C507B763F308588CB7727AA /* PpVoipCall.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE6865237195268CA7C8FB10 /* PpVoipCall.swift */; };
 		9D2796A320A9C3E642B75C49 /* PpVoipCall.m in Sources */ = {isa = PBXBuildFile; fileRef = 80C02AA92B02E8CBBFABD68D /* PpVoipCall.m */; };
+		257147657CE44817A2BFEE48 /* PpAuthSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B3066BAB62141AAAC641336 /* PpAuthSession.swift */; };
+		1B6EAF7AFCF947F2AE8435A3 /* PpAuthSession.m in Sources */ = {isa = PBXBuildFile; fileRef = A391B46D0ACA492E9B130C51 /* PpAuthSession.m */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -38,6 +40,8 @@
 		79DE5EF1EF3EB5113E087253 /* PpSipKeepAlive.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = PpSipKeepAlive.m; sourceTree = "<group>"; };
 		EE6865237195268CA7C8FB10 /* PpVoipCall.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PpVoipCall.swift; sourceTree = "<group>"; };
 		80C02AA92B02E8CBBFABD68D /* PpVoipCall.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = PpVoipCall.m; sourceTree = "<group>"; };
+		0B3066BAB62141AAAC641336 /* PpAuthSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PpAuthSession.swift; sourceTree = "<group>"; };
+		A391B46D0ACA492E9B130C51 /* PpAuthSession.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = PpAuthSession.m; sourceTree = "<group>"; };
 		EBBF3EA4B38EC3CFA8D421BB /* App.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = App.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -108,11 +112,22 @@
 		A5093A54F6817220DAF5C49B /* Plugins */ = {
 			isa = PBXGroup;
 			children = (
+				D61625CEEA1245CD80DC117E /* PpAuthSession */,
 				BF4130B1104D08D1CA91B0EF /* PpSipKeepAlive */,
 				0B8C44795BEA088FBFD19C5F /* PpVoipCall */,
 			);
 			name = Plugins;
 			path = Plugins;
+			sourceTree = "<group>";
+		};
+		D61625CEEA1245CD80DC117E /* PpAuthSession */ = {
+			isa = PBXGroup;
+			children = (
+				0B3066BAB62141AAAC641336 /* PpAuthSession.swift */,
+				A391B46D0ACA492E9B130C51 /* PpAuthSession.m */,
+			);
+			name = PpAuthSession;
+			path = PpAuthSession;
 			sourceTree = "<group>";
 		};
 		BF4130B1104D08D1CA91B0EF /* PpSipKeepAlive */ = {
@@ -251,6 +266,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				504EC3081FED79650016851F /* AppDelegate.swift in Sources */,
+				257147657CE44817A2BFEE48 /* PpAuthSession.swift in Sources */,
+				1B6EAF7AFCF947F2AE8435A3 /* PpAuthSession.m in Sources */,
 				0E0C85E5E14918B74C0843FE /* PpSipKeepAlive.swift in Sources */,
 				472E50053CEB7AD4769E8FEB /* PpSipKeepAlive.m in Sources */,
 				3C507B763F308588CB7727AA /* PpVoipCall.swift in Sources */,
@@ -394,12 +411,12 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = 64XSWWB49N;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 10;
 				CODE_SIGN_ENTITLEMENTS = App/App.entitlements;
 				INFOPLIST_FILE = App/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = 1.3.1;
 				OTHER_SWIFT_FLAGS = "$(inherited) \"-D\" \"COCOAPODS\" \"-DDEBUG\"";
 				PRODUCT_BUNDLE_IDENTIFIER = com.planipret.mobile;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -416,12 +433,12 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				DEVELOPMENT_TEAM = 64XSWWB49N;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 10;
 				CODE_SIGN_ENTITLEMENTS = App/App.entitlements;
 				INFOPLIST_FILE = App/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = 1.3.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.planipret.mobile;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "";
