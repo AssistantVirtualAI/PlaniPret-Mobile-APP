@@ -179,6 +179,10 @@ class PpSipProvider {
    * object-reference comparison can never detect "nothing changed".
    */
   private attachedAudioSignature = "";
+  // ring14 - set when NetSapiens unregisters the AOR mid-call. The re-REGISTER
+  // is deliberately postponed until the call ends, because re-registering while
+  // an INVITE is ringing makes the PBX drop the WSS leg and kills the dialog.
+  private pendingReRegisterAfterCall = false;
   private lastSig = "";
   private lastStartAt = 0;
   private connectingSince = 0;
@@ -367,6 +371,18 @@ class PpSipProvider {
 
   private guardedRegister(reason: string, options: { priority?: boolean } = {}): boolean {
     const ua = this.ua;
+    // ring14 - CENTRAL GUARD. A REGISTER sent while a SIP dialog is live makes
+    // NetSapiens close the WSS leg (1001), and the dialog dies with it. This is
+    // the single choke point every REGISTER path goes through, so the rule is
+    // enforced once here instead of at each of the 8 call sites.
+    //
+    // `deferred_after_call` is the one exemption: resetCall() clears the session
+    // before running it, so by then there is no dialog left to protect.
+    if (this.session && reason !== "deferred_after_call") {
+      this.log("warn", `REGISTER blocked - a live SIP dialog must not be disturbed (${reason}, callState=${this.snap.callState})`);
+      this.pendingReRegisterAfterCall = true;
+      return false;
+    }
     // An inbound answer intent OUTRANKS every caller-supplied option. Observed in
     // production: on foreground resume during a ring, `forceReregister()` called
     // guardedRegister() WITHOUT priority, so the 5000ms debounce swallowed it
@@ -578,6 +594,36 @@ class PpSipProvider {
           this.scheduleSocketReconnect("unregistered_transport_down");
           return;
         }
+        // ring14 - THE call-killer. Proven by the ring13 log:
+        //
+        //   incoming INVITE attached  sipCallId=2026...C148E6
+        //   unregistered on live transport - scheduling guarded re-register
+        //   registration failed: Connection Error
+        //   ws disconnected
+        //   [answer] tapped {hasLiveSipSession:false, sipCallState:"idle"}
+        //   [answer] no inbound SIP INVITE available
+        //
+        // NetSapiens emits `unregistered` on the AOR while the INVITE is
+        // ringing, because the fork legs contend for the same AOR. Re-REGISTER
+        // at that instant makes NetSapiens close the WSS leg, and the dialog
+        // carrying the ringing INVITE dies with it. The user then taps Answer
+        // on a session that no longer exists.
+        //
+        // A ringing or established call ALWAYS outranks registration hygiene.
+        // The registration is only useful to RECEIVE a call; once the INVITE is
+        // in hand it has already served its purpose. Defer every re-REGISTER
+        // until the call is over - resubscribeAfterCall() runs it on cleanup.
+        const callBusy = this.snap.callState === "ringing-in"
+          || this.snap.callState === "active"
+          || this.snap.callState === "connecting"
+          || !!this.session;
+        if (callBusy) {
+          this.log("warn", `unregistered during a live call (${this.snap.callState}) - re-register DEFERRED, keeping the dialog alive`);
+          this.pendingReRegisterAfterCall = true;
+          // Do NOT touch this.snap.status: flipping it to "connected" makes the
+          // UI and the native side believe the AOR is gone mid-ring.
+          return;
+        }
         this.log("warn", "unregistered on live transport - scheduling guarded re-register");
         this.update({ status: "connected", errorCause: "re_registering" });
         // NetSapiens sometimes returns 401/403 mid-session on stale nonce;
@@ -715,7 +761,13 @@ class PpSipProvider {
 
 
     session.on("progress", () => { if (!incoming) this.update({ callState: "ringing-out" }); });
-    session.on("confirmed", () => this.update({ callState: "active", startedAt: Date.now() }));
+    // ring14 - the 200 OK already promoted the call to "active"; preserve the
+    // original startedAt so the on-screen timer does not jump backwards when a
+    // late ACK arrives.
+    session.on("confirmed", () => this.update({
+      callState: "active",
+      startedAt: this.snap.startedAt ?? Date.now(),
+    }));
     session.on("failed", (e: any) => {
       if (this.pendingAnswer?.callId === callId) this.pendingAnswer = null;
       this.update({ callState: "ended", errorCause: e?.cause || "failed" });
@@ -839,6 +891,21 @@ class PpSipProvider {
       muted: false,
       onHold: false,
     });
+    // ring14 - the call is over, registration hygiene may resume. This is the
+    // deferred half of the `unregistered during a live call` guard.
+    if (this.pendingReRegisterAfterCall) {
+      this.pendingReRegisterAfterCall = false;
+      this.log("log", "call ended - running the re-register deferred during the call");
+      setTimeout(() => {
+        try {
+          if (this.ua?.isConnected?.()) {
+            this.guardedRegister("deferred_after_call");
+          } else {
+            this.scheduleSocketReconnect("deferred_after_call_transport_down");
+          }
+        } catch { /* noop */ }
+      }, 800);
+    }
   }
 
 
@@ -927,6 +994,33 @@ class PpSipProvider {
       });
       this.pendingAnswer = null;
       this.log("info", "200 OK sent (answer)", { withStream: !!mediaStream });
+      // ring14 - promote to "active" on the 200 OK instead of waiting for JsSIP's
+      // `confirmed` event (which needs the caller's ACK).
+      //
+      // The ring13 log proves the ACK can simply never arrive: 456 lines, four
+      // `callState:"ringing-in"`, zero `callState:"active"`, on a call whose
+      // `200 OK sent (answer) {withStream:true}` is right there. Everything keyed
+      // on "active" therefore stayed dormant - CallKit confirmation, the audio
+      // handover, the in-call UI - so the call was silent and CallKit kept
+      // ringing over it.
+      //
+      // We sent the 200 OK: from this side the call IS answered. `confirmed`
+      // remains wired and simply becomes a no-op refresh when the ACK does
+      // arrive; a genuine failure still surfaces through `failed`/`ended`.
+      if (this.snap.callState === "ringing-in") {
+        this.update({
+          callState: "active",
+          startedAt: this.snap.startedAt ?? Date.now(),
+          errorCause: undefined,
+        });
+        this.log("log", "callState -> active on the 200 OK (not waiting for the ACK)");
+      }
+      // ring14 - attach the remote audio right away too. It used to be wired only
+      // to `accepted`/`confirmed`, both of which depend on the caller's ACK; with
+      // no ACK the media path was never bound and the call stayed silent.
+      // attachRemoteAudio() is idempotent (track-signature guard), so the later
+      // `accepted`/`confirmed` handlers simply log a no-op.
+      setTimeout(() => { try { this.attachRemoteAudio(session.connection); } catch { /* noop */ } }, 150);
       return true;
     } catch (error) {
       this.log("error", "answer failed", error);

@@ -690,7 +690,15 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       // CallKit stays in "connecting" (and the app never opens on the keypad)
       // until the pending CXAnswerCallAction is fulfilled — that only happens
       // when we report the real outcome back through completeAnswer().
-      try { ppSipProvider.forceReregister(); } catch {}
+      // ring14 - forceReregister() REMOVED from the answer path. The ring13 log
+      // showed it firing 3 x "REGISTER promoted to priority
+      // (force_registered_refresh) {callState:'ringing-in'}" at the exact instant
+      // of the answer. A REGISTER on an AOR that is carrying a ringing INVITE
+      // makes NetSapiens drop the WSS leg, the ACK never comes back, JsSIP never
+      // emits `confirmed`, callState stays "ringing-in", CallKit is never
+      // fulfilled and therefore never hands the audio session over: hadOutputs=n
+      // on every activation, i.e. no sound at all.
+      // The transport is already up here - that is how the INVITE arrived.
       try { window.dispatchEvent(new CustomEvent("pp:sip-callkit-answered", { detail: data })); } catch {}
       void (async () => {
         let ok = false;
@@ -699,8 +707,25 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
         // session.answer() only means that JsSIP accepted the command locally.
         // CallKit may be fulfilled only after the SIP dialog is truly confirmed;
         // the active-state effect above owns the success completion.
-        if (!ok) void completePlanipretCallKitAnswer(data?.callId, false);
-        console.info(`[pp-voip] CallKit answer command → ${ok ? "awaiting SIP confirmation" : "failed"}`);
+        // ring14 - confirm CallKit as soon as the SIP 200 OK is out, instead of
+        // waiting for callState to reach "active".
+        //
+        // Proven by the ring13 log: 456 lines contain FOUR
+        // `callState:"ringing-in"` and ZERO `callState:"active"`, even on the call
+        // where `200 OK sent (answer) {withStream:true}` did appear. JsSIP only
+        // emits `confirmed` when the caller's ACK comes back; when the WSS leg is
+        // disturbed that ACK never arrives. The confirmation effect keyed on
+        // "active" therefore never ran, CallKit was never fulfilled, iOS never
+        // called didActivate, and the app's AVAudioSession stayed with zero
+        // outputs (`hadOutputs=n` on every single activation): total silence,
+        // then CallKit tore the call down at the 32s timeout.
+        //
+        // A 200 OK carrying a media stream is proof enough that the answer
+        // succeeded on our side. The `active` effect stays in place as a
+        // belt-and-braces path; completeAnswer is idempotent natively (it
+        // returns no_pending_answer once the action is consumed).
+        void completePlanipretCallKitAnswer(data?.callId, ok);
+        console.info(`[pp-voip] CallKit answer command → ${ok ? "confirmed on 200 OK" : "failed"}`);
       })();
     }).then((fn) => { cleanupVoipAnswer = fn; }).catch(() => undefined);
 
@@ -1441,14 +1466,38 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       setAnsweredElsewhere("widget");
       try { ppSipProvider.hangup(); } catch {}
     }).catch(() => { /* claim is best-effort; the live dialog wins */ });
-    // Do not report success to CallKit on a locally accepted answer command.
-    // Wait until JsSIP receives the confirmed dialog from the PBX.
+    // ring14 - THE bug behind "I tapped Answer and nothing happened".
+    //
+    // This loop used to end with `if (i === 15) return false;`, i.e. it declared
+    // the answer FAILED after 4s whenever callState had not reached "active".
+    // The ring13 log has FOUR `callState:"ringing-in"` and ZERO
+    // `callState:"active"` across 456 lines, even on the call where
+    // `200 OK sent (answer) {withStream:true}` is present. So this loop always
+    // returned false, answerOnce() reported failure, completeAnswer(ok:false)
+    // ran, `action.fail()` fired and CallKit TORE DOWN a call whose media was
+    // already established.
+    //
+    // JsSIP only emits `confirmed` (-> callState "active") when the caller's ACK
+    // comes back. A missing ACK is a PBX/transport matter, never a reason to
+    // discard our own successful 200 OK. The loop is now pure observation: it
+    // can confirm early, and only a real BYE (`ended`) counts as a failure.
+    let confirmed = false;
     for (let i = 0; i < 16; i++) {
       await new Promise((r) => window.setTimeout(r, 250));
       const state = ppSipProvider.getSnapshot().callState;
-      if (state === "active" || state === "held") break;
-      if (state === "ended") return false;
-      if (i === 15) return false;
+      if (state === "active" || state === "held") { confirmed = true; break; }
+      if (state === "ended") {
+        console.warn("[answer] dialog ended right after the 200 OK", { callId });
+        return false;
+      }
+    }
+    if (!confirmed) {
+      // Not an error: the 200 OK is out and the remote track is attached. iOS
+      // must be told the call is up, otherwise CallKit keeps ringing on top of
+      // a live conversation - exactly what the user photographed.
+      console.warn("[answer] 200 OK sent but no ACK-confirmed dialog within 4s - treating the answer as SUCCESSFUL", {
+        callId, state: ppSipProvider.getSnapshot().callState,
+      });
     }
     // Clear the REST/DB attachment so the in-call UI follows the live session.
     if (ok && restCall?.id) setRestCall(null);

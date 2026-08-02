@@ -34,6 +34,11 @@ const REASONS: Record<string, { fr: string; en: string }> = {
     en: "Classification unavailable — posted anyway (POST /calls is idempotent)",
   },
   post_failed: { fr: "Échec après 3 tentatives", en: "Failed after 3 attempts" },
+  // ring14 - tell a Maestro-side outage (HTTP 5xx) apart from a broken link.
+  maestro_server_error: {
+    fr: "Maestro indisponible (erreur serveur 500) — nouvelle tentative à la fin de l'appel",
+    en: "Maestro unavailable (server error 500) — will retry after the call",
+  },
 };
 
 function reasonLabel(reason: string, lang: "fr" | "en") {

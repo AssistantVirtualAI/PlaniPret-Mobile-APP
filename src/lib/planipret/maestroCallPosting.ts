@@ -215,6 +215,16 @@ async function post(
         try { window.dispatchEvent(new CustomEvent("pp:maestro-needs-reauth", { detail: { callId } })); } catch {}
         return rec;
       }
+      // ring14 - a Maestro 5xx is a remote outage: retrying twice more changes
+      // nothing and costs 2 extra HTTP round trips on the ring path. The ring13
+      // log shows 3 identical `{"status":500,"details":{"message":"Server
+      // Error"}}` per call, on all three calls. Stop after the first 5xx and mark
+      // the record so the panel shows an outage rather than a broken link.
+      if (/\b5\d\d\b|server error|maestro_error/i.test(lastError)) {
+        const rec = upsert(callId, { direction, number, state: "failed", reason: "maestro_server_error", lastError });
+        log("post_server_error", { callId, dedupKey, direction, number, classification, error: lastError, attempt });
+        return rec;
+      }
       if (attempt < POST_MAX_ATTEMPTS) await sleep(attempt * 800);
     }
   }
