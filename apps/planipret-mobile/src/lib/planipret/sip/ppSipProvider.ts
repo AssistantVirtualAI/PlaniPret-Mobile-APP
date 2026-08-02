@@ -351,7 +351,8 @@ class PpSipProvider {
     }, delay);
   }
 
-  private guardedRegister(reason: string): boolean {
+  /** @param urgent bypasses the debounce floor — reserved for inbound-call wake-ups. */
+  private guardedRegister(reason: string, urgent = false): boolean {
     const ua = this.ua;
     if (!ua?.isConnected?.()) {
       this.scheduleSocketReconnect(`${reason}_transport_down`);
@@ -359,8 +360,22 @@ class PpSipProvider {
     }
     const now = Date.now();
     const minGap = Math.max(5000, getPpSipReconnectConfig().reRegisterDelayMs);
-    if (now - this.lastRegisterAttemptAt < minGap) {
-      this.log("warn", `explicit REGISTER suppressed (${now - this.lastRegisterAttemptAt}ms < ${minGap}ms)`);
+    // The 5s floor exists to stop the reconnect storm that made NetSapiens close
+    // the WSS with 1001. But an inbound VoIP push MUST be able to re-REGISTER
+    // immediately: without a fresh contact the PBX cannot route the INVITE, the
+    // answer intent waits for an INVITE that never comes, and the call dies with
+    // `mobile_registered:false / registered_aors:[]`. Urgent wake-ups therefore
+    // bypass the floor; they are rate-limited by a much shorter guard so a broken
+    // push loop still cannot spam REGISTER.
+    const gap = now - this.lastRegisterAttemptAt;
+    if (urgent) {
+      if (gap < 800) {
+        this.log("warn", `urgent REGISTER suppressed (${gap}ms < 800ms)`);
+        return false;
+      }
+      this.log("info", `urgent REGISTER allowed (${reason}, ${gap}ms since last) — debounce floor bypassed`);
+    } else if (gap < minGap) {
+      this.log("warn", `explicit REGISTER suppressed (${gap}ms < ${minGap}ms)`);
       this.pushHistory("blocked", "register_debounce");
       this.emitMetrics();
       return false;
@@ -868,7 +883,9 @@ class PpSipProvider {
     }
     return false;
   }
-  async forceReregister() {
+  /** @param urgent set by inbound VoIP-push wake-ups so the debounce floor cannot
+   *  swallow the REGISTER that makes the PBX able to deliver the INVITE. */
+  async forceReregister(urgent = false) {
     try {
       const ua = this.ua;
       if (!ua) return;
@@ -885,10 +902,10 @@ class PpSipProvider {
         // AoR — including the native background keep-alive registration — which
         // left the extension unregistered and sent inbound calls straight to
         // voicemail. A plain re-REGISTER refreshes only this contact.
-        this.guardedRegister("force_registered_refresh");
+        this.guardedRegister("force_registered_refresh", urgent);
         return;
       }
-      this.guardedRegister("force_reregister");
+      this.guardedRegister("force_reregister", urgent);
     } catch {}
   }
 

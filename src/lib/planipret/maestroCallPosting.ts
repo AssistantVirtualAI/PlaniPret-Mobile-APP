@@ -207,6 +207,15 @@ async function post(
     } catch (e: any) {
       lastError = String(e?.message ?? e);
       log("post_attempt_failed", { callId, dedupKey, direction, attempt, error: lastError });
+      // An expired/revoked OAuth token never heals by retrying: the previous code
+      // burned three requests and ~2.4s of delay per call on a guaranteed 401.
+      // Stop immediately and mark the record so the UI can prompt a relink.
+      if (/\b401\b|reauth_required|invalid or expired/i.test(lastError)) {
+        const authRec = upsert(callId, { direction, number, state: "failed", reason: "maestro_reauth_required", lastError });
+        log("post_failed_auth", { callId, dedupKey, direction, number, classification, error: lastError, hint: "relink Maestro" });
+        try { window.dispatchEvent(new CustomEvent("pp:maestro-reauth-required", { detail: { callId } })); } catch { /* noop */ }
+        return authRec;
+      }
       if (attempt < POST_MAX_ATTEMPTS) await sleep(attempt * 800);
     }
   }

@@ -390,7 +390,9 @@ export function useMplanipretSoftphone(enabled = true) {
       // before re-registering, so a fast JsSIP INVITE cannot beat the flag.
       if (invite?.action === "answer") {
         try { (window as any).__ppPendingAnswer = { callId: invite.callId, ts: Date.now() }; } catch {}
-        try { ppSipProvider.forceReregister(); } catch {}
+        // urgent: the 5s debounce floor must not swallow this REGISTER, otherwise
+        // the PBX has no contact to route the INVITE to and the call never arrives.
+        try { ppSipProvider.forceReregister(true); } catch {}
         // Android: the notification action only broadcast an intent before —
         // nothing actually picked the call up, so the caller kept hearing the
         // greeting. Run the full answer flow (SIP, then NS-API fallback).
@@ -407,7 +409,8 @@ export function useMplanipretSoftphone(enabled = true) {
         setPushRing(null);
         void acknowledgePlanipretIncoming();
       }
-      try { ppSipProvider.forceReregister(); } catch {}
+      // Inbound-call wake-up — urgent for the same reason as above.
+      try { ppSipProvider.forceReregister(true); } catch {}
       try {
         window.dispatchEvent(new CustomEvent("pp:sip-incoming-invite", { detail: invite }));
       } catch {}
@@ -459,11 +462,12 @@ export function useMplanipretSoftphone(enabled = true) {
       window.setTimeout(() => setPushRing((cur) => (cur && cur.callId === String(data?.callId ?? "") ? null : cur)), 40_000);
     }).then((fn) => { cleanupVoipIncoming = fn; }).catch(() => undefined);
 
-    onPlanipretIncomingCallAnswered((data) => {
-      // CallKit stays in "connecting" (and the app never opens on the keypad)
-      // until the pending CXAnswerCallAction is fulfilled — that only happens
-      // when we report the real outcome back through completeAnswer().
-      try { ppSipProvider.forceReregister(); } catch {}
+      onPlanipretIncomingCallAnswered((data) => {
+        // CallKit stays in "connecting" (and the app never opens on the keypad)
+        // until the pending CXAnswerCallAction is fulfilled — that only happens
+        // when we report the real outcome back through completeAnswer().
+        // urgent: bypass the debounce floor, the INVITE depends on this REGISTER.
+        try { ppSipProvider.forceReregister(true); } catch {}
       try { window.dispatchEvent(new CustomEvent("pp:sip-callkit-answered", { detail: data })); } catch {}
       void (async () => {
         let ok = false;
@@ -706,7 +710,10 @@ export function useMplanipretSoftphone(enabled = true) {
          if (!check || check.healthy) return;
          console.warn("[pp-sip] backend registration check unhealthy", check);
          if (check.actions?.includes("reregister")) {
-           ppSipProvider.forceReregister();
+           // The PBX itself reports no live binding (`registered_aors: []`), so this
+           // self-heal must not be swallowed by the debounce floor — while it is,
+           // inbound calls cannot be delivered at all.
+           ppSipProvider.forceReregister(true);
            handedOffToNative = false;
          }
          if (check.actions?.includes("refresh_push_token")) {
@@ -1047,7 +1054,9 @@ export function useMplanipretSoftphone(enabled = true) {
       console.info("[answer] route=PUSH-PENDING → forceReregister + requestAnswer", {
         pushCallId: pushRing.callId ?? null,
       });
-      try { ppSipProvider.forceReregister(); } catch {}
+      // urgent: this is the wake-up path where the debounce floor previously
+      // suppressed the REGISTER and left `registered_aors: []`.
+      try { ppSipProvider.forceReregister(true); } catch {}
       const immediate = await ppSipProvider.requestAnswer(pushRing.callId || undefined);
       console.info(`[answer] requestAnswer → ${immediate ? "answered immediately" : "intent queued"}`);
       if (immediate) return true;

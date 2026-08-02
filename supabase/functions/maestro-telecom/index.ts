@@ -9,7 +9,7 @@ import {
   isMaestroTelecomConfigured,
   maestroTelecomFetch,
 } from "../_shared/maestro-telecom.ts";
-import { getUserMaestroAccessToken } from "../_shared/maestro-oauth.ts";
+import { getUserMaestroAccessToken, forceRefreshMaestroToken } from "../_shared/maestro-oauth.ts";
 
 const json = (b: unknown, s = 200) =>
   new Response(JSON.stringify(b), { status: s, headers: { ...corsHeaders, "Content-Type": "application/json" } });
@@ -64,15 +64,35 @@ Deno.serve(async (req) => {
     const userToken = await getUserMaestroAccessToken(admin, u.user.id);
 
     const endpoint = `${url.pathname}${url.search}`;
-    const r = await maestroTelecomFetch(cfg, endpoint, {
+    let r = await maestroTelecomFetch(cfg, endpoint, {
       method,
       body: method !== "GET" ? reqBody : undefined,
       token: userToken ?? undefined,
     });
 
+    // getUserMaestroAccessToken() only refreshes when `maestro_token_expires_at`
+    // says the token is stale. When that column is wrong (or Maestro revoked the
+    // token early) we get a 401 while still believing the token is fresh, and the
+    // caller retried the same dead token three times. Force one refresh and retry.
+    if (r.status === 401) {
+      console.warn("[maestro-telecom] 401 on presumed-fresh token — forcing refresh");
+      const refreshed = await forceRefreshMaestroToken(admin, u.user.id);
+      if (refreshed) {
+        r = await maestroTelecomFetch(cfg, endpoint, {
+          method,
+          body: method !== "GET" ? reqBody : undefined,
+          token: refreshed,
+        });
+      } else {
+        console.error("[maestro-telecom] refresh unavailable — relink required");
+        return json({ ok: false, error: "maestro_reauth_required", status: 401, details: r.data ?? r.error }, 200);
+      }
+    }
+
     if (!r.ok) {
       console.error("[maestro-telecom]", method, endpoint, r.status, JSON.stringify(r.data ?? r.error).slice(0, 500));
-      return json({ ok: false, error: "maestro_error", status: r.status, details: r.data ?? r.error }, 200);
+      const code = r.status === 401 ? "maestro_reauth_required" : "maestro_error";
+      return json({ ok: false, error: code, status: r.status, details: r.data ?? r.error }, 200);
     }
     return json({ ok: true, status: r.status, data: r.data });
   } catch (e) {

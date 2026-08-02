@@ -136,6 +136,49 @@ export async function persistTokenSet(
   await admin.from("planipret_profiles").update(patch).eq("user_id", userId);
 }
 
+/**
+ * Refresh the access token unconditionally, ignoring `maestro_token_expires_at`.
+ * Needed because Maestro can revoke a token before its recorded expiry (and the
+ * column itself can be stale), which produced 401s while the app still believed
+ * the token was fresh. Returns the new access token, or null when no refresh is
+ * possible — in which case the user must relink via `maestro-oauth-start`.
+ */
+export async function forceRefreshMaestroToken(
+  admin: SupabaseClient,
+  userId: string,
+): Promise<string | null> {
+  const { data: prof } = await admin
+    .from("planipret_profiles")
+    .select("maestro_refresh_token, maestro_oauth_client")
+    .or(`user_id.eq.${userId},id.eq.${userId}`)
+    .maybeSingle();
+  const refreshToken = (prof as any)?.maestro_refresh_token as string | undefined;
+  if (!refreshToken) {
+    console.warn("[maestro-oauth] force refresh impossible: no refresh_token stored");
+    return null;
+  }
+  const env = getMaestroOAuthEnv();
+  if (!isMaestroOAuthConfigured(env)) {
+    console.warn("[maestro-oauth] force refresh impossible: OAuth env not configured");
+    return null;
+  }
+  const isMobile = (prof as any)?.maestro_oauth_client === "mobile";
+  const refreshed = await refreshAccessToken(env, refreshToken, isMobile);
+  if (!refreshed.ok || !refreshed.data?.access_token) {
+    console.warn("[maestro-oauth] force refresh failed", refreshed.status, refreshed.error);
+    // The refresh token itself is dead: clear the connected flag so the UI stops
+    // claiming "connected" and can surface the relink button.
+    await admin
+      .from("planipret_profiles")
+      .update({ maestro_connected: false, maestro_token_expires_at: new Date(0).toISOString() })
+      .eq("user_id", userId);
+    return null;
+  }
+  await persistTokenSet(admin, userId, refreshed.data, isMobile);
+  console.info("[maestro-oauth] force refresh succeeded");
+  return refreshed.data.access_token as string;
+}
+
 export async function getUserMaestroAccessToken(
   admin: SupabaseClient,
   userId: string,
