@@ -327,6 +327,14 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         // publish the authoritative one, then wake JS.
         pendingAnswerAction?.fulfill()
         pendingAnswerAction = action
+        // ring16 - claim audio ownership HERE, not at didActivate. Log 138 shows
+        // three "audio session (re)activated ... hadOutputs=n" emitted by the
+        // keep-alive watchdog BETWEEN the 200 OK and didActivate, because the
+        // ownership flag was only armed at didActivate. Each of those touches the
+        // session while it still has no route, and that is what drives WebKit into
+        // "beginInterruption but session is already interrupted!". From the moment
+        // CallKit asks us to answer, nobody else may touch the session.
+        NotificationCenter.default.post(name: Notification.Name("PpVoipAudioSessionActivated"), object: nil)
         // Pin the SIP transport + audio session up while the WebView performs
         // the actual SIP answer, possibly still in the background.
         NotificationCenter.default.post(name: Notification.Name("PpVoipCallAnswered"), object: nil, userInfo: ["callId": activeCallId ?? ""])
@@ -394,6 +402,27 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         // Tell the keep-alive plugin that CallKit owns the session now, so its
         // 2-second watchdog stops reconfiguring it underneath WebRTC.
         NotificationCenter.default.post(name: Notification.Name("PpVoipAudioSessionActivated"), object: nil)
+
+        // ring16 - THE REMAINING HALF OF THE AUDIO FIX.
+        // ring15 made the route correct (log 138: outputs=[Receiver],
+        // inputs=[MicrophoneBuiltIn], 48 kHz) yet the call was still silent. The
+        // reason is in the same log, BEFORE this callback fires:
+        //     AudioSession::beginInterruption but session is already interrupted!
+        //     [recording-notice] play blocked "The operation was aborted."
+        // Between the SIP 200 OK and this didActivate the session has no output
+        // route, so WebKit suspends its own audio pipeline. When the route finally
+        // appears, WebKit does NOT resume by itself: the <audio> element stays
+        // paused and the mic capture stays stopped, which is exactly a
+        // two-way-silent call with every indicator green.
+        //
+        // So we tell the web layer that the route is live. The JS side re-attaches
+        // srcObject and calls play() again, which is the only way to pull WebKit
+        // out of its interrupted state.
+        notifyListeners("audioSessionActivated", data: [
+            "outputs": outs,
+            "inputs": ins,
+            "sampleRate": audioSession.sampleRate
+        ])
     }
 
     public func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {

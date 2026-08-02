@@ -893,6 +893,78 @@ class PpSipProvider {
     }
   }
 
+  /**
+   * ring16 - Resume the WebKit audio pipeline once CallKit has handed us a live
+   * audio route.
+   *
+   * Log 138 is unambiguous. The SIP side was perfect: 200 OK sent withStream,
+   * remote audio attached (1 track), and CallKit reported
+   * outputs=[Receiver] inputs=[MicrophoneBuiltIn] sr=48000. The call was still
+   * silent in both directions, and the reason sits two lines earlier in the very
+   * same log:
+   *     AudioSession::beginInterruption but session is already interrupted!
+   *     [recording-notice] play blocked - The operation was aborted.
+   *
+   * Between the 200 OK and CallKit didActivate, AVAudioSession has NO output
+   * route. WebKit reacts by suspending its own audio pipeline: the audio element
+   * is paused and mic capture is stopped. When the route finally shows up WebKit
+   * does NOT resume on its own, and nothing in our code asked it to. Every
+   * indicator is green and no audio flows.
+   *
+   * This method is driven by the native audioSessionActivated event. It
+   * deliberately BYPASSES the ring11 idempotence guard: here the track set is
+   * identical on purpose, and reassigning srcObject is exactly what forces
+   * WebKit to rebuild the render pipeline it tore down.
+   */
+  public resumeAudioAfterRouteActivation(reason = "callkit_did_activate") {
+    try {
+      const el = this.audioEl;
+      const pc: RTCPeerConnection | undefined | null = (this.session as any)?.connection;
+      if (!el || !pc) {
+        this.log("warn", `audio resume skipped - no ${!el ? "audio element" : "peer connection"} (${reason})`);
+        return;
+      }
+
+      const receivers = pc.getReceivers?.() ?? [];
+      const tracks = receivers.map((r) => r.track).filter((t) => t && t.kind === "audio") as MediaStreamTrack[];
+      if (!tracks.length) {
+        this.log("warn", `audio resume skipped - no remote audio track yet (${reason})`);
+        return;
+      }
+
+      // INBOUND: a track disabled while the session was interrupted stays
+      // disabled and carries pure silence.
+      for (const t of tracks) { try { if (!t.enabled) t.enabled = true; } catch { /* noop */ } }
+
+      // OUTBOUND: the mic sender track is stopped the same way, which is why the
+      // caller could not hear us either.
+      const senders = pc.getSenders?.() ?? [];
+      let micRestored = 0;
+      for (const s of senders) {
+        const t = s.track;
+        if (t && t.kind === "audio") {
+          try { if (!t.enabled) { t.enabled = true; micRestored++; } } catch { /* noop */ }
+        }
+      }
+
+      // Force the re-attach. This IS the WebKit pipeline restart.
+      el.srcObject = new MediaStream(tracks);
+      this.attachedAudioSignature = tracks.map((t) => t.id).sort().join(",");
+      el.muted = false;
+      el.volume = 1;
+      const p = el.play();
+      if (p?.catch) {
+        p.catch((e: any) => {
+          this.log("warn", `audio resume play() rejected, retrying: ${e?.message || e}`);
+          setTimeout(() => el.play().catch(() => {}), 250);
+        });
+      }
+      this.log("info", `audio pipeline resumed after route activation (${reason}, ${tracks.length} track(s), mic re-enabled: ${micRestored})`);
+    } catch (e: any) {
+      this.log("error", `audio resume failed: ${e?.message || e}`);
+    }
+  }
+
 
   private resetCall() {
     this.session = null;

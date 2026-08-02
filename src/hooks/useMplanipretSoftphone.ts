@@ -29,6 +29,7 @@ import {
   getPlanipretVoipPushToken,
   onPlanipretIncomingCallAnswered,
   onPlanipretIncomingCallRejected,
+  onPlanipretAudioSessionActivated, // ring16
   onPlanipretIncomingInvite,
   onPlanipretNativeReregister,
   onPlanipretSipKeepAliveStatus,
@@ -613,6 +614,7 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     let cleanupVoipToken: (() => void) | undefined;
     let cleanupVoipAnswer: (() => void) | undefined;
     let cleanupVoipReject: (() => void) | undefined;
+    let cleanupAudioActivated: (() => void) | undefined; // ring16
     let cleanupVoipInvalid: (() => void) | undefined;
     onPlanipretVoipPushToken(({ token, bundleId, environment, source }) => {
       if (!token) { console.warn("[pp-voip] empty VoIP token received", { source }); return; }
@@ -737,6 +739,36 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       try { window.dispatchEvent(new CustomEvent("pp:sip-callkit-rejected", { detail: data })); } catch {}
     }).then((fn) => { cleanupVoipReject = fn; }).catch(() => undefined);
 
+    // ring16 - THE REMAINING HALF OF THE AUDIO FIX.
+    // ring15 fixed the route: log 138 shows CallKit reporting
+    // outputs=[Receiver] inputs=[MicrophoneBuiltIn] sr=48000, and the SIP side
+    // was flawless (200 OK withStream, remote audio attached). The call was
+    // still silent BOTH ways, and the same log says why, right before:
+    //     AudioSession::beginInterruption but session is already interrupted!
+    //     [recording-notice] play blocked "The operation was aborted."
+    // WebKit suspends its audio pipeline while AVAudioSession has no output
+    // route, and it does NOT resume when the route finally appears. Nothing in
+    // our code ever asked it to, so playback stayed paused and mic capture
+    // stayed stopped - every indicator green, zero audio.
+    onPlanipretAudioSessionActivated((data) => {
+      console.info(
+        `[pp-voip] audio route live (outputs=${data?.outputs || "NONE"} inputs=${data?.inputs || "NONE"} sr=${data?.sampleRate ?? 0}) → resuming WebKit audio pipeline`,
+      );
+      // Release the recording notice, which deliberately holds off until the
+      // route exists (playing on a routeless session is what interrupted the
+      // shared WebKit audio pipeline in log 138).
+      try { window.dispatchEvent(new CustomEvent("pp:audio-route-live", { detail: data })); } catch {}
+      // Immediately, then twice more: WebKit occasionally needs a beat after the
+      // route change before play() is honoured, and a rejected play() is silent.
+      try { ppSipProvider.resumeAudioAfterRouteActivation("callkit_did_activate"); } catch {}
+      window.setTimeout(() => {
+        try { ppSipProvider.resumeAudioAfterRouteActivation("callkit_did_activate_retry_400ms"); } catch {}
+      }, 400);
+      window.setTimeout(() => {
+        try { ppSipProvider.resumeAudioAfterRouteActivation("callkit_did_activate_retry_1200ms"); } catch {}
+      }, 1200);
+    }).then((fn) => { cleanupAudioActivated = fn; }).catch(() => undefined);
+
     const poll = window.setInterval(() => {
       getPlanipretSipKeepAliveStatus().then((s) => { if (s && !cancelled) setNativeStatus(s); }).catch(() => undefined);
     }, 15_000);
@@ -755,6 +787,7 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       cleanupVoipIncoming?.();
       cleanupVoipAnswer?.();
       cleanupVoipReject?.();
+      cleanupAudioActivated?.(); // ring16
     };
   }, [clientType, enabled, user?.id]);
 

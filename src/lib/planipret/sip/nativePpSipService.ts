@@ -140,6 +140,24 @@ export async function onPlanipretIncomingCallRejected(cb: (data: { callUUID: str
   return addDedupedCapListener("PpVoipCall", NativePpVoipCall, "incomingCallRejected", (data: any) => cb(data ?? {}));
 }
 
+/**
+ * ring16 - Fired from CXProviderDelegate.provider(_:didActivate:), the single
+ * moment iOS hands us a usable audio route for a CallKit call.
+ *
+ * This matters because WebKit suspends its audio pipeline while AVAudioSession
+ * has no output route, and does not resume by itself when the route appears.
+ * Log 138: outputs=[Receiver] inputs=[MicrophoneBuiltIn] sr=48000 yet the call
+ * was silent both ways, with "beginInterruption but session is already
+ * interrupted!" recorded just before. The web layer must explicitly restart
+ * playback and re-enable the tracks on this signal.
+ */
+export async function onPlanipretAudioSessionActivated(
+  cb: (data: { outputs?: string; inputs?: string; sampleRate?: number }) => void,
+): Promise<() => void> {
+  if (platform() !== "ios") return () => undefined;
+  return addDedupedCapListener("PpVoipCall", NativePpVoipCall, "audioSessionActivated", (data: any) => cb(data ?? {}));
+}
+
 
 /**
  * iOS cannot keep a WSS socket alive while suspended: PushKit is the only
