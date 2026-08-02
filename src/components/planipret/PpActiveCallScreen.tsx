@@ -180,6 +180,26 @@ export default function PpActiveCallScreen({
     : isHeld ? (t("call.onHold") || "En attente")
     : fmt(elapsed);
 
+  /**
+   * Never surface internal transport state on the call screen.
+   *
+   * `snap.errorCause` carries raw diagnostics such as `ws_disconnected`, and it
+   * was being printed under the caller's number. That string is meaningless to a
+   * broker and it is actively misleading here: on a background VoIP push iOS has
+   * suspended the WebView, so the socket IS closed at the instant the incoming
+   * screen appears. The whole push-wake path (wakeForIncoming, the 1.5s native
+   * grace, declareJsOwnsAor) exists precisely to rebuild that socket before the
+   * INVITE lands, so a closed socket at ring time is expected, not a fault.
+   *
+   * Only causes the user can act on are shown (e.g. rejected credentials). Every
+   * transport-level cause stays in the console and in the diagnostic panel,
+   * reachable from the header icon.
+   */
+  const TRANSPORT_NOISE = /ws_|websocket|socket|disconnect|transport|connection error|1001|1006|POSIX|timeout|ice|dead_transport/i;
+  const userFacingError = snap.errorCause && !TRANSPORT_NOISE.test(String(snap.errorCause))
+    ? snap.errorCause
+    : null;
+
   const KEYS = ["1","2","3","4","5","6","7","8","9","*","0","#"];
 
   return (
@@ -225,7 +245,7 @@ export default function PpActiveCallScreen({
             {displayNumber && <div className="text-sm text-white/60 mt-1">{displayNumber}</div>}
             <div className="mt-3 text-sm text-white/70">{statusText}</div>
             {dtmfBuf && <div className="mt-2 text-xs text-white/50">DTMF: {dtmfBuf}</div>}
-            {snap.errorCause && <div className="mt-2 text-xs" style={{ color: "#FCA5A5" }}>{snap.errorCause}</div>}
+            {userFacingError && <div className="mt-2 text-xs" style={{ color: "#FCA5A5" }}>{userFacingError}</div>}
           </div>
         )}
 
