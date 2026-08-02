@@ -192,6 +192,12 @@ class PpSipProvider {
   private wsRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private wsWatchdogTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectVerifyTimer: ReturnType<typeof setTimeout> | null = null;
+  /** ring19 - RTP flow probe. See startRtpProbe(). */
+  private rtpProbeTimer: ReturnType<typeof setInterval> | null = null;
+  private rtpProbeStartedAt = 0;
+  private rtpProbeTicks = 0;
+  private rtpProbeLastBytes = { tx: 0, rx: 0 };
+  private rtpProbeAlerted = false;
   private wsFailures = 0;
   private lastWsDisconnectedAt = 0;
   private lastRegisterAttemptAt = 0;
@@ -815,8 +821,8 @@ class PpSipProvider {
     };
     wire(session.connection);
     session.on("peerconnection", (e: any) => wire(e?.peerconnection || session.connection));
-    session.on("accepted", () => this.attachRemoteAudio(session.connection));
-    session.on("confirmed", () => this.attachRemoteAudio(session.connection));
+    session.on("accepted", () => { this.attachRemoteAudio(session.connection); this.startRtpProbe("accepted"); });
+    session.on("confirmed", () => { this.attachRemoteAudio(session.connection); this.startRtpProbe("confirmed"); });
   }
 
   /** Hidden, always-available audio sink so remote audio never depends on a screen being mounted. */
@@ -1068,7 +1074,109 @@ class PpSipProvider {
   }
 
 
+  /**
+   * ring19 - RTP flow probe.
+   *
+   * Every fix from ring16 to ring18 targeted a plausible cause of the silence and
+   * every one of them reported a healthy state afterwards, yet no audio ever
+   * passed. The reason we kept guessing is that nothing in this stack ever
+   * measured whether RTP packets actually move. Without byte counters two very
+   * different failures look identical from the logs:
+   *
+   *   - bytesSent stays 0        -> nothing leaves the device (ICE never paired,
+   *                                 SBC/firewall dropping, no local track)
+   *   - bytesReceived stays 0    -> the PBX/SBC is not sending us media
+   *   - both counters climb      -> media DOES flow; the silence is then an OS
+   *                                 rendering/route problem, not a network one
+   *
+   * This probe samples getStats() every 5s and prints the ICE state plus the
+   * cumulative and per-interval byte/packet counters, then raises one explicit
+   * alert if a direction is still at zero after 10s. It is read-only: it never
+   * touches the peer connection, so it cannot itself perturb the media path.
+   */
+  private startRtpProbe(reason: string) {
+    if (this.rtpProbeTimer) return;
+    this.rtpProbeStartedAt = Date.now();
+    this.rtpProbeTicks = 0;
+    this.rtpProbeLastBytes = { tx: 0, rx: 0 };
+    this.rtpProbeAlerted = false;
+    this.log("log", `rtp probe started (${reason})`);
+    const sample = async () => {
+      const pc = this.getActivePeerConnection();
+      if (!pc) { this.stopRtpProbe("no peer connection"); return; }
+      try {
+        const stats = await pc.getStats();
+        let txBytes = 0, rxBytes = 0, txPackets = 0, rxPackets = 0;
+        let localCandidate = "", remoteCandidate = "", pairState = "";
+        let audioLevelOut: number | null = null, audioLevelIn: number | null = null;
+        const candidates: Record<string, any> = {};
+        stats.forEach((r: any) => {
+          if (r.type === "local-candidate" || r.type === "remote-candidate") candidates[r.id] = r;
+        });
+        stats.forEach((r: any) => {
+          if (r.type === "outbound-rtp" && r.kind !== "video") {
+            txBytes += Number(r.bytesSent || 0);
+            txPackets += Number(r.packetsSent || 0);
+          }
+          if (r.type === "inbound-rtp" && r.kind !== "video") {
+            rxBytes += Number(r.bytesReceived || 0);
+            rxPackets += Number(r.packetsReceived || 0);
+          }
+          if (r.type === "media-source" && typeof r.audioLevel === "number") audioLevelOut = r.audioLevel;
+          if (r.type === "inbound-rtp" && typeof r.audioLevel === "number") audioLevelIn = r.audioLevel;
+          if (r.type === "candidate-pair" && (r.selected || r.state === "succeeded")) {
+            pairState = String(r.state || "");
+            const lc = candidates[r.localCandidateId];
+            const rc = candidates[r.remoteCandidateId];
+            if (lc) localCandidate = `${lc.candidateType || "?"}/${lc.protocol || "?"}`;
+            if (rc) remoteCandidate = `${rc.candidateType || "?"}/${rc.protocol || "?"}`;
+          }
+        });
+        const dTx = txBytes - this.rtpProbeLastBytes.tx;
+        const dRx = rxBytes - this.rtpProbeLastBytes.rx;
+        this.rtpProbeLastBytes = { tx: txBytes, rx: rxBytes };
+        this.rtpProbeTicks++;
+        const elapsed = Math.round((Date.now() - this.rtpProbeStartedAt) / 1000);
+        // One single-line record so it is greppable in the Xcode console.
+        this.log(
+          "log",
+          `rtp probe t=${elapsed}s ice=${pc.iceConnectionState}/${pc.connectionState} pair=${pairState || "none"}`
+          + ` ${localCandidate || "?"}->${remoteCandidate || "?"}`
+          + ` tx=${txBytes}B(+${dTx}) rx=${rxBytes}B(+${dRx})`
+          + ` pkt tx=${txPackets} rx=${rxPackets}`
+          + ` level out=${audioLevelOut ?? "n/a"} in=${audioLevelIn ?? "n/a"}`,
+        );
+        // Verdict after 10s, printed once. This is the branch point for the next
+        // round of debugging, so state it in plain terms.
+        if (!this.rtpProbeAlerted && elapsed >= 10) {
+          this.rtpProbeAlerted = true;
+          if (txBytes === 0 && rxBytes === 0) {
+            this.log("error", "rtp probe verdict: NO MEDIA IN EITHER DIRECTION - ICE/SBC/network problem, not an audio-route problem");
+          } else if (txBytes === 0) {
+            this.log("error", "rtp probe verdict: NOTHING SENT (mic path dead or blocked outbound) while inbound flows");
+          } else if (rxBytes === 0) {
+            this.log("error", "rtp probe verdict: NOTHING RECEIVED (PBX/SBC not sending, or inbound blocked) while outbound flows");
+          } else {
+            this.log("log", "rtp probe verdict: MEDIA FLOWS BOTH WAYS - any remaining silence is OS audio rendering/route, not the network");
+          }
+        }
+      } catch (e: any) {
+        this.log("warn", `rtp probe sample failed: ${e?.message || e}`);
+      }
+    };
+    void sample();
+    this.rtpProbeTimer = setInterval(() => { void sample(); }, 5_000);
+  }
+
+  private stopRtpProbe(reason: string) {
+    if (!this.rtpProbeTimer) return;
+    clearInterval(this.rtpProbeTimer);
+    this.rtpProbeTimer = null;
+    this.log("log", `rtp probe stopped after ${this.rtpProbeTicks} sample(s) (${reason})`);
+  }
+
   private resetCall() {
+    this.stopRtpProbe("call reset");
     this.session = null;
     // ring11 - the next call gets brand new tracks; drop the signature so the
     // first attach of that call is not mistaken for a duplicate.
@@ -1214,6 +1322,11 @@ class PpSipProvider {
       // attachRemoteAudio() is idempotent (track-signature guard), so the later
       // `accepted`/`confirmed` handlers simply log a no-op.
       setTimeout(() => { try { this.attachRemoteAudio(session.connection); } catch { /* noop */ } }, 150);
+      // ring19 - start measuring RTP as soon as we have answered. On this stack the
+      // caller's ACK may never arrive (see above), so we cannot wait for
+      // `confirmed` to begin instrumenting: that is precisely the silent case we
+      // need data on. startRtpProbe() is idempotent.
+      this.startRtpProbe("answered (200 OK sent)");
       return true;
     } catch (error) {
       this.log("error", "answer failed", error);
@@ -1641,6 +1754,7 @@ class PpSipProvider {
 
   stop(options: { preserveCallIntent?: boolean } = {}) {
     this.stopKeepAlive();
+    this.stopRtpProbe("provider stop");
     if (this.wsRetryTimer) { clearTimeout(this.wsRetryTimer); this.wsRetryTimer = null; }
     if (this.wsWatchdogTimer) { clearTimeout(this.wsWatchdogTimer); this.wsWatchdogTimer = null; }
     if (this.reconnectVerifyTimer) { clearTimeout(this.reconnectVerifyTimer); this.reconnectVerifyTimer = null; }

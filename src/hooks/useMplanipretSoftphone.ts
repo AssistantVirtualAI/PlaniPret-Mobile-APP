@@ -933,6 +933,15 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       const waitForNativeRegistered = async (): Promise<boolean> => {
         for (let i = 0; i < 12; i++) {
           if (seq !== handoffSeq) return false;
+          // ring19 - this poll runs for up to 12s. A call can start ringing at any
+          // point during it, and the caller loop below would then keep issuing
+          // native REGISTERs on an AOR that is carrying an in-flight INVITE. That
+          // is exactly the socket-stealing pattern ring13/ring15 closed on the JS
+          // side; the native path was still open.
+          if (callInProgress()) {
+            console.warn("[pp-sip] native handoff aborted mid-wait - a call now owns the transport");
+            return false;
+          }
           const st = await getPlanipretSipKeepAliveStatus().catch(() => null);
           if (st) setNativeStatus(st);
           const v = String(st?.status ?? "");
@@ -947,6 +956,14 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       };
       for (let attempt = 0; attempt < 3; attempt++) {
         if (seq !== handoffSeq) return;
+        // ring19 - re-check on EVERY attempt, not just at function entry. The
+        // retry budget is large (12s poll + 2s + 4s backoff = up to ~40s), so the
+        // single check at l.917 was valid only for the first instant of the loop.
+        if (callInProgress()) {
+          console.warn("[pp-sip] native handoff aborted before retry - a call now owns the transport");
+          keepNativeCallActive();
+          return;
+        }
         try {
           const s = await startPlanipretSipKeepAlive(cfg);
           if (s) setNativeStatus(s);
@@ -961,6 +978,12 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
           }
         } catch { /* retry */ }
         await new Promise((r) => setTimeout(r, 2_000 * (attempt + 1)));
+        // ring19 - and once more after the backoff sleep, before looping.
+        if (callInProgress()) {
+          console.warn("[pp-sip] native handoff aborted after backoff - a call now owns the transport");
+          keepNativeCallActive();
+          return;
+        }
       }
       // Native did not confirm registration. The VoIP-push wake path will retry;
       // do not reopen JsSIP while iOS is hidden and create concurrent ownership.
