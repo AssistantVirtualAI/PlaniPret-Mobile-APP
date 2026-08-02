@@ -631,7 +631,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
 
     public override func load() {
       restoreConfig()
-      DispatchQueue.main.async { [weak self] in self?.appActive = UIApplication.shared.applicationState == .active }
+      DispatchQueue.main.async { [weak self] in self?.appActive = UIApplication.shared.applicationState != .background }
       NotificationCenter.default.addObserver(self, selector: #selector(onBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
       NotificationCenter.default.addObserver(self, selector: #selector(onForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
       NotificationCenter.default.addObserver(self, selector: #selector(onForeground), name: UIApplication.didBecomeActiveNotification, object: nil)
@@ -671,6 +671,8 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       verifyDelayMs = Double(call.getInt("verifyDelayMs") ?? 8000)
       registerExpires = call.getInt("registerExpiresSec") ?? 1800
       persistConfig()
+      // Build marker: lets us prove from the Xcode console which binary is running.
+      NSLog("[PpSipKeepAlive] BUILD MARKER pp-build-2026-08-02-aor-fix (single-AOR: .inactive counts as foreground)")
       NSLog("[PpSipKeepAlive] reconnect strategy min=%.0fms max=%.0fms attempts=%d verify=%.0fms expires=%ds", backoffMinMs, backoffMaxMs, backoffMaxAttempts, verifyDelayMs, registerExpires)
       DispatchQueue.main.async { [weak self] in
         guard let self = self else { call.resolve(["ok": false, "status": "error", "reason": "plugin_released"]); return }
@@ -862,9 +864,16 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     // NEVER touch UIApplication/UIScene off the main thread: it triggers
     // "UI API called on a background thread" and can deadlock (DispatchQueue.main.sync).
     // The cached appActive flag is refreshed only from main-thread notifications.
+    // Only .background means the WebView is truly suspended. During launch and
+    // during transient overlays (Control Center, notification shade, incoming
+    // CallKit UI) applicationState is .inactive while the WebView is ALIVE and
+    // JsSIP still owns the AOR. Treating .inactive as "background" made the
+    // native layer REGISTER a second Contact on the same AOR, and NetSapiens
+    // closed the JsSIP socket with WSS 1001 (Going Away) in an endless loop —
+    // the INVITE never reached JsSIP, so answering never sent a 200 OK.
     private func isForeground() -> Bool {
       if Thread.isMainThread {
-        appActive = UIApplication.shared.applicationState == .active
+        appActive = UIApplication.shared.applicationState != .background
         return appActive
       }
       return appActive

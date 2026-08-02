@@ -624,7 +624,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
 
     public override func load() {
       restoreConfig()
-      DispatchQueue.main.async { [weak self] in self?.appActive = UIApplication.shared.applicationState == .active }
+      DispatchQueue.main.async { [weak self] in self?.appActive = UIApplication.shared.applicationState != .background }
       NotificationCenter.default.addObserver(self, selector: #selector(onBackground), name: UIApplication.didEnterBackgroundNotification, object: nil)
       NotificationCenter.default.addObserver(self, selector: #selector(onForeground), name: UIApplication.willEnterForegroundNotification, object: nil)
       NotificationCenter.default.addObserver(self, selector: #selector(onForeground), name: UIApplication.didBecomeActiveNotification, object: nil)
@@ -657,6 +657,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       verifyDelayMs = Double(call.getInt("verifyDelayMs") ?? 8000)
       registerExpires = call.getInt("registerExpiresSec") ?? 1800
       persistConfig()
+      NSLog("[PpSipKeepAlive] BUILD MARKER pp-build-2026-08-02-aor-fix (single-AOR: .inactive counts as foreground)")
       NSLog("[PpSipKeepAlive] reconnect strategy min=%.0fms max=%.0fms attempts=%d verify=%.0fms expires=%ds", backoffMinMs, backoffMaxMs, backoffMaxAttempts, verifyDelayMs, registerExpires)
       DispatchQueue.main.async { [weak self] in
         guard let self = self else { call.resolve(["ok": false, "status": "error", "reason": "plugin_released"]); return }
@@ -845,7 +846,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     // The cached appActive flag is refreshed only from main-thread notifications.
     private func isForeground() -> Bool {
       if Thread.isMainThread {
-        appActive = UIApplication.shared.applicationState == .active
+        appActive = UIApplication.shared.applicationState != .background
         return appActive
       }
       return appActive

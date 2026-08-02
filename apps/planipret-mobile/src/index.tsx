@@ -4,18 +4,15 @@
 import React from 'react';
 import { render as legacyRender } from 'react-dom';
 import { createRoot } from 'react-dom/client';
-import { BrowserRouter } from 'react-router-dom';
 import { Capacitor } from '@capacitor/core';
 import App from './App';
 import './styles.css';
-import { scheduleRuntimeSmokeCheck } from './lib/runtimeSmoke';
 
 type BootWindow = Window & {
   __PP_REACT_BOOTED__?: boolean;
   __PP_REACT_BOOT_ATTEMPTED__?: boolean;
   __PP_REACT_MOUNT_CALLED__?: boolean;
   __PP_MARK_BOOT_READY__?: () => void;
-  __PP_DISABLE_NATIVE_BOOT_FALLBACK__?: boolean;
 };
 
 function isIgnorableNativeStartupError(raw: unknown): boolean {
@@ -38,23 +35,18 @@ function markBootReady() {
   } catch {}
 }
 
-/**
- * The boot flag used to be set only by <NativeBootMarker /> deep inside the
- * provider tree. If any provider or lazy chunk was slow (cold start on iOS),
- * the old watchdog could paint a diagnostic overlay on top of an app that was
- * actually booting fine — and it never went away.
- * We now mark the boot as soon as React commits anything into #root.
- */
-function watchFirstPaint(container: HTMLElement) {
-  const deadline = Date.now() + 20000;
-  const tick = () => {
-    const painted = container.children.length > 0 && !container.querySelector('[data-pp-boot-visible]');
-    if (painted) { markBootReady(); void hideSplash('first-paint'); return; }
-    if (Date.now() < deadline) window.setTimeout(tick, 150);
-  };
-  window.setTimeout(tick, 0);
+function NativeBootErrorFallback({ message, onRetry }: { message?: string; onRetry: () => void }) {
+  return (
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#0A1425', color: '#E2E8F0', fontFamily: 'system-ui,-apple-system,BlinkMacSystemFont,sans-serif', padding: 24, textAlign: 'center' }}>
+      <div style={{ maxWidth: 340 }}>
+        <div style={{ width: 58, height: 58, borderRadius: 18, background: '#fff', margin: '0 auto 16px', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#1A4A8A', fontWeight: 800, fontSize: 20 }}>PP</div>
+        <div style={{ fontWeight: 800, fontSize: 18, marginBottom: 8 }}>Planiprêt Mobile</div>
+        <div style={{ fontSize: 13, lineHeight: 1.45, opacity: 0.82, marginBottom: 18, wordBreak: 'break-word' }}>{message || "Le démarrage a été interrompu. Relancez l’application."}</div>
+        <button onClick={onRetry} style={{ border: 0, borderRadius: 12, background: '#2E9BDC', color: 'white', fontWeight: 800, padding: '12px 18px' }}>Relancer</button>
+      </div>
+    </div>
+  );
 }
-
 
 class NativeRootRecoveryBoundary extends React.Component<{ children: React.ReactNode }, { error: Error | null; retryKey: number }> {
   state: { error: Error | null; retryKey: number } = { error: null, retryKey: 0 };
@@ -70,7 +62,8 @@ class NativeRootRecoveryBoundary extends React.Component<{ children: React.React
       this.setState((state) => {
         const nextRetryKey = state.retryKey + 1;
         if (nextRetryKey > 3) {
-          return { error: null, retryKey: nextRetryKey };
+          console.warn('[PP] native startup artifact repeated; keeping current tree');
+          return { error: null, retryKey: state.retryKey };
         }
         return { error: null, retryKey: nextRetryKey };
       });
@@ -85,14 +78,14 @@ class NativeRootRecoveryBoundary extends React.Component<{ children: React.React
 
   render() {
     if (this.state.error) {
-      return null;
+      const message = this.state.error.message || 'Erreur de démarrage inconnue.';
+      return <NativeBootErrorFallback message={message} onRetry={this.retry} />;
     }
     return <React.Fragment key={this.state.retryKey}>{this.props.children}</React.Fragment>;
   }
 }
 
 if (typeof window !== 'undefined') {
-  (window as BootWindow).__PP_DISABLE_NATIVE_BOOT_FALLBACK__ = true;
   (window as BootWindow).__PP_MARK_BOOT_READY__ = markBootReady;
   window.addEventListener('error', (event) => {
     if (!isIgnorableNativeStartupError((event as ErrorEvent).error) && !isIgnorableNativeStartupError((event as ErrorEvent).message)) return;
@@ -130,28 +123,20 @@ if (typeof document !== 'undefined') {
   });
 }
 
-let splashHidden = false;
-/**
- * Hide the native splash as soon as the web app is ready.
- * `launchAutoHide` is disabled in capacitor.config.ts, so WebKit no longer
- * logs the "SplashScreen timeout" warning: we own the hide, and a safety
- * timer guarantees it always happens even if React never commits.
- */
-async function hideSplash(reason: string) {
-  if (splashHidden) return;
-  splashHidden = true;
+async function hideSplashSoon() {
   try {
     const { SplashScreen } = await import('@capacitor/splash-screen');
     await SplashScreen.hide({ fadeOutDuration: 200 });
-    console.log('[PP] splash hidden', reason);
   } catch {}
 }
 
 async function bootstrap() {
+  // Build marker: proves from the Xcode/logcat console which web bundle is running.
+  console.log('[PP] BUILD MARKER pp-build-2026-08-02-aor-fix');
   console.log('[PP] bootstrap:start', { native: Capacitor.isNativePlatform(), proto: window.location.protocol });
-  // Safety net: never leave the user staring at the launch image, even if the
-  // first React commit never happens (render error, slow chunk, no network).
-  window.setTimeout(() => { void hideSplash('safety-timeout'); }, 4000);
+  // Hide splash immediately so a render error can never leave the user staring
+  // at the launch image with no signal.
+  void hideSplashSoon();
   try {
     const container = document.getElementById('root');
     if (!container) throw new Error('Root element not found');
@@ -159,9 +144,7 @@ async function bootstrap() {
     if (container.textContent?.trim() === 'Démarrage...') container.innerHTML = '';
     const appTree = (
       <NativeRootRecoveryBoundary>
-        <BrowserRouter>
-          <App />
-        </BrowserRouter>
+        <App />
       </NativeRootRecoveryBoundary>
     );
 
@@ -172,9 +155,10 @@ async function bootstrap() {
     // path for Capacitor only and keep createRoot for web/dev preview.
     if (Capacitor.isNativePlatform() || window.location.protocol === 'capacitor:') {
       legacyRender(appTree, container);
+      // React has committed the tree synchronously here. Mark boot ready right
+      // away so the index.html watchdog can never show the "Relancer" overlay
+      // for an app that is actually starting normally.
       markBootReady();
-      watchFirstPaint(container);
-      scheduleRuntimeSmokeCheck();
       window.setTimeout(() => { (window as BootWindow).__PP_REACT_MOUNT_CALLED__ = true; }, 0);
       return;
     }
@@ -190,13 +174,11 @@ async function bootstrap() {
     });
     root.render(appTree);
     markBootReady();
-    watchFirstPaint(container);
     window.setTimeout(() => { (window as BootWindow).__PP_REACT_MOUNT_CALLED__ = true; }, 0);
   } catch (e) {
     console.error('[PP] Render failed:', e);
     const el = document.getElementById('root');
     if (el) {
-      void hideSplash('render-failed');
       el.innerHTML =
         '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0A1425;color:#E2E8F0;font-family:system-ui;padding:24px;text-align:center">Impossible de démarrer l\'application. Vérifiez votre connexion et relancez.</div>';
     }
