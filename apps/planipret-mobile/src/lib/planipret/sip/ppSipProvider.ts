@@ -357,9 +357,17 @@ class PpSipProvider {
 
   private guardedRegister(reason: string, options: { priority?: boolean } = {}): boolean {
     const ua = this.ua;
+    // An inbound answer intent OUTRANKS every caller-supplied option. Observed in
+    // production: on foreground resume during a ring, `forceReregister()` called
+    // guardedRegister() WITHOUT priority, so the 5000ms debounce swallowed it
+    // (34 x "explicit REGISTER suppressed" in one 4-minute session). The JS side
+    // therefore stayed unregistered, the INVITE only reached the native plugin,
+    // and the answer had no SIP dialog to accept.
+    const answerPending = !!this.pendingAnswer && this.pendingAnswer.expiresAt > Date.now();
+    const priority = !!options.priority || answerPending || this.snap.callState === "ringing-in";
     if (!ua?.isConnected?.()) {
       // An inbound call cannot wait for the backoff curve: rebuild now.
-      if (options.priority) this.hardRebuild(`${reason}_transport_down`);
+      if (priority) this.hardRebuild(`${reason}_transport_down`);
       else this.scheduleSocketReconnect(`${reason}_transport_down`);
       return false;
     }
@@ -367,7 +375,12 @@ class PpSipProvider {
     const minGap = Math.max(5000, getPpSipReconnectConfig().reRegisterDelayMs);
     // Inbound-call recovery must never be swallowed by the debounce: that is
     // exactly what left the extension unregistered while the caller waited.
-    if (options.priority) {
+    if (priority) {
+      if (!options.priority) {
+        this.log("info", `REGISTER promoted to priority (${reason})`, {
+          answerPending, callState: this.snap.callState,
+        });
+      }
       try {
         this.lastRegisterAttemptAt = now;
         ua.register();
@@ -926,14 +939,48 @@ class PpSipProvider {
     // contact. Confirm the authoritative AOR before declaring wake successful.
     if (ok && this.getSnapshot().callState !== "ringing-in") {
       const backend = await checkSipBackendRegistration({ force: true, minIntervalMs: 0 });
-      if (backend?.registration?.mobile_registered === false) {
+      // STRICT `=== false` ONLY. The backend now returns null when it could not
+      // read the PBX registrations at all; treating that as "not registered"
+      // triggered a hard transport rebuild while the portal actually showed the
+      // mobile AOR up, destroying the socket carrying the inbound INVITE.
+      // A `false` is only CREDIBLE when the probe actually read the AOR table.
+      // Observed in production: the function returned `mobile_registered:false`
+      // with `count:0` and `registered_aors:[]` while the PBX portal showed BOTH
+      // 113M and 113W registered. `count:0` means "read nothing", not "nothing is
+      // registered" — acting on it destroyed the socket carrying the INVITE.
+      const reg = backend?.registration;
+      const probeReadSomething = Number(reg?.count ?? 0) > 0;
+      const pbxSaysUnregistered = reg?.mobile_registered === false && probeReadSomething;
+      if (reg?.mobile_registered === false && !probeReadSomething) {
+        this.log("warn", "push wake: PBX says unregistered but probe read 0 AOR → NOT trusted", {
+          count: reg?.count ?? null, probeStatuses: reg?.probe_statuses ?? null,
+        });
+      }
+      // An answer intent in flight forbids any transport teardown: hardRebuild()
+      // destroys the UA, and an INVITE landing inside the swap window is lost.
+      const answerPending = !!this.pendingAnswer && this.pendingAnswer.expiresAt > Date.now();
+      if (pbxSaysUnregistered && answerPending) {
+        this.log("warn", "push wake: rebuild SKIPPED — answer intent in flight", {
+          callId: this.pendingAnswer?.callId ?? "",
+        });
+      }
+      // Re-check the ring state: the diagnostic round-trip takes seconds and an
+      // INVITE may have landed meanwhile. Never rebuild on top of a live ring.
+      if (pbxSaysUnregistered && !answerPending && this.getSnapshot().callState !== "ringing-in") {
         this.log("warn", "push wake: local registered but PBX mobile AOR absent → rebuilding");
         this.hardRebuild("push_wake_pbx_unregistered");
         ok = await this.waitForRegistered(12_000);
         if (ok) {
           const verified = await checkSipBackendRegistration({ force: true, minIntervalMs: 0 });
-          ok = verified?.registration?.mobile_registered !== false;
+          const vr = verified?.registration;
+          // Same credibility rule: a `false` backed by an empty read must not
+          // demote a locally confirmed REGISTER to "wake failed".
+          ok = !(vr?.mobile_registered === false && Number(vr?.count ?? 0) > 0);
         }
+      } else if (backend?.registration?.mobile_registered == null) {
+        this.log("warn", "push wake: PBX registration unreadable → trusting local REGISTER", {
+          probeStatuses: backend?.registration?.probe_statuses ?? null,
+        });
       }
     }
     // The answer window only makes sense once the socket can carry an INVITE.

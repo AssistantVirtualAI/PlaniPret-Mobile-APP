@@ -883,6 +883,17 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
            console.warn("[pp-sip] backend check unhealthy but call in progress → no self-heal", check);
            return;
          }
+         // Same credibility rule as wakeForIncoming: a `mobile_registered:false`
+         // returned together with `count:0` / empty `registered_aors` means the
+         // probe read NOTHING, not that the AOR is gone. The PBX portal showed
+         // 113M and 113W registered while this fired 3x per session.
+         const reg = check.registration;
+         if (reg?.mobile_registered === false && Number(reg?.count ?? 0) === 0) {
+           console.warn("[pp-sip] backend check: unregistered claim not trusted (0 AOR read) → no self-heal", {
+             count: reg?.count ?? null, probeStatuses: reg?.probe_statuses ?? null,
+           });
+           return;
+         }
          console.warn("[pp-sip] backend registration check unhealthy", check);
          if (check.actions?.includes("reregister")) {
            ppSipProvider.forceReregister();

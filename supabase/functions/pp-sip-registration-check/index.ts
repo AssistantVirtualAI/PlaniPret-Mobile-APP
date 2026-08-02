@@ -72,9 +72,16 @@ Deno.serve(async (req) => {
   // null (unreadable => callers must take no corrective action).
   const probesAnswered = regProbes.some((p) => p.ok);
   const probeStatuses = regProbes.map((p) => p.status);
-  const mobileRegistered: boolean | null = !probesAnswered
-    ? null
-    : aors.some((a) => a.toLowerCase() === mobileAor.toLowerCase());
+  const seen = aors.some((a) => a.toLowerCase() === mobileAor.toLowerCase());
+  // STILL not enough: an endpoint can answer 200 with an EMPTY collection when it
+  // is simply not the registration endpoint of this NetSapiens deployment (or the
+  // API scope hides registrations). Observed: probes answered, aors = [], while
+  // the portal listed 113M and 113W as registered. A `false` therefore requires
+  // BOTH an answered probe AND at least one AOR actually read back. Reporting
+  // `false` on an empty read made the app tear down its transport mid-ring.
+  const mobileRegistered: boolean | null = seen
+    ? true
+    : (probesAnswered && regRows.length > 0 ? false : null);
 
   // 2) Mobile device must have push enabled (docs/netsapiens/devices.md).
   //    The device LIST endpoint often omits `device-push-enabled`, so fall back
