@@ -1121,6 +1121,24 @@ export function useMplanipretSoftphone(enabled = true) {
     // claim becomes post-hoc arbitration. Answering a call the widget also
     // answered is recoverable (we hang up right after); losing the dialog is not.
     console.info("[answer] route=SIP → answering INVITE first (claim runs after)", { callId });
+    // Re-read the live session immediately before handing it to JsSIP. Anything
+    // awaited above (pending-answer arbitration, native wake, route decision) may
+    // have taken seconds, and the PBX can have advanced the call to greeting or
+    // voicemail meanwhile. Calling answer() on a dead session produced the
+    // opaque INVALID_STATE_ERROR "Invalid status: 8"; this gives an exact cause.
+    const answerable = ppSipProvider.getSnapshot();
+    if (answerable.callState === "active" || answerable.callState === "held") {
+      console.info("[answer] concurrent local path already confirmed the dialog", { callId });
+      return true;
+    }
+    if (answerable.callState !== "ringing-in" || answerable.callId !== callId) {
+      console.warn("[answer] INVITE expired before answering", {
+        expectedCallId: callId,
+        currentCallId: answerable.callId || null,
+        state: answerable.callState,
+      });
+      return false;
+    }
     const ok = await ppSipProvider.answer(callId);
     console.info(`[answer] ppSipProvider.answer → ${ok ? "SIP 200 OK sent" : "FAILED"}`, { callId });
     if (!ok) return false;
@@ -1169,6 +1187,13 @@ export function useMplanipretSoftphone(enabled = true) {
 
   useEffect(() => {
     const onPendingAnswerReady = () => {
+      // This is NOT a duplicate tap: it is the first moment a real SIP INVITE
+      // exists. The original CallKit answer promise is deliberately parked in its
+      // watchdog loop waiting for `active`, so the answerAttemptRef mutex would
+      // hand that parked promise back instead of running the answer path - and
+      // nothing would ever send the SIP 200 OK. Release the outer mutex first,
+      // then run the full answer path against the INVITE that just arrived.
+      answerAttemptRef.current = null;
       void answerRef.current?.().then((ok) => {
         console.info(`[answer] arbitrated pending INVITE → ${ok ? "connected" : "not answered"}`);
       });

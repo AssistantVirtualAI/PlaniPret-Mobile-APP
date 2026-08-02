@@ -67,10 +67,27 @@ export async function upsertRingingSession(args: {
 export async function claimCall(callId: string, answeredBy: AnsweredBy): Promise<boolean> {
   if (!callId) return true; // no-id calls can't be coordinated; let them proceed
   try {
-    const { data, error } = await supabase.rpc("pp_claim_call", {
+    // Second belt. The answer path now sends the SIP 200 OK BEFORE claiming, so
+    // this round-trip is off the critical path - but other callers still await it,
+    // and a slow database request (17 s observed on a cold radio woken by a VoIP
+    // push) must never hold an answer decision long enough for the PBX to roll the
+    // call over to greeting/voicemail. Keep the cross-device arbitration, but fail
+    // open after 1.5 s: answering a call the widget also took is recoverable
+    // (claimHeldByUs / the post-hoc concession handles it), dropping it is not.
+    const claimRequest = supabase.rpc("pp_claim_call", {
       _call_id: callId,
       _answered_by: answeredBy,
     });
+    const timeout = new Promise<{ data: unknown; error: unknown }>((resolve) => {
+      window.setTimeout(() => {
+        console.warn("[claim] pp_claim_call slow → failing open", { callId, answeredBy });
+        resolve({ data: true, error: null });
+      }, 1_500);
+    });
+    const { data, error } = await Promise.race([
+      claimRequest as unknown as Promise<{ data: unknown; error: unknown }>,
+      timeout,
+    ]);
     if (error) return true; // fail open — better to answer than to drop
     if (Boolean(data)) return true;
     return await claimHeldByUs(callId, answeredBy);

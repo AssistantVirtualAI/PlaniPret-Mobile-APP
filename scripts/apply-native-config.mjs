@@ -733,7 +733,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       registerExpires = call.getInt("registerExpiresSec") ?? 1800
       persistConfig()
       // Build marker: lets us prove from the Xcode console which binary is running.
-      NSLog("[PpSipKeepAlive] BUILD MARKER pp-build-2026-08-02-ringlock2 (ring guard on releaseRegistration + SIP-before-claim)")
+      NSLog("[PpSipKeepAlive] BUILD MARKER pp-build-2026-08-02-ringlock3 (ring guard on releaseRegistration + SIP-before-claim)")
       NSLog("[PpSipKeepAlive] reconnect strategy min=%.0fms max=%.0fms attempts=%d verify=%.0fms expires=%ds", backoffMinMs, backoffMaxMs, backoffMaxAttempts, verifyDelayMs, registerExpires)
       DispatchQueue.main.async { [weak self] in
         guard let self = self else { call.resolve(["ok": false, "status": "error", "reason": "plugin_released"]); return }
@@ -1521,6 +1521,15 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         // connected CallKit call with no audio path.
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .allowBluetoothA2DP])
+        // Settle the transaction BEFORE waking JS. With retainUntilConsumed a
+        // retained Capacitor listener can answer SYNCHRONOUSLY inside
+        // notifyListeners, and completeAnswer() then ran while
+        // pendingAnswerAction was still the PREVIOUS action (or nil): it found
+        // nothing to fulfill, action.fulfill() was never called, and CallKit tore
+        // the call down at the 32s timeout. Fulfill any stale action first, then
+        // publish the authoritative one, then wake JS.
+        pendingAnswerAction?.fulfill()
+        pendingAnswerAction = action
         // Pin the SIP transport + audio session up while the WebView performs
         // the actual SIP answer, possibly still in the background.
         NotificationCenter.default.post(name: Notification.Name("PpVoipCallAnswered"), object: nil, userInfo: ["callId": activeCallId ?? ""])
@@ -1531,8 +1540,6 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             "callUUID": action.callUUID.uuidString,
             "callId": activeCallId ?? ""
         ], retainUntilConsumed: true)
-        pendingAnswerAction?.fulfill()
-        pendingAnswerAction = action
         // Safety net: never present a falsely connected CallKit call.
         // 32s is deliberately GREATER than PP_PENDING_ANSWER_TIMEOUT_MS (30s in
         // ppSipProvider): the pending-answer intent stays valid for 30s while the
