@@ -221,7 +221,16 @@ Deno.serve(async (req) => {
         : nsAction === "dtmf" ? JSON.stringify({ digit: payload.digit })
         : undefined;
       let res = await nsFetch(path, { method: "PATCH", body });
-      if (!res.ok && nsAction === "disconnect") {
+      // NetSapiens documents `DELETE .../calls/{call-id}` as the hangup path. Some
+      // deployments refuse `PATCH .../reject` on a still-ringing leg, which left
+      // the red button silently ineffective and the call ringing to voicemail.
+      // Extending the existing disconnect fallback to `reject` costs nothing: it
+      // only fires when the PATCH already failed, and it acts on a call-id we
+      // already hold. This is the ONLY change carried over from the upstream
+      // click-to-call batch — the callback/answer path from that batch is
+      // deliberately NOT ported (it originates a new outbound call instead of
+      // answering, recreating the ring13 double-call bug).
+      if (!res.ok && (nsAction === "disconnect" || nsAction === "reject")) {
         res = await nsFetch(`${base}/${encodeURIComponent(callId)}`, { method: "DELETE" });
       }
       if (!res.ok && (nsAction === "transfer" || nsAction === "forward")) {
