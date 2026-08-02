@@ -285,9 +285,13 @@ type RestCallAttachment = {
  *   instance preempts a passive owner so the CallKit answer listener always lives
  *   in the instance whose `answer()` is wired to the visible keypad.
  */
-export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolean }) {
+export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolean; clientType?: "mobile" | "web" }) {
   const { user } = useAuth();
   const isPrimary = opts?.primary === true;
+  // Which NetSapiens device this instance registers to: `<ext>M` for the iOS app,
+  // `<ext>W` for the browser portal/widget. They have DIFFERENT passwords and must
+  // never be mixed: two clients on one AOR make the SBC close the older WSS (1001).
+  const clientType = opts?.clientType ?? "mobile";
   const ownerIdRef = useRef<string>(`pp-softphone-${++softphoneOwnerSeq}`);
   /** Bumped when ownership becomes available, so gated effects re-evaluate. */
   const [ownerTick, setOwnerTick] = useState(0);
@@ -442,7 +446,7 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
         if (opts?.force) {
           try { ppSipProvider.stop(); } catch {}
         }
-        const { data, error } = await supabase.functions.invoke("ns-resolve-sip-credentials", { body: { client_type: "mobile" } });
+        const { data, error } = await supabase.functions.invoke("ns-resolve-sip-credentials", { body: { client_type: clientType } });
         if (cancelled) return;
         if (error || !data || (data as any)?.error) return;
         const d = data as any;
@@ -479,21 +483,26 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
         // credentials. In foreground startSipService only stores this config and
         // remains idle (`foreground_js_owns`); once iOS backgrounds the app it can
         // take ownership without failing with `missing_host`.
-        startPlanipretSipKeepAlive(sipConfig)
-          .then((s) => { if (s && !cancelled) setNativeStatus(s); })
-          .catch(() => undefined);
+        // Native keep-alive only exists on the mobile client (`<ext>M`). The web
+        // portal has no native bridge and must never start it.
+        if (clientType === "mobile") {
+          startPlanipretSipKeepAlive(sipConfig)
+            .then((s) => { if (s && !cancelled) setNativeStatus(s); })
+            .catch(() => undefined);
+        }
 
-
-        // This is the mobile application: both foreground JsSIP and the native
-        // background bridge must use `<ext>M`. `<ext>W` is reserved for the web
-        // widget; borrowing it here creates two registrations for the same
-        // NetSapiens device and the SBC closes the older WSS with code 1001.
-        sameAorRef.current = true;
+        // In the mobile app, foreground JsSIP and the native background bridge share
+        // the SAME `<ext>M` AOR, so handoff must be strictly sequential. On web there
+        // is no native peer, hence no shared-AOR constraint.
+        sameAorRef.current = clientType === "mobile";
         if (cancelled) return;
         await ppSipProvider.init(sipConfig);
-        void getPlanipretVoipPushToken().then((t) => {
-          if (t?.token) void uploadPlanipretVoipToken(t.token, t.bundleId, sipConfig.extension, t.environment);
-        });
+        // VoIP push tokens belong to the iOS app only.
+        if (clientType === "mobile") {
+          void getPlanipretVoipPushToken().then((t) => {
+            if (t?.token) void uploadPlanipretVoipToken(t.token, t.bundleId, sipConfig.extension, t.environment);
+          });
+        }
         // Broadcast our registered device id so any UI can highlight it.
         try {
           window.dispatchEvent(new CustomEvent("pp:sip-registered", {
@@ -521,12 +530,16 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       // wiped out by the dispossessed instance's cleanup.
       releaseSoftphoneOwner(ownerId);
     };
-  }, [enabled, user?.id]);
+  }, [clientType, enabled, user?.id]);
 
   // Native guard: Android keeps a foreground keep-alive service with WakeLock / WifiLock;
   // iOS receives native background refresh requests and re-registers as soon as execution resumes.
   useEffect(() => {
     if (!enabled || !user) return;
+    // Native keep-alive, PushKit and CallKit only exist in the iOS app (`<ext>M`).
+    // The browser portal has no native bridge: registering these listeners there
+    // would be a no-op at best, and would fight over the mobile AOR at worst.
+    if (clientType !== "mobile") return;
     if (softphoneOwnerId !== ownerIdRef.current) return;
     let cleanupStatus: (() => void) | undefined;
     let cleanupReregister: (() => void) | undefined;
@@ -579,6 +592,7 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       try {
         window.dispatchEvent(new CustomEvent("pp:sip-incoming-invite", { detail: invite }));
       } catch {}
+      /* clientType gate above keeps this mobile-only */
     }).then((fn) => { cleanupInvite = fn; }).catch(() => undefined);
 
 
@@ -707,7 +721,7 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       cleanupVoipAnswer?.();
       cleanupVoipReject?.();
     };
-  }, [enabled, user?.id]);
+  }, [clientType, enabled, user?.id]);
 
   // Watchdog: keep the SIP registration alive. If we drift into
   // `disconnected` / `error` for more than 10s, force a re-REGISTER. If still
@@ -1198,7 +1212,7 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
 
 
   const callViaPBX = useCallback(async (destination: string): Promise<OutboundResult> => {
-    const { data, error } = await supabase.functions.invoke("pp-ns-calls", { body: { action: "start", to_number: destination, client_type: "mobile" } });
+    const { data, error } = await supabase.functions.invoke("pp-ns-calls", { body: { action: "start", to_number: destination, client_type: clientType } });
     if (error || (data as any)?.success === false) {
       const msg = (data as any)?.message ?? (data as any)?.error ?? error?.message ?? "PBX call failed";
       return { via: "none", ok: false, error: msg };
@@ -1217,7 +1231,7 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       postOutboundCall({ providerCallId: callId, number: destination });
     }
     return { via: "pbx", ok: true, callId };
-  }, []);
+  }, [clientType]);
 
 
   const placeCall = useCallback(async (destination: string): Promise<OutboundResult> => {

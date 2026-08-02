@@ -134,7 +134,10 @@ export default function PlanipretAdminLayout() {
   const [auditScore, setAuditScore] = useState<number | null>(null);
   const { status: rtStatus } = useAdminRealtime();
   // `primary`: renders PpActiveCallScreen too, so it must own the answer path.
-  const softphone = useMplanipretSoftphone(true, { primary: true });
+  // `clientType: "web"`: this is the browser portal, it registers to `<ext>W` with
+  // its own password. `<ext>M` belongs to the iOS app and its native keep-alive;
+  // sharing one AOR between two clients makes the SBC close the older WSS (1001).
+  const softphone = useMplanipretSoftphone(true, { primary: true, clientType: "web" });
   const realtimeOk = rtStatus === "live";
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [dialNumber, setDialNumber] = useState("");

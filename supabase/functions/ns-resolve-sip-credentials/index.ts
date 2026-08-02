@@ -1,15 +1,11 @@
 // Resolve per-broker SIP credentials by querying NS-API for the real device.
 // Uses NS_API_KEY server-side; the browser never sees the NS token.
 //
-// If the broker is linked to Maestro (`planipret_profiles.maestro_broker_id`)
-// and the Maestro Telecom REST API returns valid SIP credentials, those are
-// used first. Otherwise the existing NS-API flow runs unchanged.
+// One client = one device. Mobile always gets `<ext>M`, web/widget always get
+// `<ext>W`. The Maestro Telecom fast path was removed: it returned the bare
+// extension as `sip_username` (e.g. `113` instead of `113M`) with a password
+// unrelated to the device, so both stacks ended up on the wrong AOR.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import {
-  getMaestroTelecomConfig,
-  isMaestroTelecomConfigured,
-  maestroTelecomFetch,
-} from "../_shared/maestro-telecom.ts";
 import {
   mobileDeviceId,
   webDeviceId,
@@ -65,14 +61,18 @@ function json(b: unknown, s = 200) {
 }
 
 function normalizeClientType(v: unknown): ClientType {
-  if (v === "web" || v === "widget") return "web";
+  // Keep "widget" distinct from "web": both map to <ext>W but the stored secret
+  // name differs, and mixing them up would let the widget take the mobile AOR.
+  if (v === "web" || v === "widget") return v;
   return "mobile";
 }
 
 // Naming convention: <ext>M (mobile) / <ext>W (web+widget). No underscore —
 // Snap Mobile provisioning and the web widget mangle `_` in the AOR user part.
+// Tested on "mobile" (not "web") so that "widget" cannot fall through to the
+// mobile branch and steal <ext>M.
 function deviceNameFor(ext: string, ct: ClientType): string {
-  return ct === "web" ? webDeviceId(ext) : mobileDeviceId(ext);
+  return ct === "mobile" ? mobileDeviceId(ext) : webDeviceId(ext);
 }
 
 function deviceIdOf(d: any): string | null {
@@ -81,9 +81,20 @@ function deviceIdOf(d: any): string | null {
   return String(id).replace(/^sip:/i, "").split("@")[0] || null;
 }
 
-// Must match the deterministic password generation in ns-provision-broker-devices.
-async function derivePassword(userId: string): Promise<string> {
-  const enc = new TextEncoder().encode(userId + "planipret-sip-2026");
+// NetSapiens masks unreadable passwords as `***`; treat those as absent so we
+// never register with a literal mask.
+function usablePassword(value: unknown): string | null {
+  const password = String(value ?? "").trim();
+  if (!password || /^\*+$/.test(password)) return null;
+  return password;
+}
+
+// Deterministic fallback for newly-created devices ONLY. The device id is part
+// of the seed so <ext>M and <ext>W never share credentials (the portal shows
+// different passwords per device, and rewriting one kicks the other off).
+// Must match the generation in ns-provision-broker-devices.
+async function derivePassword(userId: string, deviceId: string): Promise<string> {
+  const enc = new TextEncoder().encode(`${userId}:${deviceId}:planipret-sip-2026`);
   const h = await crypto.subtle.digest("SHA-256", enc);
   const hex = Array.from(new Uint8Array(h)).map((b) => b.toString(16).padStart(2, "0")).join("");
   return `Pp${hex.substring(0, 12)}!`;
@@ -251,51 +262,12 @@ Deno.serve(async (req) => {
     }, 200);
   }
 
-  // Fast path: Maestro Telecom returns SIP credentials directly for the broker.
-  // Only take that path when it returns a complete credential set; otherwise
-  // fall through to the NS-API device query below (never break the flow).
-  const maestroBrokerId = (profile as any).maestro_broker_id as string | null;
-  if (maestroBrokerId) {
-    try {
-      const admin = createClient(SUPABASE_URL, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
-      const cfg = await getMaestroTelecomConfig(admin);
-      if (isMaestroTelecomConfigured(cfg)) {
-        const r = await maestroTelecomFetch<any>(cfg, `/users/${encodeURIComponent(maestroBrokerId)}/sip`);
-        const d = r.data ?? {};
-        const ext = d.sip_extension ?? d.extension;
-        const dom = d.sip_domain ?? d.domain;
-        const pwd = d.sip_password ?? d.password;
-        if (r.ok && ext && dom && pwd) {
-          const rawWss = d.sip_wss_url ?? d.wss_url ?? NS_SIP_WSS_URL;
-          const wss = edgeWssUrls([rawWss, NS_SIP_WSS_URL])[0];
-          const wssUrls = edgeWssUrls([wss, NS_SIP_WSS_URL]);
-          return json({
-            ok: true,
-            source: "maestro_telecom",
-            client_type: clientType,
-            device_id: d.device_id ?? deviceNameFor(String(ext), clientType),
-            sip_username: d.sip_username ?? ext,
-            sip_auth_user: d.sip_auth_user ?? d.sip_username ?? ext,
-            sip_password: pwd,
-            sip_extension: ext,
-            sip_domain: dom,
-            sip_proxy: d.sip_proxy ?? FALLBACK_PROXY,
-            sip_core_server: d.sip_core_server ?? d.sip_proxy ?? FALLBACK_PROXY,
-            sip_uri: d.sip_uri ?? `sip:${ext}@${dom}`,
-            sip_ws_url: wss,
-            sip_wss_url: wss,
-            sip_ws_urls: wssUrls,
-            sip_wss_urls: wssUrls,
-            display_name: d.display_name ?? String(ext),
-            sip_state: d.sip_state ?? null,
-            device_registered: d.device_registered ?? true,
-          });
-        }
-      }
-    } catch (e) {
-      console.warn("[ns-resolve] maestro_telecom fallback failed:", (e as Error)?.message);
-    }
-  }
+  // NOTE: a Maestro Telecom fast path used to run here and return before the
+  // NS-API device query below. It resolved `sip_username: d.sip_username ?? ext`,
+  // i.e. the bare extension (`113`) when Maestro omitted the field, together
+  // with a Maestro-side password unrelated to the <ext>M device. `deviceNameFor()`
+  // was therefore never applied, and the mobile app could register on the wrong
+  // AOR. Removed on purpose: NS-API is the single source of truth for devices.
 
   const ext = String(profile.ns_extension);
   const domain = profile.ns_domain || NS_DEFAULT_DOMAIN;
@@ -338,8 +310,10 @@ Deno.serve(async (req) => {
   // device was deleted in the portal) get it created on the fly, with exactly
   // the same payload as ns-provision-broker-devices. Applies to every broker,
   // not just the ones an admin re-provisioned manually.
+  let createdPassword: string | null = null;
   if (!device) {
-    const selfHealPwd = await derivePassword(String(profile.user_id));
+    const selfHealPwd = await derivePassword(String(profile.user_id), deviceName);
+    createdPassword = selfHealPwd;
     const isMobile = clientType === "mobile";
     const created = await nsPost(
       `/domains/${encodeURIComponent(domain)}/users/${encodeURIComponent(ext)}/devices`,
@@ -377,7 +351,14 @@ Deno.serve(async (req) => {
   }
 
 
-  const resolvedId = deviceIdOf(device) || deviceName;
+  // Hard invariant: mobile ALWAYS registers as <ext>M, web/widget ALWAYS as
+  // <ext>W, whatever NS-API echoes back. Without this, a divergent NS response
+  // silently moved a client onto another client's device.
+  const resolvedRaw = deviceIdOf(device) || deviceName;
+  const resolvedId = deviceName;
+  if (resolvedRaw.toLowerCase() !== resolvedId.toLowerCase()) {
+    console.warn(`[ns-resolve] forced ${clientType} AOR ${resolvedId} (NS returned ${resolvedRaw})`);
+  }
   const rawCore = (device["core-server"] ?? device["device-sip-registration-core-server"] ?? device["sip-registration-core-server"] ?? "").toString().trim();
   const coreServer = (rawCore || FALLBACK_PROXY).replace(/^https?:\/\//, "").replace(/\/+$/, "");
   const sipUri = device["device-sip-registration-uri"] ?? `sip:${resolvedId}@${domain}`;
@@ -386,12 +367,40 @@ Deno.serve(async (req) => {
   // Provide and enforce SIP credentials so JsSIP (web + iOS + Android) can register the device.
   // device-sip-allowed-user-agent must match the User-Agent sent by JsSIP: "JsSIP/x.x.x".
   // Leaving it empty or using a wildcard lets any softphone register.
-  const sipPassword = await derivePassword(String(profile.user_id));
+  //
+  // The password is NEVER rewritten here. Resolving credentials used to PUT a
+  // freshly derived password on every call, which (a) was identical for <ext>M
+  // and <ext>W because the seed was the user id alone, and (b) invalidated the
+  // registration of whichever client was already online — hence "113M only turns
+  // green when I open the app". Read order: real device password, then the stored
+  // secret, then the per-device derived value for a device we just created.
+  const secretName = clientType === "mobile"
+    ? `pp_sip_${profile.id}_mobile`
+    : `pp_sip_${profile.id}_widget`;
+  let storedSecret: string | null = null;
+  try {
+    const admin = createClient(SUPABASE_URL, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+    const { data } = await admin.rpc("read_planipret_sip_secret", { _name: secretName });
+    storedSecret = typeof data === "string" ? data : null;
+  } catch (e) {
+    console.warn(`[ns-resolve] secret read failed (${secretName}):`, (e as Error)?.message);
+  }
+  const sipPassword = usablePassword(device["device-sip-registration-password"])
+    ?? usablePassword(storedSecret)
+    ?? createdPassword;
+  if (!sipPassword) {
+    return json({
+      ok: false,
+      error: "device_credentials_unavailable",
+      device_id: resolvedId,
+      client_type: clientType,
+      action: "Le mot de passe SIP du device est illisible. Relancez la provision (ns-provision-broker-devices) pour le regenerer.",
+    }, 409);
+  }
   let repairStatus: any = null;
   repairStatus = await nsPut(
     `/domains/${encodeURIComponent(domain)}/users/${encodeURIComponent(ext)}/devices/${encodeURIComponent(resolvedId)}`,
     {
-      "device-sip-registration-password": sipPassword,
       "core-server": coreServer,
       "device-provisioning-registration-core-server": coreServer,
       "device-srtp-enabled": "opportunistic",
