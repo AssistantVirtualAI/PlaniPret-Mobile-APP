@@ -121,7 +121,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       registerExpires = call.getInt("registerExpiresSec") ?? 1800
       persistConfig()
       // Build marker: lets us prove from the Xcode console which binary is running.
-      NSLog("[PpSipKeepAlive] BUILD MARKER pp-build-2026-08-02-ring12 (answer mutex never parks + provider answer fallback)")
+      NSLog("[PpSipKeepAlive] BUILD MARKER pp-build-2026-08-02-ring13 (never REGISTER a live socket on push wake + caller-level CallKit dedup)")
       NSLog("[PpSipKeepAlive] reconnect strategy min=%.0fms max=%.0fms attempts=%d verify=%.0fms expires=%ds", backoffMinMs, backoffMaxMs, backoffMaxAttempts, verifyDelayMs, registerExpires)
       DispatchQueue.main.async { [weak self] in
         guard let self = self else { call.resolve(["ok": false, "status": "error", "reason": "plugin_released"]); return }
@@ -377,6 +377,21 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         // or it is already carrying the dialog): stay out of the way.
         if self.jsOwnsAor {
           NSLog("[PpSipKeepAlive] push wake: JS owns the AOR -> native REGISTER skipped")
+          return
+        }
+        // ring13 - a native REGISTER while a call is being set up is destructive.
+        //
+        // The ring12 log shows this firing right after the JS side had already
+        // logged "incoming INVITE attached": the native REGISTER re-registered the
+        // AOR, NetSapiens tore down the older WSS leg (1001) and the dialog
+        // carrying the INVITE died with it. The user then saw a ringing call whose
+        // Answer button could not work, because callState had fallen back to idle.
+        //
+        // callActive is set by the JS side as soon as it owns an inbound dialog, so
+        // it is the authoritative "a call is in flight, do not touch the transport"
+        // signal available natively.
+        if self.callActive {
+          NSLog("[PpSipKeepAlive] push wake: a call is already in flight -> native REGISTER skipped (never tear down a live dialog)")
           return
         }
         NSLog("[PpSipKeepAlive] push wake: JS did not claim the AOR in 1.5s -> native REGISTER as fallback")

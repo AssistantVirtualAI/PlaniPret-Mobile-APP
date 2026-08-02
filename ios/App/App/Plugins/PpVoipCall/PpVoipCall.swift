@@ -24,6 +24,10 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     private var lastReportedToken: String?
     private var activeCallUUID: UUID?
     private var activeCallId: String?
+    // ring13 - the PBX call-id is not stable across fork legs, so dedup also needs
+    // the caller and the age of the live CallKit report.
+    private var activeCallerNumber: String = ""
+    private var activeCallReportedAt: Date = .distantPast
     private var pendingAnswerAction: CXAnswerCallAction?
     private let voipTokenDefaultsKey = "pp.voip.push-token.v1"
     /// ring11 - memoised result of apnsEnvironment(); the embedded provisioning
@@ -146,6 +150,8 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             callController.request(CXTransaction(action: end)) { _ in }
             activeCallUUID = nil
             activeCallId = nil
+            activeCallerNumber = ""
+            activeCallReportedAt = .distantPast
         }
         call.resolve(["ok": true])
     }
@@ -206,6 +212,40 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             return
         }
 
+        // ring13 - second-level dedup, BY CALLER, because the callId is not stable.
+        //
+        // The callId dedup above only catches a byte-identical retry. The ring12 log
+        // carried FOUR pushes bearing THREE distinct callIds for the same physical
+        // call, because NetSapiens mints a new call-id per fork leg (orig and term
+        // side both fire the call webhook model). Each unseen callId therefore
+        // produced a fresh reportNewIncomingCall with a fresh UUID, and the user saw
+        // TWO CallKit call screens for one caller - one already connected, the other
+        // still ringing with a Reject button.
+        //
+        // Same caller + a still-live CallKit call = same physical call. Update the
+        // existing call instead of reporting a new one: reporting twice is what puts
+        // CallKit and the SIP dialog out of sync, and the second (dialog-less) call
+        // screen is the one that can never be answered.
+        if let liveUUID = activeCallUUID,
+           !callerNumber.isEmpty,
+           callerNumber == activeCallerNumber,
+           Date().timeIntervalSince(activeCallReportedAt) < 25.0 {
+            NSLog("[PpVoipCall] duplicate VoIP push ignored: same caller %@ already ringing (callId=%@ mapped onto live call)", callerNumber, callId)
+            // Keep the newest PBX call-id addressable so an answer/hangup routed
+            // through it still resolves to the live CallKit call.
+            activeCallId = callId
+            NotificationCenter.default.post(name: Notification.Name("PpVoipIncomingPush"), object: nil, userInfo: ["callId": callId])
+            notifyListeners("callKitReady", data: [
+                "callUUID": liveUUID.uuidString,
+                "callId": callId,
+                "callerName": callerName,
+                "callerNumber": callerNumber,
+                "deduplicated": true
+            ], retainUntilConsumed: true)
+            completion()
+            return
+        }
+
         // Wake the native SIP keep-alive FIRST: iOS may have killed the WSS
         // socket while suspended, and only this push guarantees runtime.
         NotificationCenter.default.post(name: Notification.Name("PpVoipIncomingPush"), object: nil, userInfo: ["callId": callId])
@@ -213,6 +253,10 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         let uuid = UUID()
         activeCallUUID = uuid
         activeCallId = callId
+        // ring13 - remember WHO is calling and WHEN, so a later push from another
+        // fork leg of the same call can be folded onto this CallKit call.
+        activeCallerNumber = callerNumber
+        activeCallReportedAt = Date()
 
         let update = CXCallUpdate()
         let handle: CXHandle = callerNumber.isEmpty
@@ -244,7 +288,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     // MARK: - CXProviderDelegate
     public func providerDidReset(_ provider: CXProvider) {
         pendingAnswerAction?.fail(); pendingAnswerAction = nil
-        activeCallUUID = nil; activeCallId = nil
+        activeCallUUID = nil; activeCallId = nil; activeCallerNumber = ""; activeCallReportedAt = .distantPast
     }
 
     public func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
@@ -292,7 +336,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             "callUUID": action.callUUID.uuidString,
             "callId": activeCallId ?? ""
         ])
-        activeCallUUID = nil; activeCallId = nil
+        activeCallUUID = nil; activeCallId = nil; activeCallerNumber = ""; activeCallReportedAt = .distantPast
         action.fulfill()
     }
 

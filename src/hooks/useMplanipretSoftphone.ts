@@ -122,6 +122,10 @@ async function uploadPlanipretVoipToken(token: string, bundleId?: string, extens
 let softphoneOwnerId: string | null = null;
 let softphoneOwnerUserId: string | null = null;
 let softphoneOwnerSeq = 0;
+// ring13 - answer transaction shared across every mounted softphone instance.
+// Per-instance refs cannot serialise a tap when three instances are mounted, which
+// is how one physical tap produced two full answer transactions in the ring12 log.
+let ppAnswerInFlightShared: Promise<boolean> | null = null;
 let globalSipInitInFlight = false;
 let lastSipInitStartedAt = 0;
 
@@ -1452,6 +1456,26 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
   }, [restCall?.id, restControl, hasLiveSipSession, pushRing]);
 
   const answer = useCallback((): Promise<boolean> => {
+    // ring13 - cross-instance guard.
+    //
+    // answerAttemptRef is a per-instance ref, so with several mounted softphone
+    // instances it cannot serialise anything. The ring12 log shows the result:
+    // "ANSWER BUTTON TAPPED" twice, "route=SIP" twice, "ppSipProvider.answer ->
+    // SIP 200 OK sent" twice and "button result -> connected" twice, for a single
+    // physical tap. Only one 200 OK actually reached the PBX (the provider's own
+    // answerInFlight guard held), but the duplicated run raced the arbitration and
+    // the CallKit completion.
+    //
+    // The module-scoped promise below is shared by every instance in the WebView,
+    // so a second instance joins the first attempt instead of starting its own.
+    // Unlike the ring11 mutex this is only ever held across the ACTUAL answer
+    // transaction, never across a wait for an INVITE that has not arrived.
+    const shared = ppAnswerInFlightShared;
+    const sharedRinging = ppSipProvider.getSnapshot().callState === "ringing-in";
+    if (shared && sharedRinging) {
+      console.info("[answer] joining the answer transaction already running in another instance");
+      return shared;
+    }
     const pending = answerAttemptRef.current;
     // ring12 - the mutex must never be able to swallow a tap on a live INVITE.
     //
@@ -1471,8 +1495,10 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     }
     const run = answerOnce();
     answerAttemptRef.current = run;
+    ppAnswerInFlightShared = run;
     void run.finally(() => {
       if (answerAttemptRef.current === run) answerAttemptRef.current = null;
+      if (ppAnswerInFlightShared === run) ppAnswerInFlightShared = null;
     });
     return run;
   }, [answerOnce]);

@@ -992,15 +992,52 @@ class PpSipProvider {
     this.log("info", "push wake → transport check", {
       callId: callId ?? "", status: this.snap.status, socketLive: live,
     });
+
+    // ring13 - claim the AOR BEFORE anything else.
+    //
+    // This used to be called only after waitForRegistered(12s) resolved, which is
+    // far outside the native 1.5s grace window. The ring12 log shows the exact
+    // consequence: "declareJsOwnsAor(true)" followed by "push wake: JS did not
+    // claim the AOR in 1.5s -> native REGISTER as fallback". The native stack then
+    // re-registered the AOR and stole it back mid-ring, and since the native stack
+    // has no media plane the INVITE landing there is unanswerable. A push wake IS
+    // the moment JS takes ownership; there is nothing to wait for.
+    void declarePlanipretJsOwnsAor(true);
+
+    // ring13 - THE fix for "it rings but the answer button does nothing".
+    //
+    // A live socket in `registered` state can already carry the INVITE: there is
+    // nothing to repair, and re-REGISTERing it is actively destructive. Observed
+    // in the ring12 log, in this exact order:
+    //
+    //   push wake -> transport check {status:"registered", socketLive:true}
+    //   priority REGISTER sent (push_wake)
+    //   incoming INVITE attached          <- the INVITE lands
+    //   unregistered on live transport - scheduling guarded re-register
+    //   registration failed: Connection Error
+    //   ws disconnected code=1001         <- socket dies, INVITE dies with it
+    //   [answer] tapped {sipCallState:"idle", sipCallId:null}
+    //   [answer] no inbound SIP INVITE available
+    //
+    // NetSapiens answers a REGISTER on an already-registered AOR by tearing down
+    // the older WSS leg (the same 1001 pattern as the historic double-socket bug).
+    // The dialog carrying the INVITE goes with it, so by the time the user taps
+    // Answer there is no session left - the button cannot possibly work.
+    //
+    // The successful call in the same log proves the inverse: when the INVITE
+    // arrived BEFORE the push, callState was already "ringing-in", the register was
+    // merely "promoted" instead of resetting the transport, and the answer sent a
+    // real 200 OK. That is precisely why it only worked with the app open.
+    if (live && this.snap.status === "registered") {
+      this.log("info", "push wake → transport already registered, no REGISTER needed (socket can carry the INVITE)");
+      if (this.pendingAnswer) this.pendingAnswer.expiresAt = Date.now() + PP_PENDING_ANSWER_TIMEOUT_MS;
+      return true;
+    }
+
     if (live) this.guardedRegister("push_wake", { priority: true });
     else this.hardRebuild("push_wake");
 
     let ok = await this.waitForRegistered(12_000);
-    // JsSIP now holds the (ext)M AOR. Tell the native keep-alive immediately so its
-    // push-wake grace window does NOT fall back to a native REGISTER and steal the
-    // AOR back mid-ring: the native stack has no media plane, so an INVITE landing
-    // there is unanswerable.
-    if (ok) void declarePlanipretJsOwnsAor(true);
     if (!ok && this.getSnapshot().callState !== "ringing-in") {
       this.log("warn", "push wake: still unregistered → hard rebuild retry");
       this.hardRebuild("push_wake_retry");
