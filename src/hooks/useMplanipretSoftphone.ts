@@ -639,9 +639,23 @@ export function useMplanipretSoftphone(enabled = true) {
       // REGISTER 200 OK: that gap is what sends inbound calls to voicemail and
       // only rings the app once the WebView finally re-registers.
       if (nativeStopTimer) clearTimeout(nativeStopTimer);
+      // RINGING IS SACRED. `stopSipService` tears the WSS down; doing it while an
+      // INVITE is ringing or a dialog is up terminated the JsSIP session, and
+      // answer() then failed with INVALID_STATE_ERROR "Invalid status: 8"
+      // (8 = STATUS_TERMINATED). `force` (foreground resume) must NOT bypass this:
+      // tapping Answer in CallKit brings the app to the foreground, which is
+      // exactly when the stop used to fire and kill the call being answered.
+      if (callInProgress()) {
+        console.warn("[pp-sip] native stop refused — call ringing/active owns the transport");
+        return;
+      }
       let tries = 0;
       const tick = () => {
         nativeStopTimer = null;
+        if (callInProgress()) {
+          console.warn("[pp-sip] native stop refused — call ringing/active owns the transport");
+          return;
+        }
         if (!force && typeof document !== "undefined" && document.visibilityState === "hidden") return;
         if (ppSipProvider.getSnapshot().status !== "registered") {
           if (tries++ >= 20) return; // keep native registered — safest state
@@ -1085,25 +1099,38 @@ export function useMplanipretSoftphone(enabled = true) {
     }
 
     const callId = sipSnap.callId;
-    console.info("[answer] route=SIP → claiming call", { callId });
-    const won = await claimCall(callId, "mobile");
-    if (!won) {
-      // Non-destructive claim: a lost claim must never tear down a media dialog
-      // that is already live locally. Two concurrent answer paths on the SAME
-      // device used to make the loser hang up the call its twin had just picked up.
-      const liveState = ppSipProvider.getSnapshot().callState;
-      if (liveState === "active" || liveState === "held") {
-        console.warn("[answer] claim lost but local dialog is live → keeping the call", { callId, liveState });
-      } else {
-        console.warn("[answer] claim lost → answered elsewhere (widget)");
-        setAnsweredElsewhere("widget");
-        try { ppSipProvider.hangup(); } catch {}
-        return false;
-      }
-    }
+
+    // ORDER IS CRITICAL — SIP FIRST, CLAIM SECOND.
+    //
+    // The claim used to run BEFORE session.answer(). Its Supabase round-trip can
+    // take seconds on a cold radio right after a VoIP push; in a captured log it
+    // took ~17s. During that window the foreground/background SIP-owner
+    // arbitration called stopSipService, which killed the WSS, so by the time
+    // answer() finally ran JsSIP reported:
+    //   INVALID_STATE_ERROR "Invalid status: 8"   (8 = STATUS_TERMINATED)
+    // CallKit then failed the action and the call was destroyed: no audio, no
+    // in-call screen, caller left listening to the greeting.
+    //
+    // Sending the 200 OK is the only time-critical step, so it runs first and the
+    // claim becomes post-hoc arbitration. Answering a call the widget also
+    // answered is recoverable (we hang up right after); losing the dialog is not.
+    console.info("[answer] route=SIP → answering INVITE first (claim runs after)", { callId });
     const ok = await ppSipProvider.answer(callId);
     console.info(`[answer] ppSipProvider.answer → ${ok ? "SIP 200 OK sent" : "FAILED"}`, { callId });
     if (!ok) return false;
+
+    // Post-hoc arbitration: must never block the media path.
+    void claimCall(callId, "mobile").then((won) => {
+      if (won) return;
+      const liveState = ppSipProvider.getSnapshot().callState;
+      if (liveState === "active" || liveState === "held") {
+        console.warn("[answer] claim lost but local dialog is live → keeping the call", { callId, liveState });
+        return;
+      }
+      console.warn("[answer] claim lost after answering → conceding to widget");
+      setAnsweredElsewhere("widget");
+      try { ppSipProvider.hangup(); } catch {}
+    }).catch(() => { /* claim is best-effort; the live dialog wins */ });
     // Do not report success to CallKit on a locally accepted answer command.
     // Wait until JsSIP receives the confirmed dialog from the PBX.
     for (let i = 0; i < 16; i++) {

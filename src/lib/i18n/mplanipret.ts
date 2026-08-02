@@ -164,6 +164,10 @@ export const MP_DICT = {
       hungUp: "Appel raccroché",
     },
     call: {
+      // `incoming` was missing while PpActiveCallScreen reads t("call.incoming").
+      // t() returns the raw path when a key is absent, so the incoming-call screen
+      // literally displayed "call.incoming" instead of a label.
+      incoming: "Appel entrant",
       ringing: "Sonnerie…",
       onHold: "En attente",
       mute: "Muet",
@@ -1203,6 +1207,7 @@ export const MP_DICT = {
       hungUp: "Call ended",
     },
     call: {
+      incoming: "Incoming call",
       ringing: "Ringing…",
       onHold: "On hold",
       mute: "Mute",

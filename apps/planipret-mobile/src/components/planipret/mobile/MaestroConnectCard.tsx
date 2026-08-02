@@ -156,10 +156,22 @@ export default function MaestroConnectCard() {
           // Browser.open cannot return a custom-scheme callback on iOS
           // ("Unable to display URL"): ASWebAuthenticationSession is mandatory.
           logDeepLink({ kind: "info", source: "MaestroConnect", detail: "auth path=ASWebAuthenticationSession" });
-          const { startNativeOAuthSession } = await import("@/lib/ms365AuthSession");
+          // NOTE: the exported symbol is startNativeAuthSession (no "OAuth").
+          // Importing a non-existent name yields undefined and throws
+          // "<minified> is not a function" at call time.
+          const mod = await import("@/lib/ms365AuthSession");
+          const startSession = mod.startNativeAuthSession;
+          if (typeof startSession !== "function") {
+            logDeepLink({ kind: "error", source: "MaestroConnect", detail: "native auth bridge missing -> Browser.open fallback" });
+            await Browser.open({ url, presentationStyle: "fullscreen" });
+            toast.info(L.opening);
+            try { localStorage.setItem("pp_maestro_just_connected", String(Date.now())); } catch {}
+            pollStatus();
+            return;
+          }
           let callbackUrl: string | null = null;
           try {
-            callbackUrl = await startNativeOAuthSession(url, redirectUri);
+            callbackUrl = await startSession(url, redirectUri);
           } catch (e: any) {
             logDeepLink({ kind: "error", source: "MaestroConnect", detail: `native auth session failed: ${e?.message ?? e}` });
             throw e;

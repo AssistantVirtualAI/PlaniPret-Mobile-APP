@@ -112,7 +112,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       registerExpires = call.getInt("registerExpiresSec") ?? 1800
       persistConfig()
       // Build marker: lets us prove from the Xcode console which binary is running.
-      NSLog("[PpSipKeepAlive] BUILD MARKER pp-build-2026-08-02-sipowner3 (single-AOR: .inactive counts as foreground)")
+      NSLog("[PpSipKeepAlive] BUILD MARKER pp-build-2026-08-02-ringlock1 (ring guard on releaseRegistration + SIP-before-claim)")
       NSLog("[PpSipKeepAlive] reconnect strategy min=%.0fms max=%.0fms attempts=%d verify=%.0fms expires=%ds", backoffMinMs, backoffMaxMs, backoffMaxAttempts, verifyDelayMs, registerExpires)
       DispatchQueue.main.async { [weak self] in
         guard let self = self else { call.resolve(["ok": false, "status": "error", "reason": "plugin_released"]); return }
@@ -141,9 +141,18 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
           self.startAudioKeepAlive()
           // Never hold a second transport while the WebView carries the call.
           self.backgroundHandoffWorkItem?.cancel(); self.backgroundHandoffWorkItem = nil
-          if self.socket != nil { self.releaseRegistration("call_active_js_owns") }
+          // Only hand the AOR over once the WebView really has a confirmed dialog.
+          // While an INVITE is still ringing, releaseRegistration() would cancel
+          // the socket the pending answer depends on, so it is skipped here (and
+          // refused inside releaseRegistration itself as a second barrier).
+          let ringing = self.incomingPendingUntil.map { $0 > Date() } ?? false
+          if self.socket != nil && !ringing { self.releaseRegistration("call_active_js_owns") }
         } else {
-          self.incomingPendingUntil = nil
+          // Do NOT clear incomingPendingUntil here. JS emits transient
+          // setCallActive(false) while negotiating the answer; clearing the guard
+          // reopened the window in which stopSipService killed the ringing dialog
+          // (JsSIP status 8 => INVALID_STATE_ERROR on answer). The guard expires
+          // on its own after 45s, and acknowledgeIncoming clears it explicitly.
           self.stopAudioKeepAlive()
         }
         call.resolve(self.snapshot(ok: true))
@@ -224,12 +233,20 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     }
     @objc func acknowledgeIncoming(_ call: CAPPluginCall) {
       UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["pp_incoming_call"])
+      // The ring is over (answered or dismissed): this is the ONLY place allowed to
+      // clear the transport guard, so normal ownership arbitration can resume.
+      DispatchQueue.main.async { [weak self] in self?.incomingPendingUntil = nil }
       call.resolve(["ok": true])
     }
     @objc func wakeForIncomingCall(_ call: CAPPluginCall) {
       let why = call.getString("reason") ?? "js"
       DispatchQueue.main.async { [weak self] in
         guard let self = self else { call.resolve(["ok": false]); return }
+        // Arm the transport guard on EVERY inbound wake, not just the PushKit
+        // notification path. JS also calls this when it sees the INVITE first, and
+        // that path used to leave the guard disarmed, so the ownership arbitration
+        // was free to tear the socket down mid-ring.
+        self.incomingPendingUntil = Date().addingTimeInterval(45)
         self.wakeForPush(why)
         call.resolve(self.snapshot(ok: true))
       }
@@ -337,6 +354,19 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     @objc private func onSceneWillEnterForeground() { onForeground() }
     private func releaseRegistration(_ why: String) {
       if !Thread.isMainThread { DispatchQueue.main.async { [weak self] in self?.releaseRegistration(why) }; return }
+      // SINGLE CHOKE POINT for "drop the SIP transport". Guarding only
+      // stopSipService was not enough: foreground_js_owns, call_active_js_owns
+      // and the background handoff all reach this function, and any of them
+      // firing mid-ring cancelled the socket. JsSIP then moved the session to
+      // STATUS_TERMINATED (8) and answer() threw INVALID_STATE_ERROR, so CallKit
+      // failed the answer action: no audio, no in-call screen, caller left on the
+      // greeting. incomingPendingUntil carries its own 45s expiry, so this can
+      // never pin the transport indefinitely.
+      if let until = incomingPendingUntil, until > Date() {
+        NSLog("[PpSipKeepAlive] releaseRegistration refused (%@): inbound call pending", why)
+        setStatus("protected", "incoming_pending")
+        return
+      }
       backgroundHandoffWorkItem?.cancel(); backgroundHandoffWorkItem = nil
       timer?.invalidate(); timer = nil
       socket?.cancel(with: .goingAway, reason: nil); socket = nil
