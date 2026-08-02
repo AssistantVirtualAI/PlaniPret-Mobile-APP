@@ -936,16 +936,40 @@ class PpSipProvider {
       // disabled and carries pure silence.
       for (const t of tracks) { try { if (!t.enabled) t.enabled = true; } catch { /* noop */ } }
 
-      // OUTBOUND: the mic sender track is stopped the same way, which is why the
+            // OUTBOUND: the mic sender track is stopped the same way, which is why the
       // caller could not hear us either.
+      //
+      // ring18 - `enabled = true` is NOT enough.
+      //
+      // `enabled` is only a mute flag: flipping it back works when the track is
+      // merely muted, but it cannot revive a track whose readyState has gone to
+      // "ended". When WebKit suspends its pipeline because AVAudioSession has no
+      // route, iOS tears the capture device down and the MediaStreamTrack ENDS.
+      // An ended track can never produce samples again, whatever `enabled` says,
+      // so the caller keeps hearing silence while every local indicator is green.
+      //
+      // The only real repair is a brand new capture (`getUserMedia`) swapped into
+      // the existing RTCRtpSender with `replaceTrack()`. replaceTrack is chosen
+      // deliberately: it substitutes the outgoing media WITHOUT touching the SDP,
+      // so no re-INVITE, no renegotiation and no risk of NetSapiens dropping the
+      // dialog we just fought to keep alive.
       const senders = pc.getSenders?.() ?? [];
       let micRestored = 0;
+      let micNeedsRecapture = false;
       for (const s of senders) {
         const t = s.track;
         if (t && t.kind === "audio") {
-          try { if (!t.enabled) { t.enabled = true; micRestored++; } } catch { /* noop */ }
-        }
+          if (t.readyState === "ended") { micNeedsRecapture = true; continue; }
+          try { if (!t.enabled) { t.enabled = true; micRestored++; } } catch { /* noop */ } }
+        // A sender with a null track is the same dead-outbound situation.
+        if (!t && s.track === null) micNeedsRecapture = true;
       }
+      if (micNeedsRecapture) {
+        // Fire-and-forget: the inbound repair below must not wait on a permission
+        // prompt or a slow capture start.
+        void this.recaptureMicrophone(reason);
+      }
+
 
       // Force the re-attach. This IS the WebKit pipeline restart.
       el.srcObject = new MediaStream(tracks);
@@ -959,9 +983,87 @@ class PpSipProvider {
           setTimeout(() => el.play().catch(() => {}), 250);
         });
       }
-      this.log("info", `audio pipeline resumed after route activation (${reason}, ${tracks.length} track(s), mic re-enabled: ${micRestored})`);
+      this.log("info", `audio pipeline resumed after route activation (${reason}, ${tracks.length} track(s), mic re-enabled: ${micRestored}, mic recapture: ${micNeedsRecapture ? "y" : "n"})`);
     } catch (e: any) {
       this.log("error", `audio resume failed: ${e?.message || e}`);
+    }
+  }
+
+  /**
+   * ring18 - revive a DEAD outbound microphone with a fresh capture.
+   *
+   * `track.enabled = true` only clears a mute flag. When iOS tears the capture
+   * device down (which is what happens when WebKit suspends its pipeline on a
+   * routeless AVAudioSession), the MediaStreamTrack reaches readyState
+   * "ended" and is unrecoverable: it will never emit a sample again. The caller
+   * then hears nothing at all while our own UI shows a healthy call.
+   *
+   * The repair is a new getUserMedia() capture swapped into the live sender with
+   * replaceTrack(). replaceTrack does NOT alter the SDP, so this needs no
+   * re-INVITE and cannot disturb the dialog.
+   *
+   * Guarded against concurrency: didActivate can fire more than once per call
+   * (route changes, speaker toggle), and two simultaneous getUserMedia() calls on
+   * iOS can leave the capture graph in a broken state.
+   */
+  private micRecaptureInFlight = false;
+
+  private async recaptureMicrophone(reason: string): Promise<void> {
+    if (this.micRecaptureInFlight) {
+      this.log("log", `mic recapture already in flight, skipping (${reason})`);
+      return;
+    }
+    this.micRecaptureInFlight = true;
+    try {
+      const pc: RTCPeerConnection | undefined | null = (this.session as any)?.connection;
+      if (!pc) { this.log("warn", `mic recapture skipped - no peer connection (${reason})`); return; }
+
+      const sender = (pc.getSenders?.() ?? []).find(
+        (s) => s.track?.kind === "audio" || (!s.track && (s as any).transport),
+      ) ?? (pc.getSenders?.() ?? [])[0];
+      if (!sender) { this.log("warn", `mic recapture skipped - no audio sender (${reason})`); return; }
+
+      this.log("warn", `mic track is dead - recapturing via getUserMedia (${reason})`);
+
+      // Match the constraints used when the call was set up so the codec and the
+      // noise-suppression behaviour stay identical after the swap.
+      const fresh = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+        video: false,
+      });
+      const newTrack = fresh.getAudioTracks()[0];
+      if (!newTrack) {
+        this.log("error", `mic recapture failed - getUserMedia returned no audio track (${reason})`);
+        return;
+      }
+
+      // Honour the user's mute state: a recapture must not silently unmute.
+      newTrack.enabled = !this.snap.muted;
+
+      const old = sender.track;
+      await sender.replaceTrack(newTrack);
+      // Release the dead device only AFTER the swap, so the sender is never
+      // trackless in between.
+      if (old && old !== newTrack) { try { old.stop(); } catch { /* noop */ } }
+
+      // JsSIP keeps its own view of the mute state and applies it to the tracks
+      // it knows about. After a swap it holds a stale reference, so re-issue the
+      // command to keep session.isMuted() and the Mute button consistent with the
+      // track we just installed.
+      if (this.snap.muted) { try { this.session?.mute({ audio: true }); } catch { /* noop */ } }
+
+      this.log(
+        "info",
+        `mic recaptured and swapped via replaceTrack (${reason}, readyState=${newTrack.readyState}, enabled=${newTrack.enabled ? "y" : "n"})`,
+      );
+    } catch (e: any) {
+      this.log("error", `mic recapture failed: ${e?.message || e}`);
+    } finally {
+      this.micRecaptureInFlight = false;
     }
   }
 
