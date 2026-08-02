@@ -15,7 +15,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { getPpSipReconnectConfig } from "@/lib/planipret/sip/ppSipReconnectConfig";
-import { PP_PENDING_ANSWER_TIMEOUT_MS, ppSipProvider, type PpSipConfig, type PpSipSnapshot } from "@/lib/planipret/sip/ppSipProvider";
+import { ppSipProvider, type PpSipConfig, type PpSipSnapshot } from "@/lib/planipret/sip/ppSipProvider";
 import { startSipStabilityMonitor } from "@/lib/planipret/sip/sipStabilityMonitor";
 import { networkMonitor, type NetSample } from "@/lib/planipret/network/networkMonitor";
 import { handoverController } from "@/lib/planipret/net/handoverController";
@@ -1343,41 +1343,30 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       const immediate = await ppSipProvider.requestAnswer(pushRing.callId || undefined);
       console.info(`[answer] requestAnswer → ${immediate ? "answered immediately" : "intent queued"}`);
       if (immediate) return true;
-      // ring11 - release the outer answer mutex while we park in this watchdog.
-      //
-      // answerAttemptRef holds THIS promise, and this promise is about to sit in
-      // a 500ms polling loop for up to PP_PENDING_ANSWER_TIMEOUT_MS. Any further
-      // answer() call in the meantime was handed this parked promise back
-      // ("joining answer already in flight" - 17 times in the ring10 log),
-      // including the one fired by `pp:sip-pending-answer-ready` when the INVITE
-      // finally lands. Clearing the ref lets that listener run a real answer
-      // transaction instead of re-joining a promise that only polls.
-      answerAttemptRef.current = null;
 
-      // A PBX REST "answer" cannot create a WebRTC media dialog and previously
-      // produced a false connected state (CallKit answered, caller still hearing
-      // the greeting, no audio/keypad). Only a confirmed SIP dialog is success.
-      const attempts = Math.ceil(PP_PENDING_ANSWER_TIMEOUT_MS / 500);
-      let sawRinging = false;
-      for (let i = 0; i < attempts; i++) {
-        await new Promise((r) => window.setTimeout(r, 500));
-        const st = ppSipProvider.getSnapshot().callState;
-        if (st === "ringing-in") sawRinging = true;
-        if (st === "active" || st === "held") { console.info("[answer] SIP answered within watchdog window"); return true; }
-        if (st === "ended") break;
-      }
-      // ring11 - distinguish the two very different failure modes, because they
-      // need opposite fixes and the old single message hid the difference.
-      if (sawRinging) {
-        console.warn("[answer] INVITE arrived but the dialog never confirmed — answer path failed", {
-          pushCallId: pushRing.callId ?? null,
-        });
-      } else {
-        console.warn("[answer] NO INVITE EVER ARRIVED for this push — NetSapiens did not fork to this device in time", {
-          pushCallId: pushRing.callId ?? null,
-          hint: "JsSIP registered too late for the answer-rule ring window, or the (ext)M device had no contact when the call forked",
-        });
-      }
+      // ring12 - ROOT CAUSE OF "the answer button does nothing".
+      //
+      // This branch used to park HERE in a 500ms polling loop for up to
+      // PP_PENDING_ANSWER_TIMEOUT_MS. That promise is the one stored in
+      // answerAttemptRef by answer(), so for the next ~30 seconds EVERY tap on
+      // the answer button was handed this parked polling promise back
+      // ("joining answer already in flight" x17 in the log) and no tap could
+      // ever reach ppSipProvider.answer(). The user sees a dead button while the
+      // phone is ringing.
+      //
+      // ring11 tried to fix this by clearing answerAttemptRef inside this
+      // function, but that cannot work: answer() assigns
+      // `answerAttemptRef.current = run` AFTER answerOnce() returns its promise,
+      // so the assignment can land after our own clear and re-lock the mutex.
+      //
+      // The correct fix is to never park inside the mutex-held promise at all.
+      // The intent is queued in the provider, which now answers the INVITE
+      // directly when it arrives. We return immediately, the mutex is released
+      // normally, and a manual tap on a real ringing-in session always gets a
+      // fresh transaction.
+      console.info("[answer] intent queued; returning immediately so the answer button stays live", {
+        pushCallId: pushRing.callId ?? null,
+      });
       return false;
     }
 
@@ -1464,9 +1453,21 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
 
   const answer = useCallback((): Promise<boolean> => {
     const pending = answerAttemptRef.current;
-    if (pending) {
+    // ring12 - the mutex must never be able to swallow a tap on a live INVITE.
+    //
+    // A ringing-in session is answerable right now, and the 200 OK is the only
+    // time-critical step of the whole inbound path. If an earlier attempt is
+    // still in flight but the session is sitting in ringing-in, that attempt
+    // demonstrably has not sent the 200 OK yet, so joining it is exactly the
+    // wrong thing to do. ppSipProvider.answer() carries its own answerInFlight
+    // guard, so running a fresh transaction here cannot double-answer.
+    const liveRinging = ppSipProvider.getSnapshot().callState === "ringing-in";
+    if (pending && !liveRinging) {
       console.info("[answer] joining answer already in flight");
       return pending;
+    }
+    if (pending && liveRinging) {
+      console.info("[answer] bypassing in-flight attempt: a real INVITE is ringing and must be answered now");
     }
     const run = answerOnce();
     answerAttemptRef.current = run;
@@ -1484,11 +1485,10 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     if (!isOwner) return;
     const onPendingAnswerReady = () => {
       // This is NOT a duplicate tap: it is the first moment a real SIP INVITE
-      // exists. The original CallKit answer promise is deliberately parked in its
-      // watchdog loop waiting for `active`, so the answerAttemptRef mutex would
-      // hand that parked promise back instead of running the answer path - and
-      // nothing would ever send the SIP 200 OK. Release the outer mutex first,
-      // then run the full answer path against the INVITE that just arrived.
+      // exists, so it must run a real answer transaction. Since ring12 the
+      // PUSH-PENDING branch no longer parks inside the mutex-held promise, and
+      // answer() itself bypasses the mutex whenever a ringing-in session is
+      // live, so this clear is now only belt-and-braces against a stale ref.
       answerAttemptRef.current = null;
       void answerRef.current?.().then((ok) => {
         console.info(`[answer] arbitrated pending INVITE → ${ok ? "connected" : "not answered"}`);

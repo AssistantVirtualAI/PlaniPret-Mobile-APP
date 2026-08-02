@@ -62,6 +62,8 @@ export default function PpActiveCallScreen({
   const [loadingContacts, setLoadingContacts] = useState(false);
   const [diagOpen, setDiagOpen] = useState(false);
   const [speakerOn, setSpeakerOn] = useState(false);
+  // ring12 - immediate visual feedback for the answer button.
+  const [answering, setAnswering] = useState(false);
 
   useEffect(() => { setAudioEl(audioRef.current); return () => setAudioEl(null); }, [setAudioEl]);
 
@@ -70,7 +72,7 @@ export default function PpActiveCallScreen({
 
   // Reset transient state each new call
   useEffect(() => {
-    if (!active) { setView("main"); setDtmfBuf(""); setTransferQuery(""); setElapsed(0); }
+    if (!active) { setView("main"); setDtmfBuf(""); setTransferQuery(""); setElapsed(0); setAnswering(false); }
   }, [active]);
 
   // A call must never start on the loudspeaker: WebKit/WebRTC defaults to it
@@ -337,9 +339,25 @@ export default function PpActiveCallScreen({
                 style={{ width: 72, height: 72, background: "linear-gradient(135deg, #B91C1C, #E84C4C)", boxShadow: "0 8px 24px rgba(232,76,76,0.5)" }}>
                 <PhoneOff className="w-7 h-7" />
               </button>
-              <button onClick={() => void answer()} aria-label="Répondre"
+              {/* ring12 - log the tap before any await, so a future log can never
+                  again leave it ambiguous whether the button fired at all or the
+                  answer path silently gave up. The spinner state also gives the
+                  user immediate feedback instead of a seemingly dead button. */}
+              <button onClick={() => {
+                  console.info("[answer] ANSWER BUTTON TAPPED", {
+                    sipCallState: snap.callState,
+                    sipCallId: snap.callId || null,
+                    alreadyAnswering: answering,
+                  });
+                  setAnswering(true);
+                  void answer()
+                    .then((ok) => console.info(`[answer] button result \u2192 ${ok ? "connected" : "NOT answered"}`))
+                    .finally(() => setAnswering(false));
+                }}
+                aria-label="Répondre"
+                aria-busy={answering}
                 className="rounded-full flex items-center justify-center active:scale-95 transition"
-                style={{ width: 72, height: 72, background: "linear-gradient(135deg, #15803D, #22C55E)", boxShadow: "0 8px 24px rgba(34,197,94,0.5)" }}>
+                style={{ width: 72, height: 72, background: "linear-gradient(135deg, #15803D, #22C55E)", boxShadow: "0 8px 24px rgba(34,197,94,0.5)", opacity: answering ? 0.65 : 1 }}>
                 <Phone className="w-7 h-7" />
               </button>
           </>

@@ -688,6 +688,23 @@ class PpSipProvider {
             try { window.dispatchEvent(new CustomEvent("pp:sip-pending-answer-ready", { detail: { callId } })); } catch {}
           }, 50);
 
+          // ring12 - safety net. The event above is the ONLY thing that turns a
+          // queued push intent into a 200 OK, and its listener is registered
+          // under `if (!isOwner) return`. Waking from background remounts the
+          // softphone instances, so the owner can change between the push and
+          // the INVITE: the event is then dispatched into the void, the intent is
+          // already consumed, and the call rings on forever with a dead answer
+          // button. If nobody has confirmed the dialog shortly after, answer it
+          // here. Post-hoc claim arbitration in the hook still applies, and
+          // losing an arbitration is recoverable while losing the dialog is not.
+          setTimeout(() => {
+            if (this.snap.callState !== "ringing-in" || this.snap.callId !== callId) return;
+            this.log("warn", "no owner answered the queued intent → provider answers the INVITE directly", {
+              sipCallId: callId,
+            });
+            void this.answer(callId);
+          }, 1500);
+
         } else if (pending) {
           this.log("warn", "answer intent expired before INVITE arrived");
           this.pendingAnswer = null;
