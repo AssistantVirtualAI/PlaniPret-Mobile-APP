@@ -383,13 +383,32 @@ class PpSipProvider {
       this.pendingReRegisterAfterCall = true;
       return false;
     }
+    const answerPending = !!this.pendingAnswer && this.pendingAnswer.expiresAt > Date.now();
+    // ring15 - THE DECISIVE FIX. The ring14 guard above only protected a dialog
+    // that had ALREADY arrived (this.session != null). But on a background push the
+    // INVITE has not landed yet: callState is "idle" and this.session is null, so
+    // the guard let the REGISTER through. Log 137 shows it 8 times:
+    //   REGISTER promoted to priority (force_registered_refresh)
+    //     {"answerPending":true,"callState":"idle"}
+    //   priority REGISTER sent (force_registered_refresh)
+    //   ... and "incoming INVITE attached" NEVER appears again.
+    // NetSapiens closes the previous WSS leg on re-REGISTER, so the INVITE that was
+    // in flight toward that leg is lost forever, the queued answer intent never
+    // matches, and the PBX rolls the caller to voicemail (the recording notice the
+    // user hears). A pending answer intent means an INVITE is IN FLIGHT: the socket
+    // that will carry it must not be touched. `deferred_after_call` stays exempt
+    // because resetCall() clears the intent before running it.
+    if (answerPending && reason !== "deferred_after_call") {
+      this.log("warn", `REGISTER blocked - an answer intent is waiting for its INVITE, the socket must not be recycled (${reason}, callState=${this.snap.callState})`);
+      this.pendingReRegisterAfterCall = true;
+      return false;
+    }
     // An inbound answer intent OUTRANKS every caller-supplied option. Observed in
     // production: on foreground resume during a ring, `forceReregister()` called
     // guardedRegister() WITHOUT priority, so the 5000ms debounce swallowed it
     // (34 x "explicit REGISTER suppressed" in one 4-minute session). The JS side
     // therefore stayed unregistered, the INVITE only reached the native plugin,
     // and the answer had no SIP dialog to accept.
-    const answerPending = !!this.pendingAnswer && this.pendingAnswer.expiresAt > Date.now();
     const priority = !!options.priority || answerPending || this.snap.callState === "ringing-in";
     if (!ua?.isConnected?.()) {
       // An inbound call cannot wait for the backoff curve: rebuild now.
@@ -1045,6 +1064,17 @@ class PpSipProvider {
   }
   hasActiveCall(): boolean {
     return !!this.session && (this.snap.callState === "active" || this.snap.callState === "held");
+  }
+  /**
+   * ring15 - True while an answer intent is queued and still valid, i.e. the user
+   * (or CallKit) already accepted a call whose INVITE has not landed yet. In that
+   * window callState is still "idle" and `session` is null, so every "is a call in
+   * progress" check based on callState answers NO and the transport gets recycled
+   * out from under the INVITE. Anything that tears down or re-registers the socket
+   * must consult this too.
+   */
+  hasPendingAnswerIntent(): boolean {
+    return !!this.pendingAnswer && this.pendingAnswer.expiresAt > Date.now();
   }
   async iceRestart(): Promise<boolean> {
     const s = this.session;

@@ -27,6 +27,10 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     // ring13 - the PBX call-id is not stable across fork legs, so dedup also needs
     // the caller and the age of the live CallKit report.
     private var activeCallerNumber: String = ""
+    /// ring15 - last callId whose CXAnswerCallAction we successfully fulfilled, so a
+    /// second completeAnswer(ok:true) for the same call is reported as already
+    /// confirmed instead of as a failure.
+    private var answerConfirmedForCallId: String = ""
     private var activeCallReportedAt: Date = .distantPast
     private var pendingAnswerAction: CXAnswerCallAction?
     private let voipTokenDefaultsKey = "pp.voip.push-token.v1"
@@ -163,11 +167,28 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         // identical. CallKit is configured for one call only, so the pending
         // CXAnswerCallAction is the authoritative correlation token.
         guard let action = pendingAnswerAction else {
-            call.resolve(["ok": false, "reason": "no_pending_answer"])
+            // ring15 - idempotent. Two independent paths now confirm a successful
+            // answer (answerOnce, and the 200 OK effect added in ring14), so the
+            // second one legitimately arrives after the action was consumed. Log 137
+            // shows exactly that: completeAnswer -> ok:true, then completeAnswer ->
+            // ok:false/no_pending_answer. Reporting a failure for an answer that in
+            // fact succeeded is misleading, and a caller that reacts to ok:false
+            // could tear down a healthy call.
+            let alreadyConfirmed = ok && answerConfirmedForCallId == (callId.isEmpty ? (activeCallId ?? "") : callId)
+            call.resolve([
+                "ok": alreadyConfirmed,
+                "reason": alreadyConfirmed ? "already_confirmed" : "no_pending_answer"
+            ])
             return
         }
         pendingAnswerAction = nil
-        if ok { action.fulfill() } else { action.fail() }
+        if ok {
+            answerConfirmedForCallId = callId.isEmpty ? (activeCallId ?? "") : callId
+            action.fulfill()
+        } else {
+            answerConfirmedForCallId = ""
+            action.fail()
+        }
         call.resolve(["ok": true])
     }
 
@@ -288,7 +309,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     // MARK: - CXProviderDelegate
     public func providerDidReset(_ provider: CXProvider) {
         pendingAnswerAction?.fail(); pendingAnswerAction = nil
-        activeCallUUID = nil; activeCallId = nil; activeCallerNumber = ""; activeCallReportedAt = .distantPast
+        activeCallUUID = nil; activeCallId = nil; activeCallerNumber = ""; activeCallReportedAt = .distantPast; answerConfirmedForCallId = ""
     }
 
     public func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
@@ -336,11 +357,49 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             "callUUID": action.callUUID.uuidString,
             "callId": activeCallId ?? ""
         ])
-        activeCallUUID = nil; activeCallId = nil; activeCallerNumber = ""; activeCallReportedAt = .distantPast
+        activeCallUUID = nil; activeCallId = nil; activeCallerNumber = ""; activeCallReportedAt = .distantPast; answerConfirmedForCallId = ""
         action.fulfill()
     }
 
     public func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
-        try? audioSession.setActive(true)
+        // ring15 - THE AUDIO FIX. This callback is the ONLY moment iOS lets us take
+        // the CallKit-owned session, and it was doing the one thing that breaks
+        // WebRTC: calling setActive(true) on a session CallKit had already
+        // activated, WITHOUT ever configuring category/mode. Log 137 shows the
+        // consequence directly - every activation during a call reports
+        // hadOutputs=n, i.e. AVAudioSession has NO output route, so neither
+        // direction can carry audio.
+        //
+        // Correct order, and it must be exactly this order:
+        //   1. category/mode FIRST. .playAndRecord + .voiceChat is what makes iOS
+        //      attach the earpiece/speaker route and enable the mic. Setting it
+        //      after activation is silently ignored.
+        //   2. setActive(true) is deliberately NOT called again. CallKit already
+        //      activated this session; re-activating it makes iOS re-arbitrate the
+        //      route and drop the outputs (that is the hadOutputs=n we measured).
+        //   3. overrideOutputAudioPort(.none) pins the earpiece, per the product
+        //      rule that the speaker must only ever be enabled by the user tapping
+        //      the dedicated button.
+        do {
+            try audioSession.setCategory(.playAndRecord, mode: .voiceChat,
+                                         options: [.allowBluetoothHFP, .allowBluetoothA2DP])
+            try audioSession.overrideOutputAudioPort(.none)
+        } catch {
+            NSLog("[PpVoipCall] didActivate: category/route failed %@", error.localizedDescription)
+        }
+        let outs = audioSession.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
+        let ins = audioSession.currentRoute.inputs.map { $0.portType.rawValue }.joined(separator: ",")
+        NSLog("[PpVoipCall] CallKit didActivate audio session outputs=[%@] inputs=[%@] sr=%.0f",
+              outs.isEmpty ? "NONE" : outs, ins.isEmpty ? "NONE" : ins, audioSession.sampleRate)
+        // Tell the keep-alive plugin that CallKit owns the session now, so its
+        // 2-second watchdog stops reconfiguring it underneath WebRTC.
+        NotificationCenter.default.post(name: Notification.Name("PpVoipAudioSessionActivated"), object: nil)
+    }
+
+    public func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
+        // Logged because a didDeactivate arriving DURING a call is the signature of
+        // a competing setActive() call elsewhere in the app.
+        NSLog("[PpVoipCall] CallKit didDeactivate audio session (call should be over)")
+        NotificationCenter.default.post(name: Notification.Name("PpVoipAudioSessionDeactivated"), object: nil)
     }
 }

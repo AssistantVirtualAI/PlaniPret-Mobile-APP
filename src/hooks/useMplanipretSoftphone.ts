@@ -821,7 +821,16 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     const callInProgress = () => {
       try {
         const st = ppSipProvider.getSnapshot().callState;
-        return ppSipProvider.hasActiveCall() || st === "ringing-in" || st === "ringing-out";
+        // ring15 - `hasPendingAnswerIntent()` closes the window this guard used to
+        // miss entirely. On a background push the user taps Answer BEFORE the
+        // INVITE lands: callState is still "idle", so the three checks below all
+        // answered NO and `stopSipService` tore the WSS down while the INVITE was
+        // in flight (log 137: "answer intent queued" then stopSipService then
+        // startSipService, and "incoming INVITE attached" never appears again).
+        return ppSipProvider.hasActiveCall()
+          || st === "ringing-in"
+          || st === "ringing-out"
+          || ppSipProvider.hasPendingAnswerIntent();
       } catch { return false; }
     };
     // ring11 - every setCallActive(true) that crosses the bridge re-activates the

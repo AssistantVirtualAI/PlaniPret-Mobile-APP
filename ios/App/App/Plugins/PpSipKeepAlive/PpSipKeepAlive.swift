@@ -106,6 +106,21 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         self.callActive = true
         self.activateAudioSession()
       }
+      // ring15 - CallKit audio-session ownership. Between didActivate and
+      // didDeactivate the system session belongs to CallKit; every setCategory or
+      // setActive we issue in that window strips the route (hadOutputs=n) and the
+      // call goes silent both ways. These two observers are what make
+      // activateAudioSession() stand down.
+      NotificationCenter.default.addObserver(forName: Notification.Name("PpVoipAudioSessionActivated"), object: nil, queue: .main) { [weak self] _ in
+        guard let self = self else { return }
+        self.callKitOwnsAudioSession = true
+        NSLog("[PpSipKeepAlive] CallKit now owns the audio session - keep-alive stands down")
+      }
+      NotificationCenter.default.addObserver(forName: Notification.Name("PpVoipAudioSessionDeactivated"), object: nil, queue: .main) { [weak self] _ in
+        guard let self = self else { return }
+        self.callKitOwnsAudioSession = false
+        NSLog("[PpSipKeepAlive] CallKit released the audio session - keep-alive resumes")
+      }
       UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
     }
     deinit { NotificationCenter.default.removeObserver(self); timer?.invalidate(); socket?.cancel(with: .goingAway, reason: nil) }
@@ -121,7 +136,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       registerExpires = call.getInt("registerExpiresSec") ?? 1800
       persistConfig()
       // Build marker: lets us prove from the Xcode console which binary is running.
-      NSLog("[PpSipKeepAlive] BUILD MARKER pp-build-2026-08-02-ring14 (never REGISTER a live socket on push wake + caller-level CallKit dedup)")
+      NSLog("[PpSipKeepAlive] BUILD MARKER pp-build-2026-08-02-ring15 (never REGISTER a live socket on push wake + caller-level CallKit dedup)")
       NSLog("[PpSipKeepAlive] reconnect strategy min=%.0fms max=%.0fms attempts=%d verify=%.0fms expires=%ds", backoffMinMs, backoffMaxMs, backoffMaxAttempts, verifyDelayMs, registerExpires)
       DispatchQueue.main.async { [weak self] in
         guard let self = self else { call.resolve(["ok": false, "status": "error", "reason": "plugin_released"]); return }
@@ -206,6 +221,9 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     /// ring11 - tracks whether we already brought the session up, so repeated
     /// setCallActive(true) calls do not re-activate it.
     private var audioSessionActivated = false
+    /// ring15 - true from CallKit didActivate until didDeactivate. While set, this
+    /// plugin must not configure or activate AVAudioSession at all.
+    private var callKitOwnsAudioSession = false
 
     /// ring11 - idempotent. The ring10 log shows setAudioRoute called 5 times on
     /// a single call, each one re-running overrideOutputAudioPort on a route that
@@ -238,6 +256,11 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     }
 
     private func applyAudioRoute(_ route: String) {
+      // ring15 - deliberately NOT gated on callKitOwnsAudioSession.
+      // overrideOutputAudioPort only moves the output port, it never re-activates
+      // or re-categorises the session, so it is safe under CallKit ownership - and
+      // it must stay reachable, otherwise the user's Speaker button would do
+      // nothing during a call.
       let s = AVAudioSession.sharedInstance()
       switch route {
       case "speaker":
@@ -543,6 +566,16 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     ///
     /// We now only touch the session when something actually differs.
     private func activateAudioSession(force: Bool = false) {
+      // ring15 - CallKit is the EXCLUSIVE owner of the audio session for the whole
+      // duration of a call. Every setCategory/setActive we issue while it holds the
+      // session makes iOS re-arbitrate the route and strip the outputs, which is
+      // precisely the hadOutputs=n measured throughout log 137 while the user heard
+      // nothing in either direction. During a CallKit call the ONLY place allowed to
+      // configure the session is PpVoipCall's provider(_:didActivate:).
+      if callKitOwnsAudioSession {
+        NSLog("[PpSipKeepAlive] audio session untouched - CallKit owns it (force=%@)", force ? "y" : "n")
+        return
+      }
       let s = AVAudioSession.sharedInstance()
       // During a live call we must own the session exclusively: .mixWithOthers
       // lets WebKit interrupt it when the app goes background (no audio at all).
