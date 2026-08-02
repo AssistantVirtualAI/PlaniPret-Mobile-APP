@@ -672,7 +672,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       registerExpires = call.getInt("registerExpiresSec") ?? 1800
       persistConfig()
       // Build marker: lets us prove from the Xcode console which binary is running.
-      NSLog("[PpSipKeepAlive] BUILD MARKER pp-build-2026-08-02-urgent-register (single-AOR: .inactive counts as foreground)")
+      NSLog("[PpSipKeepAlive] BUILD MARKER pp-build-2026-08-02-callkit32 (single-AOR: .inactive counts as foreground)")
       NSLog("[PpSipKeepAlive] reconnect strategy min=%.0fms max=%.0fms attempts=%d verify=%.0fms expires=%ds", backoffMinMs, backoffMaxMs, backoffMaxAttempts, verifyDelayMs, registerExpires)
       DispatchQueue.main.async { [weak self] in
         guard let self = self else { call.resolve(["ok": false, "status": "error", "reason": "plugin_released"]); return }
@@ -1421,13 +1421,16 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         ], retainUntilConsumed: true)
         pendingAnswerAction?.fulfill()
         pendingAnswerAction = action
-        // Safety net: never present a falsely connected CallKit call. 12s is
-        // deliberately longer than the JS watchdogs (8s push path / 4s SIP
-        // path) so completeAnswer() always reports the real outcome first.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 12.0) { [weak self, weak action] in
+        // Safety net: never present a falsely connected CallKit call.
+        // 32s is deliberately GREATER than PP_PENDING_ANSWER_TIMEOUT_MS (30s in
+        // ppSipProvider): the pending-answer intent stays valid for 30s while the
+        // caller is still hearing the greeting, so a 12s CallKit timeout used to
+        // fail() the action while the SIP path was still legitimately working.
+        // Ordering must always be: JS watchdogs < SIP intent (30s) < CallKit (32s).
+        DispatchQueue.main.asyncAfter(deadline: .now() + 32.0) { [weak self, weak action] in
             guard let self = self, let action = action, self.pendingAnswerAction === action else { return }
             self.pendingAnswerAction = nil
-            NSLog("[PpVoipCall] answer action timed out \u{2014} SIP dialog not confirmed")
+            NSLog("[PpVoipCall] answer action timed out \u{2014} SIP dialog not confirmed after 32s")
             action.fail()
         }
     }

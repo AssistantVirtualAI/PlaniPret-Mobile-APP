@@ -657,7 +657,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       verifyDelayMs = Double(call.getInt("verifyDelayMs") ?? 8000)
       registerExpires = call.getInt("registerExpiresSec") ?? 1800
       persistConfig()
-      NSLog("[PpSipKeepAlive] BUILD MARKER pp-build-2026-08-02-urgent-register (single-AOR: .inactive counts as foreground)")
+      NSLog("[PpSipKeepAlive] BUILD MARKER pp-build-2026-08-02-callkit32 (single-AOR: .inactive counts as foreground)")
       NSLog("[PpSipKeepAlive] reconnect strategy min=%.0fms max=%.0fms attempts=%d verify=%.0fms expires=%ds", backoffMinMs, backoffMaxMs, backoffMaxAttempts, verifyDelayMs, registerExpires)
       DispatchQueue.main.async { [weak self] in
         guard let self = self else { call.resolve(["ok": false, "status": "error", "reason": "plugin_released"]); return }
@@ -1346,7 +1346,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         ])
         pendingAnswerAction?.fail()
         pendingAnswerAction = action
-        DispatchQueue.main.asyncAfter(deadline: .now() + 30.0) { [weak self, weak action] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 32.0) { [weak self, weak action] in
             guard let self = self, let action = action, self.pendingAnswerAction === action else { return }
             self.pendingAnswerAction = nil
             action.fail()

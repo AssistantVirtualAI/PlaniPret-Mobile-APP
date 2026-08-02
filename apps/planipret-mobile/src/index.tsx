@@ -132,7 +132,7 @@ async function hideSplashSoon() {
 
 async function bootstrap() {
   // Build marker: proves from the Xcode/logcat console which web bundle is running.
-  console.log('[PP] BUILD MARKER pp-build-2026-08-02-urgent-register');
+  console.log('[PP] BUILD MARKER pp-build-2026-08-02-callkit32');
   console.log('[PP] bootstrap:start', { native: Capacitor.isNativePlatform(), proto: window.location.protocol });
   // Hide splash immediately so a render error can never leave the user staring
   // at the launch image with no signal.

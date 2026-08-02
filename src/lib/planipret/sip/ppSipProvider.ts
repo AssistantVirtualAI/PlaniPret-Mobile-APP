@@ -14,6 +14,15 @@ import { edgeOnlyWssUrls, isPortalWssUrl } from "./sipEdgePolicy";
 // REGISTERs the same AOR. Without this gap NetSapiens closes one WSS with 1001.
 const PP_SIP_UA_SWAP_DELAY_MS = 800;
 
+// How long a queued answer/decline intent stays valid while we wait for the INVITE
+// to reach JsSIP after a VoIP push wake-up. The caller is still hearing the
+// greeting during this window, so it must NOT be shortened.
+// Timing contract (any change must preserve this ordering):
+//   JS answer watchdog (8s) < PP_PENDING_ANSWER_TIMEOUT_MS (30s) < CallKit safety net (32s)
+// A CallKit net shorter than this constant fail()s the action while the SIP path
+// is still legitimately working.
+export const PP_PENDING_ANSWER_TIMEOUT_MS = 30_000;
+
 export type PpSipStatus = "idle" | "connecting" | "connected" | "registered" | "disconnected" | "error";
 export type PpCallState = "idle" | "ringing-out" | "ringing-in" | "active" | "held" | "ended";
 
@@ -786,7 +795,7 @@ class PpSipProvider {
 
   async requestAnswer(callId?: string): Promise<boolean> {
     if (await this.answer(callId)) return true;
-    this.pendingAnswer = { callId: String(callId ?? ""), expiresAt: Date.now() + 30_000 };
+    this.pendingAnswer = { callId: String(callId ?? ""), expiresAt: Date.now() + PP_PENDING_ANSWER_TIMEOUT_MS };
     this.log("info", "answer intent queued until matching INVITE", { callId: callId ?? "" });
     return false;
   }
@@ -799,7 +808,7 @@ class PpSipProvider {
       } catch { /* queue below */ }
     }
     this.pendingAnswer = null;
-    this.pendingDecline = { callId: String(callId ?? ""), expiresAt: Date.now() + 30_000 };
+    this.pendingDecline = { callId: String(callId ?? ""), expiresAt: Date.now() + PP_PENDING_ANSWER_TIMEOUT_MS };
     this.log("info", "decline intent queued until incoming INVITE", { callId: callId ?? "" });
     return false;
   }
