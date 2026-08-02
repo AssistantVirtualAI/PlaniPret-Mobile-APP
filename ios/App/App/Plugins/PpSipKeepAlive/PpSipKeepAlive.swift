@@ -59,6 +59,9 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     /// stack must NEVER take the AOR over: doing so closes the JsSIP transport
     /// (WSS 1001) and kills the audio. We only keep the audio session alive.
     private var callActive = false
+    /// Set on VoIP push wake: while an inbound call is pending we must never
+    /// release the SIP registration (that sent the caller to voicemail).
+    private var incomingPendingUntil: Date? = nil
     private var audioKeepAliveTimer: Timer?
     private let configDefaultsKey = "pp_sip_native_config_v1"
     private let passwordService = "com.planipret.mobile.sip"
@@ -109,7 +112,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       registerExpires = call.getInt("registerExpiresSec") ?? 1800
       persistConfig()
       // Build marker: lets us prove from the Xcode console which binary is running.
-      NSLog("[PpSipKeepAlive] BUILD MARKER pp-build-2026-08-02-callkit32 (single-AOR: .inactive counts as foreground)")
+      NSLog("[PpSipKeepAlive] BUILD MARKER pp-build-2026-08-02-pushwake1 (single-AOR: .inactive counts as foreground)")
       NSLog("[PpSipKeepAlive] reconnect strategy min=%.0fms max=%.0fms attempts=%d verify=%.0fms expires=%ds", backoffMinMs, backoffMaxMs, backoffMaxAttempts, verifyDelayMs, registerExpires)
       DispatchQueue.main.async { [weak self] in
         guard let self = self else { call.resolve(["ok": false, "status": "error", "reason": "plugin_released"]); return }
@@ -140,6 +143,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
           self.backgroundHandoffWorkItem?.cancel(); self.backgroundHandoffWorkItem = nil
           if self.socket != nil { self.releaseRegistration("call_active_js_owns") }
         } else {
+          self.incomingPendingUntil = nil
           self.stopAudioKeepAlive()
         }
         call.resolve(self.snapshot(ok: true))
@@ -197,7 +201,19 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       }
     }
 
-    @objc func stopSipService(_ call: CAPPluginCall) { DispatchQueue.main.async { self.releaseRegistration("stopped"); call.resolve(self.snapshot(ok: true)) } }
+    @objc func stopSipService(_ call: CAPPluginCall) {
+      DispatchQueue.main.async {
+        // Refuse to drop the registration while an inbound call is pending:
+        // stopSipService fired mid-ring used to leave the PBX with zero
+        // contacts (registered_aors: []) and the caller went to voicemail.
+        if let until = self.incomingPendingUntil, until > Date() {
+          NSLog("[PpSipKeepAlive] stopSipService ignored: inbound call pending")
+          self.setStatus("protected", "incoming_pending")
+          call.resolve(self.snapshot(ok: true)); return
+        }
+        self.releaseRegistration("stopped"); call.resolve(self.snapshot(ok: true))
+      }
+    }
     @objc func getSipServiceStatus(_ call: CAPPluginCall) { DispatchQueue.main.async { call.resolve(self.snapshot(ok: true)) } }
     @objc func triggerReregister(_ call: CAPPluginCall) {
       DispatchQueue.main.async { [weak self] in
@@ -219,7 +235,10 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       }
     }
     @objc private func onVoipPushWake(_ note: Notification) {
-      DispatchQueue.main.async { [weak self] in self?.wakeForPush("voip_push") }
+      DispatchQueue.main.async { [weak self] in
+        self?.incomingPendingUntil = Date().addingTimeInterval(45)
+        self?.wakeForPush("voip_push")
+      }
     }
     /// Immediate, debounce-free REGISTER triggered by a VoIP push. Apple only
     /// guarantees background execution through PushKit, so this is the path that

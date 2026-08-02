@@ -15,7 +15,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { getPpSipReconnectConfig } from "@/lib/planipret/sip/ppSipReconnectConfig";
-import { ppSipProvider, type PpSipConfig, type PpSipSnapshot } from "@/lib/planipret/sip/ppSipProvider";
+import { PP_PENDING_ANSWER_TIMEOUT_MS, ppSipProvider, type PpSipConfig, type PpSipSnapshot } from "@/lib/planipret/sip/ppSipProvider";
 import { startSipStabilityMonitor } from "@/lib/planipret/sip/sipStabilityMonitor";
 import { networkMonitor, type NetSample } from "@/lib/planipret/network/networkMonitor";
 import { handoverController } from "@/lib/planipret/net/handoverController";
@@ -223,9 +223,8 @@ export function useMplanipretSoftphone(enabled = true) {
   const [nativeStatus, setNativeStatus] = useState<PpNativeSipStatus | null>(null);
   /** Latest answer() implementation, callable from native listeners registered once. */
   const answerRef = useRef<null | (() => Promise<boolean>)>(null);
-  // In-flight answer promises keyed by call id, so the CallKit listener, the
-  // native invite listener and the queued-intent listener never race.
-  const answerInflightRef = useRef<Map<string, Promise<boolean>>>(new Map());
+  /** One answer transaction at a time across CallKit, notification and in-app UI. */
+  const answerAttemptRef = useRef<Promise<boolean> | null>(null);
 
   const seenCallIds = useRef<Set<string>>(new Set());
   const mobileSipConfigRef = useRef<PpSipConfig | null>(null);
@@ -390,13 +389,9 @@ export function useMplanipretSoftphone(enabled = true) {
       // before re-registering, so a fast JsSIP INVITE cannot beat the flag.
       if (invite?.action === "answer") {
         try { (window as any).__ppPendingAnswer = { callId: invite.callId, ts: Date.now() }; } catch {}
-        // urgent: the 5s debounce floor must not swallow this REGISTER, otherwise
-        // the PBX has no contact to route the INVITE to and the call never arrives.
-        try { ppSipProvider.forceReregister(true); } catch {}
-        // Android: the notification action only broadcast an intent before —
-        // nothing actually picked the call up, so the caller kept hearing the
-        // greeting. Run the full answer flow (SIP, then NS-API fallback).
-        void ppSipProvider.requestAnswer(invite?.callId);
+        try { ppSipProvider.forceReregister(); } catch {}
+        // Run the single arbitrated answer transaction. Calling requestAnswer()
+        // here as well used to create a second 30s waiter racing CallKit/UI.
         void answerRef.current?.().then((ok) => console.info(`[pp-sip] notification answer → ${ok ? "connected" : "failed"}`));
       } else if (invite?.action === "decline") {
         try { ppSipProvider.requestDecline(invite?.callId); } catch {}
@@ -409,8 +404,7 @@ export function useMplanipretSoftphone(enabled = true) {
         setPushRing(null);
         void acknowledgePlanipretIncoming();
       }
-      // Inbound-call wake-up — urgent for the same reason as above.
-      try { ppSipProvider.forceReregister(true); } catch {}
+      try { ppSipProvider.forceReregister(); } catch {}
       try {
         window.dispatchEvent(new CustomEvent("pp:sip-incoming-invite", { detail: invite }));
       } catch {}
@@ -456,18 +450,20 @@ export function useMplanipretSoftphone(enabled = true) {
     onPlanipretVoipIncomingCall((data: any) => {
       console.log("[pp-voip] incoming VoIP push → waking native SIP", data?.callId);
       void wakePlanipretNativeSipForIncomingCall("voip_push");
+      // Rebuild the JS transport straight away: waiting for the "Répondre" tap
+      // left the PBX with zero registered contacts (no INVITE → voicemail).
+      void ppSipProvider.wakeForIncoming(String(data?.callId ?? ""));
       const from = String(data?.from ?? data?.handle ?? data?.caller ?? data?.callerName ?? "");
       setPushRing({ callId: String(data?.callId ?? ""), from });
       // Sécurité : si aucun INVITE n'arrive, on retire l'écran après 40 s.
       window.setTimeout(() => setPushRing((cur) => (cur && cur.callId === String(data?.callId ?? "") ? null : cur)), 40_000);
     }).then((fn) => { cleanupVoipIncoming = fn; }).catch(() => undefined);
 
-      onPlanipretIncomingCallAnswered((data) => {
-        // CallKit stays in "connecting" (and the app never opens on the keypad)
-        // until the pending CXAnswerCallAction is fulfilled — that only happens
-        // when we report the real outcome back through completeAnswer().
-        // urgent: bypass the debounce floor, the INVITE depends on this REGISTER.
-        try { ppSipProvider.forceReregister(true); } catch {}
+    onPlanipretIncomingCallAnswered((data) => {
+      // CallKit stays in "connecting" (and the app never opens on the keypad)
+      // until the pending CXAnswerCallAction is fulfilled — that only happens
+      // when we report the real outcome back through completeAnswer().
+      try { ppSipProvider.forceReregister(); } catch {}
       try { window.dispatchEvent(new CustomEvent("pp:sip-callkit-answered", { detail: data })); } catch {}
       void (async () => {
         let ok = false;
@@ -710,10 +706,7 @@ export function useMplanipretSoftphone(enabled = true) {
          if (!check || check.healthy) return;
          console.warn("[pp-sip] backend registration check unhealthy", check);
          if (check.actions?.includes("reregister")) {
-           // The PBX itself reports no live binding (`registered_aors: []`), so this
-           // self-heal must not be swallowed by the debounce floor — while it is,
-           // inbound calls cannot be delivered at all.
-           ppSipProvider.forceReregister(true);
+           ppSipProvider.forceReregister();
            handedOffToNative = false;
          }
          if (check.actions?.includes("refresh_push_token")) {
@@ -1036,7 +1029,7 @@ export function useMplanipretSoftphone(enabled = true) {
   // lose (widget answered first), don't pick up — the winner already has audio.
   // Every branch is logged so the exact route to answer() is visible in Xcode /
   // Logcat when debugging a VoIP-push answer.
-  const runAnswer = useCallback(async () => {
+  const answerOnce = useCallback(async () => {
     const sipSnap = ppSipProvider.getSnapshot();
     console.info("[answer] tapped", {
       hasLiveSipSession,
@@ -1051,25 +1044,33 @@ export function useMplanipretSoftphone(enabled = true) {
     // comparaison de Call-ID : push id ≠ SIP Call-ID).
     const liveSipNow = ["ringing-in", "ringing-out", "active", "held"].includes(sipSnap.callState);
     if (!liveSipNow && pushRing) {
-      console.info("[answer] route=PUSH-PENDING → forceReregister + requestAnswer", {
+      console.info("[answer] route=PUSH-PENDING → wakeForIncoming + requestAnswer", {
         pushCallId: pushRing.callId ?? null,
       });
-      // urgent: this is the wake-up path where the debounce floor previously
-      // suppressed the REGISTER and left `registered_aors: []`.
-      try { ppSipProvider.forceReregister(true); } catch {}
+      try { await ppSipProvider.wakeForIncoming(pushRing.callId || undefined); } catch {}
       const immediate = await ppSipProvider.requestAnswer(pushRing.callId || undefined);
       console.info(`[answer] requestAnswer → ${immediate ? "answered immediately" : "intent queued"}`);
       if (immediate) return true;
       // A PBX REST "answer" cannot create a WebRTC media dialog and previously
       // produced a false connected state (CallKit answered, caller still hearing
       // the greeting, no audio/keypad). Only a confirmed SIP dialog is success.
-      for (let i = 0; i < 16; i++) {
+      const attempts = Math.ceil(PP_PENDING_ANSWER_TIMEOUT_MS / 500);
+      for (let i = 0; i < attempts; i++) {
         await new Promise((r) => window.setTimeout(r, 500));
         const st = ppSipProvider.getSnapshot().callState;
         if (st === "active") { console.info("[answer] SIP answered within watchdog window"); return true; }
         if (st === "ended") break;
       }
-      console.warn("[answer] no confirmed SIP dialog after 8s — refusing false REST answer");
+      console.warn("[answer] no confirmed SIP dialog before pending-answer expiry — refusing false REST answer");
+      return false;
+    }
+
+    // `ringing-in` is the only state that may be answered. Treating an active
+    // or outgoing session as answerable made CallKit wait on a command that
+    // could never produce a new confirmed inbound dialog.
+    if (sipSnap.callState === "active" || sipSnap.callState === "held") return true;
+    if (sipSnap.callState !== "ringing-in") {
+      console.warn("[answer] no inbound SIP INVITE available", { state: sipSnap.callState });
       return false;
     }
 
@@ -1084,41 +1085,23 @@ export function useMplanipretSoftphone(enabled = true) {
     console.info("[answer] route=SIP → claiming call", { callId });
     const won = await claimCall(callId, "mobile");
     if (!won) {
-      // A lost claim only means "another CLIENT answered" — claimCall() already
-      // read the row back and conceded solely to a different answered_by. Even
-      // then, never tear down a dialog this device has already established.
-      const stateNow = ppSipProvider.getSnapshot().callState;
-      if (stateNow === "active" || stateNow === "held") {
-        console.info("[answer] claim lost but local dialog is live → keeping the call", { callId, stateNow });
-        return true;
+      // Non-destructive claim: a lost claim must never tear down a media dialog
+      // that is already live locally. Two concurrent answer paths on the SAME
+      // device used to make the loser hang up the call its twin had just picked
+      // up ("answered elsewhere (widget)" with pushCallId=null in the logs).
+      const liveState = ppSipProvider.getSnapshot().callState;
+      if (liveState === "active" || liveState === "held") {
+        console.warn("[answer] claim lost but local dialog is live → keeping the call", { callId, liveState });
+      } else {
+        console.warn("[answer] claim lost → answered elsewhere (widget)");
+        setAnsweredElsewhere("widget");
+        try { ppSipProvider.hangup(); } catch {}
+        return false;
       }
-      console.warn("[answer] claim lost → answered elsewhere (widget)");
-      setAnsweredElsewhere("widget");
-      try { ppSipProvider.hangup(); } catch {}
-      return false;
-    }
-    // The session may already be answered by a sibling path that won the race a
-    // few ms earlier; that is a success, not a failure.
-    const preState = ppSipProvider.getSnapshot().callState;
-    if (preState === "active" || preState === "held") {
-      console.info("[answer] dialog already confirmed → nothing to do", { callId, preState });
-      if (restCall?.id) setRestCall(null);
-      return true;
     }
     const ok = await ppSipProvider.answer(callId);
     console.info(`[answer] ppSipProvider.answer → ${ok ? "SIP 200 OK sent" : "FAILED"}`, { callId });
-    if (!ok) {
-      // INVALID_STATE_ERROR (status 8) means the dialog was answered elsewhere in
-      // this very app; treat a live session as success instead of reporting a
-      // failure that would fail the CXAnswerCallAction.
-      const after = ppSipProvider.getSnapshot().callState;
-      if (after === "active" || after === "held") {
-        console.info("[answer] answer() rejected but dialog is live → treating as success", { callId, after });
-        if (restCall?.id) setRestCall(null);
-        return true;
-      }
-      return false;
-    }
+    if (!ok) return false;
     // Do not report success to CallKit on a locally accepted answer command.
     // Wait until JsSIP receives the confirmed dialog from the PBX.
     for (let i = 0; i < 16; i++) {
@@ -1133,31 +1116,19 @@ export function useMplanipretSoftphone(enabled = true) {
     return ok;
   }, [restCall?.id, restControl, hasLiveSipSession, pushRing]);
 
-  // Idempotence guard. Three independent paths can fire for the SAME INVITE:
-  // the CallKit `incomingCallAnswered` listener, the native invite listener with
-  // action="answer" (Android notification), and `pp:sip-pending-answer-ready`
-  // once a queued intent finds its INVITE. Running them concurrently produced
-  // two `pp_claim_call` RPCs; the loser logged "answered elsewhere (widget)" and
-  // hung up the call the winner had just answered, and JsSIP raised
-  // INVALID_STATE_ERROR (status 8) on the second `session.answer()`.
-  // Concurrent callers now share the first in-flight promise.
-  const answer = useCallback(async () => {
-    const key = ppSipProvider.getSnapshot().callId || pushRing?.callId || "pending";
-    const inflight = answerInflightRef.current;
-    const existing = inflight.get(key);
-    if (existing) {
-      console.info("[answer] already in flight for this call → joining", { key });
-      return existing;
+  const answer = useCallback((): Promise<boolean> => {
+    const pending = answerAttemptRef.current;
+    if (pending) {
+      console.info("[answer] joining answer already in flight");
+      return pending;
     }
-    const p = (async () => {
-      try { return await runAnswer(); }
-      finally {
-        window.setTimeout(() => { answerInflightRef.current.delete(key); }, 1500);
-      }
-    })();
-    inflight.set(key, p);
-    return p;
-  }, [runAnswer, pushRing?.callId]);
+    const run = answerOnce();
+    answerAttemptRef.current = run;
+    void run.finally(() => {
+      if (answerAttemptRef.current === run) answerAttemptRef.current = null;
+    });
+    return run;
+  }, [answerOnce]);
 
   useEffect(() => { answerRef.current = answer; }, [answer]);
 
