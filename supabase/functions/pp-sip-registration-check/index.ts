@@ -59,7 +59,22 @@ Deno.serve(async (req) => {
       .filter(Boolean),
   ));
   const mobileAor = `${ctx.extension}M`;
-  const mobileRegistered = aors.some((a) => a.toLowerCase() === mobileAor.toLowerCase());
+
+  // NEVER report "not registered" when we simply could not read the PBX.
+  // get() swallows every failure into {ok:false}, so a 403/404/timeout on all
+  // registration probes produced registered_aors: [] and mobile_registered:
+  // false while the portal clearly showed 113M and 113W as registered. The
+  // client reacted to that false negative with `hard transport rebuild
+  // (push_wake_pbx_unregistered)` DURING the inbound ring, tearing down the very
+  // socket the INVITE was arriving on.
+  //
+  // Three states now: true (seen), false (probes answered, AOR absent),
+  // null (unreadable => callers must take no corrective action).
+  const probesAnswered = regProbes.some((p) => p.ok);
+  const probeStatuses = regProbes.map((p) => p.status);
+  const mobileRegistered: boolean | null = !probesAnswered
+    ? null
+    : aors.some((a) => a.toLowerCase() === mobileAor.toLowerCase());
 
   // 2) Mobile device must have push enabled (docs/netsapiens/devices.md).
   //    The device LIST endpoint often omits `device-push-enabled`, so fall back
@@ -102,7 +117,8 @@ Deno.serve(async (req) => {
 
   const actions: string[] = [];
   const blockers: string[] = [];
-  if (!mobileRegistered) actions.push("reregister");
+  // Only a confirmed negative justifies a re-register. `null` means unreadable.
+  if (mobileRegistered === false) actions.push("reregister");
   if (!tokenRow?.device_token || (tokenAgeH != null && tokenAgeH > 24)) actions.push("refresh_push_token");
   // device-push-enabled=no => NS never fires the APNs VoIP push, no webhook can
   // compensate for that. Surface it as a hard blocker so it gets repaired.
@@ -113,7 +129,9 @@ Deno.serve(async (req) => {
   if (!mobileDevice) blockers.push("MOBILE_DEVICE_MISSING");
   if (!callSubscription) blockers.push("CALL_SUBSCRIPTION_MISSING");
 
-  const healthy = mobileRegistered && !!tokenRow?.device_token && callSubscription &&
+  // `unknown` registration must not be reported as unhealthy: the app used that
+  // verdict to rebuild its transport mid-ring.
+  const healthy = mobileRegistered !== false && !!tokenRow?.device_token && callSubscription &&
     devicePushEnabled !== false;
 
 
@@ -124,9 +142,14 @@ Deno.serve(async (req) => {
     domain: ctx.nsDomain,
     registration: {
       mobile_aor: mobileAor,
+      // true | false | null (null = PBX registrations unreadable, do not act)
       mobile_registered: mobileRegistered,
       registered_aors: aors,
       count: regRows.length,
+      // Diagnostics for the unreadable case: 403 = missing API scope,
+      // 404 = wrong endpoint for this NS deployment, 0 = network failure.
+      probes_answered: probesAnswered,
+      probe_statuses: probeStatuses,
     },
     push: {
       device_push_enabled: devicePushEnabled,

@@ -926,7 +926,14 @@ class PpSipProvider {
     // contact. Confirm the authoritative AOR before declaring wake successful.
     if (ok && this.getSnapshot().callState !== "ringing-in") {
       const backend = await checkSipBackendRegistration({ force: true, minIntervalMs: 0 });
-      if (backend?.registration?.mobile_registered === false) {
+      // STRICT `=== false` ONLY. The backend now returns null when it could not
+      // read the PBX registrations at all; treating that as "not registered"
+      // triggered a hard transport rebuild while the portal actually showed the
+      // mobile AOR up, destroying the socket carrying the inbound INVITE.
+      const pbxSaysUnregistered = backend?.registration?.mobile_registered === false;
+      // Re-check the ring state: the diagnostic round-trip takes seconds and an
+      // INVITE may have landed meanwhile. Never rebuild on top of a live ring.
+      if (pbxSaysUnregistered && this.getSnapshot().callState !== "ringing-in") {
         this.log("warn", "push wake: local registered but PBX mobile AOR absent → rebuilding");
         this.hardRebuild("push_wake_pbx_unregistered");
         ok = await this.waitForRegistered(12_000);
@@ -934,6 +941,10 @@ class PpSipProvider {
           const verified = await checkSipBackendRegistration({ force: true, minIntervalMs: 0 });
           ok = verified?.registration?.mobile_registered !== false;
         }
+      } else if (backend?.registration?.mobile_registered == null) {
+        this.log("warn", "push wake: PBX registration unreadable → trusting local REGISTER", {
+          probeStatuses: backend?.registration?.probe_statuses ?? null,
+        });
       }
     }
     // The answer window only makes sense once the socket can carry an INVITE.

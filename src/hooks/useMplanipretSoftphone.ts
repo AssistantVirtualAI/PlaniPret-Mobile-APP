@@ -720,6 +720,12 @@ export function useMplanipretSoftphone(enabled = true) {
        // live binding. Ask the backend for the real state and self-heal.
        void checkSipBackendRegistration().then((check) => {
          if (!check || check.healthy) return;
+         // A ringing INVITE outranks every self-healing action: forcing a
+         // re-REGISTER here re-opened the transport under the live dialog.
+         if (callInProgress()) {
+           console.warn("[pp-sip] backend check unhealthy but call in progress → no self-heal", check);
+           return;
+         }
          console.warn("[pp-sip] backend registration check unhealthy", check);
          if (check.actions?.includes("reregister")) {
            ppSipProvider.forceReregister();
