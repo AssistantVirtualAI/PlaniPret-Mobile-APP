@@ -223,6 +223,9 @@ export function useMplanipretSoftphone(enabled = true) {
   const [nativeStatus, setNativeStatus] = useState<PpNativeSipStatus | null>(null);
   /** Latest answer() implementation, callable from native listeners registered once. */
   const answerRef = useRef<null | (() => Promise<boolean>)>(null);
+  // In-flight answer promises keyed by call id, so the CallKit listener, the
+  // native invite listener and the queued-intent listener never race.
+  const answerInflightRef = useRef<Map<string, Promise<boolean>>>(new Map());
 
   const seenCallIds = useRef<Set<string>>(new Set());
   const mobileSipConfigRef = useRef<PpSipConfig | null>(null);
@@ -1026,7 +1029,7 @@ export function useMplanipretSoftphone(enabled = true) {
   // lose (widget answered first), don't pick up — the winner already has audio.
   // Every branch is logged so the exact route to answer() is visible in Xcode /
   // Logcat when debugging a VoIP-push answer.
-  const answer = useCallback(async () => {
+  const runAnswer = useCallback(async () => {
     const sipSnap = ppSipProvider.getSnapshot();
     console.info("[answer] tapped", {
       hasLiveSipSession,
@@ -1072,14 +1075,41 @@ export function useMplanipretSoftphone(enabled = true) {
     console.info("[answer] route=SIP → claiming call", { callId });
     const won = await claimCall(callId, "mobile");
     if (!won) {
+      // A lost claim only means "another CLIENT answered" — claimCall() already
+      // read the row back and conceded solely to a different answered_by. Even
+      // then, never tear down a dialog this device has already established.
+      const stateNow = ppSipProvider.getSnapshot().callState;
+      if (stateNow === "active" || stateNow === "held") {
+        console.info("[answer] claim lost but local dialog is live → keeping the call", { callId, stateNow });
+        return true;
+      }
       console.warn("[answer] claim lost → answered elsewhere (widget)");
       setAnsweredElsewhere("widget");
       try { ppSipProvider.hangup(); } catch {}
       return false;
     }
+    // The session may already be answered by a sibling path that won the race a
+    // few ms earlier; that is a success, not a failure.
+    const preState = ppSipProvider.getSnapshot().callState;
+    if (preState === "active" || preState === "held") {
+      console.info("[answer] dialog already confirmed → nothing to do", { callId, preState });
+      if (restCall?.id) setRestCall(null);
+      return true;
+    }
     const ok = await ppSipProvider.answer(callId);
     console.info(`[answer] ppSipProvider.answer → ${ok ? "SIP 200 OK sent" : "FAILED"}`, { callId });
-    if (!ok) return false;
+    if (!ok) {
+      // INVALID_STATE_ERROR (status 8) means the dialog was answered elsewhere in
+      // this very app; treat a live session as success instead of reporting a
+      // failure that would fail the CXAnswerCallAction.
+      const after = ppSipProvider.getSnapshot().callState;
+      if (after === "active" || after === "held") {
+        console.info("[answer] answer() rejected but dialog is live → treating as success", { callId, after });
+        if (restCall?.id) setRestCall(null);
+        return true;
+      }
+      return false;
+    }
     // Do not report success to CallKit on a locally accepted answer command.
     // Wait until JsSIP receives the confirmed dialog from the PBX.
     for (let i = 0; i < 16; i++) {
@@ -1093,6 +1123,32 @@ export function useMplanipretSoftphone(enabled = true) {
     if (ok && restCall?.id) setRestCall(null);
     return ok;
   }, [restCall?.id, restControl, hasLiveSipSession, pushRing]);
+
+  // Idempotence guard. Three independent paths can fire for the SAME INVITE:
+  // the CallKit `incomingCallAnswered` listener, the native invite listener with
+  // action="answer" (Android notification), and `pp:sip-pending-answer-ready`
+  // once a queued intent finds its INVITE. Running them concurrently produced
+  // two `pp_claim_call` RPCs; the loser logged "answered elsewhere (widget)" and
+  // hung up the call the winner had just answered, and JsSIP raised
+  // INVALID_STATE_ERROR (status 8) on the second `session.answer()`.
+  // Concurrent callers now share the first in-flight promise.
+  const answer = useCallback(async () => {
+    const key = ppSipProvider.getSnapshot().callId || pushRing?.callId || "pending";
+    const inflight = answerInflightRef.current;
+    const existing = inflight.get(key);
+    if (existing) {
+      console.info("[answer] already in flight for this call → joining", { key });
+      return existing;
+    }
+    const p = (async () => {
+      try { return await runAnswer(); }
+      finally {
+        window.setTimeout(() => { answerInflightRef.current.delete(key); }, 1500);
+      }
+    })();
+    inflight.set(key, p);
+    return p;
+  }, [runAnswer, pushRing?.callId]);
 
   useEffect(() => { answerRef.current = answer; }, [answer]);
 

@@ -54,7 +54,16 @@ export async function upsertRingingSession(args: {
   } catch { /* best-effort */ }
 }
 
-/** Atomically try to claim the call for this client. Returns true if we won. */
+/** Atomically try to claim the call for this client. Returns true if we won.
+ *
+ *  IMPORTANT: `pp_claim_call` flips state with `WHERE state='ringing'`, so it
+ *  also returns false when THIS device already claimed the call a few hundred
+ *  milliseconds earlier (two internal answer paths can fire for the same
+ *  INVITE: the CallKit listener and the queued-intent listener). Reporting that
+ *  as "answered elsewhere" made the second path hang up the call the first path
+ *  had just answered. When the claim is lost we therefore read the row back and
+ *  only concede if the winner is a DIFFERENT client.
+ */
 export async function claimCall(callId: string, answeredBy: AnsweredBy): Promise<boolean> {
   if (!callId) return true; // no-id calls can't be coordinated; let them proceed
   try {
@@ -63,9 +72,30 @@ export async function claimCall(callId: string, answeredBy: AnsweredBy): Promise
       _answered_by: answeredBy,
     });
     if (error) return true; // fail open — better to answer than to drop
-    return Boolean(data);
+    if (Boolean(data)) return true;
+    return await claimHeldByUs(callId, answeredBy);
   } catch {
     return true;
+  }
+}
+
+/** Returns true when the existing claim on `callId` belongs to `answeredBy`. */
+async function claimHeldByUs(callId: string, answeredBy: AnsweredBy): Promise<boolean> {
+  try {
+    const { data, error } = await supabase
+      .from("planipret_call_sessions")
+      .select("answered_by,state")
+      .eq("call_id", callId)
+      .maybeSingle();
+    if (error || !data) return false; // unknown winner → concede
+    const row = data as { answered_by: AnsweredBy | null; state: SessionState | null };
+    if (row.answered_by === answeredBy) {
+      console.info("[claim] already held by this client → proceeding", { callId, answeredBy });
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
   }
 }
 
