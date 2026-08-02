@@ -197,20 +197,23 @@ public class PpSipKeepAlivePlugin extends Plugin {
     String route = call.getString("route", "earpiece");
     try {
       android.media.AudioManager am = (android.media.AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
-      if (am != null) {
-        am.setMode(android.media.AudioManager.MODE_IN_COMMUNICATION);
-        if ("speaker".equals(route)) {
-          try { am.stopBluetoothSco(); } catch (Exception ignored) {}
-          am.setBluetoothScoOn(false);
-          am.setSpeakerphoneOn(true);
-        } else if ("bluetooth".equals(route)) {
-          am.setSpeakerphoneOn(false);
-          try { am.startBluetoothSco(); } catch (Exception ignored) {}
-        } else { // earpiece
-          try { am.stopBluetoothSco(); } catch (Exception ignored) {}
-          am.setBluetoothScoOn(false);
-          am.setSpeakerphoneOn(false);
-        }
+      // Reject instead of silently resolving: a muted speaker button with an "ok"
+      // reply is impossible to diagnose from the JS side.
+      if (am == null) { call.reject("no_audio_manager"); return; }
+      am.setMode(android.media.AudioManager.MODE_IN_COMMUNICATION);
+      if ("speaker".equals(route)) {
+        try { am.stopBluetoothSco(); } catch (Exception ignored) {}
+        am.setBluetoothScoOn(false);
+        am.setSpeakerphoneOn(true);
+      } else if ("bluetooth".equals(route)) {
+        am.setSpeakerphoneOn(false);
+        // setBluetoothScoOn is required in addition to startBluetoothSco: on some
+        // devices the SCO link comes up but audio keeps flowing to the handset.
+        try { am.startBluetoothSco(); am.setBluetoothScoOn(true); } catch (Exception ignored) {}
+      } else { // earpiece
+        try { am.stopBluetoothSco(); } catch (Exception ignored) {}
+        am.setBluetoothScoOn(false);
+        am.setSpeakerphoneOn(false);
       }
       call.resolve(new JSObject().put("ok", true).put("route", route));
     } catch (Exception e) { call.reject(e.getMessage()); }
@@ -220,8 +223,10 @@ public class PpSipKeepAlivePlugin extends Plugin {
       android.media.AudioManager am = (android.media.AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
       String route = "earpiece";
       if (am != null) {
-        if (am.isSpeakerphoneOn()) route = "speaker";
-        else if (am.isBluetoothScoOn()) route = "bluetooth";
+        // Bluetooth first: an active SCO link is the effective route even when
+        // isSpeakerphoneOn() still reports a stale true.
+        if (am.isBluetoothScoOn()) route = "bluetooth";
+        else if (am.isSpeakerphoneOn()) route = "speaker";
       }
       call.resolve(new JSObject().put("ok", true).put("route", route));
     } catch (Exception e) { call.reject(e.getMessage()); }
@@ -255,6 +260,9 @@ public class PpIncomingActionReceiver extends BroadcastReceiver {
       NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE);
       if (nm != null) nm.cancel(PpSipKeepAliveService.INCOMING_NOTIFICATION_ID);
     } catch (Exception ignored) {}
+    // "Refuser": send a real SIP 603 from the native service. The broadcast below
+    // only informs the WebView, which may not even be running yet.
+    if ("decline".equals(userAction)) PpSipKeepAliveService.declineIncoming(c, callId);
     // Forward to plugin listeners.
     c.sendBroadcast(new Intent(PpSipKeepAliveService.ACTION_INCOMING_INVITE)
       .setPackage(c.getPackageName())
@@ -312,7 +320,8 @@ public class PpSipKeepAliveService extends Service {
     PREFS_NAME = "pp_sip_keepalive",
     ACTION_STATUS = "com.planipret.mobile.PP_SIP_STATUS",
     ACTION_REREGISTER = "com.planipret.mobile.PP_SIP_REREGISTER",
-    ACTION_INCOMING_INVITE = "com.planipret.mobile.PP_SIP_INCOMING_INVITE";
+    ACTION_INCOMING_INVITE = "com.planipret.mobile.PP_SIP_INCOMING_INVITE",
+    ACTION_DECLINE_CALL = "com.planipret.mobile.PP_SIP_DECLINE_CALL";
   public static final int NOTIFICATION_ID = 2201, INCOMING_NOTIFICATION_ID = 2202;
   public static final String KEY_STATUS = "status", KEY_REASON = "reason", KEY_UPDATED_AT = "updated_at", KEY_WAKE_HELD = "wake_held", KEY_WIFI_HELD = "wifi_held", KEY_LOGGED_IN = "logged_in";
   private final ScheduledExecutorService executor = Executors.newScheduledThreadPool(2);
@@ -330,9 +339,17 @@ public class PpSipKeepAliveService extends Service {
   private long lastRegisterSentMs = 0L;
   private long lastRegisterOkMs = 0L;
   private static final long REGISTER_DEBOUNCE_MS = 5000L;
+  // Headers of the INVITE currently ringing. A SIP 603 Decline must echo Via,
+  // From, To, Call-ID and CSeq of that INVITE, so they are captured on arrival.
+  private volatile String activeInviteVia = null, activeInviteFrom = null, activeInviteTo = null;
+  private volatile String activeInviteCallId = null, activeInviteCSeq = null;
 
   public static void start(Context c) { Intent i = new Intent(c, PpSipKeepAliveService.class); if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) c.startForegroundService(i); else c.startService(i); }
   public static void stop(Context c) { c.stopService(new Intent(c, PpSipKeepAliveService.class)); }
+  public static void declineIncoming(Context c, String callId) {
+    Intent i = new Intent(c, PpSipKeepAliveService.class).setAction(ACTION_DECLINE_CALL).putExtra("callId", callId);
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) c.startForegroundService(i); else c.startService(i);
+  }
   public static void saveConfig(Context c, String host, int port, String path, String login, String domain, String displayName, String password) { c.getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putString("host", host).putInt("port", port).putString("path", path).putString("login", login).putString("domain", domain).putString("display_name", displayName).putString("password", password).apply(); }
   public static void saveStrategy(Context c, int backoffMinMs, int backoffMaxMs, int backoffMaxAttempts, int verifyDelayMs, int heartbeatSec, int registerExpiresSec) {
     c.getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
@@ -380,6 +397,14 @@ public class PpSipKeepAliveService extends Service {
     Notification n = buildOngoingNotification("Téléphonie prête en arrière-plan");
     if (Build.VERSION.SDK_INT >= 34) ServiceCompat.startForeground(this, NOTIFICATION_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL | ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
     else startForeground(NOTIFICATION_ID, n);
+    // "Refuser" tapped in the incoming notification: answer the ringing INVITE
+    // with a real SIP 603 Decline. Without it the caller kept ringing until the
+    // PBX timed out and the call fell through to voicemail.
+    if (intent != null && ACTION_DECLINE_CALL.equals(intent.getAction())) {
+      String requestedCallId = intent.getStringExtra("callId");
+      executor.execute(() -> { try { sendDecline(requestedCallId); } catch (Exception ignored) {} });
+      return START_STICKY;
+    }
     emitStatus("connecting", "native_register_start");
     executor.execute(this::connectAndRegister);
     if (heartbeat != null) heartbeat.cancel(false);
@@ -436,6 +461,9 @@ public class PpSipKeepAliveService extends Service {
       String fromHdr = header(msg, "From"); String toHdr = header(msg, "To");
       String viaHdr = header(msg, "Via"); String inviteCallId = header(msg, "Call-ID");
       String inviteCSeq = header(msg, "CSeq");
+      // Remember the ringing dialog so "Refuser" can build a valid 603 later.
+      activeInviteVia = viaHdr; activeInviteFrom = fromHdr; activeInviteTo = toHdr;
+      activeInviteCallId = inviteCallId; activeInviteCSeq = inviteCSeq;
       String fromDisplay = parseDisplay(fromHdr); String fromUser = parseUser(fromHdr);
       // Send 180 Ringing so the PBX keeps the INVITE alive while the app wakes.
       try { sendRinging(viaHdr, fromHdr, toHdr, inviteCallId, inviteCSeq); } catch (Exception ignored) {}
@@ -445,7 +473,37 @@ public class PpSipKeepAliveService extends Service {
         .putExtra("fromUser", fromUser).putExtra("fromDisplay", fromDisplay));
       // Fire the full-screen "ringing" notification with Answer / Decline actions.
       showIncomingCallNotification(inviteCallId, fromHdr, fromUser, fromDisplay);
+      return;
     }
+    // The caller hung up before we answered: drop the notification, otherwise a
+    // stale full-screen "incoming call" stayed on screen for a dead call.
+    if (msg.startsWith("CANCEL ")) {
+      String cancelCallId = header(msg, "Call-ID");
+      if (cancelCallId != null && cancelCallId.equals(activeInviteCallId)) {
+        clearIncomingNotification(this);
+        sendBroadcast(new Intent(ACTION_INCOMING_INVITE).setPackage(getPackageName())
+          .putExtra("callId", cancelCallId).putExtra("userAction", "cancelled"));
+        clearActiveInvite();
+      }
+    }
+  }
+
+  /** Sends a real SIP 603 Decline for the ringing INVITE, echoing its headers. */
+  private void sendDecline(String requestedCallId) throws Exception {
+    if (activeInviteCallId == null || (requestedCallId != null && !requestedCallId.equals(activeInviteCallId))) return;
+    if (activeInviteVia == null || activeInviteFrom == null || activeInviteTo == null || activeInviteCSeq == null) return;
+    String toWithTag = activeInviteTo.contains(";tag=") ? activeInviteTo : activeInviteTo + ";tag=" + Long.toHexString(System.nanoTime());
+    String response = "SIP/2.0 603 Decline\\r\\nVia: " + activeInviteVia + "\\r\\nFrom: " + activeInviteFrom
+      + "\\r\\nTo: " + toWithTag + "\\r\\nCall-ID: " + activeInviteCallId + "\\r\\nCSeq: " + activeInviteCSeq
+      + "\\r\\nUser-Agent: Planipret Native KeepAlive\\r\\nContent-Length: 0\\r\\n\\r\\n";
+    sendFrame(response);
+    clearIncomingNotification(this);
+    clearActiveInvite();
+  }
+
+  private void clearActiveInvite() {
+    activeInviteVia = null; activeInviteFrom = null; activeInviteTo = null;
+    activeInviteCallId = null; activeInviteCSeq = null;
   }
 
   private void sendRinging(String via, String from, String to, String cid, String cseqHeader) throws Exception {
@@ -675,7 +733,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       registerExpires = call.getInt("registerExpiresSec") ?? 1800
       persistConfig()
       // Build marker: lets us prove from the Xcode console which binary is running.
-      NSLog("[PpSipKeepAlive] BUILD MARKER pp-build-2026-08-02-pushwake1 (single-AOR: .inactive counts as foreground)")
+      NSLog("[PpSipKeepAlive] BUILD MARKER pp-build-2026-08-02-sipowner3 (single-AOR: .inactive counts as foreground)")
       NSLog("[PpSipKeepAlive] reconnect strategy min=%.0fms max=%.0fms attempts=%d verify=%.0fms expires=%ds", backoffMinMs, backoffMaxMs, backoffMaxAttempts, verifyDelayMs, registerExpires)
       DispatchQueue.main.async { [weak self] in
         guard let self = self else { call.resolve(["ok": false, "status": "error", "reason": "plugin_released"]); return }
@@ -1014,6 +1072,9 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
           self.receiveLoop()
         case .failure(let err):
           self.socket = nil
+          // Without this, socketOpen stayed true after a drop and sendRegister
+          // happily wrote to a dead socket (POSIX 57).
+          self.socketOpen = false
           if self.isForeground() { self.setStatus("idle", "foreground_js_owns") }
           else {
             NSLog("[PpSipKeepAlive] socket closed: %@", String(describing: err))
@@ -1036,8 +1097,10 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         self.reconnectPending = false
         if self.isForeground() { self.setStatus("idle", "foreground_js_owns"); return }
         guard self.networkUp else { self.setStatus("reconnecting", "network_down"); self.scheduleReconnect("network_down"); return }
+        // connect() only. The REGISTER is driven by didOpenWithProtocol via
+        // registerOnOpen: firing it here raced the handshake and produced
+        // POSIX 57 (socket is not connected) plus a wasted backoff cycle.
         self.connect()
-        self.sendRegister(challenge: nil)
         DispatchQueue.main.asyncAfter(deadline: .now() + self.verifyDelayMs / 1000.0) { [weak self] in
           guard let self = self else { return }
           if self.status != "registered" && !self.isForeground() { self.scheduleReconnect("still_unregistered") }

@@ -197,20 +197,23 @@ public class PpSipKeepAlivePlugin extends Plugin {
     String route = call.getString("route", "earpiece");
     try {
       android.media.AudioManager am = (android.media.AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
-      if (am != null) {
-        am.setMode(android.media.AudioManager.MODE_IN_COMMUNICATION);
-        if ("speaker".equals(route)) {
-          try { am.stopBluetoothSco(); } catch (Exception ignored) {}
-          am.setBluetoothScoOn(false);
-          am.setSpeakerphoneOn(true);
-        } else if ("bluetooth".equals(route)) {
-          am.setSpeakerphoneOn(false);
-          try { am.startBluetoothSco(); } catch (Exception ignored) {}
-        } else { // earpiece
-          try { am.stopBluetoothSco(); } catch (Exception ignored) {}
-          am.setBluetoothScoOn(false);
-          am.setSpeakerphoneOn(false);
-        }
+      // Reject instead of silently resolving: a muted speaker button with an "ok"
+      // reply is impossible to diagnose from the JS side.
+      if (am == null) { call.reject("no_audio_manager"); return; }
+      am.setMode(android.media.AudioManager.MODE_IN_COMMUNICATION);
+      if ("speaker".equals(route)) {
+        try { am.stopBluetoothSco(); } catch (Exception ignored) {}
+        am.setBluetoothScoOn(false);
+        am.setSpeakerphoneOn(true);
+      } else if ("bluetooth".equals(route)) {
+        am.setSpeakerphoneOn(false);
+        // setBluetoothScoOn is required in addition to startBluetoothSco: on some
+        // devices the SCO link comes up but audio keeps flowing to the handset.
+        try { am.startBluetoothSco(); am.setBluetoothScoOn(true); } catch (Exception ignored) {}
+      } else { // earpiece
+        try { am.stopBluetoothSco(); } catch (Exception ignored) {}
+        am.setBluetoothScoOn(false);
+        am.setSpeakerphoneOn(false);
       }
       call.resolve(new JSObject().put("ok", true).put("route", route));
     } catch (Exception e) { call.reject(e.getMessage()); }
@@ -220,8 +223,10 @@ public class PpSipKeepAlivePlugin extends Plugin {
       android.media.AudioManager am = (android.media.AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
       String route = "earpiece";
       if (am != null) {
-        if (am.isSpeakerphoneOn()) route = "speaker";
-        else if (am.isBluetoothScoOn()) route = "bluetooth";
+        // Bluetooth first: an active SCO link is the effective route even when
+        // isSpeakerphoneOn() still reports a stale true.
+        if (am.isBluetoothScoOn()) route = "bluetooth";
+        else if (am.isSpeakerphoneOn()) route = "speaker";
       }
       call.resolve(new JSObject().put("ok", true).put("route", route));
     } catch (Exception e) { call.reject(e.getMessage()); }
@@ -255,6 +260,9 @@ public class PpIncomingActionReceiver extends BroadcastReceiver {
       NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE);
       if (nm != null) nm.cancel(PpSipKeepAliveService.INCOMING_NOTIFICATION_ID);
     } catch (Exception ignored) {}
+    // "Refuser": send a real SIP 603 from the native service. The broadcast below
+    // only informs the WebView, which may not even be running yet.
+    if ("decline".equals(userAction)) PpSipKeepAliveService.declineIncoming(c, callId);
     // Forward to plugin listeners.
     c.sendBroadcast(new Intent(PpSipKeepAliveService.ACTION_INCOMING_INVITE)
       .setPackage(c.getPackageName())
@@ -312,7 +320,8 @@ public class PpSipKeepAliveService extends Service {
     PREFS_NAME = "pp_sip_keepalive",
     ACTION_STATUS = "com.planipret.mobile.PP_SIP_STATUS",
     ACTION_REREGISTER = "com.planipret.mobile.PP_SIP_REREGISTER",
-    ACTION_INCOMING_INVITE = "com.planipret.mobile.PP_SIP_INCOMING_INVITE";
+    ACTION_INCOMING_INVITE = "com.planipret.mobile.PP_SIP_INCOMING_INVITE",
+    ACTION_DECLINE_CALL = "com.planipret.mobile.PP_SIP_DECLINE_CALL";
   public static final int NOTIFICATION_ID = 2201, INCOMING_NOTIFICATION_ID = 2202;
   public static final String KEY_STATUS = "status", KEY_REASON = "reason", KEY_UPDATED_AT = "updated_at", KEY_WAKE_HELD = "wake_held", KEY_WIFI_HELD = "wifi_held", KEY_LOGGED_IN = "logged_in";
   private final ScheduledExecutorService executor = Executors.newScheduledThreadPool(2);
@@ -330,9 +339,17 @@ public class PpSipKeepAliveService extends Service {
   private long lastRegisterSentMs = 0L;
   private long lastRegisterOkMs = 0L;
   private static final long REGISTER_DEBOUNCE_MS = 5000L;
+  // Headers of the INVITE currently ringing. A SIP 603 Decline must echo Via,
+  // From, To, Call-ID and CSeq of that INVITE, so they are captured on arrival.
+  private volatile String activeInviteVia = null, activeInviteFrom = null, activeInviteTo = null;
+  private volatile String activeInviteCallId = null, activeInviteCSeq = null;
 
   public static void start(Context c) { Intent i = new Intent(c, PpSipKeepAliveService.class); if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) c.startForegroundService(i); else c.startService(i); }
   public static void stop(Context c) { c.stopService(new Intent(c, PpSipKeepAliveService.class)); }
+  public static void declineIncoming(Context c, String callId) {
+    Intent i = new Intent(c, PpSipKeepAliveService.class).setAction(ACTION_DECLINE_CALL).putExtra("callId", callId);
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) c.startForegroundService(i); else c.startService(i);
+  }
   public static void saveConfig(Context c, String host, int port, String path, String login, String domain, String displayName, String password) { c.getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit().putString("host", host).putInt("port", port).putString("path", path).putString("login", login).putString("domain", domain).putString("display_name", displayName).putString("password", password).apply(); }
   public static void saveStrategy(Context c, int backoffMinMs, int backoffMaxMs, int backoffMaxAttempts, int verifyDelayMs, int heartbeatSec, int registerExpiresSec) {
     c.getSharedPreferences(PREFS_NAME, MODE_PRIVATE).edit()
@@ -380,6 +397,14 @@ public class PpSipKeepAliveService extends Service {
     Notification n = buildOngoingNotification("Téléphonie prête en arrière-plan");
     if (Build.VERSION.SDK_INT >= 34) ServiceCompat.startForeground(this, NOTIFICATION_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL | ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
     else startForeground(NOTIFICATION_ID, n);
+    // "Refuser" tapped in the incoming notification: answer the ringing INVITE
+    // with a real SIP 603 Decline. Without it the caller kept ringing until the
+    // PBX timed out and the call fell through to voicemail.
+    if (intent != null && ACTION_DECLINE_CALL.equals(intent.getAction())) {
+      String requestedCallId = intent.getStringExtra("callId");
+      executor.execute(() -> { try { sendDecline(requestedCallId); } catch (Exception ignored) {} });
+      return START_STICKY;
+    }
     emitStatus("connecting", "native_register_start");
     executor.execute(this::connectAndRegister);
     if (heartbeat != null) heartbeat.cancel(false);
@@ -436,6 +461,9 @@ public class PpSipKeepAliveService extends Service {
       String fromHdr = header(msg, "From"); String toHdr = header(msg, "To");
       String viaHdr = header(msg, "Via"); String inviteCallId = header(msg, "Call-ID");
       String inviteCSeq = header(msg, "CSeq");
+      // Remember the ringing dialog so "Refuser" can build a valid 603 later.
+      activeInviteVia = viaHdr; activeInviteFrom = fromHdr; activeInviteTo = toHdr;
+      activeInviteCallId = inviteCallId; activeInviteCSeq = inviteCSeq;
       String fromDisplay = parseDisplay(fromHdr); String fromUser = parseUser(fromHdr);
       // Send 180 Ringing so the PBX keeps the INVITE alive while the app wakes.
       try { sendRinging(viaHdr, fromHdr, toHdr, inviteCallId, inviteCSeq); } catch (Exception ignored) {}
@@ -445,7 +473,37 @@ public class PpSipKeepAliveService extends Service {
         .putExtra("fromUser", fromUser).putExtra("fromDisplay", fromDisplay));
       // Fire the full-screen "ringing" notification with Answer / Decline actions.
       showIncomingCallNotification(inviteCallId, fromHdr, fromUser, fromDisplay);
+      return;
     }
+    // The caller hung up before we answered: drop the notification, otherwise a
+    // stale full-screen "incoming call" stayed on screen for a dead call.
+    if (msg.startsWith("CANCEL ")) {
+      String cancelCallId = header(msg, "Call-ID");
+      if (cancelCallId != null && cancelCallId.equals(activeInviteCallId)) {
+        clearIncomingNotification(this);
+        sendBroadcast(new Intent(ACTION_INCOMING_INVITE).setPackage(getPackageName())
+          .putExtra("callId", cancelCallId).putExtra("userAction", "cancelled"));
+        clearActiveInvite();
+      }
+    }
+  }
+
+  /** Sends a real SIP 603 Decline for the ringing INVITE, echoing its headers. */
+  private void sendDecline(String requestedCallId) throws Exception {
+    if (activeInviteCallId == null || (requestedCallId != null && !requestedCallId.equals(activeInviteCallId))) return;
+    if (activeInviteVia == null || activeInviteFrom == null || activeInviteTo == null || activeInviteCSeq == null) return;
+    String toWithTag = activeInviteTo.contains(";tag=") ? activeInviteTo : activeInviteTo + ";tag=" + Long.toHexString(System.nanoTime());
+    String response = "SIP/2.0 603 Decline\\r\\nVia: " + activeInviteVia + "\\r\\nFrom: " + activeInviteFrom
+      + "\\r\\nTo: " + toWithTag + "\\r\\nCall-ID: " + activeInviteCallId + "\\r\\nCSeq: " + activeInviteCSeq
+      + "\\r\\nUser-Agent: Planipret Native KeepAlive\\r\\nContent-Length: 0\\r\\n\\r\\n";
+    sendFrame(response);
+    clearIncomingNotification(this);
+    clearActiveInvite();
+  }
+
+  private void clearActiveInvite() {
+    activeInviteVia = null; activeInviteFrom = null; activeInviteTo = null;
+    activeInviteCallId = null; activeInviteCSeq = null;
   }
 
   private void sendRinging(String via, String from, String to, String cid, String cseqHeader) throws Exception {
@@ -582,6 +640,8 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       CAPPluginMethod(name: "acknowledgeIncoming", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "wakeForIncomingCall", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "setCallActive", returnType: CAPPluginReturnPromise),
+      CAPPluginMethod(name: "setAudioRoute", returnType: CAPPluginReturnPromise),
+      CAPPluginMethod(name: "getAudioRoute", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "addListener", returnType: CAPPluginReturnCallback),
       CAPPluginMethod(name: "removeAllListeners", returnType: CAPPluginReturnPromise)
     ]
@@ -589,6 +649,10 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private var bgTask: UIBackgroundTaskIdentifier = .invalid
     private var host = ""; private var port = 443; private var path = "/"; private var login = ""; private var domain = ""; private var displayName = ""; private var password = ""
     private var socket: URLSessionWebSocketTask?
+    /// Only true once the WSS handshake completed. Sending a REGISTER before
+    /// that fails with POSIX 57 "Socket is not connected".
+    private var socketOpen = false
+    private var registerOnOpen = false
     private lazy var session = URLSession(configuration: .default, delegate: self, delegateQueue: OperationQueue())
     private var timer: Timer?
     private var cseq = 1
@@ -611,10 +675,14 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private var backgroundHandoffWorkItem: DispatchWorkItem?
     private var pathMonitor: NWPathMonitor?
     private var networkUp = true
+    private var lastPathChangeAt: Date?
     /// True while the WebView (JsSIP) has a live call. During a call the native
     /// stack must NEVER take the AOR over: doing so closes the JsSIP transport
     /// (WSS 1001) and kills the audio. We only keep the audio session alive.
     private var callActive = false
+    /// Set on VoIP push wake: while an inbound call is pending we must never
+    /// release the SIP registration (that sent the caller to voicemail).
+    private var incomingPendingUntil: Date? = nil
     private var audioKeepAliveTimer: Timer?
     private let configDefaultsKey = "pp_sip_native_config_v1"
     private let passwordService = "com.planipret.mobile.sip"
@@ -643,6 +711,13 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       // this is the ONLY reliable iOS background wake, so re-REGISTER immediately
       // instead of relying on a long-lived WSS socket.
       NotificationCenter.default.addObserver(self, selector: #selector(onVoipPushWake(_:)), name: Notification.Name("PpVoipIncomingPush"), object: nil)
+      // CallKit Answer tapped: hold the transport + audio session up so the
+      // WebView can complete the SIP 200 OK while still in the background.
+      NotificationCenter.default.addObserver(forName: Notification.Name("PpVoipCallAnswered"), object: nil, queue: .main) { [weak self] _ in
+        guard let self = self else { return }
+        self.callActive = true
+        self.activateAudioSession()
+      }
       UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
     }
     deinit { NotificationCenter.default.removeObserver(self); timer?.invalidate(); socket?.cancel(with: .goingAway, reason: nil) }
@@ -657,7 +732,8 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       verifyDelayMs = Double(call.getInt("verifyDelayMs") ?? 8000)
       registerExpires = call.getInt("registerExpiresSec") ?? 1800
       persistConfig()
-      NSLog("[PpSipKeepAlive] BUILD MARKER pp-build-2026-08-02-pushwake1 (single-AOR: .inactive counts as foreground)")
+      // Build marker: lets us prove from the Xcode console which binary is running.
+      NSLog("[PpSipKeepAlive] BUILD MARKER pp-build-2026-08-02-sipowner3 (single-AOR: .inactive counts as foreground)")
       NSLog("[PpSipKeepAlive] reconnect strategy min=%.0fms max=%.0fms attempts=%d verify=%.0fms expires=%ds", backoffMinMs, backoffMaxMs, backoffMaxAttempts, verifyDelayMs, registerExpires)
       DispatchQueue.main.async { [weak self] in
         guard let self = self else { call.resolve(["ok": false, "status": "error", "reason": "plugin_released"]); return }
@@ -688,6 +764,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
           self.backgroundHandoffWorkItem?.cancel(); self.backgroundHandoffWorkItem = nil
           if self.socket != nil { self.releaseRegistration("call_active_js_owns") }
         } else {
+          self.incomingPendingUntil = nil
           self.stopAudioKeepAlive()
         }
         call.resolve(self.snapshot(ok: true))
@@ -709,22 +786,25 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
 
     @objc func setAudioRoute(_ call: CAPPluginCall) {
       let route = call.getString("route") ?? "earpiece"
-      preferredRoute = route
-      applyAudioRoute(route)
-      call.resolve(["ok": true, "route": route])
+      DispatchQueue.main.async { [weak self] in
+        guard let self = self else { call.resolve(["ok": false]); return }
+        self.preferredRoute = route
+        self.applyAudioRoute(route)
+        call.resolve(["ok": true, "route": self.preferredRoute])
+      }
     }
 
     @objc func getAudioRoute(_ call: CAPPluginCall) {
-      let s = AVAudioSession.sharedInstance()
-      let current: String
-      if s.currentRoute.outputs.contains(where: { $0.portType == .bluetoothHFP || $0.portType == .bluetoothA2DP || $0.portType == .bluetoothLE }) {
-        current = "bluetooth"
-      } else if s.currentRoute.outputs.contains(where: { $0.portType == .builtInSpeaker }) {
-        current = "speaker"
-      } else {
-        current = "earpiece"
+      DispatchQueue.main.async { [weak self] in
+        call.resolve(["ok": true, "route": self?.currentAudioRoute() ?? "earpiece"])
       }
-      call.resolve(["ok": true, "route": current])
+    }
+
+    private func currentAudioRoute() -> String {
+      let outs = AVAudioSession.sharedInstance().currentRoute.outputs
+      if outs.contains(where: { $0.portType == .bluetoothHFP || $0.portType == .bluetoothA2DP || $0.portType == .bluetoothLE }) { return "bluetooth" }
+      if outs.contains(where: { $0.portType == .builtInSpeaker }) { return "speaker" }
+      return "earpiece"
     }
 
     private func applyAudioRoute(_ route: String) {
@@ -734,13 +814,27 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         try? s.overrideOutputAudioPort(.speaker)
       case "bluetooth":
         try? s.overrideOutputAudioPort(.none)
-        // Bluetooth SCO is handled by AVAudioSession category options (.allowBluetooth)
+        // Bluetooth SCO needs the HFP input explicitly selected, the category
+        // options alone do not move the route on every device.
+        if let bt = s.availableInputs?.first(where: { $0.portType == .bluetoothHFP }) { try? s.setPreferredInput(bt) }
       default: // earpiece
         try? s.overrideOutputAudioPort(.none)
       }
     }
 
-    @objc func stopSipService(_ call: CAPPluginCall) { DispatchQueue.main.async { self.releaseRegistration("stopped"); call.resolve(self.snapshot(ok: true)) } }
+    @objc func stopSipService(_ call: CAPPluginCall) {
+      DispatchQueue.main.async {
+        // Refuse to drop the registration while an inbound call is pending:
+        // stopSipService fired mid-ring used to leave the PBX with zero
+        // contacts (registered_aors: []) and the caller went to voicemail.
+        if let until = self.incomingPendingUntil, until > Date() {
+          NSLog("[PpSipKeepAlive] stopSipService ignored: inbound call pending")
+          self.setStatus("protected", "incoming_pending")
+          call.resolve(self.snapshot(ok: true)); return
+        }
+        self.releaseRegistration("stopped"); call.resolve(self.snapshot(ok: true))
+      }
+    }
     @objc func getSipServiceStatus(_ call: CAPPluginCall) { DispatchQueue.main.async { call.resolve(self.snapshot(ok: true)) } }
     @objc func triggerReregister(_ call: CAPPluginCall) {
       DispatchQueue.main.async { [weak self] in
@@ -762,7 +856,10 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       }
     }
     @objc private func onVoipPushWake(_ note: Notification) {
-      DispatchQueue.main.async { [weak self] in self?.wakeForPush("voip_push") }
+      DispatchQueue.main.async { [weak self] in
+        self?.incomingPendingUntil = Date().addingTimeInterval(45)
+        self?.wakeForPush("voip_push")
+      }
     }
     /// Immediate, debounce-free REGISTER triggered by a VoIP push. Apple only
     /// guarantees background execution through PushKit, so this is the path that
@@ -844,6 +941,13 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     // NEVER touch UIApplication/UIScene off the main thread: it triggers
     // "UI API called on a background thread" and can deadlock (DispatchQueue.main.sync).
     // The cached appActive flag is refreshed only from main-thread notifications.
+    // Only .background means the WebView is truly suspended. During launch and
+    // during transient overlays (Control Center, notification shade, incoming
+    // CallKit UI) applicationState is .inactive while the WebView is ALIVE and
+    // JsSIP still owns the AOR. Treating .inactive as "background" made the
+    // native layer REGISTER a second Contact on the same AOR, and NetSapiens
+    // closed the JsSIP socket with WSS 1001 (Going Away) in an endless loop —
+    // the INVITE never reached JsSIP, so answering never sent a 200 OK.
     private func isForeground() -> Bool {
       if Thread.isMainThread {
         appActive = UIApplication.shared.applicationState != .background
@@ -901,8 +1005,8 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       // During a live call we must own the session exclusively: .mixWithOthers
       // lets WebKit interrupt it when the app goes background (no audio at all).
       let opts: AVAudioSession.CategoryOptions = callActive
-        ? [.allowBluetooth, .allowBluetoothA2DP]
-        : [.allowBluetooth, .allowBluetoothA2DP, .mixWithOthers]
+        ? [.allowBluetoothHFP, .allowBluetoothA2DP]
+        : [.allowBluetoothHFP, .allowBluetoothA2DP, .mixWithOthers]
       try? s.setCategory(.playAndRecord, mode: .voiceChat, options: opts)
       try? s.setActive(true, options: [])
       // Re-assert the preferred route: iOS resets overrideOutputAudioPort on each setActive.
@@ -919,8 +1023,36 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       var comps = URLComponents(); comps.scheme = port == 80 ? "ws" : "wss"; comps.host = host; comps.port = port; comps.path = path.isEmpty ? "/" : path
       guard let url = comps.url else { setStatus("error", "bad_ws_url"); return }
       var req = URLRequest(url: url); req.setValue("sip", forHTTPHeaderField: "Sec-WebSocket-Protocol")
+      socketOpen = false
+      registerOnOpen = true
       socket = session.webSocketTask(with: req); socket?.resume(); setStatus("connecting", "ws_connecting"); receiveLoop()
-      DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in self?.sendRegister(challenge: nil) }
+      // Safety net: if didOpen never fires within 10s, drop the socket and let
+      // the reconnect watchdog take over. No REGISTER is sent in that case.
+      let pending = socket
+      DispatchQueue.main.asyncAfter(deadline: .now() + 10.0) { [weak self] in
+        guard let self = self, let pending = pending, pending === self.socket, !self.socketOpen else { return }
+        NSLog("[PpSipKeepAlive] ws open timeout - cancelling socket")
+        self.registerOnOpen = false
+        self.socket?.cancel(with: .goingAway, reason: nil); self.socket = nil
+        self.setStatus("reconnecting", "ws_open_timeout"); self.scheduleReconnect("ws_open_timeout")
+      }
+    }
+    public func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
+      DispatchQueue.main.async { [weak self] in
+        guard let self = self, webSocketTask === self.socket else { return }
+        self.socketOpen = true
+        NSLog("[PpSipKeepAlive] ws open")
+        if self.registerOnOpen { self.registerOnOpen = false; self.sendRegister(challenge: nil, force: true) }
+      }
+    }
+    public func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
+      DispatchQueue.main.async { [weak self] in
+        guard let self = self, webSocketTask === self.socket else { return }
+        self.socketOpen = false
+        self.socket = nil
+        NSLog("[PpSipKeepAlive] ws closed code=%ld", closeCode.rawValue)
+        if !self.isForeground() { self.setStatus("reconnecting", "ws_closed"); self.scheduleReconnect("ws_closed") }
+      }
     }
     private func scheduleRegister() {
       timer?.invalidate()
@@ -940,6 +1072,9 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
           self.receiveLoop()
         case .failure(let err):
           self.socket = nil
+          // Without this, socketOpen stayed true after a drop and sendRegister
+          // happily wrote to a dead socket (POSIX 57).
+          self.socketOpen = false
           if self.isForeground() { self.setStatus("idle", "foreground_js_owns") }
           else {
             NSLog("[PpSipKeepAlive] socket closed: %@", String(describing: err))
@@ -962,8 +1097,10 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         self.reconnectPending = false
         if self.isForeground() { self.setStatus("idle", "foreground_js_owns"); return }
         guard self.networkUp else { self.setStatus("reconnecting", "network_down"); self.scheduleReconnect("network_down"); return }
+        // connect() only. The REGISTER is driven by didOpenWithProtocol via
+        // registerOnOpen: firing it here raced the handshake and produced
+        // POSIX 57 (socket is not connected) plus a wasted backoff cycle.
         self.connect()
-        self.sendRegister(challenge: nil)
         DispatchQueue.main.asyncAfter(deadline: .now() + self.verifyDelayMs / 1000.0) { [weak self] in
           guard let self = self else { return }
           if self.status != "registered" && !self.isForeground() { self.scheduleReconnect("still_unregistered") }
@@ -978,16 +1115,19 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         guard let self = self else { return }
         let up = path.status == .satisfied
         let wasUp = self.networkUp
+        if up == wasUp { return }
+        if let last = self.lastPathChangeAt, Date().timeIntervalSince(last) < 2.0 { return }
+        self.lastPathChangeAt = Date()
         self.networkUp = up
         NSLog("[PpSipKeepAlive] network %@", up ? "available" : "lost")
-        if up && !wasUp {
+        if up {
           self.reconnectAttempts = 0
           DispatchQueue.main.async { [weak self] in
             guard let self = self, !self.isForeground() else { return }
-            self.socket?.cancel(with: .goingAway, reason: nil); self.socket = nil
-            self.connect(); self.sendRegister(challenge: nil)
+            self.socket?.cancel(with: .goingAway, reason: nil); self.socket = nil; self.socketOpen = false
+            self.connect()
           }
-        } else if !up {
+        } else {
           self.setStatus("reconnecting", "network_lost")
         }
       }
@@ -1076,6 +1216,11 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private func sendRegister(challenge: String?, proxyAuth: Bool = false, force: Bool = false) {
       if isForeground() { releaseRegistration("foreground_js_owns"); return }
       if socket == nil { connect(); return }
+      if !socketOpen {
+        registerOnOpen = true
+        if !force { NSLog("[PpSipKeepAlive] REGISTER skipped: ws_not_open") }
+        return
+      }
       // Two REGISTERs in a row on the same WSS connection make NetSapiens see a
       // duplicate AoR and close the socket. Hold off after each send/200 OK
       // (auth challenge responses are exempt: they complete the same handshake).
@@ -1321,12 +1466,15 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             if let error = error {
                 NSLog("[PpVoipCall] reportNewIncomingCall failed: \\(error.localizedDescription)")
             }
+            // retainUntilConsumed: the VoIP push often lands while the WebView
+            // is suspended; without it the event is dropped and the JS layer
+            // never learns about the incoming call.
             self?.notifyListeners("callKitReady", data: [
                 "callUUID": uuid.uuidString,
                 "callId": callId,
                 "callerName": callerName,
                 "callerNumber": callerNumber
-            ])
+            ], retainUntilConsumed: true)
             completion()
         }
     }
@@ -1338,17 +1486,33 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     }
 
     public func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
-        try? AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .allowBluetoothA2DP])
-        try? AVAudioSession.sharedInstance().setActive(true)
+        // Prepare the route but let CallKit own activation (didActivate:).
+        // Activating the session here races the system session and produces a
+        // connected CallKit call with no audio path.
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .allowBluetoothA2DP])
+        // Pin the SIP transport + audio session up while the WebView performs
+        // the actual SIP answer, possibly still in the background.
+        NotificationCenter.default.post(name: Notification.Name("PpVoipCallAnswered"), object: nil, userInfo: ["callId": activeCallId ?? ""])
+        // retainUntilConsumed: Answer can be tapped from the lock screen while
+        // the WebView is suspended; without it the event is dropped and the
+        // call is never picked up on the SIP side.
         notifyListeners("incomingCallAnswered", data: [
             "callUUID": action.callUUID.uuidString,
             "callId": activeCallId ?? ""
-        ])
-        pendingAnswerAction?.fail()
+        ], retainUntilConsumed: true)
+        pendingAnswerAction?.fulfill()
         pendingAnswerAction = action
+        // Safety net: never present a falsely connected CallKit call.
+        // 32s is deliberately GREATER than PP_PENDING_ANSWER_TIMEOUT_MS (30s in
+        // ppSipProvider): the pending-answer intent stays valid for 30s while the
+        // caller is still hearing the greeting, so a 12s CallKit timeout used to
+        // fail() the action while the SIP path was still legitimately working.
+        // Ordering must always be: JS watchdogs < SIP intent (30s) < CallKit (32s).
         DispatchQueue.main.asyncAfter(deadline: .now() + 32.0) { [weak self, weak action] in
             guard let self = self, let action = action, self.pendingAnswerAction === action else { return }
             self.pendingAnswerAction = nil
+            NSLog("[PpVoipCall] answer action timed out \u{2014} SIP dialog not confirmed after 32s")
             action.fail()
         }
     }

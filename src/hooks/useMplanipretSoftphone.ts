@@ -448,11 +448,13 @@ export function useMplanipretSoftphone(enabled = true) {
     // WSS socket is usually dead after suspension) instead of waiting on it.
     let cleanupVoipIncoming: (() => void) | undefined;
     onPlanipretVoipIncomingCall((data: any) => {
-      console.log("[pp-voip] incoming VoIP push → waking native SIP", data?.callId);
-      void wakePlanipretNativeSipForIncomingCall("voip_push");
-      // Rebuild the JS transport straight away: waiting for the "Répondre" tap
-      // left the PBX with zero registered contacts (no INVITE → voicemail).
-      void ppSipProvider.wakeForIncoming(String(data?.callId ?? ""));
+      const appVisible = document.visibilityState === "visible";
+      console.log(`[pp-voip] incoming VoIP push → ${appVisible ? "JS" : "native"} SIP owns recovery`, data?.callId);
+      // The native plugin already receives PpVoipIncomingPush directly. Starting
+      // native REGISTER and rebuilding JsSIP together creates two transports for
+      // the same AOR; NetSapiens then closes one with WSS 1001. Pick one owner.
+      if (appVisible) void ppSipProvider.wakeForIncoming(String(data?.callId ?? ""));
+      else void wakePlanipretNativeSipForIncomingCall("voip_push");
       const from = String(data?.from ?? data?.handle ?? data?.caller ?? data?.callerName ?? "");
       setPushRing({ callId: String(data?.callId ?? ""), from });
       // Sécurité : si aucun INVITE n'arrive, on retire l'écran après 40 s.
@@ -1047,7 +1049,8 @@ export function useMplanipretSoftphone(enabled = true) {
       console.info("[answer] route=PUSH-PENDING → wakeForIncoming + requestAnswer", {
         pushCallId: pushRing.callId ?? null,
       });
-      try { await ppSipProvider.wakeForIncoming(pushRing.callId || undefined); } catch {}
+      // requestAnswer queues the intent first, then performs exactly one wake.
+      // Waking here too sent duplicate priority REGISTERs on the same socket.
       const immediate = await ppSipProvider.requestAnswer(pushRing.callId || undefined);
       console.info(`[answer] requestAnswer → ${immediate ? "answered immediately" : "intent queued"}`);
       if (immediate) return true;
@@ -1087,8 +1090,7 @@ export function useMplanipretSoftphone(enabled = true) {
     if (!won) {
       // Non-destructive claim: a lost claim must never tear down a media dialog
       // that is already live locally. Two concurrent answer paths on the SAME
-      // device used to make the loser hang up the call its twin had just picked
-      // up ("answered elsewhere (widget)" with pushCallId=null in the logs).
+      // device used to make the loser hang up the call its twin had just picked up.
       const liveState = ppSipProvider.getSnapshot().callState;
       if (liveState === "active" || liveState === "held") {
         console.warn("[answer] claim lost but local dialog is live → keeping the call", { callId, liveState });

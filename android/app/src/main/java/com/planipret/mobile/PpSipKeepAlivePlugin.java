@@ -91,20 +91,23 @@ public class PpSipKeepAlivePlugin extends Plugin {
     String route = call.getString("route", "earpiece");
     try {
       android.media.AudioManager am = (android.media.AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
-      if (am != null) {
-        am.setMode(android.media.AudioManager.MODE_IN_COMMUNICATION);
-        if ("speaker".equals(route)) {
-          try { am.stopBluetoothSco(); } catch (Exception ignored) {}
-          am.setBluetoothScoOn(false);
-          am.setSpeakerphoneOn(true);
-        } else if ("bluetooth".equals(route)) {
-          am.setSpeakerphoneOn(false);
-          try { am.startBluetoothSco(); } catch (Exception ignored) {}
-        } else { // earpiece
-          try { am.stopBluetoothSco(); } catch (Exception ignored) {}
-          am.setBluetoothScoOn(false);
-          am.setSpeakerphoneOn(false);
-        }
+      // Reject instead of silently resolving: a muted speaker button with an "ok"
+      // reply is impossible to diagnose from the JS side.
+      if (am == null) { call.reject("no_audio_manager"); return; }
+      am.setMode(android.media.AudioManager.MODE_IN_COMMUNICATION);
+      if ("speaker".equals(route)) {
+        try { am.stopBluetoothSco(); } catch (Exception ignored) {}
+        am.setBluetoothScoOn(false);
+        am.setSpeakerphoneOn(true);
+      } else if ("bluetooth".equals(route)) {
+        am.setSpeakerphoneOn(false);
+        // setBluetoothScoOn is required in addition to startBluetoothSco: on some
+        // devices the SCO link comes up but audio keeps flowing to the handset.
+        try { am.startBluetoothSco(); am.setBluetoothScoOn(true); } catch (Exception ignored) {}
+      } else { // earpiece
+        try { am.stopBluetoothSco(); } catch (Exception ignored) {}
+        am.setBluetoothScoOn(false);
+        am.setSpeakerphoneOn(false);
       }
       call.resolve(new JSObject().put("ok", true).put("route", route));
     } catch (Exception e) { call.reject(e.getMessage()); }
@@ -114,8 +117,10 @@ public class PpSipKeepAlivePlugin extends Plugin {
       android.media.AudioManager am = (android.media.AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
       String route = "earpiece";
       if (am != null) {
-        if (am.isSpeakerphoneOn()) route = "speaker";
-        else if (am.isBluetoothScoOn()) route = "bluetooth";
+        // Bluetooth first: an active SCO link is the effective route even when
+        // isSpeakerphoneOn() still reports a stale true.
+        if (am.isBluetoothScoOn()) route = "bluetooth";
+        else if (am.isSpeakerphoneOn()) route = "speaker";
       }
       call.resolve(new JSObject().put("ok", true).put("route", route));
     } catch (Exception e) { call.reject(e.getMessage()); }

@@ -9,6 +9,7 @@
 import JsSIP from "jssip";
 import { getPpSipReconnectConfig, ppSipBackoffDelay, PP_SIP_RECONNECT_FLOOR_MS } from "./ppSipReconnectConfig";
 import { edgeOnlyWssUrls, isPortalWssUrl } from "./sipEdgePolicy";
+import { checkSipBackendRegistration } from "./sipBackendCheck";
 
 // Let the SBC finish removing the previous Contact before a replacement UA
 // REGISTERs the same AOR. Without this gap NetSapiens closes one WSS with 1001.
@@ -206,6 +207,7 @@ class PpSipProvider {
   private pendingAnswer: { callId: string; expiresAt: number } | null = null;
   private pendingDecline: { callId: string; expiresAt: number } | null = null;
   private answerInFlight: Promise<boolean> | null = null;
+  private wakeInFlight: Promise<boolean> | null = null;
 
   getReconnectMetrics(): PpSipReconnectMetrics {
     return { ...this.reconnectMetrics, recoveryOwner: this.recoveryOwner, history: [...this.reconnectMetrics.history] };
@@ -893,6 +895,17 @@ class PpSipProvider {
    * rebuild the transport and wait for a REAL `registered` event.
    */
   async wakeForIncoming(callId?: string): Promise<boolean> {
+    if (this.wakeInFlight) {
+      this.log("info", "joining incoming wake already in flight");
+      return this.wakeInFlight;
+    }
+    const run = this.wakeForIncomingOnce(callId);
+    this.wakeInFlight = run;
+    void run.finally(() => { if (this.wakeInFlight === run) this.wakeInFlight = null; });
+    return run;
+  }
+
+  private async wakeForIncomingOnce(callId?: string): Promise<boolean> {
     const cfg = this.cfg;
     if (!cfg) return false;
     if (this.snap.callState === "ringing-in") return true;
@@ -908,6 +921,20 @@ class PpSipProvider {
       this.log("warn", "push wake: still unregistered → hard rebuild retry");
       this.hardRebuild("push_wake_retry");
       ok = await this.waitForRegistered(12_000);
+    }
+    // A local REGISTER event can be stale while the PBX has no routable mobile
+    // contact. Confirm the authoritative AOR before declaring wake successful.
+    if (ok && this.getSnapshot().callState !== "ringing-in") {
+      const backend = await checkSipBackendRegistration({ force: true, minIntervalMs: 0 });
+      if (backend?.registration?.mobile_registered === false) {
+        this.log("warn", "push wake: local registered but PBX mobile AOR absent → rebuilding");
+        this.hardRebuild("push_wake_pbx_unregistered");
+        ok = await this.waitForRegistered(12_000);
+        if (ok) {
+          const verified = await checkSipBackendRegistration({ force: true, minIntervalMs: 0 });
+          ok = verified?.registration?.mobile_registered !== false;
+        }
+      }
     }
     // The answer window only makes sense once the socket can carry an INVITE.
     if (this.pendingAnswer) this.pendingAnswer.expiresAt = Date.now() + PP_PENDING_ANSWER_TIMEOUT_MS;
