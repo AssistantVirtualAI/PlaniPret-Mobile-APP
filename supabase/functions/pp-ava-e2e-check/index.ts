@@ -3,7 +3,7 @@
 // Returns a per-link diagnostic so the app can surface what is missing.
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
-import { getUserMaestroAccessToken } from "../_shared/maestro-oauth.ts";
+import { resolveMaestroAccessToken } from "../_shared/maestro-oauth.ts";
 import { linkBrokerIdByEmail } from "../_shared/maestro-broker-directory.ts";
 
 const j = (b: unknown, s = 200) =>
@@ -80,13 +80,32 @@ Deno.serve(async (req) => {
       detail: p.ms365_refresh_token ? "Compte lié" : "Compte Microsoft non lié",
     });
 
-    // Maestro token
+    // Maestro token.
+    // Health MUST come from resolveMaestroAccessToken, never from the truthiness of
+    // getUserMaestroAccessToken: that helper deliberately falls back to the stored
+    // token in several failure modes, so `!!token` could only ever be false when the
+    // column was empty - never when Maestro actually rejected the token. That is why
+    // this panel reported "Jeton expiré" while every Maestro endpoint below
+    // succeeded: those calls run through maestro-actions, which falls back to the
+    // MAESTRO_API_KEY machine key instead of the broker's OAuth token.
     let maestroOk = false;
     let maestroDetail = "maestro_not_configured";
     if (p.maestro_refresh_token) {
       try {
-        maestroOk = !!(await getUserMaestroAccessToken(admin as any, userId));
-        maestroDetail = maestroOk ? "Jeton valide" : "Jeton expiré";
+        const res = await resolveMaestroAccessToken(admin as any, userId);
+        maestroOk = res.healthy;
+        const labels: Record<string, string> = {
+          fresh: "Jeton valide",
+          refreshed: "Jeton renouvelé",
+          refresh_not_persisted:
+            "Jeton renouvelé mais NON enregistré — aucune ligne planipret_profiles ne correspond à cet utilisateur",
+          stale_no_refresh_token: "Jeton expiré, aucun refresh_token — reconnexion requise",
+          stale_oauth_not_configured: "Jeton expiré et OAuth Maestro non configuré",
+          refresh_rejected: "Refresh refusé par Maestro — reconnexion requise",
+          no_profile: "Aucun profil Planipret trouvé",
+          no_token: "Aucun jeton d'accès enregistré",
+        };
+        maestroDetail = labels[res.reason] ?? res.reason;
       } catch (e) {
         maestroDetail = (e as Error).message;
       }

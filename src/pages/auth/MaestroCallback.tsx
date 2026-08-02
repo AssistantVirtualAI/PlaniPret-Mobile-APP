@@ -1,7 +1,14 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { Capacitor } from "@capacitor/core";
+import { Browser } from "@capacitor/browser";
+import { ROUTES } from "@/lib/routes";
+
+// Where the user came from: MaestroConnectCard lives on the mobile "More" tab.
+const RETURN_ROUTE = `${ROUTES.MPLANIPRET}/more`;
+// Long enough to read the success message, short enough not to feel stuck.
+const AUTO_RETURN_MS = 2_000;
 
 // Module-level dedupe: prevents double-exchange when the deep link is
 // delivered via both launchUrl and appUrlOpen (cold start).
@@ -18,6 +25,20 @@ export default function MaestroCallback() {
   const [status, setStatus] = useState<"loading" | "ok" | "error">("loading");
   const [message, setMessage] = useState<string>("Traitement de l'autorisation Maestro…");
   const [details, setDetails] = useState<Record<string, string>>({});
+  const isNativeApp = Capacitor.isNativePlatform();
+
+  // Single exit path. On native this screen is rendered INSIDE the app WebView
+  // (origin is capacitor://localhost), so there is no tab to close and no browser
+  // chrome to go back with: without an explicit navigation the user is trapped and
+  // has to kill the app from the multitasking switcher.
+  const returnToApp = useCallback(() => {
+    if (isNativeApp) {
+      // No-op when the page was not opened through the in-app browser.
+      void Browser.close().catch(() => { /* not opened via Browser.open */ });
+    }
+    navigatedAway = true;
+    navigate(RETURN_ROUTE, { replace: true });
+  }, [isNativeApp, navigate]);
 
   useEffect(() => {
     if (ran.current) return;
@@ -63,7 +84,11 @@ export default function MaestroCallback() {
         }
         completedCodes.add(code);
         setStatus("ok");
-        setMessage("Compte Maestro connecté avec succès. Vous pouvez fermer cet onglet.");
+        setMessage(
+          Capacitor.isNativePlatform()
+            ? "Compte Maestro connecté avec succès. Retour à l'application…"
+            : "Compte Maestro connecté avec succès. Vous pouvez fermer cet onglet.",
+        );
       } catch (e: any) {
         setStatus("error");
         setMessage(e?.message ?? "Erreur inconnue");
@@ -72,6 +97,14 @@ export default function MaestroCallback() {
       }
     })();
   }, [params, navigate]);
+
+  // Auto-return on success. Previously the component stopped here and rendered a
+  // dead-end card: no button, no navigation, no browser chrome.
+  useEffect(() => {
+    if (status !== "ok") return;
+    const timer = window.setTimeout(returnToApp, AUTO_RETURN_MS);
+    return () => window.clearTimeout(timer);
+  }, [status, returnToApp]);
 
   return (
     <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0b1220", color: "#e5e7eb", padding: 24 }}>
@@ -95,9 +128,30 @@ export default function MaestroCallback() {
             {JSON.stringify(details, null, 2)}
           </pre>
         )}
-        <div style={{ marginTop: 20, fontSize: 11, opacity: 0.5 }}>
-          Callback: <code>{window.location.origin}/auth/maestro/callback</code>
-        </div>
+        {/* Always reachable, including on error: the error branch used to be a
+            dead end too. */}
+        {status !== "loading" && (
+          <button
+            type="button"
+            onClick={returnToApp}
+            style={{
+              marginTop: 20, width: "100%", padding: "14px 16px",
+              background: status === "error" ? "#1f2a44" : "#059669",
+              color: "#f9fafb", border: "none", borderRadius: 12,
+              fontSize: 15, fontWeight: 600, cursor: "pointer",
+              WebkitTapHighlightColor: "transparent",
+            }}
+          >
+            {status === "error" ? "Retour à l'application" : "Continuer"}
+          </button>
+        )}
+        {/* The raw capacitor://localhost callback is internal plumbing; showing it
+            only confused the "close this tab" instruction. Web only. */}
+        {!isNativeApp && (
+          <div style={{ marginTop: 20, fontSize: 11, opacity: 0.5 }}>
+            Callback: <code>{window.location.origin}/auth/maestro/callback</code>
+          </div>
+        )}
       </div>
     </div>
   );
