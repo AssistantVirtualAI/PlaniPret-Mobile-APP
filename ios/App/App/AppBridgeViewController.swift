@@ -7,6 +7,7 @@ class AppBridgeViewController: CAPBridgeViewController {
         bridge?.registerPluginInstance(PpSipKeepAlive())
         bridge?.registerPluginInstance(PpVoipCall())
         bridge?.registerPluginInstance(PpAuthSession())
+        bridge?.registerPluginInstance(PpPjsip())
     }
 
     override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .portrait }

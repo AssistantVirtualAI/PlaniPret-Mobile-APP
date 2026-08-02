@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { ppSipProvider, type PpSipEvent, type PpSipSnapshot } from "@/lib/planipret/sip/ppSipProvider";
 import { exportSipStability, getSipStabilityReport, resetSipStability } from "@/lib/planipret/sip/sipStabilityMonitor";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import { runPjsipRegisterProbe, PJSIP_PROBE_PORT, PJSIP_PROBE_SERVER, type PjsipProbeResult } from "@/lib/native/PpPjsipProbe";
 
 const STAGES = ["idle", "connecting", "connected", "registered"] as const;
 
@@ -114,6 +115,9 @@ export default function MSipDebug() {
       </section>
 
 
+      {/* Sonde PJSIP native — declenchement MANUEL uniquement */}
+      <PjsipProbeCard />
+
       {/* 24h stability soak */}
       <StabilityCard />
 
@@ -141,6 +145,47 @@ export default function MSipDebug() {
         )}
       </section>
     </div>
+  );
+}
+
+function PjsipProbeCard() {
+  const [running, setRunning] = useState(false);
+  const [res, setRes] = useState<PjsipProbeResult | null>(null);
+  const run = async () => {
+    setRunning(true);
+    setRes(null);
+    try {
+      const out = await runPjsipRegisterProbe();
+      setRes(out);
+      if (out.ok) toast.success(`PJSIP REGISTER ${out.code} ${out.reason}`);
+      else toast.error(`PJSIP: ${out.reason}`);
+    } finally {
+      setRunning(false);
+    }
+  };
+  const color = res ? (res.ok ? "#10B981" : "#EF4444") : "#94A3B8";
+  return (
+    <section className="pp-card p-4 space-y-3">
+      <div className="flex items-center gap-2">
+        <Radio className="w-4 h-4" style={{ color }} />
+        <span className="font-bold text-sm" style={{ color: "var(--pp-text-primary)" }}>Sonde PJSIP native (TLS)</span>
+      </div>
+      <p className="text-[11px]" style={{ color: "var(--pp-text-secondary)" }}>
+        REGISTER natif vers {PJSIP_PROBE_SERVER}:{PJSIP_PROBE_PORT} sur une AOR de test
+        (&lt;ext&gt;PROBE). N'affecte pas l'enregistrement actif.
+      </p>
+      {res && (
+        <div className="text-[11px] font-mono p-2 rounded" style={{ background: "var(--pp-bg-elevated)", color }}>
+          {res.aor ? <div className="opacity-70">{res.aor}</div> : null}
+          <div>{res.code ? `SIP ${res.code} — ` : ""}{res.reason}{res.elapsedMs ? ` (${res.elapsedMs} ms)` : ""}</div>
+        </div>
+      )}
+      <button onClick={run} disabled={running}
+        className="w-full py-1.5 rounded-lg text-[11px] font-semibold disabled:opacity-60"
+        style={{ background: "var(--pp-brand-accent)", color: "#fff" }}>
+        {running ? "REGISTER en cours…" : "Lancer la sonde PJSIP"}
+      </button>
+    </section>
   );
 }
 

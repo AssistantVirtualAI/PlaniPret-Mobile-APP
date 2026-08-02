@@ -38,6 +38,11 @@ let pbx = fs.readFileSync(pbxprojPath, "utf8");
 // Check what's already patched
 const hasPlugins = pbx.includes("PpSipKeepAlive.swift") || pbx.includes("PpVoipCall.swift");
 const hasEntitlements = pbx.includes("App.entitlements");
+// NOTE: PpPjsip is deliberately NOT handled here. It is registered by
+// scripts/apply-native-config.mjs (ensureXcodeSourceFiles), which runs on every
+// postbuild. Registering it in both scripts produced duplicate PBXBuildFile
+// entries for the same source file, which risks a duplicate-symbol link error.
+// One owner per artifact.
 
 if (hasPlugins && hasEntitlements) {
   console.log("[patch-xcode] Plugins already in pbxproj — no changes needed.");
