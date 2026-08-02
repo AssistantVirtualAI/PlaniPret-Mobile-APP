@@ -28,6 +28,15 @@ export type SipBackendCheck = {
     count: number;
     probes_answered?: boolean;
     probe_statuses?: number[];
+    /**
+     * Core node that accepted the last REGISTER. NetSapiens routes the inbound
+     * INVITE to that node (docs/netsapiens/devices.md), so a device registered
+     * on a non-core node reads as `registered` yet never rings.
+     */
+    core_server?: string | null;
+    core_server_ok?: boolean;
+    registration_contact?: string | null;
+    registration_user_agent?: string | null;
   };
   push?: {
     device_push_enabled: boolean | null;

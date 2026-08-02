@@ -264,8 +264,20 @@ export async function resolveMaestroAccessToken(
   const stored = (prof.maestro_broker_token as string | null) ?? null;
   if (!stored) return { token: null, healthy: false, reason: "no_token", expiresAt };
 
-  const expAt = expiresAt ? Date.parse(expiresAt) : 0;
-  if (expAt && expAt - Date.now() > 60_000) {
+  // Maestro (Laravel Passport) can issue non-expiring tokens: the token endpoint
+  // then returns no `expires_in` and persistTokenSet stores NULL. NULL means "no
+  // expiry", NOT "expired". Treating it as expired forced a refresh on EVERY
+  // call, and a rejected refresh flipped maestro_connected to false - surfacing
+  // as "Jeton expiré" in the AVA diagnostic while no token had actually expired.
+  if (!expiresAt) {
+    return { token: stored, healthy: true, reason: "no_expiry", expiresAt: null };
+  }
+  const expAt = Date.parse(expiresAt);
+  if (!Number.isFinite(expAt)) {
+    // Unparsable date is a storage artefact, not proof of expiry.
+    return { token: stored, healthy: true, reason: "expiry_unparsable", expiresAt };
+  }
+  if (expAt - Date.now() > 60_000) {
     return { token: stored, healthy: true, reason: "fresh", expiresAt };
   }
 

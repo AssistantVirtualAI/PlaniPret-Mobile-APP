@@ -10,6 +10,9 @@ import JsSIP from "jssip";
 import { getPpSipReconnectConfig, ppSipBackoffDelay, PP_SIP_RECONNECT_FLOOR_MS } from "./ppSipReconnectConfig";
 import { edgeOnlyWssUrls, isPortalWssUrl } from "./sipEdgePolicy";
 import { checkSipBackendRegistration } from "./sipBackendCheck";
+// nativePpSipService only imports a TYPE from this module, so this is not a
+// runtime cycle.
+import { declarePlanipretJsOwnsAor } from "./nativePpSipService";
 
 // Let the SBC finish removing the previous Contact before a replacement UA
 // REGISTERs the same AOR. Without this gap NetSapiens closes one WSS with 1001.
@@ -930,11 +933,20 @@ class PpSipProvider {
     else this.hardRebuild("push_wake");
 
     let ok = await this.waitForRegistered(12_000);
+    // JsSIP now holds the (ext)M AOR. Tell the native keep-alive immediately so its
+    // push-wake grace window does NOT fall back to a native REGISTER and steal the
+    // AOR back mid-ring: the native stack has no media plane, so an INVITE landing
+    // there is unanswerable.
+    if (ok) void declarePlanipretJsOwnsAor(true);
     if (!ok && this.getSnapshot().callState !== "ringing-in") {
       this.log("warn", "push wake: still unregistered → hard rebuild retry");
       this.hardRebuild("push_wake_retry");
       ok = await this.waitForRegistered(12_000);
+      if (ok) void declarePlanipretJsOwnsAor(true);
     }
+    // JsSIP could not register: hand ownership back so the native keep-alive can
+    // at least keep the phone ringing instead of dropping to voicemail.
+    if (!ok) void declarePlanipretJsOwnsAor(false);
     // A local REGISTER event can be stale while the PBX has no routable mobile
     // contact. Confirm the authoritative AOR before declaring wake successful.
     if (ok && this.getSnapshot().callState !== "ringing-in") {

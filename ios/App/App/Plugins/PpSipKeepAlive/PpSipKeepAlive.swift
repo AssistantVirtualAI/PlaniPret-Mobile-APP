@@ -67,6 +67,15 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private let passwordService = "com.planipret.mobile.sip"
     private let passwordAccount = "background-register"
     private var lastPushWakeAt: Date?
+    /// Grace-window bookkeeping for the VoIP push wake. This keep-alive has NO
+    /// WebRTC media stack, so whenever it wins the shared (ext)M AOR the inbound
+    /// call becomes unanswerable. On every push we notify JS first and only
+    /// register ourselves if JS has not claimed the AOR within 4s.
+    private var pushWakeGraceToken: String? = nil
+    /// True while the JS (JsSIP) side owns the SIP registration on that AOR. Set
+    /// when JS takes over (foreground / active call), cleared when native ownership
+    /// begins.
+    private var jsOwnsAor = false
 
 
     public override func load() {
@@ -112,7 +121,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       registerExpires = call.getInt("registerExpiresSec") ?? 1800
       persistConfig()
       // Build marker: lets us prove from the Xcode console which binary is running.
-      NSLog("[PpSipKeepAlive] BUILD MARKER pp-build-2026-08-02-ring7 (ring guard on releaseRegistration + SIP-before-claim)")
+      NSLog("[PpSipKeepAlive] BUILD MARKER pp-build-2026-08-02-ring9 (ring guard on releaseRegistration + SIP-before-claim)")
       NSLog("[PpSipKeepAlive] reconnect strategy min=%.0fms max=%.0fms attempts=%d verify=%.0fms expires=%ds", backoffMinMs, backoffMaxMs, backoffMaxAttempts, verifyDelayMs, registerExpires)
       DispatchQueue.main.async { [weak self] in
         guard let self = self else { call.resolve(["ok": false, "status": "error", "reason": "plugin_released"]); return }
@@ -223,6 +232,26 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         self.releaseRegistration("stopped"); call.resolve(self.snapshot(ok: true))
       }
     }
+    /// JS declares it holds the (ext)M AOR. Called by ppSipProvider as soon as its
+    /// own REGISTER succeeds after a VoIP push, so the push-wake grace window does
+    /// NOT fall back to a native REGISTER and steal the AOR back mid-ring.
+    /// Without this, the only signal was releaseRegistration("...js_owns"), which
+    /// is refused while incomingPendingUntil is armed - i.e. exactly during a ring.
+    @objc func declareJsOwnsAor(_ call: CAPPluginCall) {
+      let owns = call.getBool("owns") ?? true
+      DispatchQueue.main.async { [weak self] in
+        guard let self = self else { call.resolve(["ok": false]); return }
+        self.jsOwnsAor = owns
+        NSLog("[PpSipKeepAlive] declareJsOwnsAor(%@)", owns ? "true" : "false")
+        if owns, self.socket != nil {
+          // Two transports on one AOR make NetSapiens close them alternately
+          // (WSS 1001). JS is media-capable, so stand down - but never cancel the
+          // socket while our own INVITE dialog is the live one.
+          self.releaseRegistration("js_owns")
+        }
+        call.resolve(["ok": true])
+      }
+    }
     @objc func getSipServiceStatus(_ call: CAPPluginCall) { DispatchQueue.main.async { call.resolve(self.snapshot(ok: true)) } }
     @objc func triggerReregister(_ call: CAPPluginCall) {
       DispatchQueue.main.async { [weak self] in
@@ -276,12 +305,51 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       activateAudioSession()
       lastRegisterOkTime = nil
       lastRegisterSentTime = nil
-      if isForeground() {
-        notifyListeners("sipReregisterRequested", data: ["reason": "voip_push"])
-        return
+      // ROOT CAUSE (proven by the 3-inbound-call log): this keep-alive has NO
+      // WebRTC media stack, and its bridge forwards only callId/from to JS - never
+      // the SDP offer. JsSIP registers on the SAME NetSapiens device (ext)M as
+      // this service, so whichever stack holds the AOR captures the INVITE. When it
+      // is this one, the call is structurally unanswerable: JS never sees
+      // "incoming INVITE attached" and Answer lands on a dead session.
+      //
+      // isForeground() is the wrong gate: a VoIP push arrives with the app
+      // backgrounded or the screen locked by definition, so this used to fall
+      // through to sendRegister() every single time. PushKit has just woken the
+      // WebView, so JsSIP - the only media-capable stack - must get first refusal.
+      // We always notify JS, then register ourselves only as a LAST RESORT if JS
+      // has not taken the AOR within the grace window. Registering in parallel is
+      // not an option: two transports on one AOR make NetSapiens close them
+      // alternately (WSS 1001 loop).
+      //
+      // GRACE WINDOW = 1.5s, deliberately short. docs/netsapiens/devices.md:
+      // "When push is used, the OS may kill the SIP registration in the
+      // background - the platform pairs device-push-enabled with push services to
+      // wake the app to re-register/answer. If the OS suspends the app,
+      // device-sip-registration-state will read unregistered and calls will not
+      // route to that device (falling through to voicemail)." The wake REGISTER is
+      // therefore ON THE CRITICAL PATH of inbound routing: NetSapiens forks the
+      // INVITE only to devices already registered. Waiting 4s risked nobody being
+      // registered at fork time -> voicemail. 1.5s is enough for JsSIP to open its
+      // WSS and REGISTER when the WebView is alive, and short enough that the
+      // native fallback still lands inside the ring window when it is not.
+      notifyListeners("sipReregisterRequested", data: ["reason": "voip_push"])
+      if isForeground() { return }
+      let graceToken = UUID().uuidString
+      pushWakeGraceToken = graceToken
+      DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+        guard let self = self else { return }
+        // A newer push superseded this one.
+        guard self.pushWakeGraceToken == graceToken else { return }
+        // JS took the AOR (it called releaseRegistration via foreground_js_owns,
+        // or it is already carrying the dialog): stay out of the way.
+        if self.jsOwnsAor {
+          NSLog("[PpSipKeepAlive] push wake: JS owns the AOR -> native REGISTER skipped")
+          return
+        }
+        NSLog("[PpSipKeepAlive] push wake: JS did not claim the AOR in 1.5s -> native REGISTER as fallback")
+        if self.socket == nil { self.connect() } else { self.sendRegister(challenge: nil, force: true) }
+        self.setStatus(self.status == "registered" ? "registered" : "protected", "voip_push_wake_fallback")
       }
-      if socket == nil { connect() } else { sendRegister(challenge: nil, force: true) }
-      setStatus(status == "registered" ? "registered" : "protected", "voip_push_wake")
     }
 
     private func persistConfig() {
@@ -362,6 +430,10 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       // failed the answer action: no audio, no in-call screen, caller left on the
       // greeting. incomingPendingUntil carries its own 45s expiry, so this can
       // never pin the transport indefinitely.
+      // Any release reason ending in js_owns means the media-capable JS stack is
+      // taking over, so the push-wake grace window must not fall back to a native
+      // REGISTER and steal the AOR back mid-ring.
+      if why.hasSuffix("js_owns") { jsOwnsAor = true }
       if let until = incomingPendingUntil, until > Date() {
         NSLog("[PpSipKeepAlive] releaseRegistration refused (%@): inbound call pending", why)
         setStatus("protected", "incoming_pending")
@@ -403,6 +475,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
 
     private func beginNativeOwnership(_ why: String) {
       guard !isForeground() else { releaseRegistration("foreground_js_owns"); return }
+      jsOwnsAor = false
       connect()
       scheduleRegister()
       if socket != nil, status != "registered" { sendRegister(challenge: nil) }

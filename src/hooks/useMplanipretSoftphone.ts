@@ -560,6 +560,20 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
         try { ppSipProvider.hangup(); } catch {}
         setPushRing(null);
         void acknowledgePlanipretIncoming();
+      } else {
+        // No user action attached: the native keep-alive is reporting that IT
+        // captured the INVITE on the shared `<ext>M` AOR. It has no WebRTC media
+        // stack and its bridge forwards only callId/from - never the SDP offer - so
+        // a call left in its hands can never be answered.
+        //
+        // Honest about the limit: NetSapiens will not re-offer an INVITE already
+        // being answered on that AOR, so re-registering cannot rescue THIS call.
+        // It restores a media-capable owner for the next one, and it is the signal
+        // that ownership was on the wrong stack at INVITE time.
+        console.warn("[pp-sip] native captured the INVITE (no media stack) → JsSIP reclaiming the <ext>M AOR", {
+          callId: invite?.callId ?? "",
+        });
+        void ppSipProvider.wakeForIncoming(String(invite?.callId ?? ""));
       }
       try { ppSipProvider.forceReregister(); } catch {}
       try {
@@ -605,13 +619,43 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     // WSS socket is usually dead after suspension) instead of waiting on it.
     let cleanupVoipIncoming: (() => void) | undefined;
     onPlanipretVoipIncomingCall((data: any) => {
-      const appVisible = document.visibilityState === "visible";
-      console.log(`[pp-voip] incoming VoIP push → ${appVisible ? "JS" : "native"} SIP owns recovery`, data?.callId);
-      // The native plugin already receives PpVoipIncomingPush directly. Starting
-      // native REGISTER and rebuilding JsSIP together creates two transports for
-      // the same AOR; NetSapiens then closes one with WSS 1001. Pick one owner.
-      if (appVisible) void ppSipProvider.wakeForIncoming(String(data?.callId ?? ""));
-      else void wakePlanipretNativeSipForIncomingCall("voip_push");
+      const pushCallId = String(data?.callId ?? "");
+      // ROOT CAUSE FIXED HERE - proven by the 3-inbound-call Xcode log:
+      //   l.142  [pp-sip] incoming INVITE attached  (call 1 ONLY)
+      //   l.153  JS SIP owns recovery      -> 200 OK sent + remote audio attached
+      //   l.408  native SIP owns recovery  -> [answer] hasLiveSipSession:false
+      //   l.539  native SIP owns recovery  -> [answer] hasLiveSipSession:false
+      //
+      // Both stacks share the SAME NetSapiens device `<ext>M`
+      // (ns-resolve-sip-credentials is called with `client_type: "mobile"` and the
+      // resulting config feeds both ppSipProvider.init and the native keep-alive),
+      // so there is exactly ONE AOR and exactly one owner at a time. Starting both
+      // in parallel makes NetSapiens close the sockets alternately (WSS 1001 loop).
+      //
+      // The bug was WHICH stack got picked. Ownership used to be arbitrated on
+      // `document.visibilityState`, but a VoIP push arrives with the app
+      // backgrounded or the screen locked BY DEFINITION, so the branch taken was
+      // almost always `native`. PpSipKeepAlive holds the REGISTER so the phone
+      // rings, but it has NO WebRTC media stack and its bridge forwards only
+      // callId/from - never the SDP offer. Once it captures the INVITE the call is
+      // structurally unanswerable: JS never sees `incoming INVITE attached` and
+      // Answer lands on a dead session (`hasLiveSipSession:false`).
+      //
+      // The WebView is demonstrably ALIVE here - it is running this very handler -
+      // and visibility measures UI state, not the ability to negotiate media. So
+      // JsSIP, the only media-capable stack, takes the AOR; native stays a fallback.
+      console.log("[pp-voip] incoming VoIP push → JsSIP takes the <ext>M AOR (media-capable owner)", {
+        callId: pushCallId, visibility: document.visibilityState,
+      });
+      void ppSipProvider.wakeForIncoming(pushCallId).then((ok) => {
+        if (ok) return;
+        // JsSIP could not register in time: hand the AOR back to the keep-alive so
+        // the phone at least rings rather than dropping to voicemail.
+        console.warn("[pp-voip] JsSIP wake failed → falling back to native SIP ownership", { callId: pushCallId });
+        void wakePlanipretNativeSipForIncomingCall("voip_push");
+      }).catch(() => {
+        void wakePlanipretNativeSipForIncomingCall("voip_push");
+      });
       const from = String(data?.from ?? data?.handle ?? data?.caller ?? data?.callerName ?? "");
       setPushRing({ callId: String(data?.callId ?? ""), from });
       // Sécurité : si aucun INVITE n'arrive, on retire l'écran après 40 s.
@@ -744,8 +788,13 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     };
     const handoffToNative = async () => {
       if (callInProgress()) { void setPlanipretNativeCallActive(true); return; }
-      // NetSapiens permits one active transport for this device AOR. Remove the
-      // foreground contact first, then let native claim the same `<ext>M` AOR.
+      // Both stacks register as the SAME NetSapiens device `<ext>M`:
+      // ns-resolve-sip-credentials is called with `client_type: "mobile"` and the
+      // resulting config feeds BOTH ppSipProvider.init() and
+      // startPlanipretSipKeepAlive(). `<ext>W` is the browser widget, not this app.
+      // NetSapiens allows one active transport per AOR, so the JS contact MUST be
+      // released before native claims it - otherwise the PBX closes the sockets
+      // alternately (WSS 1001 loop, hundreds of sockets).
       const cfg = mobileSipConfigRef.current ?? ppSipProvider.getConfig();
       if (!cfg) return;
       const seq = ++handoffSeq;
@@ -791,10 +840,10 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     };
     let nativeStopTimer: ReturnType<typeof setTimeout> | null = null;
     const stopNativeAfterWebRegistered = (force = false) => {
-      // NetSapiens keeps ONE registration per AOR (doc: registrations.md).
-      // Never drop the native registration before JsSIP has a confirmed
-      // REGISTER 200 OK: that gap is what sends inbound calls to voicemail and
-      // only rings the app once the WebView finally re-registers.
+      // NetSapiens keeps ONE registration per AOR, and both stacks use the SAME
+      // device `<ext>M` (see handoffToNative). Never drop the native registration
+      // before JsSIP has a confirmed REGISTER 200 OK: that gap is what sends
+      // inbound calls to voicemail.
       if (nativeStopTimer) clearTimeout(nativeStopTimer);
       // RINGING IS SACRED. `stopSipService` tears the WSS down; doing it while an
       // INVITE is ringing or a dialog is up terminated the JsSIP session, and

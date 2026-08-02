@@ -16,9 +16,27 @@ export type SipBackendCheck = {
   extension?: string;
   registration?: {
     mobile_aor: string;
-    mobile_registered: boolean;
+    /**
+     * true = AOR seen registered, false = probes answered and AOR absent,
+     * null = PBX registrations unreadable (403 / wrong endpoint / network).
+     * Callers MUST only act on an explicit `false`: treating null as "not
+     * registered" caused a hard transport rebuild mid-ring while the portal
+     * actually showed 113M and 113W registered.
+     */
+    mobile_registered: boolean | null;
     registered_aors: string[];
     count: number;
+    probes_answered?: boolean;
+    probe_statuses?: number[];
+    /**
+     * Core node that accepted the last REGISTER. NetSapiens routes the inbound
+     * INVITE to that node (docs/netsapiens/devices.md), so a device registered
+     * on a non-core node reads as `registered` yet never rings.
+     */
+    core_server?: string | null;
+    core_server_ok?: boolean;
+    registration_contact?: string | null;
+    registration_user_agent?: string | null;
   };
   push?: {
     device_push_enabled: boolean | null;

@@ -33,6 +33,7 @@ type PpSipKeepAlivePlugin = {
   requestBatteryOptimizationExemption?: () => Promise<PpNativeSipStatus>;
   triggerReregister?: () => Promise<PpNativeSipStatus>;
   acknowledgeIncoming?: () => Promise<{ ok: boolean }>;
+  declareJsOwnsAor?: (opts: { owns: boolean }) => Promise<{ ok: boolean }>;
   wakeForIncomingCall?: (opts?: { reason?: string }) => Promise<PpNativeSipStatus>;
   setCallActive?: (opts: { active: boolean }) => Promise<PpNativeSipStatus>;
   addListener?: (
@@ -309,4 +310,24 @@ export async function acknowledgePlanipretIncoming(): Promise<void> {
   if (!isNative()) return;
   try { await NativePpSip.acknowledgeIncoming?.(); }
   catch { /* noop */ }
+}
+
+/**
+ * Tell the native keep-alive that JsSIP now holds the (ext)M AOR.
+ *
+ * JsSIP and PpSipKeepAlive register on the SAME NetSapiens device: whichever
+ * stack holds the AOR captures the INVITE, and only JsSIP can negotiate media.
+ * After a VoIP push the native side opens a short grace window before
+ * re-REGISTERing as a fallback; this call closes that window.
+ *
+ * It exists because the previous signal was `releaseRegistration("...js_owns")`,
+ * which the native layer REFUSES while `incomingPendingUntil` is armed — that is,
+ * during a ring, exactly when the hand-off matters.
+ */
+export async function declarePlanipretJsOwnsAor(owns = true): Promise<void> {
+  if (!isPlanipretNativeSipAvailable()) return;
+  try { await NativePpSip.declareJsOwnsAor?.({ owns }); }
+  catch (e) {
+    if (!markUnavailable("sip", e, "pp-sip-native")) console.warn("[pp-sip-native] declareJsOwnsAor failed", e);
+  }
 }

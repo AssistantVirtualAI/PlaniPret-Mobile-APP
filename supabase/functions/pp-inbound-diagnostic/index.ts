@@ -108,29 +108,18 @@ Deno.serve(async (req) => {
   }
 
   // 3) Devices / registrations
-  // NOTE: /users/{ext}/subscriptions returns SIP SUBSCRIBE (presence), NOT
-  // REGISTER bindings. Real registrations live under the device sub-resource
-  // and at domain level — probe all of them.
+  // NS-API v2 has NO /registrations resource, and /subscriptions is SIP SUBSCRIBE
+  // (presence), not REGISTER (docs/netsapiens/registrations.md). Registration
+  // state lives on the Device object itself, so all the probes below 404'd and
+  // this diagnostic reported "no active registration" for a registered extension.
   const devices = await get(`/domains/${d}/users/${e}/devices`);
-  const deviceIds = arrOf(devices.data)
-    .map((x: any) => String(x?.device ?? x?.aor ?? x?.name ?? "").replace(/^sip:/, "").split("@")[0])
-    .filter(Boolean);
-  const regProbes = [
-    await get(`/domains/${d}/users/${e}/registrations`),
-    await get(`/domains/${d}/registrations?user=${e}`),
-    ...(await Promise.all(
-      deviceIds.slice(0, 6).map((id) =>
-        get(`/domains/${d}/users/${e}/devices/${encodeURIComponent(id)}/registrations`)
-      ),
-    )),
-    await get(`/domains/${d}/users/${e}/subscriptions`),
-  ];
+  const regProbes = [{ path: devices.path, status: devices.status, ok: devices.ok, data: devices.data }];
   const registrations = {
-    path: regProbes.find((p) => p.ok && arrOf(p.data).length)?.path ?? regProbes[0].path,
-    status: regProbes.find((p) => p.ok && arrOf(p.data).length)?.status ?? regProbes[0].status,
-    ok: regProbes.some((p) => p.ok),
-    data: regProbes.flatMap((p) => (p.ok ? arrOf(p.data) : [])),
-    probes: regProbes.map((p) => ({ path: p.path, status: p.status, count: p.ok ? arrOf(p.data).length : 0 })),
+    path: `/domains/${d}/users/${e}/devices`,
+    status: devices.status,
+    ok: devices.ok,
+    data: arrOf(devices.data),
+    probes: [{ path: devices.path, status: devices.status, count: arrOf(devices.data).length }],
   } as any;
 
 
@@ -220,30 +209,43 @@ Deno.serve(async (req) => {
   const ruleFwdAlways = yes(activeRule?.["forward-always"]?.enabled) || yes(activeRule?.["forward-always-enabled"]);
   if (ruleFwdAlways) { verdicts.push("RULE_FORWARD_ALWAYS"); issues.push("La règle active a un renvoi permanent activé."); }
 
-  // devices
+  // devices — a device is registered ONLY when NetSapiens says so.
+  // The previous heuristic accepted `device-sip-registration-uri` as proof, but
+  // that field is `sip:[device]@[domain]` (devices.md l.27) - a static string
+  // present on EVERY device, registered or not. It therefore reported every
+  // unregistered mobile as registered, hiding the real cause of missed calls.
   const deviceList = arrOf(devices.data).filter((x) => x && typeof x === "object");
-  const regList = arrOf(registrations.data).filter((x) => x && typeof x === "object");
   const registeredAors = new Set<string>();
-  for (const r of [...deviceList, ...regList]) {
+  let coreServerFor113M: string | null = null;
+  for (const r of deviceList) {
     const aor = String(
-      r?.aor ?? r?.["device"] ?? r?.["aor-user"] ?? r?.["sub-user"] ?? r?.["user"] ?? r?.name ?? "",
+      r?.["device"] ?? r?.aor ?? r?.["aor-user"] ?? r?.name ?? "",
     ).replace(/^sip:/, "");
-    const exp = Number(r?.expires ?? r?.["registration-expires"] ?? r?.["expires-seconds"] ?? 0);
-    const statusStr = String(
-      r?.["registration-status"] ?? r?.["device-registration-status"] ?? r?.status ?? "",
+    const state = String(
+      r?.["device-sip-registration-state"] ?? r?.["registration-status"] ?? r?.status ?? "",
     ).toLowerCase();
-    const isReg =
-      !!(r?.["registration-time"] ?? r?.["reg-time"] ?? r?.contact ?? r?.["registration-contact"] ??
-         r?.["contact-uri"] ?? r?.["device-sip-registration-uri"] ?? r?.["registration-ip"] ??
-         r?.["ip-address"] ?? r?.["user-agent"]) ||
-      exp > 0 ||
-      statusStr.includes("register") || statusStr.includes("online") || statusStr === "active";
-    if (aor && isReg) registeredAors.add(aor.toLowerCase());
+    // Expiry must be in the future when present; the field is nullable and can
+    // lag for replication, so absence is not disqualifying.
+    const expRaw = r?.["device-sip-registration-expires-datetime"];
+    const expT = expRaw ? Date.parse(String(expRaw).replace(" ", "T")) : NaN;
+    const expOk = !expRaw || !Number.isFinite(expT) || expT > Date.now();
+    if (aor && state === "registered" && expOk) {
+      registeredAors.add(aor.toLowerCase());
+      if (aor.toLowerCase().split("@")[0] === `${ext.toLowerCase()}m`) {
+        coreServerFor113M = String(r?.["device-sip-registration-core-server"] ?? "") || null;
+      }
+    }
   }
 
   if (!registeredAors.size) {
     verdicts.push("NO_REGISTRATION_VISIBLE");
-    issues.push("NS-API ne montre aucune registration active pour cette extension (endpoint devices/subscriptions).");
+    issues.push("NS-API ne montre aucun device enregistré pour cette extension (device-sip-registration-state).");
+  }
+  // The core node that accepted the REGISTER is the one that routes the inbound
+  // INVITE (devices.md l.35). Registered on a non-core node = never rings.
+  if (coreServerFor113M && !/^core\d+\./i.test(coreServerFor113M)) {
+    verdicts.push("REGISTERED_ON_NON_CORE_SERVER");
+    issues.push(`${ext}M est enregistré sur ${coreServerFor113M}, pas sur un noeud core: NS ne peut pas y router l'INVITE.`);
   }
   const mobileAor = `${ext.toLowerCase()}m`;
   const legacyMobileAor = `${ext.toLowerCase()}_mobile`;
