@@ -704,8 +704,34 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       try { window.dispatchEvent(new CustomEvent("pp:sip-callkit-answered", { detail: data })); } catch {}
       void (async () => {
         let ok = false;
+        let threw = false;
         try { ok = !!(await answerRef.current?.()); }
-        catch (e: any) { console.warn("[pp-voip] CallKit answer failed", e?.message ?? e); }
+        catch (e: any) { threw = true; console.warn("[pp-voip] CallKit answer failed", e?.message ?? e); }
+
+        // ring17 - a QUEUED answer intent must NOT be reported to CallKit as a
+        // failure.
+        //
+        // On a push-woken call the INVITE has not landed yet, so answerOnce()
+        // takes the PUSH-PENDING route, queues the intent in the provider and
+        // returns false immediately (ring12: never park inside the mutex). Log
+        // 138 then shows, in this exact order:
+        //   [answer] intent queued; returning immediately ...
+        //   [pp-voip] CallKit answer command -> failed          <-- action.fail()
+        //   ... INVITE arrives, 200 OK sent ...
+        //   [pp-voip] CallKit answer command -> confirmed on 200 OK
+        // The fail() destroyed the CXAnswerCallAction while a perfectly valid
+        // intent was still in flight, which is why CallKit behaved erratically
+        // (ringing UI kept alive, late confirmation, call torn down).
+        //
+        // This is the same mistake as the `if (i === 15) return false;` fixed in
+        // ring14, on the other branch: there we declared a SUCCESSFUL answer
+        // failed, here we declare an IN-PROGRESS one failed. Leave the action in
+        // flight; the provider fulfils it via completeAnswer(ok:true) as soon as
+        // the INVITE is answered, and the native 32s guard is the backstop.
+        if (!ok && !threw && ppSipProvider.hasPendingAnswerIntent()) {
+          console.info("[pp-voip] CallKit answer command → intent queued, leaving the action in flight");
+          return;
+        }
         // session.answer() only means that JsSIP accepted the command locally.
         // CallKit may be fulfilled only after the SIP dialog is truly confirmed;
         // the active-state effect above owns the success completion.

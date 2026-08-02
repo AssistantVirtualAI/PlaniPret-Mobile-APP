@@ -17,6 +17,7 @@
  */
 import { supabase } from "@/integrations/supabase/client";
 import { maestroTelecom } from "@/lib/planipret/maestroTelecom";
+import { toE164 } from "@/lib/callEdge";
 
 export type MaestroPostState = "pending" | "posted" | "skipped" | "failed";
 export type MaestroCallDirection = "inbound" | "outbound";
@@ -33,6 +34,12 @@ export interface MaestroPostRecord {
   classification: MaestroClassification;
   attempts: number;
   lastError: string | null;
+  /**
+   * ring17 - Maestro's own record id, as returned by `POST /calls`. The
+   * end-of-call `PUT` must address the record by this id; using our
+   * `provider_call_id` returned 404 on every call in log 138.
+   */
+  remoteId?: string | null;
   /** Set once the end-of-call update has been sent. */
   endedUpdate: "none" | "sent" | "failed" | "blocked";
   createdAt: number;
@@ -191,17 +198,47 @@ async function post(
   recentDedup.set(dedupKey, { callId, at: Date.now() });
   upsert(callId, { direction, number, classification, state: "pending", reason: "posting" });
 
+  // ring17 - Maestro rejects a non-E.164 number with 422, not 500.
+  //
+  // Log 138 posted the SAME call twice and the difference is only the number
+  // format:
+  //   number:"1514 4942888"  -> maestro_error (422)      <- from the VoIP push
+  //   number:"+15144942888"  -> posted                    <- from the SIP INVITE
+  // The PBX hands the caller id to PushKit pre-formatted with a space and no
+  // leading +, while the INVITE carries a clean E.164 value. So the first post
+  // of every push-woken call was doomed by our own payload, and the record only
+  // landed later thanks to the retry on the SIP path. Normalising here removes
+  // both the 422 and the wasted round trip on the ring path.
+  const e164 = toE164(number);
+  if (e164 !== number) {
+    log("number_normalised", { callId, from: number, to: e164 });
+  }
+
   let lastError: string | null = null;
   for (let attempt = 1; attempt <= POST_MAX_ATTEMPTS; attempt++) {
     upsert(callId, { direction, number, attempts: attempt, state: "pending", reason: `posting_attempt_${attempt}` });
     try {
-      await maestroTelecom.createCall({
+      const created: any = await maestroTelecom.createCall({
         provider_call_id: callId,
-        to_user_number: number || undefined,
+        to_user_number: e164 || undefined,
         status: direction === "outbound" ? "dialing" : "created",
         direction,
       });
-      const rec = upsert(callId, { direction, number, state: "posted", reason: "posted", lastError: null });
+      // ring17 - the end-of-call PUT was returning 404 because it addressed the
+      // record by OUR provider_call_id. Log 138:
+      //   posted        {"callId":"20260802120700026002-fdc76c..."}
+      //   update_failed {"callId":"20260802120700026002-fdc76c...","error":"maestro_error (404)"}
+      // PUT /users/{me}/calls/{id} expects Maestro's OWN record id, which the
+      // POST response carries. Remember it so the update can address the record
+      // the way the API expects, and fall back to the provider id when the
+      // response shape is unknown.
+      const remoteId = String(
+        created?.call?.id ?? created?.data?.id ?? created?.id ?? "",
+      ).trim();
+      if (remoteId && remoteId !== callId) {
+        log("remote_id_captured", { callId, remoteId });
+      }
+      const rec = upsert(callId, { direction, number, state: "posted", reason: "posted", lastError: null, remoteId: remoteId || null });
       log("posted", { callId, dedupKey, direction, number, classification, attempts: attempt });
       return rec;
     } catch (e: any) {
@@ -213,6 +250,15 @@ async function post(
         const rec = upsert(callId, { direction, number, state: "failed", reason: "needs_reauth", lastError });
         log("post_needs_reauth", { callId, dedupKey, direction, number, classification, error: lastError });
         try { window.dispatchEvent(new CustomEvent("pp:maestro-needs-reauth", { detail: { callId } })); } catch {}
+        return rec;
+      }
+      // ring17 - a 4xx is OUR payload being wrong, and it must not be reported as
+      // a Maestro outage. The ring14 catch-all below matched `maestro_error` for
+      // any status, so the 422 of log 138 was mislabelled `maestro_server_error`
+      // and shown to the user as a remote failure. Keep them apart.
+      if (/\b4\d\d\b/.test(lastError)) {
+        const rec = upsert(callId, { direction, number, state: "failed", reason: "maestro_rejected_payload", lastError });
+        log("post_rejected_payload", { callId, dedupKey, direction, number: e164, classification, error: lastError, attempt });
         return rec;
       }
       // ring14 - a Maestro 5xx is a remote outage: retrying twice more changes
@@ -308,15 +354,35 @@ export async function updateCallIfPosted(
     log("update_blocked_not_posted", { callId: id, state: rec?.state ?? "unknown", reason: rec?.reason ?? "no_record" });
     return "blocked";
   }
+  // ring17 - address the record by Maestro's own id when the POST gave us one;
+  // the provider id produced a 404 on every end-of-call update in log 138.
+  const target = rec.remoteId || id;
   try {
-    await maestroTelecom.updateCall(id, body as any);
+    await maestroTelecom.updateCall(target, body as any);
     upsert(id, { direction: rec.direction, number: rec.number, endedUpdate: "sent" });
-    log("update_sent", { callId: id, dedupKey: rec.dedupKey, body });
+    log("update_sent", { callId: id, target, dedupKey: rec.dedupKey, body });
     return "sent";
   } catch (e: any) {
     const msg = String(e?.message ?? e);
+    // ring17 - if the remote id was a wrong guess, try the provider id once
+    // before giving up: losing the end-of-call status costs the call duration
+    // and the ended_reason in Maestro.
+    if (target !== id && /\b404\b/.test(msg)) {
+      log("update_retry_with_provider_id", { callId: id, target, error: msg });
+      try {
+        await maestroTelecom.updateCall(id, body as any);
+        upsert(id, { direction: rec.direction, number: rec.number, endedUpdate: "sent" });
+        log("update_sent", { callId: id, target: id, dedupKey: rec.dedupKey, body });
+        return "sent";
+      } catch (e2: any) {
+        const msg2 = String(e2?.message ?? e2);
+        upsert(id, { direction: rec.direction, number: rec.number, endedUpdate: "failed", lastError: msg2 });
+        log("update_failed", { callId: id, target: id, error: msg2 });
+        return "failed";
+      }
+    }
     upsert(id, { direction: rec.direction, number: rec.number, endedUpdate: "failed", lastError: msg });
-    log("update_failed", { callId: id, error: msg });
+    log("update_failed", { callId: id, target, error: msg });
     return "failed";
   }
 }

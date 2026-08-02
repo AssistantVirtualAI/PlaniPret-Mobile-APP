@@ -39,6 +39,11 @@ const REASONS: Record<string, { fr: string; en: string }> = {
     fr: "Maestro indisponible (erreur serveur 500) — nouvelle tentative à la fin de l'appel",
     en: "Maestro unavailable (server error 500) — will retry after the call",
   },
+  // ring17 - a 4xx is our own payload being rejected, not a Maestro outage.
+  maestro_rejected_payload: {
+    fr: "Données refusées par Maestro (erreur 4xx) — vérifier le format du numéro",
+    en: "Payload rejected by Maestro (4xx) — check the number format",
+  },
 };
 
 function reasonLabel(reason: string, lang: "fr" | "en") {
