@@ -742,7 +742,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       registerExpires = call.getInt("registerExpiresSec") ?? 1800
       persistConfig()
       // Build marker: lets us prove from the Xcode console which binary is running.
-      NSLog("[PpSipKeepAlive] BUILD MARKER pp-build-2026-08-02-ring10 (ring guard on releaseRegistration + SIP-before-claim)")
+      NSLog("[PpSipKeepAlive] BUILD MARKER pp-build-2026-08-02-ring11 (idempotent audio session + route + APNs env from entitlement)")
       NSLog("[PpSipKeepAlive] reconnect strategy min=%.0fms max=%.0fms attempts=%d verify=%.0fms expires=%ds", backoffMinMs, backoffMaxMs, backoffMaxAttempts, verifyDelayMs, registerExpires)
       DispatchQueue.main.async { [weak self] in
         guard let self = self else { call.resolve(["ok": false, "status": "error", "reason": "plugin_released"]); return }
@@ -764,10 +764,21 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       let active = call.getBool("active") ?? false
       DispatchQueue.main.async { [weak self] in
         guard let self = self else { call.resolve(["ok": false]); return }
+        // ring11 - idempotent. The ring10 log shows setCallActive(true) arriving
+        // 4 times on a single call; every extra one used to re-activate the
+        // AVAudioSession and cut the live WebRTC stream.
+        let unchanged = self.callActive == active
         self.callActive = active
         if active {
           self.beginBackgroundTask()
-          self.activateAudioSession()
+          if unchanged && self.audioSessionActivated {
+            // Session already up for this call: only repair a drifted route.
+            self.activateAudioSession()
+            self.startAudioKeepAlive()
+            call.resolve(self.snapshot(ok: true)); return
+          }
+          // First transition into the call: bring the session up decisively.
+          self.activateAudioSession(force: true)
           self.startAudioKeepAlive()
           // Never hold a second transport while the WebView carries the call.
           self.backgroundHandoffWorkItem?.cancel(); self.backgroundHandoffWorkItem = nil
@@ -784,15 +795,27 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
           // (JsSIP status 8 => INVALID_STATE_ERROR on answer). The guard expires
           // on its own after 45s, and acknowledgeIncoming clears it explicitly.
           self.stopAudioKeepAlive()
+          // ring11 - allow the next call to re-activate the session cleanly.
+          if !unchanged { self.audioSessionActivated = false }
         }
         call.resolve(self.snapshot(ok: true))
       }
     }
+    /// ring11 - the keep-alive timer is now a REPAIR mechanism, not a periodic
+    /// reconfiguration. It previously called activateAudioSession() blindly every
+    /// 2 seconds, which re-ran setCategory/setActive on a healthy session for the
+    /// whole call and cut the WebRTC stream. It now only steps in when the route
+    /// has genuinely collapsed (no outputs = session interrupted by WebKit),
+    /// which is the failure mode it was written to defend against.
     private func startAudioKeepAlive() {
       audioKeepAliveTimer?.invalidate()
       audioKeepAliveTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
         guard let self = self, self.callActive else { return }
-        self.activateAudioSession()
+        let s = AVAudioSession.sharedInstance()
+        if s.currentRoute.outputs.isEmpty {
+          NSLog("[PpSipKeepAlive] audio keep-alive: session lost its outputs -> repairing")
+          self.activateAudioSession(force: true)
+        }
       }
     }
     private func stopAudioKeepAlive() { audioKeepAliveTimer?.invalidate(); audioKeepAliveTimer = nil }
@@ -801,12 +824,22 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     // Stored so we can re-assert the route after every activateAudioSession() call
     // (iOS resets overrideOutputAudioPort on each setActive).
     private var preferredRoute: String = "earpiece"
+    /// ring11 - tracks whether we already brought the session up, so repeated
+    /// setCallActive(true) calls do not re-activate it.
+    private var audioSessionActivated = false
 
+    /// ring11 - idempotent. The ring10 log shows setAudioRoute called 5 times on
+    /// a single call, each one re-running overrideOutputAudioPort on a route that
+    /// was already correct.
     @objc func setAudioRoute(_ call: CAPPluginCall) {
       let route = call.getString("route") ?? "earpiece"
       DispatchQueue.main.async { [weak self] in
         guard let self = self else { call.resolve(["ok": false]); return }
+        let alreadyThere = self.preferredRoute == route && self.currentAudioRoute() == route
         self.preferredRoute = route
+        if alreadyThere {
+          call.resolve(["ok": true, "route": self.preferredRoute, "noop": true]); return
+        }
         self.applyAudioRoute(route)
         call.resolve(["ok": true, "route": self.preferredRoute])
       }
@@ -1103,17 +1136,46 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       setStatus(status == "registered" ? "registered" : "protected", why)
     }
 
-    private func activateAudioSession() {
+    /// ring11 - MADE IDEMPOTENT. This used to unconditionally re-run
+    /// setCategory + setActive + applyAudioRoute on every invocation, and it is
+    /// invoked from setCallActive(true) AND from a 2-second repeating keep-alive
+    /// timer for the entire duration of a call.
+    ///
+    /// Reconfiguring an AVAudioSession that is already active and already
+    /// correct forces a hardware route change. While an RTCPeerConnection is
+    /// rendering, that produces an audible dropout - and can leave the stream
+    /// permanently silent. Combined with the JS-side srcObject churn it is why
+    /// answered calls had no sound in the ring10 log.
+    ///
+    /// We now only touch the session when something actually differs.
+    private func activateAudioSession(force: Bool = false) {
       let s = AVAudioSession.sharedInstance()
       // During a live call we must own the session exclusively: .mixWithOthers
       // lets WebKit interrupt it when the app goes background (no audio at all).
       let opts: AVAudioSession.CategoryOptions = callActive
         ? [.allowBluetoothHFP, .allowBluetoothA2DP]
         : [.allowBluetoothHFP, .allowBluetoothA2DP, .mixWithOthers]
-      try? s.setCategory(.playAndRecord, mode: .voiceChat, options: opts)
-      try? s.setActive(true, options: [])
-      // Re-assert the preferred route: iOS resets overrideOutputAudioPort on each setActive.
-      applyAudioRoute(preferredRoute)
+
+      let categoryMatches = s.category == .playAndRecord && s.mode == .voiceChat && s.categoryOptions == opts
+      if force || !categoryMatches {
+        try? s.setCategory(.playAndRecord, mode: .voiceChat, options: opts)
+      }
+
+      // An empty currentRoute.outputs list is the reliable signal that the
+      // session was deactivated or interrupted out from under us.
+      let sessionLooksActive = !s.currentRoute.outputs.isEmpty
+      if force || !sessionLooksActive || !categoryMatches {
+        try? s.setActive(true, options: [])
+        // iOS resets overrideOutputAudioPort on each setActive, so the route
+        // must be re-asserted - but only when we really did call setActive.
+        applyAudioRoute(preferredRoute)
+        audioSessionActivated = true
+        NSLog("[PpSipKeepAlive] audio session (re)activated force=%@ categoryMatched=%@ hadOutputs=%@",
+              force ? "y" : "n", categoryMatches ? "y" : "n", sessionLooksActive ? "y" : "n")
+      } else if currentAudioRoute() != preferredRoute {
+        // Session is fine, only the route drifted (e.g. a headset was unplugged).
+        applyAudioRoute(preferredRoute)
+      }
     }
     private func connect() {
       // A new socket means a new AoR binding: clear the 200 OK debounce.
@@ -1412,13 +1474,58 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     private var activeCallId: String?
     private var pendingAnswerAction: CXAnswerCallAction?
     private let voipTokenDefaultsKey = "pp.voip.push-token.v1"
+    /// ring11 - memoised result of apnsEnvironment(); the embedded provisioning
+    /// profile cannot change while the process is alive.
+    private var cachedApnsEnvironment: String? = nil
 
+    /// ring11 - the APNs environment a PushKit token belongs to is decided by the
+    /// aps-environment entitlement baked into the embedded provisioning
+    /// profile, NOT by the Xcode build configuration.
+    ///
+    /// The previous implementation returned "sandbox" under #if DEBUG, which
+    /// mislabelled every Debug build even though Planipret's entitlements are
+    /// production. The ring10 log showed environment=sandbox for a
+    /// production-signed build, and because pp-voip-push-token persists that
+    /// value on every app launch it kept overwriting the server-side
+    /// self-correction. Result: ns-webhook-receiver hit
+    /// api.sandbox.push.apple.com first on EVERY call, took a BadDeviceToken,
+    /// then retried on the production host - a permanent extra round trip on
+    /// the critical path that delayed the INVITE.
+    ///
+    /// We now read the real entitlement out of embedded.mobileprovision. That
+    /// file is a CMS blob wrapping a plist, so we slice between the plist
+    /// markers instead of trying to decode the signature.
     private func apnsEnvironment() -> String {
-        #if DEBUG
-        return "sandbox"
-        #else
-        return "production"
-        #endif
+        if let cached = cachedApnsEnvironment { return cached }
+
+        var resolved: String? = nil
+
+        if let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
+           let data = try? Data(contentsOf: url),
+           let raw = String(data: data, encoding: .isoLatin1),
+           let start = raw.range(of: "<?xml"),
+           let end = raw.range(of: "</plist>") {
+            let plistText = String(raw[start.lowerBound..<end.upperBound])
+            if let plistData = plistText.data(using: .isoLatin1),
+               let plist = try? PropertyListSerialization.propertyList(from: plistData, options: [], format: nil) as? [String: Any],
+               let entitlements = plist["Entitlements"] as? [String: Any],
+               let apsEnv = entitlements["aps-environment"] as? String {
+                // Apple spells it "development" in the entitlement; APNs calls
+                // the matching host "sandbox".
+                resolved = (apsEnv == "development") ? "sandbox" : "production"
+                NSLog("[PpVoipCall] apnsEnvironment from entitlement aps-environment=%@ -> %@", apsEnv, resolved!)
+            }
+        }
+
+        if resolved == nil {
+            // App Store / TestFlight builds strip the embedded profile, and those
+            // are always production.
+            resolved = "production"
+            NSLog("[PpVoipCall] apnsEnvironment no embedded profile -> production")
+        }
+
+        cachedApnsEnvironment = resolved
+        return resolved!
     }
 
     public override func load() {

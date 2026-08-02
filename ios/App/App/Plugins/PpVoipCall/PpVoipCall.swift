@@ -26,13 +26,58 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     private var activeCallId: String?
     private var pendingAnswerAction: CXAnswerCallAction?
     private let voipTokenDefaultsKey = "pp.voip.push-token.v1"
+    /// ring11 - memoised result of apnsEnvironment(); the embedded provisioning
+    /// profile cannot change while the process is alive.
+    private var cachedApnsEnvironment: String? = nil
 
+    /// ring11 - the APNs environment a PushKit token belongs to is decided by the
+    /// aps-environment entitlement baked into the embedded provisioning
+    /// profile, NOT by the Xcode build configuration.
+    ///
+    /// The previous implementation returned "sandbox" under #if DEBUG, which
+    /// mislabelled every Debug build even though Planipret's entitlements are
+    /// production. The ring10 log showed environment=sandbox for a
+    /// production-signed build, and because pp-voip-push-token persists that
+    /// value on every app launch it kept overwriting the server-side
+    /// self-correction. Result: ns-webhook-receiver hit
+    /// api.sandbox.push.apple.com first on EVERY call, took a BadDeviceToken,
+    /// then retried on the production host - a permanent extra round trip on
+    /// the critical path that delayed the INVITE.
+    ///
+    /// We now read the real entitlement out of embedded.mobileprovision. That
+    /// file is a CMS blob wrapping a plist, so we slice between the plist
+    /// markers instead of trying to decode the signature.
     private func apnsEnvironment() -> String {
-        #if DEBUG
-        return "sandbox"
-        #else
-        return "production"
-        #endif
+        if let cached = cachedApnsEnvironment { return cached }
+
+        var resolved: String? = nil
+
+        if let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
+           let data = try? Data(contentsOf: url),
+           let raw = String(data: data, encoding: .isoLatin1),
+           let start = raw.range(of: "<?xml"),
+           let end = raw.range(of: "</plist>") {
+            let plistText = String(raw[start.lowerBound..<end.upperBound])
+            if let plistData = plistText.data(using: .isoLatin1),
+               let plist = try? PropertyListSerialization.propertyList(from: plistData, options: [], format: nil) as? [String: Any],
+               let entitlements = plist["Entitlements"] as? [String: Any],
+               let apsEnv = entitlements["aps-environment"] as? String {
+                // Apple spells it "development" in the entitlement; APNs calls
+                // the matching host "sandbox".
+                resolved = (apsEnv == "development") ? "sandbox" : "production"
+                NSLog("[PpVoipCall] apnsEnvironment from entitlement aps-environment=%@ -> %@", apsEnv, resolved!)
+            }
+        }
+
+        if resolved == nil {
+            // App Store / TestFlight builds strip the embedded profile, and those
+            // are always production.
+            resolved = "production"
+            NSLog("[PpVoipCall] apnsEnvironment no embedded profile -> production")
+        }
+
+        cachedApnsEnvironment = resolved
+        return resolved!
     }
 
     public override func load() {

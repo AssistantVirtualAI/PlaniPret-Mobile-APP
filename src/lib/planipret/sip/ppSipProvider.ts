@@ -172,6 +172,13 @@ class PpSipProvider {
   };
 
   audioEl: HTMLAudioElement | null = null;
+  /**
+   * ring11 - identities of the remote audio tracks currently wired into
+   * `audioEl`, sorted and joined. Used to make attachRemoteAudio() idempotent:
+   * `new MediaStream(tracks)` allocates a fresh object every time, so an
+   * object-reference comparison can never detect "nothing changed".
+   */
+  private attachedAudioSignature = "";
   private lastSig = "";
   private lastStartAt = 0;
   private connectingSince = 0;
@@ -752,12 +759,47 @@ class PpSipProvider {
         if (remotes?.length) stream = remotes[0];
       }
       if (!stream) return;
-      if (el.srcObject !== stream) el.srcObject = stream;
+
+      // ring11 - ROOT CAUSE OF "call answers but there is no sound".
+      //
+      // This method is invoked 4-5 times per call by design (`track` event,
+      // legacy `addstream`, the immediate call in wire(), plus JsSIP's
+      // `accepted` and `confirmed`). The previous guard was
+      //   `if (el.srcObject !== stream) el.srcObject = stream;`
+      // but `new MediaStream(tracks)` above allocates a BRAND NEW object on
+      // every invocation, even when the underlying tracks are identical. The
+      // guard compares object references, so it was ALWAYS true and srcObject
+      // was reassigned every single time.
+      //
+      // On iOS WebKit, reassigning srcObject on a playing <audio> tears down
+      // the render pipeline and requires a fresh play(), which can be rejected
+      // for lack of a recent user gesture. In the ring10 log the 5th attach
+      // fired several seconds INTO the conversation (l.623) - killing audio
+      // that was already working.
+      //
+      // Fix: compare the actual track identities, not object references, and
+      // only touch srcObject when the track set genuinely changed.
+      const signature = stream.getAudioTracks().map((t) => t.id).sort().join(",");
+      const sameTracks = signature !== "" && signature === this.attachedAudioSignature;
+
+      if (!sameTracks) {
+        el.srcObject = stream;
+        this.attachedAudioSignature = signature;
+        this.log("info", `remote audio attached (${stream.getAudioTracks().length} track(s))`);
+      }
+
       el.muted = false;
       el.volume = 1;
-      const p = el.play();
-      if (p?.catch) p.catch(() => { setTimeout(() => el.play().catch(() => {}), 300); });
-      this.log("info", `remote audio attached (${stream.getAudioTracks().length} track(s))`);
+      // Only (re)start playback when it is actually stopped. Calling play() on
+      // an already-playing element is harmless, but calling it right after a
+      // needless srcObject swap is exactly what produced the dropouts.
+      if (el.paused || el.readyState === 0) {
+        const p = el.play();
+        if (p?.catch) p.catch(() => { setTimeout(() => el.play().catch(() => {}), 300); });
+      }
+      if (sameTracks) {
+        this.log("debug", `remote audio already attached (same ${stream.getAudioTracks().length} track(s)) - no-op`);
+      }
     } catch (e: any) {
       this.log("error", `attachRemoteAudio failed: ${e?.message || e}`);
     }
@@ -766,6 +808,10 @@ class PpSipProvider {
 
   private resetCall() {
     this.session = null;
+    // ring11 - the next call gets brand new tracks; drop the signature so the
+    // first attach of that call is not mistaken for a duplicate.
+    this.attachedAudioSignature = "";
+    if (this.audioEl) { try { this.audioEl.srcObject = null; } catch { /* noop */ } }
     this.update({
       callState: "idle",
       remoteIdentity: "",

@@ -312,6 +312,12 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
   const answerRef = useRef<null | (() => Promise<boolean>)>(null);
   /** One answer transaction at a time across CallKit, notification and in-app UI. */
   const answerAttemptRef = useRef<Promise<boolean> | null>(null);
+  /**
+   * ring11 - last value pushed to the native setCallActive bridge, so we never
+   * re-send an unchanged boolean (each redundant activation reconfigured the
+   * AVAudioSession and cut the audio mid-call).
+   */
+  const lastNativeCallActiveRef = useRef<boolean | null>(null);
 
   const seenCallIds = useRef<Set<string>>(new Set());
   const mobileSipConfigRef = useRef<PpSipConfig | null>(null);
@@ -789,19 +795,29 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
         return ppSipProvider.hasActiveCall() || st === "ringing-in" || st === "ringing-out";
       } catch { return false; }
     };
+    // ring11 - every setCallActive(true) that crosses the bridge re-activates the
+    // native AVAudioSession, and doing that during a live call cuts the WebRTC
+    // audio. These handoff guards fire repeatedly (visibility churn, freeze,
+    // pagehide, timers), so route them through the same de-dup ref as the main
+    // call-state effect.
+    const keepNativeCallActive = () => {
+      if (lastNativeCallActiveRef.current === true) return;
+      lastNativeCallActiveRef.current = true;
+      void setPlanipretNativeCallActive(true);
+    };
     const scheduleHandoff = (delay = 2500) => {
       if (handoffTimer) clearTimeout(handoffTimer);
-      if (callInProgress()) { void setPlanipretNativeCallActive(true); return; }
+      if (callInProgress()) { keepNativeCallActive(); return; }
       handoffTimer = setTimeout(() => {
         handoffTimer = null;
         const stillHidden = typeof document === "undefined" || document.visibilityState === "hidden";
         if (!stillHidden) return;
-        if (callInProgress()) { void setPlanipretNativeCallActive(true); return; }
+        if (callInProgress()) { keepNativeCallActive(); return; }
         void handoffToNative();
       }, delay);
     };
     const handoffToNative = async () => {
-      if (callInProgress()) { void setPlanipretNativeCallActive(true); return; }
+      if (callInProgress()) { keepNativeCallActive(); return; }
       // Both stacks register as the SAME NetSapiens device `<ext>M`:
       // ns-resolve-sip-credentials is called with `client_type: "mobile"` and the
       // resulting config feeds BOTH ppSipProvider.init() and
@@ -1039,7 +1055,18 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     const ringing = snap.callState === "ringing-in" || snap.callState === "ringing-out";
     // Keep the native iOS audio session alive while a call is up, otherwise
     // WebKit interrupts it as soon as the app is backgrounded (no audio).
-    void setPlanipretNativeCallActive(active || ringing);
+    //
+    // ring11 - only cross the bridge when the boolean actually flips. This effect
+    // re-runs on every callState transition (ringing-in -> active -> held ...) and
+    // each redundant setCallActive(true) used to re-activate the AVAudioSession,
+    // which cuts the live WebRTC stream. The ring10 log shows 4 of them on a
+    // single call. The native side is idempotent now too, but not paying for the
+    // round trip at all is better.
+    const desiredCallActive = active || ringing;
+    if (lastNativeCallActiveRef.current !== desiredCallActive) {
+      lastNativeCallActiveRef.current = desiredCallActive;
+      void setPlanipretNativeCallActive(desiredCallActive);
+    }
     if (!active) { setQuality(null); return; }
     const un = callQualitySampler.subscribe(setQuality);
     return () => { un(); };
@@ -1316,17 +1343,41 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       const immediate = await ppSipProvider.requestAnswer(pushRing.callId || undefined);
       console.info(`[answer] requestAnswer → ${immediate ? "answered immediately" : "intent queued"}`);
       if (immediate) return true;
+      // ring11 - release the outer answer mutex while we park in this watchdog.
+      //
+      // answerAttemptRef holds THIS promise, and this promise is about to sit in
+      // a 500ms polling loop for up to PP_PENDING_ANSWER_TIMEOUT_MS. Any further
+      // answer() call in the meantime was handed this parked promise back
+      // ("joining answer already in flight" - 17 times in the ring10 log),
+      // including the one fired by `pp:sip-pending-answer-ready` when the INVITE
+      // finally lands. Clearing the ref lets that listener run a real answer
+      // transaction instead of re-joining a promise that only polls.
+      answerAttemptRef.current = null;
+
       // A PBX REST "answer" cannot create a WebRTC media dialog and previously
       // produced a false connected state (CallKit answered, caller still hearing
       // the greeting, no audio/keypad). Only a confirmed SIP dialog is success.
       const attempts = Math.ceil(PP_PENDING_ANSWER_TIMEOUT_MS / 500);
+      let sawRinging = false;
       for (let i = 0; i < attempts; i++) {
         await new Promise((r) => window.setTimeout(r, 500));
         const st = ppSipProvider.getSnapshot().callState;
-        if (st === "active") { console.info("[answer] SIP answered within watchdog window"); return true; }
+        if (st === "ringing-in") sawRinging = true;
+        if (st === "active" || st === "held") { console.info("[answer] SIP answered within watchdog window"); return true; }
         if (st === "ended") break;
       }
-      console.warn("[answer] no confirmed SIP dialog before pending-answer expiry — refusing false REST answer");
+      // ring11 - distinguish the two very different failure modes, because they
+      // need opposite fixes and the old single message hid the difference.
+      if (sawRinging) {
+        console.warn("[answer] INVITE arrived but the dialog never confirmed — answer path failed", {
+          pushCallId: pushRing.callId ?? null,
+        });
+      } else {
+        console.warn("[answer] NO INVITE EVER ARRIVED for this push — NetSapiens did not fork to this device in time", {
+          pushCallId: pushRing.callId ?? null,
+          hint: "JsSIP registered too late for the answer-rule ring window, or the (ext)M device had no contact when the call forked",
+        });
+      }
       return false;
     }
 
