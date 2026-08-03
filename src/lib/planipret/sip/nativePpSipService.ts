@@ -34,6 +34,8 @@ type PpSipKeepAlivePlugin = {
   triggerReregister?: () => Promise<PpNativeSipStatus>;
   acknowledgeIncoming?: () => Promise<{ ok: boolean }>;
   declareJsOwnsAor?: (opts: { owns: boolean }) => Promise<{ ok: boolean }>;
+  /** ring21 — le moteur PJSIP natif possède l'AOR : coupe la socket WSS. */
+  declareNativeEngineOwnsAor?: (opts: { owns: boolean }) => Promise<{ ok: boolean }>;
   wakeForIncomingCall?: (opts?: { reason?: string }) => Promise<PpNativeSipStatus>;
   setCallActive?: (opts: { active: boolean }) => Promise<PpNativeSipStatus>;
   addListener?: (
@@ -347,5 +349,25 @@ export async function declarePlanipretJsOwnsAor(owns = true): Promise<void> {
   try { await NativePpSip.declareJsOwnsAor?.({ owns }); }
   catch (e) {
     if (!markUnavailable("sip", e, "pp-sip-native")) console.warn("[pp-sip-native] declareJsOwnsAor failed", e);
+  }
+}
+
+/**
+ * ring21 — le moteur PJSIP natif (TLS 5061) possède l'AOR `<ext>M`.
+ *
+ * À la différence de `declarePlanipretJsOwnsAor`, ce signal coupe la socket WSS
+ * du keep-alive de façon inconditionnelle : PJSIP REGISTER en TLS et
+ * NetSapiens fermerait l'un des deux transports (WSS 1001) si les deux
+ * restaient liés à la même AOR.
+ *
+ * Le `?.` est volontaire : sur un binaire natif antérieur à ring21 la méthode
+ * n'existe pas, et l'absence de signal doit rester silencieuse plutôt que de
+ * faire échouer l'initialisation du moteur.
+ */
+export async function declarePlanipretNativeEngineOwnsAor(owns = true): Promise<void> {
+  if (!isPlanipretNativeSipAvailable()) return;
+  try { await NativePpSip.declareNativeEngineOwnsAor?.({ owns }); }
+  catch (e) {
+    if (!markUnavailable("sip", e, "pp-sip-native")) console.warn("[pp-sip-native] declareNativeEngineOwnsAor failed", e);
   }
 }

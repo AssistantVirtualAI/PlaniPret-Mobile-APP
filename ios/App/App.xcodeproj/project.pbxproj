@@ -31,6 +31,7 @@
 		9B0D688E85318487D3AD90FF /* SceneDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 94BA8A12802872FFF9452AFA /* SceneDelegate.swift */; };
 		E62BAA3F469EE98A5AAB5A16 /* PpPjsip.swift in Sources */ = {isa = PBXBuildFile; fileRef = 570CD2B8941AE2CCCBA5CAF2 /* PpPjsip.swift */; };
 		2753EB2DDF31AA6573F19CB9 /* PpPjsip.m in Sources */ = {isa = PBXBuildFile; fileRef = 04A55FD4872E2EDFFDFF1043 /* PpPjsip.m */; };
+		2DC73C5B52409A322DF6D0A6 /* PpPjsipEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = FDE7802A123290C35DAF67BD /* PpPjsipEngine.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -63,6 +64,7 @@
 		94BA8A12802872FFF9452AFA /* SceneDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/SceneDelegate.swift; sourceTree = SOURCE_ROOT; };
 		570CD2B8941AE2CCCBA5CAF2 /* PpPjsip.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/Plugins/PpPjsip/PpPjsip.swift; sourceTree = SOURCE_ROOT; };
 		04A55FD4872E2EDFFDFF1043 /* PpPjsip.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = App/Plugins/PpPjsip/PpPjsip.m; sourceTree = SOURCE_ROOT; };
+		FDE7802A123290C35DAF67BD /* PpPjsipEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/Plugins/PpPjsip/PpPjsipEngine.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -291,7 +293,8 @@
 				0E0C85E5E14918B74C0843FE /* PpSipKeepAlive.swift in Sources */,
 				472E50053CEB7AD4769E8FEB /* PpSipKeepAlive.m in Sources */,
 				3C507B763F308588CB7727AA /* PpVoipCall.swift in Sources */,
-				9D2796A320A9C3E642B75C49 /* PpVoipCall.m in Sources */,				5090EB0312657394EB79FE66 /* AppBridgeViewController.swift in Sources */,				9B0D688E85318487D3AD90FF /* SceneDelegate.swift in Sources */,				E62BAA3F469EE98A5AAB5A16 /* PpPjsip.swift in Sources */,				2753EB2DDF31AA6573F19CB9 /* PpPjsip.m in Sources */,
+				9D2796A320A9C3E642B75C49 /* PpVoipCall.m in Sources */,				5090EB0312657394EB79FE66 /* AppBridgeViewController.swift in Sources */,				9B0D688E85318487D3AD90FF /* SceneDelegate.swift in Sources */,				E62BAA3F469EE98A5AAB5A16 /* PpPjsip.swift in Sources */,				2753EB2DDF31AA6573F19CB9 /* PpPjsip.m in Sources */,				2DC73C5B52409A322DF6D0A6 /* PpPjsipEngine.swift in Sources */,
+
 
 
 

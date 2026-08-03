@@ -47,6 +47,8 @@ import {
 } from "@/lib/planipret/sip/nativePpSipService";
 import { addDedupedCapListener } from "@/lib/planipret/sip/capListeners";
 import { checkSipBackendRegistration } from "@/lib/planipret/sip/sipBackendCheck";
+import { nativeSip } from "@/lib/planipret/sip/nativeSipService";
+import { nativeOwnsAor } from "@/lib/planipret/sip/aorArbitration";
 
 import {
   upsertRingingSession,
@@ -486,6 +488,21 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
           displayName: String(d.display_name || d.sip_display_name || d.sip_extension),
         };
         mobileSipConfigRef.current = sipConfig;
+        // ring21 - chemin de production iOS: initialiser/enregistrer PJSIP AVANT que
+        // l'une des piles WSS heritees ne puisse revendiquer `<ext>M`. La trace Xcode
+        // ne montrait aucun appel PpPjsip, puis PpSipKeepAlive captait l'INVITE et le
+        // remettait a un Call-ID JsSIP different, faisant attendre Repondre a l'infini.
+        if (clientType === "mobile" && nativeSip.isAvailable()) {
+          const nativeReady = await nativeSip.initialize();
+          if (nativeReady || nativeOwnsAor()) {
+            try { ppSipProvider.yieldAorToNative(); } catch { /* noop */ }
+            void getPlanipretVoipPushToken().then((t) => {
+              if (t?.token) void uploadPlanipretVoipToken(t.token, t.bundleId, sipConfig.extension, t.environment);
+            });
+            console.info("[pp-sip] PJSIP is the sole <ext>M owner; legacy WSS initialization skipped");
+            return;
+          }
+        }
         // The native keep-alive service owns the `<ext>_mobile` device, but ONLY
         // in background. Running it while the WebView (JsSIP) is registered makes
         // NetSapiens close the sockets alternately (code 1001 loop, hundreds of
@@ -566,6 +583,11 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     // MActiveCall / MHome can pop the ringing sheet even if the WebView slept.
     let cleanupInvite: (() => void) | undefined;
     onPlanipretIncomingInvite((invite) => {
+      // ring21 - PJSIP est la seule pile a porter l'INVITE quand il possede l'AOR.
+      if (nativeOwnsAor()) {
+        console.info("[pp-sip] legacy keep-alive INVITE ignored; PJSIP owns the AOR", invite?.callId);
+        return;
+      }
       // If the user already tapped Answer on the notification, mark the intent
       // before re-registering, so a fast JsSIP INVITE cannot beat the flag.
       if (invite?.action === "answer") {
@@ -645,6 +667,13 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     // WSS socket is usually dead after suspension) instead of waiting on it.
     let cleanupVoipIncoming: (() => void) | undefined;
     onPlanipretVoipIncomingCall((data: any) => {
+      // ring21 - PJSIP/CallKit portent seuls l'appel: aucun reveil WSS a declencher.
+      if (nativeOwnsAor()) {
+        console.info("[pp-voip] push received; PJSIP/CallKit remain the sole call path", data?.callId);
+        const from = String(data?.from ?? data?.handle ?? data?.caller ?? data?.callerName ?? "");
+        setPushRing({ callId: String(data?.callId ?? ""), from });
+        return;
+      }
       const pushCallId = String(data?.callId ?? "");
       // ROOT CAUSE FIXED HERE - proven by the 3-inbound-call Xcode log:
       //   l.142  [pp-sip] incoming INVITE attached  (call 1 ONLY)
@@ -1389,6 +1418,12 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       return { via: "none", ok: false, error: mic.error ?? "microphone unavailable", micState: mic.state };
     }
     try { mic.stream?.getTracks().forEach((tr) => tr.stop()); } catch {}
+    // ring21 - PJSIP possede l'AOR: il porte aussi les sortants.
+    if (nativeOwnsAor() && nativeSip.isRegistered()) {
+      const ok = await nativeSip.makeCall(destination);
+      if (ok) return { via: "webrtc", ok: true };
+      console.warn("[softphone] native PJSIP call failed; falling back to PBX");
+    }
     let canUseSip = registered;
     if (!canUseSip) {
       try { ppSipProvider.forceReregister(); } catch {}
@@ -1441,6 +1476,12 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
   // Every branch is logged so the exact route to answer() is visible in Xcode /
   // Logcat when debugging a VoIP-push answer.
   const answerOnce = useCallback(async () => {
+    // ring21 - PJSIP possede l'AOR: c'est lui qui envoie le 200 OK.
+    if (nativeOwnsAor()) {
+      const ok = await nativeSip.answer();
+      console.info(`[answer] route=PJSIP → ${ok ? "SIP 200 OK sent" : "no native INVITE"}`);
+      return ok;
+    }
     const sipSnap = ppSipProvider.getSnapshot();
     console.info("[answer] tapped", {
       hasLiveSipSession,
@@ -1667,6 +1708,14 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
 
 
   const hangup = useCallback(() => {
+    // ring21 - PJSIP possede l'AOR: c'est lui qui envoie le BYE.
+    if (nativeOwnsAor()) {
+      void nativeSip.hangup();
+      setPushRing(null);
+      setRestCall(null);
+      console.info("[hangup] native PJSIP hangup sent");
+      return;
+    }
     const callId = ppSipProvider.getSnapshot().callId;
     const restId = restCall?.id ?? null;
     console.info("[hangup] requested", { sipCallId: callId || null, restCallId: restId, hasLiveSipSession });

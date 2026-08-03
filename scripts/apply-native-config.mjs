@@ -697,6 +697,8 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     /// when JS takes over (foreground / active call), cleared when native ownership
     /// begins.
     private var jsOwnsAor = false
+    /// ring21: vrai quand le moteur PJSIP natif (TLS 5061) possede l'AOR.
+    private var nativeEngineOwnsAor = false
 
 
     public override func load() {
@@ -929,6 +931,27 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         call.resolve(["ok": true])
       }
     }
+    /// ring21: le moteur PJSIP natif possede l'AOR <ext>M. Contrairement a
+    /// declareJsOwnsAor, on coupe ici la socket WSS de facon inconditionnelle :
+    /// PJSIP REGISTER en TLS 5061 et NetSapiens fermerait l'un des deux
+    /// transports (WSS 1001) si les deux restaient lies a la meme AOR.
+    @objc func declareNativeEngineOwnsAor(_ call: CAPPluginCall) {
+      let owns = call.getBool("owns") ?? true
+      DispatchQueue.main.async { [weak self] in
+        guard let self = self else { call.resolve(["ok": false]); return }
+        self.nativeEngineOwnsAor = owns
+        NSLog("[PpSipKeepAlive] nativeEngineOwnsAor=%@", owns ? "true" : "false")
+        if owns {
+          self.jsOwnsAor = false
+          self.backgroundHandoffWorkItem?.cancel(); self.backgroundHandoffWorkItem = nil
+          self.timer?.invalidate(); self.timer = nil
+          self.socket?.cancel(with: .goingAway, reason: nil); self.socket = nil
+          self.socketOpen = false
+          self.setStatus("protected", "pjsip_owns_aor")
+        }
+        call.resolve(self.snapshot(ok: true))
+      }
+    }
     @objc func getSipServiceStatus(_ call: CAPPluginCall) { DispatchQueue.main.async { call.resolve(self.snapshot(ok: true)) } }
     @objc func triggerReregister(_ call: CAPPluginCall) {
       DispatchQueue.main.async { [weak self] in
@@ -967,6 +990,14 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     /// guarantees background execution through PushKit, so this is the path that
     /// must bring the AOR back before the PBX times out to voicemail.
     private func wakeForPush(_ why: String) {
+      // ring21: si le moteur PJSIP natif possede l'AOR, c'est lui qui REGISTER en
+      // TLS 5061. Un REGISTER WSS de secours ici creerait un second transport sur
+      // la meme AOR et NetSapiens fermerait l'un des deux (WSS 1001).
+      if nativeEngineOwnsAor {
+        NSLog("[PpSipKeepAlive] VoIP push wake delegated to PJSIP - legacy WSS REGISTER blocked")
+        setStatus("protected", "pjsip_owns_aor")
+        return
+      }
       // PushKit can wake iOS before the WebView has loaded. Restore the last
       // confirmed SIP configuration so REGISTER never depends on JS startup.
       if host.isEmpty || login.isEmpty || domain.isEmpty { restoreConfig() }
@@ -1019,8 +1050,8 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         guard self.pushWakeGraceToken == graceToken else { return }
         // JS took the AOR (it called releaseRegistration via foreground_js_owns,
         // or it is already carrying the dialog): stay out of the way.
-        if self.jsOwnsAor {
-          NSLog("[PpSipKeepAlive] push wake: JS owns the AOR -> native REGISTER skipped")
+        if self.jsOwnsAor || self.nativeEngineOwnsAor {
+          NSLog("[PpSipKeepAlive] push wake: another engine owns the AOR -> native REGISTER skipped")
           return
         }
         // ring13 - a native REGISTER while a call is being set up is destructive.
@@ -2135,6 +2166,7 @@ CAP_PLUGIN(PpSipKeepAlive, "PpSipKeepAlive",
   CAP_PLUGIN_METHOD(triggerReregister, CAPPluginReturnPromise);
   CAP_PLUGIN_METHOD(acknowledgeIncoming, CAPPluginReturnPromise);
   CAP_PLUGIN_METHOD(declareJsOwnsAor, CAPPluginReturnPromise);
+  CAP_PLUGIN_METHOD(declareNativeEngineOwnsAor, CAPPluginReturnPromise);
   CAP_PLUGIN_METHOD(wakeForIncomingCall, CAPPluginReturnPromise);
   CAP_PLUGIN_METHOD(setCallActive, CAPPluginReturnPromise);
   CAP_PLUGIN_METHOD(setAudioRoute, CAPPluginReturnPromise);
@@ -2302,6 +2334,76 @@ function ensureXcodeSourceFiles(iosRoot, relativeFiles) {
 // project, otherwise the pjlib headers cannot locate pj/compat/os_auto.h and
 // every file that imports pjsua fails to compile. Injected here so it survives
 // `npx cap sync ios` and never becomes a manual Xcode step to remember.
+// ring21 (Lovable) - Lier libpjsip.xcframework a la cible App + exposer son
+// module.modulemap a Swift. Sans ca `#if canImport(pjsua)` est FAUX et tout le
+// moteur PJSIP est exclu a la compilation, meme si l'archive est visible dans
+// Xcode. C'est la cause de l'absence totale de traces [PpPjsip] dans les logs.
+function ensurePjsipXcframework(iosRoot) {
+  const rel = "App/Plugins/PpPjsip/Frameworks/libpjsip.xcframework";
+  const abs = path.join(iosRoot, rel);
+  if (!fs.existsSync(abs)) {
+    console.log(
+      `[native-config] WARNING: ${rel} absent - le moteur PJSIP ne sera pas compile ` +
+        "(canImport(pjsua) faux). Lance: bash scripts/build-pjsip-ios.sh"
+    );
+    return false;
+  }
+  // Chemins d'en-tetes reels des tranches (device + simulateur).
+  const headerPaths = fs
+    .readdirSync(abs)
+    .filter((slice) => fs.existsSync(path.join(abs, slice, "Headers")))
+    .map((slice) => `\"$(SRCROOT)/${rel}/${slice}/Headers\"`);
+  if (headerPaths.length === 0) {
+    console.log("[native-config] WARNING: libpjsip.xcframework sans dossier Headers - canImport(pjsua) serait faux.");
+    return false;
+  }
+  const pbx = path.join(iosRoot, "App.xcodeproj", "project.pbxproj");
+  if (!fs.existsSync(pbx)) return false;
+  let text = fs.readFileSync(pbx, "utf8");
+  const before = text;
+  const fileName = "libpjsip.xcframework";
+  const fileRef = xcodeId(`file:${rel}`);
+  const buildRef = xcodeId(`build:${rel}`);
+  const buildName = `${fileName} in Frameworks`;
+  if (!text.includes(`${fileRef} /* ${fileName} */`)) {
+    const line = `\t\t${fileRef} /* ${fileName} */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = ${rel}; sourceTree = SOURCE_ROOT; };\n`;
+    text = text.replace(/(\/\* End PBXFileReference section \*\/)/, `${line}$1`);
+  }
+  if (!text.includes(`${buildRef} /* ${buildName} */`)) {
+    const line = `\t\t${buildRef} /* ${buildName} */ = {isa = PBXBuildFile; fileRef = ${fileRef} /* ${fileName} */; };\n`;
+    text = text.replace(/(\/\* End PBXBuildFile section \*\/)/, `${line}$1`);
+  }
+  text = text.replace(
+    /(isa = PBXFrameworksBuildPhase;[\s\S]*?files = \(\n)([\s\S]*?)(\s*\);)/g,
+    (match, start, files, end) =>
+      files.includes(buildRef) ? match : `${start}${files}\t\t\t\t${buildRef} /* ${buildName} */,\n${end}`
+  );
+  // Reglages de build: Swift ne trouve module.modulemap que via
+  // SWIFT_INCLUDE_PATHS / HEADER_SEARCH_PATHS.
+  const includes = headerPaths.join(" ");
+  text = text.replace(/(buildSettings = \{\n)([\s\S]*?)(\n\t*\};)/g, (match, start, body, end) => {
+    if (!/PRODUCT_BUNDLE_IDENTIFIER/.test(body)) return match;
+    let next = body;
+    for (const key of ["SWIFT_INCLUDE_PATHS", "HEADER_SEARCH_PATHS"]) {
+      if (next.includes(key)) {
+        if (next.includes("libpjsip.xcframework")) continue;
+        next = next.replace(
+          new RegExp(`(${key} = )([^;]*);`),
+          `$1(\n\t\t\t\t\t"$(inherited)",\n\t\t\t\t\t${includes},\n\t\t\t\t);`
+        );
+      } else {
+        next += `\n\t\t\t\t${key} = (\n\t\t\t\t\t"$(inherited)",\n\t\t\t\t\t${includes},\n\t\t\t\t);`;
+      }
+    }
+    return `${start}${next}${end}`;
+  });
+  if (text !== before) {
+    fs.writeFileSync(pbx, text);
+    console.log("[native-config] libpjsip.xcframework lie a la cible App (+ chemins de module pjsua).");
+    return true;
+  }
+  return false;
+}
 function ensurePjsipPreprocessorMacro(iosRoot) {
   const pbxproj = path.join(iosRoot, "App.xcodeproj", "project.pbxproj");
   if (!fs.existsSync(pbxproj)) return;
@@ -2652,8 +2754,12 @@ function patchIosNativeFiles() {
     // has to reach the Xcode Sources build phase.
     "App/Plugins/PpPjsip/PpPjsip.swift",
     "App/Plugins/PpPjsip/PpPjsip.m",
+    // ring21: le moteur media natif (pjsua) vit dans un fichier separe et doit
+    // etre compile, sinon PpPjsip.swift ne trouve pas PjsipEngine.shared.
+    "App/Plugins/PpPjsip/PpPjsipEngine.swift",
   ]);
   ensurePjsipPreprocessorMacro(iosRoot);
+  ensurePjsipXcframework(iosRoot);
   patchIosAppDelegate(iosApp);
   ensureIosBridgeController(iosApp);
   ensureIosSceneDelegate(iosApp);

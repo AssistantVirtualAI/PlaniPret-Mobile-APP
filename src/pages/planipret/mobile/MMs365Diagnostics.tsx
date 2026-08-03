@@ -66,7 +66,7 @@ export default function MMs365Diagnostics() {
   const StatusIcon = data?.status === "ok" ? CheckCircle2 : data?.status === "limited" ? AlertTriangle : XCircle;
 
   return (
-    <div className="min-h-screen p-4" style={{ background: "#060D1A", color: "#E8EDF5" }}>
+    <div className="min-h-full p-4 pb-8" style={{ background: "#060D1A", color: "#E8EDF5" }}>
       <div className="max-w-4xl mx-auto">
         <div className="flex items-center gap-3 mb-4">
           <button onClick={() => nav(-1)} className="p-2 rounded-lg" style={{ background: "#0A1628", border: "1px solid #0E2A45" }}>

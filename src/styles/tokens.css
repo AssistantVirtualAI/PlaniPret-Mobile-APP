@@ -1091,6 +1091,15 @@
   background: rgba(3,7,18,0.75) !important;
   border-top: 1px solid var(--pp-glass-border) !important;
 }
+/* Android WebView often ignores backdrop-filter -> translucent bars let the page
+   text bleed through. Fall back to opaque bars when blur is unsupported. */
+@supports not ((backdrop-filter: blur(2px)) or (-webkit-backdrop-filter: blur(2px))) {
+  .planipret-mobile-scope[data-pp-theme="dark"] .pp-mobile-tabbar,
+  .planipret-mobile-scope[data-pp-theme="dark"] .pp-mobile-footer,
+  .planipret-mobile-scope[data-pp-theme="dark"] .pp-mobile-header {
+    background: #030712 !important;
+  }
+}
 /* Inputs become glass pills */
 .planipret-mobile-scope[data-pp-theme="dark"] input,
 .planipret-mobile-scope[data-pp-theme="dark"] textarea {

@@ -76,6 +76,8 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     /// when JS takes over (foreground / active call), cleared when native ownership
     /// begins.
     private var jsOwnsAor = false
+    /// ring21: vrai quand le moteur PJSIP natif (TLS 5061) possede l'AOR.
+    private var nativeEngineOwnsAor = false
 
 
     public override func load() {
@@ -308,6 +310,27 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         call.resolve(["ok": true])
       }
     }
+    /// ring21: le moteur PJSIP natif possede l'AOR <ext>M. Contrairement a
+    /// declareJsOwnsAor, on coupe ici la socket WSS de facon inconditionnelle :
+    /// PJSIP REGISTER en TLS 5061 et NetSapiens fermerait l'un des deux
+    /// transports (WSS 1001) si les deux restaient lies a la meme AOR.
+    @objc func declareNativeEngineOwnsAor(_ call: CAPPluginCall) {
+      let owns = call.getBool("owns") ?? true
+      DispatchQueue.main.async { [weak self] in
+        guard let self = self else { call.resolve(["ok": false]); return }
+        self.nativeEngineOwnsAor = owns
+        NSLog("[PpSipKeepAlive] nativeEngineOwnsAor=%@", owns ? "true" : "false")
+        if owns {
+          self.jsOwnsAor = false
+          self.backgroundHandoffWorkItem?.cancel(); self.backgroundHandoffWorkItem = nil
+          self.timer?.invalidate(); self.timer = nil
+          self.socket?.cancel(with: .goingAway, reason: nil); self.socket = nil
+          self.socketOpen = false
+          self.setStatus("protected", "pjsip_owns_aor")
+        }
+        call.resolve(self.snapshot(ok: true))
+      }
+    }
     @objc func getSipServiceStatus(_ call: CAPPluginCall) { DispatchQueue.main.async { call.resolve(self.snapshot(ok: true)) } }
     @objc func triggerReregister(_ call: CAPPluginCall) {
       DispatchQueue.main.async { [weak self] in
@@ -346,6 +369,14 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     /// guarantees background execution through PushKit, so this is the path that
     /// must bring the AOR back before the PBX times out to voicemail.
     private func wakeForPush(_ why: String) {
+      // ring21: si le moteur PJSIP natif possede l'AOR, c'est lui qui REGISTER en
+      // TLS 5061. Un REGISTER WSS de secours ici creerait un second transport sur
+      // la meme AOR et NetSapiens fermerait l'un des deux (WSS 1001).
+      if nativeEngineOwnsAor {
+        NSLog("[PpSipKeepAlive] VoIP push wake delegated to PJSIP - legacy WSS REGISTER blocked")
+        setStatus("protected", "pjsip_owns_aor")
+        return
+      }
       // PushKit can wake iOS before the WebView has loaded. Restore the last
       // confirmed SIP configuration so REGISTER never depends on JS startup.
       if host.isEmpty || login.isEmpty || domain.isEmpty { restoreConfig() }
@@ -398,8 +429,8 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         guard self.pushWakeGraceToken == graceToken else { return }
         // JS took the AOR (it called releaseRegistration via foreground_js_owns,
         // or it is already carrying the dialog): stay out of the way.
-        if self.jsOwnsAor {
-          NSLog("[PpSipKeepAlive] push wake: JS owns the AOR -> native REGISTER skipped")
+        if self.jsOwnsAor || self.nativeEngineOwnsAor {
+          NSLog("[PpSipKeepAlive] push wake: another engine owns the AOR -> native REGISTER skipped")
           return
         }
         // ring13 - a native REGISTER while a call is being set up is destructive.

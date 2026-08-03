@@ -13,12 +13,34 @@ import { checkSipBackendRegistration } from "./sipBackendCheck";
 // nativePpSipService only imports a TYPE from this module, so this is not a
 // runtime cycle.
 import { declarePlanipretJsOwnsAor } from "./nativePpSipService";
+import {
+  PP_AOR_CLAIM_EVENT,
+  nativeOwnsAor,
+  normalizeMobileAor,
+  preclaimNativeAor,
+} from "./aorArbitration";
+
+// ring21 - resout la propriete de l'AOR avant toute creation d'UA JsSIP.
+preclaimNativeAor();
 
 // Let the SBC finish removing the previous Contact before a replacement UA
 // REGISTERs the same AOR. Without this gap NetSapiens closes one WSS with 1001.
 const PP_SIP_UA_SWAP_DELAY_MS = 800;
 /** Must remain shorter than the native CallKit answer watchdog (32s). */
 export const PP_PENDING_ANSWER_TIMEOUT_MS = 30_000;
+
+// ring21 - un seul proprietaire par AOR: le moteur PJSIP natif s'annonce via
+// `pp:sip-native-owns-aor`, apres quoi JsSIP ne doit plus jamais REGISTER.
+// L'etat autoritaire vit dans `aorArbitration` (persiste + pre-claime sur les
+// plateformes natives avant qu'un UA JsSIP puisse le prendre de vitesse).
+export const ppNativeSipOwnsAor = () => nativeOwnsAor();
+if (typeof window !== "undefined") {
+  window.addEventListener(PP_AOR_CLAIM_EVENT, () => {
+    // Demonter immediatement toute registration WebView vivante: la laisser
+    // liee fait fermer la branche native par NetSapiens avec un 1001.
+    try { ppSipProvider?.yieldAorToNative(); } catch { /* provider not built yet */ }
+  });
+}
 
 export type PpSipStatus = "idle" | "connecting" | "connected" | "registered" | "disconnected" | "error";
 export type PpCallState = "idle" | "ringing-out" | "ringing-in" | "active" | "held" | "ended";
@@ -376,6 +398,15 @@ class PpSipProvider {
   }
 
   private guardedRegister(reason: string, options: { priority?: boolean } = {}): boolean {
+    // ring21 - un moteur SIP natif (PJSIP) qui detient l'AOR en est le seul
+    // proprietaire: un REGISTER JS sur la meme AOR fait fermer la branche
+    // native par NetSapiens (1001).
+    if (ppNativeSipOwnsAor()) {
+      this.log("warn", `REGISTER blocked: native SIP owns AOR (${reason})`);
+      this.pushHistory("blocked", "native_owns_aor");
+      this.emitMetrics();
+      return false;
+    }
     const ua = this.ua;
     // ring14 - CENTRAL GUARD. A REGISTER sent while a SIP dialog is live makes
     // NetSapiens close the WSS leg (1001), and the dialog dies with it. This is
@@ -388,6 +419,26 @@ class PpSipProvider {
       this.log("warn", `REGISTER blocked - a live SIP dialog must not be disturbed (${reason}, callState=${this.snap.callState})`);
       this.pendingReRegisterAfterCall = true;
       return false;
+    }
+    // ring20 - purge the orphan intent BEFORE evaluating the ring15 guard below.
+    // The 2026-08-03 log shows ring15 firing 4 times with callState=idle AFTER the
+    // call was over: the intent had outlived its call (its INVITE never matched,
+    // because the VoIP push Call-ID and the SIP Call-ID are different identifier
+    // spaces on NetSapiens), so it blocked every later REGISTER refresh and put the
+    // NEXT inbound call at risk.
+    //
+    // CAUTION - do NOT purge on `callState === "idle"` alone: that is exactly the
+    // legitimate window ring15 protects (background push, INVITE still in flight,
+    // no session yet). Purging there would resurrect the bug ring15 fixed and send
+    // the caller to voicemail. Two signals separate a real orphan from legitimate
+    // waiting: the intent has expired, or the call it targeted has already ended.
+    if (this.pendingAnswer) {
+      const expired = this.pendingAnswer.expiresAt <= Date.now();
+      const callOver = this.snap.callState === "ended";
+      if (expired || callOver) {
+        this.log("info", `stale answer intent purged - no live call to protect (${reason}, callState=${this.snap.callState}, expired=${expired})`);
+        this.pendingAnswer = null;
+      }
     }
     const answerPending = !!this.pendingAnswer && this.pendingAnswer.expiresAt > Date.now();
     // ring15 - THE DECISIVE FIX. The ring14 guard above only protected a dialog
@@ -461,6 +512,15 @@ class PpSipProvider {
 
   async init(cfg: PpSipConfig) {
     if (ppSipInitInFlight) return;
+    // ring21 — arbitrage d'AOR : le moteur natif PJSIP est le seul REGISTER
+    // autorise sur `<ext>M`. Creer un UA JsSIP ici (register:true) rouvrirait la
+    // course qui provoque les WSS 1001 et envoie l'appel en messagerie.
+    if (nativeOwnsAor()) {
+      this.log("warn", "JsSIP init blocked: native PJSIP owns the AOR");
+      this.pushHistory("blocked", "native_owns_aor_init");
+      if (this.ua) this.yieldAorToNative();
+      return;
+    }
     installSipParserGuard();
     const rawWssUrl = String(cfg.wssUrl ?? "").trim();
     if (!cfg.extension || !cfg.sipDomain || !rawWssUrl || rawWssUrl === "undefined" || !/^wss?:\/\//i.test(rawWssUrl) || !cfg.password) {
@@ -474,7 +534,12 @@ class PpSipProvider {
       this.log("warn", `portal WSS target rejected (${rawWssUrl}) -> using core ${edgeUrls[0]}`);
     }
     const wssUrl = edgeUrls[0];
-    const cleanCfg = { ...cfg, wssUrl, wssUrls: edgeUrls };
+    // ring21 — invariant d'AOR : la WebView ne peut REGISTER que `<ext>M`.
+    const mobileAor = normalizeMobileAor(cfg.sipUsername || cfg.extension);
+    if (mobileAor && mobileAor !== cfg.sipUsername) {
+      this.log("warn", `AOR normalise ${cfg.sipUsername} -> ${mobileAor}`);
+    }
+    const cleanCfg = { ...cfg, sipUsername: mobileAor || cfg.sipUsername, wssUrl, wssUrls: edgeUrls };
     const sig = `${cleanCfg.extension}|${cleanCfg.sipDomain}|${cleanCfg.wssUrl}|${cleanCfg.password}`;
     if (this.ua && sig === this.lastSig && this.snap.status === "registered") {
       return;
@@ -1178,6 +1243,13 @@ class PpSipProvider {
   private resetCall() {
     this.stopRtpProbe("call reset");
     this.session = null;
+    // ring20 - an answer/decline intent only lives as long as the call it targets.
+    // Keeping it past the end of the call blocks every later REGISTER refresh (the
+    // ring15 guard fires with callState=idle) and jeopardises the NEXT inbound call.
+    // This is the primary purge; the one in guardedRegister() is the safety net for
+    // intents queued on a call that never reached resetCall().
+    this.pendingAnswer = null;
+    this.pendingDecline = null;
     // ring11 - the next call gets brand new tracks; drop the signature so the
     // first attach of that call is not mistaken for a duplicate.
     this.attachedAudioSignature = "";
@@ -1385,6 +1457,11 @@ class PpSipProvider {
    * rebuild the transport and wait for a REAL `registered` event.
    */
   async wakeForIncoming(callId?: string): Promise<boolean> {
+    // ring21 - le reveil push sert a demarrer PJSIP, pas a re-REGISTER la WebView.
+    if (nativeOwnsAor()) {
+      this.log("warn", "push wake ignored: native PJSIP owns the AOR");
+      return false;
+    }
     if (this.wakeInFlight) {
       this.log("info", "joining incoming wake already in flight");
       return this.wakeInFlight;
@@ -1413,8 +1490,8 @@ class PpSipProvider {
     // re-registered the AOR and stole it back mid-ring, and since the native stack
     // has no media plane the INVITE landing there is unanswerable. A push wake IS
     // the moment JS takes ownership; there is nothing to wait for.
-    void declarePlanipretJsOwnsAor(true);
-
+    // ring21 - si PJSIP possede l'AOR, le JS ne le revendique jamais.
+    void declarePlanipretJsOwnsAor(!nativeOwnsAor());
     // ring13 - THE fix for "it rings but the answer button does nothing".
     //
     // A live socket in `registered` state can already carry the INVITE: there is
@@ -1453,7 +1530,7 @@ class PpSipProvider {
       this.log("warn", "push wake: still unregistered → hard rebuild retry");
       this.hardRebuild("push_wake_retry");
       ok = await this.waitForRegistered(12_000);
-      if (ok) void declarePlanipretJsOwnsAor(true);
+      if (ok) void declarePlanipretJsOwnsAor(!nativeOwnsAor());
     }
     // JsSIP could not register: hand ownership back so the native keep-alive can
     // at least keep the phone ringing instead of dropping to voicemail.
@@ -1731,6 +1808,23 @@ class PpSipProvider {
 
   private stopKeepAlive() {
     if (this.keepAliveTimer) { clearInterval(this.keepAliveTimer); this.keepAliveTimer = null; }
+  }
+
+  /**
+   * ring21 - le moteur PJSIP natif vient de prendre l'AOR: liberer sur-le-champ
+   * la registration JsSIP. Sans cela NetSapiens voit deux contacts sur le meme
+   * AOR et ferme la branche native avec un WSS 1001.
+   */
+  yieldAorToNative(): void {
+    if (!this.ua) return;
+    if (this.hasActiveCall() || this.snap.callState === "ringing-in" || this.snap.callState === "ringing-out") {
+      this.log("warn", "AOR handover deferred: call in progress");
+      return;
+    }
+    this.log("warn", "native PJSIP owns the AOR -> releasing JsSIP registration");
+    this.pushHistory("blocked", "aor_handover_native");
+    try { this.ua.unregister({ all: false }); } catch { /* noop */ }
+    setTimeout(() => { try { this.stop(); } catch { /* noop */ } }, 250);
   }
 
   /**
