@@ -329,6 +329,34 @@ xcodebuild -create-xcframework \
   -output "$OUT/libpjsip.xcframework"
 
 echo ""
+# ---------------------------------------------------------------------------
+# 4) Vérifications post-build sur les BINAIRES FINAUX
+# ---------------------------------------------------------------------------
+# verify-pjsip-tls.sh contrôle, sur chaque tranche du xcframework :
+#  - au moins un symbole OpenSSL (SSL_CTX_new, OPENSSL_init_ssl, …) ;
+#  - les symboles PJSIP prouvant que le transport TLS a été compilé
+#    (pjsip_tls_transport_start, pj_ssl_sock_create). Ce second contrôle est
+#    essentiel : il attrape le cas où OpenSSL est fusionné mais où pjproject a
+#    été compilé sans support TLS, qu'une simple recherche de symboles OpenSSL
+#    laisserait passer.
+if [ -f "$APP_DIR/scripts/verify-pjsip-tls.sh" ]; then
+  PJSIP_WORKDIR="$WORK" bash "$APP_DIR/scripts/verify-pjsip-tls.sh" "$OUT/libpjsip.xcframework"
+fi
+
+# Le self-test compile et exécute un vrai programme dans le simulateur, qui
+# appelle pjsua_transport_create(PJSIP_TRANSPORT_TLS). C'est la seule preuve
+# à l'EXÉCUTION que le TLS fonctionne. Non bloquant : il dépend d'un runtime de
+# simulateur installé, absent sur certaines machines.
+if [ -f "$APP_DIR/scripts/pjsip-tls-selftest.sh" ]; then
+  if PJSIP_WORKDIR="$WORK" bash "$APP_DIR/scripts/pjsip-tls-selftest.sh"; then
+    echo "✔ self-test TLS réussi dans le simulateur"
+  else
+    echo "⚠ self-test TLS non concluant (runtime de simulateur absent ?) — non bloquant."
+    echo "  Les vérifications statiques sur les binaires sont passées."
+  fi
+fi
+
+echo ""
 echo "✅ libpjsip.xcframework (TLS activé) → $OUT"
 echo ""
 echo "Étape Xcode restante — une seule, non automatisable :"

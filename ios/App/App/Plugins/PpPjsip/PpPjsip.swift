@@ -213,10 +213,13 @@ final class PjsipProbeEngine {
         pjsua_transport_config_default(&tcfg)
         tcfg.port = 0                      // port local éphémère
         var transportId = pjsua_transport_id(-1)
-        try check(
-            pjsua_transport_create(PJSIP_TRANSPORT_TLS, &tcfg, &transportId),
-            "pjsua_transport_create(TLS)"
-        )
+        let tlsStatus = pjsua_transport_create(PJSIP_TRANSPORT_TLS, &tcfg, &transportId)
+        if tlsStatus != pj_status_t(0) {
+            // Sans ce diagnostic, un binaire construit sans OpenSSL échoue ici avec
+            // un code numérique dont la cause est invisible depuis le Swift.
+            logTlsFailureDiagnostics(status: tlsStatus)
+        }
+        try check(tlsStatus, "pjsua_transport_create(TLS)")
 
         try check(pjsua_start(), "pjsua_start")
         // Aucun périphérique audio ouvert : ce lot ne fait que du signalement.
@@ -315,6 +318,40 @@ final class PjsipProbeEngine {
             accId = pjsua_acc_id(-1)
         }
         cb(result)
+    }
+
+    /// Diagnostic d'échec du transport TLS.
+    ///
+    /// Le point décisif est `pj_ssl_cipher_get_availables` : si le binaire a été
+    /// construit sans OpenSSL, aucun cipher n'est disponible. Cela distingue de
+    /// façon fiable un défaut de BUILD (TLS absent du binaire) d'un défaut de
+    /// RÉSEAU ou de certificat — deux causes qui produisent sinon le même silence.
+    private func logTlsFailureDiagnostics(status: pj_status_t) {
+        var buf = [CChar](repeating: 0, count: 256)
+        pj_strerror(status, &buf, 256)
+        let msg = String(cString: buf)
+
+        var ciphers = [pj_ssl_cipher](repeating: pj_ssl_cipher(0), count: 256)
+        var count = UInt32(ciphers.count)
+        let cipherStatus = pj_ssl_cipher_get_availables(&ciphers, &count)
+        let sslBackendPresent = cipherStatus == pj_status_t(0) && count > 0
+
+        NSLog("[PpPjsip] pjsua_transport_create(TLS) failed status=%d (%@)", status, msg)
+        NSLog("[PpPjsip] --- etat de configuration PJSIP ---")
+        NSLog("[PpPjsip]   pjsua version       : %@", String(cString: pj_get_version()))
+        NSLog("[PpPjsip]   backend SSL present : %@ (ciphers=%u, status=%d)",
+              sslBackendPresent ? "OUI" : "NON", count, cipherStatus)
+        NSLog("[PpPjsip]   transport demande   : PJSIP_TRANSPORT_TLS (5061)")
+        NSLog("[PpPjsip]   TLS est le SEUL transport natif possible : PJSIP n'a pas de transport SIP/WebSocket.")
+
+        if status == pj_status_t(PJSIP_EUNSUPTRANSPORT.rawValue) || !sslBackendPresent {
+            NSLog("[PpPjsip] CAUSE : libpjsip.xcframework a ete construit SANS OpenSSL (PJ_HAS_SSL_SOCK=0).")
+            NSLog("[PpPjsip]   CORRECTIF : bash scripts/build-pjsip-ios.sh")
+            NSLog("[PpPjsip]   puis      : bash scripts/verify-pjsip-tls.sh")
+            NSLog("[PpPjsip]   puis      : npx cap sync ios")
+        } else {
+            NSLog("[PpPjsip] CAUSE probable : reseau ou certificat local. Le backend SSL est present.")
+        }
     }
 
     private func check(_ status: pj_status_t, _ what: String) throws {

@@ -1,0 +1,72 @@
+name: PJSIP iOS TLS (Planiprêt)
+
+# Vérifie que le build PJSIP produit bien un binaire AVEC TLS/OpenSSL.
+# Trois barrières, chacune bloquante :
+#   1. configure-<arch>.log doit contenir « OpenSSL library found, SSL support enabled »
+#   2. les binaires finaux doivent exporter les symboles OpenSSL + TLS PJSIP
+#   3. pjsua_transport_create(PJSIP_TRANSPORT_TLS) doit réussir au lancement
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/build-pjsip-ios.sh'
+      - 'scripts/verify-pjsip-tls.sh'
+      - 'scripts/pjsip-tls-selftest.sh'
+      - 'ios/App/App/Plugins/PpPjsip/**'
+      - '.github/workflows/pjsip-ios.yml'
+  workflow_dispatch:
+
+jobs:
+  build-and-verify:
+    name: build-pjsip-ios.sh + vérification TLS
+    runs-on: macos-14
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Cache PJSIP/OpenSSL build
+        uses: actions/cache@v4
+        with:
+          path: .pjsip-build
+          key: pjsip-${{ runner.os }}-${{ hashFiles('scripts/build-pjsip-ios.sh') }}
+
+      - name: Build OpenSSL + PJSIP + xcframework
+        run: bash scripts/build-pjsip-ios.sh
+
+      - name: Contrôle explicite des logs configure (exit 1 si SSL absent)
+        run: |
+          shopt -s nullglob
+          logs=(.pjsip-build/configure-*.log)
+          if [ ${#logs[@]} -eq 0 ]; then
+            echo "::error::aucun configure-<arch>.log produit — le build PJSIP n'a pas tourné"
+            exit 1
+          fi
+          status=0
+          for log in "${logs[@]}"; do
+            arch="$(basename "$log" .log)"; arch="${arch#configure-}"
+            if grep -q "OpenSSL library found, SSL support enabled" "$log"; then
+              echo "✔ $arch : OpenSSL détecté, SSL activé"
+            else
+              echo "::error file=$log::[$arch] « OpenSSL library found, SSL support enabled » absent — PJ_HAS_SSL_SOCK=0, TLS indisponible"
+              status=1
+            fi
+          done
+          exit $status
+
+      - name: Vérification des binaires finaux (symboles OpenSSL + TLS)
+        run: bash scripts/verify-pjsip-tls.sh
+
+      - name: Test de lancement pjsua_transport_create(TLS)
+        run: bash scripts/pjsip-tls-selftest.sh
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pjsip-build-logs
+          path: |
+            .pjsip-build/configure-*.log
+          if-no-files-found: warn
