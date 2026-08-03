@@ -106,8 +106,22 @@ if [ -f "$SSL_SRC/VERSION.dat" ]; then
   echo "▶ OpenSSL source : $(tr '\n' ' ' < "$SSL_SRC/VERSION.dat" | sed 's/  */ /g')"
 fi
 
+# $3 = flags SUPPLÉMENTAIRES passés à ./Configure, chacun en UN SEUL argument.
+#
+# ./Configure d'OpenSSL n'a aucune branche pour « -arch » : tout argument qui ne
+# commence pas par -, + ou / est interprété comme un NOM DE CIBLE. Passer
+# « -arch arm64 » en deux mots fait donc lire « arm64 » comme une seconde cible :
+#   target already defined - ios64-xcrun (offending arg: arm64)
+# La syntaxe documentée pour un flag à argument séparé est l'encodage %20, que
+# Configure décode en espace : « -arch%20arm64 ».
+#
+# À noter : ios64-xcrun ajoute DÉJÀ « -arch arm64 » elle-même, donc la tranche
+# device n'en a pas besoin. iossimulator-xcrun, elle, ne fixe aucune
+# architecture : il faut l'y préciser.
 build_openssl () {
-  local tag="$1" ossl_target="$2" min_flag="$3"
+  local tag="$1" ossl_target="$2"
+  shift 2
+  local extra_flags=("$@")
   local prefix="$WORK/openssl/$tag"
 
   if [ -f "$prefix/lib/libssl.a" ] && [ -f "$prefix/lib/libcrypto.a" ]; then
@@ -115,14 +129,20 @@ build_openssl () {
     return 0
   fi
 
-  echo "▶ OpenSSL: $tag (cible $ossl_target, arm64, $min_flag)"
+  echo "▶ OpenSSL: $tag (cible $ossl_target, flags: ${extra_flags[*]})"
   rm -rf "$WORK/openssl-build-$tag"
   cp -R "$SSL_SRC" "$WORK/openssl-build-$tag"
   pushd "$WORK/openssl-build-$tag" >/dev/null
 
   ./Configure "$ossl_target" no-shared no-dso no-async no-tests no-engine \
-    --prefix="$prefix" \
-    -arch arm64 "$min_flag" -fno-common
+    --prefix="$prefix" "${extra_flags[@]}"
+
+  # Configure imprime « Failure! build file wasn't produced » sans code d'erreur
+  # utilisable dans certains cas : on vérifie le produit attendu.
+  if [ ! -f configdata.pm ]; then
+    echo "❌ ARRÊT — ./Configure n'a pas produit configdata.pm pour « $tag »."
+    exit 1
+  fi
 
   make -j"$(sysctl -n hw.ncpu)" build_libs
   make install_dev
@@ -135,11 +155,22 @@ build_openssl () {
   test -f "$prefix/lib/libssl.a"    || { echo "❌ OpenSSL $tag : libssl.a manquant";    exit 1; }
   test -f "$prefix/lib/libcrypto.a" || { echo "❌ OpenSSL $tag : libcrypto.a manquant"; exit 1; }
   test -f "$prefix/include/openssl/ssl.h" || { echo "❌ OpenSSL $tag : en-têtes manquants"; exit 1; }
-  echo "✔ OpenSSL $tag → $prefix"
+
+  # L'architecture doit être arm64 : une erreur de flags produirait silencieusement
+  # du x86_64 et le lien final échouerait bien plus tard, sans cause lisible.
+  local archs
+  archs="$(lipo -archs "$prefix/lib/libcrypto.a" 2>/dev/null || echo '?')"
+  if [ "$archs" != "arm64" ]; then
+    echo "❌ ARRÊT — libcrypto.a ($tag) est en « $archs », attendu « arm64 »."
+    exit 1
+  fi
+  echo "✔ OpenSSL $tag → $prefix (arm64)"
 }
 
-build_openssl device    ios64-xcrun        "-mios-version-min=$MIN_IOS_VER"
-build_openssl simulator iossimulator-xcrun "-mios-simulator-version-min=$MIN_IOS_VER"
+# Device : ios64-xcrun fournit déjà -arch arm64 ; on ne surcharge que la version min.
+build_openssl device    ios64-xcrun        "-mios-version-min=$MIN_IOS_VER" "-fno-common"
+# Simulateur : aucune architecture dans la cible, d'où -arch%20arm64 (encodage %20).
+build_openssl simulator iossimulator-xcrun "-arch%20arm64" "-mios-simulator-version-min=$MIN_IOS_VER" "-fno-common"
 echo ""
 
 # ---------------------------------------------------------------------------
