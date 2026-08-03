@@ -105,6 +105,19 @@ export default function MContacts() {
 
   const favKeys = useMemo(() => new Set(favorites.map((f) => f.key)), [favorites]);
 
+  // Actions SMS / courriel directement depuis la LISTE (et pas seulement depuis la
+  // fiche de detail, qui n'est atteignable ni pour l'annuaire ni pour les favoris :
+  // le onClick de la ligne est conditionne par `!isDir && !isFav`).
+  const openSmsTo = useCallback((n: string) => {
+    navigate(`/mplanipret/messages?tab=sms&to=${encodeURIComponent(n)}`);
+  }, [navigate]);
+
+  const openEmailTo = useCallback((email: string, name?: string) => {
+    const qs = new URLSearchParams({ tab: "emails", to: email });
+    if (name) qs.set("name", name);
+    navigate(`/mplanipret/messages?${qs.toString()}`);
+  }, [navigate]);
+
   const toggleFav = useCallback((entry: FavEntry) => {
     const cur = loadFavs();
     const exists = cur.some((f) => f.key === entry.key);
@@ -391,6 +404,11 @@ export default function MContacts() {
               : (c.phone || c.email || c.company);
             const phone = isDir ? c.extension : (c.phone || c.extension);
             const pres = isDir ? presenceMeta(c.presence, t) : null;
+            // Cible SMS : on privilegie toujours un vrai numero. L'annuaire NS ne
+            // renvoie qu'une extension (pp-ns-contacts n'expose pas de numero),
+            // c'est donc le repli pour les collegues internes.
+            const smsTarget: string | undefined = c.phone || c.mobile || c.cell || c.extension;
+            const emailTarget: string | undefined = c.email;
 
 
             const source: FavEntry["source"] = isDir ? "directory" : isFav ? c.source : "personal";
@@ -410,7 +428,7 @@ export default function MContacts() {
               <div
                 key={favEntry.key}
                 onClick={() => !isDir && !isFav && setSelected(c)}
-                className="pp-card flex items-center gap-3 cursor-pointer"
+                className="pp-card flex items-center gap-2 cursor-pointer"
                 style={{ padding: 12 }}
               >
                 <div className="relative">
@@ -442,11 +460,13 @@ export default function MContacts() {
                     </div>
                   )}
                 </div>
+                {/* Groupe d'actions resserre : 4 boutons doivent tenir sans rogner le nom. */}
+                <div className="flex items-center shrink-0" style={{ gap: 6 }}>
                 <button
                   onClick={(e) => { e.stopPropagation(); toggleFav(favEntry); }}
                   className="flex items-center justify-center active:scale-95 transition"
                   style={{
-                    width: 32, height: 32, borderRadius: "50%",
+                    width: 30, height: 30, borderRadius: "50%",
                     background: starred ? "rgba(245,158,11,0.15)" : "var(--pp-bg-elevated)",
                     border: `1px solid ${starred ? "rgba(245,158,11,0.4)" : "var(--pp-bg-border-2)"}`,
                     color: starred ? "#f59e0b" : "var(--pp-text-secondary)",
@@ -454,12 +474,39 @@ export default function MContacts() {
                   aria-label={starred ? (t("contacts.removeFavorite") || "Retirer") : (t("contacts.addFavorite") || "Ajouter")}>
                   <Star className="w-3.5 h-3.5" fill={starred ? "#f59e0b" : "none"} />
                 </button>
+                <button onClick={(e) => { e.stopPropagation(); smsTarget && openSmsTo(smsTarget); }}
+                  disabled={!smsTarget}
+                  className="flex items-center justify-center active:scale-95 transition"
+                  style={{
+                    width: 30, height: 30, borderRadius: "50%",
+                    background: smsTarget ? "rgba(139,92,246,0.12)" : "var(--pp-bg-elevated)",
+                    border: `1px solid ${smsTarget ? "rgba(139,92,246,0.3)" : "var(--pp-bg-border-2)"}`,
+                    color: smsTarget ? "#a78bfa" : "var(--pp-text-faint)",
+                    opacity: smsTarget ? 1 : 0.45,
+                  }}
+                  aria-label={t("contacts.sendSms") || "Envoyer un SMS"}>
+                  <MessageSquare className="w-3.5 h-3.5" />
+                </button>
+                <button onClick={(e) => { e.stopPropagation(); emailTarget && openEmailTo(emailTarget, displayName || undefined); }}
+                  disabled={!emailTarget}
+                  className="flex items-center justify-center active:scale-95 transition"
+                  style={{
+                    width: 30, height: 30, borderRadius: "50%",
+                    background: emailTarget ? "rgba(34,197,94,0.12)" : "var(--pp-bg-elevated)",
+                    border: `1px solid ${emailTarget ? "rgba(34,197,94,0.3)" : "var(--pp-bg-border-2)"}`,
+                    color: emailTarget ? "#4ade80" : "var(--pp-text-faint)",
+                    opacity: emailTarget ? 1 : 0.45,
+                  }}
+                  aria-label={t("contacts.sendEmail") || "Envoyer un courriel"}>
+                  <Mail className="w-3.5 h-3.5" />
+                </button>
                 <button onClick={(e) => { e.stopPropagation(); phone && openDialer(phone); }}
                   className="flex items-center justify-center active:scale-95 transition"
-                  style={{ width: 32, height: 32, borderRadius: "50%", background: "rgba(46,155,220,0.12)", border: "1px solid rgba(46,155,220,0.3)", color: "var(--pp-brand-accent)" }}
+                  style={{ width: 30, height: 30, borderRadius: "50%", background: "rgba(46,155,220,0.12)", border: "1px solid rgba(46,155,220,0.3)", color: "var(--pp-brand-accent)" }}
                   aria-label={t("common.call")}>
                   <Phone className="w-3.5 h-3.5" />
                 </button>
+                </div>
               </div>
             );
           })}
