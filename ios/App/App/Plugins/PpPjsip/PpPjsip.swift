@@ -17,8 +17,11 @@ import pjsua
  *  - Aucune manipulation d'AVAudioSession (PpVoipCall/CallKit reste seul maître).
  *  - AOR de test distincte (<user>PROBE) + +sip.instance propre : la sonde ne
  *    peut pas voler l'enregistrement de l'agent actif (JsSIP ou PpSipKeepAlive).
- *  - Entrée dans le contexte PJSIP via pjsua_schedule_timer2 (pas de GCD à
- *    travers la frontière PJLIB, qui provoque des crashs aléatoires).
+ *  - Toutes les API PJSUA sont appelées sur le thread worker qui a appelé
+ *    pjsua_create() : pj_init() enregistre ce thread auprès de PJLIB, donc il
+ *    est légal. Aucun franchissement de frontière par GCD (qui provoque des
+ *    crashs aléatoires), et aucun besoin de pjsua_schedule_timer2 — laquelle
+ *    n'est de toute façon pas appelable depuis Swift (voir ligne ~178).
  *  - Trace SIP complète (log level 5) redirigée vers NSLog.
  */
 @objc(PpPjsip)
@@ -82,16 +85,29 @@ private func ppPjsipLogWriter(_ level: Int32, _ data: UnsafePointer<CChar>?, _ l
     NSLog("[pjsip] %@", String(cString: data).trimmingCharacters(in: .whitespacesAndNewlines))
 }
 
+// PJSIP_EUNSUPTRANSPORT = 220003 (« Unsupported transport »).
+//
+// Non importable depuis Swift. Les codes d'erreur PJSIP ne sont pas une enum mais des
+// #define composes, definis dans pjsip/include/pjsip/sip_errno.h :
+//
+//     #define PJSIP_ERRNO_START            (PJ_ERRNO_START_USER)
+//     #define PJSIP_ERRNO_FROM_SIP_STATUS(code)  (PJSIP_ERRNO_START+code)
+//
+// Swift n'importe un #define que si sa valeur est un litteral directement evaluable ;
+// une composition de macros ne l'est pas. Et meme importe, ce serait un Int32 nu,
+// donc sans `.rawValue`. La valeur numerique est stable et documentee (220003) : elle
+// apparait telle quelle dans la sortie de pjsua et dans nos scripts de diagnostic.
+private let PP_PJSIP_EUNSUPTRANSPORT: pj_status_t = 220003
+
 private func ppPjsipOnRegState2(_ accId: pjsua_acc_id, _ info: UnsafeMutablePointer<pjsua_reg_info>?) {
     guard let info = info, let rdata = info.pointee.cbparam else { return }
-    let code = Int(rdata.pointee.code.rawValue)
+    // rdata.pointee.code est le champ `code` de pjsip_status_line : un `int` C, donc
+    // Int32 nu cote Swift. Seules les typedef enum C sont importees comme
+    // RawRepresentable et ont `.rawValue` ; un Int32 n'en a pas.
+    let code = Int(rdata.pointee.code)
     let reason = ppPjStr(rdata.pointee.reason)
     NSLog("[PpPjsip] REGISTER response acc=%d code=%d reason=%@", accId, code, reason)
     PjsipProbeEngine.shared.completeRegistration(code: code, reason: reason)
-}
-
-private func ppPjsipEnterContext(_ userData: UnsafeMutableRawPointer?) {
-    PjsipProbeEngine.shared.runScheduledWork()
 }
 
 private func ppPjStr(_ s: pj_str_t) -> String {
@@ -122,7 +138,6 @@ final class PjsipProbeEngine {
     private var started = false
     private var accId: pjsua_acc_id = pjsua_acc_id(-1)
     private var completion: ((Result<[String: Any], Error>) -> Void)?
-    private var scheduledWork: (() -> Void)?
     private var strings: [UnsafeMutablePointer<CChar>] = []
     private var startedAt = Date()
 
@@ -152,21 +167,28 @@ final class PjsipProbeEngine {
             guard let self = self else { return }
             do {
                 try self.ensureStackStarted()
-                // Franchissement de la frontière par le scheduler PJSIP, comme
-                // le recommande la documentation (jamais via GCD).
-                self.scheduleOnPjsipThread {
-                    do {
-                        try self.addProbeAccount(
-                            username: username,
-                            password: password,
-                            domain: domain,
-                            server: server,
-                            port: port
-                        )
-                    } catch {
-                        self.finish(.failure(error))
-                    }
-                }
+                // Appel direct : PAS d'indirection par pjsua_schedule_timer2.
+                //
+                // ensureStackStarted() vient d'appeler pjsua_create() SUR CE THREAD, et
+                // pjsua_create() appelle pj_init() qui enregistre le thread appelant aupres
+                // de PJLIB. Ce thread est donc deja un thread PJLIB legal : toute API PJSUA
+                // peut y etre appelee. Replanifier via un timer serait redondant.
+                //
+                // La contrainte PJSIP (« ne jamais franchir la frontiere via GCD ») est
+                // respectee par construction, puisque nous ne franchissons aucune frontiere :
+                // pjsua_create() et pjsua_acc_add() s'executent sur le meme thread.
+                //
+                // Note technique : pjsua_schedule_timer2 n'est de toute facon pas appelable
+                // depuis Swift. Quand PJ_TIMER_DEBUG est actif (le cas en configuration Debug),
+                // pjsua.h la redefinit en macro a arguments vers pjsua_schedule_timer2_dbg ;
+                // or Swift n'importe pas les macros C a arguments.
+                try self.addProbeAccount(
+                    username: username,
+                    password: password,
+                    domain: domain,
+                    server: server,
+                    port: port
+                )
             } catch {
                 self.finish(.failure(error))
             }
@@ -262,25 +284,6 @@ final class PjsipProbeEngine {
         try check(pjsua_acc_add(&acc, pj_bool_t(1), &accId), "pjsua_acc_add")
     }
 
-    // MARK: contexte PJSIP
-
-    private func scheduleOnPjsipThread(_ work: @escaping () -> Void) {
-        lock.lock()
-        scheduledWork = work
-        lock.unlock()
-        // pjsua_schedule_timer2(cb, user_data, msec_delay) : délai nul, la
-        // fonction est exécutée depuis un thread PJSIP enregistré.
-        pjsua_schedule_timer2(ppPjsipEnterContext, nil, 0)
-    }
-
-    func runScheduledWork() {
-        lock.lock()
-        let work = scheduledWork
-        scheduledWork = nil
-        lock.unlock()
-        work?()
-    }
-
     // MARK: résultat
 
     func completeRegistration(code: Int, reason: String) {
@@ -344,7 +347,7 @@ final class PjsipProbeEngine {
         NSLog("[PpPjsip]   transport demande   : PJSIP_TRANSPORT_TLS (5061)")
         NSLog("[PpPjsip]   TLS est le SEUL transport natif possible : PJSIP n'a pas de transport SIP/WebSocket.")
 
-        if status == pj_status_t(PJSIP_EUNSUPTRANSPORT.rawValue) || !sslBackendPresent {
+        if status == PP_PJSIP_EUNSUPTRANSPORT || !sslBackendPresent {
             NSLog("[PpPjsip] CAUSE : libpjsip.xcframework a ete construit SANS OpenSSL (PJ_HAS_SSL_SOCK=0).")
             NSLog("[PpPjsip]   CORRECTIF : bash scripts/build-pjsip-ios.sh")
             NSLog("[PpPjsip]   puis      : bash scripts/verify-pjsip-tls.sh")
