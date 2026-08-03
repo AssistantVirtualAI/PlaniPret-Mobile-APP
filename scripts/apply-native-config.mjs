@@ -1523,6 +1523,9 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     // ring13 - the PBX call-id is not stable across fork legs, so dedup also needs
     // the caller and the age of the live CallKit report.
     private var activeCallerNumber: String = ""
+    /// Instant ou l'action de decrochage CallKit a ete fulfillee. Sert a ne
+    /// jamais resoudre deux fois la meme action.
+    private var answerFulfilledAt: Date?
     /// ring15 - last callId whose CXAnswerCallAction we successfully fulfilled, so a
     /// second completeAnswer(ok:true) for the same call is reported as already
     /// confirmed instead of as a failure.
@@ -1652,6 +1655,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             activeCallId = nil
             activeCallerNumber = ""
             activeCallReportedAt = .distantPast
+            answerFulfilledAt = nil
         }
         call.resolve(["ok": true])
     }
@@ -1678,14 +1682,72 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             return
         }
         pendingAnswerAction = nil
+        // L'action de decrochage est desormais fulfillee des sa reception (voir
+        // perform CXAnswerCallAction). Elle ne doit donc plus etre resolue une
+        // seconde fois ici : CallKit journalise toute double resolution comme une
+        // erreur, et un fail() sur une action deja fulfillee est ignore.
+        let alreadyFulfilled = answerFulfilledAt != nil
+        answerFulfilledAt = nil
         if ok {
             answerConfirmedForCallId = callId.isEmpty ? (activeCallId ?? "") : callId
-            action.fulfill()
+            if !alreadyFulfilled { action.fulfill() }
+            call.resolve(["ok": true, "reason": alreadyFulfilled ? "confirmed_after_fulfill" : "fulfilled"])
+            return
+        }
+        answerConfirmedForCallId = ""
+        if alreadyFulfilled {
+            // Le decrochage a echoue cote SIP alors que CallKit affiche deja un
+            // appel connecte : il faut le terminer explicitement, sinon
+            // l'interface reste bloquee sur un appel fantome.
+            if let uuid = activeCallUUID {
+                provider?.reportCall(with: uuid, endedAt: Date(), reason: .failed)
+                activeCallUUID = nil; activeCallId = nil; activeCallerNumber = ""
+            }
+            NSLog("[PpVoipCall] SIP answer failed after fulfill - CallKit call ended")
         } else {
-            answerConfirmedForCallId = ""
             action.fail()
         }
         call.resolve(["ok": true])
+    }
+
+    /// Jetons que NetSapiens et les trunks en amont placent dans le champ
+    /// appelant quand le numero est masque. Aucun n'est composable.
+    private static let anonymousTokens: Set<String> = [
+        "anonymous", "unknown", "unavailable", "restricted", "private",
+        "prive", "masque", "withheld", "blocked", "nonumber", "no-number",
+        "no_number", "null", "none", ""
+    ]
+
+    /// Retourne un numero reellement composable, ou "" s'il n'y en a pas.
+    ///
+    /// - Normalise en E.164 les numeros nord-americains a 10 ou 11 chiffres :
+    ///   un handle .phoneNumber sans "+" n'est pas associe au carnet d'adresses
+    ///   par iOS, qui retombe alors sur son libelle generique.
+    /// - Laisse les extensions internes (3 a 6 chiffres) telles quelles.
+    /// - Retourne "" pour tout appelant masque ou toute valeur non numerique.
+    static func dialableNumber(_ raw: String) -> String {
+        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.lowercased().hasPrefix("sip:") { value = String(value.dropFirst(4)) }
+        if let at = value.firstIndex(of: "@") { value = String(value[value.startIndex..<at]) }
+        value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let token = value.lowercased().replacingOccurrences(of: " ", with: "")
+        if anonymousTokens.contains(token) { return "" }
+        let digits = value.filter { $0.isNumber }
+        if digits.isEmpty { return "" }
+        // Un "0", "00", "000"... n'est pas un appelant.
+        if digits.allSatisfy({ $0 == "0" }) { return "" }
+        switch digits.count {
+        case 3...6:
+            return digits                                  // extension interne
+        case 10:
+            return "+1" + digits                           // NANP sans indicatif
+        case 11 where digits.hasPrefix("1"):
+            return "+" + digits
+        case 8...15:
+            return "+" + digits                            // international
+        default:
+            return ""
+        }
     }
 
     // MARK: - PKPushRegistryDelegate
@@ -1718,8 +1780,24 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         guard type == .voIP else { completion(); return }
         let dict = payload.dictionaryPayload
         let callId = (dict["callId"] as? String) ?? (dict["call_id"] as? String) ?? UUID().uuidString
-        let callerName = (dict["callerName"] as? String) ?? (dict["from_number"] as? String) ?? (dict["from"] as? String) ?? "Appel entrant"
-        let callerNumber = (dict["callerNumber"] as? String) ?? (dict["from_number"] as? String) ?? (dict["from_user"] as? String) ?? ""
+        let rawName = (dict["callerName"] as? String) ?? (dict["from_number"] as? String) ?? (dict["from"] as? String) ?? ""
+        let rawNumber = (dict["callerNumber"] as? String) ?? (dict["from_number"] as? String) ?? (dict["from_user"] as? String) ?? ""
+        // Le serveur signale explicitement un appelant masque. On ne s'y fie pas
+        // seul : ce plugin doit rester correct face a un push emis par une
+        // version anterieure du webhook.
+        let serverSaysAnonymous = (dict["callerAnonymous"] as? Bool) ?? false
+        // callerNumber ne doit contenir QU'UN numero reellement composable.
+        // Sinon CXHandle(type: .phoneNumber) est rejete par iOS, qui affiche
+        // alors son propre libelle "numero indisponible" - le defaut du 3 aout.
+        let callerNumber = serverSaysAnonymous ? "" : Self.dialableNumber(rawNumber)
+        let callerName: String = {
+            let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty, Self.dialableNumber(trimmed).isEmpty || trimmed == callerNumber {
+                return trimmed
+            }
+            if !callerNumber.isEmpty { return callerNumber }
+            return "Appel masque"
+        }()
 
         // NetSapiens can retry a call event while iOS is waking. Preserve the
         // first CallKit UUID so its Answer action never becomes stale.
@@ -1776,10 +1854,18 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         activeCallReportedAt = Date()
 
         let update = CXCallUpdate()
+        // CXHandle(type: .phoneNumber) exige de l'E.164. Quand le numero est
+        // absent, masque ou non composable, on passe en .generic avec un libelle
+        // lisible : iOS affiche alors ce libelle au lieu de le remplacer par son
+        // propre "numero indisponible".
         let handle: CXHandle = callerNumber.isEmpty
-            ? CXHandle(type: .generic, value: callerName)
+            ? CXHandle(type: .generic, value: callerName.isEmpty ? "Appel masque" : callerName)
             : CXHandle(type: .phoneNumber, value: callerNumber)
         update.remoteHandle = handle
+        NSLog("[PpVoipCall] CallKit handle type=%@ value=%@ raw=%@",
+              callerNumber.isEmpty ? "generic" : "phoneNumber",
+              callerNumber.isEmpty ? callerName : callerNumber,
+              rawNumber)
         update.localizedCallerName = callerName
         update.hasVideo = false
         update.supportsHolding = true
@@ -1804,7 +1890,9 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
 
     // MARK: - CXProviderDelegate
     public func providerDidReset(_ provider: CXProvider) {
-        pendingAnswerAction?.fail(); pendingAnswerAction = nil
+        if answerFulfilledAt == nil { pendingAnswerAction?.fail() }
+        pendingAnswerAction = nil
+        answerFulfilledAt = nil
         activeCallUUID = nil; activeCallId = nil; activeCallerNumber = ""; activeCallReportedAt = .distantPast; answerConfirmedForCallId = ""
     }
 
@@ -1823,6 +1911,21 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         // publish the authoritative one, then wake JS.
         pendingAnswerAction?.fulfill()
         pendingAnswerAction = action
+        // LE CORRECTIF DU BOUTON DECROCHER GELE (3 aout).
+        //
+        // Cette action etait fulfillee seulement apres confirmation du dialogue
+        // SIP par completeAnswer(). Quand le decrochage vient d'un push CallKit
+        // et que JsSIP ne possede plus l'AOR, cette confirmation n'arrive jamais :
+        // CallKit laisse alors son interface figee jusqu'au timeout de 32 s, et le
+        // bouton "decrocher" ne repond plus - exactement le symptome observe.
+        //
+        // La doctrine Apple est de fulfiller des que l'application ACCEPTE de
+        // decrocher, pas quand le media est etabli. L'etablissement reel est
+        // rapporte ensuite par reportCall(with:updated:) ; un echec est signale
+        // par reportCall(with:endedAt:reason:) et non par un bouton mort.
+        action.fulfill()
+        answerFulfilledAt = Date()
+        NSLog("[PpVoipCall] answer action fulfilled immediately callId=%@", activeCallId ?? "")
         // ring16 - claim audio ownership HERE, not at didActivate. Log 138 shows
         // three "audio session (re)activated ... hadOutputs=n" emitted by the
         // keep-alive watchdog BETWEEN the 200 OK and didActivate, because the
@@ -1847,16 +1950,27 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         // caller is still hearing the greeting, so a 12s CallKit timeout used to
         // fail() the action while the SIP path was still legitimately working.
         // Ordering must always be: JS watchdogs < SIP intent (30s) < CallKit (32s).
+        // L'action etant deja fulfillee, ce filet ne peut plus "echouer" le
+        // bouton : il termine l'appel proprement si le dialogue SIP ne s'est
+        // jamais etabli, ce qui est la facon correcte de signaler l'echec.
         DispatchQueue.main.asyncAfter(deadline: .now() + 32.0) { [weak self, weak action] in
             guard let self = self, let action = action, self.pendingAnswerAction === action else { return }
             self.pendingAnswerAction = nil
-            NSLog("[PpVoipCall] answer action timed out \u{2014} SIP dialog not confirmed after 32s")
-            action.fail()
+            self.answerFulfilledAt = nil
+            guard let uuid = self.activeCallUUID else { return }
+            NSLog("[PpVoipCall] SIP dialog not confirmed after 32s - ending CallKit call")
+            self.provider?.reportCall(with: uuid, endedAt: Date(), reason: .failed)
+            self.activeCallUUID = nil; self.activeCallId = nil
+            self.activeCallerNumber = ""; self.answerConfirmedForCallId = ""
         }
     }
 
     public func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
-        pendingAnswerAction?.fail(); pendingAnswerAction = nil
+        // Une action deja fulfillee ne doit pas etre fail() : ce serait une
+        // double resolution, que CallKit journalise comme une erreur.
+        if answerFulfilledAt == nil { pendingAnswerAction?.fail() }
+        pendingAnswerAction = nil
+        answerFulfilledAt = nil
         notifyListeners("incomingCallRejected", data: [
             "callUUID": action.callUUID.uuidString,
             "callId": activeCallId ?? ""

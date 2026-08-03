@@ -59,19 +59,105 @@ export function nsTermExtension(o: any): string | null {
   return cleaned || null;
 }
 
+/**
+ * Valeurs que NetSapiens (et les trunks en amont) placent dans `orig_from_user`
+ * quand l'appelant est masqué. Elles ne sont PAS composables : les passer à
+ * `CXHandle(type: .phoneNumber, …)` fait afficher « numéro indisponible » par
+ * iOS, car CallKit rejette un handle téléphonique non numérique.
+ */
+const ANONYMOUS_CALLER = /^(anonymous|unknown|unavailable|restricted|private|priv[eé]|masqu[eé]|withheld|blocked|no[\s_-]?number|null|0+)$/i;
+
+/**
+ * Sources dans lesquelles NetSapiens peut placer le numéro appelant.
+ *
+ * L'ordre compte : les champs explicitement numériques d'abord, les URI SIP
+ * ensuite. Certains trunks ne renseignent QUE `orig_from_uri` ou `ani`, d'où
+ * l'étendue de cette liste (issue de l'extracteur de Lovable, commit 5f050f57).
+ */
+const CALLER_FIELDS = [
+  "from_number", "caller_number", "ani", "orig_from_user", "orig-from-user",
+  "from_user", "remote_party", "from", "orig_user", "orig-user",
+  "call-orig-from-user", "orig_from_uri", "orig-from-uri", "from_uri",
+] as const;
+
+/**
+ * Extrait la chaîne appelante brute d'un objet d'événement NetSapiens, en
+ * balayant toutes les sources connues, puis décapsule l'URI SIP et les
+ * chevrons d'un display-name (`"Nom" <sip:514...@dom>`).
+ *
+ * Ne normalise PAS : voir `nsCallerNumber` pour l'E.164.
+ */
+export function nsPickCallerField(o: any): string {
+  if (o == null) return "";
+  for (const key of CALLER_FIELDS) {
+    const v = o?.[key];
+    if (v == null) continue;
+    const extracted = nsCallerRaw(v);
+    if (extracted) return extracted;
+  }
+  return "";
+}
+
+/**
+ * Décapsule une valeur appelante : `"Nom" <sip:5144942888@dom;user=phone>`
+ * devient `5144942888`.
+ */
+export function nsCallerRaw(raw: unknown): string {
+  const s = str(raw).trim();
+  if (!s) return "";
+  // Un display-name peut précéder l'URI : ne garder que la partie sip:.
+  const m = s.match(/sip:([^@;>\s]+)/i);
+  const user = (m ? m[1] : s).replace(/^</, "").replace(/>$/, "").trim();
+  // Sans schéma sip:, la valeur peut rester de la forme `514...@domaine`.
+  return user.split("@")[0].trim();
+}
+
+/**
+ * Normalise le numéro appelant en E.164 pour que CallKit puisse le résoudre.
+ *
+ * NetSapiens envoie typiquement `5144942888` ou `15144942888`, sans le `+`.
+ * iOS exige E.164 sur un handle `.phoneNumber` ; sans le `+` il n'associe pas
+ * le contact et retombe sur son libellé générique.
+ *
+ * Retourne `null` pour un appelant masqué ou un numéro non composable, afin que
+ * la couche native choisisse un handle `.generic` au lieu de `.phoneNumber`.
+ */
+export function nsCallerNumber(raw: unknown): string | null {
+  if (raw == null) return null;
+  const cleaned = nsCallerRaw(raw);
+  if (!cleaned) return null;
+  if (ANONYMOUS_CALLER.test(cleaned)) return null;
+  const digits = cleaned.replace(/\D/g, "");
+  // Extensions internes (3 à 6 chiffres) : composables mais pas E.164.
+  // On les rend telles quelles, sans `+`.
+  if (digits.length >= 3 && digits.length <= 6) return digits;
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  if (digits.length >= 8 && digits.length <= 15) {
+    return cleaned.startsWith("+") ? `+${digits}` : `+${digits}`;
+  }
+  return null;
+}
+
 function mapCall(o: any): NsNormalizedEvent | null {
   if (isTeardown(o)) return null;
   const ext = nsTermExtension(o);
   if (!ext) return null;
-  const from = o?.orig_from_user ?? o?.["orig-from-user"] ?? o?.orig_user ?? o?.["orig-user"] ??
-    o?.from_number ?? o?.from ?? o?.["call-orig-from-user"] ?? null;
+  // Balayage large de toutes les sources connues, URI SIP comprises.
+  const from = nsPickCallerField(o);
+  const normalized = nsCallerNumber(from);
   return {
     type: "call.inbound",
     data: {
       ...o,
       call_id: nsCallKey(o),
       extension: ext,
-      from_number: from ? str(from).replace(/^sip:/i, "").split("@")[0] : null,
+      // E.164 quand c'est possible : c'est ce que CallKit et le carnet
+      // d'adresses attendent. `null` = appelant masqué ou non composable.
+      from_number: normalized,
+      // Valeur brute conservée pour le diagnostic et les journaux d'appel.
+      from_number_raw: from || null,
+      caller_anonymous: normalized == null,
       to_number: ext,
       from_name: o?.orig_from_name ?? o?.["orig-from-name"] ?? o?.caller_name ?? null,
     },

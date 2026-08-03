@@ -150,17 +150,24 @@ export default function MSipDebug() {
 
 function PjsipProbeCard() {
   const [running, setRunning] = useState(false);
+  const [mode, setMode] = useState<"probe" | "real" | null>(null);
   const [res, setRes] = useState<PjsipProbeResult | null>(null);
-  const run = async () => {
+  // L'AOR de test <ext>MPROBE n'existe pas dans NetSapiens : elle reçoit un
+  // 403 Forbidden sans challenge 401, donc elle ne peut PAS valider
+  // l'authentification digest. Seule l'AOR de production le permet, au prix
+  // d'une interruption de 2 à 3 s de l'enregistrement JsSIP.
+  const run = async (useRealAor: boolean) => {
     setRunning(true);
+    setMode(useRealAor ? "real" : "probe");
     setRes(null);
     try {
-      const out = await runPjsipRegisterProbe();
+      const out = await runPjsipRegisterProbe({ useRealAor });
       setRes(out);
       if (out.ok) toast.success(`PJSIP REGISTER ${out.code} ${out.reason}`);
       else toast.error(`PJSIP: ${out.reason}`);
     } finally {
       setRunning(false);
+      setMode(null);
     }
   };
   const color = res ? (res.ok ? "#10B981" : "#EF4444") : "#94A3B8";
@@ -171,8 +178,11 @@ function PjsipProbeCard() {
         <span className="font-bold text-sm" style={{ color: "var(--pp-text-primary)" }}>Sonde PJSIP native (TLS)</span>
       </div>
       <p className="text-[11px]" style={{ color: "var(--pp-text-secondary)" }}>
-        REGISTER natif vers {PJSIP_PROBE_SERVER}:{PJSIP_PROBE_PORT} sur une AOR de test
-        (&lt;ext&gt;PROBE). N'affecte pas l'enregistrement actif.
+        REGISTER natif vers {PJSIP_PROBE_SERVER}:{PJSIP_PROBE_PORT}. La sonde sur AOR de
+        test (&lt;ext&gt;PROBE) n'affecte pas l'enregistrement actif, mais NetSapiens la
+        refuse par un 403 sans challenge : elle ne valide donc pas l'authentification.
+        La sonde sur AOR réelle est la seule concluante ; elle interrompt JsSIP 2 à 3 s
+        puis le relance automatiquement.
       </p>
       {res && (
         <div className="text-[11px] font-mono p-2 rounded" style={{ background: "var(--pp-bg-elevated)", color }}>
@@ -180,11 +190,20 @@ function PjsipProbeCard() {
           <div>{res.code ? `SIP ${res.code} — ` : ""}{res.reason}{res.elapsedMs ? ` (${res.elapsedMs} ms)` : ""}</div>
         </div>
       )}
-      <button onClick={run} disabled={running}
+      <button onClick={() => run(false)} disabled={running}
         className="w-full py-1.5 rounded-lg text-[11px] font-semibold disabled:opacity-60"
         style={{ background: "var(--pp-brand-accent)", color: "#fff" }}>
-        {running ? "REGISTER en cours…" : "Lancer la sonde PJSIP"}
+        {running && mode === "probe" ? "REGISTER en cours…" : "Sonde sur AOR de test (sans impact)"}
       </button>
+      <button onClick={() => run(true)} disabled={running}
+        className="w-full py-1.5 rounded-lg text-[11px] font-semibold disabled:opacity-60"
+        style={{ background: "#B45309", color: "#fff" }}>
+        {running && mode === "real" ? "REGISTER sur AOR réelle…" : "Sonde sur AOR réelle (coupe JsSIP 2-3 s)"}
+      </button>
+      <p className="text-[10px]" style={{ color: "var(--pp-text-secondary)" }}>
+        Ne pas lancer la sonde sur AOR réelle pendant un appel : elle relâche
+        l'enregistrement le temps du test.
+      </p>
     </section>
   );
 }

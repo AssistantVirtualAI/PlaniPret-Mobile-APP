@@ -40,6 +40,11 @@ public class PpPjsip: CAPPlugin, CAPBridgedPlugin {
         let server = call.getString("server") ?? ""
         let port = call.getInt("port") ?? 5061
         let transport = (call.getString("transport") ?? "TLS").uppercased()
+        // useRealAor=true : REGISTER sur l'AOR de PRODUCTION (<ext>M), seule
+        // façon de valider l'authentification digest NetSapiens. L'appelant DOIT
+        // avoir arrêté JsSIP avant, et l'enregistrement est retiré aussitôt après.
+        let useRealAor = call.getBool("useRealAor") ?? false
+        let realmValue = call.getString("realm") ?? "*"
 
         guard !username.isEmpty, !password.isEmpty, !domain.isEmpty, !server.isEmpty else {
             call.reject("missing_credentials", "username/password/domain/server are required")
@@ -56,7 +61,9 @@ public class PpPjsip: CAPPlugin, CAPBridgedPlugin {
             password: password,
             domain: domain,
             server: server,
-            port: port
+            port: port,
+            useRealAor: useRealAor,
+            realmValue: realmValue
         ) { result in
             switch result {
             case .success(let payload):
@@ -149,6 +156,8 @@ final class PjsipProbeEngine {
         domain: String,
         server: String,
         port: Int,
+        useRealAor: Bool,
+        realmValue: String,
         completion: @escaping (Result<[String: Any], Error>) -> Void
     ) {
         lock.lock()
@@ -187,7 +196,9 @@ final class PjsipProbeEngine {
                     password: password,
                     domain: domain,
                     server: server,
-                    port: port
+                    port: port,
+                    useRealAor: useRealAor,
+                    realmValue: realmValue
                 )
             } catch {
                 self.finish(.failure(error))
@@ -256,11 +267,22 @@ final class PjsipProbeEngine {
         password: String,
         domain: String,
         server: String,
-        port: Int
+        port: Int,
+        useRealAor: Bool,
+        realmValue: String
     ) throws {
-        // AOR de test : suffixe PROBE pour ne JAMAIS entrer en concurrence avec
-        // l'AOR de production (<ext>M) tenue par JsSIP / PpSipKeepAlive.
-        let probeUser = "\(username)PROBE"
+        // Deux modes :
+        //
+        //  - useRealAor=false (defaut) : AOR de test <ext>MPROBE. Ne peut PAS
+        //    aboutir a un 200 OK car cet abonne n'existe pas dans NetSapiens :
+        //    le serveur repond 403 Forbidden. Utile uniquement pour prouver que
+        //    le transport TLS fonctionne, sans jamais toucher la production.
+        //
+        //  - useRealAor=true : AOR de PRODUCTION <ext>M, la seule que NetSapiens
+        //    connaisse. Seul mode capable de valider l'authentification digest.
+        //    L'appelant DOIT avoir arrete JsSIP avant (sinon deux agents se
+        //    disputent l'AOR), et finish() retire l'enregistrement aussitot.
+        let probeUser = useRealAor ? username : "\(username)PROBE"
         let instanceId = "urn:uuid:\(UUID().uuidString.lowercased())"
 
         var acc = pjsua_acc_config()
@@ -269,7 +291,9 @@ final class PjsipProbeEngine {
         acc.id = ppMakePjStr("sip:\(probeUser)@\(domain)", keep: &strings)
         acc.reg_uri = ppMakePjStr("sip:\(server):\(port);transport=tls", keep: &strings)
         acc.cred_count = 1
-        acc.cred_info.0.realm = ppMakePjStr("*", keep: &strings)
+        // realm : "*" (joker PJSIP) par defaut. Si NetSapiens boucle en 401,
+        // passer le realm exact renvoye dans son WWW-Authenticate.
+        acc.cred_info.0.realm = ppMakePjStr(realmValue.isEmpty ? "*" : realmValue, keep: &strings)
         acc.cred_info.0.scheme = ppMakePjStr("digest", keep: &strings)
         acc.cred_info.0.username = ppMakePjStr(username, keep: &strings)
         acc.cred_info.0.data_type = 0 // PJSIP_CRED_DATA_PLAIN_PASSWD
@@ -280,7 +304,12 @@ final class PjsipProbeEngine {
         acc.register_on_acc_add = pj_bool_t(1)
         acc.contact_params = ppMakePjStr(";+sip.instance=\"<\(instanceId)>\"", keep: &strings)
 
-        NSLog("[PpPjsip] REGISTER → sip:%@:%d TLS  aor=sip:%@@%@", server, Int32(port), probeUser, domain)
+        NSLog(
+            "[PpPjsip] REGISTER → sip:%@:%d TLS  aor=sip:%@@%@  authUser=%@  realm=%@  mode=%@",
+            server, Int32(port), probeUser, domain, username,
+            realmValue.isEmpty ? "*" : realmValue,
+            useRealAor ? "REAL_AOR" : "PROBE_AOR"
+        )
         try check(pjsua_acc_add(&acc, pj_bool_t(1), &accId), "pjsua_acc_add")
     }
 
