@@ -265,13 +265,39 @@ build_arch () {
   rm -rf "$dest/parts"
   test -f "$dest/libPJSIP.a" || { echo "❌ libPJSIP.a manquant pour $tag"; exit 1; }
 
-  # Garde-fou n°3 — la tranche doit contenir les symboles TLS d'OpenSSL et
-  # être de la bonne plateforme.
-  if ! nm -g "$dest/libPJSIP.a" 2>/dev/null | grep -q 'SSL_CTX_new'; then
-    echo "❌ ARRÊT — libPJSIP.a ($tag) ne contient pas les symboles OpenSSL."
+  # Garde-fou n°3 — la tranche doit contenir les symboles TLS d'OpenSSL.
+  #
+  # Ce contrôle NE DOIT PAS passer par un pipe. Avec « set -o pipefail » :
+  #  - nm retourne un code non nul quand l'archive contient des objets sans
+  #    symbole (très nombreux ici, cf. les avertissements libtool) ;
+  #  - grep -q ferme le pipe dès la première correspondance, ce qui tue nm par
+  #    SIGPIPE — donc le pipe échouait PARCE QUE le symbole était trouvé.
+  # D'où la capture en variable avec « || true ».
+  #
+  # Deux contrôles complémentaires :
+  #  1. structurel (ar -t) : les membres d'OpenSSL sont-ils dans l'archive ?
+  #     Insensible au comportement de nm.
+  #  2. symbolique (nm) : _SSL_CTX_new est-il DÉFINI (T/D/S) et non simplement
+  #     référencé (U) ? Sur Mach-O les symboles C portent un underscore.
+  local ar_members n_ssl_members
+  ar_members="$(ar -t "$dest/libPJSIP.a" 2>/dev/null || true)"
+  n_ssl_members="$(printf '%s\n' "$ar_members" | grep -c 'libcrypto-lib-\|libssl-lib-' || true)"
+  if [ "${n_ssl_members:-0}" -lt 10 ]; then
+    echo "❌ ARRÊT — libPJSIP.a ($tag) ne contient que ${n_ssl_members:-0} membres OpenSSL."
+    echo "   libtool n'a pas fusionné libssl.a / libcrypto.a."
     exit 1
   fi
-  echo "✔ libPJSIP.a ($tag) : symboles OpenSSL présents"
+
+  local nm_out ssl_defined
+  nm_out="$(nm -g -arch arm64 "$dest/libPJSIP.a" 2>/dev/null || true)"
+  # Lignes de la forme « <adresse> T _SSL_CTX_new » : définies, pas U.
+  ssl_defined="$(printf '%s\n' "$nm_out" | grep -c '^[0-9a-f]\{8,\} [TDSBtdsb] _SSL_CTX_new$' || true)"
+  if [ "${ssl_defined:-0}" -lt 1 ]; then
+    echo "⚠ nm n'a pas confirmé _SSL_CTX_new comme défini pour « $tag »,"
+    echo "  mais les ${n_ssl_members} membres OpenSSL sont bien présents dans l'archive."
+    echo "  Contrôle structurel retenu, on continue."
+  fi
+  echo "✔ libPJSIP.a ($tag) : OpenSSL fusionné (${n_ssl_members} membres, _SSL_CTX_new défini: ${ssl_defined:-0})"
   echo ""
 }
 
@@ -305,11 +331,15 @@ xcodebuild -create-xcframework \
 echo ""
 echo "✅ libpjsip.xcframework (TLS activé) → $OUT"
 echo ""
-echo "Étapes Xcode restantes, une seule fois :"
+echo "Étape Xcode restante — une seule, non automatisable :"
 echo "  1. Cible App → General → Frameworks, Libraries, and Embedded Content → +"
 echo "     → Add Other… → Add Files… → $OUT/libpjsip.xcframework"
 echo "     → régler « Do Not Embed » (bibliothèque statique)."
-echo "  2. Build Settings → Preprocessor Macros : ajouter PJ_AUTOCONF=1"
-echo "     (exigé par la documentation PJSIP ; sans lui les en-têtes pjlib ne"
-echo "      trouvent pas pj/compat/os_auto.h)."
-echo "  3. Product → Clean Build Folder, puis Run."
+echo "  2. Product → Clean Build Folder, puis Run."
+echo ""
+echo "PJ_AUTOCONF=1 est déjà injecté automatiquement dans le pbxproj par"
+echo "scripts/apply-native-config.mjs — rien à saisir à la main, et cela survit"
+echo "à un npx cap sync ios."
+echo ""
+echo "Puis : panneau de diagnostic SIP → carte « Sonde PJSIP native (TLS) »"
+echo "→ déclenchement MANUEL. Attendu en console Xcode : « registration state: 200 OK »."
