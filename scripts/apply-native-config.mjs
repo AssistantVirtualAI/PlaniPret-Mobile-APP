@@ -2380,7 +2380,7 @@ function ensurePjsipXcframework(iosRoot) {
   );
   // Reglages de build: Swift ne trouve module.modulemap que via
   // SWIFT_INCLUDE_PATHS / HEADER_SEARCH_PATHS.
-  const includes = headerPaths.join(" ");
+  const includes = headerPaths.join(",\n\t\t\t\t\t");
   text = text.replace(/(buildSettings = \{\n)([\s\S]*?)(\n\t*\};)/g, (match, start, body, end) => {
     if (!/PRODUCT_BUNDLE_IDENTIFIER/.test(body)) return match;
     let next = body;
