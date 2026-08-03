@@ -2184,6 +2184,33 @@ function ensureXcodeSourceFiles(iosRoot, relativeFiles) {
   return false;
 }
 
+// PJSIP's documentation requires PJ_AUTOCONF=1 to be defined in the Xcode
+// project, otherwise the pjlib headers cannot locate pj/compat/os_auto.h and
+// every file that imports pjsua fails to compile. Injected here so it survives
+// `npx cap sync ios` and never becomes a manual Xcode step to remember.
+function ensurePjsipPreprocessorMacro(iosRoot) {
+  const pbxproj = path.join(iosRoot, "App.xcodeproj", "project.pbxproj");
+  if (!fs.existsSync(pbxproj)) return;
+  let text = fs.readFileSync(pbxproj, "utf8");
+  if (text.includes("PJ_AUTOCONF=1")) return;
+
+  // Target-level configurations are the ones carrying PRODUCT_BUNDLE_IDENTIFIER.
+  // Anchor on INFOPLIST_FILE so both Debug and Release of the App target get it.
+  const anchor = "\t\t\t\tINFOPLIST_FILE = App/Info.plist;\n";
+  if (!text.includes(anchor)) {
+    console.log("[native-config] WARNING: could not anchor PJ_AUTOCONF=1 — add it manually in Build Settings.");
+    return;
+  }
+  const injected = anchor +
+    "\t\t\t\tGCC_PREPROCESSOR_DEFINITIONS = (\n" +
+    "\t\t\t\t\t\"$(inherited)\",\n" +
+    "\t\t\t\t\t\"PJ_AUTOCONF=1\",\n" +
+    "\t\t\t\t);\n";
+  text = text.split(anchor).join(injected);
+  fs.writeFileSync(pbxproj, text);
+  console.log("[native-config] PJ_AUTOCONF=1 added to the App target build settings.");
+}
+
 function ensurePluginRegistration(swift) {
   let next = swift;
   const sipLine = "        bridge?.registerPluginInstance(PpSipKeepAlive())\n";
@@ -2512,6 +2539,7 @@ function patchIosNativeFiles() {
     "App/Plugins/PpPjsip/PpPjsip.swift",
     "App/Plugins/PpPjsip/PpPjsip.m",
   ]);
+  ensurePjsipPreprocessorMacro(iosRoot);
   patchIosAppDelegate(iosApp);
   ensureIosBridgeController(iosApp);
   ensureIosSceneDelegate(iosApp);
