@@ -7,6 +7,16 @@ import UserNotifications
 import Network
 import Security
 
+/// Vrai lorsque le moteur PJSIP natif est linké : dans ce cas il détient
+/// l'AOR `<ext>M` en TLS 5061 et la pile WSS de secours ne doit jamais
+/// ré-enregistrer par-dessus (sinon le Contact TLS est remplacé côté NetSapiens).
+var nativeEngineOwnsAor: Bool {
+  #if canImport(pjsua)
+  return true
+  #else
+  return false
+  #endif
+}
 // Planiprêt-only. DO NOT reuse in Lemtel (Verto stack).
 @objc(PpSipKeepAlive)
 public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDelegate {
@@ -78,8 +88,6 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private let passwordService = "com.planipret.mobile.sip"
     private let passwordAccount = "background-register"
     private var lastPushWakeAt: Date?
-    /// True when PJSIP native engine has successfully registered and owns the AOR.
-    private var nativeEngineOwnsAor: Bool { PjsipEngine.shared.isRegistered }
 
 
     public override func load() {

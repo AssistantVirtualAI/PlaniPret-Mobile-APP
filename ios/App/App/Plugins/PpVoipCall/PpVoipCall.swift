@@ -151,7 +151,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
                 pendingAnswerAction = nil
                 answerCompleted = true
                 endAnswerBackgroundTask()
-                // `PpPjsipAnswerPending` already armed the engine when CallKit
+                // PpPjsipAnswerPending already armed the engine when CallKit
                 // was answered before this INVITE. handleIncomingCall() sends
                 // the 200 OK itself; posting AnswerRequested here would answer
                 // the same dialog twice and can leave the caller ringing.
