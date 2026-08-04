@@ -130,6 +130,8 @@ final class PjsipEngine {
     private var domain = ""
     private var registered = false
     private var activeCall: pjsua_call_id = pjsua_call_id(-1)
+    /// callId de l'appel sortant en cours (pour marquer direction="out" dans callState).
+    private var outgoingCallId: pjsua_call_id = pjsua_call_id(-1)
     private var muted = false
     private var speakerOn = false
     private var audioSessionReady = false
@@ -293,8 +295,15 @@ final class PjsipEngine {
                     return
                 }
                 self.activeCall = newCall
+                self.outgoingCallId = newCall
                 self.muted = false
                 NSLog("[PpPjsip] outgoing INVITE → %@ callId=%d", target, newCall)
+                // Notifie l'UI et CallKit que l'appel sortant vient d'être lancé.
+                self.emit("PpPjsipOutgoingCall", [
+                    "callId": String(newCall),
+                    "remoteNumber": ppUserFromUri(target),
+                    "state": "calling"
+                ])
                 completion(.success(String(newCall)))
             }
         }
@@ -457,12 +466,22 @@ final class PjsipEngine {
         case PJSIP_INV_STATE_DISCONNECTED: label = "disconnected"
         default: label = "unknown"
         }
-
+        let isOutgoing = (outgoingCallId == callId)
+        let direction = isOutgoing ? "out" : "in"
+        // Notifie la sonnerie sortante (early media / 180 Ringing).
+        if isOutgoing && state == PJSIP_INV_STATE_EARLY {
+            emit("PpPjsipOutgoingRinging", [
+                "callId": String(callId),
+                "remoteNumber": ppUserFromUri(remoteUri),
+                "state": "ringing"
+            ])
+        }
         emit("callState", [
             "callId": String(callId),
             "state": label,
             "code": lastCode,
-            "remoteNumber": ppUserFromUri(remoteUri)
+            "remoteNumber": ppUserFromUri(remoteUri),
+            "direction": direction
         ])
 
         if state == PJSIP_INV_STATE_CONFIRMED {
@@ -472,6 +491,7 @@ final class PjsipEngine {
         }
         if state == PJSIP_INV_STATE_DISCONNECTED {
             if activeCall == callId { activeCall = pjsua_call_id(-1) }
+            if outgoingCallId == callId { outgoingCallId = pjsua_call_id(-1) }
             audioSessionReady = false
             NotificationCenter.default.post(
                 name: .ppPjsipCallEnded, object: nil,

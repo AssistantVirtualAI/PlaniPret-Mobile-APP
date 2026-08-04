@@ -315,6 +315,8 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
   // Permet d'afficher immédiatement l'écran "ça sonne" avec Répondre/Raccrocher.
   const [pushRing, setPushRing] = useState<{ callId: string; from: string } | null>(null);
   const [nativeStatus, setNativeStatus] = useState<PpNativeSipStatus | null>(null);
+  /** Appel sortant PJSIP en cours (callId + remoteNumber) — prioritaire dans le snapshot. */
+  const [nativeOutgoingCall, setNativeOutgoingCall] = useState<{ callId: string; remoteNumber: string; state: string } | null>(null);
   /** Latest answer() implementation, callable from native listeners registered once. */
   const answerRef = useRef<null | (() => Promise<boolean>)>(null);
   /** One answer transaction at a time across CallKit, notification and in-app UI. */
@@ -333,6 +335,37 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
 
   // Subscribe to the SIP snapshot.
   useEffect(() => ppSipProvider.subscribe(setSnap), []);
+
+  // Écouter les events d'appels sortants PJSIP pour alimenter nativeOutgoingCall.
+  useEffect(() => {
+    const onOutgoing = (e: Event) => {
+      const d = (e as CustomEvent).detail;
+      if (d?.engine === "pjsip") {
+        setNativeOutgoingCall({ callId: String(d.callId ?? ""), remoteNumber: String(d.remoteNumber ?? ""), state: "calling" });
+      }
+    };
+    const onRinging = (e: Event) => {
+      const d = (e as CustomEvent).detail;
+      if (d?.engine === "pjsip") {
+        setNativeOutgoingCall((cur) => cur ? { ...cur, state: "ringing" } : null);
+      }
+    };
+    const onCallState = (e: Event) => {
+      const d = (e as CustomEvent).detail;
+      if (d?.engine === "pjsip" && d?.direction === "out") {
+        if (d?.state === "connected") setNativeOutgoingCall((cur) => cur ? { ...cur, state: "connected" } : null);
+        if (d?.state === "disconnected" || d?.state === "ended") setNativeOutgoingCall(null);
+      }
+    };
+    window.addEventListener("sip-outgoing-call", onOutgoing);
+    window.addEventListener("sip-outgoing-ringing", onRinging);
+    window.addEventListener("sip-call-state", onCallState);
+    return () => {
+      window.removeEventListener("sip-outgoing-call", onOutgoing);
+      window.removeEventListener("sip-outgoing-ringing", onRinging);
+      window.removeEventListener("sip-call-state", onCallState);
+    };
+  }, []);
 
   // Register this instance in the handover registry.
   useEffect(() => {
@@ -1313,8 +1346,24 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     const base: PpSipSnapshot = (nativeOwnsRegistration && snap.status !== "registered" && snap.status !== "connected")
       ? ({ ...snap, status: "registered", lastError: null } as PpSipSnapshot)
       : snap;
+    // Appel sortant PJSIP : prioritaire sur tout le reste (snap JsSIP + restCall).
+    // Sans ça, l'écran d'appel ne s'affiche pas et le clavier reste caché.
+    if (nativeOutgoingCall && nativeOwnsAor()) {
+      const callState: PpSipSnapshot["callState"] =
+        nativeOutgoingCall.state === "connected" ? "active"
+        : nativeOutgoingCall.state === "ringing" ? "ringing-out"
+        : "ringing-out";
+      return {
+        ...base,
+        callState,
+        callId: nativeOutgoingCall.callId,
+        remoteIdentity: nativeOutgoingCall.remoteNumber,
+        remoteNumber: nativeOutgoingCall.remoteNumber,
+        direction: "out",
+      } as PpSipSnapshot;
+    }
     if (!restCall?.id || hasLiveSipSession) {
-      // Écran "ça sonne" piloté par le push VoIP tant que l'INVITE n'est pas là.
+      // Écran "ca sonne" piloté par le push VoIP tant que l'INVITE n'est pas là.
       if (!hasLiveSipSession && pushRing) {
         return {
           ...base,
@@ -1776,18 +1825,22 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     answer,
     hangup,
     reregister: () => { try { ppSipProvider.forceReregister(); } catch {} },
-    mute: () => (restCall?.id && !hasLiveSipSession) ? void restControl("mute", { muted: true }) : ppSipProvider.mute(),
-    unmute: () => (restCall?.id && !hasLiveSipSession) ? void restControl("mute", { muted: false }) : ppSipProvider.unmute(),
+    // ring22 - appel sortant PJSIP : router mute/DTMF/speaker/raccrocher vers le moteur natif.
+    mute: () => nativeOutgoingCall && nativeOwnsAor() ? void nativeSip.setMute(true)
+      : (restCall?.id && !hasLiveSipSession) ? void restControl("mute", { muted: true }) : ppSipProvider.mute(),
+    unmute: () => nativeOutgoingCall && nativeOwnsAor() ? void nativeSip.setMute(false)
+      : (restCall?.id && !hasLiveSipSession) ? void restControl("mute", { muted: false }) : ppSipProvider.unmute(),
     hold: () => (restCall?.id && !hasLiveSipSession) ? void restControl("hold") : ppSipProvider.hold(),
     unhold: () => (restCall?.id && !hasLiveSipSession) ? void restControl("unhold") : ppSipProvider.unhold(),
-    sendDTMF: (k: string) => (restCall?.id && !hasLiveSipSession) ? void restControl("dtmf", { digit: k }) : ppSipProvider.sendDTMF(k),
+    sendDTMF: (k: string) => nativeOutgoingCall && nativeOwnsAor() ? void nativeSip.sendDTMF(k)
+      : (restCall?.id && !hasLiveSipSession) ? void restControl("dtmf", { digit: k }) : ppSipProvider.sendDTMF(k),
     transfer: (t: string) => (restCall?.id && !hasLiveSipSession) ? void restControl("transfer", { destination: t, target: t }) : ppSipProvider.transfer(t),
     // The provider owns a persistent hidden <audio> sink; screens must not
     // detach it on unmount (that killed remote audio mid-call).
     setAudioEl: (_el: HTMLAudioElement | null) => {},
 
     forceHandover: () => handoverController.forceHandover(),
-  }), [effectiveSnap, loading, net, quality, nativeStatus, sipConnected, placeCall, answer, hangup, answeredElsewhere, attachRestCall, restCall?.id, restControl, hasLiveSipSession]);
+  }), [effectiveSnap, loading, net, quality, nativeStatus, sipConnected, placeCall, answer, hangup, answeredElsewhere, attachRestCall, restCall?.id, restControl, hasLiveSipSession, nativeOutgoingCall]);
 
 
 }

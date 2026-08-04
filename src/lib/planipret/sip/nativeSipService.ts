@@ -233,6 +233,35 @@ export class NativeSipService {
       else if (state?.callId) this.currentCallId = String(state.callId);
       void import("./nativePpSipService").then((m) => m.setPlanipretNativeCallActive(!ended)).catch(() => undefined);
       emit("sip-call-state", { ...state, engine: "pjsip" });
+      // Quand l'appel sortant passe en 200 OK (connected), notifier CallKit.
+      if (!ended && state?.direction === "out" && state?.state === "connected") {
+        try {
+          const VoipCall = (window as any)?.Capacitor?.Plugins?.PpVoipCall;
+          if (VoipCall?.reportOutgoingConnected) void VoipCall.reportOutgoingConnected({});
+        } catch { /* noop */ }
+      }
+    });
+    // Appels sortants : PpPjsipEngine émet ces events dès que PJSIP lance l'INVITE
+    // ou reçoit 180 Ringing. On les relaie à CallKit via PpVoipCall pour qu'iOS
+    // active l'audio et affiche l'écran d'appel natif.
+    await pjsip.addListener("PpPjsipOutgoingCall", (data: any) => {
+      const callId = String(data?.callId ?? "");
+      const remoteNumber = String(data?.remoteNumber ?? "Unknown");
+      this.currentCallId = callId || null;
+      void import("./nativePpSipService").then((m) => m.setPlanipretNativeCallActive(true)).catch(() => undefined);
+      emit("sip-outgoing-call", { callId, remoteNumber, engine: "pjsip" });
+      // Notifie CallKit via PpVoipCall.startOutgoingCall
+      try {
+        const VoipCall = (window as any)?.Capacitor?.Plugins?.PpVoipCall;
+        if (VoipCall?.startOutgoingCall) void VoipCall.startOutgoingCall({ callId, remoteNumber });
+      } catch { /* noop */ }
+    });
+    await pjsip.addListener("PpPjsipOutgoingRinging", (data: any) => {
+      emit("sip-outgoing-ringing", { ...data, engine: "pjsip" });
+      try {
+        const VoipCall = (window as any)?.Capacitor?.Plugins?.PpVoipCall;
+        if (VoipCall?.reportOutgoingRinging) void VoipCall.reportOutgoingRinging({});
+      } catch { /* noop */ }
     });
   }
 

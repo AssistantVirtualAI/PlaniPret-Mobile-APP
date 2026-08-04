@@ -13,6 +13,9 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
       CAPPluginMethod(name: "refreshVoipPushToken", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "reportCallEnded", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "completeAnswer", returnType: CAPPluginReturnPromise),
+      CAPPluginMethod(name: "startOutgoingCall", returnType: CAPPluginReturnPromise),
+      CAPPluginMethod(name: "reportOutgoingRinging", returnType: CAPPluginReturnPromise),
+      CAPPluginMethod(name: "reportOutgoingConnected", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "addListener", returnType: CAPPluginReturnCallback),
       CAPPluginMethod(name: "removeAllListeners", returnType: CAPPluginReturnPromise)
     ]
@@ -123,6 +126,53 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         registry.delegate = self
         registry.desiredPushTypes = [.voIP]
         self.pushRegistry = registry
+    }
+
+    // MARK: - Appels sortants PJSIP
+
+    /// Appelé par JS dès que pjsua_call_make_call réussit (event PpPjsipOutgoingCall).
+    /// Enregistre l'appel dans CallKit → iOS active l'audio et affiche l'écran d'appel.
+    @objc func startOutgoingCall(_ call: CAPPluginCall) {
+        let remoteNumber = call.getString("remoteNumber") ?? "Unknown"
+        let callId = call.getString("callId") ?? ""
+        let uuid = UUID()
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { call.resolve(["ok": false]); return }
+            self.activeCallUUID = uuid
+            self.activeCallId = callId
+            self.activeCallerNumber = remoteNumber
+            let handle = CXHandle(type: .phoneNumber, value: remoteNumber)
+            let startAction = CXStartCallAction(call: uuid, handle: handle)
+            startAction.isVideo = false
+            let transaction = CXTransaction(action: startAction)
+            self.callController.request(transaction) { [weak self] error in
+                if let error = error {
+                    NSLog("[PpVoipCall] CXStartCallAction failed: %@", error.localizedDescription)
+                } else {
+                    NSLog("[PpVoipCall] CXStartCallAction OK uuid=%@ callId=%@", uuid.uuidString, callId)
+                    self?.provider?.reportOutgoingCall(with: uuid, startedConnectingAt: Date())
+                }
+            }
+            call.resolve(["ok": true, "uuid": uuid.uuidString])
+        }
+    }
+
+    /// Appelé quand PJSIP reçoit 180 Ringing / early media pour un appel sortant.
+    @objc func reportOutgoingRinging(_ call: CAPPluginCall) {
+        DispatchQueue.main.async { [weak self] in
+            guard let uuid = self?.activeCallUUID else { call.resolve(["ok": false]); return }
+            self?.provider?.reportOutgoingCall(with: uuid, startedConnectingAt: Date())
+            call.resolve(["ok": true])
+        }
+    }
+
+    /// Appelé quand PJSIP reçoit 200 OK pour un appel sortant.
+    @objc func reportOutgoingConnected(_ call: CAPPluginCall) {
+        DispatchQueue.main.async { [weak self] in
+            guard let uuid = self?.activeCallUUID else { call.resolve(["ok": false]); return }
+            self?.provider?.reportOutgoingCall(with: uuid, connectedAt: Date())
+            call.resolve(["ok": true])
+        }
     }
 
     // MARK: - JS ↔ Native
