@@ -56,7 +56,7 @@ private func ppPjsipOnCallState(_ callId: pjsua_call_id, _ event: UnsafeMutableP
     PjsipEngine.shared.handleCallState(
         callId: callId,
         state: info.state,
-        lastCode: Int(info.last_status),
+        lastCode: Int(clamping: info.last_status.rawValue),
         remoteUri: ppPjStr(info.remote_info)
     )
 }
