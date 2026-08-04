@@ -69,11 +69,19 @@ grep -rq "pjsip_tls_transport_start" "$XCF" --include='*.h' \
 green "  ✔ en-têtes TLS exportés"
 
 # Journaux de configure conservés par le build : confirmation croisée.
+# En mode device-only (PJSIP_DEVICE_ONLY=1 ou xcframework à 1 seule tranche),
+# le log configure-simulator.log est absent ou invalide — on l'ignore.
 shopt -s nullglob
 logs=("$WORK"/configure-*.log)
 if [ ${#logs[@]} -gt 0 ]; then
   for log in "${logs[@]}"; do
     tag="$(basename "$log" .log)"; tag="${tag#configure-}"
+    # Si le xcframework n'a qu'une tranche device et que ce log est pour le
+    # simulateur, on l'ignore (mode device-only).
+    if [ "$tag" = "simulator" ] && [ "$slices" -eq 1 ]; then
+      echo "  ⚠ configure-simulator.log ignoré (xcframework device-only à 1 tranche)"
+      continue
+    fi
     grep -q "OpenSSL library found, SSL support enabled" "$log" \
       || fail "configure-$tag.log ne contient pas « OpenSSL library found, SSL support enabled »"
     echo "  ✔ $tag : OpenSSL détecté par configure"

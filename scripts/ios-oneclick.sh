@@ -61,12 +61,17 @@ ok "npm install terminé"
 if [ "$REBUILD_PJSIP" -eq 1 ]; then
   step "2/5 — Recompilation forcée de libpjsip.xcframework (--rebuild-pjsip)"
   rm -rf "$XCFW"
+  # Supprimer aussi le cache de build pour forcer une recompilation complète
+  rm -rf "$APP_DIR/.pjsip-build/libs" "$APP_DIR/.pjsip-build/pjproject"
 fi
 
 if [ ! -d "$XCFW" ]; then
   step "2/5 — Compilation de libpjsip.xcframework (OpenSSL + pjproject, ~15-20 min)"
   warn "Cette étape est longue. Ne fermez pas ce terminal."
-  bash scripts/build-pjsip-ios.sh
+  # Sur Mac Apple Silicon (M1/M2/M3/M4) + Xcode 15+, le simulateur arm64 ne
+  # compile pas avec configure-iphone. On force device-only par défaut :
+  # l'app fonctionne parfaitement sur iPhone réel avec une seule tranche.
+  PJSIP_DEVICE_ONLY=1 bash scripts/build-pjsip-ios.sh
   ok "libpjsip.xcframework compilé → $XCFW"
 
   # Ajouter automatiquement le xcframework au projet Xcode via ruby/xcodeproj
