@@ -7,6 +7,7 @@
 // stats sampling, and ICE-restart support for Wi-Fi ↔ LTE handover.
 
 import JsSIP from "jssip";
+import { Capacitor } from "@capacitor/core";
 import { getPpSipReconnectConfig, ppSipBackoffDelay, PP_SIP_RECONNECT_FLOOR_MS } from "./ppSipReconnectConfig";
 import { edgeOnlyWssUrls, isPortalWssUrl } from "./sipEdgePolicy";
 import { checkSipBackendRegistration } from "./sipBackendCheck";
@@ -448,6 +449,18 @@ class PpSipProvider {
 
   async init(cfg: PpSipConfig) {
     if (ppSipInitInFlight) return;
+    // Native builds are PJSIP-only. Never create a WebView JsSIP UA on iOS or
+    // Android, even when the native engine is unavailable or not registered.
+    // Falling back here registers `<ext>M` as WSS (`pp-ua=web-*`) and steals
+    // inbound calls from the native TCP/TLS account.
+    if (Capacitor.isNativePlatform()) {
+      this.log("error", "JsSIP init blocked on native platform — native SIP is mandatory");
+      this.pushHistory("blocked", "native_platform_jssip_forbidden");
+      this.emitMetrics();
+      if (this.ua) this.yieldAorToNative();
+      this.update({ status: "error", errorCause: "native_sip_unavailable" });
+      return;
+    }
     // Arbitrage d'AOR : le moteur natif PJSIP est le seul REGISTER autorisé sur
     // `<ext>M`. Créer un UA JsSIP ici (register:true) rouvrirait la course qui
     // provoque les WSS 1001.

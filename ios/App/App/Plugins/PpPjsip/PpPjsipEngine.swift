@@ -244,7 +244,7 @@ final class PjsipEngine {
         // AOR — JsSIP doit céder (`pp:sip-native-owns-aor`), sinon NetSapiens
         // ferme la socket la plus ancienne (WSS 1001).
         if accId != pjsua_acc_id(-1) {
-            pjsua_acc_set_registration(accId, 0)
+            pjsua_acc_set_registration(accId, pj_bool_t(0))
             pjsua_acc_del(accId)
             accId = pjsua_acc_id(-1)
         }
@@ -297,7 +297,7 @@ final class PjsipEngine {
         thread.run { [weak self] in
             guard let self = self else { return }
             self.scheduleOnPjsipThread {
-                pjsua_acc_set_registration(self.accId, on ? 1 : 0)
+                pjsua_acc_set_registration(self.accId, pj_bool_t(on ? 1 : 0))
             }
         }
     }
@@ -778,7 +778,7 @@ final class PjsipEngine {
         lock.unlock()
         guard let cb = cb else { return }
         if probeAccId != pjsua_acc_id(-1) {
-            pjsua_acc_set_registration(probeAccId, 0)
+            pjsua_acc_set_registration(probeAccId, pj_bool_t(0))
             pjsua_acc_del(probeAccId)
             probeAccId = pjsua_acc_id(-1)
         }
@@ -916,7 +916,7 @@ final class PjsipEngine {
         NSLog("[PpPjsip]   TLS est le SEUL transport natif possible — PJSIP n'a pas de transport SIP/WebSocket.")
 
         if status == pj_status_t(220003) || !sslBackendPresent {
-            NSLog("[PpPjsip] 🔎 CAUSE : PJSIP_EUNSUPTRANSPORT — libpjsip.xcframework construit SANS OpenSSL.")
+            NSLog("[PpPjsip] 🔎 CAUSE : 220003 — libpjsip.xcframework construit SANS OpenSSL.")
             NSLog("[PpPjsip]    CORRECTIF : bash scripts/build-pjsip-ios.sh puis npx cap sync ios")
         } else {
             NSLog("[PpPjsip] 🔎 CAUSE probable : réseau/certificat local (backend SSL présent).")

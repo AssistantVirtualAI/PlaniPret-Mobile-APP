@@ -11,6 +11,7 @@
 //     ("both, with fallback" policy).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Capacitor } from "@capacitor/core";
 import { edgeOnlyWssUrls } from "@/lib/planipret/sip/sipEdgePolicy";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
@@ -390,6 +391,34 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
         if (opts?.force) {
           try { ppSipProvider.stop(); } catch {}
         }
+        // Native application invariant: PJSIP is the only SIP stack allowed.
+        // Validate it before calling the credential resolver so a failed native
+        // probe can never rewrite/register `<ext>M` as WSS through JsSIP.
+        if (Capacitor.isNativePlatform()) {
+          try { ppSipProvider.yieldAorToNative(); } catch {}
+          const nativeReady = await nativeSip.initialize();
+          if (cancelled) return;
+          if (!nativeReady) {
+            console.error("[SIP] SIP natif non disponible — JsSIP bloqué sur plateforme native");
+            try {
+              window.dispatchEvent(new CustomEvent("sip-registration-state", {
+                detail: {
+                  registered: false,
+                  state: "unavailable",
+                  reason: "native_sip_unavailable",
+                  message: "SIP natif non disponible",
+                  engine: "pjsip",
+                },
+              }));
+            } catch {}
+            return;
+          }
+          void getPlanipretVoipPushToken().then((t) => {
+            if (t?.token) void uploadPlanipretVoipToken(t.token, t.bundleId, nativeSip.getExtension(), t.environment);
+          });
+          console.info("[pp-sip] PJSIP is the sole native owner; all WSS initialization skipped");
+          return;
+        }
         // Le resolver réécrit `device-sip-transport-type`. Sans ce garde il repasse
         // le device `<ext>M` en WSS 9002 alors que PJSIP est enregistré en TLS 5061,
         // et les INVITE entrants n'arrivent jamais au moteur natif.
@@ -441,8 +470,8 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
             console.info("[pp-sip] PJSIP is the sole <ext>M owner; legacy WSS initialization skipped");
             return;
           }
-          releaseAorFromNative("native_init_failed_fallback_legacy");
-          console.warn("[pp-sip] PJSIP init failed → legacy WSS path takes over the AOR");
+          releaseAorFromNative("web_native_probe_failed");
+          console.warn("[pp-sip] native probe failed outside Capacitor; web WSS remains available");
         }
 
         // The native keep-alive service owns the `<ext>M` device, but ONLY
