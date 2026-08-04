@@ -1,14 +1,14 @@
 {
-  "generatedAt": "2026-08-04T11:09:56.040Z",
+  "generatedAt": "2026-08-04T21:36:30.741Z",
   "entry": [
     "src/index.tsx"
   ],
   "ok": true,
   "totals": {
-    "localImportsChecked": 440,
-    "bundledFiles": 178,
+    "localImportsChecked": 437,
+    "bundledFiles": 177,
     "missing": 0,
-    "orphanFiles": 884,
+    "orphanFiles": 886,
     "orphanBrokenImports": 0
   },
   "missing": [],
@@ -294,6 +294,7 @@
     "src/components/planipret/mobile/NetworkQualityBadge.tsx",
     "src/components/planipret/mobile/NewMsEventSheet.tsx",
     "src/components/planipret/mobile/PerformanceReportCard.tsx",
+    "src/components/planipret/mobile/PermissionsPrimer.tsx",
     "src/components/planipret/mobile/call/CallAudioSheet.tsx",
     "src/components/planipret/mobile/call/NetworkBadge.tsx",
     "src/components/planipret/widget/WidgetCallDetail.tsx",
@@ -635,6 +636,7 @@
     "src/lib/planipret/brokerStats.ts",
     "src/lib/planipret/design-tokens.ts",
     "src/lib/planipret/pricing.ts",
+    "src/lib/planipret/sip/__tests__/ppSipProvider.nativeGuard.test.ts",
     "src/lib/planipret/sip/__tests__/ppSipProvider.reconnect.test.ts",
     "src/lib/portalGuardMonitoring.ts",
     "src/lib/postLoginRoute.ts",

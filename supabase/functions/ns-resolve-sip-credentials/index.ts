@@ -207,11 +207,12 @@ function queueRingRuleResync(brokerId: string, reason: string, force = false) {
  *
  * The client therefore declares which transport it will actually register with:
  *  - `wss` (default) — WebView / JsSIP over wss:9002 on a core node.
- *  - `tls` — native PJSIP over sip:5061 on a core node (iOS/Android native engine).
+ *  - `tcp` (mobile default) — native SIP over sip:5060 on a core node.
+ *  - `tls` — native SIP over sip:5061 (optionnel, plus sécurisé).
  */
-type SipTransport = "wss" | "tls";
-const nsTransport = (t: SipTransport) => (t === "tls" ? "TLS" : "WSS");
-const sipPortFor = (t: SipTransport) => (t === "tls" ? 5061 : 9002);
+type SipTransport = "wss" | "tls" | "tcp";
+const nsTransport = (t: SipTransport) => (t === "tls" ? "TLS" : t === "tcp" ? "TCP" : "WSS");
+const sipPortFor = (t: SipTransport) => (t === "tls" ? 5061 : t === "tcp" ? 5060 : 9002);
 
 /**
  * Same device payload as ns-provision-broker-devices so EVERY broker ends up
@@ -258,7 +259,7 @@ Deno.serve(async (req) => {
   // Invariant AOR/transport : `<ext>M` = app native PJSIP/TLS uniquement,
   // `<ext>W` = navigateur JsSIP/WSS. Jamais l'inverse, sinon le dernier
   // REGISTER reçu vole le Contact et les appels partent au mauvais client.
-  const sipTransport = clientType === "mobile" ? "tls" : "wss";
+  const sipTransport: SipTransport = clientType === "mobile" ? "tcp" : "wss";
 
 
   const authHeader = req.headers.get("Authorization") ?? "";
@@ -452,6 +453,8 @@ Deno.serve(async (req) => {
     sip_transport: sipTransport,
     sip_port: sipPortFor(sipTransport),
     sip_tls_uri: `sip:${coreServer}:5061;transport=tls`,
+    sip_tcp_uri: `sip:${coreServer}:5060;transport=tcp`,
+    sip_native_uri: `sip:${coreServer}:${sipPortFor(sipTransport)};transport=${sipTransport}`,
     // Single pinned core node (no core1/core2 alternation).
     sip_ws_url: edgeWssUrls([NS_SIP_WSS_URL])[0],
     sip_wss_url: edgeWssUrls([NS_SIP_WSS_URL])[0],

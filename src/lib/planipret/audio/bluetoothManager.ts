@@ -1,76 +1,53 @@
 // Phase 4.3 — Bluetooth audio device manager for /mplanipret.
-// Uses @capacitor-community/bluetooth-le when native, no-ops on web.
+// Call audio routing on iOS/Android is handled by the OS audio session
+// (AVAudioSession / AudioManager), not by BLE GATT: the native plugin reports
+// connected headsets and we simply mirror them here.
 
 import { audioRouter } from "./audioRouter";
 
-const LAST_KEY = "pp_last_bt_device";
-
 export interface BtDevice { id: string; name: string }
 
-let listeners = new Set<(devs: BtDevice[]) => void>();
+const listeners = new Set<(devs: BtDevice[]) => void>();
 let known: BtDevice[] = [];
+let bound = false;
 
-function isNative(): boolean {
-  return !!(window as any)?.Capacitor?.isNativePlatform?.();
+function apply(d: { bluetooth: boolean; bluetoothName: string }) {
+  known = d.bluetooth ? [{ id: "bt", name: d.bluetoothName || "Casque Bluetooth" }] : [];
+  listeners.forEach((f) => f(known));
 }
 
-async function getBle(): Promise<any | null> {
-  if (!isNative()) return null;
-  try {
-    const mod = await import("@capacitor-community/bluetooth-le");
-    return (mod as any).BleClient;
-  } catch {
-    return null;
-  }
+function bind() {
+  if (bound) return;
+  bound = true;
+  audioRouter.subscribe((d) => apply(d));
 }
 
 export const bluetoothManager = {
   devices: () => [...known],
 
   subscribe(fn: (devs: BtDevice[]) => void) {
+    bind();
     listeners.add(fn);
     fn(known);
     return () => { listeners.delete(fn); };
   },
 
+  /** Re-reads the OS audio route (auto-detection is push-based). */
   async scanAudioDevices(): Promise<BtDevice[]> {
-    const Ble = await getBle();
-    if (!Ble) return known;
-    try {
-      await Ble.initialize();
-      const found: BtDevice[] = [];
-      await Ble.requestLEScan({}, (r: any) => {
-        if (r?.device?.deviceId) found.push({ id: r.device.deviceId, name: r.device.name ?? "Casque BT" });
-      });
-      setTimeout(() => Ble.stopLEScan().catch(() => {}), 4000);
-      known = found;
-      listeners.forEach((f) => f(known));
-      return known;
-    } catch {
-      return known;
-    }
+    bind();
+    const d = await audioRouter.refreshDevices();
+    apply(d);
+    return known;
   },
 
+  /** Called at call start: the headset is picked automatically when present. */
   async autoConnectLast(): Promise<void> {
-    const Ble = await getBle();
-    if (!Ble) return;
-    try {
-      const id = localStorage.getItem(LAST_KEY);
-      if (!id) return;
-      await Ble.connect(id, () => { audioRouter.setRoute("earpiece"); });
-      await audioRouter.setRoute("bluetooth");
-    } catch {}
+    const d = await audioRouter.refreshDevices();
+    apply(d);
+    if (d.bluetooth) await audioRouter.setRoute("bluetooth");
   },
 
-  async connect(id: string, name: string): Promise<void> {
-    const Ble = await getBle();
-    if (!Ble) return;
-    try {
-      await Ble.connect(id, () => { audioRouter.setRoute("earpiece"); });
-      localStorage.setItem(LAST_KEY, id);
-      await audioRouter.setRoute("bluetooth");
-      if (!known.find((d) => d.id === id)) known = [...known, { id, name }];
-      listeners.forEach((f) => f(known));
-    } catch {}
+  async connect(_id: string, _name: string): Promise<void> {
+    await audioRouter.setRoute("bluetooth");
   },
 };

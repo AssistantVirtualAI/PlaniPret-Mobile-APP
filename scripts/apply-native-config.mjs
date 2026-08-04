@@ -638,6 +638,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       CAPPluginMethod(name: "declareNativeEngineOwnsAor", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "setAudioRoute", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "getAudioRoute", returnType: CAPPluginReturnPromise),
+      CAPPluginMethod(name: "getAudioDevices", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "addListener", returnType: CAPPluginReturnCallback),
       CAPPluginMethod(name: "removeAllListeners", returnType: CAPPluginReturnPromise)
     ]
@@ -731,6 +732,9 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         self?.callKitAudioActive = false
       }
       UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
+      // Auto-detect headsets: iOS posts a route change whenever a Bluetooth
+      // HFP device, a wired headset or the speaker becomes (un)available.
+      NotificationCenter.default.addObserver(self, selector: #selector(onAudioRouteChange(_:)), name: AVAudioSession.routeChangeNotification, object: nil)
     }
     deinit { NotificationCenter.default.removeObserver(self); timer?.invalidate(); socket?.cancel(with: .goingAway, reason: nil) }
 
@@ -822,6 +826,62 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       return "earpiece"
     }
 
+    @objc func getAudioDevices(_ call: CAPPluginCall) {
+      DispatchQueue.main.async { [weak self] in
+        guard let self = self else { call.resolve(["ok": false]); return }
+        call.resolve([
+          "ok": true,
+          "route": self.currentAudioRoute(),
+          "bluetooth": self.bluetoothAvailable(),
+          "bluetoothName": self.bluetoothName() ?? "",
+          "wired": self.wiredAvailable()
+        ])
+      }
+    }
+
+    private func bluetoothInput() -> AVAudioSessionPortDescription? {
+      let s = AVAudioSession.sharedInstance()
+      return s.availableInputs?.first(where: { $0.portType == .bluetoothHFP })
+    }
+    private func bluetoothAvailable() -> Bool {
+      if bluetoothInput() != nil { return true }
+      return AVAudioSession.sharedInstance().currentRoute.outputs.contains(where: {
+        $0.portType == .bluetoothHFP || $0.portType == .bluetoothA2DP || $0.portType == .bluetoothLE
+      })
+    }
+    private func bluetoothName() -> String? {
+      if let i = bluetoothInput() { return i.portName }
+      return AVAudioSession.sharedInstance().currentRoute.outputs.first(where: {
+        $0.portType == .bluetoothHFP || $0.portType == .bluetoothA2DP || $0.portType == .bluetoothLE
+      })?.portName
+    }
+    private func wiredAvailable() -> Bool {
+      let s = AVAudioSession.sharedInstance()
+      if s.currentRoute.outputs.contains(where: { $0.portType == .headphones || $0.portType == .usbAudio }) { return true }
+      return s.availableInputs?.contains(where: { $0.portType == .headsetMic || $0.portType == .usbAudio }) ?? false
+    }
+
+    @objc private func onAudioRouteChange(_ note: Notification) {
+      DispatchQueue.main.async { [weak self] in
+        guard let self = self else { return }
+        let bt = self.bluetoothAvailable()
+        // Auto-follow the headset unless the user explicitly picked the speaker.
+        if self.preferredRoute != "speaker" {
+          let wanted = bt ? "bluetooth" : "earpiece"
+          if self.preferredRoute != wanted {
+            self.preferredRoute = wanted
+            self.applyAudioRoute()
+          }
+        }
+        self.notifyListeners("audioRouteChanged", data: [
+          "route": self.currentAudioRoute(),
+          "bluetooth": bt,
+          "bluetoothName": self.bluetoothName() ?? "",
+          "wired": self.wiredAvailable()
+        ])
+      }
+    }
+
     private func applyAudioRoute() {
       let s = AVAudioSession.sharedInstance()
       switch preferredRoute {
@@ -829,9 +889,11 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         try? s.overrideOutputAudioPort(.speaker)
       case "bluetooth":
         try? s.overrideOutputAudioPort(.none)
-        if let bt = s.availableInputs?.first(where: { $0.portType == .bluetoothHFP }) { try? s.setPreferredInput(bt) }
+        if let bt = bluetoothInput() { try? s.setPreferredInput(bt) }
       default:
         try? s.overrideOutputAudioPort(.none)
+        // Auto: a connected Bluetooth headset always wins over the earpiece.
+        if let bt = bluetoothInput() { try? s.setPreferredInput(bt) }
       }
     }
 
@@ -1999,6 +2061,7 @@ CAP_PLUGIN(PpSipKeepAlive, "PpSipKeepAlive",
   CAP_PLUGIN_METHOD(declareJsOwnsAor, CAPPluginReturnPromise);
   CAP_PLUGIN_METHOD(setAudioRoute, CAPPluginReturnPromise);
   CAP_PLUGIN_METHOD(getAudioRoute, CAPPluginReturnPromise);
+  CAP_PLUGIN_METHOD(getAudioDevices, CAPPluginReturnPromise);
   CAP_PLUGIN_METHOD(addListener, CAPPluginReturnCallback);
   CAP_PLUGIN_METHOD(removeAllListeners, CAPPluginReturnPromise);
 )

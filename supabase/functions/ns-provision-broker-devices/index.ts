@@ -70,11 +70,15 @@ Deno.serve(async (req) => {
      * and land in voicemail. Pass `transport: "wss" | "tls"` to force a rewrite.
      */
     const rawTransport = String(body?.transport ?? "").trim().toLowerCase();
-    const forcedTransport: "WSS" | "TLS" | null =
+    const forcedTransport: "WSS" | "TLS" | "TCP" | null =
       rawTransport === "tls" || rawTransport === "sips" ? "TLS"
+        : rawTransport === "tcp" ? "TCP"
         : rawTransport === "wss" || rawTransport === "ws" ? "WSS"
         : null;
-    const sipPort = Number(body?.sip_port ?? (forcedTransport === "TLS" ? 5061 : 9002));
+    const sipPort = Number(
+      body?.sip_port ??
+        (forcedTransport === "TLS" ? 5061 : forcedTransport === "TCP" ? 5060 : 9002),
+    );
     if (!Number.isInteger(sipPort) || sipPort < 1 || sipPort > 65535) {
       return json({ error: "invalid_sip_port" }, 400);
     }

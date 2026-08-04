@@ -276,8 +276,14 @@ final class PjsipEngine {
         // (PJMEDIA_SRTP_ESDPINCRYPTOTAG) → média détruit = appel sortant muet.
         // On duplique donc les lignes crypto dans l'offre AVP initiale.
         acc.srtp_optional_dup_offer = pj_bool_t(1)
-        // Les session timers déclenchaient un UPDATE qui re-négociait le SDP en
-        // cours d'appel et détruisait le flux audio. Le keep-alive TCP suffit.
+        // PJSUA envoie sinon automatiquement un UPDATE juste après le 200 OK
+        // pour verrouiller le codec. NetSapiens répond à cet UPDATE avec un
+        // nouveau tag SDES (crypto:3 au lieu de crypto:1), puis PJSIP détruit
+        // le média avec PJMEDIA_SRTP_ESDPINCRYPTOTAG. Garder l'offre négociée
+        // dans le 183/200 préserve le flux SRTP bidirectionnel.
+        acc.lock_codec = pj_bool_t(0)
+        // Les session timers sont également inutiles sur ce trunk et peuvent
+        // provoquer une seconde renégociation SDP. Le keep-alive TCP suffit.
         acc.use_timer = PJSUA_SIP_TIMER_INACTIVE
         // Un seul `+sip.instance` : on laisse RFC5626 le générer avec NOTRE
         // UUID stable au lieu d'ajouter un second param manuel (pjsua émettait
