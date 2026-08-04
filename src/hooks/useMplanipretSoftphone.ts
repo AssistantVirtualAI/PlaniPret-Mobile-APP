@@ -48,6 +48,7 @@ import { addDedupedCapListener } from "@/lib/planipret/sip/capListeners";
 import { checkSipBackendRegistration } from "@/lib/planipret/sip/sipBackendCheck";
 import { nativeSip } from "@/lib/planipret/sip/nativeSipService";
 import { nativeOwnsAor, releaseAorFromNative } from "@/lib/planipret/sip/aorArbitration";
+import { installAorTransportRecovery } from "@/lib/planipret/sip/aorTransportRecovery";
 
 import {
   upsertRingingSession,
@@ -499,6 +500,7 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
   useEffect(() => {
     if (!enabled || !user) return;
     if (softphoneOwnerId !== ownerIdRef.current) return;
+    installAorTransportRecovery();
     let cleanupStatus: (() => void) | undefined;
     let cleanupReregister: (() => void) | undefined;
     let cancelled = false;

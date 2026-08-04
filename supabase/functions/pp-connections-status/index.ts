@@ -4,7 +4,7 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { MS365_DELEGATED_SCOPES, refreshMicrosoftAccessToken } from "../_shared/ms365.ts";
-import { resolveMaestroAccessToken } from "../_shared/maestro-oauth.ts";
+import { getUserMaestroAccessToken } from "../_shared/maestro-oauth.ts";
 
 const j = (b: unknown, s = 200) =>
   new Response(JSON.stringify(b), { status: s, headers: { ...corsHeaders, "Content-Type": "application/json" } });
@@ -13,8 +13,6 @@ type Health = {
   service: "ms365" | "maestro" | "elevenlabs";
   state: "ok" | "reconnecting" | "error" | "not_configured";
   detail: string;
-  /** Machine-readable cause, so the client can act on it without parsing `detail`. */
-  reason?: string;
   expires_at?: string | null;
   can_reconnect: boolean;
 };
@@ -106,27 +104,11 @@ Deno.serve(async (req) => {
       services.push({ service: "maestro", state: "error", detail: "missing_maestro_broker_id — reconnect Maestro so sync can attach calls to the broker account", can_reconnect: true });
     } else {
       try {
-        // Use resolveMaestroAccessToken, not the token's truthiness:
-        // getUserMaestroAccessToken falls back to the stored token when a refresh
-        // fails, so `t ? "ok" : "error"` reported "Jeton valide" on a dead token and
-        // "Jeton expiré" only when the column was empty.
-        const res = await resolveMaestroAccessToken(admin as any, u.user.id);
-        const details: Record<string, string> = {
-          fresh: "Jeton valide",
-          refreshed: "Jeton renouvelé",
-          refresh_not_persisted:
-            "Jeton renouvelé mais NON enregistré — aucune ligne planipret_profiles ne correspond à cet utilisateur",
-          stale_no_refresh_token: "Jeton expiré, aucun refresh_token — reconnexion requise",
-          stale_oauth_not_configured: "Jeton expiré et OAuth Maestro non configuré",
-          refresh_rejected: "Refresh refusé par Maestro — reconnexion requise",
-          no_profile: "Aucun profil Planipret trouvé",
-          no_token: "Aucun jeton d'accès enregistré",
-        };
+        const t = await getUserMaestroAccessToken(admin as any, u.user.id);
         services.push({
           service: "maestro",
-          state: res.healthy ? "ok" : "error",
-          detail: details[res.reason] ?? res.reason,
-          reason: res.reason,
+          state: t ? "ok" : "error",
+          detail: t ? "Jeton valide" : "Jeton expiré — reconnexion requise",
           expires_at: p.maestro_token_expires_at,
           can_reconnect: true,
         });

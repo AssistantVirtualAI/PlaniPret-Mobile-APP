@@ -9,7 +9,7 @@ import {
   isMaestroTelecomConfigured,
   maestroTelecomFetch,
 } from "../_shared/maestro-telecom.ts";
-import { getUserMaestroAccessToken, forceRefreshMaestroToken } from "../_shared/maestro-oauth.ts";
+import { getUserMaestroAccessToken } from "../_shared/maestro-oauth.ts";
 
 const json = (b: unknown, s = 200) =>
   new Response(JSON.stringify(b), { status: s, headers: { ...corsHeaders, "Content-Type": "application/json" } });
@@ -41,6 +41,7 @@ Deno.serve(async (req) => {
     if (!path || typeof path !== "string") return json({ error: "missing_path" }, 400);
 
     // Resolve {me} → current broker's Maestro id
+    let resolvedMeId: string | number | null = null;
     if (path.includes("{me}")) {
       const { data: prof } = await admin
         .from("planipret_profiles")
@@ -49,6 +50,7 @@ Deno.serve(async (req) => {
         .maybeSingle();
       const meId = prof?.maestro_broker_id;
       if (!meId) return json({ ok: false, error: "no_maestro_broker_id", needs_link: true }, 200);
+      resolvedMeId = meId;
       path = path.replaceAll("{me}", encodeURIComponent(String(meId)));
     }
 
@@ -62,37 +64,38 @@ Deno.serve(async (req) => {
     // Prefer the broker's per-user OAuth token when available (auto-refresh),
     // fall back to the machine key from the shared config.
     const userToken = await getUserMaestroAccessToken(admin, u.user.id);
+    if (!userToken) {
+      return json({ ok: false, error: "maestro_reconnect_required", needs_reauth: true }, 200);
+    }
 
     const endpoint = `${url.pathname}${url.search}`;
-    let r = await maestroTelecomFetch(cfg, endpoint, {
-      method,
-      body: method !== "GET" ? reqBody : undefined,
-      token: userToken ?? undefined,
-    });
-
-    // getUserMaestroAccessToken() only refreshes when `maestro_token_expires_at`
-    // says the token is stale. When that column is wrong (or Maestro revoked the
-    // token early) we get a 401 while still believing the token is fresh, and the
-    // caller retried the same dead token three times. Force one refresh and retry.
-    if (r.status === 401) {
-      console.warn("[maestro-telecom] 401 on presumed-fresh token — forcing refresh");
-      const refreshed = await forceRefreshMaestroToken(admin, u.user.id);
-      if (refreshed) {
-        r = await maestroTelecomFetch(cfg, endpoint, {
-          method,
-          body: method !== "GET" ? reqBody : undefined,
-          token: refreshed,
-        });
-      } else {
-        console.error("[maestro-telecom] refresh unavailable — relink required");
-        return json({ ok: false, error: "maestro_reauth_required", status: 401, details: r.data ?? r.error }, 200);
+    let upstreamBody = method !== "GET" ? reqBody : undefined;
+    // Maestro's call-create contract distinguishes the external destination
+    // (outbound) from the external caller + internal recipient (inbound).
+    // Sending an inbound caller as `to_user_number` makes the upstream route
+    // resolve the caller as its destination and currently returns HTTP 500.
+    if (method === "POST" && /\/users\/[^/]+\/calls$/.test(url.pathname)
+      && reqBody && typeof reqBody === "object") {
+      const call = { ...(reqBody as Record<string, unknown>) };
+      if (call.direction === "inbound") {
+        const externalCaller = call.from_user_number ?? call.to_user_number;
+        delete call.to_user_number;
+        call.from_user_number = externalCaller;
+        call.to_user_id = resolvedMeId !== null && Number.isFinite(Number(resolvedMeId))
+          ? Number(resolvedMeId)
+          : resolvedMeId;
       }
+      upstreamBody = call;
     }
+    const r = await maestroTelecomFetch(cfg, endpoint, {
+      method,
+      body: upstreamBody,
+      token: userToken,
+    });
 
     if (!r.ok) {
       console.error("[maestro-telecom]", method, endpoint, r.status, JSON.stringify(r.data ?? r.error).slice(0, 500));
-      const code = r.status === 401 ? "maestro_reauth_required" : "maestro_error";
-      return json({ ok: false, error: code, status: r.status, details: r.data ?? r.error }, 200);
+      return json({ ok: false, error: "maestro_error", status: r.status, details: r.data ?? r.error }, 200);
     }
     return json({ ok: true, status: r.status, data: r.data });
   } catch (e) {

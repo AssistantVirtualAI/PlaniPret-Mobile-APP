@@ -207,6 +207,53 @@ Deno.serve(async (req) => {
       }, 200);
     }
 
+    // Click-to-call pickup for inbound calls when the SIP WebSocket is not
+    // usable (wss://core*.cluster1.ucstack.io:9002 is not publicly reachable).
+    // NS-API: POST /domains/{d}/users/{ext}/calls with the mobile AOR as
+    // origination and the caller as termination, auto-answered on our leg.
+    if (action === "callback") {
+      const payload = cachedBody ?? (await req.json().catch(() => ({})));
+      const raw = String(payload?.number ?? payload?.from_number ?? "");
+      const digits = raw.replace(/[^\d+]/g, "");
+      if (!digits) return jsonResponse({ success: false, error: "number required" }, 200);
+      let dest = digits;
+      if (!dest.startsWith("+")) {
+        const d = dest.replace(/\D/g, "");
+        dest = "+" + (d.length === 10 ? "1" + d : d);
+      }
+
+      let deviceName = `${ctx.extension}_mobile`;
+      try {
+        const { data: profileDevice } = await guard.supabase
+          .from("planipret_profiles")
+          .select("ns_mobile_device_id")
+          .eq("user_id", ctx.userId)
+          .maybeSingle();
+        if (profileDevice?.ns_mobile_device_id) deviceName = String(profileDevice.ns_mobile_device_id);
+      } catch { /* keep default */ }
+
+      const nsBody = {
+        "call-id": crypto.randomUUID(),
+        "call-orig-user": `${deviceName}@${ctx.nsDomain}`,
+        "call-term-user": dest,
+        "auto-answer-enabled": "yes",
+        "synchronous": "yes",
+      };
+      console.log(`[pp-ns-calls] callback orig=${nsBody["call-orig-user"]} term=${dest}`);
+      const res = await nsFetch(base, { method: "POST", body: JSON.stringify(nsBody) });
+      const text = await res.text();
+      let parsed: any = null;
+      try { parsed = text ? JSON.parse(text) : null; } catch { parsed = text; }
+      const ok = res.ok || res.status === 202;
+      return jsonResponse({
+        success: ok,
+        call_id: parsed?.["call-id"] ?? parsed?.call_id ?? nsBody["call-id"],
+        destination: dest,
+        ns_status: res.status,
+        error: ok ? undefined : ((typeof parsed === "object" && parsed?.message) || `NS-API error ${res.status}`),
+      }, 200);
+    }
+
     // Call-control actions: accept either PATCH or POST-with-action-in-body
     // (supabase.functions.invoke only issues POST).
     const controlActions = ["answer", "hold", "unhold", "resume", "transfer", "forward", "disconnect", "reject", "mute", "dtmf"];
@@ -221,15 +268,8 @@ Deno.serve(async (req) => {
         : nsAction === "dtmf" ? JSON.stringify({ digit: payload.digit })
         : undefined;
       let res = await nsFetch(path, { method: "PATCH", body });
-      // NetSapiens documents `DELETE .../calls/{call-id}` as the hangup path. Some
-      // deployments refuse `PATCH .../reject` on a still-ringing leg, which left
-      // the red button silently ineffective and the call ringing to voicemail.
-      // Extending the existing disconnect fallback to `reject` costs nothing: it
-      // only fires when the PATCH already failed, and it acts on a call-id we
-      // already hold. This is the ONLY change carried over from the upstream
-      // click-to-call batch — the callback/answer path from that batch is
-      // deliberately NOT ported (it originates a new outbound call instead of
-      // answering, recreating the ring13 double-call bug).
+      // Decline: NS-API documents DELETE .../calls/{call-id} as the hangup /
+      // reject path, used as fallback when PATCH is refused.
       if (!res.ok && (nsAction === "disconnect" || nsAction === "reject")) {
         res = await nsFetch(`${base}/${encodeURIComponent(callId)}`, { method: "DELETE" });
       }

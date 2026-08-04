@@ -3,7 +3,7 @@
 // store for legacy pre-per-user tokens.
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { getMaestroOAuthEnv, isMaestroOAuthConfigured } from "../_shared/maestro-oauth.ts";
+import { getMaestroOAuthEnv, getUserMaestroAccessToken, isMaestroOAuthConfigured } from "../_shared/maestro-oauth.ts";
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -40,7 +40,7 @@ Deno.serve(async (req) => {
   if (userId) {
     const { data: profRows } = await admin
       .from("planipret_profiles")
-      .select("id, user_id, maestro_broker_id, maestro_email, maestro_broker_token, maestro_refresh_token, maestro_token_expires_at, maestro_last_sync_at, maestro_connected")
+      .select("id, user_id, maestro_broker_id, maestro_email, maestro_broker_token, maestro_token_expires_at, maestro_last_sync_at, maestro_connected")
       .or(`user_id.eq.${userId},id.eq.${userId}`)
       .limit(2);
     const prof = ((profRows ?? []) as any[]).find((r) => r.user_id === userId) ?? (profRows ?? [])[0] ?? null;
@@ -49,28 +49,19 @@ Deno.serve(async (req) => {
     const brokerIdStr = rawBrokerId !== null && rawBrokerId !== undefined ? String(rawBrokerId).trim() : "";
     maestroBrokerId = /^\d+$/.test(brokerIdStr) && Number(brokerIdStr) > 0 ? brokerIdStr : null;
     maestroEmail = (prof as any)?.maestro_email ?? null;
-    if (maestroBrokerId || prof?.maestro_broker_token || (prof as any)?.maestro_connected) {
+    const validToken = prof?.maestro_broker_token
+      ? await getUserMaestroAccessToken(admin, userId)
+      : null;
+    if (validToken) {
+      status = "connected";
       lastConnectedAt = (prof as any).maestro_last_sync_at ?? null;
       const expAt = (prof as any).maestro_token_expires_at ? Date.parse((prof as any).maestro_token_expires_at) : 0;
       expiresIn = expAt ? Math.max(0, Math.floor((expAt - Date.now()) / 1000)) : null;
-      // A stored broker id proves the account was linked once — it does NOT prove the
-      // access token is still usable. Reporting "connected" on a dead token made the
-      // UI hide the relink button while every maestro-telecom call returned
-      // 401 "access token is invalid or expired". Surface the expiry explicitly so the
-      // app can offer reconnection.
-      const tokenExpired = expAt > 0 && expAt - Date.now() <= 0;
-      const canRefresh = !!(prof as any)?.maestro_refresh_token;
-      if (tokenExpired && !canRefresh) {
-        status = "error";
-        authReason = "token_expired";
-      } else {
-        status = "connected";
-        if (tokenExpired) authReason = "token_expired_refreshable";
-      }
+
     } else if (!prof) {
       authReason = "no_profile_row";
     } else {
-      authReason = "no_token";
+      authReason = maestroBrokerId ? "oauth_expired_reconnect_required" : "no_token";
     }
 
   }

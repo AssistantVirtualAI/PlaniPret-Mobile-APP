@@ -5,6 +5,7 @@ import { Loader2, PlugZap, Wifi, WifiOff, AlertTriangle, CheckCircle2, Zap, Refr
 import { toast } from "sonner";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { PP_SIP_CORE_PRIMARY } from "@/lib/planipret/sip/sipEdgePolicy";
+import CallDoctorCard from "@/components/planipret/admin/CallDoctorCard";
 
 const DICT = {
   fr: {
@@ -249,6 +250,8 @@ export default function PASipDiagnostic() {
           </button>
         </div>
       </div>
+
+      <CallDoctorCard />
 
 
       {/* Status card */}

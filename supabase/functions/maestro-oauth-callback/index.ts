@@ -99,16 +99,7 @@ Deno.serve(async (req) => {
     // in planipret_integration_secrets so nothing is lost.
     if (userId) {
       const isMobile = !!storedCodeVerifier;
-      // persistTokenSet now reports whether a row was actually written. A silent
-      // no-op here left the broker permanently "expired" in the diagnostics while
-      // the OAuth dance appeared to succeed.
-      const stored = await persistTokenSet(admin, userId, exch.data, isMobile);
-      if (!stored) {
-        console.error(
-          "[maestro-oauth-callback] token NOT persisted for", userId,
-          "— no planipret_profiles row matched user_id or id",
-        );
-      }
+      await persistTokenSet(admin, userId, exch.data, isMobile);
 
       // Best-effort: hydrate maestro_broker_id + maestro_email from /users/me
       const me = await fetchMaestroUserProfile(env, exch.data.access_token);
@@ -120,20 +111,7 @@ Deno.serve(async (req) => {
         if (mid) patch.maestro_broker_id = String(mid);
         if (email) patch.maestro_email = email;
         if (Object.keys(patch).length) {
-          // Match on user_id OR id, like every read in _shared/maestro-oauth.ts:
-          // filtering on user_id alone silently wrote to zero rows whenever the
-          // profile was keyed by id.
-          const { data: patched, error: patchErr } = await admin
-            .from("planipret_profiles")
-            .update(patch)
-            .or(`user_id.eq.${userId},id.eq.${userId}`)
-            .select("id");
-          if (patchErr || !patched?.length) {
-            console.error(
-              "[maestro-oauth-callback] broker id/email patch matched no row for", userId,
-              patchErr?.message ?? "",
-            );
-          }
+          await admin.from("planipret_profiles").update(patch).eq("user_id", userId);
         }
         // Names are intentionally NOT copied: Maestro's first_name/last_name can be
         // stale on shared/test accounts. Log a mismatch so it can be fixed upstream.

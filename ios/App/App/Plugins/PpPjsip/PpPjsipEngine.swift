@@ -33,7 +33,7 @@ private func ppPjsipLogWriter(_ level: Int32, _ data: UnsafePointer<CChar>?, _ l
 
 private func ppPjsipOnRegState2(_ accId: pjsua_acc_id, _ info: UnsafeMutablePointer<pjsua_reg_info>?) {
     guard let info = info, let rdata = info.pointee.cbparam else { return }
-    let code = Int(rdata.pointee.code)
+    let code = Int(rdata.pointee.code.rawValue)
     let reason = ppPjStr(rdata.pointee.reason)
     NSLog("[PpPjsip] REGISTER response acc=%d code=%d reason=%@", accId, code, reason)
     PjsipEngine.shared.handleRegState(accId: accId, code: code, reason: reason)
@@ -257,7 +257,7 @@ final class PjsipEngine {
         // Un seul `+sip.instance` : on laisse RFC5626 le générer avec NOTRE
         // UUID stable au lieu d'ajouter un second param manuel (pjsua émettait
         // sinon un doublon dont un UUID à zéros).
-        acc.use_rfc5626 = UInt32(1)
+        acc.use_rfc5626 = pj_bool_t(1)
         acc.rfc5626_instance_id = ppMakePjStr(instanceId, keep: &strings)
 
 
@@ -691,7 +691,7 @@ final class PjsipEngine {
         acc.proxy.0 = ppMakePjStr("sip:\(server):\(port);transport=tls;lr", keep: &strings)
         acc.reg_timeout = 300
         acc.register_on_acc_add = pj_bool_t(1)
-        acc.use_rfc5626 = UInt32(1)
+        acc.use_rfc5626 = pj_bool_t(1)
         acc.rfc5626_instance_id = ppMakePjStr(instanceId, keep: &strings)
 
         NSLog("[PpPjsip] PROBE REGISTER → sip:%@:%d TLS aor=sip:%@@%@", server, Int32(port), probeUser, domain)
@@ -790,7 +790,7 @@ final class PjsipEngine {
         let count = max(1, MemoryLayout<pj_thread_desc>.size / MemoryLayout<Int>.size)
         let desc = UnsafeMutablePointer<Int>.allocate(capacity: count)
         desc.initialize(repeating: 0, count: count)
-        var handle: OpaquePointer?
+        var handle: UnsafeMutablePointer<pj_thread_t>?
         let status = pj_thread_register("pp-gcd", desc, &handle)
         NSLog("[PpPjsip] pj_thread_register status=%d", status)
         lock.lock()
@@ -807,7 +807,7 @@ final class PjsipEngine {
             work()
         }
         lock.unlock()
-        ppPjsipEnterContext(nil)
+        pjsua_schedule_timer2(ppPjsipEnterContext, nil, 0)
     }
 
 
@@ -836,7 +836,7 @@ final class PjsipEngine {
               sslBackendPresent ? "OUI" : "NON", count, cipherStatus)
         NSLog("[PpPjsip]   TLS est le SEUL transport natif possible — PJSIP n'a pas de transport SIP/WebSocket.")
 
-        if status == pj_status_t(220003) || !sslBackendPresent {
+        if status == pj_status_t(PJSIP_EUNSUPTRANSPORT.rawValue) || !sslBackendPresent {
             NSLog("[PpPjsip] 🔎 CAUSE : PJSIP_EUNSUPTRANSPORT — libpjsip.xcframework construit SANS OpenSSL.")
             NSLog("[PpPjsip]    CORRECTIF : bash scripts/build-pjsip-ios.sh puis npx cap sync ios")
         } else {

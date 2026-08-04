@@ -108,12 +108,10 @@ Deno.serve(async (req) => {
   }
 
   // 3) Devices / registrations
-  // NS-API v2 has NO /registrations resource, and /subscriptions is SIP SUBSCRIBE
-  // (presence), not REGISTER (docs/netsapiens/registrations.md). Registration
-  // state lives on the Device object itself, so all the probes below 404'd and
-  // this diagnostic reported "no active registration" for a registered extension.
+  // NS-API v2 has NO /registrations resource and /subscriptions is SIP
+  // SUBSCRIBE (presence), not REGISTER (docs/netsapiens/registrations.md).
+  // Registration state lives on the Device object itself.
   const devices = await get(`/domains/${d}/users/${e}/devices`);
-  const regProbes = [{ path: devices.path, status: devices.status, ok: devices.ok, data: devices.data }];
   const registrations = {
     path: `/domains/${d}/users/${e}/devices`,
     status: devices.status,
@@ -209,14 +207,13 @@ Deno.serve(async (req) => {
   const ruleFwdAlways = yes(activeRule?.["forward-always"]?.enabled) || yes(activeRule?.["forward-always-enabled"]);
   if (ruleFwdAlways) { verdicts.push("RULE_FORWARD_ALWAYS"); issues.push("La règle active a un renvoi permanent activé."); }
 
-  // devices — a device is registered ONLY when NetSapiens says so.
-  // The previous heuristic accepted `device-sip-registration-uri` as proof, but
-  // that field is `sip:[device]@[domain]` (devices.md l.27) - a static string
-  // present on EVERY device, registered or not. It therefore reported every
-  // unregistered mobile as registered, hiding the real cause of missed calls.
+  // devices — a device is registered ONLY when NS says so
+  // (`device-sip-registration-state == "registered"` AND the expiry is in the
+  // future). The old heuristic treated `device-sip-registration-uri` — a field
+  // always present on every device — as proof of registration, so this
+  // diagnostic reported unregistered mobiles as registered.
   const deviceList = arrOf(devices.data).filter((x) => x && typeof x === "object");
   const registeredAors = new Set<string>();
-  let coreServerFor113M: string | null = null;
   for (const r of deviceList) {
     const aor = String(
       r?.["device"] ?? r?.aor ?? r?.["aor-user"] ?? r?.name ?? "",
@@ -224,28 +221,15 @@ Deno.serve(async (req) => {
     const state = String(
       r?.["device-sip-registration-state"] ?? r?.["registration-status"] ?? r?.status ?? "",
     ).toLowerCase();
-    // Expiry must be in the future when present; the field is nullable and can
-    // lag for replication, so absence is not disqualifying.
     const expRaw = r?.["device-sip-registration-expires-datetime"];
-    const expT = expRaw ? Date.parse(String(expRaw).replace(" ", "T")) : NaN;
-    const expOk = !expRaw || !Number.isFinite(expT) || expT > Date.now();
-    if (aor && state === "registered" && expOk) {
-      registeredAors.add(aor.toLowerCase());
-      if (aor.toLowerCase().split("@")[0] === `${ext.toLowerCase()}m`) {
-        coreServerFor113M = String(r?.["device-sip-registration-core-server"] ?? "") || null;
-      }
-    }
+    const expTs = expRaw ? Date.parse(String(expRaw).replace(" ", "T")) : NaN;
+    const notExpired = !Number.isFinite(expTs) || expTs > Date.now();
+    if (aor && state === "registered" && notExpired) registeredAors.add(aor.toLowerCase());
   }
 
   if (!registeredAors.size) {
     verdicts.push("NO_REGISTRATION_VISIBLE");
-    issues.push("NS-API ne montre aucun device enregistré pour cette extension (device-sip-registration-state).");
-  }
-  // The core node that accepted the REGISTER is the one that routes the inbound
-  // INVITE (devices.md l.35). Registered on a non-core node = never rings.
-  if (coreServerFor113M && !/^core\d+\./i.test(coreServerFor113M)) {
-    verdicts.push("REGISTERED_ON_NON_CORE_SERVER");
-    issues.push(`${ext}M est enregistré sur ${coreServerFor113M}, pas sur un noeud core: NS ne peut pas y router l'INVITE.`);
+    issues.push("NS-API ne montre aucune registration active pour cette extension (endpoint devices/subscriptions).");
   }
   const mobileAor = `${ext.toLowerCase()}m`;
   const legacyMobileAor = `${ext.toLowerCase()}_mobile`;

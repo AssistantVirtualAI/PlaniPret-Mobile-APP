@@ -115,51 +115,12 @@ export async function refreshAccessToken(
   return exchangeWeb(env, { grant_type: "refresh_token", refresh_token: refreshToken });
 }
 
-/**
- * Apply a patch to the broker profile using the SAME matching rule as the reads
- * below (`user_id` OR `id`).
- *
- * This asymmetry was a silent data-loss bug: reads accepted a profile found by
- * either column, while writes filtered on `user_id` only. When a profile row was
- * matched by `id` (because `user_id` was null or different), the refreshed token
- * was written to ZERO rows - and an UPDATE matching nothing is a SQL success, so
- * nothing was logged. Every call refreshed the token successfully and then threw
- * it away, leaving `maestro_token_expires_at` permanently in the past while the
- * diagnostics reported "Jeton expiré".
- *
- * Returns the number of rows actually written so callers can detect the failure.
- */
-async function patchProfile(
-  admin: SupabaseClient,
-  userId: string,
-  patch: Record<string, unknown>,
-  context: string,
-): Promise<number> {
-  const { data, error } = await admin
-    .from("planipret_profiles")
-    .update(patch)
-    .or(`user_id.eq.${userId},id.eq.${userId}`)
-    .select("id");
-  if (error) {
-    console.error(`[maestro-oauth] ${context}: update failed`, error.message);
-    return 0;
-  }
-  const rows = Array.isArray(data) ? data.length : 0;
-  if (rows === 0) {
-    console.error(
-      `[maestro-oauth] ${context}: update matched NO row for ${userId} — ` +
-      "token not persisted, check planipret_profiles.user_id/id",
-    );
-  }
-  return rows;
-}
-
 export async function persistTokenSet(
   admin: SupabaseClient,
   userId: string,
   tokens: MaestroTokenSet,
   isMobile = false,
-): Promise<boolean> {
+) {
   const expiresAt = tokens.expires_in
     ? new Date(Date.now() + (tokens.expires_in as number) * 1000).toISOString()
     : null;
@@ -172,151 +133,77 @@ export async function persistTokenSet(
   };
   if (tokens.refresh_token) patch.maestro_refresh_token = tokens.refresh_token;
   if (tokens.scope) patch.maestro_scope = tokens.scope;
-  return (await patchProfile(admin, userId, patch, "persistTokenSet")) > 0;
+  await updateProfileByEitherKey(admin, userId, patch, "persistTokenSet");
 }
 
 /**
- * Refresh the access token unconditionally, ignoring `maestro_token_expires_at`.
- * Needed because Maestro can revoke a token before its recorded expiry (and the
- * column itself can be stale), which produced 401s while the app still believed
- * the token was fresh. Returns the new access token, or null when no refresh is
- * possible — in which case the user must relink via `maestro-oauth-start`.
+ * Reads match on `user_id` OR `id`; writes MUST use the same key resolution.
+ * Filtering writes on `user_id` only silently updated zero rows when the
+ * profile row is keyed by `id`, so every refreshed token was thrown away and
+ * `maestro_token_expires_at` stayed permanently in the past.
  */
-export async function forceRefreshMaestroToken(
+async function updateProfileByEitherKey(
+  admin: SupabaseClient,
+  userId: string,
+  patch: Record<string, unknown>,
+  label: string,
+): Promise<boolean> {
+  const { data, error } = await admin
+    .from("planipret_profiles")
+    .update(patch)
+    .or(`user_id.eq.${userId},id.eq.${userId}`)
+    .select("id");
+  if (error) {
+    console.error(`[maestro-oauth] ${label} update failed`, error.message);
+    return false;
+  }
+  if (!data || data.length === 0) {
+    console.error(`[maestro-oauth] ${label} matched ZERO profile rows`, { userId });
+    return false;
+  }
+  return true;
+}
+
+export async function getUserMaestroAccessToken(
   admin: SupabaseClient,
   userId: string,
 ): Promise<string | null> {
-  const { data: prof } = await admin
-    .from("planipret_profiles")
-    .select("maestro_refresh_token, maestro_oauth_client")
-    .or(`user_id.eq.${userId},id.eq.${userId}`)
-    .maybeSingle();
-  const refreshToken = (prof as any)?.maestro_refresh_token as string | undefined;
-  if (!refreshToken) {
-    console.warn("[maestro-oauth] force refresh impossible: no refresh_token stored");
-    return null;
-  }
-  const env = getMaestroOAuthEnv();
-  if (!isMaestroOAuthConfigured(env)) {
-    console.warn("[maestro-oauth] force refresh impossible: OAuth env not configured");
-    return null;
-  }
-  const isMobile = (prof as any)?.maestro_oauth_client === "mobile";
-  const refreshed = await refreshAccessToken(env, refreshToken, isMobile);
-  if (!refreshed.ok || !refreshed.data?.access_token) {
-    console.warn("[maestro-oauth] force refresh failed", refreshed.status, refreshed.error);
-    // The refresh token itself is dead: clear the connected flag so the UI stops
-    // claiming "connected" and can surface the relink button.
-    await patchProfile(
-      admin,
-      userId,
-      { maestro_connected: false, maestro_token_expires_at: new Date(0).toISOString() },
-      "forceRefresh/disconnect",
-    );
-    return null;
-  }
-  await persistTokenSet(admin, userId, refreshed.data, isMobile);
-  console.info("[maestro-oauth] force refresh succeeded");
-  return refreshed.data.access_token as string;
-}
-
-/** Why a token is (or is not) usable. Lets callers report an accurate reason
- *  instead of collapsing every failure mode into "Jeton expiré". */
-export type MaestroTokenReason =
-  | "fresh"              // stored token still valid
-  | "refreshed"          // refreshed and persisted successfully
-  | "refresh_not_persisted" // refreshed but the DB write matched no row
-  | "stale_no_refresh_token"
-  | "stale_oauth_not_configured"
-  | "refresh_rejected"   // Maestro refused the refresh token
-  | "no_profile"
-  | "no_token";
-
-export interface MaestroTokenResult {
-  token: string | null;
-  /** True only when the token is known to be currently valid. */
-  healthy: boolean;
-  reason: MaestroTokenReason;
-  expiresAt: string | null;
-}
-
-/**
- * Resolve the broker access token AND say how trustworthy it is.
- *
- * `getUserMaestroAccessToken` below returns the stored token as a last resort in
- * several failure modes, so a truthy return never meant "valid". Callers that
- * displayed health based on it (pp-ava-e2e-check, pp-connections-status) could
- * only ever report "Jeton expiré" when the column was empty - never when the
- * token was actually rejected. Use this function for any health reporting.
- */
-export async function resolveMaestroAccessToken(
-  admin: SupabaseClient,
-  userId: string,
-): Promise<MaestroTokenResult> {
   const { data: prof } = await admin
     .from("planipret_profiles")
     .select("maestro_broker_token, maestro_refresh_token, maestro_token_expires_at, maestro_oauth_client")
     .or(`user_id.eq.${userId},id.eq.${userId}`)
     .maybeSingle();
-  if (!prof) return { token: null, healthy: false, reason: "no_profile", expiresAt: null };
+  if (!prof?.maestro_broker_token) return null;
 
-  const expiresAt = (prof.maestro_token_expires_at as string | null) ?? null;
-  const stored = (prof.maestro_broker_token as string | null) ?? null;
-  if (!stored) return { token: null, healthy: false, reason: "no_token", expiresAt };
+  // Maestro (Laravel Passport) can issue non-expiring tokens: the token
+  // endpoint then returns no `expires_in` and we store NULL. NULL means
+  // "no expiry", NOT "expired" — never force a refresh in that case.
+  const rawExp = prof.maestro_token_expires_at as string | null;
+  if (!rawExp) return prof.maestro_broker_token as string;
 
-  // Maestro (Laravel Passport) can issue non-expiring tokens: the token endpoint
-  // then returns no `expires_in` and persistTokenSet stores NULL. NULL means "no
-  // expiry", NOT "expired". Treating it as expired forced a refresh on EVERY
-  // call, and a rejected refresh flipped maestro_connected to false - surfacing
-  // as "Jeton expiré" in the AVA diagnostic while no token had actually expired.
-  if (!expiresAt) {
-    return { token: stored, healthy: true, reason: "no_expiry", expiresAt: null };
-  }
-  const expAt = Date.parse(expiresAt);
-  if (!Number.isFinite(expAt)) {
-    // Unparsable date is a storage artefact, not proof of expiry.
-    return { token: stored, healthy: true, reason: "expiry_unparsable", expiresAt };
-  }
-  if (expAt - Date.now() > 60_000) {
-    return { token: stored, healthy: true, reason: "fresh", expiresAt };
-  }
+  const expAt = Date.parse(rawExp);
+  if (!Number.isFinite(expAt)) return prof.maestro_broker_token as string;
+  const stillFresh = expAt - Date.now() > 60_000;
+  if (stillFresh) return prof.maestro_broker_token as string;
 
-  if (!prof.maestro_refresh_token) {
-    return { token: stored, healthy: false, reason: "stale_no_refresh_token", expiresAt };
-  }
+  // Never return a token that is known to be expired. Doing so made callers
+  // repeatedly POST with the stale bearer while the UI still said connected.
+  if (!prof.maestro_refresh_token) return expAt > Date.now() ? prof.maestro_broker_token as string : null;
   const env = getMaestroOAuthEnv();
-  if (!isMaestroOAuthConfigured(env)) {
-    return { token: stored, healthy: false, reason: "stale_oauth_not_configured", expiresAt };
-  }
+  if (!isMaestroOAuthConfigured(env)) return null;
 
   const isMobile = (prof as any).maestro_oauth_client === "mobile";
   const refreshed = await refreshAccessToken(env, prof.maestro_refresh_token as string, isMobile);
-  if (!refreshed.ok || !refreshed.data?.access_token) {
+  if (!refreshed.ok || !refreshed.data) {
     console.warn("[maestro-oauth] refresh failed", refreshed.status, refreshed.error);
-    return { token: stored, healthy: false, reason: "refresh_rejected", expiresAt };
+    await updateProfileByEitherKey(admin, userId, {
+      maestro_connected: false,
+      maestro_broker_token: null,
+    }, "refresh-failure");
+    return null;
   }
-
-  const persisted = await persistTokenSet(admin, userId, refreshed.data, isMobile);
-  const newToken = refreshed.data.access_token as string;
-  // The token itself is valid even when the DB write failed, but the caller must
-  // know: on the next request the stale row will trigger another refresh.
-  return persisted
-    ? { token: newToken, healthy: true, reason: "refreshed", expiresAt }
-    : { token: newToken, healthy: false, reason: "refresh_not_persisted", expiresAt };
-}
-
-/**
- * Backwards-compatible wrapper: returns a token to use for an API call.
- *
- * Do NOT use the truthiness of this result to report connection health - it
- * deliberately falls back to the stored token so an in-flight request still has
- * something to send. Use `resolveMaestroAccessToken` for health.
- */
-export async function getUserMaestroAccessToken(
-  admin: SupabaseClient,
-  userId: string,
-): Promise<string | null> {
-  return (await resolveMaestroAccessToken(admin, userId)).token;
+  await persistTokenSet(admin, userId, refreshed.data, isMobile);
+  return refreshed.data.access_token;
 }
 
 export async function fetchMaestroUserProfile(env: MaestroOAuthEnv, accessToken: string) {

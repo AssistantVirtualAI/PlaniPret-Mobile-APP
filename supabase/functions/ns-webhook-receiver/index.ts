@@ -1,12 +1,24 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
-import {
-  normalizeNsEvents, nsCallKey, shouldProcessCall, nsPickCallerField, nsCallerNumber,
-} from "../_shared/ns-call-events.ts";
+import { normalizeNsEvents, nsCallKey, shouldProcessCall } from "../_shared/ns-call-events.ts";
 import { parseServiceAccount, sendFcmDataMessage } from "../_shared/fcm.ts";
 
 
 declare const EdgeRuntime: { waitUntil: (p: Promise<unknown>) => void };
+
+/** NetSapiens n'envoie pas toujours `from_number` : le numero appelant peut
+ *  arriver sous forme d'URI SIP (`orig_from_uri`) ou de champs ANI. Sans lui,
+ *  CallKit affiche "Numero indisponible". */
+function extractCaller(data: any): string {
+  const raw = data?.from_number ?? data?.caller_number ?? data?.ani ?? data?.orig_from_user
+    ?? data?.from_user ?? data?.remote_party ?? data?.from ?? data?.orig_from_uri
+    ?? data?.["orig-from-uri"] ?? data?.from_uri ?? "";
+  const str = String(raw || "").trim();
+  if (!str) return "";
+  const m = str.match(/sip:([^@;>\s]+)/i);
+  const user = (m ? m[1] : str).replace(/^<|>$/g, "").trim();
+  return /^\+?[0-9*#]{2,}$/.test(user) ? user : user;
+}
 
 const ok = () => new Response(JSON.stringify({ received: true }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
@@ -113,7 +125,7 @@ async function processEvent(event: any) {
       method: "POST",
       headers: { Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`, "Content-Type": "application/json" },
       body: JSON.stringify({ user_id: uid, ...payload }),
-    }).catch(() => {});
+    }).catch((e) => console.warn("[ns-webhook-receiver] sendPush failed", e));
   };
 
   const sendVoipPush = async (uid: string, payload: any) => {
@@ -277,8 +289,7 @@ async function processEvent(event: any) {
         ns_orig_callid: data["call-orig-call-id"] ?? data["orig-callid"] ?? data["orig-call-id"] ?? null,
         ns_term_callid: data["call-term-call-id"] ?? data["term-callid"] ?? data["term-call-id"] ?? null,
         direction: data.direction ?? null,
-        // Balayage large : certains CDR ne portent que `orig_from_uri` ou `ani`.
-        from_number: nsCallerNumber(nsPickCallerField(data)) ?? nsPickCallerField(data) ?? null,
+        from_number: data.from_number ?? data.caller_number ?? data.from ?? null,
         to_number: data.to_number ?? data.callee_number ?? data.to ?? null,
         duration_seconds: data.duration ?? data.duration_seconds ?? null,
         recording_url: recUrl,
@@ -311,9 +322,7 @@ async function processEvent(event: any) {
     const dndActive = isDndActive(brokerProfile);
     await admin.from("planipret_phone_calls").insert({
       user_id: userId, ns_call_id: callId ? String(callId) : null, direction: "inbound",
-      // E.164 quand disponible ; sinon la valeur brute NS, pour ne jamais perdre
-      // l'information dans le journal d'appels.
-      from_number: data.from_number ?? data.from_number_raw ?? data.from ?? null,
+      from_number: extractCaller(data) || null,
       to_number: data.to_number ?? data.to ?? null,
       status: dndActive ? "voicemail" : "inbound_ringing",
       metadata: dndActive ? { dnd_auto_voicemail: true, dnd_message: brokerProfile?.dnd_message_fr } : null,
@@ -321,40 +330,19 @@ async function processEvent(event: any) {
     if (userId && !dndActive) {
       await admin.channel(`call-events:${userId}`).send({
         type: "broadcast", event: "inbound_call",
-        payload: {
-          type: "inbound_call",
-          call_id: callId,
-          from_number: data.from_number ?? data.from_number_raw ?? data.from,
-          caller_anonymous: data.caller_anonymous === true,
-          to_number: data.to_number ?? data.to,
-        },
+        payload: { type: "inbound_call", call_id: callId, from_number: extractCaller(data), to_number: data.to_number ?? data.to },
       });
       if (brokerProfile?.notif_calls !== false) {
         const inboundCallId = callId ? String(callId) : crypto.randomUUID();
-        // « numéro indisponible » sur l'écran CallKit venait d'ici : on envoyait
-        // la valeur brute de NetSapiens dans `callerNumber`. iOS construit alors
-        // un CXHandle(.phoneNumber) avec une chaîne non composable
-        // (« anonymous », numéro sans « + », etc.) et le rejette silencieusement.
-        //
-        // `mapCall` normalise désormais `from_number` en E.164 et met
-        // `caller_anonymous = true` quand l'appelant est masqué. Le payload ne
-        // transporte donc plus qu'un numéro réellement composable — ou rien,
-        // auquel cas la couche native choisit un handle `.generic`.
-        const anonymous = data.caller_anonymous === true;
-        const dialable = anonymous ? "" : String(data.from_number ?? "");
-        const displayName = data.from_name ?? data.caller_name
-          ?? (anonymous ? "Appel masqué" : (dialable || "Appel entrant"));
+        const callerNum = extractCaller(data);
         const inboundPushPayload = {
           call_id: inboundCallId,
           callId: inboundCallId,
-          from_number: dialable || (anonymous ? "anonymous" : ""),
-          callerName: displayName,
-          // Vide si non composable : c'est le signal attendu par PpVoipCall.swift
-          // pour basculer sur CXHandle(type: .generic).
-          callerNumber: dialable,
-          callerAnonymous: anonymous,
-          from: dialable || (anonymous ? "anonymous" : ""),
-          from_user: dialable,
+          from_number: callerNum || "Inconnu",
+          callerName: data.from_name ?? data.caller_name ?? callerNum ?? "Appel entrant",
+          callerNumber: callerNum,
+          from: callerNum || "Inconnu",
+          from_user: callerNum,
           to_number: data.to_number ?? data.to ?? ext,
           type: "incoming_call",
         };
@@ -362,7 +350,7 @@ async function processEvent(event: any) {
         await sendAndroidCallPush(userId, inboundPushPayload);
         sendPush(userId, {
           title: "📞 Appel entrant",
-          body: displayName,
+          body: data.from_number ?? data.from ?? "Inconnu",
           data: { url: "/mplanipret/calls", call_id: callId },
           actions: [{ action: "answer", title: "Répondre" }],
         });
@@ -370,11 +358,7 @@ async function processEvent(event: any) {
     } else if (userId && dndActive) {
       await admin.channel(`call-events:${userId}`).send({
         type: "broadcast", event: "dnd_auto_handled",
-        payload: {
-          call_id: callId,
-          from_number: data.from_number ?? data.from_number_raw ?? (nsPickCallerField(data) || null),
-          message: brokerProfile?.dnd_message_fr,
-        },
+        payload: { call_id: callId, from_number: data.from_number ?? data.from, message: brokerProfile?.dnd_message_fr },
       });
     }
   } else if (type === "message.inbound") {

@@ -9,6 +9,7 @@ import {
   preclaimNativeAor,
   releaseAorFromNative,
 } from "./aorArbitration";
+import { pinnedCoreHost } from "./sipEdgePolicy";
 
 
 
@@ -149,7 +150,10 @@ export class NativeSipService {
     armAorWatchdog(() => this.registered);
 
     const { data, error } = await supabase.functions.invoke("ns-resolve-sip-credentials", {
-      body: { client_type: "mobile" },
+      // `transport: "tls"` aligns the NS Device object on TLS 5061 — ONE
+      // transport per AOR. Without it the PBX still advertises WSS for `<ext>M`
+      // and never forks inbound calls to the native TLS contact.
+      body: { client_type: "mobile", transport: "tls" },
     });
 
     const creds = (data ?? {}) as Record<string, string>;
@@ -166,7 +170,14 @@ export class NativeSipService {
     this.username = username;
     this.extension = String(creds.sip_extension ?? aorExtension(username));
 
-    const proxy = String(creds.sip_proxy ?? creds.sip_core_server ?? "");
+    // Same single-core invariant as the WSS path: NS sometimes reports the
+    // portal host in `core-server`; a registration held by the portal is never
+    // used for inbound delivery (calls go straight to voicemail).
+    const rawProxy = String(creds.sip_proxy ?? creds.sip_core_server ?? "");
+    const proxy = pinnedCoreHost(rawProxy);
+    if (rawProxy && !rawProxy.includes(proxy)) {
+      console.warn("[SIP] core-server", rawProxy, "rejeté (portail/non-core) → épinglé", proxy);
+    }
     const transport = "TLS" as const;
     const port = 5061;
 
