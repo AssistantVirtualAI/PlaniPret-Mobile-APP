@@ -26,9 +26,12 @@ interface PpPjsipPlugin {
     port: number;
     transport: "TLS";
   }): Promise<{ ok: boolean; code: number; reason: string; transport: string; elapsedMs: number }>;
+  getState(): Promise<{ available?: boolean; registered?: boolean; username?: string }>;
+  isEngineLinked(): Promise<{ linked: boolean }>;
 }
 
 const PpPjsip = registerPlugin<PpPjsipPlugin>("PpPjsip");
+
 
 export type PjsipProbeResult = {
   ok: boolean;
@@ -47,8 +50,36 @@ export async function runPjsipRegisterProbe(): Promise<PjsipProbeResult> {
     return { ok: false, reason: "plugin_missing — PpPjsip absent du build (npx cap sync ios)" };
   }
 
+  // 1. Le binaire pjsua est-il réellement lié ? C'est la vraie question du
+  //    diagnostic — un REGISTER de test ne l'est pas.
+  try {
+    const linked = await PpPjsip.isEngineLinked();
+    if (!linked?.linked) {
+      return { ok: false, reason: "engine_not_linked — libpjsip.xcframework absent du binaire" };
+    }
+  } catch { /* plugin plus ancien : on continue */ }
+
+  // 2. Si la registration native de PRODUCTION est déjà active, on la rapporte
+  //    telle quelle. Enregistrer une seconde AOR ici (ancien `<ext>PROBE`)
+  //    renvoyait un 403 attendu de NetSapiens, présenté à tort comme une panne,
+  //    ce qui poussait à couper PJSIP et à rebasculer le device en WSS.
+  try {
+    const state = await PpPjsip.getState();
+    if (state?.registered) {
+      const user = state.username || "";
+      return {
+        ok: true,
+        code: 200,
+        reason: "registration native active — REGISTER TLS 5061 en cours",
+        transport: "TLS",
+        elapsedMs: 0,
+        aor: user ? `sip:${user}` : undefined,
+      };
+    }
+  } catch { /* getState indisponible : on tente le REGISTER de test */ }
+
   const { data, error } = await supabase.functions.invoke("ns-resolve-sip-credentials", {
-    body: { client_type: "mobile" },
+    body: { client_type: "mobile", transport: "tls" },
   });
   if (error) return { ok: false, reason: `credentials_error — ${error.message}` };
 
@@ -61,7 +92,8 @@ export async function runPjsipRegisterProbe(): Promise<PjsipProbeResult> {
   }
 
   const server = creds.sip_core_server || creds.sip_proxy || PJSIP_PROBE_SERVER;
-  const aor = `sip:${username}PROBE@${domain}`;
+  // AOR RÉELLE : c'est la seule que NetSapiens accepte d'authentifier.
+  const aor = `sip:${username}@${domain}`;
   console.log(`[PpPjsipProbe] REGISTER TLS ${server}:${PJSIP_PROBE_PORT} aor=${aor}`);
 
   try {
@@ -74,6 +106,13 @@ export async function runPjsipRegisterProbe(): Promise<PjsipProbeResult> {
       transport: "TLS",
     });
     console.log("[PpPjsipProbe] result", res);
+    if (!res.ok && (res.code === 401 || res.code === 403)) {
+      return {
+        ...res,
+        aor,
+        reason: `identifiants refusés (SIP ${res.code}) — le moteur PJSIP et le transport TLS fonctionnent`,
+      };
+    }
     return { ...res, aor };
   } catch (e: any) {
     const reason = `${e?.code ? `${e.code} — ` : ""}${e?.message ?? String(e)}`;
@@ -81,3 +120,4 @@ export async function runPjsipRegisterProbe(): Promise<PjsipProbeResult> {
     return { ok: false, reason, aor };
   }
 }
+

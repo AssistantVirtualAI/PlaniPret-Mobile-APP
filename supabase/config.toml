@@ -203,3 +203,6 @@ verify_jwt = false
 
 [functions.pp-mobile-profile]
 verify_jwt = false
+
+[functions.pp-ns-upload-greeting]
+verify_jwt = true

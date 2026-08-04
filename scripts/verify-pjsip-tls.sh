@@ -72,15 +72,8 @@ green "  ✔ en-têtes TLS exportés"
 shopt -s nullglob
 logs=("$WORK"/configure-*.log)
 if [ ${#logs[@]} -gt 0 ]; then
-  # Compter les tranches réelles dans le xcframework
-  real_slices=$(find "$XCF" -name '*.a' -type f | wc -l | tr -d ' ')
   for log in "${logs[@]}"; do
     tag="$(basename "$log" .log)"; tag="${tag#configure-}"
-    # Si xcframework device-only (1 tranche) et log simulator → ignorer
-    if [ "$real_slices" -eq 1 ] && [ "$tag" = "simulator" ]; then
-      echo "  ⚠ configure-simulator.log ignoré (xcframework device-only à 1 tranche)"
-      continue
-    fi
     grep -q "OpenSSL library found, SSL support enabled" "$log" \
       || fail "configure-$tag.log ne contient pas « OpenSSL library found, SSL support enabled »"
     echo "  ✔ $tag : OpenSSL détecté par configure"

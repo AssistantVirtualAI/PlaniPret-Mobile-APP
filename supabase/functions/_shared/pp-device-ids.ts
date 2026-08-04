@@ -13,9 +13,11 @@
  */
 export const MOBILE_SUFFIX = "M";
 export const WEB_SUFFIX = "W";
+export const WIDGET_SUFFIX = "x";
 
 export const mobileDeviceId = (ext: string | number) => `${ext}${MOBILE_SUFFIX}`;
 export const webDeviceId = (ext: string | number) => `${ext}${WEB_SUFFIX}`;
+export const widgetDeviceId = (ext: string | number) => `${ext}${WIDGET_SUFFIX}`;
 
 export const legacyMobileDeviceId = (ext: string | number) => `${ext}_mobile`;
 export const legacyWebDeviceId = (ext: string | number) => `${ext}_web`;

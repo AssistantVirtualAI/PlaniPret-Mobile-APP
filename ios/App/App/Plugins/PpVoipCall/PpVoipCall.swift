@@ -36,6 +36,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     /// true quand l'appel CallKit courant est piloté par le moteur PJSIP natif
     /// (INVITE reçu en TLS 5061) et non plus par le chemin JsSIP/WebView.
     private var nativeEngineOwnsCall = false
+    private var pjsipObservers: [NSObjectProtocol] = []
 
     private func beginAnswerBackgroundTask() {
         endAnswerBackgroundTask()
@@ -80,7 +81,9 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     /// l'appel en premier, le chemin JsSIP n'est jamais sollicité.
     private func observePjsipEngine() {
         let nc = NotificationCenter.default
-        nc.addObserver(forName: Notification.Name("PpPjsipIncomingCall"), object: nil, queue: .main) { [weak self] note in
+        pjsipObservers.forEach { nc.removeObserver($0) }
+        pjsipObservers.removeAll()
+        pjsipObservers.append(nc.addObserver(forName: Notification.Name("PpPjsipIncomingCall"), object: nil, queue: .main) { [weak self] note in
             guard let self = self else { return }
             let info = note.userInfo as? [String: Any] ?? [:]
             self.reportNativeIncomingCall(
@@ -88,12 +91,12 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
                 callerName: (info["callerName"] as? String) ?? "Appel entrant",
                 callerNumber: (info["callerNumber"] as? String) ?? ""
             )
-        }
-        nc.addObserver(forName: Notification.Name("PpPjsipCallConnected"), object: nil, queue: .main) { [weak self] _ in
+        })
+        pjsipObservers.append(nc.addObserver(forName: Notification.Name("PpPjsipCallConnected"), object: nil, queue: .main) { [weak self] _ in
             guard let self = self, let uuid = self.activeCallUUID else { return }
             self.provider?.reportOutgoingCall(with: uuid, connectedAt: Date())
-        }
-        nc.addObserver(forName: Notification.Name("PpPjsipOutgoingCall"), object: nil, queue: .main) { [weak self] note in
+        })
+        pjsipObservers.append(nc.addObserver(forName: Notification.Name("PpPjsipOutgoingCall"), object: nil, queue: .main) { [weak self] note in
             guard let self = self else { return }
             let info = note.userInfo as? [String: Any] ?? [:]
             let callId = (info["callId"] as? String) ?? UUID().uuidString
@@ -110,12 +113,12 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
                     NotificationCenter.default.post(name: Notification.Name("PpPjsipEndRequested"), object: nil)
                 }
             }
-        }
-        nc.addObserver(forName: Notification.Name("PpPjsipOutgoingRinging"), object: nil, queue: .main) { [weak self] _ in
+        })
+        pjsipObservers.append(nc.addObserver(forName: Notification.Name("PpPjsipOutgoingRinging"), object: nil, queue: .main) { [weak self] _ in
             guard let self = self, let uuid = self.activeCallUUID else { return }
             self.provider?.reportOutgoingCall(with: uuid, startedConnectingAt: Date())
-        }
-        nc.addObserver(forName: Notification.Name("PpPjsipAnswerResult"), object: nil, queue: .main) { [weak self] note in
+        })
+        pjsipObservers.append(nc.addObserver(forName: Notification.Name("PpPjsipAnswerResult"), object: nil, queue: .main) { [weak self] note in
             guard let self = self, let pending = self.pendingAnswerAction else { return }
             let ok = (note.userInfo?["ok"] as? Bool) ?? false
             self.pendingAnswerAction = nil
@@ -123,8 +126,8 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             if ok { pending.fulfill() } else { pending.fail() }
             self.endAnswerBackgroundTask()
             NSLog("[PpVoipCall] native SIP answer %@", ok ? "confirmed" : "failed")
-        }
-        nc.addObserver(forName: Notification.Name("PpPjsipCallEnded"), object: nil, queue: .main) { [weak self] note in
+        })
+        pjsipObservers.append(nc.addObserver(forName: Notification.Name("PpPjsipCallEnded"), object: nil, queue: .main) { [weak self] note in
             guard let self = self, let uuid = self.activeCallUUID else { return }
             let code = (note.userInfo?["code"] as? Int) ?? 0
             let reason: CXCallEndedReason = (code == 486 || code == 603) ? .declinedElsewhere
@@ -134,7 +137,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             self.endAnswerBackgroundTask()
             self.activeCallUUID = nil; self.activeCallId = nil
             self.nativeEngineOwnsCall = false
-        }
+        })
     }
 
     private func reportNativeIncomingCall(callId: String, callerName: String, callerNumber: String) {
@@ -208,6 +211,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
 
 
     private func setupCallKit() {
+        guard provider == nil else { return }
         let cfg = CXProviderConfiguration(localizedName: "Planiprêt")
         cfg.supportsVideo = false
         cfg.maximumCallsPerCallGroup = 1

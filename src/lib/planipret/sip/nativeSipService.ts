@@ -5,7 +5,6 @@ import {
   armAorWatchdog,
   claimAorForNative,
   isPjsipEnabled,
-  nativeOwnsAor,
   normalizeMobileAor,
   preclaimNativeAor,
   releaseAorFromNative,
@@ -171,7 +170,6 @@ export class NativeSipService {
       this.setState("failed");
       return false;
     }
-
     // Diagnostic : le resolver DOIT renvoyer `tls`. S'il renvoie `wss`, le
     // device `<ext>M` reste en WSS 9002 côté PBX et les INVITE n'arrivent
     // jamais sur PJSIP. On force alors un realignement TLS explicite.
@@ -182,6 +180,7 @@ export class NativeSipService {
       );
       void this.forceDeviceTlsTransport({ sipPort: 5061, contact: creds.sip_tls_uri ?? "" }, true);
     }
+
 
     // Invariant : l'AOR mobile est TOUJOURS `<ext>M` (jamais `<ext>_mobile`).
     const username = normalizeMobileAor(String(creds.sip_username ?? creds.sip_extension ?? ""));
@@ -256,6 +255,7 @@ export class NativeSipService {
         name: err?.name ?? null,
         stack: String(err?.stack ?? "").split("\n").slice(0, 3).join(" | "),
       }));
+
       // QUELLE QUE SOIT la raison (binary_missing, timeout, exception), le
       // chemin legacy JsSIP doit reprendre la main immédiatement.
       releaseAorFromNative(code);
@@ -299,6 +299,7 @@ export class NativeSipService {
       console.warn("[SIP] reprovision TLS ignoré — contact/serveur vide", { contact, registrationServer });
       return;
     }
+
     // Idempotence : chaque reprovisioning provoque un cycle Expires:0 côté
     // NetSapiens, fenêtre pendant laquelle les appels partent en messagerie.
     // On ne réécrit que si le contact/port TLS a réellement changé.
@@ -318,6 +319,7 @@ export class NativeSipService {
           transport: "tls",
           sip_port: port,
           ...(contactUsable ? { contact } : {}),
+
           force: true,
           client_type: "mobile",
         },
@@ -389,11 +391,11 @@ export class NativeSipService {
         console.warn("[SIP] REGISTER natif en échec — propriété TLS conservée");
       }
       if (state === "registered") {
-        this.retryCount = 0;
         if (this.registrationRetryTimer) {
           clearTimeout(this.registrationRetryTimer);
           this.registrationRetryTimer = null;
         }
+        this.retryCount = 0;
         claimAorForNative(this.username, "native_registered");
         const waiters = this.registrationWaiters.splice(0);
         waiters.forEach((finish) => finish(true));

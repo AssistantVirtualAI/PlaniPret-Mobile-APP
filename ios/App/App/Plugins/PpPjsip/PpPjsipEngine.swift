@@ -15,6 +15,8 @@ extension Notification.Name {
     static let ppPjsipCallConnected = Notification.Name("PpPjsipCallConnected")
     /// CallKit demande de décrocher l'appel natif.
     static let ppPjsipAnswerRequested = Notification.Name("PpPjsipAnswerRequested")
+    /// Résultat réel de pjsua_call_answer; CallKit ne doit être validé qu'après.
+    static let ppPjsipAnswerResult = Notification.Name("PpPjsipAnswerResult")
     /// CallKit demande de raccrocher / refuser l'appel natif.
     static let ppPjsipEndRequested = Notification.Name("PpPjsipEndRequested")
     /// PJSIP a émis un INVITE sortant → CallKit doit présenter l'appel sortant
@@ -22,8 +24,6 @@ extension Notification.Name {
     static let ppPjsipOutgoingCall = Notification.Name("PpPjsipOutgoingCall")
     /// 180/183 reçu sur la jambe sortante → CallKit passe en "ringing".
     static let ppPjsipOutgoingRinging = Notification.Name("PpPjsipOutgoingRinging")
-    /// Résultat réel de pjsua_call_answer; CallKit ne doit être validé qu'après.
-    static let ppPjsipAnswerResult = Notification.Name("PpPjsipAnswerResult")
 }
 
 // MARK: - Callbacks C (état global : aucune capture possible)
@@ -35,7 +35,7 @@ private func ppPjsipLogWriter(_ level: Int32, _ data: UnsafePointer<CChar>?, _ l
 
 private func ppPjsipOnRegState2(_ accId: pjsua_acc_id, _ info: UnsafeMutablePointer<pjsua_reg_info>?) {
     guard let info = info, let rdata = info.pointee.cbparam else { return }
-    let code = Int(rdata.pointee.code)
+    let code = Int(rdata.pointee.code.rawValue)
     let reason = ppPjStr(rdata.pointee.reason)
     NSLog("[PpPjsip] REGISTER response acc=%d code=%d reason=%@", accId, code, reason)
     PjsipEngine.shared.handleRegState(accId: accId, code: code, reason: reason)
@@ -58,7 +58,7 @@ private func ppPjsipOnCallState(_ callId: pjsua_call_id, _ event: UnsafeMutableP
     PjsipEngine.shared.handleCallState(
         callId: callId,
         state: info.state,
-        lastCode: { var s = info.last_status; return Int(withUnsafeBytes(of: &s) { $0.load(as: Int32.self) }) }(),
+        lastCode: Int(info.last_status.rawValue),
         remoteUri: ppPjStr(info.remote_info)
     )
 }
@@ -118,9 +118,9 @@ final class PjsipEngine {
     private let lock = NSLock()
 
     private var started = false
-    private var scheduledWork: (() -> Void)?
     /// `pj_thread_register` n'est utilisable qu'après `pjsua_create()`.
     private var pjlibReady = false
+    private var scheduledWork: (() -> Void)?
     private var strings: [UnsafeMutablePointer<CChar>] = []
     private var pjThreadDescs: [UnsafeMutableRawPointer] = []
 
@@ -143,13 +143,13 @@ final class PjsipEngine {
     private var pendingAnswerCallId: String?
     private var pendingAnswerCompletions: [(Bool) -> Void] = []
 
+    /// Appel sortant en cours (piloté par CallKit côté PpVoipCall).
+    private var outgoingCall: pjsua_call_id = pjsua_call_id(-1)
     /// Armé AVANT `pjsua_call_make_call` : le callback d'état `CALLING` peut
     /// arriver avant que `outgoingCall` soit affecté, ce qui faisait annoncer
     /// `direction=in` sur un appel sortant (double écran d'appel côté JS).
     private var outgoingPending = false
 
-    /// Appel sortant en cours (piloté par CallKit côté PpVoipCall).
-    private var outgoingCall: pjsua_call_id = pjsua_call_id(-1)
     private var muted = false
     private var speakerOn = false
     private var audioSessionReady = false
@@ -240,7 +240,7 @@ final class PjsipEngine {
         // AOR — JsSIP doit céder (`pp:sip-native-owns-aor`), sinon NetSapiens
         // ferme la socket la plus ancienne (WSS 1001).
         if accId != pjsua_acc_id(-1) {
-            pjsua_acc_set_registration(accId, 0)
+            pjsua_acc_set_registration(accId, pj_bool_t(0))
             pjsua_acc_del(accId)
             accId = pjsua_acc_id(-1)
         }
@@ -262,20 +262,20 @@ final class PjsipEngine {
         acc.reg_timeout = 300
         acc.reg_retry_interval = 15
         acc.reg_first_retry_interval = 5
-        acc.register_on_acc_add = 1
-        acc.allow_contact_rewrite = 1
+        acc.register_on_acc_add = pj_bool_t(1)
+        acc.allow_contact_rewrite = pj_bool_t(1)
         acc.contact_rewrite_method = 2
         acc.use_srtp = PJMEDIA_SRTP_OPTIONAL
         acc.srtp_secure_signaling = 0
         // Un seul `+sip.instance` : on laisse RFC5626 le générer avec NOTRE
         // UUID stable au lieu d'ajouter un second param manuel (pjsua émettait
         // sinon un doublon dont un UUID à zéros).
-        acc.use_rfc5626 = 1
+        acc.use_rfc5626 = pj_bool_t(1)
         acc.rfc5626_instance_id = ppMakePjStr(instanceId, keep: &strings)
 
 
         NSLog("[PpPjsip] production REGISTER → sip:%@:%d TLS aor=sip:%@@%@", server, Int32(port), username, domain)
-        try check(pjsua_acc_add(&acc, 1, &accId), "pjsua_acc_add")
+        try check(pjsua_acc_add(&acc, pj_bool_t(1), &accId), "pjsua_acc_add")
     }
 
     /// UUID stable par installation : NetSapiens déduplique les contacts sur
@@ -293,7 +293,7 @@ final class PjsipEngine {
         thread.run { [weak self] in
             guard let self = self else { return }
             self.scheduleOnPjsipThread {
-                pjsua_acc_set_registration(self.accId, on ? 1 : 0)
+                pjsua_acc_set_registration(self.accId, pj_bool_t(on ? 1 : 0))
             }
         }
     }
@@ -584,6 +584,7 @@ final class PjsipEngine {
             NotificationCenter.default.post(name: .ppPjsipAnswerResult, object: nil, userInfo: ["ok": ok])
             pendingCompletions.forEach { $0(ok) }
         }
+
         // CallKit sonne à partir de l'INVITE natif — plus de dépendance JsSIP.
         NotificationCenter.default.post(
             name: .ppPjsipIncomingCall,
@@ -612,6 +613,7 @@ final class PjsipEngine {
             outgoingCall = callId
             outgoingPending = false
         }
+
         emit("callState", [
             "callId": String(callId),
             "state": label,
@@ -742,12 +744,12 @@ final class PjsipEngine {
         acc.proxy_cnt = 1
         acc.proxy.0 = ppMakePjStr("sip:\(server):\(port);transport=tls;lr", keep: &strings)
         acc.reg_timeout = 300
-        acc.register_on_acc_add = 1
-        acc.use_rfc5626 = 1
+        acc.register_on_acc_add = pj_bool_t(1)
+        acc.use_rfc5626 = pj_bool_t(1)
         acc.rfc5626_instance_id = ppMakePjStr(instanceId, keep: &strings)
 
         NSLog("[PpPjsip] PROBE REGISTER → sip:%@:%d TLS aor=sip:%@@%@", server, Int32(port), probeUser, domain)
-        try check(pjsua_acc_add(&acc, 1, &probeAccId), "pjsua_acc_add(probe)")
+        try check(pjsua_acc_add(&acc, pj_bool_t(1), &probeAccId), "pjsua_acc_add(probe)")
     }
 
     private func completeRegistrationProbe(code: Int, reason: String) {
@@ -843,7 +845,7 @@ final class PjsipEngine {
         let count = max(1, MemoryLayout<pj_thread_desc>.size / MemoryLayout<Int>.size)
         let desc = UnsafeMutablePointer<Int>.allocate(capacity: count)
         desc.initialize(repeating: 0, count: count)
-        var handle: OpaquePointer?
+        var handle: UnsafeMutablePointer<pj_thread_t>?
         let status = pj_thread_register("pp-worker", desc, &handle)
         NSLog("[PpPjsip] pj_thread_register status=%d", status)
         lock.lock()
@@ -866,6 +868,7 @@ final class PjsipEngine {
             }
         }
     }
+
 
 
     func runScheduledWork() {
@@ -893,7 +896,7 @@ final class PjsipEngine {
               sslBackendPresent ? "OUI" : "NON", count, cipherStatus)
         NSLog("[PpPjsip]   TLS est le SEUL transport natif possible — PJSIP n'a pas de transport SIP/WebSocket.")
 
-        if status == pj_status_t(220003) || !sslBackendPresent {
+        if status == pj_status_t(PJSIP_EUNSUPTRANSPORT.rawValue) || !sslBackendPresent {
             NSLog("[PpPjsip] 🔎 CAUSE : PJSIP_EUNSUPTRANSPORT — libpjsip.xcframework construit SANS OpenSSL.")
             NSLog("[PpPjsip]    CORRECTIF : bash scripts/build-pjsip-ios.sh puis npx cap sync ios")
         } else {
@@ -955,5 +958,6 @@ final class PjsipWorkerThread {
         lock.unlock()
     }
 }
+
 
 #endif

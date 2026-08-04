@@ -25,6 +25,28 @@
     <div id="root"></div>
     <script>
       (function () {
+        // Boot-time error tracer: surfaces any JS exception thrown before
+        // bootstrap:start (WKWebView only reports "A JavaScript exception occurred").
+        window.addEventListener('error', function (e) {
+          try {
+            console.error('[PP] boot-error', JSON.stringify({
+              message: String(e.message || ''),
+              source: String(e.filename || ''),
+              line: e.lineno || 0,
+              col: e.colno || 0,
+              stack: e.error && e.error.stack ? String(e.error.stack).slice(0, 600) : ''
+            }));
+          } catch (_) {}
+        }, true);
+        window.addEventListener('unhandledrejection', function (e) {
+          try {
+            var r = e.reason;
+            console.error('[PP] boot-rejection', String((r && (r.stack || r.message)) || r || ''));
+          } catch (_) {}
+        }, true);
+      })();
+
+      (function () {
         function isIgnorableNativeStartupError(raw) {
           if (typeof raw === 'string') return /multi_header\.length|multi_header/i.test(raw);
           if (!raw || typeof raw !== 'object') return false;

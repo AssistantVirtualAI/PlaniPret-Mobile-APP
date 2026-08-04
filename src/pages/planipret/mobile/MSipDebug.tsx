@@ -239,6 +239,7 @@ function PjsipProbeCard() {
         Vérifie que le moteur PJSIP est lié et enregistré en TLS sur {PJSIP_PROBE_SERVER}:{PJSIP_PROBE_PORT}.
         Si la registration native est déjà active, elle est rapportée telle quelle — aucun second
         enregistrement n'est créé.
+
       </p>
       {res && (
         <div className="text-[11px] font-mono p-2 rounded space-y-1" style={{ background: "var(--pp-bg-elevated)", color }}>
@@ -292,6 +293,7 @@ function PjsipToggleCard() {
     await setPjsipEnabled(next);
     toast.success(next ? "PJSIP activé (redémarrer l'app)" : "PJSIP désactivé — repli JsSIP actif");
   };
+
 
   return (
     <section className="pp-card p-3 space-y-2">

@@ -29,8 +29,8 @@ public class PpSipKeepAliveService extends Service {
     PREFS_NAME = "pp_sip_keepalive",
     ACTION_STATUS = "com.planipret.mobile.PP_SIP_STATUS",
     ACTION_REREGISTER = "com.planipret.mobile.PP_SIP_REREGISTER",
-    ACTION_INCOMING_INVITE = "com.planipret.mobile.PP_SIP_INCOMING_INVITE",
-    ACTION_DECLINE_CALL = "com.planipret.mobile.PP_SIP_DECLINE_CALL";
+    ACTION_DECLINE_CALL = "com.planipret.mobile.PP_SIP_DECLINE_CALL",
+    ACTION_INCOMING_INVITE = "com.planipret.mobile.PP_SIP_INCOMING_INVITE";
   public static final int NOTIFICATION_ID = 2201, INCOMING_NOTIFICATION_ID = 2202;
   public static final String KEY_STATUS = "status", KEY_REASON = "reason", KEY_UPDATED_AT = "updated_at", KEY_WAKE_HELD = "wake_held", KEY_WIFI_HELD = "wifi_held", KEY_LOGGED_IN = "logged_in";
   private final ScheduledExecutorService executor = Executors.newScheduledThreadPool(2);
@@ -47,11 +47,8 @@ public class PpSipKeepAliveService extends Service {
   private int reconnectAttempts = 0; private volatile boolean reconnectPending = false;
   private long lastRegisterSentMs = 0L;
   private long lastRegisterOkMs = 0L;
+  private volatile String activeInviteVia, activeInviteFrom, activeInviteTo, activeInviteCallId, activeInviteCSeq;
   private static final long REGISTER_DEBOUNCE_MS = 5000L;
-  // Headers of the INVITE currently ringing. A SIP 603 Decline must echo Via,
-  // From, To, Call-ID and CSeq of that INVITE, so they are captured on arrival.
-  private volatile String activeInviteVia = null, activeInviteFrom = null, activeInviteTo = null;
-  private volatile String activeInviteCallId = null, activeInviteCSeq = null;
 
   public static void start(Context c) { Intent i = new Intent(c, PpSipKeepAliveService.class); if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) c.startForegroundService(i); else c.startService(i); }
   public static void stop(Context c) { c.stopService(new Intent(c, PpSipKeepAliveService.class)); }
@@ -106,9 +103,6 @@ public class PpSipKeepAliveService extends Service {
     Notification n = buildOngoingNotification("Téléphonie prête en arrière-plan");
     if (Build.VERSION.SDK_INT >= 34) ServiceCompat.startForeground(this, NOTIFICATION_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL | ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
     else startForeground(NOTIFICATION_ID, n);
-    // "Refuser" tapped in the incoming notification: answer the ringing INVITE
-    // with a real SIP 603 Decline. Without it the caller kept ringing until the
-    // PBX timed out and the call fell through to voicemail.
     if (intent != null && ACTION_DECLINE_CALL.equals(intent.getAction())) {
       String requestedCallId = intent.getStringExtra("callId");
       executor.execute(() -> { try { sendDecline(requestedCallId); } catch (Exception ignored) {} });
@@ -170,7 +164,6 @@ public class PpSipKeepAliveService extends Service {
       String fromHdr = header(msg, "From"); String toHdr = header(msg, "To");
       String viaHdr = header(msg, "Via"); String inviteCallId = header(msg, "Call-ID");
       String inviteCSeq = header(msg, "CSeq");
-      // Remember the ringing dialog so "Refuser" can build a valid 603 later.
       activeInviteVia = viaHdr; activeInviteFrom = fromHdr; activeInviteTo = toHdr;
       activeInviteCallId = inviteCallId; activeInviteCSeq = inviteCSeq;
       String fromDisplay = parseDisplay(fromHdr); String fromUser = parseUser(fromHdr);
@@ -184,8 +177,6 @@ public class PpSipKeepAliveService extends Service {
       showIncomingCallNotification(inviteCallId, fromHdr, fromUser, fromDisplay);
       return;
     }
-    // The caller hung up before we answered: drop the notification, otherwise a
-    // stale full-screen "incoming call" stayed on screen for a dead call.
     if (msg.startsWith("CANCEL ")) {
       String cancelCallId = header(msg, "Call-ID");
       if (cancelCallId != null && cancelCallId.equals(activeInviteCallId)) {
@@ -197,14 +188,22 @@ public class PpSipKeepAliveService extends Service {
     }
   }
 
-  /** Sends a real SIP 603 Decline for the ringing INVITE, echoing its headers. */
   private void sendDecline(String requestedCallId) throws Exception {
     if (activeInviteCallId == null || (requestedCallId != null && !requestedCallId.equals(activeInviteCallId))) return;
     if (activeInviteVia == null || activeInviteFrom == null || activeInviteTo == null || activeInviteCSeq == null) return;
     String toWithTag = activeInviteTo.contains(";tag=") ? activeInviteTo : activeInviteTo + ";tag=" + Long.toHexString(System.nanoTime());
-    String response = "SIP/2.0 603 Decline\r\nVia: " + activeInviteVia + "\r\nFrom: " + activeInviteFrom
-      + "\r\nTo: " + toWithTag + "\r\nCall-ID: " + activeInviteCallId + "\r\nCSeq: " + activeInviteCSeq
-      + "\r\nUser-Agent: Planipret Native KeepAlive\r\nContent-Length: 0\r\n\r\n";
+    String response = "SIP/2.0 603 Decline
+Via: " + activeInviteVia + "
+From: " + activeInviteFrom
+      + "
+To: " + toWithTag + "
+Call-ID: " + activeInviteCallId + "
+CSeq: " + activeInviteCSeq
+      + "
+User-Agent: Planipret Native KeepAlive
+Content-Length: 0
+
+";
     sendFrame(response);
     clearIncomingNotification(this);
     clearActiveInvite();

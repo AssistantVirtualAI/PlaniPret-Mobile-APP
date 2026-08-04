@@ -43,13 +43,24 @@ export default defineConfig({
     reportCompressedSize: false,
     rollupOptions: {
       output: {
-        // Keep all node_modules in a single vendor chunk to avoid circular
-        // chunk evaluation issues on iOS/Capacitor (e.g. react-dom calling
-        // scheduler before its chunk is loaded → unstable_scheduleCallback undefined).
-        // Approach validated by Lovable.
         manualChunks(id) {
-          if (!id.includes('node_modules')) return;
-          return 'vendor';
+          if (
+            id.includes('node_modules/react/') ||
+            id.includes('node_modules/react-dom/') ||
+            id.includes('node_modules/scheduler/') ||
+            id.includes('node_modules/react-is/') ||
+            id.includes('node_modules/use-sync-external-store/')
+          )
+            return 'vendor-react';
+          if (id.includes('node_modules/react-router')) return 'vendor-router';
+          if (id.includes('@supabase')) return 'vendor-supabase';
+          if (id.includes('recharts') || id.includes('d3-')) return 'vendor-charts';
+          if (id.includes('@radix-ui')) return 'vendor-radix';
+          if (id.includes('lucide-react')) return 'vendor-lucide';
+          if (id.includes('@tanstack')) return 'vendor-tanstack';
+          if (id.includes('jssip') || id.includes('sip.js')) return 'vendor-sip';
+          if (id.includes('framer-motion')) return 'vendor-motion';
+          if (id.includes('node_modules')) return 'vendor-misc';
         },
       },
     },

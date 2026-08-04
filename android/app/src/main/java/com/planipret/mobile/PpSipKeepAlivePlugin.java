@@ -78,21 +78,11 @@ public class PpSipKeepAlivePlugin extends Plugin {
   @PluginMethod public void getSipServiceStatus(PluginCall call) { call.resolve(readStatus().put("ok", true)); }
   @PluginMethod public void triggerReregister(PluginCall call) { PpSipKeepAliveService.requestReregister(getContext(), "manual"); call.resolve(readStatus().put("ok", true)); }
   @PluginMethod public void acknowledgeIncoming(PluginCall call) { PpSipKeepAliveService.clearIncomingNotification(getContext()); call.resolve(new JSObject().put("ok", true)); }
-  @PluginMethod public void requestBatteryOptimizationExemption(PluginCall call) {
-    try {
-      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) { call.resolve(new JSObject().put("ok", true).put("ignored", true).put("requested", false)); return; }
-      PowerManager pm = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
-      boolean ignored = pm != null && pm.isIgnoringBatteryOptimizations(getContext().getPackageName());
-      if (!ignored) getContext().startActivity(new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).setData(Uri.parse("package:" + getContext().getPackageName())).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
-      call.resolve(new JSObject().put("ok", true).put("ignored", ignored).put("requested", !ignored));
-    } catch (Exception e) { call.reject(e.getMessage()); }
-  }
+  /** In-call audio routing. A call must start on the earpiece; the speaker is opt-in. */
   @PluginMethod public void setAudioRoute(PluginCall call) {
     String route = call.getString("route", "earpiece");
     try {
       android.media.AudioManager am = (android.media.AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
-      // Reject instead of silently resolving: a muted speaker button with an "ok"
-      // reply is impossible to diagnose from the JS side.
       if (am == null) { call.reject("no_audio_manager"); return; }
       am.setMode(android.media.AudioManager.MODE_IN_COMMUNICATION);
       if ("speaker".equals(route)) {
@@ -101,10 +91,8 @@ public class PpSipKeepAlivePlugin extends Plugin {
         am.setSpeakerphoneOn(true);
       } else if ("bluetooth".equals(route)) {
         am.setSpeakerphoneOn(false);
-        // setBluetoothScoOn is required in addition to startBluetoothSco: on some
-        // devices the SCO link comes up but audio keeps flowing to the handset.
         try { am.startBluetoothSco(); am.setBluetoothScoOn(true); } catch (Exception ignored) {}
-      } else { // earpiece
+      } else {
         try { am.stopBluetoothSco(); } catch (Exception ignored) {}
         am.setBluetoothScoOn(false);
         am.setSpeakerphoneOn(false);
@@ -117,12 +105,19 @@ public class PpSipKeepAlivePlugin extends Plugin {
       android.media.AudioManager am = (android.media.AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
       String route = "earpiece";
       if (am != null) {
-        // Bluetooth first: an active SCO link is the effective route even when
-        // isSpeakerphoneOn() still reports a stale true.
         if (am.isBluetoothScoOn()) route = "bluetooth";
         else if (am.isSpeakerphoneOn()) route = "speaker";
       }
       call.resolve(new JSObject().put("ok", true).put("route", route));
+    } catch (Exception e) { call.reject(e.getMessage()); }
+  }
+  @PluginMethod public void requestBatteryOptimizationExemption(PluginCall call) {
+    try {
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) { call.resolve(new JSObject().put("ok", true).put("ignored", true).put("requested", false)); return; }
+      PowerManager pm = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
+      boolean ignored = pm != null && pm.isIgnoringBatteryOptimizations(getContext().getPackageName());
+      if (!ignored) getContext().startActivity(new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).setData(Uri.parse("package:" + getContext().getPackageName())).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+      call.resolve(new JSObject().put("ok", true).put("ignored", ignored).put("requested", !ignored));
     } catch (Exception e) { call.reject(e.getMessage()); }
   }
   private JSObject statusFromIntent(Intent i) { return new JSObject().put("status", i.getStringExtra("status")).put("reason", i.getStringExtra("reason")).put("updatedAt", i.getLongExtra("updatedAt", 0)).put("wakeLockHeld", i.getBooleanExtra("wakeLockHeld", false)).put("wifiLockHeld", i.getBooleanExtra("wifiLockHeld", false)).put("loggedIn", i.getBooleanExtra("loggedIn", false)); }

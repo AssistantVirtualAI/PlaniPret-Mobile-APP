@@ -125,6 +125,12 @@ Deno.serve(async (req) => {
     }
 
     // Scope the notice to inbound only: OFF at the domain, ON per user.
+    // MESURÉ le 2026-08-04 sur planipret.ca : le PUT utilisateur renvoie bien
+    // 202 Accepted mais NetSapiens NE PERSISTE PAS `music-on-ring-enabled` sur
+    // l'objet user (relecture = null). Conséquence : cette action coupe l'avis
+    // en early media pour TOUT LE MONDE. C'est le comportement voulu côté
+    // sortant ; pour le rejouer aux appelants entrants il faut passer par le
+    // routage entrant (dial-rule / DID), pas par l'objet user.
     if (action === "scope_users" || action === "fix") {
       const dom = await setDomainRing(false);
       const targets: string[] = Array.isArray(body?.users) && body.users.length
@@ -134,25 +140,30 @@ Deno.serve(async (req) => {
       for (const u of targets) results.push(await setUserRing(u, true));
       return json({
         ok: dom.ok && results.every((r) => r.ok),
-        note: "domain music-on-ring disabled (no notice on outbound), enabled per user (inbound only)",
+        note: "domain music-on-ring disabled (no notice on outbound)",
+        warning: "NetSapiens ignore music-on-ring-enabled sur l'objet user : l'avis en early media est donc coupé aussi pour les entrants",
         domain: dom,
         users: results,
         state: await readState(),
       });
     }
 
-    // Restore the notice for ringing legs. NetSapiens only honours
-    // `music-on-ring-enabled` at the DOMAIN level (the user object ignores it),
-    // so this is the only configuration that actually plays the notice.
+
+    // DÉPANNAGE UNIQUEMENT — remet `music-on-ring-enabled` au niveau du
+    // DOMAINE. Cela rejoue l'avis sur TOUTES les jambes qui sonnent, y compris
+    // les appels SORTANTS des courtiers. Ne pas utiliser en configuration
+    // normale : utiliser `scope_users` à la place.
     if (action === "restore" || action === "enable_domain") {
       const dom = await setDomainRing(true);
       return json({
         ok: dom.ok,
+        warning: "DÉPANNAGE : le domaine rejoue l'avis aussi sur les appels sortants des courtiers",
         note: "domain music-on-ring enabled — notice plays on ringing legs (iOS + Android)",
         domain: dom,
         state: await readState(),
       });
     }
+
 
     if (action === "enable") {
       // 1) upload the notice as domain MOH media
@@ -181,17 +192,19 @@ Deno.serve(async (req) => {
       const upText = await up.text();
 
       // 2) keep MOH at the domain but NEVER music-on-ring at the domain level
-      //    (that would play the notice on the broker's outbound calls too).
+      //    (that plays the notice on the broker's OUTBOUND calls too — this is
+      //    exactly the regression reported on 2026-08-04).
       const dom = await nsFetch(base, {
         method: "PUT",
         body: JSON.stringify({
           synchronous: "yes",
-          "music-on-ring-enabled": "yes",
+          "music-on-ring-enabled": "no",
           "music-on-hold-enabled": "yes",
           "music-on-hold-randomized-enabled": "no",
         }),
       }, { functionName: "pp-ns-ring-announcement" });
       const domText = await dom.text();
+
 
       // 3) enable early media while ringing, per user (callee side only)
       const targets: string[] = Array.isArray(body?.users) && body.users.length

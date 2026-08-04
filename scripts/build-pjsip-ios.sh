@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
-# Build OpenSSL + pjproject for iOS (device arm64 + optional simulator arm64) and
+# Build OpenSSL + pjproject for iOS (device arm64 + simulator arm64) and
 # assemble libpjsip.xcframework for the PpPjsip plugin.
 #
 # Must run on macOS with Xcode command line tools. This cannot be produced in
 # the Lovable sandbox (no macOS / no iOS SDK).
 #
 #   cd apps/planipret-mobile && bash scripts/build-pjsip-ios.sh
-#   PJSIP_DEVICE_ONLY=1 bash scripts/build-pjsip-ios.sh  # device seulement (plus rapide)
 #
 # Output: ios/App/App/Plugins/PpPjsip/Frameworks/libpjsip.xcframework
 #
@@ -18,12 +17,6 @@
 # et pjsua_transport_create(PJSIP_TRANSPORT_TLS, …) échoue à l'exécution avec
 # PJSIP_EUNSUPTRANSPORT. Ce script échoue donc explicitement (exit 1) si
 # configure n'annonce pas « OpenSSL library found, SSL support enabled ».
-#
-# NOTE Mac Apple Silicon (M1/M2/M3/M4) : le simulateur arm64 partage le même
-# CPU que le device mais utilise un SDK différent. configure-iphone de pjproject
-# ne supporte pas le simulateur arm64 nativement sur Xcode 15+. Si la compilation
-# simulateur échoue, relancez avec PJSIP_DEVICE_ONLY=1 — l'app fonctionne
-# parfaitement sur iPhone réel avec une tranche device uniquement.
 set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -32,9 +25,6 @@ OUT="$APP_DIR/ios/App/App/Plugins/PpPjsip/Frameworks"
 PJ_TAG="${PJSIP_TAG:-2.15.1}"
 OPENSSL_TAG="${OPENSSL_TAG:-openssl-3.0.15}"
 MIN_IOS="${MIN_IOS:-14.0}"
-# PJSIP_DEVICE_ONLY=1 : compile uniquement pour device arm64 (plus rapide, recommandé
-# sur Mac Apple Silicon si le simulateur échoue avec configure-iphone)
-DEVICE_ONLY="${PJSIP_DEVICE_ONLY:-0}"
 
 command -v xcodebuild >/dev/null || { echo "xcodebuild introuvable — ce script exige macOS + Xcode."; exit 1; }
 command -v xcrun >/dev/null || { echo "xcrun introuvable — installe Xcode et sélectionne-le avec xcode-select."; exit 1; }
@@ -48,26 +38,16 @@ mkdir -p "$WORK" "$OUT"
 # mais CROSS_TOP attend le nom de plateforme sans version (iPhoneOS/iPhoneSimulator)
 # ---------------------------------------------------------------------------
 IOS_SDK_PATH="$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null || true)"
-if [ -z "$IOS_SDK_PATH" ]; then
+SIM_SDK_PATH="$(xcrun --sdk iphonesimulator --show-sdk-path 2>/dev/null || true)"
+if [ -z "$IOS_SDK_PATH" ] || [ -z "$SIM_SDK_PATH" ]; then
   echo "❌ SDK iOS introuvable. Vérifie: sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer"
   exit 1
 fi
-SIM_SDK_PATH="$(xcrun --sdk iphonesimulator --show-sdk-path 2>/dev/null || true)"
-
 # Extraire le nom de plateforme sans version ni .sdk (ex: iPhoneOS)
 IOS_PLATFORM_NAME="$(basename "$IOS_SDK_PATH" | sed 's/[0-9][0-9.]*\.sdk$//' | sed 's/\.sdk$//')"
-echo "▶ SDK détectés: device=$(basename "$IOS_SDK_PATH")"
-echo "▶ Plateforme device: $IOS_PLATFORM_NAME"
-
-if [ "$DEVICE_ONLY" = "1" ]; then
-  echo "▶ Mode DEVICE_ONLY activé — simulateur ignoré"
-elif [ -z "$SIM_SDK_PATH" ]; then
-  echo "⚠ SDK simulateur introuvable — passage en mode device-only"
-  DEVICE_ONLY=1
-else
-  SIM_PLATFORM_NAME="$(basename "$SIM_SDK_PATH" | sed 's/[0-9][0-9.]*\.sdk$//' | sed 's/\.sdk$//')"
-  echo "▶ SDK simulateur: $(basename "$SIM_SDK_PATH") ($SIM_PLATFORM_NAME)"
-fi
+SIM_PLATFORM_NAME="$(basename "$SIM_SDK_PATH" | sed 's/[0-9][0-9.]*\.sdk$//' | sed 's/\.sdk$//')"
+echo "▶ SDK détectés: device=$(basename "$IOS_SDK_PATH") simulator=$(basename "$SIM_SDK_PATH")"
+echo "▶ Plateformes: device=$IOS_PLATFORM_NAME simulator=$SIM_PLATFORM_NAME"
 
 # ---------------------------------------------------------------------------
 # 1) OpenSSL pour iPhoneOS.sdk arm64 et iPhoneSimulator.sdk arm64
@@ -120,9 +100,7 @@ build_openssl () {
 # ios64-xcrun et iossimulator-xcrun sont les cibles modernes pour Xcode récent
 # (ios64-cross n'est plus reconnu depuis OpenSSL 3.x avec Xcode 15+)
 build_openssl device    iphoneos         ios64-xcrun
-if [ "$DEVICE_ONLY" != "1" ]; then
-  build_openssl simulator iphonesimulator  iossimulator-xcrun
-fi
+build_openssl simulator iphonesimulator  iossimulator-xcrun
 
 # ---------------------------------------------------------------------------
 # 2) pjproject
@@ -204,18 +182,7 @@ build_arch () {
 # Utiliser les alias génériques xcrun (iphoneos/iphonesimulator) qui fonctionnent
 # avec toutes les versions de SDK (iphoneos26.5, iphoneos17.x, etc.)
 build_arch iphoneos arm64 device
-if [ "$DEVICE_ONLY" != "1" ]; then
-  # Sur Mac Apple Silicon (M1/M2/M3/M4) + Xcode 15+, configure-iphone peut
-  # échouer pour le simulateur arm64 car le compilateur croisé n'est pas
-  # reconnu. On tente la compilation et on bascule en device-only si échec.
-  if ! build_arch iphonesimulator arm64 simulator 2>&1; then
-    echo ""
-    echo "⚠ Compilation simulateur échouée (Mac Apple Silicon + Xcode 15+ connu)."
-    echo "⚠ Passage en mode device-only — l'app fonctionne parfaitement sur iPhone réel."
-    echo "⚠ Pour forcer device-only dès le début: PJSIP_DEVICE_ONLY=1 npm run ios:build-pjsip"
-    DEVICE_ONLY=1
-  fi
-fi
+build_arch iphonesimulator arm64 simulator
 
 # ---------------------------------------------------------------------------
 # 3) En-têtes + xcframework
@@ -236,18 +203,10 @@ module pjsua [system] {
 EOF
 
 rm -rf "$OUT/libpjsip.xcframework"
-if [ "$DEVICE_ONLY" = "1" ]; then
-  echo "▶ Création xcframework avec tranche device uniquement"
-  xcodebuild -create-xcframework \
-    -library "$WORK/libs/device/libPJSIP.a" -headers "$WORK/headers" \
-    -output "$OUT/libpjsip.xcframework"
-else
-  echo "▶ Création xcframework avec tranches device + simulator"
-  xcodebuild -create-xcframework \
-    -library "$WORK/libs/device/libPJSIP.a" -headers "$WORK/headers" \
-    -library "$WORK/libs/simulator/libPJSIP.a" -headers "$WORK/headers" \
-    -output "$OUT/libpjsip.xcframework"
-fi
+xcodebuild -create-xcframework \
+  -library "$WORK/libs/device/libPJSIP.a" -headers "$WORK/headers" \
+  -library "$WORK/libs/simulator/libPJSIP.a" -headers "$WORK/headers" \
+  -output "$OUT/libpjsip.xcframework"
 
 # ---------------------------------------------------------------------------
 # 4) Vérification POST-xcodebuild des binaires livrés (bloquante)

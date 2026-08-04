@@ -1,5 +1,5 @@
 // Plays the "cet appel est enregistré" notice locally at the start of every
-// active call. The audio lives in the private `pbx-audio` bucket
+// INBOUND call (never on the broker's own outgoing calls). The audio lives in the private `pbx-audio` bucket
 // (`call-recording-notice.wav`) — the same file NetSapiens plays to the caller
 // as ring announcement — so both parties hear the same notice.
 //
@@ -58,7 +58,16 @@ async function getNoticeUrl(): Promise<string | null> {
  * Best-effort playback of the recording notice, once per `callKey`.
  * Never throws, never blocks the call.
  */
-export async function playRecordingNotice(callKey?: string): Promise<void> {
+export async function playRecordingNotice(
+  callKey?: string,
+  direction?: "in" | "out" | null,
+): Promise<void> {
+  // Garde-fou : l'avis ne concerne QUE les appels entrants (les gens qui
+  // appellent le DID d'un courtier). Un appel sortant ne doit jamais le jouer.
+  if (direction === "out") {
+    log("skipped — outbound call", { callKey });
+    return;
+  }
   const key = callKey && callKey.length ? callKey : "__default__";
   if (announced.has(key)) return;
 
@@ -82,7 +91,7 @@ export async function playRecordingNotice(callKey?: string): Promise<void> {
     const attempts = retryCount.get(key) ?? 0;
     if (attempts < 2) {
       retryCount.set(key, attempts + 1);
-      window.setTimeout(() => { if (!announced.has(key)) void playRecordingNotice(key); }, 750);
+      window.setTimeout(() => { if (!announced.has(key)) void playRecordingNotice(key, direction); }, 750);
     }
   }
 }

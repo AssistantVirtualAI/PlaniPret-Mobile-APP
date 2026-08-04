@@ -81,14 +81,18 @@ export default function PpActiveCallScreen({
     void audioRouter.startCallAudio();
   }, [snap.callState, snap.callId]);
 
-  // Recording notice — played once per call as soon as it connects.
+  // Recording notice — ENTRANTS UNIQUEMENT. Le courtier ne doit jamais
+  // entendre l'avis sur ses propres appels sortants : il s'adresse aux
+  // personnes qui appellent le DID du courtier.
   // Dedup lives in the module (recordingNotice.ts), so remounting this screen
   // (navigation, re-render) never replays or skips the notice.
   useEffect(() => {
     if (snap.callState !== "active") return;
+    if (snap.direction !== "in") return;
     const key = snap.callId || String(snap.startedAt ?? "");
-    void playRecordingNotice(key);
-  }, [snap.callState, snap.callId, snap.startedAt]);
+    void playRecordingNotice(key, snap.direction);
+  }, [snap.callState, snap.callId, snap.startedAt, snap.direction]);
+
 
   // Free the dedup slot when the call is over so the next call plays it again.
   useEffect(() => {

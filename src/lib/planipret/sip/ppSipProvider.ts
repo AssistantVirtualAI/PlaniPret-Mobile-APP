@@ -1106,14 +1106,14 @@ class PpSipProvider {
   /** Destroy the (possibly zombie) UA and rebuild immediately, bypassing every
    *  debounce/backoff guard. Answer intent is preserved on purpose. */
   private hardRebuild(reason: string) {
-    const cfg = this.cfg;
-    if (!cfg) return;
     if (ppNativeSipOwnsAor()) {
       this.log("warn", `hard transport rebuild blocked: native SIP owns AOR (${reason})`);
       this.pushHistory("blocked", `native_owns_aor_hard_rebuild:${reason}`);
       this.emitMetrics();
       return;
     }
+    const cfg = this.cfg;
+    if (!cfg) return;
     const ua = this.ua;
     this.ua = null;
     try { ua?.stop(); } catch {}
