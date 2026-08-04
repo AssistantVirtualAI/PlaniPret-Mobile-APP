@@ -13,6 +13,7 @@ CAP_PLUGIN(PpSipKeepAlive, "PpSipKeepAlive",
   CAP_PLUGIN_METHOD(setAudioRoute, CAPPluginReturnPromise);
   CAP_PLUGIN_METHOD(getAudioRoute, CAPPluginReturnPromise);
   CAP_PLUGIN_METHOD(getAudioDevices, CAPPluginReturnPromise);
+  CAP_PLUGIN_METHOD(resetAudioSession, CAPPluginReturnPromise);
   CAP_PLUGIN_METHOD(addListener, CAPPluginReturnCallback);
   CAP_PLUGIN_METHOD(removeAllListeners, CAPPluginReturnPromise);
 )

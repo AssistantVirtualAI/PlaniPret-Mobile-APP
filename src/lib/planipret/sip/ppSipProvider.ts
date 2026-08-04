@@ -987,8 +987,11 @@ class PpSipProvider {
   }
 
   hangup() { try { this.session?.terminate(); } catch {} }
-  mute() { this.session?.mute({ audio: true }); }
-  unmute() { this.session?.unmute({ audio: true }); }
+  mute() { this.session?.mute({ audio: true }); this.update({ muted: true }); }
+  unmute() { this.session?.unmute({ audio: true }); this.update({ muted: false }); }
+  /** Native PJSIP calls have no JsSIP session: reflect their mute state in the snapshot. */
+  setMutedFlag(muted: boolean) { this.update({ muted }); }
+
   hold() { this.session?.hold(); }
   unhold() { this.session?.unhold(); }
   sendDTMF(k: string) { this.session?.sendDTMF(k, { duration: 100, interToneGap: 70 }); }

@@ -1552,9 +1552,9 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     reregister: () => { try { ppSipProvider.forceReregister(); } catch {} },
     // Pendant un appel natif PJSIP, les commandes doivent viser le moteur natif :
     // ppSipProvider (JsSIP) n'a aucune session sur iOS.
-    mute: () => hasNativeCall ? void nativeSip.setMute(true)
+    mute: () => hasNativeCall ? (void nativeSip.setMute(true), ppSipProvider.setMutedFlag(true))
       : (restCall?.id && !hasLiveSipSession) ? void restControl("mute", { muted: true }) : ppSipProvider.mute(),
-    unmute: () => hasNativeCall ? void nativeSip.setMute(false)
+    unmute: () => hasNativeCall ? (void nativeSip.setMute(false), ppSipProvider.setMutedFlag(false))
       : (restCall?.id && !hasLiveSipSession) ? void restControl("mute", { muted: false }) : ppSipProvider.unmute(),
     hold: () => (restCall?.id && !hasLiveSipSession) ? void restControl("hold") : ppSipProvider.hold(),
     unhold: () => (restCall?.id && !hasLiveSipSession) ? void restControl("unhold") : ppSipProvider.unhold(),

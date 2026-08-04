@@ -79,7 +79,7 @@ if [ ${#logs[@]} -gt 0 ]; then
     elif [[ "$tag" == *"simulator"* ]]; then
       echo "  ⚠ $tag : OpenSSL absent du log simulateur (ignoré — seul le device est requis)"
     else
-      fail "configure-$tag.log ne contient pas « OpenSSL library found, SSL support enabled »"
+      fail "configure-$tag.log ne contient pas \« OpenSSL library found, SSL support enabled \»"
     fi
   done
 else

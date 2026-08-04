@@ -1,11 +1,11 @@
 {
-  "generatedAt": "2026-08-04T21:36:30.741Z",
+  "generatedAt": "2026-08-04T23:53:07.150Z",
   "entry": [
     "src/index.tsx"
   ],
   "ok": true,
   "totals": {
-    "localImportsChecked": 437,
+    "localImportsChecked": 436,
     "bundledFiles": 177,
     "missing": 0,
     "orphanFiles": 886,

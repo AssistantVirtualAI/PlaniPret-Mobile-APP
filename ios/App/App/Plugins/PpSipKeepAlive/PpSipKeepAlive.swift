@@ -35,6 +35,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       CAPPluginMethod(name: "setAudioRoute", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "getAudioRoute", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "getAudioDevices", returnType: CAPPluginReturnPromise),
+      CAPPluginMethod(name: "resetAudioSession", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "addListener", returnType: CAPPluginReturnCallback),
       CAPPluginMethod(name: "removeAllListeners", returnType: CAPPluginReturnPromise)
     ]
@@ -513,6 +514,41 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       scheduleRegister()
       if socket != nil, status != "registered" { sendRegister(challenge: nil) }
       setStatus(status == "registered" ? "registered" : "protected", why)
+    }
+
+    /// Réinitialisation fiable de la session audio au décrochage.
+    /// Sans ça, la session laissée par la sonnerie / une lecture média reste
+    /// à moitié configurée et l'appelé n'entend rien ("no voice on the other
+    /// side"). On désactive puis réactive la session en mode voiceChat, puis on
+    /// ré-applique la route choisie. Si CallKit possède déjà la session on ne
+    /// la désactive JAMAIS (iOS retirerait toutes les sorties) : on se contente
+    /// de réaffirmer catégorie + route.
+    @objc func resetAudioSession(_ call: CAPPluginCall) {
+      DispatchQueue.main.async { [weak self] in
+        guard let self = self else { call.resolve(["ok": false]); return }
+        let s = AVAudioSession.sharedInstance()
+        if !self.callKitAudioActive {
+          try? s.setActive(false, options: [.notifyOthersOnDeactivation])
+        }
+        try? s.setCategory(.playAndRecord, mode: .voiceChat,
+                           options: [.allowBluetoothHFP, .allowBluetoothA2DP])
+        if !self.callKitAudioActive { try? s.setActive(true, options: []) }
+        self.applyAudioRoute()
+        // Deuxième passe : CallKit/PJSIP ré-arbitrent la route ~600 ms après
+        // l'activation média, ce qui peut couper la sortie.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+          guard let self = self else { return }
+          self.applyAudioRoute()
+          self.notifyListeners("audioRouteChanged", data: [
+            "route": self.currentAudioRoute(),
+            "bluetooth": self.bluetoothAvailable(),
+            "bluetoothName": self.bluetoothName() ?? "",
+            "wired": self.wiredAvailable()
+          ])
+        }
+        NSLog("[PpSipKeepAlive] audio session reset outputs=%d route=%@", s.currentRoute.outputs.count, self.currentAudioRoute())
+        call.resolve(["ok": true, "route": self.currentAudioRoute()])
+      }
     }
 
     private func activateAudioSession() {

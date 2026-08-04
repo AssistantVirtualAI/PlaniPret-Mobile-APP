@@ -8,7 +8,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { supabase } from "@/integrations/supabase/client";
 import {
   Mic, MicOff, Pause, Play, PhoneForwarded, Grid3X3, PhoneOff, Phone,
-  User, Search, X, ChevronLeft, Activity, Volume2, VolumeX,
+  User, Search, X, ChevronLeft, Activity, Volume2, VolumeX, Bluetooth,
 } from "lucide-react";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import type { useMplanipretSoftphone } from "@/hooks/useMplanipretSoftphone";
@@ -62,8 +62,16 @@ export default function PpActiveCallScreen({
   const [loadingContacts, setLoadingContacts] = useState(false);
   const [diagOpen, setDiagOpen] = useState(false);
   const [speakerOn, setSpeakerOn] = useState(false);
+  const [audioDev, setAudioDev] = useState(() => audioRouter.devices());
 
   useEffect(() => { setAudioEl(audioRef.current); return () => setAudioEl(null); }, [setAudioEl]);
+
+  // Auto-detect headsets: the native plugin pushes a route change whenever a
+  // Bluetooth/wired device connects or disconnects.
+  useEffect(() => audioRouter.subscribe((d) => {
+    setAudioDev(d);
+    setSpeakerOn(d.route === "speaker");
+  }), []);
 
   const active = snap.callState === "ringing-out" || snap.callState === "ringing-in"
     || snap.callState === "active" || snap.callState === "held";
@@ -77,8 +85,7 @@ export default function PpActiveCallScreen({
   // once the remote party answers, so we force the earpiece on connect.
   useEffect(() => {
     if (snap.callState !== "active") return;
-    setSpeakerOn(false);
-    void audioRouter.startCallAudio();
+    void audioRouter.startCallAudio().then((r) => setSpeakerOn(r === "speaker"));
   }, [snap.callState, snap.callId]);
 
   // Recording notice — ENTRANTS UNIQUEMENT. Le courtier ne doit jamais
@@ -326,11 +333,18 @@ export default function PpActiveCallScreen({
               style={{ background: "rgba(3,10,22,0.72)", border: "1px solid rgba(255,255,255,0.10)", boxShadow: "0 18px 48px rgba(0,0,0,0.42)", backdropFilter: "blur(18px)" }}
             >
               <CallBtn active={snap.muted} onClick={() => (snap.muted ? unmute() : mute())} icon={snap.muted ? <MicOff /> : <Mic />} label={snap.muted ? "Activer" : "Muet"} />
-              <CallBtn active={speakerOn} onClick={() => {
-                const next = !speakerOn;
-                setSpeakerOn(next);
-                audioRouter.setRoute(next ? "speaker" : "earpiece").catch(() => {});
-              }} icon={speakerOn ? <Volume2 /> : <VolumeX />} label="H.-parleur" />
+              <CallBtn active={speakerOn || audioDev.route === "bluetooth"} onClick={() => {
+                // Cycle: speaker -> (bluetooth if present) -> earpiece
+                const next: "speaker" | "bluetooth" | "earpiece" =
+                  speakerOn ? (audioDev.bluetooth ? "bluetooth" : "earpiece")
+                  : audioDev.route === "bluetooth" ? "earpiece"
+                  : "speaker";
+                setSpeakerOn(next === "speaker");
+                setAudioDev((d) => ({ ...d, route: next }));
+                audioRouter.setRoute(next).catch(() => {});
+              }}
+                icon={audioDev.route === "bluetooth" ? <Bluetooth /> : speakerOn ? <Volume2 /> : <VolumeX />}
+                label={audioDev.route === "bluetooth" ? (audioDev.bluetoothName || "Bluetooth") : "H.-parleur"} />
               <CallBtn active={isHeld} onClick={() => (isHeld ? unhold() : hold())} icon={isHeld ? <Play /> : <Pause />} label={isHeld ? "Reprendre" : "Attente"} />
               <CallBtn onClick={() => setView("transfer")} icon={<PhoneForwarded />} label="Transférer" />
               <CallBtn onClick={() => setView("keypad")} icon={<Grid3X3 />} label="Clavier" />

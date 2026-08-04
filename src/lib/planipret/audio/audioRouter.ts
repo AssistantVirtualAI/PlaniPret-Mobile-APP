@@ -125,8 +125,23 @@ export const audioRouter = {
    * to the loudspeaker; a phone call must start on the earpiece (or a connected
    * Bluetooth headset) until the user taps the speaker button.
    */
+  /**
+   * Full audio-session reset. Called when a call is answered: the ringing /
+   * media session left behind by CallKit or the WebView is half-configured and
+   * the remote party ends up hearing nothing. The native plugin deactivates and
+   * re-activates AVAudioSession in voiceChat mode, then re-applies the route.
+   */
+  async resetSession(): Promise<void> {
+    const b = bridge();
+    if (b?.resetAudioSession) {
+      try { await b.resetAudioSession(); } catch {}
+    }
+    await audioRouter.refreshDevices();
+  },
+
   async startCallAudio(): Promise<AudioRoute> {
     bindNativeEvents();
+    await audioRouter.resetSession();
     const d = await audioRouter.refreshDevices();
     // Auto-detect: a connected Bluetooth headset always wins at call start.
     const route: AudioRoute = d.bluetooth ? "bluetooth" : "earpiece";
@@ -140,6 +155,12 @@ export const audioRouter = {
       if (generation !== routeGeneration) return;
       void audioRouter.setRoute(route);
     }, 1200);
+    // Second reset pass: NetSapiens/PJSIP can renegotiate media ~2.5 s after
+    // answer, which silences the far end if the session was not re-armed.
+    setTimeout(() => {
+      if (generation !== routeGeneration) return;
+      void audioRouter.resetSession().then(() => audioRouter.setRoute(route));
+    }, 2500);
     return route;
   },
 
