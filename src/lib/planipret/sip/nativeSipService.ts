@@ -568,4 +568,3 @@ export const nativeSip = NativeSipService.getInstance();
 // Arbitrage d'AOR au chargement : si le plugin PJSIP est embarqué, le natif
 // possède `<ext>M` avant que JsSIP puisse tenter le moindre REGISTER.
 preclaimNativeAor();
-

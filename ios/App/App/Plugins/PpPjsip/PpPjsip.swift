@@ -15,7 +15,7 @@ import pjsua
  *     hangupCall/setMute/setSpeaker/sendDTMF` sur l'AOR de production `<ext>M`.
  *
  * Contraintes :
- *  - Transport TLS 5061 UNIQUEMENT (PJSIP n'a pas de transport SIP/WebSocket).
+ *  - Transports SIP natifs : TCP 5060 (défaut) / TLS 5061 (PJSIP n'a pas de SIP/WebSocket).
  *  - CallKit (PpVoipCall) reste seul maître de l'AVAudioSession : le moteur
  *    n'active jamais la session, il attend `PpCallKitAudioActivated`.
  *  - Les événements d'appel sont diffusés à la fois vers JS (notifyListeners)
@@ -119,16 +119,16 @@ public class PpPjsip: CAPPlugin, CAPBridgedPlugin {
         let password = call.getString("password") ?? ""
         let domain = call.getString("domain") ?? ""
         let proxy = call.getString("proxy") ?? ""
-        let port = call.getInt("port") ?? 5061
+        let transport = (call.getString("transport") ?? "TCP").uppercased()
+        let port = call.getInt("port") ?? (transport == "TLS" ? 5061 : 5060)
         let displayName = call.getString("displayName") ?? "Planiprêt"
-        let transport = (call.getString("transport") ?? "TLS").uppercased()
 
         guard !username.isEmpty, !password.isEmpty, !domain.isEmpty else {
             call.reject("missing_credentials", "username/password/domain are required")
             return
         }
-        guard transport == "TLS" else {
-            call.reject("unsupported_transport", "PJSIP natif : TLS 5061 uniquement (pas de SIP/WebSocket).")
+        guard transport == "TLS" || transport == "TCP" || transport == "UDP" else {
+            call.reject("unsupported_transport", "PJSIP natif : TCP 5060 / TLS 5061 / UDP (pas de SIP/WebSocket).")
             return
         }
 
@@ -138,7 +138,8 @@ public class PpPjsip: CAPPlugin, CAPBridgedPlugin {
             domain: domain,
             server: proxy.isEmpty ? domain : proxy,
             port: port,
-            displayName: displayName
+            displayName: displayName,
+            transport: transport
         ) { result in
             switch result {
             case .success:

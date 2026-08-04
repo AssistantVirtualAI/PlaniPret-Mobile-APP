@@ -39,7 +39,8 @@
     "verify:sip:bundle": "node scripts/verify-sip-bundle.mjs",
     "prebuild": "node scripts/check-imports.mjs",
     "ios:oneclick": "bash scripts/ios-oneclick.sh",
-    "ios:oneclick:rebuild": "bash scripts/ios-oneclick.sh --rebuild-pjsip"
+    "ios:oneclick:rebuild": "bash scripts/ios-oneclick.sh --rebuild-pjsip",
+    "verify:aor:mobile": "node scripts/verify-aor-mobile.mjs"
   },
   "dependencies": {
     "@capacitor-community/bluetooth-le": "^6.1.0",

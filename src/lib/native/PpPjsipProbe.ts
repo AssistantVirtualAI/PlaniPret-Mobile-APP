@@ -120,4 +120,3 @@ export async function runPjsipRegisterProbe(): Promise<PjsipProbeResult> {
     return { ok: false, reason, aor };
   }
 }
-

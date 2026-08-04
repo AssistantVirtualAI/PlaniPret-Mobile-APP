@@ -1046,5 +1046,3 @@ function NewMeetingSheet({
     </div>
   );
 }
-
-
