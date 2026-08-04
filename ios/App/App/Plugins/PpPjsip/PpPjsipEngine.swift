@@ -281,7 +281,7 @@ final class PjsipEngine {
         // nouveau tag SDES (crypto:3 au lieu de crypto:1), puis PJSIP détruit
         // le média avec PJMEDIA_SRTP_ESDPINCRYPTOTAG. Garder l'offre négociée
         // dans le 183/200 préserve le flux SRTP bidirectionnel.
-        acc.lock_codec = pj_bool_t(0)
+        acc.lock_codec = 0  // UInt32 struct field — désactive codec-lock UPDATE (pj_bool_t interdit ici)
         // Les session timers sont également inutiles sur ce trunk et peuvent
         // provoquer une seconde renégociation SDP. Le keep-alive TCP suffit.
         acc.use_timer = PJSUA_SIP_TIMER_INACTIVE
