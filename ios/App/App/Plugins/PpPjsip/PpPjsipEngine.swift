@@ -33,7 +33,7 @@ private func ppPjsipLogWriter(_ level: Int32, _ data: UnsafePointer<CChar>?, _ l
 
 private func ppPjsipOnRegState2(_ accId: pjsua_acc_id, _ info: UnsafeMutablePointer<pjsua_reg_info>?) {
     guard let info = info, let rdata = info.pointee.cbparam else { return }
-    let code = Int(rdata.pointee.code.rawValue)
+    let code = Int(rdata.pointee.code)
     let reason = ppPjStr(rdata.pointee.reason)
     NSLog("[PpPjsip] REGISTER response acc=%d code=%d reason=%@", accId, code, reason)
     PjsipEngine.shared.handleRegState(accId: accId, code: code, reason: reason)
@@ -56,7 +56,7 @@ private func ppPjsipOnCallState(_ callId: pjsua_call_id, _ event: UnsafeMutableP
     PjsipEngine.shared.handleCallState(
         callId: callId,
         state: info.state,
-        lastCode: Int(info.last_status.rawValue),
+        lastCode: Int(info.last_status),
         remoteUri: ppPjStr(info.remote_info)
     )
 }
@@ -227,7 +227,7 @@ final class PjsipEngine {
         // AOR — JsSIP doit céder (`pp:sip-native-owns-aor`), sinon NetSapiens
         // ferme la socket la plus ancienne (WSS 1001).
         if accId != pjsua_acc_id(-1) {
-            pjsua_acc_set_registration(accId, pj_bool_t(0))
+            pjsua_acc_set_registration(accId, 0)
             pjsua_acc_del(accId)
             accId = pjsua_acc_id(-1)
         }
@@ -249,20 +249,20 @@ final class PjsipEngine {
         acc.reg_timeout = 300
         acc.reg_retry_interval = 15
         acc.reg_first_retry_interval = 5
-        acc.register_on_acc_add = pj_bool_t(1)
-        acc.allow_contact_rewrite = pj_bool_t(1)
+        acc.register_on_acc_add = 1
+        acc.allow_contact_rewrite = 1
         acc.contact_rewrite_method = 2
         acc.use_srtp = PJMEDIA_SRTP_OPTIONAL
         acc.srtp_secure_signaling = 0
         // Un seul `+sip.instance` : on laisse RFC5626 le générer avec NOTRE
         // UUID stable au lieu d'ajouter un second param manuel (pjsua émettait
         // sinon un doublon dont un UUID à zéros).
-        acc.use_rfc5626 = pj_bool_t(1)
+        acc.use_rfc5626 = 1
         acc.rfc5626_instance_id = ppMakePjStr(instanceId, keep: &strings)
 
 
         NSLog("[PpPjsip] production REGISTER → sip:%@:%d TLS aor=sip:%@@%@", server, Int32(port), username, domain)
-        try check(pjsua_acc_add(&acc, pj_bool_t(1), &accId), "pjsua_acc_add")
+        try check(pjsua_acc_add(&acc, 1, &accId), "pjsua_acc_add")
     }
 
     /// UUID stable par installation : NetSapiens déduplique les contacts sur
@@ -280,7 +280,7 @@ final class PjsipEngine {
         thread.run { [weak self] in
             guard let self = self else { return }
             self.scheduleOnPjsipThread {
-                pjsua_acc_set_registration(self.accId, pj_bool_t(on ? 1 : 0))
+                pjsua_acc_set_registration(self.accId, on ? 1 : 0)
             }
         }
     }
@@ -690,12 +690,12 @@ final class PjsipEngine {
         acc.proxy_cnt = 1
         acc.proxy.0 = ppMakePjStr("sip:\(server):\(port);transport=tls;lr", keep: &strings)
         acc.reg_timeout = 300
-        acc.register_on_acc_add = pj_bool_t(1)
-        acc.use_rfc5626 = pj_bool_t(1)
+        acc.register_on_acc_add = 1
+        acc.use_rfc5626 = 1
         acc.rfc5626_instance_id = ppMakePjStr(instanceId, keep: &strings)
 
         NSLog("[PpPjsip] PROBE REGISTER → sip:%@:%d TLS aor=sip:%@@%@", server, Int32(port), probeUser, domain)
-        try check(pjsua_acc_add(&acc, pj_bool_t(1), &probeAccId), "pjsua_acc_add(probe)")
+        try check(pjsua_acc_add(&acc, 1, &probeAccId), "pjsua_acc_add(probe)")
     }
 
     private func completeRegistrationProbe(code: Int, reason: String) {
@@ -720,7 +720,7 @@ final class PjsipEngine {
         lock.unlock()
         guard let cb = cb else { return }
         if probeAccId != pjsua_acc_id(-1) {
-            pjsua_acc_set_registration(probeAccId, pj_bool_t(0))
+            pjsua_acc_set_registration(probeAccId, 0)
             pjsua_acc_del(probeAccId)
             probeAccId = pjsua_acc_id(-1)
         }
@@ -749,12 +749,12 @@ final class PjsipEngine {
         pjsua_logging_config_default(&logCfg)
         logCfg.level = 5
         logCfg.console_level = 5
-        logCfg.msg_logging = pj_bool_t(1)
+        logCfg.msg_logging = 1
         logCfg.cb = ppPjsipLogWriter
 
         var mediaCfg = pjsua_media_config()
         pjsua_media_config_default(&mediaCfg)
-        mediaCfg.no_vad = pj_bool_t(1)
+        mediaCfg.no_vad = 1
         mediaCfg.clock_rate = 16000
         mediaCfg.snd_clock_rate = 16000
         mediaCfg.ec_tail_len = 0 // l'AEC est fourni par iOS (voiceChat)
@@ -790,7 +790,7 @@ final class PjsipEngine {
         let count = max(1, MemoryLayout<pj_thread_desc>.size / MemoryLayout<Int>.size)
         let desc = UnsafeMutablePointer<Int>.allocate(capacity: count)
         desc.initialize(repeating: 0, count: count)
-        var handle: UnsafeMutablePointer<pj_thread_t>?
+        var handle: OpaquePointer?
         let status = pj_thread_register("pp-gcd", desc, &handle)
         NSLog("[PpPjsip] pj_thread_register status=%d", status)
         lock.lock()
@@ -807,7 +807,11 @@ final class PjsipEngine {
             work()
         }
         lock.unlock()
-        pjsua_schedule_timer2(ppPjsipEnterContext, nil, 0)
+        // pjsua_schedule_timer2 n'est pas disponible dans cette version de pjproject.
+        // On dispatche le travail sur la queue pjsip (thread pool interne).
+        DispatchQueue.global(qos: .userInitiated).async {
+            ppPjsipEnterContext(nil)
+        }
     }
 
 
@@ -836,7 +840,9 @@ final class PjsipEngine {
               sslBackendPresent ? "OUI" : "NON", count, cipherStatus)
         NSLog("[PpPjsip]   TLS est le SEUL transport natif possible — PJSIP n'a pas de transport SIP/WebSocket.")
 
-        if status == pj_status_t(PJSIP_EUNSUPTRANSPORT.rawValue) || !sslBackendPresent {
+        // PJSIP_EUNSUPTRANSPORT = 220003 (défini dans pjsip/sip_errno.h)
+        let pjsipEunsuptransport: pj_status_t = 220003
+        if status == pjsipEunsuptransport || !sslBackendPresent {
             NSLog("[PpPjsip] 🔎 CAUSE : PJSIP_EUNSUPTRANSPORT — libpjsip.xcframework construit SANS OpenSSL.")
             NSLog("[PpPjsip]    CORRECTIF : bash scripts/build-pjsip-ios.sh puis npx cap sync ios")
         } else {
