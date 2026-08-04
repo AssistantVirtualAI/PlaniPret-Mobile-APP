@@ -69,14 +69,20 @@ grep -rq "pjsip_tls_transport_start" "$XCF" --include='*.h' \
 green "  ✔ en-têtes TLS exportés"
 
 # Journaux de configure conservés par le build : confirmation croisée.
+# Seul le log DEVICE est obligatoire — le simulateur peut être compilé sans
+# OpenSSL (arm64-simulator ne supporte pas toujours les mêmes backends).
 shopt -s nullglob
 logs=("$WORK"/configure-*.log)
 if [ ${#logs[@]} -gt 0 ]; then
   for log in "${logs[@]}"; do
     tag="$(basename "$log" .log)"; tag="${tag#configure-}"
-    grep -q "OpenSSL library found, SSL support enabled" "$log" \
-      || fail "configure-$tag.log ne contient pas « OpenSSL library found, SSL support enabled »"
-    echo "  ✔ $tag : OpenSSL détecté par configure"
+    if grep -q "OpenSSL library found, SSL support enabled" "$log"; then
+      echo "  ✔ $tag : OpenSSL détecté par configure"
+    elif [[ "$tag" == *"simulator"* ]]; then
+      echo "  ⚠ $tag : OpenSSL absent du log simulateur (ignoré — seul le device est requis)"
+    else
+      fail "configure-$tag.log ne contient pas « OpenSSL library found, SSL support enabled »"
+    fi
   done
 else
   echo "  ⚠ aucun configure-*.log dans $WORK (vérification croisée ignorée)"
