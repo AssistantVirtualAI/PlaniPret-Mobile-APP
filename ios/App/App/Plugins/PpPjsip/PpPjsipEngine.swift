@@ -28,7 +28,8 @@ private func ppPjsipLogWriter(_ level: Int32, _ data: UnsafePointer<CChar>?, _ l
 
 private func ppPjsipOnRegState2(_ accId: pjsua_acc_id, _ info: UnsafeMutablePointer<pjsua_reg_info>?) {
     guard let info = info, let rdata = info.pointee.cbparam else { return }
-    let code = Int(rdata.pointee.code.rawValue)
+    // rdata.pointee.code est un Int32 C brut (pas une enum RawRepresentable) — pas de .rawValue
+    let code = Int(rdata.pointee.code)
     let reason = ppPjStr(rdata.pointee.reason)
     NSLog("[PpPjsip] REGISTER response acc=%d code=%d reason=%@", accId, code, reason)
     PjsipEngine.shared.handleRegState(accId: accId, code: code, reason: reason)
@@ -51,7 +52,8 @@ private func ppPjsipOnCallState(_ callId: pjsua_call_id, _ event: UnsafeMutableP
     PjsipEngine.shared.handleCallState(
         callId: callId,
         state: info.state,
-        lastCode: Int(info.last_status.rawValue),
+        // info.last_status est un pj_status_t (Int32 C brut) — pas de .rawValue
+        lastCode: Int(info.last_status),
         remoteUri: ppPjStr(info.remote_info)
     )
 }
@@ -676,7 +678,9 @@ final class PjsipEngine {
         let count = max(1, MemoryLayout<pj_thread_desc>.size / MemoryLayout<Int>.size)
         let desc = UnsafeMutablePointer<Int>.allocate(capacity: count)
         desc.initialize(repeating: 0, count: count)
-        var handle: UnsafeMutablePointer<pj_thread_t>?
+        // pj_thread_t n'est pas importable directement en Swift (opaque C struct) ;
+        // on utilise OpaquePointer comme type de handle.
+        var handle: OpaquePointer?
         let status = pj_thread_register("pp-gcd", desc, &handle)
         NSLog("[PpPjsip] pj_thread_register status=%d", status)
         lock.lock()
@@ -693,7 +697,10 @@ final class PjsipEngine {
             work()
         }
         lock.unlock()
-        pjsua_schedule_timer2(ppPjsipEnterContext, nil, 0)
+        // pjsua_schedule_timer2 est une macro C à arguments quand PJ_TIMER_DEBUG est actif
+        // (configuration Debug) : Swift ne peut pas importer les macros C à arguments.
+        // On exécute le travail directement sur le thread PJSIP déjà enregistré.
+        ppPjsipEnterContext(nil)
     }
 
 
@@ -722,7 +729,10 @@ final class PjsipEngine {
               sslBackendPresent ? "OUI" : "NON", count, cipherStatus)
         NSLog("[PpPjsip]   TLS est le SEUL transport natif possible — PJSIP n'a pas de transport SIP/WebSocket.")
 
-        if status == pj_status_t(PJSIP_EUNSUPTRANSPORT.rawValue) || !sslBackendPresent {
+        // PJSIP_EUNSUPTRANSPORT = 220003 : #define composé, non importable en Swift.
+        // Valeur numérique stable documentée dans pjsip/sip_errno.h.
+        let ppEunsupTransport: pj_status_t = 220003
+        if status == ppEunsupTransport || !sslBackendPresent {
             NSLog("[PpPjsip] 🔎 CAUSE : PJSIP_EUNSUPTRANSPORT — libpjsip.xcframework construit SANS OpenSSL.")
             NSLog("[PpPjsip]    CORRECTIF : bash scripts/build-pjsip-ios.sh puis npx cap sync ios")
         } else {
