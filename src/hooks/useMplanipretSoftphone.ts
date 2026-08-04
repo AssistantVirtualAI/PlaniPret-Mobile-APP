@@ -43,6 +43,7 @@ import {
   stopPlanipretSipKeepAlive,
   type PpNativeSipStatus,
   setPlanipretNativeCallActive,
+  declarePlanipretNativeEngineOwnsAor,
 } from "@/lib/planipret/sip/nativePpSipService";
 import { addDedupedCapListener } from "@/lib/planipret/sip/capListeners";
 import { checkSipBackendRegistration } from "@/lib/planipret/sip/sipBackendCheck";
@@ -1281,7 +1282,7 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
   // Every branch is logged so the exact route to answer() is visible in Xcode /
   // Logcat when debugging a VoIP-push answer.
   const answerOnce = useCallback(async () => {
-    if (nativeOwnsAor()) {
+    if (nativeOwnsAor() && nativeSip.isRegistered()) {
       const ok = await nativeSip.answer();
       console.info(`[answer] route=PJSIP → ${ok ? "SIP 200 OK sent" : "no native INVITE"}`);
       if (ok) return true;
@@ -1289,6 +1290,16 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       // here corrupts the current and next inbound route under live PJSIP.
       console.warn("[answer] PJSIP has no INVITE; preserving TLS ownership");
       return false;
+    }
+
+    // Un preclaim natif n'est pas une inscription SIP. Si PJSIP a perdu son
+    // REGISTER, il ne doit jamais absorber le premier tap CallKit et attendre
+    // 5 secondes un INVITE TLS qui ne peut pas arriver. Rendre immédiatement
+    // l'AOR au chemin WSS déjà initialisé, puis poursuivre la réponse ci-dessous.
+    if (nativeOwnsAor()) {
+      console.warn("[answer] PJSIP owns AOR but is not registered → immediate WSS handoff");
+      releaseAorFromNative("answer_native_not_registered");
+      await declarePlanipretNativeEngineOwnsAor(false);
     }
 
     const sipSnap = ppSipProvider.getSnapshot();

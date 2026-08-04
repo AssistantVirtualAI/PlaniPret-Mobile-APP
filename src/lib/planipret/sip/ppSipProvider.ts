@@ -1060,8 +1060,16 @@ class PpSipProvider {
     if (ok && this.getSnapshot().callState !== "ringing-in") {
       const backend = await checkSipBackendRegistration({ force: true, minIntervalMs: 0 });
       if (backend?.registration?.mobile_registered === false) {
-        this.log("warn", "push wake: local registered but PBX mobile AOR absent → rebuilding");
-        this.hardRebuild("push_wake_pbx_unregistered");
+        // Never destroy the socket after the user has tapped Answer: the INVITE
+        // may already be in flight on this exact transport. Refresh REGISTER on
+        // the existing UA and let the queued answer consume the incoming dialog.
+        if (this.pendingAnswer && this.ua?.isConnected?.()) {
+          this.log("warn", "push wake: PBX AOR absent while answer pending → preserving socket + REGISTER");
+          this.guardedRegister("push_answer_pbx_unregistered", { priority: true });
+        } else {
+          this.log("warn", "push wake: local registered but PBX mobile AOR absent → rebuilding");
+          this.hardRebuild("push_wake_pbx_unregistered");
+        }
         ok = await this.waitForRegistered(12_000);
         if (ok) {
           const verified = await checkSipBackendRegistration({ force: true, minIntervalMs: 0 });

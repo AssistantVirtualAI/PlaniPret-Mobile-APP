@@ -22,7 +22,7 @@ extension Notification.Name {
     static let ppPjsipOutgoingCall = Notification.Name("PpPjsipOutgoingCall")
     /// 180/183 reçu sur la jambe sortante → CallKit passe en "ringing".
     static let ppPjsipOutgoingRinging = Notification.Name("PpPjsipOutgoingRinging")
-    /// Résultat du décrochage natif (ok = true/false) → CallKit complète ou annule.
+    /// Résultat réel de pjsua_call_answer; CallKit ne doit être validé qu'après.
     static let ppPjsipAnswerResult = Notification.Name("PpPjsipAnswerResult")
 }
 
@@ -340,6 +340,15 @@ final class PjsipEngine {
 
     func answer(callId: String?, completion: @escaping (Bool) -> Void) {
         let target = resolveCall(callId)
+        // Une intention de réponse ne peut être mise en attente que si le
+        // compte TLS est réellement enregistré. Sinon aucun INVITE PJSIP
+        // ne peut arriver et le timer de 5 s fait échouer CallKit pour rien.
+        guard registered else {
+            NSLog("[PpPjsip] answer refusé immédiatement — compte TLS non enregistré")
+            NotificationCenter.default.post(name: .ppPjsipAnswerResult, object: nil, userInfo: ["ok": false])
+            completion(false)
+            return
+        }
         guard target >= 0 else {
             // L'utilisateur a décroché depuis CallKit avant l'arrivée de
             // l'INVITE SIP (push VoIP plus rapide que le réseau SIP).
@@ -350,9 +359,6 @@ final class PjsipEngine {
             pendingAnswerCallId = callId
             pendingAnswerCompletions.append(completion)
             lock.unlock()
-            // Même fenêtre que CallKit (32 s) : avec 10 s, une INVITE arrivée
-            // entre t=10 et t=32 trouvait l'intention déjà supprimée et aucun
-            // 200 OK n'était envoyé malgré l'écran système encore actif.
             // Si aucun INVITE TLS n'arrive rapidement, demander au JS de
             // réaligner immédiatement le device NetSapiens avant d'expirer.
             DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 5.0) { [weak self] in
@@ -398,7 +404,9 @@ final class PjsipEngine {
                 if done { return }
                 let status = pjsua_call_answer(target, 200, nil, nil)
                 NSLog("[PpPjsip] answer callId=%d status=%d", target, status)
-                finish(status == pj_status_t(0))
+                let ok = status == pj_status_t(0)
+                NotificationCenter.default.post(name: .ppPjsipAnswerResult, object: nil, userInfo: ["ok": ok])
+                finish(ok)
             }
         }
         // Filet de sécurité : si le timer PJSIP ne s'exécute pas (thread non
