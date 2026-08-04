@@ -241,26 +241,49 @@ export class NativeSipService {
    * Idempotent et throttlé à 60 s.
    */
   private lastTlsProvisionAt = 0;
+  private lastTlsProvisionSignature = "";
+  private lastTlsProvisionOk = false;
+  private tlsProvisionInFlight = false;
+
   private async forceDeviceTlsTransport(payload?: any, urgent = false): Promise<void> {
+    const port = Number(payload?.sipPort ?? 5061);
+    const contact = String(payload?.contact ?? "");
+    // Idempotence : chaque reprovisioning provoque un cycle Expires:0 côté
+    // NetSapiens, fenêtre pendant laquelle les appels partent en messagerie.
+    // On ne réécrit que si le contact/port TLS a réellement changé.
+    const signature = `tls:${port}:${contact}`;
+    if (this.lastTlsProvisionSignature === signature && this.lastTlsProvisionOk) {
+      if (!urgent) return;
+      // Même en urgence, on ne réécrit pas plus d'une fois par minute.
+      if (Date.now() - this.lastTlsProvisionAt < 60_000) return;
+    }
     if (!urgent && Date.now() - this.lastTlsProvisionAt < 60_000) return;
+    if (this.tlsProvisionInFlight) return;
+    this.tlsProvisionInFlight = true;
     this.lastTlsProvisionAt = Date.now();
     try {
       const { data, error } = await supabase.functions.invoke("ns-provision-broker-devices", {
         body: {
           transport: "tls",
-          sip_port: Number(payload?.sipPort ?? 5061),
-          contact: String(payload?.contact ?? ""),
+          sip_port: port,
+          contact,
           force: true,
           client_type: "mobile",
         },
       });
       if (error) throw error;
+      this.lastTlsProvisionSignature = signature;
+      this.lastTlsProvisionOk = true;
       console.log("[SIP] device réaligné en TLS après REGISTER natif", data);
     } catch (e: any) {
+      this.lastTlsProvisionOk = false;
       console.warn("[SIP] échec du réalignement TLS du device:", e?.message ?? e);
       this.lastTlsProvisionAt = 0;
+    } finally {
+      this.tlsProvisionInFlight = false;
     }
   }
+
 
 
   private setState(state: SipRegistrationState) {
@@ -287,10 +310,11 @@ export class NativeSipService {
         this.retryCount++;
         setTimeout(() => { pjsip.register().catch(() => { /* noop */ }); }, 30_000);
       } else if (state === "failed") {
-        // Échec définitif du natif : rendre l'AOR à JsSIP plutôt que de
-        // laisser l'extension sans aucun REGISTER.
-        releaseAorFromNative("native_register_failed");
-        void import("./nativePpSipService").then((m) => m.declarePlanipretNativeEngineOwnsAor(false)).catch(() => undefined);
+        // Ne jamais démarrer JsSIP sur le même <ext>M après un échec transitoire
+        // du REGISTER TLS. Cela créait deux propriétaires, deux écrans CallKit
+        // et des INVITE livrés à la mauvaise pile. Le natif garde l'AOR et sera
+        // relancé au prochain cycle foreground/réseau.
+        console.warn("[SIP] REGISTER natif en échec — propriété TLS conservée");
       }
       if (state === "registered") {
         this.retryCount = 0;
@@ -450,6 +474,7 @@ export class NativeSipService {
     try {
       const snapshot = await pjsip.getState();
       this.registered = !!snapshot?.registered;
+      this.lastState = this.registered ? "registered" : "unregistered";
       this.currentCallId = snapshot?.callId || null;
       return snapshot;
     } catch {

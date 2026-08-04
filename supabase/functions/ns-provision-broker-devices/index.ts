@@ -107,7 +107,9 @@ Deno.serve(async (req) => {
       broker_id = String(callerProfile?.id ?? callerProfile?.user_id);
     }
     // Allow self-provisioning: caller may provision their OWN broker record without admin role
-    const selfOnly = !isAdmin && !bulk && broker_id && (callerProfile?.user_id === caller.id || callerProfile?.id === caller.id);
+    const selfOnly = !isAdmin && !bulk && !!broker_id
+      && callerProfile?.user_id === caller.id
+      && (broker_id === callerProfile.id || broker_id === callerProfile.user_id);
     if (!isAdmin && !selfOnly) return json({ error: "forbidden", detail: "admin role required for this operation" }, 403);
 
     const nsHeaders = { Authorization: `Bearer ${NS_API_KEY}`, "Content-Type": "application/json", Accept: "application/json" };

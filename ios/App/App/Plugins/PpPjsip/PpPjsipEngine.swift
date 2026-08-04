@@ -143,6 +143,11 @@ final class PjsipEngine {
     private var pendingAnswerCallId: String?
     private var pendingAnswerCompletions: [(Bool) -> Void] = []
 
+    /// Armé AVANT `pjsua_call_make_call` : le callback d'état `CALLING` peut
+    /// arriver avant que `outgoingCall` soit affecté, ce qui faisait annoncer
+    /// `direction=in` sur un appel sortant (double écran d'appel côté JS).
+    private var outgoingPending = false
+
     /// Appel sortant en cours (piloté par CallKit côté PpVoipCall).
     private var outgoingCall: pjsua_call_id = pjsua_call_id(-1)
     private var muted = false
@@ -309,12 +314,15 @@ final class PjsipEngine {
                     : "sip:\(destination)@\(self.domain)"
                 var uri = ppMakePjStr(target, keep: &keep)
                 var newCall = pjsua_call_id(-1)
+                self.outgoingPending = true
                 let status = pjsua_call_make_call(self.accId, &uri, nil, nil, nil, &newCall)
                 keep.forEach { free($0) }
                 if status != pj_status_t(0) {
+                    self.outgoingPending = false
                     completion(.failure(NSError(domain: "PpPjsip", code: Int(status), userInfo: [NSLocalizedDescriptionKey: "pjsua_call_make_call failed"])))
                     return
                 }
+                self.outgoingPending = false
                 self.activeCall = newCall
                 self.muted = false
                 self.outgoingCall = newCall
@@ -593,7 +601,14 @@ final class PjsipEngine {
         default: label = "unknown"
         }
 
-        let isOutgoing = outgoingCall == callId
+        // `outgoingPending` couvre la fenêtre où PJSIP notifie CALLING avant
+        // le retour de `pjsua_call_make_call` (sinon direction=in sur sortant).
+        var isOutgoing = outgoingCall == callId
+        if !isOutgoing, outgoingPending, outgoingCall < 0 {
+            isOutgoing = true
+            outgoingCall = callId
+            outgoingPending = false
+        }
         emit("callState", [
             "callId": String(callId),
             "state": label,
@@ -724,12 +739,12 @@ final class PjsipEngine {
         acc.proxy_cnt = 1
         acc.proxy.0 = ppMakePjStr("sip:\(server):\(port);transport=tls;lr", keep: &strings)
         acc.reg_timeout = 300
-        acc.register_on_acc_add = 1
-        acc.use_rfc5626 = 1
+        acc.register_on_acc_add = pj_bool_t(1)
+        acc.use_rfc5626 = pj_bool_t(1)
         acc.rfc5626_instance_id = ppMakePjStr(instanceId, keep: &strings)
 
         NSLog("[PpPjsip] PROBE REGISTER → sip:%@:%d TLS aor=sip:%@@%@", server, Int32(port), probeUser, domain)
-        try check(pjsua_acc_add(&acc, 1, &probeAccId), "pjsua_acc_add(probe)")
+        try check(pjsua_acc_add(&acc, pj_bool_t(1), &probeAccId), "pjsua_acc_add(probe)")
     }
 
     private func completeRegistrationProbe(code: Int, reason: String) {
@@ -754,7 +769,7 @@ final class PjsipEngine {
         lock.unlock()
         guard let cb = cb else { return }
         if probeAccId != pjsua_acc_id(-1) {
-            pjsua_acc_set_registration(probeAccId, 0)
+            pjsua_acc_set_registration(probeAccId, pj_bool_t(0))
             pjsua_acc_del(probeAccId)
             probeAccId = pjsua_acc_id(-1)
         }
@@ -825,7 +840,7 @@ final class PjsipEngine {
         let count = max(1, MemoryLayout<pj_thread_desc>.size / MemoryLayout<Int>.size)
         let desc = UnsafeMutablePointer<Int>.allocate(capacity: count)
         desc.initialize(repeating: 0, count: count)
-        var handle: OpaquePointer?
+        var handle: UnsafeMutablePointer<pj_thread_t>?
         let status = pj_thread_register("pp-worker", desc, &handle)
         NSLog("[PpPjsip] pj_thread_register status=%d", status)
         lock.lock()

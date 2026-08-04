@@ -1434,9 +1434,10 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     if (nativeOwnsAor()) {
       void nativeSip.hangup().then((ok) => {
         if (ok) return;
-        // Repli immédiat : PJSIP absent → BYE par la pile legacy.
-        releaseAorFromNative("hangup_native_failed");
-        console.warn("[hangup] PJSIP failed → legacy BYE");
+        // Le BYE REST peut servir de filet, mais l'AOR doit rester au natif :
+        // céder ici à JsSIP après une course de fin d'appel créait le prochain
+        // double REGISTER et faisait réapparaître l'appel après raccrochage.
+        console.warn("[hangup] PJSIP failed → legacy BYE without AOR handoff");
         try { ppSipProvider.hangup(); } catch {}
       });
       setPushRing(null);
