@@ -1,0 +1,1286 @@
+import { FormEvent, useEffect, useRef, useState, useCallback, lazy, Suspense } from "react";
+import { useNavigate, NavLink, Outlet, useLocation } from "react-router-dom";
+import { motion, AnimatePresence } from "framer-motion";
+import { supabase } from "@/integrations/supabase/client";
+import { Home, Phone, MessageSquare, Users, Bot, Phone as PhoneIcon, X, Delete, Plus, Lock, PhoneOff, Search as SearchIcon, MessageCircle, Loader2 } from "lucide-react";
+import { toast } from "sonner";
+import { runAvaE2ECheckThrottled, recoverConnection } from "@/lib/planipret/connectionRecovery";
+import { usePullToRefresh, PullIndicator } from "@/hooks/usePullToRefresh";
+import { useRealtimeManager } from "@/hooks/useRealtimeManager";
+import InboundCallOverlay, { type InboundCall } from "@/components/InboundCallOverlay";
+import { OfflineBanner, PlanipretErrorBoundary } from "@/components/PlanipretErrorBoundary";
+import SessionTimeoutModal from "@/components/planipret/SessionTimeoutModal";
+import PrivacyConsentGate from "@/components/planipret/PrivacyConsentGate";
+import UniversalSearchBar from "@/components/planipret/UniversalSearchBar";
+import { OnboardingTutorial } from "@/components/planipret/OnboardingTutorial";
+import MobileScreenSkeleton from "@/components/planipret/mobile/MobileScreenSkeleton";
+import { prefetchRoute, scheduleIdlePrefetch, prefetchAllMplanipret } from "@/lib/routePrefetch";
+
+import { useAvaNavigation } from "@/hooks/useAvaNavigation";
+const AvaVoiceAgent = lazy(() => import("@/components/planipret/mobile/AvaVoiceAgent"));
+import AvaChatSheet from "@/components/planipret/mobile/AvaChatSheet";
+import avaLogoAsset from "@/assets/ava-statistics-logo.png.asset.json";
+import planipretLogoAsset from "@/assets/planipret-logo.png.asset.json";
+import MobileAuthScreen from "@/components/planipret/mobile/MobileAuthScreen";
+import MobileHeaderControls from "@/components/planipret/mobile/MobileHeaderControls";
+import PpActiveCallScreen from "@/components/planipret/PpActiveCallScreen";
+import { useMplanipretTheme } from "@/hooks/useMplanipretTheme";
+import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import { ROUTES } from "@/lib/routes";
+import { recordRedirect } from "@/lib/debug/navDebug";
+import { useMplanipretSoftphone } from "@/hooks/useMplanipretSoftphone";
+import MicDeniedBanner from "@/components/planipret/mobile/MicDeniedBanner";
+import { requestPermissionsAfterLogin } from "@/lib/native/requestPermissionsAfterLogin";
+import { bootstrapPushIfNative } from "@/lib/native/pushBootstrap";
+import { Capacitor } from "@capacitor/core";
+import { listDeviceContacts } from "@/lib/native/permissions/contacts";
+import { tokenize, matchAllTokens } from "@/lib/textNormalize";
+import { prefetchPpContacts, peekPpContacts } from "@/lib/ppContactsCache";
+import { PLANIPRET_PROFILE_SAFE_COLUMNS, PLANIPRET_PROFILE_BOOT_COLUMNS } from "@/lib/planipret/profileColumns";
+
+/** Hard timeout guard: never let a hung network call freeze the app shell. */
+function ppWithTimeout<T>(p: PromiseLike<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label}_timeout`)), ms);
+    p.then((v) => { clearTimeout(timer); resolve(v); }, (e) => { clearTimeout(timer); reject(e); });
+  });
+}
+
+
+const ACCENT = "#2E9BDC";
+
+const AvaBadge = ({ compact = false, circle = false }: { compact?: boolean; circle?: boolean }) => {
+  const size = circle ? "100%" : compact ? 18 : 34;
+  return (
+    <div
+      aria-label="AVA"
+      style={{
+        width: size,
+        height: size,
+        borderRadius: "50%",
+        overflow: "hidden",
+        display: "inline-flex",
+        alignItems: "center",
+        justifyContent: "center",
+        background: "#0A1628",
+        boxShadow: compact ? undefined : "0 0 12px rgba(124,58,237,0.35)",
+      }}
+    >
+      <img src={avaLogoAsset.url} alt="AVA" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
+    </div>
+  );
+};
+
+const PlanipretBadge = () => (
+  <div
+    aria-label="Planiprêt"
+    style={{
+      width: 44,
+      height: 44,
+      borderRadius: 10,
+      overflow: "hidden",
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "center",
+      background: "#fff",
+    }}
+  >
+    <img src={planipretLogoAsset.url} alt="Planiprêt" style={{ width: "100%", height: "100%", objectFit: "contain" }} />
+  </div>
+);
+
+export type PlanipretMobileContext = { profile: any; reloadProfile: () => Promise<void>; openDialer: (number?: string, autoDial?: boolean) => void; openAva: () => void; registerRefresh: (fn: (() => Promise<void> | void) | null) => void; softphone: ReturnType<typeof useMplanipretSoftphone> };
+
+const TABS = [
+  { to: "/mplanipret/home", labelKey: "tabs.home", Icon: Home },
+  { to: "/mplanipret/calls", labelKey: "tabs.calls", Icon: Phone },
+  { to: "/mplanipret/ava", labelKey: "tabs.ava", Icon: Bot },
+  { to: "/mplanipret/messages", labelKey: "tabs.messages", Icon: MessageSquare },
+  { to: "/mplanipret/contacts", labelKey: "tabs.contacts", Icon: Users },
+];
+
+
+const KEYS: Array<{ d: string; l?: string }> = [
+  { d: "1", l: "" }, { d: "2", l: "ABC" }, { d: "3", l: "DEF" },
+  { d: "4", l: "GHI" }, { d: "5", l: "JKL" }, { d: "6", l: "MNO" },
+  { d: "7", l: "PQRS" }, { d: "8", l: "TUV" }, { d: "9", l: "WXYZ" },
+  { d: "*" }, { d: "0", l: "+" }, { d: "#" },
+];
+
+type DialerContact = {
+  id?: string;
+  first_name?: string;
+  last_name?: string;
+  name?: string;
+  display_name?: string;
+  phone?: string;
+  cell_phone?: string;
+  work_phone?: string;
+  home_phone?: string;
+  extension?: string;
+  email?: string;
+  company?: string;
+  source?: "personal" | "shared" | "directory" | "native" | "maestro";
+  maestro_client_id?: string;
+};
+
+function contactDisplayName(c: DialerContact): string {
+  return (
+    c.display_name ||
+    c.name ||
+    [c.first_name, c.last_name].filter(Boolean).join(" ") ||
+    c.email ||
+    c.phone ||
+    "—"
+  );
+}
+function contactPrimaryPhone(c: DialerContact): string | undefined {
+  return c.cell_phone || c.phone || c.work_phone || c.home_phone || c.extension;
+}
+
+function Dialer({ open, onClose, initial, autoDial, openMessages, softphone, maestroConfigured }: { open: boolean; onClose: () => void; initial?: string; autoDial?: boolean; openMessages: (n?: string) => void; softphone: ReturnType<typeof useMplanipretSoftphone>; maestroConfigured: boolean }) {
+  const { t } = useMplanipretLang();
+  const [mode, setMode] = useState<"keypad" | "search">("keypad");
+  const [number, setNumber] = useState("");
+  const [calling, setCalling] = useState(false);
+  const [micDenied, setMicDenied] = useState(false);
+  const [query, setQuery] = useState("");
+  // Seed synchronously from persistent cache so the directory shows INSTANTLY
+  // instead of a spinner. Fresh data is fetched in the background.
+  const [contacts, setContacts] = useState<DialerContact[]>(() => {
+    const seed: DialerContact[] = [];
+    for (const [action, source] of [["directory", "directory"], ["list", "personal"], ["shared", "shared"], ["maestro", "maestro"]] as const) {
+      const rows = peekPpContacts(action);
+      if (rows?.length) seed.push(...rows.map((c: any) => ({ ...c, source })));
+    }
+    return seed;
+  });
+  const [loadingContacts, setLoadingContacts] = useState(false);
+  const [refreshingContacts, setRefreshingContacts] = useState(false);
+  const [contactsError, setContactsError] = useState<string | null>(null);
+  const [contactsLoadKey, setContactsLoadKey] = useState(0);
+  const holdTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const autoDialKeyRef = useRef("");
+  useEffect(() => {
+    if (open) { setNumber(initial ?? ""); setMode("keypad"); setQuery(""); }
+    else autoDialKeyRef.current = "";
+  }, [open, initial]);
+  const append = (c: string) => setNumber((n) => (n + c).slice(0, 20));
+  const back = () => setNumber((n) => n.slice(0, -1));
+  const startHold = () => {
+    if (holdTimer.current) clearTimeout(holdTimer.current);
+    holdTimer.current = setTimeout(() => { setNumber(""); holdTimer.current = null; }, 1000);
+  };
+  const endHold = () => { if (holdTimer.current) { clearTimeout(holdTimer.current); holdTimer.current = null; back(); } };
+  const startCall = async (destOverride?: string) => {
+    const destination = destOverride ?? number;
+    if (!destination) return;
+    setMicDenied(false);
+    setCalling(true);
+    const result = await softphone.placeCall(destination);
+    setCalling(false);
+    if (!result.ok) {
+      if ("micState" in result && (result.micState === "denied" || result.micState === "unavailable")) {
+        setMicDenied(true);
+        return;
+      }
+      toast.error(("error" in result && result.error) || t("dialer.callFailed"));
+      return;
+    }
+    toast.success(t("dialer.callStarted"));
+    setNumber("");
+    onClose();
+  };
+
+  useEffect(() => {
+    if (!open || !autoDial || !initial) return;
+    if (autoDialKeyRef.current === initial) return;
+    autoDialKeyRef.current = initial;
+    const id = window.setTimeout(() => { void startCall(initial); }, 350);
+    return () => window.clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, autoDial, initial]);
+
+  // Load contacts (phone + personal + shared + directory + maestro) once when opening Search mode.
+  const withTimeout = async <T,>(promise: Promise<T>, ms: number, label: string): Promise<T> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<T>((_, reject) => { timer = setTimeout(() => reject(new Error(`${label} timeout`)), ms); }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+
+  const loadNsContacts = async (action: "list" | "shared" | "directory" | "maestro") => {
+    const { getPpContacts } = await import("@/lib/ppContactsCache");
+    return getPpContacts(action, { limit: 500 });
+  };
+
+  useEffect(() => {
+    if (!open || mode !== "search") return;
+    let cancelled = false;
+    const hasSeed = contacts.length > 0;
+    if (hasSeed) setRefreshingContacts(true); else setLoadingContacts(true);
+    setContactsError(null);
+    // Replace contacts of a given source with fresh rows (avoids duplicates on refresh).
+    const replaceBatch = (rows: any[], source: DialerContact["source"]) => {
+      if (cancelled) return;
+      setContacts((cur) => {
+        const kept = cur.filter((c) => c.source !== source);
+        return [...kept, ...rows.map((c) => ({ ...c, source }))];
+      });
+      setLoadingContacts(false);
+    };
+    const errors: string[] = [];
+    const jobs: Array<Promise<void>> = [
+      withTimeout(listDeviceContacts(), 6000, "device").then((v) => replaceBatch(v, "native")).catch((e) => { errors.push(`device: ${e?.message ?? e}`); }),
+      withTimeout(loadNsContacts("list"), 12000, "personal").then((v) => replaceBatch(v, "personal")).catch((e) => { errors.push(`personal: ${e?.message ?? e}`); }),
+      withTimeout(loadNsContacts("shared"), 12000, "shared").then((v) => replaceBatch(v, "shared")).catch((e) => { errors.push(`shared: ${e?.message ?? e}`); }),
+      withTimeout(loadNsContacts("directory"), 12000, "directory").then((v) => replaceBatch(v, "directory")).catch((e) => { errors.push(`directory: ${e?.message ?? e}`); }),
+    ];
+    if (maestroConfigured) {
+      jobs.push(
+        withTimeout(loadNsContacts("maestro"), 12000, "maestro").then((v) => replaceBatch(v, "maestro")).catch((e) => { errors.push(`maestro: ${e?.message ?? e}`); }),
+      );
+    }
+    Promise.allSettled(jobs).then(() => {
+      if (cancelled) return;
+      setLoadingContacts(false);
+      setRefreshingContacts(false);
+      setContacts((cur) => {
+        if (cur.length === 0 && errors.length) setContactsError(errors[0]);
+        return cur;
+      });
+    });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, mode, contactsLoadKey, maestroConfigured]);
+
+
+
+  const tokens = tokenize(query);
+  const filtered = tokens.length
+
+    ? contacts.filter((c) => {
+        const hay = [
+          contactDisplayName(c),
+          c.first_name,
+          c.last_name,
+          c.name,
+          c.display_name,
+          c.email,
+          c.company,
+          c.extension,
+          c.phone,
+          c.cell_phone,
+          c.work_phone,
+          c.home_phone,
+          (c as any).job_title,
+          (c as any).position,
+          (c as any).department,
+        ].filter(Boolean).join(" ");
+        return matchAllTokens(hay, tokens);
+      }).slice(0, 50)
+    : contacts.slice(0, 50);
+  
+
+
+  return (
+    <AnimatePresence>
+      {open && (
+        <motion.div className="absolute inset-x-0 bottom-0 z-30 flex flex-col"
+          style={{
+            height: "85%",
+            background: "var(--pp-bg-surface)",
+            border: "1px solid var(--pp-bg-border-2)",
+            borderRadius: "24px 24px 0 0",
+            boxShadow: "0 -8px 32px rgba(0,0,0,0.5)",
+          }}
+          initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }} transition={{ type: "spring", damping: 28, stiffness: 280 }}>
+          <div className="pt-3 pb-2 flex flex-col items-center relative">
+            <div style={{ width: 36, height: 4, background: "var(--pp-bg-border-2)", borderRadius: 2 }} />
+            <button onClick={onClose} className="absolute right-3 top-3 p-2.5 rounded-full" style={{ color: "var(--pp-text-secondary)", minWidth: 44, minHeight: 44 }} aria-label={t("common.close")}><X className="w-5 h-5 mx-auto" /></button>
+          </div>
+          <div className="flex-1 flex flex-col px-6 pt-2 overflow-hidden">
+            {/* Segmented control: Keypad / Search */}
+            <div className="mx-auto flex items-center gap-1 p-1 rounded-full" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)" }}>
+              {(["keypad", "search"] as const).map((m) => (
+                <button
+                  key={m}
+                  onClick={() => setMode(m)}
+                  className="px-4 py-1.5 rounded-full text-xs font-medium transition flex items-center gap-1.5"
+                  style={{
+                    background: mode === m ? "var(--pp-bg-surface)" : "transparent",
+                    color: mode === m ? "var(--pp-text-primary)" : "var(--pp-text-muted)",
+                    boxShadow: mode === m ? "0 1px 4px rgba(0,0,0,0.25)" : "none",
+                    minHeight: 36,
+                  }}
+                >
+                  {m === "keypad" ? <PhoneIcon className="w-3.5 h-3.5" /> : <SearchIcon className="w-3.5 h-3.5" />}
+                  {t(m === "keypad" ? "dialer.modeKeypad" : "dialer.modeSearch")}
+                </button>
+              ))}
+            </div>
+
+            {mode === "keypad" ? (
+              <>
+                <div className="text-center min-h-[56px] flex items-center justify-center px-5 py-4">
+                  <span style={{
+                    fontFamily: "Inter, sans-serif",
+                    fontWeight: 300,
+                    fontSize: number ? 32 : 16,
+                    color: number ? "var(--pp-text-primary)" : "var(--pp-text-faint)",
+                    letterSpacing: "-0.01em",
+                  }}>
+                    {number || t("dialer.enterNumber")}
+                  </span>
+                </div>
+                <div className="grid grid-cols-3 gap-3 mt-1 mx-auto" style={{ maxWidth: 288 }}>
+                  {KEYS.map((k) => (
+                    <button key={k.d} onClick={() => append(k.d)}
+                      className="flex flex-col items-center justify-center transition active:scale-[0.92] pp-keypad-btn"
+                      style={{
+                        width: 72, height: 72, borderRadius: "50%",
+                        background: "var(--pp-bg-elevated)",
+                        border: "1px solid var(--pp-bg-border-2)",
+                      }}>
+                      <span style={{ fontFamily: "Inter, sans-serif", fontWeight: 600, fontSize: 26, color: "var(--pp-text-primary)", lineHeight: 1 }}>{k.d}</span>
+                      {k.l && <span style={{ fontFamily: "DM Sans, sans-serif", fontSize: 9, color: "var(--pp-text-muted)", marginTop: 3, letterSpacing: "0.05em" }}>{k.l}</span>}
+                    </button>
+                  ))}
+                </div>
+                <div className="grid grid-cols-3 items-center gap-3 mt-5 mx-auto" style={{ maxWidth: 288 }}>
+                  <button onClick={() => append("+")} className="mx-auto flex items-center justify-center active:scale-95 transition"
+                    style={{ width: 48, height: 48, borderRadius: "50%", background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-muted)" }} aria-label={t("dialer.plus")}>
+                    <Plus className="w-5 h-5" />
+                  </button>
+                  <button onClick={() => startCall()} disabled={!number || calling}
+                    className="mx-auto flex items-center justify-center text-white disabled:opacity-50 active:scale-95 transition"
+                    style={{ width: 72, height: 72, borderRadius: "50%", background: "linear-gradient(135deg, #0D5C2A, #00D4AA)", boxShadow: "0 4px 20px rgba(0,212,170,0.5)" }} aria-label={t("common.call")}>
+                    <PhoneIcon className="w-7 h-7" />
+                  </button>
+                  <button
+                    onPointerDown={startHold}
+                    onPointerUp={endHold}
+                    onPointerLeave={() => { if (holdTimer.current) { clearTimeout(holdTimer.current); holdTimer.current = null; } }}
+                    onContextMenu={(e) => { e.preventDefault(); setNumber(""); }}
+                    className="mx-auto flex items-center justify-center active:scale-95 transition"
+                    style={{ width: 48, height: 48, borderRadius: "50%", background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-muted)" }} aria-label={t("dialer.clear")}>
+                    <Delete className="w-5 h-5" />
+                  </button>
+                </div>
+                {calling && <div className="mt-4 text-center text-sm" style={{ color: "var(--pp-text-muted)" }}>{t("dialer.callInProgress")}</div>}
+              </>
+            ) : (
+              <div className="flex-1 flex flex-col mt-3 overflow-hidden">
+                <div className="flex items-center gap-2 px-3 py-2 rounded-xl" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)" }}>
+                  <SearchIcon className="w-4 h-4" style={{ color: "var(--pp-text-muted)" }} />
+                  <input
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    placeholder={t("dialer.searchPh")}
+                    className="flex-1 bg-transparent outline-none text-sm"
+                    style={{ color: "var(--pp-text-primary)", fontSize: 16 }}
+                  />
+                  {query && (
+                    <button onClick={() => setQuery("")} aria-label={t("dialer.clear")} style={{ color: "var(--pp-text-muted)" }}>
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+                <div className="flex-1 overflow-y-auto mt-3 -mx-2 px-2 pb-4">
+                  {loadingContacts && contacts.length === 0 ? (
+                    <div className="text-center text-sm py-8" style={{ color: "var(--pp-text-muted)" }}>
+                      <Loader2 className="w-4 h-4 animate-spin mx-auto mb-2" />
+                      {t("dialer.loadingDirectory") || "Chargement du répertoire…"}
+                    </div>
+                  ) : contactsError && contacts.length === 0 ? (
+                    <div className="text-center text-sm py-8" style={{ color: "var(--pp-text-muted)" }}>
+                      <div className="mb-2">{contactsError}</div>
+                      <button onClick={() => { setContacts([]); setContactsError(null); setContactsLoadKey((n) => n + 1); }} className="px-3 py-1.5 rounded-full text-xs font-semibold" style={{ background: "var(--pp-brand-accent)", color: "#fff" }}>Réessayer</button>
+                    </div>
+                  ) : filtered.length === 0 ? (
+                    <div className="text-center text-sm py-8" style={{ color: "var(--pp-text-muted)" }}>{tokens.length ? t("dialer.noResults") : t("contacts.noDirectory")}</div>
+                  ) : (
+                    <>
+                      {!tokens.length && (
+                        <div className="px-1 pb-2 flex items-center justify-between">
+                          <div className="text-[10px] uppercase tracking-wider font-semibold" style={{ color: "var(--pp-text-muted)" }}>
+                            {t("contacts.directorySection") || t("contacts.directory")} · {contacts.length}
+                          </div>
+                          {refreshingContacts && (
+                            <div className="flex items-center gap-1 text-[10px]" style={{ color: "var(--pp-text-muted)" }}>
+                              <Loader2 className="w-3 h-3 animate-spin" /> Mise à jour…
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                    <ul className="flex flex-col gap-1.5">
+                      {filtered.map((c, i) => {
+                        const dest = contactPrimaryPhone(c);
+                        const label = contactDisplayName(c);
+                        return (
+                          <li key={(c.id ?? "") + i} className="flex items-center gap-3 p-2.5 rounded-xl" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)" }}>
+                            <div className="relative w-9 h-9">
+                              <div className="w-9 h-9 rounded-full flex items-center justify-center text-sm font-semibold" style={{ background: "linear-gradient(135deg, #1A4A8A, #2E9BDC)", color: "white" }}>
+                                {label.slice(0, 1).toUpperCase()}
+                              </div>
+                              {c.source === "directory" && (() => {
+                                const p = String((c as any).presence ?? "").toLowerCase();
+                                const color = ["available","online","active","ready","registered"].includes(p) ? "#22c55e"
+                                  : ["busy","dnd","oncall","on-call","in-call"].includes(p) ? "#ef4444"
+                                  : ["away","idle"].includes(p) ? "#f59e0b" : "#64748b";
+                                return <span style={{ position: "absolute", right: -1, bottom: -1, width: 11, height: 11, borderRadius: "50%", background: color, border: "2px solid var(--pp-bg-surface)" }} />;
+                              })()}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <div className="text-sm font-medium truncate" style={{ color: "var(--pp-text-primary)" }}>{label}</div>
+                              <div className="text-xs truncate" style={{ color: "var(--pp-text-muted)" }}>
+                                {c.extension ? `${t("contacts.extension") || "Ext."} ${c.extension}` : dest || c.email || ""}
+                                {c.source === "directory" && ` · ${t("dialer.internal")}`}
+                                {c.source === "maestro" && ` · Maestro`}
+                                {c.source === "native" && ` · Téléphone`}
+                              </div>
+                            </div>
+                            <button
+                              disabled={!dest || calling}
+                              onClick={() => dest && startCall(dest)}
+                              className="p-2 rounded-full text-white disabled:opacity-40 active:scale-95 transition"
+                              style={{ background: "linear-gradient(135deg, #0D5C2A, #00D4AA)" }}
+                              aria-label={t("common.call")}
+                            >
+                              <PhoneIcon className="w-4 h-4" />
+                            </button>
+                            <button
+                              disabled={!dest}
+                              onClick={() => dest && openMessages(dest)}
+                              className="p-2 rounded-full disabled:opacity-40 active:scale-95 transition"
+                              style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
+                              aria-label={t("dialer.sms")}
+                            >
+                              <MessageCircle className="w-4 h-4" />
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        </motion.div>
+      )}
+      {micDenied && (
+        <div className="absolute left-0 right-0 z-30 px-4" style={{ bottom: "calc(env(safe-area-inset-bottom,0px) + 96px)" }}>
+          <MicDeniedBanner onDismiss={() => setMicDenied(false)} />
+        </div>
+      )}
+    </AnimatePresence>
+  );
+}
+
+export default function PlanipretMobile() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { t, lang, setLang } = useMplanipretLang();
+  const [profile, setProfile] = useState<any>(null);
+  // REST-only call control: outbound calls ring the broker's registered mobile device.
+  // Wait for the profile before SIP init so cold starts do not race auth/profile boot.
+  const softphone = useMplanipretSoftphone(Boolean(profile?.user_id), { primary: true });
+  const attachRestCall = (softphone as any).attachRestCall as ((a: any) => void) | undefined;
+  const sipCallLive = ["ringing-in", "ringing-out", "active", "held"].includes(
+    String(softphone.snap.callState),
+  );
+
+  const [loading, setLoading] = useState(true);
+  const [accessError, setAccessError] = useState<"unauthenticated" | "missing_profile" | "load_failed" | null>(null);
+  const [profileErrorDetail, setProfileErrorDetail] = useState<string>("");
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginLoading, setLoginLoading] = useState(false);
+  const [dialerOpen, setDialerOpen] = useState(false);
+  const [dialerInit, setDialerInit] = useState<string | undefined>(undefined);
+  const [dialerAutoDial, setDialerAutoDial] = useState(false);
+  const [unreadMsg, setUnreadMsg] = useState(0);
+  const [unreadVm, setUnreadVm] = useState(0);
+  const [unreadNotif, setUnreadNotif] = useState(0);
+  const [inbound, setInbound] = useState<InboundCall>(null);
+  const [avaOpen, setAvaOpen] = useState(false);
+  const [avaMode, setAvaMode] = useState<"voice" | "chat">("voice");
+  const [activeCallId, setActiveCallId] = useState<string | null>(null);
+  const endedCallIds = useRef<Map<string, number>>(new Map());
+  const openDialer = (n?: string, autoDial = false) => { setDialerInit(n); setDialerAutoDial(autoDial); setDialerOpen(true); };
+  const openSmsComposer = useCallback((detail: { number?: string; body?: string; autoSend?: boolean } = {}) => {
+    const qs = new URLSearchParams();
+    if (detail.number) qs.set("to", detail.number);
+    if (detail.body) qs.set("body", detail.body);
+    if (detail.autoSend) qs.set("autosend", "1");
+    navigate(`/mplanipret/messages${qs.toString() ? `?${qs.toString()}` : ""}`);
+  }, [navigate]);
+  const openAva = () => { setAvaMode(profile?.voice_agent_enabled ? "voice" : "chat"); setAvaOpen(true); };
+  const refreshFn = useRef<(() => Promise<void> | void) | null>(null);
+  const registerRefresh = (fn: (() => Promise<void> | void) | null) => { refreshFn.current = fn; };
+  const handlePull = async () => { if (refreshFn.current) await refreshFn.current(); };
+  const { ref: scrollRef, pullDist, refreshing, threshold } = usePullToRefresh(handlePull);
+
+  // Keep Microsoft 365 + Maestro OAuth sessions alive: refresh on boot, on
+  // foreground, and every 20 minutes so connections never silently drop.
+  useEffect(() => {
+    if (!profile?.user_id) return;
+    let last = 0;
+    const ping = () => {
+      if (Date.now() - last < 60_000) return;
+      last = Date.now();
+      supabase.functions.invoke("pp-connections-keepalive", { body: {} }).catch(() => {});
+    };
+    ping();
+    const onVis = () => { if (document.visibilityState === "visible") ping(); };
+    document.addEventListener("visibilitychange", onVis);
+    const iv = setInterval(ping, 20 * 60 * 1000);
+    return () => { document.removeEventListener("visibilitychange", onVis); clearInterval(iv); };
+  }, [profile?.user_id]);
+
+  // Startup end-to-end check of AVA tool routing + silent recovery of a broken
+  // Maestro link (backoff, then a toast asking for a full re-auth).
+  useEffect(() => {
+    if (!profile?.user_id) return;
+    let cancelled = false;
+    (async () => {
+      const res = await runAvaE2ECheckThrottled();
+      if (cancelled || !res || res.healthy) return;
+      if (res.missing.includes("maestro")) {
+        const rec = await recoverConnection("maestro");
+        if (!cancelled && !rec.ok && rec.needsReauth) {
+          toast.error(t("screens.shell.maestroDisconnected"), {
+            description: t("screens.shell.reconnectAccount"),
+            action: { label: t("screens.shell.connectionsLabel"), onClick: () => navigate("/mplanipret/connections") },
+          });
+          return;
+        }
+        if (rec.ok) return;
+      }
+      if (!cancelled) {
+        toast.warning(`AVA: ${res.missing.length} ${t("screens.shell.avaMissingLinks")}`, {
+          description: t("screens.shell.openDiagnostics"),
+          action: { label: t("common.view"), onClick: () => navigate("/mplanipret/connections") },
+        });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [profile?.user_id]);
+
+  const isDismissed = (id?: string | null) => {
+    if (!id) return false;
+    const ts = endedCallIds.current.get(id);
+    if (!ts) return false;
+    if (Date.now() - ts > 30_000) { endedCallIds.current.delete(id); return false; }
+    return true;
+  };
+
+  const onInboundRinging = useCallback((row: any) => {
+    const controlId = row.ns_callid ?? row.ns_call_id ?? row.call_id ?? row.id;
+    attachRestCall?.({
+      id: controlId,
+      direction: "in",
+      other: row.caller_name || row.from_name || row.from_number || row.number || "—",
+      status: "ringing-in",
+    });
+    setInbound({ call_id: controlId, from_number: row.from_number, caller_name: row.caller_name });
+  }, [attachRestCall]);
+
+  // A tap on the native iOS incoming-call banner must restore the ringing
+  // screen, not merely navigate to call history. The event may arrive before
+  // this shell/profile mounts on a cold launch, so consume the stored copy too.
+  useEffect(() => {
+    if (!profile?.user_id) return;
+    const consume = (detail: any) => {
+      const callId = String(detail?.callId ?? "");
+      if (!callId) return;
+      const action = String(detail?.action ?? "open");
+      const from = String(detail?.from ?? "");
+      attachRestCall?.({ id: callId, direction: "in", other: from || "Appel entrant", number: from, status: "ringing-in" });
+      setInbound({ call_id: callId, from_number: from, caller_name: from || undefined });
+      navigate("/mplanipret/calls", { replace: true });
+      if (action === "answer") {
+        try { (window as any).__ppPendingAnswer = { callId, ts: Date.now() }; } catch { /* ignore */ }
+        softphone.reregister();
+      } else if (action === "decline") {
+        softphone.hangup();
+        setInbound(null);
+      }
+      try { sessionStorage.removeItem("pp.pending-incoming-action.v1"); } catch { /* ignore */ }
+    };
+    const onAction = (event: Event) => consume((event as CustomEvent).detail);
+    window.addEventListener("pp:incoming-notification-action", onAction);
+    try {
+      const raw = sessionStorage.getItem("pp.pending-incoming-action.v1");
+      if (raw) consume(JSON.parse(raw));
+    } catch { /* ignore */ }
+    return () => window.removeEventListener("pp:incoming-notification-action", onAction);
+  }, [profile?.user_id, attachRestCall, navigate, softphone]);
+
+  useEffect(() => {
+    if (!profile?.user_id) return;
+    const onNativeInvite = (event: Event) => {
+      const invite = (event as CustomEvent).detail ?? {};
+      const callId = String(invite.callId ?? invite.call_id ?? "");
+      if (!callId) return;
+      const from = String(invite.from ?? invite.fromNumber ?? invite.callerNumber ?? "");
+      attachRestCall?.({ id: callId, direction: "in", other: from || "Appel entrant", number: from, status: "ringing-in" });
+      setInbound({ call_id: callId, from_number: from, caller_name: String(invite.callerName ?? "") || undefined });
+      navigate("/mplanipret/calls", { replace: true });
+    };
+    window.addEventListener("pp:sip-incoming-invite", onNativeInvite);
+    return () => window.removeEventListener("pp:sip-incoming-invite", onNativeInvite);
+  }, [profile?.user_id, attachRestCall, navigate]);
+  const onAiInsight = useCallback((row: any) => {
+    toast(t("toasts.aiAnalysisReady"), {
+      description: String(row.ai_summary ?? "").slice(0, 80),
+      duration: 8000,
+      action: { label: t("common.view"), onClick: () => navigate(`/mplanipret/calls?call=${row.id}`) },
+    });
+  }, [navigate, t]);
+  useRealtimeManager(profile?.user_id, { onInboundRinging, onAiInsight });
+  useAvaNavigation(profile?.user_id);
+
+  // React to open_dialer / open_sms_composer events broadcast by AVA tools.
+  useEffect(() => {
+    const onOpenDialer = (e: Event) => {
+      const detail = (e as CustomEvent).detail ?? {};
+      if (detail.number) openDialer(String(detail.number), !!detail.autoDial);
+    };
+    const onOpenSms = (e: Event) => {
+      const detail = (e as CustomEvent).detail ?? {};
+      openSmsComposer({ number: detail.number ? String(detail.number) : undefined, body: detail.body ? String(detail.body) : undefined, autoSend: !!detail.autoSend });
+    };
+    window.addEventListener("ava:open-dialer", onOpenDialer);
+    window.addEventListener("ava:open-sms-composer", onOpenSms);
+    window.addEventListener("ava:open-email-composer", onOpenSms);
+    return () => {
+      window.removeEventListener("ava:open-dialer", onOpenDialer);
+      window.removeEventListener("ava:open-sms-composer", onOpenSms);
+      window.removeEventListener("ava:open-email-composer", onOpenSms);
+    };
+  }, [openSmsComposer]);
+
+  // Aggressive: prefetch every mobile chunk immediately on mount so tab
+  // switches feel instant — especially Microsoft integration screens which
+  // are heavy and used often.
+  useEffect(() => { prefetchAllMplanipret(); }, []);
+
+
+  // Detect active outbound/in-progress call → FAB pulses red & hangs up on tap
+  useEffect(() => {
+    if (!profile?.user_id) return;
+    const refreshActive = async () => {
+      let q: any = supabase
+        .from("planipret_phone_calls")
+        .select("id,ns_call_id,ns_callid,status,direction,from_number,to_number,from_name,to_name,started_at,answered_at,created_at")
+        .in("status", ["active", "in_progress", "answered", "ringing", "outbound_ringing"])
+        .order("created_at", { ascending: false })
+        .limit(1);
+      const filters = [
+        profile.id ? `user_id.eq.${profile.id}` : null,
+        profile.user_id ? `user_id.eq.${profile.user_id}` : null,
+        profile.ns_extension ? `extension.eq.${profile.ns_extension}` : null,
+        profile.extension ? `extension.eq.${profile.extension}` : null,
+      ].filter(Boolean).join(",");
+      if (filters) q = q.or(filters);
+      const { data } = await q.maybeSingle();
+      const row = data as any;
+      const controlId = row?.ns_callid ?? row?.ns_call_id ?? row?.id ?? null;
+      if (isDismissed(controlId) || isDismissed(row?.id)) {
+        setActiveCallId(null);
+        attachRestCall?.(null);
+        return;
+      }
+      const createdAt = row?.created_at ? new Date(row.created_at).getTime() : 0;
+      const isRinging = String(row?.status ?? "").includes("ring");
+      if (row && isRinging && createdAt && Date.now() - createdAt > 120_000) {
+        setActiveCallId(null);
+        attachRestCall?.(null);
+        return;
+      }
+      setActiveCallId(controlId);
+      if (!row?.id) attachRestCall?.(null);
+      if (row?.id) {
+        const out = row.direction === "outbound" || row.direction === "out";
+        attachRestCall?.({
+          id: controlId,
+          direction: out ? "out" : "in",
+          other: (out ? row.to_name || row.to_number : row.from_name || row.from_number) || "—",
+          number: (out ? row.to_number : row.from_number) || "",
+          status: isRinging ? (out ? "ringing-out" : "ringing-in") : "active",
+          startedAt: row.answered_at ? new Date(row.answered_at).getTime() : row.started_at ? new Date(row.started_at).getTime() : Date.now(),
+        });
+      }
+    };
+    refreshActive();
+    const ch = supabase
+      .channel(`mplanipret-active-call-${Math.random().toString(36).slice(2, 8)}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "planipret_phone_calls" }, refreshActive)
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [profile?.user_id, attachRestCall]);
+
+  const hangupActive = async () => {
+    if (!activeCallId) return;
+    const id = activeCallId;
+    endedCallIds.current.set(id, Date.now());
+    setActiveCallId(null);
+    attachRestCall?.(null);
+    try { softphone.hangup(); } catch {}
+    const { error } = await supabase.functions.invoke("pp-ns-calls", { body: { action: "disconnect", call_id: id } });
+    if (error) toast.error(t("dialer.hangupFailed")); else toast.success(t("dialer.hungUp"));
+    try {
+      const nowIso = new Date().toISOString();
+      await supabase
+        .from("planipret_phone_calls")
+        .update({ status: "ended", ended_at: nowIso } as any)
+        .or(`id.eq.${id},ns_callid.eq.${id},ns_call_id.eq.${id}`);
+    } catch {}
+  };
+
+  useEffect(() => {
+    if (!profile?.user_id) return;
+    const sb: any = supabase;
+    const refreshCounts = async () => {
+      const [{ count: mc }, { count: vc }, { count: nc }] = await Promise.all([
+        supabase.from("planipret_phone_messages").select("id", { count: "exact", head: true }).eq("user_id", profile.user_id).eq("direction", "inbound").is("read_at", null),
+        supabase.from("planipret_voicemails").select("id", { count: "exact", head: true }).eq("user_id", profile.user_id).eq("folder", "inbox").eq("is_read", false),
+        sb.from("planipret_ava_notifications").select("id", { count: "exact", head: true }).eq("user_id", profile.user_id).is("read_at", null),
+      ]);
+      setUnreadMsg(mc ?? 0); setUnreadVm(vc ?? 0); setUnreadNotif(nc ?? 0);
+    };
+    refreshCounts();
+
+    // In-app toast alerts for new inbound events (message, voicemail, missed call).
+    // Deep-links straight to the relevant tab so the user can act immediately.
+    const onNewSms = (payload: any) => {
+      const row = payload.new || {};
+      if (row.direction !== "inbound") return;
+      const from = row.from_number || row.contact_number || row.sender || "";
+      toast(t("toasts.newSms") || "Nouveau SMS", {
+        description: `${from}${row.body ? " — " + String(row.body).slice(0, 60) : ""}`,
+        duration: 6000,
+        action: { label: t("common.view") || "Voir", onClick: () => navigate("/mplanipret/messages") },
+      });
+    };
+    const onNewVm = (payload: any) => {
+      const row = payload.new || {};
+      if (row.folder && row.folder !== "inbox") return;
+      const from = row.from_number || row.caller || "";
+      toast(t("toasts.newVoicemail") || "Nouvelle boîte vocale", {
+        description: from,
+        duration: 7000,
+        action: { label: t("common.listen") || "Écouter", onClick: () => navigate("/mplanipret/calls?tab=voicemail") },
+      });
+    };
+    const onNewMissed = (payload: any) => {
+      const row = payload.new || {};
+      const status = String(row.status || "").toLowerCase();
+      if (row.direction !== "inbound" || !(status.includes("miss") || status === "no-answer" || status === "abandoned")) return;
+      const from = row.from_name || row.from_number || "";
+      toast(t("toasts.missedCall") || "Appel manqué", {
+        description: from,
+        duration: 6000,
+        action: { label: t("common.view") || "Voir", onClick: () => navigate("/mplanipret/calls") },
+      });
+    };
+    const onNewNotif = (payload: any) => {
+      const row = payload.new || {};
+      toast(row.title || "Notification", {
+        description: row.body ? String(row.body).slice(0, 80) : undefined,
+        duration: 6000,
+        action: { label: t("common.view") || "Voir", onClick: () => navigate("/mplanipret/notifications") },
+      });
+    };
+
+    const ch = supabase
+      .channel(`mplanipret-badges-${Math.random().toString(36).slice(2, 8)}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "planipret_phone_messages", filter: `user_id=eq.${profile.user_id}` }, (p: any) => { if (p.eventType === "INSERT") onNewSms(p); refreshCounts(); })
+      .on("postgres_changes", { event: "*", schema: "public", table: "planipret_voicemails", filter: `user_id=eq.${profile.user_id}` }, (p: any) => { if (p.eventType === "INSERT") onNewVm(p); refreshCounts(); })
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "planipret_phone_calls", filter: `user_id=eq.${profile.user_id}` }, onNewMissed)
+      .on("postgres_changes", { event: "*", schema: "public", table: "planipret_ava_notifications", filter: `user_id=eq.${profile.user_id}` }, (p: any) => { if (p.eventType === "INSERT") onNewNotif(p); refreshCounts(); })
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [profile?.user_id, location.pathname, navigate, t]);
+
+  const loadProfile = async (attempt = 0) => {
+    if (attempt === 0) {
+      setLoading(true);
+      setAccessError(null);
+    }
+    let session: any = null;
+    try {
+      const r: any = await ppWithTimeout(supabase.auth.getSession(), 8000, "get_session");
+      session = r?.data?.session ?? null;
+    } catch (e) {
+      console.warn("[PlanipretMobile] getSession timeout", e);
+      setAccessError("load_failed");
+      setLoading(false);
+      return;
+    }
+    const user = session?.user ?? null;
+    if (!user) {
+      recordRedirect(location.pathname, ROUTES.MPLANIPRET, "PlanipretMobile.loadProfile", "no auth session — stay inside mobile app");
+      setProfile(null);
+      setAccessError("unauthenticated");
+      setLoading(false);
+      return;
+    }
+    // Capture Microsoft 365 tokens once after Azure SSO redirect.
+    try {
+      const captured = sessionStorage.getItem("pp_ms_captured");
+      if (session.provider_token && captured !== session.access_token) {
+        await supabase.functions.invoke("ms365-store-session", {
+          body: {
+            provider_token: session.provider_token,
+            provider_refresh_token: (session as any).provider_refresh_token ?? null,
+            expires_in: 3600,
+            email: user.email,
+            display_name: (user.user_metadata as any)?.full_name ?? (user.user_metadata as any)?.name ?? null,
+          },
+        });
+        sessionStorage.setItem("pp_ms_captured", session.access_token);
+      }
+    } catch (_) { /* non-blocking */ }
+    const loadProfileViaFunction = async (): Promise<any> => {
+      let currentSession = session;
+      if (!currentSession?.access_token) {
+        const { data: refreshed } = await supabase.auth.refreshSession();
+        currentSession = refreshed?.session ?? null;
+      }
+      if (!currentSession?.access_token) throw new Error("no_session");
+
+      const { data: fnData, error: fnError }: any = await ppWithTimeout(supabase.functions.invoke("pp-mobile-profile", {
+        body: { fields: "safe" },
+        headers: { Authorization: `Bearer ${currentSession.access_token}` },
+      }), 10000, "profile_fn");
+      if (fnError) throw fnError;
+      const fnProfile = (fnData as any)?.profile ?? null;
+      if (!fnProfile) throw new Error((fnData as any)?.error ?? "missing_profile");
+      return fnProfile;
+    };
+
+    let data: any = null;
+    let error: any = null;
+
+    // 1) Stable path: direct RLS-backed profile read. Backend function is fallback only.
+    try {
+      const direct: any = await ppWithTimeout(supabase.from("planipret_profiles").select(PLANIPRET_PROFILE_BOOT_COLUMNS).eq("user_id", user.id).maybeSingle(), 10000, "profile_query");
+      data = direct.data as any;
+      error = direct.error;
+    } catch (directErr: any) {
+      error = directErr;
+    }
+
+    if (error || !data) {
+      const directMsg = error?.message ?? "missing_profile";
+      try {
+        data = await loadProfileViaFunction();
+        error = null;
+      } catch (fnErr: any) {
+        const msg = fnErr?.message ?? String(fnErr);
+        if (msg === "no_session") {
+          recordRedirect(location.pathname, ROUTES.MPLANIPRET, "PlanipretMobile.loadProfile", "no session for profile boot");
+          setProfile(null);
+          setAccessError("unauthenticated");
+          setLoading(false);
+          return;
+        }
+        console.error("[PlanipretMobile] profile fallback failed:", { direct: directMsg, backend: msg });
+        error = { message: directMsg !== "missing_profile" ? directMsg : msg, code: "profile_boot_failed" };
+      }
+    }
+
+    if (!data && !error) {
+      recordRedirect(location.pathname, ROUTES.MPLANIPRET, "PlanipretMobile.loadProfile", "missing planipret_profiles row");
+      setAccessError("missing_profile");
+      setLoading(false);
+      return;
+    }
+
+    if (!data && error?.message === "no_session") {
+        recordRedirect(location.pathname, ROUTES.MPLANIPRET, "PlanipretMobile.loadProfile", "no session for profile boot");
+        setProfile(null);
+        setAccessError("unauthenticated");
+        setLoading(false);
+        return;
+    }
+
+    if (error) {
+      console.error("[PlanipretMobile] profile query error:", error.message, (error as any).code);
+      setProfileErrorDetail(error.message || "");
+      recordRedirect(location.pathname, ROUTES.MPLANIPRET, "PlanipretMobile.loadProfile", "profile load failed");
+      setAccessError("load_failed");
+      setLoading(false);
+      return;
+    }
+    if (!data) {
+      recordRedirect(location.pathname, ROUTES.MPLANIPRET, "PlanipretMobile.loadProfile", "missing planipret_profiles row");
+      setAccessError("missing_profile");
+      setLoading(false);
+      return;
+    }
+    setAccessError(null);
+    setProfileErrorDetail("");
+    setProfile(data);
+    setLoading(false);
+    void supabase
+      .from("planipret_profiles")
+      .select(PLANIPRET_PROFILE_SAFE_COLUMNS)
+      .eq("user_id", user.id)
+      .maybeSingle()
+      .then(async ({ data: full, error: fullError }) => {
+        if (full) setProfile(full);
+        else if (fullError) {
+          try {
+            const fallbackFull = await loadProfileViaFunction();
+            if (fallbackFull) setProfile(fallbackFull);
+          } catch { /* non-blocking */ }
+        }
+      });
+
+    // Hydrate FR/EN from DB (source of truth across devices)
+    if (data.language === "fr" || data.language === "en") {
+      if (data.language !== lang) setLang(data.language);
+    } else {
+      // Fallback: no language stored → use current detected lang and persist back
+      const fallback: "fr" | "en" = lang === "en" ? "en" : "fr";
+      setLang(fallback);
+      try {
+        await supabase.from("planipret_profiles").update({ language: fallback }).eq("user_id", user.id);
+      } catch { /* non-blocking */ }
+    }
+  };
+
+  const submitMobileLogin = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!loginEmail || !loginPassword) return;
+    setLoginLoading(true);
+    const { error } = await supabase.auth.signInWithPassword({ email: loginEmail.trim(), password: loginPassword });
+    setLoginLoading(false);
+    if (error) {
+      toast.error(error.message || t("home.connectionImpossible"));
+      return;
+    }
+    // On native, trigger the OS permission prompts directly (no in-app primer page).
+    // On web, this is a no-op.
+    void requestPermissionsAfterLogin();
+    toast.success(t("auth.success"));
+    setLoading(true);
+    await loadProfile();
+  };
+
+  useEffect(() => {
+    loadProfile();
+    if (location.pathname === ROUTES.MPLANIPRET) navigate(ROUTES.MPLANIPRET_HOME, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Bootstrap push listeners + prompt primer once the profile is loaded (native only).
+  useEffect(() => {
+    if (!profile?.user_id) return;
+    const ext = profile?.ns_extension || profile?.extension || "";
+    void bootstrapPushIfNative(ext);
+    void requestPermissionsAfterLogin(ext);
+    // Warm the directory/personal/shared/Maestro caches in parallel so the
+    // dialer's Search tab and Contacts render from memory instantly.
+    const actions: Array<"list" | "shared" | "directory" | "maestro"> = ["list", "shared", "directory"];
+    if (profile?.maestro_broker_id) actions.push("maestro");
+    prefetchPpContacts(actions);
+  }, [profile?.user_id, profile?.ns_extension, profile?.extension, profile?.maestro_broker_id]);
+
+
+  // Watchdog: if boot stalls (slow/blocked network on review devices), surface
+  // an actionable error screen instead of an infinite loading state.
+  useEffect(() => {
+    if (!loading) return;
+    const id = setTimeout(() => {
+      setLoading(false);
+      setAccessError((prev) => prev ?? "load_failed");
+    }, 15000);
+    return () => clearTimeout(id);
+  }, [loading]);
+
+  if (loading) return <div className="min-h-screen flex items-center justify-center" style={{ background: "#0A1425", color: "#2E9BDC", fontFamily: "Urbanist,sans-serif" }}>{t("common.loading")}</div>;
+
+  if (accessError === "unauthenticated") {
+    return (
+      <Frame forceDark>
+        <MobileAuthScreen onLoggedIn={loadProfile} />
+      </Frame>
+    );
+  }
+
+  if (accessError) {
+    return (
+      <Frame>
+        <div className="h-full flex items-center justify-center p-6" style={{ background: "var(--pp-bg-base)" }}>
+          <div className="pp-card p-6 text-center max-w-xs" style={{ padding: 24 }}>
+            <div className="w-14 h-14 mx-auto rounded-full flex items-center justify-center mb-4" style={{ background: "rgba(46,155,220,0.12)", color: "var(--pp-brand-accent)" }}>
+              <Lock className="w-7 h-7" />
+            </div>
+            <h2 style={{ fontFamily: "Inter,sans-serif", fontWeight: 700, fontSize: 18, color: "var(--pp-text-primary)", marginBottom: 8 }}>
+              {t("access.missingTitle")}
+            </h2>
+            <p style={{ fontSize: 13, color: "var(--pp-text-secondary)", marginBottom: 16 }}>
+              {accessError === "missing_profile"
+                ? t("access.missingProfile")
+                : t("access.loadFailed")}
+            </p>
+            {profileErrorDetail && accessError !== "missing_profile" && (
+              <p style={{ fontSize: 11, opacity: 0.7, color: "var(--pp-text-secondary)", marginBottom: 12, wordBreak: "break-word" }}>{profileErrorDetail}</p>
+            )}
+            <button onClick={() => { setProfileErrorDetail(""); setAccessError(null); setLoading(true); void loadProfile(); }} className="pp-btn-primary inline-block">{t("common.retry")}</button>
+          </div>
+        </div>
+      </Frame>
+    );
+  }
+
+  if (profile && profile.mobile_app_enabled === false) {
+    return (
+      <Frame>
+        <div className="h-full flex items-center justify-center p-6" style={{ background: "var(--pp-bg-base)" }}>
+          <div className="pp-card p-6 text-center max-w-xs" style={{ padding: 24 }}>
+            <div className="w-14 h-14 mx-auto rounded-full flex items-center justify-center mb-4" style={{ background: "rgba(46,155,220,0.12)", color: "var(--pp-brand-accent)" }}>
+              <Lock className="w-7 h-7" />
+            </div>
+            <h2 style={{ fontFamily: "Inter,sans-serif", fontWeight: 700, fontSize: 18, color: "var(--pp-text-primary)", marginBottom: 8 }}>{t("access.notActivated")}</h2>
+            <p style={{ fontSize: 13, color: "var(--pp-text-secondary)", marginBottom: 16 }}>{t("access.notActivatedDesc")}</p>
+            <a href="mailto:support@avastatistic.ca" className="pp-btn-primary inline-block">{t("access.contactSupport")}</a>
+          </div>
+        </div>
+      </Frame>
+    );
+  }
+
+
+  return (
+    <Frame>
+      <div className="h-full flex flex-col relative overflow-hidden" style={{ background: "var(--pp-bg-base)" }}>
+
+        {/* Top brand header — AVA (left) · Planiprêt (center) · Settings (right) */}
+        <header
+          className="relative flex items-center px-4 pp-mobile-header"
+          style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 6px)", paddingBottom: 6 }}
+        >
+
+
+          {/* AVA + Planiprêt logos — left */}
+          <div className="flex items-center gap-2 min-w-0">
+            <PlanipretBadge />
+            <span className="flex items-center gap-1.5">
+              <span className="pp-live-dot" />
+              <span style={{ fontSize: 9, color: "var(--pp-success)", fontWeight: 700, letterSpacing: "0.05em" }}>REST</span>
+            </span>
+          </div>
+
+          {/* Settings + notifications + profile — right */}
+          <MobileHeaderControls profile={profile} reloadProfile={loadProfile} />
+
+        </header>
+
+        <UniversalSearchBar />
+        <div ref={scrollRef} className="flex-1 overflow-y-auto pb-[130px]">
+          <PullIndicator pullDist={pullDist} refreshing={refreshing} threshold={threshold} color={ACCENT} />
+          <PlanipretErrorBoundary key={location.pathname}>
+            <Suspense fallback={<MobileScreenSkeleton />}>
+              <Outlet context={{ profile, reloadProfile: loadProfile, openDialer, openAva, registerRefresh, softphone } satisfies PlanipretMobileContext} />
+            </Suspense>
+          </PlanipretErrorBoundary>
+        </div>
+        <SessionTimeoutModal />
+        {profile && <PrivacyConsentGate profile={profile} onAccepted={loadProfile} />}
+        {profile && profile.consent_accepted_at && !profile.onboarding_completed && (
+          <OnboardingTutorial profile={profile} onDone={loadProfile} />
+        )}
+
+        {/* Right FAB — uniquement sur Home et Calls */}
+        {(/^\/mplanipret(\/(home|calls)(\/|$)?)?$/.test(location.pathname) || location.pathname === "/mplanipret") && (
+        <button onClick={activeCallId ? hangupActive : () => setDialerOpen(true)}
+          className="absolute z-20 rounded-full flex items-center justify-center text-white active:scale-95 transition"
+          style={{
+            right: 18, bottom: "calc(env(safe-area-inset-bottom, 0px) + 116px)",
+            background: activeCallId
+              ? "linear-gradient(135deg, #5A1010, #E84C4C)"
+              : "linear-gradient(135deg, #1A4A8A, #2E9BDC)",
+            boxShadow: activeCallId
+              ? "0 4px 20px rgba(232,76,76,0.6)"
+              : "0 4px 20px rgba(46,155,220,0.55)",
+            animation: activeCallId ? "pp-pulse-red 1.5s infinite" : undefined,
+            width: 50, height: 50,
+          }}
+          aria-label={activeCallId ? t("dialer.hangup") : t("dialer.dialNumber")}>
+          {activeCallId ? <PhoneOff className="w-5 h-5" /> : <PhoneIcon className="w-5 h-5" />}
+        </button>
+        )}
+
+
+        {/* Tab bar (5 tabs) */}
+        <nav className="absolute bottom-[22px] inset-x-0 grid grid-cols-5 z-10 pp-mobile-tabbar"
+          style={{ height: 84 }}>
+
+          {TABS.map((tabItem) => {
+            const badge = tabItem.to.endsWith("/messages") ? unreadMsg : 0;
+            const isAva = tabItem.to.endsWith("/ava");
+            return (
+              <NavLink key={tabItem.to} to={tabItem.to}
+                onTouchStart={() => prefetchRoute(tabItem.to)}
+                onMouseEnter={() => prefetchRoute(tabItem.to)}
+                className={`relative flex flex-col items-center justify-center gap-1 text-[11px] font-semibold pt-2 ${isAva ? "ava-tab-center" : ""}`}
+                style={({ isActive }) => ({ color: isActive ? "var(--pp-brand-accent)" : "var(--pp-text-faint)" })}>
+                {({ isActive }) => (
+                  <>
+                    {isActive && !isAva && (
+                      <span className="absolute top-1 w-1 h-1 rounded-full" style={{ background: "var(--pp-brand-accent)" }} />
+                    )}
+                    <div
+                      className="relative flex items-center justify-center transition-all duration-200"
+                      style={isAva ? {
+                        width: isActive ? 58 : 54,
+                        height: isActive ? 58 : 54,
+                        borderRadius: "50%",
+                        background: isActive
+                          ? "linear-gradient(135deg, #7C3AED, #2E9BDC)"
+                          : "var(--pp-bg-elevated)",
+                        border: isActive ? "2px solid rgba(255,255,255,0.15)" : "1px solid var(--pp-bg-border-2)",
+                        boxShadow: isActive
+                          ? "0 6px 20px rgba(124,58,237,0.5)"
+                          : "0 2px 8px rgba(0,0,0,0.12)",
+                        marginTop: -12,
+                      } : {}}>
+                      <tabItem.Icon
+                        className={isAva ? "w-[30px] h-[30px]" : "w-[26px] h-[26px]"}
+                        strokeWidth={isActive ? 2.4 : 1.8}
+                        style={{ color: isAva ? (isActive ? "#fff" : "var(--pp-brand-accent)") : undefined }}
+                      />
+                      {badge > 0 && (
+                        <span className="absolute -top-1.5 -right-2 min-w-[16px] h-4 px-1 rounded-full text-white text-[9px] font-bold flex items-center justify-center"
+                          style={{ background: "var(--pp-danger)" }}>
+                          {badge > 9 ? "9+" : badge}
+                        </span>
+                      )}
+                    </div>
+                    {!isAva && <span style={{ letterSpacing: "0.02em" }}>{"labelKey" in tabItem ? t(tabItem.labelKey) : ""}</span>}
+                  </>
+                )}
+              </NavLink>
+            );
+          })}
+        </nav>
+
+
+        {/* Powered by AVA footer — discret */}
+        <div className="absolute bottom-0 inset-x-0 h-[40px] flex flex-col items-center justify-center z-10 pp-mobile-footer" style={{ gap: 1 }}>
+          <div className="flex items-center gap-2">
+            <span style={{ fontFamily: "Urbanist,sans-serif", fontSize: 7, color: "var(--pp-text-muted)", letterSpacing: "0.14em", fontWeight: 600 }}>{t("footer.poweredBy")}</span>
+            <div className="relative flex items-center justify-center" style={{ width: 24, height: 24 }}>
+              <div className="absolute inset-0 rounded-full" style={{ background: "radial-gradient(circle, rgba(124,58,237,0.45) 0%, rgba(46,155,220,0.18) 50%, transparent 75%)", filter: "blur(5px)", animation: "ava-footer-pulse 3s ease-in-out infinite" }} />
+              <div className="absolute inset-0 rounded-full flex items-center justify-center overflow-hidden" style={{ background: "conic-gradient(from 0deg, #7C3AED, #2E9BDC, #00D4AA, #7C3AED)", padding: 1.5, animation: "ava-footer-spin 6s linear infinite" }}>
+                <div className="w-full h-full rounded-full flex items-center justify-center" style={{ background: "var(--pp-bg-surface, #0A1628)", color: "#fff", fontWeight: 800, fontSize: 8, fontFamily: "Urbanist,sans-serif", letterSpacing: "0.02em" }}>AVA</div>
+              </div>
+            </div>
+            <span style={{ fontFamily: "Urbanist,sans-serif", fontSize: 12, letterSpacing: "0.06em", fontWeight: 800, background: "linear-gradient(90deg,#7C3AED,#2E9BDC)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", backgroundClip: "text" }}>AVA</span>
+          </div>
+          <span style={{ fontSize: 6, color: "var(--pp-text-faint)", letterSpacing: "0.08em" }}>· {t("footer.developedBy")}</span>
+          <style>{`
+            @keyframes ava-footer-pulse { 0%,100% { opacity: 0.5; transform: scale(1); } 50% { opacity: 0.9; transform: scale(1.08); } }
+            @keyframes ava-footer-spin { to { transform: rotate(360deg); } }
+          `}</style>
+        </div>
+
+
+
+        <Dialer open={dialerOpen} autoDial={dialerAutoDial} onClose={() => { setDialerOpen(false); setDialerAutoDial(false); }} initial={dialerInit} openMessages={(n) => { setDialerOpen(false); openSmsComposer({ number: n }); }} softphone={softphone} maestroConfigured={Boolean(profile?.maestro_broker_id)} />
+        <PpActiveCallScreen softphone={softphone} />
+        {/* A live WebRTC session owns the UI: PpActiveCallScreen already shows
+            the ringing/answer + keypad screen, so the REST overlay must not
+            steal the tap. */}
+        <InboundCallOverlay
+          call={sipCallLive ? null : inbound}
+          onClose={() => setInbound(null)}
+          onAnswer={async () => { await softphone.answer(); }}
+          onReject={() => { softphone.hangup(); }}
+        />
+
+        {avaOpen && profile?.user_id && (
+          profile.voice_agent_enabled && avaMode === "voice"
+            ? (
+              <Suspense fallback={null}>
+                <AvaVoiceAgent
+                  userId={profile.user_id}
+                  onClose={() => setAvaOpen(false)}
+                  onFallbackToChat={() => setAvaMode("chat")}
+                />
+              </Suspense>
+            )
+            : <AvaChatSheet userId={profile.user_id} onClose={() => setAvaOpen(false)} />
+        )}
+        <OfflineBanner />
+      </div>
+    </Frame>
+  );
+}
+
+function Frame({ children, forceDark = false }: { children: React.ReactNode; forceDark?: boolean }) {
+  const { theme } = useMplanipretTheme();
+  const frameTheme = forceDark ? "dark" : theme;
+  const lockedHeightRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    const readHeight = () => Math.round(window.innerHeight || root.clientHeight || 844);
+    const isTyping = () => ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName ?? "");
+    const lockHeight = (force = false) => {
+      const next = readHeight();
+      if (force || !lockedHeightRef.current || !isTyping()) {
+        lockedHeightRef.current = next;
+        root.style.setProperty("--pp-app-height", `${next}px`);
+      }
+    };
+    lockHeight(true);
+    const onResize = () => lockHeight(false);
+    const onOrientation = () => window.setTimeout(() => lockHeight(true), 350);
+    window.addEventListener("resize", onResize);
+    window.addEventListener("orientationchange", onOrientation);
+    return () => {
+      window.removeEventListener("resize", onResize);
+      window.removeEventListener("orientationchange", onOrientation);
+    };
+  }, []);
+
+  return (
+    <div className="planipret-scope planipret-mobile-scope planipret-mobile-frame-bg min-h-screen w-full flex items-center justify-center md:p-6"
+      data-pp-theme={frameTheme}
+      style={{
+        height: "var(--pp-app-height, 100dvh)",
+        minHeight: "var(--pp-app-height, 100dvh)",
+        background: frameTheme === "dark"
+          ? "linear-gradient(160deg, #060D1A 0%, #0A1425 100%)"
+          : "linear-gradient(160deg, #EEF2F8 0%, #DCE3EC 100%)",
+      }}>
+      <div id="pp-mobile-frame" className="planipret-mobile-phone overflow-hidden w-full h-full md:w-[390px] md:h-[844px] md:rounded-[44px] relative"
+        style={{
+          background: "var(--pp-bg-base)",
+          border: "1px solid var(--pp-bg-border-2)",
+          boxShadow: frameTheme === "dark"
+            ? "0 0 0 6px #08111F, 0 40px 120px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.04)"
+            : "0 0 0 6px #FFFFFF, 0 40px 120px rgba(15,27,61,0.18), inset 0 1px 0 rgba(255,255,255,0.6)",
+        }}>
+        <div className="pp-aurora-bg" aria-hidden="true" />
+        <div className="relative z-[1] h-full w-full">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+

@@ -271,6 +271,14 @@ final class PjsipEngine {
         acc.contact_rewrite_method = 2
         acc.use_srtp = PJMEDIA_SRTP_OPTIONAL
         acc.srtp_secure_signaling = 0
+        // NetSapiens répond en RTP/SAVP même à une offre RTP/AVP sans crypto :
+        // il invente alors son propre tag (a=crypto:3) que PJSIP rejette
+        // (PJMEDIA_SRTP_ESDPINCRYPTOTAG) → média détruit = appel sortant muet.
+        // On duplique donc les lignes crypto dans l'offre AVP initiale.
+        acc.srtp_optional_dup_offer = pj_bool_t(1)
+        // Les session timers déclenchaient un UPDATE qui re-négociait le SDP en
+        // cours d'appel et détruisait le flux audio. Le keep-alive TCP suffit.
+        acc.use_timer = PJSUA_SIP_TIMER_INACTIVE
         // Un seul `+sip.instance` : on laisse RFC5626 le générer avec NOTRE
         // UUID stable au lieu d'ajouter un second param manuel (pjsua émettait
         // sinon un doublon dont un UUID à zéros).
