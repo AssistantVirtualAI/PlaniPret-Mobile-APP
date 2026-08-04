@@ -43,7 +43,6 @@ import {
   stopPlanipretSipKeepAlive,
   type PpNativeSipStatus,
   setPlanipretNativeCallActive,
-  declarePlanipretNativeEngineOwnsAor,
 } from "@/lib/planipret/sip/nativePpSipService";
 import { addDedupedCapListener } from "@/lib/planipret/sip/capListeners";
 import { checkSipBackendRegistration } from "@/lib/planipret/sip/sipBackendCheck";
@@ -1296,14 +1295,14 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       return false;
     }
 
-    // Un preclaim natif n'est pas une inscription SIP. Si PJSIP a perdu son
-    // REGISTER, il ne doit jamais absorber le premier tap CallKit et attendre
-    // 5 secondes un INVITE TLS qui ne peut pas arriver. Rendre immédiatement
-    // l'AOR au chemin WSS déjà initialisé, puis poursuivre la réponse ci-dessous.
+    // Une perte momentanée du REGISTER natif ne permet pas de migrer l'appel
+    // déjà présenté par PushKit vers WSS. Relancer le REGISTER TLS sans céder
+    // l'AOR évite le double REGISTER et le rebuild destructif observés au log.
     if (nativeOwnsAor()) {
-      console.warn("[answer] PJSIP owns AOR but is not registered → immediate WSS handoff");
-      releaseAorFromNative("answer_native_not_registered");
-      await declarePlanipretNativeEngineOwnsAor(false);
+      console.warn("[answer] PJSIP owns AOR but is not registered → TLS recovery only");
+      await nativeSip.refreshState();
+      if (nativeSip.isRegistered()) return nativeSip.answer();
+      return false;
     }
 
     const sipSnap = ppSipProvider.getSnapshot();

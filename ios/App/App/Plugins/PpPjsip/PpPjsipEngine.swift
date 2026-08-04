@@ -322,10 +322,11 @@ final class PjsipEngine {
                     completion(.failure(NSError(domain: "PpPjsip", code: Int(status), userInfo: [NSLocalizedDescriptionKey: "pjsua_call_make_call failed"])))
                     return
                 }
-                self.outgoingPending = false
                 self.activeCall = newCall
                 self.muted = false
                 self.outgoingCall = newCall
+                self.outgoingPending = false
+
                 NSLog("[PpPjsip] outgoing INVITE → %@ callId=%d", target, newCall)
                 DispatchQueue.main.async {
                     NotificationCenter.default.post(
@@ -340,25 +341,20 @@ final class PjsipEngine {
 
     func answer(callId: String?, completion: @escaping (Bool) -> Void) {
         let target = resolveCall(callId)
-        // Une intention de réponse ne peut être mise en attente que si le
-        // compte TLS est réellement enregistré. Sinon aucun INVITE PJSIP
-        // ne peut arriver et le timer de 5 s fait échouer CallKit pour rien.
-        guard registered else {
-            NSLog("[PpPjsip] answer refusé immédiatement — compte TLS non enregistré")
-            NotificationCenter.default.post(name: .ppPjsipAnswerResult, object: nil, userInfo: ["ok": false])
-            completion(false)
-            return
-        }
         guard target >= 0 else {
             // L'utilisateur a décroché depuis CallKit avant l'arrivée de
-            // l'INVITE SIP (push VoIP plus rapide que le réseau SIP).
-            // On mémorise l'intention : handleIncomingCall répondra 200 OK.
-            NSLog("[PpPjsip] answer avant INVITE → pendingAnswer armé")
+            // l'INVITE SIP. PushKit peut précéder le REGISTER 200 OK : refuser
+            // ici faisait échouer CallKit instantanément. On garde l'intention
+            // et on relance le REGISTER TLS sur le worker PJSIP.
+            NSLog("[PpPjsip] answer avant INVITE → pendingAnswer armé registered=%@", registered ? "true" : "false")
             lock.lock()
             pendingAnswerRequest = true
             pendingAnswerCallId = callId
             pendingAnswerCompletions.append(completion)
             lock.unlock()
+            if !registered, accId != pjsua_acc_id(-1) {
+                setRegistration(true)
+            }
             // Si aucun INVITE TLS n'arrive rapidement, demander au JS de
             // réaligner immédiatement le device NetSapiens avant d'expirer.
             DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 5.0) { [weak self] in
@@ -395,6 +391,7 @@ final class PjsipEngine {
             done = true
             self.lock.unlock()
             if already { return }
+            NotificationCenter.default.post(name: .ppPjsipAnswerResult, object: nil, userInfo: ["ok": ok])
             completion(ok)
         }
         thread.run { [weak self] in
@@ -404,9 +401,7 @@ final class PjsipEngine {
                 if done { return }
                 let status = pjsua_call_answer(target, 200, nil, nil)
                 NSLog("[PpPjsip] answer callId=%d status=%d", target, status)
-                let ok = status == pj_status_t(0)
-                NotificationCenter.default.post(name: .ppPjsipAnswerResult, object: nil, userInfo: ["ok": ok])
-                finish(ok)
+                finish(status == pj_status_t(0))
             }
         }
         // Filet de sécurité : si le timer PJSIP ne s'exécute pas (thread non
@@ -585,7 +580,7 @@ final class PjsipEngine {
         if hasPending {
             let status = pjsua_call_answer(callId, 200, nil, nil)
             NSLog("[PpPjsip] pendingAnswer → 200 OK callId=%d status=%d", callId, status)
-                        let ok = status == pj_status_t(0)
+            let ok = status == pj_status_t(0)
             NotificationCenter.default.post(name: .ppPjsipAnswerResult, object: nil, userInfo: ["ok": ok])
             pendingCompletions.forEach { $0(ok) }
         }
