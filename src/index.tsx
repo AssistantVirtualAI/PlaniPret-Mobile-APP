@@ -1,5 +1,10 @@
 /**
  * Planiprêt Mobile — Standalone Capacitor app entry
+ *
+ * IMPORTANT: App.tsx (version Lovable) ne contient PAS de BrowserRouter.
+ * Le BrowserRouter est fourni ici dans index.tsx, une seule fois.
+ * Ne jamais ajouter un second BrowserRouter dans App.tsx — double-routeur
+ * = invariant React Router qui crash l'app sur iOS (Rs@vendor.js:49:669).
  */
 import React from 'react';
 import { render as legacyRender } from 'react-dom';
@@ -150,7 +155,7 @@ async function hideSplash(reason: string) {
 async function bootstrap() {
   // Bump this on every native-affecting change so Xcode logs prove which
   // bundle the device is actually running.
-  console.log('[PP] BUILD MARKER pp-build-2026-08-04-boot-retry');
+  console.log('[PP] BUILD MARKER pp-build-2026-08-04-fix-double-router');
   console.log('[PP] bootstrap:start', { native: Capacitor.isNativePlatform(), proto: window.location.protocol });
   // Safety net: never leave the user staring at the launch image, even if the
   // first React commit never happens (render error, slow chunk, no network).
@@ -160,6 +165,10 @@ async function bootstrap() {
     if (!container) throw new Error('Root element not found');
     (window as BootWindow).__PP_REACT_BOOT_ATTEMPTED__ = true;
     if (container.textContent?.trim() === 'Démarrage...') container.innerHTML = '';
+
+    // BrowserRouter est fourni ICI — App.tsx (version Lovable mobile) n'en a pas.
+    // Un seul routeur par arbre React, sinon React Router v6 lance une invariant
+    // exception qui crash l'app sur iOS (Rs@vendor.js:49:669 = double-router).
     const appTree = (
       <NativeRootRecoveryBoundary>
         <BrowserRouter>
@@ -167,7 +176,6 @@ async function bootstrap() {
         </BrowserRouter>
       </NativeRootRecoveryBoundary>
     );
-
 
     // iOS Capacitor is crashing inside React 18's createRoot event bootstrap
     // before the first commit (vendor-react line in Xcode). Native shells do
