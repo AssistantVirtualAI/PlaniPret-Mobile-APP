@@ -52,8 +52,9 @@ private func ppPjsipOnCallState(_ callId: pjsua_call_id, _ event: UnsafeMutableP
     PjsipEngine.shared.handleCallState(
         callId: callId,
         state: info.state,
-        // info.last_status est un pj_status_t (Int32 C brut) — pas de .rawValue
-        lastCode: Int(info.last_status),
+        // info.last_status est de type pjsip_status_code (enum C) — Swift l'importe
+        // comme RawRepresentable avec rawValue de type UInt32.
+        lastCode: Int(info.last_status.rawValue),
         remoteUri: ppPjStr(info.remote_info)
     )
 }
