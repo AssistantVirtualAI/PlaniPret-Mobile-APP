@@ -159,10 +159,25 @@ export class NativeSipService {
     const creds = (data ?? {}) as Record<string, string>;
     const password = creds.sip_password;
     if (error || !password) {
-      console.error("[SIP] Aucun identifiant:", creds.error ?? error?.message);
+      console.error("[SIP] Aucun identifiant:", JSON.stringify({
+        edgeError: error?.message ?? null,
+        payloadError: creds.error ?? null,
+        keys: Object.keys(creds),
+      }));
       releaseAorFromNative("credentials_missing");
       this.setState("failed");
       return false;
+    }
+
+    // Diagnostic : le resolver DOIT renvoyer `tls`. S'il renvoie `wss`, le
+    // device `<ext>M` reste en WSS 9002 côté PBX et les INVITE n'arrivent
+    // jamais sur PJSIP. On force alors un realignement TLS explicite.
+    const resolvedTransport = String(creds.sip_transport ?? "").toLowerCase();
+    if (resolvedTransport && resolvedTransport !== "tls") {
+      console.warn(
+        `[SIP] ns-resolve-sip-credentials a renvoyé sip_transport="${resolvedTransport}" alors que TLS était demandé — realignement TLS forcé`,
+      );
+      void this.forceDeviceTlsTransport({ sipPort: 5061, contact: creds.sip_tls_uri ?? "" }, true);
     }
 
     // Invariant : l'AOR mobile est TOUJOURS `<ext>M` (jamais `<ext>_mobile`).
@@ -212,7 +227,15 @@ export class NativeSipService {
 
     } catch (err: any) {
       const code = String(err?.code ?? err?.message ?? err?.errorMessage ?? "error");
-      console.error("[SIP] Init échouée:", code, err);
+      // Détail complet : les erreurs Capacitor ne sérialisent pas via console.error.
+      console.error("[SIP] Init échouée:", code, JSON.stringify({
+        code: err?.code ?? null,
+        message: err?.message ?? null,
+        errorMessage: err?.errorMessage ?? null,
+        data: err?.data ?? null,
+        name: err?.name ?? null,
+        stack: String(err?.stack ?? "").split("\n").slice(0, 3).join(" | "),
+      }));
       // QUELLE QUE SOIT la raison (binary_missing, timeout, exception), le
       // chemin legacy JsSIP doit reprendre la main immédiatement.
       releaseAorFromNative(code);
@@ -247,7 +270,15 @@ export class NativeSipService {
 
   private async forceDeviceTlsTransport(payload?: any, urgent = false): Promise<void> {
     const port = Number(payload?.sipPort ?? 5061);
-    const contact = String(payload?.contact ?? "");
+    const contact = String(payload?.contact ?? "").trim();
+    const registrationServer = String(payload?.registrationServer ?? payload?.server ?? "").trim();
+    // Garde : un contact vide produit `sip:@` côté NetSapiens, ce qui casse le
+    // binding du device. On n'écrit jamais un Contact incomplet.
+    const contactUsable = /^sips?:[^@\s]+@[^@\s]+/i.test(contact) || /^sips?:[^@\s]+$/i.test(contact);
+    if (!contactUsable && !registrationServer) {
+      console.warn("[SIP] reprovision TLS ignoré — contact/serveur vide", { contact, registrationServer });
+      return;
+    }
     // Idempotence : chaque reprovisioning provoque un cycle Expires:0 côté
     // NetSapiens, fenêtre pendant laquelle les appels partent en messagerie.
     // On ne réécrit que si le contact/port TLS a réellement changé.
@@ -266,7 +297,7 @@ export class NativeSipService {
         body: {
           transport: "tls",
           sip_port: port,
-          contact,
+          ...(contactUsable ? { contact } : {}),
           force: true,
           client_type: "mobile",
         },

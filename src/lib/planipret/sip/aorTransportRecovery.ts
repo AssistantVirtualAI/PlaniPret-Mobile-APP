@@ -12,7 +12,7 @@
  */
 
 import { supabase } from "@/integrations/supabase/client";
-import { PP_AOR_RELEASE_EVENT } from "./aorArbitration";
+import { PP_AOR_RELEASE_EVENT, nativeOwnsAor } from "./aorArbitration";
 
 export const PP_TRANSPORT_RESTORED_EVENT = "pp:sip-transport-restored-wss";
 
@@ -22,6 +22,10 @@ let lastRunAt = 0;
 
 /** Repasse `<ext>M` en WSS 9002 côté PBX (idempotent, throttlé à 15 s). */
 export async function restoreWssTransport(reason = "aor_released"): Promise<void> {
+  if (nativeOwnsAor()) {
+    console.info("[AOR] restitution WSS ignorée — le moteur natif possède encore l'AOR");
+    return;
+  }
   if (inFlight) return inFlight;
   if (Date.now() - lastRunAt < 15_000) return;
   lastRunAt = Date.now();

@@ -391,7 +391,11 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
         if (opts?.force) {
           try { ppSipProvider.stop(); } catch {}
         }
-        const { data, error } = await supabase.functions.invoke("ns-resolve-sip-credentials", { body: { client_type: clientType } });
+        // Le resolver réécrit `device-sip-transport-type`. Sans ce garde il repasse
+        // le device `<ext>M` en WSS 9002 alors que PJSIP est enregistré en TLS 5061,
+        // et les INVITE entrants n'arrivent jamais au moteur natif.
+        const sipTransport = nativeOwnsAor() ? "tls" : "wss";
+        const { data, error } = await supabase.functions.invoke("ns-resolve-sip-credentials", { body: { client_type: clientType, transport: sipTransport } });
         if (cancelled) return;
         if (error || !data || (data as any)?.error) return;
         const d = data as any;
