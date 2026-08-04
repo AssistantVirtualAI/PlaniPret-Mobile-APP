@@ -241,12 +241,18 @@ export class NativeSipService {
    * Idempotent et throttlé à 60 s.
    */
   private lastTlsProvisionAt = 0;
-  private async forceDeviceTlsTransport(): Promise<void> {
-    if (Date.now() - this.lastTlsProvisionAt < 60_000) return;
+  private async forceDeviceTlsTransport(payload?: any, urgent = false): Promise<void> {
+    if (!urgent && Date.now() - this.lastTlsProvisionAt < 60_000) return;
     this.lastTlsProvisionAt = Date.now();
     try {
       const { data, error } = await supabase.functions.invoke("ns-provision-broker-devices", {
-        body: { transport: "tls", force: true, client_type: "mobile" },
+        body: {
+          transport: "tls",
+          sip_port: Number(payload?.sipPort ?? 5061),
+          contact: String(payload?.contact ?? ""),
+          force: true,
+          client_type: "mobile",
+        },
       });
       if (error) throw error;
       console.log("[SIP] device réaligné en TLS après REGISTER natif", data);
@@ -289,11 +295,21 @@ export class NativeSipService {
       if (state === "registered") {
         this.retryCount = 0;
         claimAorForNative(this.username, "native_registered");
-        // Le PBX garde le Contact WSS du device `<ext>M` tant qu'on ne force
-        // pas le transport : les INVITEs partiraient encore vers JsSIP:9002.
-        void this.forceDeviceTlsTransport();
       }
       this.setState(state);
+    });
+
+    // Événement dédié émis uniquement après le 200 OK du REGISTER natif.
+    await pjsip.addListener("registered", (payload: any) => {
+      console.info("[SIP] PJSIP registered → reprovision TLS immédiat", payload?.contact ?? "");
+      void this.forceDeviceTlsTransport(payload);
+    });
+
+    // Aucun INVITE natif dans les 5 s suivant Answer : réappliquer TLS 5061
+    // immédiatement au lieu d'attendre le prochain cycle de provisioning.
+    await pjsip.addListener("registrationRepairRequested", (payload: any) => {
+      console.warn("[SIP] INVITE TLS absent → reprovision immédiat", payload?.contact ?? "");
+      void this.forceDeviceTlsTransport(payload, true);
     });
 
 

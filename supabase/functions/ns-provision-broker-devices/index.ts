@@ -74,6 +74,14 @@ Deno.serve(async (req) => {
       rawTransport === "tls" || rawTransport === "sips" ? "TLS"
         : rawTransport === "wss" || rawTransport === "ws" ? "WSS"
         : null;
+    const sipPort = Number(body?.sip_port ?? (forcedTransport === "TLS" ? 5061 : 9002));
+    if (!Number.isInteger(sipPort) || sipPort < 1 || sipPort > 65535) {
+      return json({ error: "invalid_sip_port" }, 400);
+    }
+    // Diagnostic uniquement : le Contact effectif est produit par REGISTER et
+    // `device-sip-registration-contact` est read-only dans NS-API v2.
+    const requestedContact = String(body?.contact ?? "").trim();
+    if (requestedContact.length > 512) return json({ error: "invalid_contact" }, 400);
 
     // Verify caller is admin
     const authHeader = req.headers.get("Authorization") ?? "";
@@ -189,6 +197,8 @@ Deno.serve(async (req) => {
       if (!nsUser.ok) return { broker_id: broker.id ?? broker.user_id, success: false, error: "ns_user_create_failed", ns_user: nsUser };
 
       const create = async (id: string, model: string, isMobile: boolean, password: string) => {
+        // Le réalignement natif cible exclusivement `<ext>M`; `<ext>W` reste WSS.
+        const deviceTransport = isMobile ? forcedTransport : null;
         if (hasDev(id)) {
           // Device exists — repair the expiry/NAT/push profile, but LEAVE the
           // transport alone unless the caller explicitly forced one (see the
@@ -202,16 +212,28 @@ Deno.serve(async (req) => {
             "device-sip-nat-traversal-enabled": "automatic",
             "device-push-enabled": isMobile ? "yes" : "no",
           };
-          if (forcedTransport) {
-            patch["transport"] = forcedTransport;
-            patch["device-sip-transport-type"] = forcedTransport;
-            patch["device-provisioning-sip-transport-protocol"] = forcedTransport.toLowerCase();
+          if (deviceTransport) {
+            patch["synchronous"] = "yes";
+            patch["transport"] = deviceTransport;
+            patch["device-sip-transport-type"] = deviceTransport;
+            patch["device-provisioning-sip-transport-protocol"] = deviceTransport.toLowerCase();
           }
           const r = await nsFetch(`${base}/${encodeURIComponent(id)}`, {
             method: "PUT", headers: nsHeaders,
             body: JSON.stringify(patch),
           }).catch(() => null);
-          return { existed: true, id, patched: !!r?.ok, status: r?.status ?? 0, transport: forcedTransport ?? "unchanged" };
+          let observedContact: string | null = null;
+          if (r?.ok && isMobile && deviceTransport === "TLS") {
+            const verify = await nsFetch(`${base}/${encodeURIComponent(id)}`, { headers: nsHeaders }).catch(() => null);
+            const verified = verify?.ok ? await nsRead(verify) : null;
+            observedContact = String(verified?.["device-sip-registration-contact"] ?? "") || null;
+          }
+          return {
+            existed: true, id, patched: !!r?.ok, status: r?.status ?? 0,
+            transport: deviceTransport ?? "unchanged", sip_port: isMobile ? sipPort : 9002,
+            requested_contact: isMobile ? requestedContact || null : null,
+            observed_registration_contact: observedContact,
+          };
         }
 
         // core-server is MANDATORY — without it JsSIP/PJSIP cannot register.
@@ -237,9 +259,10 @@ Deno.serve(async (req) => {
             "device-sip-nat-traversal-enabled": "automatic",
             // Baseline transport at creation. The runtime resolver realigns it
             // with whichever stack actually registers (wss = JsSIP, tls = PJSIP).
-            "transport": forcedTransport ?? "WSS",
-            "device-sip-transport-type": forcedTransport ?? "WSS",
-            "device-provisioning-sip-transport-protocol": (forcedTransport ?? "WSS").toLowerCase(),
+            "synchronous": "yes",
+            "transport": deviceTransport ?? "WSS",
+            "device-sip-transport-type": deviceTransport ?? "WSS",
+            "device-provisioning-sip-transport-protocol": (deviceTransport ?? "WSS").toLowerCase(),
             "device-srtp-enabled": "opportunistic",
             "device-sip-allowed-user-agent": "",
             "device-push-enabled": isMobile ? "yes" : "no",

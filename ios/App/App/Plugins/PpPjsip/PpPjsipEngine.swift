@@ -130,6 +130,8 @@ final class PjsipEngine {
     private var accId: pjsua_acc_id = pjsua_acc_id(-1)
     private var username = ""
     private var domain = ""
+    private var registrationServer = ""
+    private var registrationPort = 5061
     private var registered = false
     private var activeCall: pjsua_call_id = pjsua_call_id(-1)
     /// Décrochage demandé (CallKit) avant l'arrivée de l'INVITE SIP.
@@ -189,6 +191,8 @@ final class PjsipEngine {
     ) {
         self.username = username
         self.domain = domain
+        self.registrationServer = server
+        self.registrationPort = port
 
         thread.run { [weak self] in
             guard let self = self else { return }
@@ -337,7 +341,9 @@ final class PjsipEngine {
             // Même fenêtre que CallKit (32 s) : avec 10 s, une INVITE arrivée
             // entre t=10 et t=32 trouvait l'intention déjà supprimée et aucun
             // 200 OK n'était envoyé malgré l'écran système encore actif.
-            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 30.0) { [weak self] in
+            // Si aucun INVITE TLS n'arrive rapidement, demander au JS de
+            // réaligner immédiatement le device NetSapiens avant d'expirer.
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 5.0) { [weak self] in
                 guard let self = self else { return }
                 self.lock.lock()
                 let stillPending = self.pendingAnswerRequest
@@ -349,7 +355,14 @@ final class PjsipEngine {
                 }
                 self.lock.unlock()
                 if stillPending {
-                    NSLog("[PpPjsip] pendingAnswer timeout 30s → no_active_call")
+                    let contact = "sip:\(self.username)@\(self.domain);transport=tls"
+                    NSLog("[PpPjsip] pendingAnswer timeout 5s → TLS re-provision requested contact=%@", contact)
+                    self.emit("registrationRepairRequested", [
+                        "transport": "tls", "sipPort": self.registrationPort,
+                        "contact": contact, "server": self.registrationServer,
+                        "reason": "incoming_invite_missing"
+                    ])
+                    NotificationCenter.default.post(name: .ppPjsipAnswerResult, object: nil, userInfo: ["ok": false])
                     pending.forEach { $0(false) }
                 }
             }
@@ -506,7 +519,18 @@ final class PjsipEngine {
         guard accId == self.accId else { return }
         registered = code == 200
         let state = registered ? "registered" : (code == 0 ? "unregistered" : "failed")
-        emit("registrationState", ["state": state, "code": code, "reason": reason, "username": username])
+        let contact = "sip:\(username)@\(domain);transport=tls"
+        let payload: [String: Any] = [
+            "state": state, "code": code, "reason": reason,
+            "username": username, "contact": contact,
+            "transport": "tls", "sipPort": registrationPort,
+            "server": registrationServer
+        ]
+        emit("registrationState", payload)
+        if registered {
+            NSLog("[PpPjsip] registered contact=%@ server=%@:%d", contact, registrationServer, registrationPort)
+            emit("registered", payload)
+        }
     }
 
     func handleIncomingCall(callId: pjsua_call_id, remoteUri: String) {
