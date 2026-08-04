@@ -2364,11 +2364,11 @@ function ensurePjsipXcframework(iosRoot) {
   const buildName = `${fileName} in Frameworks`;
   if (!text.includes(`${fileRef} /* ${fileName} */`)) {
     const line = `\t\t${fileRef} /* ${fileName} */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = ${rel}; sourceTree = SOURCE_ROOT; };\n`;
-    text = text.replace(/(\/* End PBXFileReference section \*\/)/, `${line}$1`);
+    text = text.replace(/(\/\* End PBXFileReference section \*\/)/, `${line}$1`);
   }
   if (!text.includes(`${buildRef} /* ${buildName} */`)) {
     const line = `\t\t${buildRef} /* ${buildName} */ = {isa = PBXBuildFile; fileRef = ${fileRef} /* ${fileName} */; };\n`;
-    text = text.replace(/(\/* End PBXBuildFile section \*\/)/, `${line}$1`);
+    text = text.replace(/(\/\* End PBXBuildFile section \*\/)/, `${line}$1`);
   }
   text = text.replace(
     /(isa = PBXFrameworksBuildPhase;[\s\S]*?files = \(\n)([\s\S]*?)(\s*\);)/g,
