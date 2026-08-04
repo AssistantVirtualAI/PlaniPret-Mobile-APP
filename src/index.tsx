@@ -150,7 +150,7 @@ async function hideSplash(reason: string) {
 async function bootstrap() {
   // Bump this on every native-affecting change so Xcode logs prove which
   // bundle the device is actually running.
-  console.log('[PP] BUILD MARKER pp-build-2026-08-04-pjsip-aor-guard');
+  console.log('[PP] BUILD MARKER pp-build-2026-08-04-boot-retry');
   console.log('[PP] bootstrap:start', { native: Capacitor.isNativePlatform(), proto: window.location.protocol });
   // Safety net: never leave the user staring at the launch image, even if the
   // first React commit never happens (render error, slow chunk, no network).
@@ -194,11 +194,45 @@ async function bootstrap() {
     watchFirstPaint(container);
     window.setTimeout(() => { (window as BootWindow).__PP_REACT_MOUNT_CALLED__ = true; }, 0);
   } catch (e) {
-    console.error('[PP] Render failed:', e);
-    const el = document.getElementById('root');
-    if (el) {
+    const detail =
+      e instanceof Error
+        ? `${e.name}: ${e.message}\n${e.stack ?? ''}`
+        : (() => { try { return JSON.stringify(e); } catch { return String(e); } })();
+    console.error('[PP] Render failed:', detail);
+
+    const container = document.getElementById('root');
+
+    // iOS/Capacitor throws opaque, empty-object exceptions during the legacy
+    // ReactDOM.render bootstrap. Those are startup artifacts, not real render
+    // failures: retry once through createRoot before showing the error screen.
+    if (container && isIgnorableNativeStartupError(e)) {
+      try {
+        console.warn('[PP] ignorable native startup error — retrying mount via createRoot');
+        container.innerHTML = '';
+        const root = createRoot(container, {
+          onRecoverableError(error) {
+            if (isIgnorableNativeStartupError(error)) return;
+            console.error('[PP] React recoverable error:', error);
+          },
+        });
+        root.render(
+          <NativeRootRecoveryBoundary>
+            <BrowserRouter>
+              <App />
+            </BrowserRouter>
+          </NativeRootRecoveryBoundary>,
+        );
+        watchFirstPaint(container);
+        window.setTimeout(() => { (window as BootWindow).__PP_REACT_MOUNT_CALLED__ = true; }, 0);
+        return;
+      } catch (retryError) {
+        console.error('[PP] createRoot retry failed:', retryError);
+      }
+    }
+
+    if (container) {
       void hideSplash('render-failed');
-      el.innerHTML =
+      container.innerHTML =
         '<div style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0A1425;color:#E2E8F0;font-family:system-ui;padding:24px;text-align:center">Impossible de démarrer l\'application. Vérifiez votre connexion et relancez.</div>';
     }
   }
