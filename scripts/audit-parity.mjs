@@ -26,7 +26,6 @@ const PAIRS = [
 
 const ALLOWED_MOBILE_ONLY = new Set([
   // pages ou composants qui existent uniquement dans l'app mobile Capacitor
-  // (vide — tous les fichiers sont maintenant syncés via sync-parity.sh)
 ]);
 const ALLOWED_WEB_ONLY = new Set([]);
 

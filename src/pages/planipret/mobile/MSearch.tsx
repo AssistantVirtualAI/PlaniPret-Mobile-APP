@@ -269,38 +269,16 @@ export default function MSearch() {
               {data.directory.slice(0, data.dir_visible).map((d, i) => {
                 const name = [d.first_name, d.last_name].filter(Boolean).join(" ").trim() || d.name || (d.extension ? `Ext. ${d.extension}` : "—");
                 return (
-                  <div key={`${d.extension ?? i}`}
-                    className="w-full text-left p-3 bg-white rounded-lg text-sm flex items-center gap-2">
+                  <button key={`${d.extension ?? i}`} onClick={() => d.extension && openDialer?.(d.extension)}
+                    className="w-full text-left p-3 bg-white rounded-lg text-sm flex items-center gap-3">
                     <div className="flex-1 min-w-0">
                       <div className="font-medium truncate">{highlight(name, q)}</div>
                       <div className="text-xs text-slate-400 truncate">
                         {d.extension ? `Ext. ${d.extension}` : ""}{d.position ? ` · ${d.position}` : ""}{d.email ? ` · ${d.email}` : ""}
                       </div>
                     </div>
-                    <div className="flex items-center shrink-0" style={{ gap: 6 }}>
-                      <button
-                        onClick={() => d.extension && navigate(`/mplanipret/messages?tab=sms&to=${encodeURIComponent(d.extension)}`)}
-                        disabled={!d.extension}
-                        aria-label={t("contacts.sendSms") || "Envoyer un SMS"}
-                        className="p-1.5 rounded-full active:scale-95 transition disabled:opacity-40">
-                        <MessageSquare className="w-4 h-4 text-violet-400" />
-                      </button>
-                      <button
-                        onClick={() => d.email && navigate(`/mplanipret/messages?tab=emails&to=${encodeURIComponent(d.email)}&name=${encodeURIComponent(name)}`)}
-                        disabled={!d.email}
-                        aria-label={t("contacts.sendEmail") || "Envoyer un courriel"}
-                        className="p-1.5 rounded-full active:scale-95 transition disabled:opacity-40">
-                        <Mail className="w-4 h-4 text-emerald-400" />
-                      </button>
-                      <button
-                        onClick={() => d.extension && openDialer?.(d.extension)}
-                        disabled={!d.extension}
-                        aria-label={t("common.call") || "Appeler"}
-                        className="p-1.5 rounded-full active:scale-95 transition disabled:opacity-40">
-                        <Phone className="w-4 h-4 text-sky-400" />
-                      </button>
-                    </div>
-                  </div>
+                    {d.extension && <Phone className="w-4 h-4 text-slate-400" />}
+                  </button>
                 );
               })}
               {renderLoadMore("directory", data.dir_visible < data.directory.length)}

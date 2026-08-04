@@ -184,21 +184,11 @@ public class PpSipKeepAlivePlugin extends Plugin {
   @PluginMethod public void getSipServiceStatus(PluginCall call) { call.resolve(readStatus().put("ok", true)); }
   @PluginMethod public void triggerReregister(PluginCall call) { PpSipKeepAliveService.requestReregister(getContext(), "manual"); call.resolve(readStatus().put("ok", true)); }
   @PluginMethod public void acknowledgeIncoming(PluginCall call) { PpSipKeepAliveService.clearIncomingNotification(getContext()); call.resolve(new JSObject().put("ok", true)); }
-  @PluginMethod public void requestBatteryOptimizationExemption(PluginCall call) {
-    try {
-      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) { call.resolve(new JSObject().put("ok", true).put("ignored", true).put("requested", false)); return; }
-      PowerManager pm = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
-      boolean ignored = pm != null && pm.isIgnoringBatteryOptimizations(getContext().getPackageName());
-      if (!ignored) getContext().startActivity(new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).setData(Uri.parse("package:" + getContext().getPackageName())).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
-      call.resolve(new JSObject().put("ok", true).put("ignored", ignored).put("requested", !ignored));
-    } catch (Exception e) { call.reject(e.getMessage()); }
-  }
+  /** In-call audio routing. A call must start on the earpiece; the speaker is opt-in. */
   @PluginMethod public void setAudioRoute(PluginCall call) {
     String route = call.getString("route", "earpiece");
     try {
       android.media.AudioManager am = (android.media.AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
-      // Reject instead of silently resolving: a muted speaker button with an "ok"
-      // reply is impossible to diagnose from the JS side.
       if (am == null) { call.reject("no_audio_manager"); return; }
       am.setMode(android.media.AudioManager.MODE_IN_COMMUNICATION);
       if ("speaker".equals(route)) {
@@ -207,10 +197,8 @@ public class PpSipKeepAlivePlugin extends Plugin {
         am.setSpeakerphoneOn(true);
       } else if ("bluetooth".equals(route)) {
         am.setSpeakerphoneOn(false);
-        // setBluetoothScoOn is required in addition to startBluetoothSco: on some
-        // devices the SCO link comes up but audio keeps flowing to the handset.
         try { am.startBluetoothSco(); am.setBluetoothScoOn(true); } catch (Exception ignored) {}
-      } else { // earpiece
+      } else {
         try { am.stopBluetoothSco(); } catch (Exception ignored) {}
         am.setBluetoothScoOn(false);
         am.setSpeakerphoneOn(false);
@@ -223,12 +211,19 @@ public class PpSipKeepAlivePlugin extends Plugin {
       android.media.AudioManager am = (android.media.AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
       String route = "earpiece";
       if (am != null) {
-        // Bluetooth first: an active SCO link is the effective route even when
-        // isSpeakerphoneOn() still reports a stale true.
         if (am.isBluetoothScoOn()) route = "bluetooth";
         else if (am.isSpeakerphoneOn()) route = "speaker";
       }
       call.resolve(new JSObject().put("ok", true).put("route", route));
+    } catch (Exception e) { call.reject(e.getMessage()); }
+  }
+  @PluginMethod public void requestBatteryOptimizationExemption(PluginCall call) {
+    try {
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) { call.resolve(new JSObject().put("ok", true).put("ignored", true).put("requested", false)); return; }
+      PowerManager pm = (PowerManager) getContext().getSystemService(Context.POWER_SERVICE);
+      boolean ignored = pm != null && pm.isIgnoringBatteryOptimizations(getContext().getPackageName());
+      if (!ignored) getContext().startActivity(new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).setData(Uri.parse("package:" + getContext().getPackageName())).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+      call.resolve(new JSObject().put("ok", true).put("ignored", ignored).put("requested", !ignored));
     } catch (Exception e) { call.reject(e.getMessage()); }
   }
   private JSObject statusFromIntent(Intent i) { return new JSObject().put("status", i.getStringExtra("status")).put("reason", i.getStringExtra("reason")).put("updatedAt", i.getLongExtra("updatedAt", 0)).put("wakeLockHeld", i.getBooleanExtra("wakeLockHeld", false)).put("wifiLockHeld", i.getBooleanExtra("wifiLockHeld", false)).put("loggedIn", i.getBooleanExtra("loggedIn", false)); }
@@ -260,8 +255,6 @@ public class PpIncomingActionReceiver extends BroadcastReceiver {
       NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE);
       if (nm != null) nm.cancel(PpSipKeepAliveService.INCOMING_NOTIFICATION_ID);
     } catch (Exception ignored) {}
-    // "Refuser": send a real SIP 603 from the native service. The broadcast below
-    // only informs the WebView, which may not even be running yet.
     if ("decline".equals(userAction)) PpSipKeepAliveService.declineIncoming(c, callId);
     // Forward to plugin listeners.
     c.sendBroadcast(new Intent(PpSipKeepAliveService.ACTION_INCOMING_INVITE)
@@ -320,8 +313,8 @@ public class PpSipKeepAliveService extends Service {
     PREFS_NAME = "pp_sip_keepalive",
     ACTION_STATUS = "com.planipret.mobile.PP_SIP_STATUS",
     ACTION_REREGISTER = "com.planipret.mobile.PP_SIP_REREGISTER",
-    ACTION_INCOMING_INVITE = "com.planipret.mobile.PP_SIP_INCOMING_INVITE",
-    ACTION_DECLINE_CALL = "com.planipret.mobile.PP_SIP_DECLINE_CALL";
+    ACTION_DECLINE_CALL = "com.planipret.mobile.PP_SIP_DECLINE_CALL",
+    ACTION_INCOMING_INVITE = "com.planipret.mobile.PP_SIP_INCOMING_INVITE";
   public static final int NOTIFICATION_ID = 2201, INCOMING_NOTIFICATION_ID = 2202;
   public static final String KEY_STATUS = "status", KEY_REASON = "reason", KEY_UPDATED_AT = "updated_at", KEY_WAKE_HELD = "wake_held", KEY_WIFI_HELD = "wifi_held", KEY_LOGGED_IN = "logged_in";
   private final ScheduledExecutorService executor = Executors.newScheduledThreadPool(2);
@@ -338,11 +331,8 @@ public class PpSipKeepAliveService extends Service {
   private int reconnectAttempts = 0; private volatile boolean reconnectPending = false;
   private long lastRegisterSentMs = 0L;
   private long lastRegisterOkMs = 0L;
+  private volatile String activeInviteVia, activeInviteFrom, activeInviteTo, activeInviteCallId, activeInviteCSeq;
   private static final long REGISTER_DEBOUNCE_MS = 5000L;
-  // Headers of the INVITE currently ringing. A SIP 603 Decline must echo Via,
-  // From, To, Call-ID and CSeq of that INVITE, so they are captured on arrival.
-  private volatile String activeInviteVia = null, activeInviteFrom = null, activeInviteTo = null;
-  private volatile String activeInviteCallId = null, activeInviteCSeq = null;
 
   public static void start(Context c) { Intent i = new Intent(c, PpSipKeepAliveService.class); if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) c.startForegroundService(i); else c.startService(i); }
   public static void stop(Context c) { c.stopService(new Intent(c, PpSipKeepAliveService.class)); }
@@ -397,9 +387,6 @@ public class PpSipKeepAliveService extends Service {
     Notification n = buildOngoingNotification("Téléphonie prête en arrière-plan");
     if (Build.VERSION.SDK_INT >= 34) ServiceCompat.startForeground(this, NOTIFICATION_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL | ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE);
     else startForeground(NOTIFICATION_ID, n);
-    // "Refuser" tapped in the incoming notification: answer the ringing INVITE
-    // with a real SIP 603 Decline. Without it the caller kept ringing until the
-    // PBX timed out and the call fell through to voicemail.
     if (intent != null && ACTION_DECLINE_CALL.equals(intent.getAction())) {
       String requestedCallId = intent.getStringExtra("callId");
       executor.execute(() -> { try { sendDecline(requestedCallId); } catch (Exception ignored) {} });
@@ -461,7 +448,6 @@ public class PpSipKeepAliveService extends Service {
       String fromHdr = header(msg, "From"); String toHdr = header(msg, "To");
       String viaHdr = header(msg, "Via"); String inviteCallId = header(msg, "Call-ID");
       String inviteCSeq = header(msg, "CSeq");
-      // Remember the ringing dialog so "Refuser" can build a valid 603 later.
       activeInviteVia = viaHdr; activeInviteFrom = fromHdr; activeInviteTo = toHdr;
       activeInviteCallId = inviteCallId; activeInviteCSeq = inviteCSeq;
       String fromDisplay = parseDisplay(fromHdr); String fromUser = parseUser(fromHdr);
@@ -475,8 +461,6 @@ public class PpSipKeepAliveService extends Service {
       showIncomingCallNotification(inviteCallId, fromHdr, fromUser, fromDisplay);
       return;
     }
-    // The caller hung up before we answered: drop the notification, otherwise a
-    // stale full-screen "incoming call" stayed on screen for a dead call.
     if (msg.startsWith("CANCEL ")) {
       String cancelCallId = header(msg, "Call-ID");
       if (cancelCallId != null && cancelCallId.equals(activeInviteCallId)) {
@@ -488,14 +472,13 @@ public class PpSipKeepAliveService extends Service {
     }
   }
 
-  /** Sends a real SIP 603 Decline for the ringing INVITE, echoing its headers. */
   private void sendDecline(String requestedCallId) throws Exception {
     if (activeInviteCallId == null || (requestedCallId != null && !requestedCallId.equals(activeInviteCallId))) return;
     if (activeInviteVia == null || activeInviteFrom == null || activeInviteTo == null || activeInviteCSeq == null) return;
     String toWithTag = activeInviteTo.contains(";tag=") ? activeInviteTo : activeInviteTo + ";tag=" + Long.toHexString(System.nanoTime());
-    String response = "SIP/2.0 603 Decline\\r\\nVia: " + activeInviteVia + "\\r\\nFrom: " + activeInviteFrom
-      + "\\r\\nTo: " + toWithTag + "\\r\\nCall-ID: " + activeInviteCallId + "\\r\\nCSeq: " + activeInviteCSeq
-      + "\\r\\nUser-Agent: Planipret Native KeepAlive\\r\\nContent-Length: 0\\r\\n\\r\\n";
+    String response = "SIP/2.0 603 Decline\r\nVia: " + activeInviteVia + "\r\nFrom: " + activeInviteFrom
+      + "\r\nTo: " + toWithTag + "\r\nCall-ID: " + activeInviteCallId + "\r\nCSeq: " + activeInviteCSeq
+      + "\r\nUser-Agent: Planipret Native KeepAlive\r\nContent-Length: 0\r\n\r\n";
     sendFrame(response);
     clearIncomingNotification(this);
     clearActiveInvite();
@@ -640,6 +623,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       CAPPluginMethod(name: "acknowledgeIncoming", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "wakeForIncomingCall", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "setCallActive", returnType: CAPPluginReturnPromise),
+      CAPPluginMethod(name: "declareJsOwnsAor", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "setAudioRoute", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "getAudioRoute", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "addListener", returnType: CAPPluginReturnCallback),
@@ -680,25 +664,24 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     /// stack must NEVER take the AOR over: doing so closes the JsSIP transport
     /// (WSS 1001) and kills the audio. We only keep the audio session alive.
     private var callActive = false
+    /// True only while CallKit owns the activated AVAudioSession.
+    private var callKitAudioActive = false
     /// Set on VoIP push wake: while an inbound call is pending we must never
     /// release the SIP registration (that sent the caller to voicemail).
     private var incomingPendingUntil: Date? = nil
+    /// R3 (ring9): JsSIP (WebView) explicitly claimed the shared 113M AOR. The
+    /// native stack must then stay off it — it can ring but has no media plan.
+    private var jsOwnsAor = false
+    private var pushGraceWorkItem: DispatchWorkItem? = nil
+    /// "earpiece" | "speaker" | "bluetooth" — chosen by the user in the in-call UI.
+    /// A phone call MUST start on the earpiece: WebKit WebRTC otherwise defaults
+    /// to the loudspeaker as soon as the remote party answers.
+    private var preferredRoute = "earpiece"
     private var audioKeepAliveTimer: Timer?
     private let configDefaultsKey = "pp_sip_native_config_v1"
     private let passwordService = "com.planipret.mobile.sip"
     private let passwordAccount = "background-register"
     private var lastPushWakeAt: Date?
-    /// Grace-window bookkeeping for the VoIP push wake. This keep-alive has NO
-    /// WebRTC media stack, so whenever it wins the shared (ext)M AOR the inbound
-    /// call becomes unanswerable. On every push we notify JS first and only
-    /// register ourselves if JS has not claimed the AOR within 4s.
-    private var pushWakeGraceToken: String? = nil
-    /// True while the JS (JsSIP) side owns the SIP registration on that AOR. Set
-    /// when JS takes over (foreground / active call), cleared when native ownership
-    /// begins.
-    private var jsOwnsAor = false
-    /// ring21: vrai quand le moteur PJSIP natif (TLS 5061) possede l'AOR.
-    private var nativeEngineOwnsAor = false
 
 
     public override func load() {
@@ -726,30 +709,28 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       // WebView can complete the SIP 200 OK while still in the background.
       NotificationCenter.default.addObserver(forName: Notification.Name("PpVoipCallAnswered"), object: nil, queue: .main) { [weak self] _ in
         guard let self = self else { return }
-        self.callActive = true
-        self.activateAudioSession()
+        self.beginBackgroundTask()
       }
-      // ring15 - CallKit audio-session ownership. Between didActivate and
-      // didDeactivate the system session belongs to CallKit; every setCategory or
-      // setActive we issue in that window strips the route (hadOutputs=n) and the
-      // call goes silent both ways. These two observers are what make
-      // activateAudioSession() stand down.
-      NotificationCenter.default.addObserver(forName: Notification.Name("PpVoipAudioSessionActivated"), object: nil, queue: .main) { [weak self] _ in
-        guard let self = self else { return }
-        self.callKitOwnsAudioSession = true
-        NSLog("[PpSipKeepAlive] CallKit now owns the audio session - keep-alive stands down")
+      NotificationCenter.default.addObserver(forName: Notification.Name("PpCallKitAudioActivated"), object: nil, queue: .main) { [weak self] _ in
+        self?.callKitAudioActive = true
+        self?.applyAudioRoute()
       }
-      NotificationCenter.default.addObserver(forName: Notification.Name("PpVoipAudioSessionDeactivated"), object: nil, queue: .main) { [weak self] _ in
-        guard let self = self else { return }
-        self.callKitOwnsAudioSession = false
-        NSLog("[PpSipKeepAlive] CallKit released the audio session - keep-alive resumes")
+      NotificationCenter.default.addObserver(forName: Notification.Name("PpCallKitAudioDeactivated"), object: nil, queue: .main) { [weak self] _ in
+        self?.callKitAudioActive = false
       }
       UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
     }
     deinit { NotificationCenter.default.removeObserver(self); timer?.invalidate(); socket?.cancel(with: .goingAway, reason: nil) }
 
     @objc func startSipService(_ call: CAPPluginCall) {
+      if nativeEngineOwnsAor {
+        NSLog("[PpSipKeepAlive] startSipService skipped — PJSIP owns the AOR")
+        releaseRegistration("pjsip_owns_aor")
+        call.resolve(["ok": true, "status": "protected", "reason": "pjsip_owns_aor"])
+        return
+      }
       host = call.getString("host") ?? call.getString("domain") ?? ""; port = call.getInt("port") ?? 443; path = call.getString("path") ?? "/"
+
       login = call.getString("login") ?? call.getString("username") ?? call.getString("extension") ?? ""
       domain = call.getString("domain") ?? ""; displayName = call.getString("displayName") ?? login; password = call.getString("password") ?? ""
       backoffMinMs = max(4000, Double(call.getInt("backoffMinMs") ?? 4000))
@@ -758,8 +739,6 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       verifyDelayMs = Double(call.getInt("verifyDelayMs") ?? 8000)
       registerExpires = call.getInt("registerExpiresSec") ?? 1800
       persistConfig()
-      // Build marker: lets us prove from the Xcode console which binary is running.
-      NSLog("[PpSipKeepAlive] BUILD MARKER pp-build-2026-08-04-pjsip-aor-guard (never REGISTER a live socket on push wake + caller-level CallKit dedup)")
       NSLog("[PpSipKeepAlive] reconnect strategy min=%.0fms max=%.0fms attempts=%d verify=%.0fms expires=%ds", backoffMinMs, backoffMaxMs, backoffMaxAttempts, verifyDelayMs, registerExpires)
       DispatchQueue.main.async { [weak self] in
         guard let self = self else { call.resolve(["ok": false, "status": "error", "reason": "plugin_released"]); return }
@@ -781,86 +760,39 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       let active = call.getBool("active") ?? false
       DispatchQueue.main.async { [weak self] in
         guard let self = self else { call.resolve(["ok": false]); return }
-        // ring11 - idempotent. The ring10 log shows setCallActive(true) arriving
-        // 4 times on a single call; every extra one used to re-activate the
-        // AVAudioSession and cut the live WebRTC stream.
-        let unchanged = self.callActive == active
         self.callActive = active
         if active {
           self.beginBackgroundTask()
-          if unchanged && self.audioSessionActivated {
-            // Session already up for this call: only repair a drifted route.
-            self.activateAudioSession()
-            self.startAudioKeepAlive()
-            call.resolve(self.snapshot(ok: true)); return
-          }
-          // First transition into the call: bring the session up decisively.
-          self.activateAudioSession(force: true)
+          self.activateAudioSession()
           self.startAudioKeepAlive()
           // Never hold a second transport while the WebView carries the call.
           self.backgroundHandoffWorkItem?.cancel(); self.backgroundHandoffWorkItem = nil
-          // Only hand the AOR over once the WebView really has a confirmed dialog.
-          // While an INVITE is still ringing, releaseRegistration() would cancel
-          // the socket the pending answer depends on, so it is skipped here (and
-          // refused inside releaseRegistration itself as a second barrier).
-          let ringing = self.incomingPendingUntil.map { $0 > Date() } ?? false
-          if self.socket != nil && !ringing { self.releaseRegistration("call_active_js_owns") }
+          if self.socket != nil { self.releaseRegistration("call_active_js_owns") }
         } else {
-          // Do NOT clear incomingPendingUntil here. JS emits transient
-          // setCallActive(false) while negotiating the answer; clearing the guard
-          // reopened the window in which stopSipService killed the ringing dialog
-          // (JsSIP status 8 => INVALID_STATE_ERROR on answer). The guard expires
-          // on its own after 45s, and acknowledgeIncoming clears it explicitly.
+          self.incomingPendingUntil = nil
           self.stopAudioKeepAlive()
-          // ring11 - allow the next call to re-activate the session cleanly.
-          if !unchanged { self.audioSessionActivated = false }
         }
         call.resolve(self.snapshot(ok: true))
       }
     }
-    /// ring11 - the keep-alive timer is now a REPAIR mechanism, not a periodic
-    /// reconfiguration. It previously called activateAudioSession() blindly every
-    /// 2 seconds, which re-ran setCategory/setActive on a healthy session for the
-    /// whole call and cut the WebRTC stream. It now only steps in when the route
-    /// has genuinely collapsed (no outputs = session interrupted by WebKit),
-    /// which is the failure mode it was written to defend against.
     private func startAudioKeepAlive() {
       audioKeepAliveTimer?.invalidate()
       audioKeepAliveTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
         guard let self = self, self.callActive else { return }
-        let s = AVAudioSession.sharedInstance()
-        if s.currentRoute.outputs.isEmpty {
-          NSLog("[PpSipKeepAlive] audio keep-alive: session lost its outputs -> repairing")
-          self.activateAudioSession(force: true)
-        }
+        // Never touch a CallKit-owned session from a timer.
+        if self.callKitAudioActive { return }
+        self.activateAudioSession()
       }
     }
     private func stopAudioKeepAlive() { audioKeepAliveTimer?.invalidate(); audioKeepAliveTimer = nil }
 
-    // MARK: - Audio route (speaker / earpiece / bluetooth)
-    // Stored so we can re-assert the route after every activateAudioSession() call
-    // (iOS resets overrideOutputAudioPort on each setActive).
-    private var preferredRoute: String = "earpiece"
-    /// ring11 - tracks whether we already brought the session up, so repeated
-    /// setCallActive(true) calls do not re-activate it.
-    private var audioSessionActivated = false
-    /// ring15 - true from CallKit didActivate until didDeactivate. While set, this
-    /// plugin must not configure or activate AVAudioSession at all.
-    private var callKitOwnsAudioSession = false
-
-    /// ring11 - idempotent. The ring10 log shows setAudioRoute called 5 times on
-    /// a single call, each one re-running overrideOutputAudioPort on a route that
-    /// was already correct.
     @objc func setAudioRoute(_ call: CAPPluginCall) {
       let route = call.getString("route") ?? "earpiece"
       DispatchQueue.main.async { [weak self] in
         guard let self = self else { call.resolve(["ok": false]); return }
-        let alreadyThere = self.preferredRoute == route && self.currentAudioRoute() == route
         self.preferredRoute = route
-        if alreadyThere {
-          call.resolve(["ok": true, "route": self.preferredRoute, "noop": true]); return
-        }
-        self.applyAudioRoute(route)
+        self.activateAudioSession()
+        self.applyAudioRoute()
         call.resolve(["ok": true, "route": self.preferredRoute])
       }
     }
@@ -878,78 +810,27 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       return "earpiece"
     }
 
-    private func applyAudioRoute(_ route: String) {
-      // ring15 - deliberately NOT gated on callKitOwnsAudioSession.
-      // overrideOutputAudioPort only moves the output port, it never re-activates
-      // or re-categorises the session, so it is safe under CallKit ownership - and
-      // it must stay reachable, otherwise the user's Speaker button would do
-      // nothing during a call.
+    private func applyAudioRoute() {
       let s = AVAudioSession.sharedInstance()
-      switch route {
+      switch preferredRoute {
       case "speaker":
         try? s.overrideOutputAudioPort(.speaker)
       case "bluetooth":
         try? s.overrideOutputAudioPort(.none)
-        // Bluetooth SCO needs the HFP input explicitly selected, the category
-        // options alone do not move the route on every device.
         if let bt = s.availableInputs?.first(where: { $0.portType == .bluetoothHFP }) { try? s.setPreferredInput(bt) }
-      default: // earpiece
+      default:
         try? s.overrideOutputAudioPort(.none)
       }
     }
 
     @objc func stopSipService(_ call: CAPPluginCall) {
       DispatchQueue.main.async {
-        // Refuse to drop the registration while an inbound call is pending:
-        // stopSipService fired mid-ring used to leave the PBX with zero
-        // contacts (registered_aors: []) and the caller went to voicemail.
         if let until = self.incomingPendingUntil, until > Date() {
           NSLog("[PpSipKeepAlive] stopSipService ignored: inbound call pending")
           self.setStatus("protected", "incoming_pending")
           call.resolve(self.snapshot(ok: true)); return
         }
         self.releaseRegistration("stopped"); call.resolve(self.snapshot(ok: true))
-      }
-    }
-    /// JS declares it holds the (ext)M AOR. Called by ppSipProvider as soon as its
-    /// own REGISTER succeeds after a VoIP push, so the push-wake grace window does
-    /// NOT fall back to a native REGISTER and steal the AOR back mid-ring.
-    /// Without this, the only signal was releaseRegistration("...js_owns"), which
-    /// is refused while incomingPendingUntil is armed - i.e. exactly during a ring.
-    @objc func declareJsOwnsAor(_ call: CAPPluginCall) {
-      let owns = call.getBool("owns") ?? true
-      DispatchQueue.main.async { [weak self] in
-        guard let self = self else { call.resolve(["ok": false]); return }
-        self.jsOwnsAor = owns
-        NSLog("[PpSipKeepAlive] declareJsOwnsAor(%@)", owns ? "true" : "false")
-        if owns, self.socket != nil {
-          // Two transports on one AOR make NetSapiens close them alternately
-          // (WSS 1001). JS is media-capable, so stand down - but never cancel the
-          // socket while our own INVITE dialog is the live one.
-          self.releaseRegistration("js_owns")
-        }
-        call.resolve(["ok": true])
-      }
-    }
-    /// ring21: le moteur PJSIP natif possede l'AOR <ext>M. Contrairement a
-    /// declareJsOwnsAor, on coupe ici la socket WSS de facon inconditionnelle :
-    /// PJSIP REGISTER en TLS 5061 et NetSapiens fermerait l'un des deux
-    /// transports (WSS 1001) si les deux restaient lies a la meme AOR.
-    @objc func declareNativeEngineOwnsAor(_ call: CAPPluginCall) {
-      let owns = call.getBool("owns") ?? true
-      DispatchQueue.main.async { [weak self] in
-        guard let self = self else { call.resolve(["ok": false]); return }
-        self.nativeEngineOwnsAor = owns
-        NSLog("[PpSipKeepAlive] nativeEngineOwnsAor=%@", owns ? "true" : "false")
-        if owns {
-          self.jsOwnsAor = false
-          self.backgroundHandoffWorkItem?.cancel(); self.backgroundHandoffWorkItem = nil
-          self.timer?.invalidate(); self.timer = nil
-          self.socket?.cancel(with: .goingAway, reason: nil); self.socket = nil
-          self.socketOpen = false
-          self.setStatus("protected", "pjsip_owns_aor")
-        }
-        call.resolve(self.snapshot(ok: true))
       }
     }
     @objc func getSipServiceStatus(_ call: CAPPluginCall) { DispatchQueue.main.async { call.resolve(self.snapshot(ok: true)) } }
@@ -962,20 +843,31 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     }
     @objc func acknowledgeIncoming(_ call: CAPPluginCall) {
       UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["pp_incoming_call"])
-      // The ring is over (answered or dismissed): this is the ONLY place allowed to
-      // clear the transport guard, so normal ownership arbitration can resume.
-      DispatchQueue.main.async { [weak self] in self?.incomingPendingUntil = nil }
       call.resolve(["ok": true])
+    }
+    /// R3 (ring9): explicit JS ownership signal for the shared AOR. Unlike
+    /// releaseRegistration("..._js_owns") this is never refused while ringing.
+    @objc func declareJsOwnsAor(_ call: CAPPluginCall) {
+      let owns = call.getBool("owns") ?? true
+      DispatchQueue.main.async { [weak self] in
+        guard let self = self else { call.resolve(["ok": false]); return }
+        self.jsOwnsAor = owns
+        NSLog("[PpSipKeepAlive] jsOwnsAor=%@", owns ? "true" : "false")
+        if owns {
+          // JsSIP holds the 113M binding: cancel our fallback REGISTER and drop
+          // our own socket so NetSapiens never sees two transports on one AOR.
+          self.pushGraceWorkItem?.cancel(); self.pushGraceWorkItem = nil
+          self.timer?.invalidate(); self.timer = nil
+          self.socket?.cancel(with: .goingAway, reason: nil); self.socket = nil
+          self.setStatus("protected", "js_owns_aor")
+        }
+        call.resolve(self.snapshot(ok: true))
+      }
     }
     @objc func wakeForIncomingCall(_ call: CAPPluginCall) {
       let why = call.getString("reason") ?? "js"
       DispatchQueue.main.async { [weak self] in
         guard let self = self else { call.resolve(["ok": false]); return }
-        // Arm the transport guard on EVERY inbound wake, not just the PushKit
-        // notification path. JS also calls this when it sees the INVITE first, and
-        // that path used to leave the guard disarmed, so the ownership arbitration
-        // was free to tear the socket down mid-ring.
-        self.incomingPendingUntil = Date().addingTimeInterval(45)
         self.wakeForPush(why)
         call.resolve(self.snapshot(ok: true))
       }
@@ -990,12 +882,9 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     /// guarantees background execution through PushKit, so this is the path that
     /// must bring the AOR back before the PBX times out to voicemail.
     private func wakeForPush(_ why: String) {
-      // ring21: si le moteur PJSIP natif possede l'AOR, c'est lui qui REGISTER en
-      // TLS 5061. Un REGISTER WSS de secours ici creerait un second transport sur
-      // la meme AOR et NetSapiens fermerait l'un des deux (WSS 1001).
       if nativeEngineOwnsAor {
-        NSLog("[PpSipKeepAlive] VoIP push wake delegated to PJSIP - legacy WSS REGISTER blocked")
-        setStatus("protected", "pjsip_owns_aor")
+        NSLog("[PpSipKeepAlive] VoIP push wake skipped — PJSIP owns the AOR")
+        releaseRegistration("pjsip_owns_aor")
         return
       }
       // PushKit can wake iOS before the WebView has loaded. Restore the last
@@ -1013,66 +902,24 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       activateAudioSession()
       lastRegisterOkTime = nil
       lastRegisterSentTime = nil
-      // ROOT CAUSE (proven by the 3-inbound-call log): this keep-alive has NO
-      // WebRTC media stack, and its bridge forwards only callId/from to JS - never
-      // the SDP offer. JsSIP registers on the SAME NetSapiens device (ext)M as
-      // this service, so whichever stack holds the AOR captures the INVITE. When it
-      // is this one, the call is structurally unanswerable: JS never sees
-      // "incoming INVITE attached" and Answer lands on a dead session.
-      //
-      // isForeground() is the wrong gate: a VoIP push arrives with the app
-      // backgrounded or the screen locked by definition, so this used to fall
-      // through to sendRegister() every single time. PushKit has just woken the
-      // WebView, so JsSIP - the only media-capable stack - must get first refusal.
-      // We always notify JS, then register ourselves only as a LAST RESORT if JS
-      // has not taken the AOR within the grace window. Registering in parallel is
-      // not an option: two transports on one AOR make NetSapiens close them
-      // alternately (WSS 1001 loop).
-      //
-      // GRACE WINDOW = 1.5s, deliberately short. docs/netsapiens/devices.md:
-      // "When push is used, the OS may kill the SIP registration in the
-      // background - the platform pairs device-push-enabled with push services to
-      // wake the app to re-register/answer. If the OS suspends the app,
-      // device-sip-registration-state will read unregistered and calls will not
-      // route to that device (falling through to voicemail)." The wake REGISTER is
-      // therefore ON THE CRITICAL PATH of inbound routing: NetSapiens forks the
-      // INVITE only to devices already registered. Waiting 4s risked nobody being
-      // registered at fork time -> voicemail. 1.5s is enough for JsSIP to open its
-      // WSS and REGISTER when the WebView is alive, and short enough that the
-      // native fallback still lands inside the ring window when it is not.
-      notifyListeners("sipReregisterRequested", data: ["reason": "voip_push"])
-      if isForeground() { return }
-      let graceToken = UUID().uuidString
-      pushWakeGraceToken = graceToken
-      DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-        guard let self = self else { return }
-        // A newer push superseded this one.
-        guard self.pushWakeGraceToken == graceToken else { return }
-        // JS took the AOR (it called releaseRegistration via foreground_js_owns,
-        // or it is already carrying the dialog): stay out of the way.
-        if self.jsOwnsAor || self.nativeEngineOwnsAor {
-          NSLog("[PpSipKeepAlive] push wake: another engine owns the AOR -> native REGISTER skipped")
-          return
-        }
-        // ring13 - a native REGISTER while a call is being set up is destructive.
-        //
-        // The ring12 log shows this firing right after the JS side had already
-        // logged "incoming INVITE attached": the native REGISTER re-registered the
-        // AOR, NetSapiens tore down the older WSS leg (1001) and the dialog
-        // carrying the INVITE died with it. The user then saw a ringing call whose
-        // Answer button could not work, because callState had fallen back to idle.
-        //
-        // callActive is set by the JS side as soon as it owns an inbound dialog, so
-        // it is the authoritative "a call is in flight, do not touch the transport"
-        // signal available natively.
-        if self.callActive {
-          NSLog("[PpSipKeepAlive] push wake: a call is already in flight -> native REGISTER skipped (never tear down a live dialog)")
-          return
-        }
-        NSLog("[PpSipKeepAlive] push wake: JS did not claim the AOR in 1.5s -> native REGISTER as fallback")
-        if self.socket == nil { self.connect() } else { self.sendRegister(challenge: nil, force: true) }
-        self.setStatus(self.status == "registered" ? "registered" : "protected", "voip_push_wake_fallback")
+      if isForeground() {
+        notifyListeners("sipReregisterRequested", data: ["reason": "voip_push"])
+        return
       }
+      // R4 (ring9): give JsSIP a 1.5s grace window to claim the AOR before we
+      // fall back to a native REGISTER. Do NOT lengthen it: NetSapiens only forks
+      // the INVITE to devices already registered at fork time.
+      jsOwnsAor = false
+      setStatus(status == "registered" ? "registered" : "protected", "voip_push_wake")
+      pushGraceWorkItem?.cancel()
+      let work = DispatchWorkItem { [weak self] in
+        guard let self = self else { return }
+        if self.jsOwnsAor { NSLog("[PpSipKeepAlive] push grace: JS owns AOR - skipping native REGISTER"); return }
+        if self.isForeground() || self.callActive { return }
+        if self.socket == nil { self.connect() } else { self.sendRegister(challenge: nil, force: true) }
+      }
+      pushGraceWorkItem = work
+      DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: work)
     }
 
     private func persistConfig() {
@@ -1128,13 +975,6 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     // NEVER touch UIApplication/UIScene off the main thread: it triggers
     // "UI API called on a background thread" and can deadlock (DispatchQueue.main.sync).
     // The cached appActive flag is refreshed only from main-thread notifications.
-    // Only .background means the WebView is truly suspended. During launch and
-    // during transient overlays (Control Center, notification shade, incoming
-    // CallKit UI) applicationState is .inactive while the WebView is ALIVE and
-    // JsSIP still owns the AOR. Treating .inactive as "background" made the
-    // native layer REGISTER a second Contact on the same AOR, and NetSapiens
-    // closed the JsSIP socket with WSS 1001 (Going Away) in an endless loop —
-    // the INVITE never reached JsSIP, so answering never sent a 200 OK.
     private func isForeground() -> Bool {
       if Thread.isMainThread {
         appActive = UIApplication.shared.applicationState != .background
@@ -1145,23 +985,16 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     @objc private func onSceneWillEnterForeground() { onForeground() }
     private func releaseRegistration(_ why: String) {
       if !Thread.isMainThread { DispatchQueue.main.async { [weak self] in self?.releaseRegistration(why) }; return }
-      // SINGLE CHOKE POINT for "drop the SIP transport". Guarding only
-      // stopSipService was not enough: foreground_js_owns, call_active_js_owns
-      // and the background handoff all reach this function, and any of them
-      // firing mid-ring cancelled the socket. JsSIP then moved the session to
-      // STATUS_TERMINATED (8) and answer() threw INVALID_STATE_ERROR, so CallKit
-      // failed the answer action: no audio, no in-call screen, caller left on the
-      // greeting. incomingPendingUntil carries its own 45s expiry, so this can
-      // never pin the transport indefinitely.
-      // Any release reason ending in js_owns means the media-capable JS stack is
-      // taking over, so the push-wake grace window must not fall back to a native
-      // REGISTER and steal the AOR back mid-ring.
+      // Arm the ownership flag BEFORE the refusal point: during a ringing call we
+      // must still record that JS owns the AOR, even though we refuse to tear the
+      // socket down (ringlock1 guard — never remove it).
       if why.hasSuffix("js_owns") { jsOwnsAor = true }
       if let until = incomingPendingUntil, until > Date() {
         NSLog("[PpSipKeepAlive] releaseRegistration refused (%@): inbound call pending", why)
         setStatus("protected", "incoming_pending")
         return
       }
+      pushGraceWorkItem?.cancel(); pushGraceWorkItem = nil
       backgroundHandoffWorkItem?.cancel(); backgroundHandoffWorkItem = nil
       timer?.invalidate(); timer = nil
       socket?.cancel(with: .goingAway, reason: nil); socket = nil
@@ -1198,63 +1031,37 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
 
     private func beginNativeOwnership(_ why: String) {
       guard !isForeground() else { releaseRegistration("foreground_js_owns"); return }
-      jsOwnsAor = false
       connect()
       scheduleRegister()
       if socket != nil, status != "registered" { sendRegister(challenge: nil) }
       setStatus(status == "registered" ? "registered" : "protected", why)
     }
 
-    /// ring11 - MADE IDEMPOTENT. This used to unconditionally re-run
-    /// setCategory + setActive + applyAudioRoute on every invocation, and it is
-    /// invoked from setCallActive(true) AND from a 2-second repeating keep-alive
-    /// timer for the entire duration of a call.
-    ///
-    /// Reconfiguring an AVAudioSession that is already active and already
-    /// correct forces a hardware route change. While an RTCPeerConnection is
-    /// rendering, that produces an audible dropout - and can leave the stream
-    /// permanently silent. Combined with the JS-side srcObject churn it is why
-    /// answered calls had no sound in the ring10 log.
-    ///
-    /// We now only touch the session when something actually differs.
-    private func activateAudioSession(force: Bool = false) {
-      // ring15 - CallKit is the EXCLUSIVE owner of the audio session for the whole
-      // duration of a call. Every setCategory/setActive we issue while it holds the
-      // session makes iOS re-arbitrate the route and strip the outputs, which is
-      // precisely the hadOutputs=n measured throughout log 137 while the user heard
-      // nothing in either direction. During a CallKit call the ONLY place allowed to
-      // configure the session is PpVoipCall's provider(_:didActivate:).
-      if callKitOwnsAudioSession {
-        NSLog("[PpSipKeepAlive] audio session untouched - CallKit owns it (force=%@)", force ? "y" : "n")
+    private func activateAudioSession() {
+      let s = AVAudioSession.sharedInstance()
+      // ring16: once CallKit has activated the session it owns category, mode
+      // and activation. Re-applying setCategory (the 2s keep-alive did it over
+      // and over) makes iOS re-arbitrate the route and drop every output —
+      // that is the measured 'hadOutputs=n' silence. Only re-assert the route.
+      if callKitAudioActive {
+        if s.category != .playAndRecord || s.mode != .voiceChat {
+          try? s.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .allowBluetoothA2DP])
+        }
+        applyAudioRoute()
+        NSLog("[PpSipKeepAlive] audio owned by CallKit outputs=%d", s.currentRoute.outputs.count)
         return
       }
-      let s = AVAudioSession.sharedInstance()
       // During a live call we must own the session exclusively: .mixWithOthers
       // lets WebKit interrupt it when the app goes background (no audio at all).
       let opts: AVAudioSession.CategoryOptions = callActive
         ? [.allowBluetoothHFP, .allowBluetoothA2DP]
         : [.allowBluetoothHFP, .allowBluetoothA2DP, .mixWithOthers]
-
-      let categoryMatches = s.category == .playAndRecord && s.mode == .voiceChat && s.categoryOptions == opts
-      if force || !categoryMatches {
-        try? s.setCategory(.playAndRecord, mode: .voiceChat, options: opts)
-      }
-
-      // An empty currentRoute.outputs list is the reliable signal that the
-      // session was deactivated or interrupted out from under us.
-      let sessionLooksActive = !s.currentRoute.outputs.isEmpty
-      if force || !sessionLooksActive || !categoryMatches {
-        try? s.setActive(true, options: [])
-        // iOS resets overrideOutputAudioPort on each setActive, so the route
-        // must be re-asserted - but only when we really did call setActive.
-        applyAudioRoute(preferredRoute)
-        audioSessionActivated = true
-        NSLog("[PpSipKeepAlive] audio session (re)activated force=%@ categoryMatched=%@ hadOutputs=%@",
-              force ? "y" : "n", categoryMatches ? "y" : "n", sessionLooksActive ? "y" : "n")
-      } else if currentAudioRoute() != preferredRoute {
-        // Session is fine, only the route drifted (e.g. a headset was unplugged).
-        applyAudioRoute(preferredRoute)
-      }
+      try? s.setCategory(.playAndRecord, mode: .voiceChat, options: opts)
+      // Foreground in-app calls do not pass through CXProvider.didActivate.
+      if !callKitAudioActive { try? s.setActive(true, options: []) }
+      // Re-assert the user's choice: activating the session resets the override
+      // and iOS would fall back to the loudspeaker mid-call.
+      applyAudioRoute()
     }
     private func connect() {
       // A new socket means a new AoR binding: clear the 200 OK debounce.
@@ -1281,6 +1088,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         self.setStatus("reconnecting", "ws_open_timeout"); self.scheduleReconnect("ws_open_timeout")
       }
     }
+
     public func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
       DispatchQueue.main.async { [weak self] in
         guard let self = self, webSocketTask === self.socket else { return }
@@ -1289,6 +1097,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         if self.registerOnOpen { self.registerOnOpen = false; self.sendRegister(challenge: nil, force: true) }
       }
     }
+
     public func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
       DispatchQueue.main.async { [weak self] in
         guard let self = self, webSocketTask === self.socket else { return }
@@ -1316,8 +1125,6 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
           self.receiveLoop()
         case .failure(let err):
           self.socket = nil
-          // Without this, socketOpen stayed true after a drop and sendRegister
-          // happily wrote to a dead socket (POSIX 57).
           self.socketOpen = false
           if self.isForeground() { self.setStatus("idle", "foreground_js_owns") }
           else {
@@ -1341,9 +1148,6 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         self.reconnectPending = false
         if self.isForeground() { self.setStatus("idle", "foreground_js_owns"); return }
         guard self.networkUp else { self.setStatus("reconnecting", "network_down"); self.scheduleReconnect("network_down"); return }
-        // connect() only. The REGISTER is driven by didOpenWithProtocol via
-        // registerOnOpen: firing it here raced the handshake and produced
-        // POSIX 57 (socket is not connected) plus a wasted backoff cycle.
         self.connect()
         DispatchQueue.main.asyncAfter(deadline: .now() + self.verifyDelayMs / 1000.0) { [weak self] in
           guard let self = self else { return }
@@ -1551,71 +1355,43 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     private var lastReportedToken: String?
     private var activeCallUUID: UUID?
     private var activeCallId: String?
-    // ring13 - the PBX call-id is not stable across fork legs, so dedup also needs
-    // the caller and the age of the live CallKit report.
-    private var activeCallerNumber: String = ""
-    /// Instant ou l'action de decrochage CallKit a ete fulfillee. Sert a ne
-    /// jamais resoudre deux fois la meme action.
-    private var answerFulfilledAt: Date?
-    /// ring15 - last callId whose CXAnswerCallAction we successfully fulfilled, so a
-    /// second completeAnswer(ok:true) for the same call is reported as already
-    /// confirmed instead of as a failure.
-    private var answerConfirmedForCallId: String = ""
-    private var activeCallReportedAt: Date = .distantPast
     private var pendingAnswerAction: CXAnswerCallAction?
+    private var pendingAnswerBackgroundTask: UIBackgroundTaskIdentifier = .invalid
+    private var answerCompleted = false
+    // ring17: NetSapiens can emit the SAME inbound call twice with two
+    // different callIds. Deduplicate on the caller number too, otherwise a
+    // second CallKit call races the first answer action.
+    private var lastPushNumber: String = ""
+    private var lastPushAt: TimeInterval = 0
     private let voipTokenDefaultsKey = "pp.voip.push-token.v1"
-    /// ring11 - memoised result of apnsEnvironment(); the embedded provisioning
-    /// profile cannot change while the process is alive.
-    private var cachedApnsEnvironment: String? = nil
+    /// true quand l'appel CallKit courant est piloté par le moteur PJSIP natif
+    /// (INVITE reçu en TLS 5061) et non plus par le chemin JsSIP/WebView.
+    private var nativeEngineOwnsCall = false
 
-    /// ring11 - the APNs environment a PushKit token belongs to is decided by the
-    /// aps-environment entitlement baked into the embedded provisioning
-    /// profile, NOT by the Xcode build configuration.
-    ///
-    /// The previous implementation returned "sandbox" under #if DEBUG, which
-    /// mislabelled every Debug build even though Planipret's entitlements are
-    /// production. The ring10 log showed environment=sandbox for a
-    /// production-signed build, and because pp-voip-push-token persists that
-    /// value on every app launch it kept overwriting the server-side
-    /// self-correction. Result: ns-webhook-receiver hit
-    /// api.sandbox.push.apple.com first on EVERY call, took a BadDeviceToken,
-    /// then retried on the production host - a permanent extra round trip on
-    /// the critical path that delayed the INVITE.
-    ///
-    /// We now read the real entitlement out of embedded.mobileprovision. That
-    /// file is a CMS blob wrapping a plist, so we slice between the plist
-    /// markers instead of trying to decode the signature.
+    private func beginAnswerBackgroundTask() {
+        endAnswerBackgroundTask()
+        pendingAnswerBackgroundTask = UIApplication.shared.beginBackgroundTask(withName: "PpVoipAnswer") { [weak self] in
+            guard let self = self else { return }
+            self.pendingAnswerAction?.fail()
+            self.pendingAnswerAction = nil
+            self.endAnswerBackgroundTask()
+        }
+    }
+
+    private func endAnswerBackgroundTask() {
+        guard pendingAnswerBackgroundTask != .invalid else { return }
+        let task = pendingAnswerBackgroundTask
+        pendingAnswerBackgroundTask = .invalid
+        UIApplication.shared.endBackgroundTask(task)
+    }
+
+
     private func apnsEnvironment() -> String {
-        if let cached = cachedApnsEnvironment { return cached }
-
-        var resolved: String? = nil
-
-        if let url = Bundle.main.url(forResource: "embedded", withExtension: "mobileprovision"),
-           let data = try? Data(contentsOf: url),
-           let raw = String(data: data, encoding: .isoLatin1),
-           let start = raw.range(of: "<?xml"),
-           let end = raw.range(of: "</plist>") {
-            let plistText = String(raw[start.lowerBound..<end.upperBound])
-            if let plistData = plistText.data(using: .isoLatin1),
-               let plist = try? PropertyListSerialization.propertyList(from: plistData, options: [], format: nil) as? [String: Any],
-               let entitlements = plist["Entitlements"] as? [String: Any],
-               let apsEnv = entitlements["aps-environment"] as? String {
-                // Apple spells it "development" in the entitlement; APNs calls
-                // the matching host "sandbox".
-                resolved = (apsEnv == "development") ? "sandbox" : "production"
-                NSLog("[PpVoipCall] apnsEnvironment from entitlement aps-environment=%@ -> %@", apsEnv, resolved!)
-            }
-        }
-
-        if resolved == nil {
-            // App Store / TestFlight builds strip the embedded profile, and those
-            // are always production.
-            resolved = "production"
-            NSLog("[PpVoipCall] apnsEnvironment no embedded profile -> production")
-        }
-
-        cachedApnsEnvironment = resolved
-        return resolved!
+        #if DEBUG
+        return "sandbox"
+        #else
+        return "production"
+        #endif
     }
 
     public override func load() {
@@ -1625,8 +1401,133 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             self.setupCallKit()
             self.setupPushKit()
             self.notifyListeners("callKitReady", data: ["ok": true])
+            self.observePjsipEngine()
         }
     }
+
+    // MARK: - Pont PJSIP natif → CallKit
+    /// La sonnerie système est désormais déclenchée par l'INVITE PJSIP natif.
+    /// Le push VoIP ne sert plus qu'à réveiller le process : si PJSIP présente
+    /// l'appel en premier, le chemin JsSIP n'est jamais sollicité.
+    private func observePjsipEngine() {
+        let nc = NotificationCenter.default
+        nc.addObserver(forName: Notification.Name("PpPjsipIncomingCall"), object: nil, queue: .main) { [weak self] note in
+            guard let self = self else { return }
+            let info = note.userInfo as? [String: Any] ?? [:]
+            self.reportNativeIncomingCall(
+                callId: (info["callId"] as? String) ?? UUID().uuidString,
+                callerName: (info["callerName"] as? String) ?? "Appel entrant",
+                callerNumber: (info["callerNumber"] as? String) ?? ""
+            )
+        }
+        nc.addObserver(forName: Notification.Name("PpPjsipCallConnected"), object: nil, queue: .main) { [weak self] _ in
+            guard let self = self, let uuid = self.activeCallUUID else { return }
+            self.provider?.reportOutgoingCall(with: uuid, connectedAt: Date())
+        }
+        nc.addObserver(forName: Notification.Name("PpPjsipOutgoingCall"), object: nil, queue: .main) { [weak self] note in
+            guard let self = self else { return }
+            let info = note.userInfo as? [String: Any] ?? [:]
+            let callId = (info["callId"] as? String) ?? UUID().uuidString
+            let destination = (info["destination"] as? String) ?? ""
+            let uuid = UUID()
+            self.activeCallUUID = uuid
+            self.activeCallId = callId
+            self.nativeEngineOwnsCall = true
+            let handle = CXHandle(type: .phoneNumber, value: destination)
+            let action = CXStartCallAction(call: uuid, handle: handle)
+            self.callController.request(CXTransaction(action: action)) { error in
+                if let error = error {
+                    NSLog("[PpVoipCall] outgoing CallKit transaction failed: %@", error.localizedDescription)
+                    NotificationCenter.default.post(name: Notification.Name("PpPjsipEndRequested"), object: nil)
+                }
+            }
+        }
+        nc.addObserver(forName: Notification.Name("PpPjsipOutgoingRinging"), object: nil, queue: .main) { [weak self] _ in
+            guard let self = self, let uuid = self.activeCallUUID else { return }
+            self.provider?.reportOutgoingCall(with: uuid, startedConnectingAt: Date())
+        }
+        nc.addObserver(forName: Notification.Name("PpPjsipCallEnded"), object: nil, queue: .main) { [weak self] note in
+            guard let self = self, let uuid = self.activeCallUUID else { return }
+            let code = (note.userInfo?["code"] as? Int) ?? 0
+            let reason: CXCallEndedReason = (code == 486 || code == 603) ? .declinedElsewhere
+                : (code >= 400 && code != 487) ? .failed : .remoteEnded
+            self.provider?.reportCall(with: uuid, endedAt: Date(), reason: reason)
+            self.pendingAnswerAction?.fulfill(); self.pendingAnswerAction = nil
+            self.endAnswerBackgroundTask()
+            self.activeCallUUID = nil; self.activeCallId = nil
+            self.nativeEngineOwnsCall = false
+        }
+    }
+
+    private func reportNativeIncomingCall(callId: String, callerName: String, callerNumber: String) {
+        // Un push VoIP a pu déjà présenter le même appel : on garde le premier
+        // UUID CallKit et on se contente d'enrichir l'affichage.
+        if let uuid = activeCallUUID {
+            nativeEngineOwnsCall = true
+            activeCallId = callId
+            let update = CXCallUpdate()
+            // Le push VoIP arrive souvent sans numero (NetSapiens ne le fournit
+            // pas toujours) -> CallKit affiche "Numero indisponible". L'INVITE
+            // natif, lui, porte toujours le From : on corrige le handle ici.
+            if !callerNumber.isEmpty {
+                update.remoteHandle = CXHandle(type: .phoneNumber, value: callerNumber)
+            }
+            update.localizedCallerName = callerName
+            provider?.reportCall(with: uuid, updated: update)
+            NSLog("[PpVoipCall] PJSIP INVITE joined existing CallKit call callId=%@", callId)
+            // L'utilisateur a pu decrocher AVANT l'arrivee de l'INVITE (appel
+            // presente par le push). L'action CallKit attendait alors JsSIP qui
+            // ne repond plus : on la remplit maintenant via PJSIP.
+            if let pending = pendingAnswerAction {
+                pendingAnswerAction = nil
+                answerCompleted = true
+                endAnswerBackgroundTask()
+                // PpPjsipAnswerPending already armed the engine when CallKit
+                // was answered before this INVITE. handleIncomingCall() sends
+                // the 200 OK itself; posting AnswerRequested here would answer
+                // the same dialog twice and can leave the caller ringing.
+                notifyListeners("incomingCallAnswered", data: [
+                    "callUUID": uuid.uuidString,
+                    "callId": callId,
+                    "source": "pjsip"
+                ], retainUntilConsumed: true)
+                pending.fulfill()
+                NSLog("[PpVoipCall] pending answer fulfilled by native INVITE callId=%@", callId)
+            }
+            return
+        }
+
+        let uuid = UUID()
+        activeCallUUID = uuid
+        activeCallId = callId
+        nativeEngineOwnsCall = true
+
+        let update = CXCallUpdate()
+        update.remoteHandle = callerNumber.isEmpty
+            ? CXHandle(type: .generic, value: callerName)
+            : CXHandle(type: .phoneNumber, value: callerNumber)
+        update.localizedCallerName = callerName
+        update.hasVideo = false
+        update.supportsHolding = false
+        update.supportsDTMF = true
+
+        provider?.reportNewIncomingCall(with: uuid, update: update) { [weak self] error in
+            if let error = error {
+                NSLog("[PpVoipCall] PJSIP reportNewIncomingCall failed: \\(error.localizedDescription)")
+                NotificationCenter.default.post(name: Notification.Name("PpPjsipEndRequested"), object: nil)
+                return
+            }
+            NSLog("[PpVoipCall] CallKit ringing from native PJSIP INVITE callId=%@", callId)
+            self?.notifyListeners("callKitReady", data: [
+                "callUUID": uuid.uuidString,
+                "callId": callId,
+                "callerName": callerName,
+                "callerNumber": callerNumber,
+                "source": "pjsip"
+            ], retainUntilConsumed: true)
+        }
+    }
+
 
     private func setupCallKit() {
         let cfg = CXProviderConfiguration(localizedName: "Planiprêt")
@@ -1684,10 +1585,8 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             callController.request(CXTransaction(action: end)) { _ in }
             activeCallUUID = nil
             activeCallId = nil
-            activeCallerNumber = ""
-            activeCallReportedAt = .distantPast
-            answerFulfilledAt = nil
         }
+        endAnswerBackgroundTask()
         call.resolve(["ok": true])
     }
 
@@ -1698,87 +1597,16 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         // identical. CallKit is configured for one call only, so the pending
         // CXAnswerCallAction is the authoritative correlation token.
         guard let action = pendingAnswerAction else {
-            // ring15 - idempotent. Two independent paths now confirm a successful
-            // answer (answerOnce, and the 200 OK effect added in ring14), so the
-            // second one legitimately arrives after the action was consumed. Log 137
-            // shows exactly that: completeAnswer -> ok:true, then completeAnswer ->
-            // ok:false/no_pending_answer. Reporting a failure for an answer that in
-            // fact succeeded is misleading, and a caller that reacts to ok:false
-            // could tear down a healthy call.
-            let alreadyConfirmed = ok && answerConfirmedForCallId == (callId.isEmpty ? (activeCallId ?? "") : callId)
-            call.resolve([
-                "ok": alreadyConfirmed,
-                "reason": alreadyConfirmed ? "already_confirmed" : "no_pending_answer"
-            ])
+            // ring16: completeAnswer is idempotent. A second call after the
+            // action was already fulfilled is a duplicate, not a failure.
+            call.resolve(["ok": answerCompleted, "reason": answerCompleted ? "already_completed" : "no_pending_answer"])
             return
         }
         pendingAnswerAction = nil
-        // L'action de decrochage est desormais fulfillee des sa reception (voir
-        // perform CXAnswerCallAction). Elle ne doit donc plus etre resolue une
-        // seconde fois ici : CallKit journalise toute double resolution comme une
-        // erreur, et un fail() sur une action deja fulfillee est ignore.
-        let alreadyFulfilled = answerFulfilledAt != nil
-        answerFulfilledAt = nil
-        if ok {
-            answerConfirmedForCallId = callId.isEmpty ? (activeCallId ?? "") : callId
-            if !alreadyFulfilled { action.fulfill() }
-            call.resolve(["ok": true, "reason": alreadyFulfilled ? "confirmed_after_fulfill" : "fulfilled"])
-            return
-        }
-        answerConfirmedForCallId = ""
-        if alreadyFulfilled {
-            // Le decrochage a echoue cote SIP alors que CallKit affiche deja un
-            // appel connecte : il faut le terminer explicitement, sinon
-            // l'interface reste bloquee sur un appel fantome.
-            if let uuid = activeCallUUID {
-                provider?.reportCall(with: uuid, endedAt: Date(), reason: .failed)
-                activeCallUUID = nil; activeCallId = nil; activeCallerNumber = ""
-            }
-            NSLog("[PpVoipCall] SIP answer failed after fulfill - CallKit call ended")
-        } else {
-            action.fail()
-        }
+        answerCompleted = ok
+        if ok { action.fulfill() } else { action.fail() }
+        endAnswerBackgroundTask()
         call.resolve(["ok": true])
-    }
-
-    /// Jetons que NetSapiens et les trunks en amont placent dans le champ
-    /// appelant quand le numero est masque. Aucun n'est composable.
-    private static let anonymousTokens: Set<String> = [
-        "anonymous", "unknown", "unavailable", "restricted", "private",
-        "prive", "masque", "withheld", "blocked", "nonumber", "no-number",
-        "no_number", "null", "none", ""
-    ]
-
-    /// Retourne un numero reellement composable, ou "" s'il n'y en a pas.
-    ///
-    /// - Normalise en E.164 les numeros nord-americains a 10 ou 11 chiffres :
-    ///   un handle .phoneNumber sans "+" n'est pas associe au carnet d'adresses
-    ///   par iOS, qui retombe alors sur son libelle generique.
-    /// - Laisse les extensions internes (3 a 6 chiffres) telles quelles.
-    /// - Retourne "" pour tout appelant masque ou toute valeur non numerique.
-    static func dialableNumber(_ raw: String) -> String {
-        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if value.lowercased().hasPrefix("sip:") { value = String(value.dropFirst(4)) }
-        if let at = value.firstIndex(of: "@") { value = String(value[value.startIndex..<at]) }
-        value = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        let token = value.lowercased().replacingOccurrences(of: " ", with: "")
-        if anonymousTokens.contains(token) { return "" }
-        let digits = value.filter { $0.isNumber }
-        if digits.isEmpty { return "" }
-        // Un "0", "00", "000"... n'est pas un appelant.
-        if digits.allSatisfy({ $0 == "0" }) { return "" }
-        switch digits.count {
-        case 3...6:
-            return digits                                  // extension interne
-        case 10:
-            return "+1" + digits                           // NANP sans indicatif
-        case 11 where digits.hasPrefix("1"):
-            return "+" + digits
-        case 8...15:
-            return "+" + digits                            // international
-        default:
-            return ""
-        }
     }
 
     // MARK: - PKPushRegistryDelegate
@@ -1811,24 +1639,26 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         guard type == .voIP else { completion(); return }
         let dict = payload.dictionaryPayload
         let callId = (dict["callId"] as? String) ?? (dict["call_id"] as? String) ?? UUID().uuidString
-        let rawName = (dict["callerName"] as? String) ?? (dict["from_number"] as? String) ?? (dict["from"] as? String) ?? ""
-        let rawNumber = (dict["callerNumber"] as? String) ?? (dict["from_number"] as? String) ?? (dict["from_user"] as? String) ?? ""
-        // Le serveur signale explicitement un appelant masque. On ne s'y fie pas
-        // seul : ce plugin doit rester correct face a un push emis par une
-        // version anterieure du webhook.
-        let serverSaysAnonymous = (dict["callerAnonymous"] as? Bool) ?? false
-        // callerNumber ne doit contenir QU'UN numero reellement composable.
-        // Sinon CXHandle(type: .phoneNumber) est rejete par iOS, qui affiche
-        // alors son propre libelle "numero indisponible" - le defaut du 3 aout.
-        let callerNumber = serverSaysAnonymous ? "" : Self.dialableNumber(rawNumber)
-        let callerName: String = {
-            let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty, Self.dialableNumber(trimmed).isEmpty || trimmed == callerNumber {
-                return trimmed
+        let callerName = (dict["callerName"] as? String) ?? (dict["from_number"] as? String) ?? (dict["from"] as? String) ?? "Appel entrant"
+        let callerNumber = (dict["callerNumber"] as? String) ?? (dict["from_number"] as? String) ?? (dict["from_user"] as? String) ?? ""
+
+        // CallKit is configured for exactly one call. The webhook push and the
+        // native SIP INVITE use different IDs, and APNs retries may omit the
+        // caller number. Therefore any push received while a CallKit call is
+        // already alive belongs to that existing physical call. Never replace
+        // its UUID: doing so creates two system call screens and makes the green
+        // button target the stale UUID.
+        if let uuid = activeCallUUID {
+            let update = CXCallUpdate()
+            if !callerNumber.isEmpty {
+                update.remoteHandle = CXHandle(type: .phoneNumber, value: callerNumber)
             }
-            if !callerNumber.isEmpty { return callerNumber }
-            return "Appel masque"
-        }()
+            update.localizedCallerName = callerName
+            provider?.reportCall(with: uuid, updated: update)
+            NSLog("[PpVoipCall] VoIP push joined active CallKit call pushCallId=%@ activeCallId=%@", callId, activeCallId ?? "")
+            completion()
+            return
+        }
 
         // NetSapiens can retry a call event while iOS is waking. Preserve the
         // first CallKit UUID so its Answer action never becomes stale.
@@ -1837,40 +1667,18 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             completion()
             return
         }
-
-        // ring13 - second-level dedup, BY CALLER, because the callId is not stable.
-        //
-        // The callId dedup above only catches a byte-identical retry. The ring12 log
-        // carried FOUR pushes bearing THREE distinct callIds for the same physical
-        // call, because NetSapiens mints a new call-id per fork leg (orig and term
-        // side both fire the call webhook model). Each unseen callId therefore
-        // produced a fresh reportNewIncomingCall with a fresh UUID, and the user saw
-        // TWO CallKit call screens for one caller - one already connected, the other
-        // still ringing with a Reject button.
-        //
-        // Same caller + a still-live CallKit call = same physical call. Update the
-        // existing call instead of reporting a new one: reporting twice is what puts
-        // CallKit and the SIP dialog out of sync, and the second (dialog-less) call
-        // screen is the one that can never be answered.
-        if let liveUUID = activeCallUUID,
-           !callerNumber.isEmpty,
-           callerNumber == activeCallerNumber,
-           Date().timeIntervalSince(activeCallReportedAt) < 25.0 {
-            NSLog("[PpVoipCall] duplicate VoIP push ignored: same caller %@ already ringing (callId=%@ mapped onto live call)", callerNumber, callId)
-            // Keep the newest PBX call-id addressable so an answer/hangup routed
-            // through it still resolves to the live CallKit call.
-            activeCallId = callId
-            NotificationCenter.default.post(name: Notification.Name("PpVoipIncomingPush"), object: nil, userInfo: ["callId": callId])
-            notifyListeners("callKitReady", data: [
-                "callUUID": liveUUID.uuidString,
-                "callId": callId,
-                "callerName": callerName,
-                "callerNumber": callerNumber,
-                "deduplicated": true
-            ], retainUntilConsumed: true)
+        // ring17: same caller, different callId, within 45s of the first push
+        // and a CallKit call still up → same physical call, drop it.
+        let now = Date().timeIntervalSince1970
+        let digits = callerNumber.filter { $0.isNumber }
+        if !digits.isEmpty, digits == lastPushNumber, activeCallUUID != nil, now - lastPushAt < 45 {
+            NSLog("[PpVoipCall] duplicate VoIP push ignored (same caller) callId=%@", callId)
             completion()
             return
         }
+        lastPushNumber = digits
+        lastPushAt = now
+
 
         // Wake the native SIP keep-alive FIRST: iOS may have killed the WSS
         // socket while suspended, and only this push guarantees runtime.
@@ -1879,24 +1687,12 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         let uuid = UUID()
         activeCallUUID = uuid
         activeCallId = callId
-        // ring13 - remember WHO is calling and WHEN, so a later push from another
-        // fork leg of the same call can be folded onto this CallKit call.
-        activeCallerNumber = callerNumber
-        activeCallReportedAt = Date()
 
         let update = CXCallUpdate()
-        // CXHandle(type: .phoneNumber) exige de l'E.164. Quand le numero est
-        // absent, masque ou non composable, on passe en .generic avec un libelle
-        // lisible : iOS affiche alors ce libelle au lieu de le remplacer par son
-        // propre "numero indisponible".
         let handle: CXHandle = callerNumber.isEmpty
-            ? CXHandle(type: .generic, value: callerName.isEmpty ? "Appel masque" : callerName)
+            ? CXHandle(type: .generic, value: callerName)
             : CXHandle(type: .phoneNumber, value: callerNumber)
         update.remoteHandle = handle
-        NSLog("[PpVoipCall] CallKit handle type=%@ value=%@ raw=%@",
-              callerNumber.isEmpty ? "generic" : "phoneNumber",
-              callerNumber.isEmpty ? callerName : callerNumber,
-              rawNumber)
         update.localizedCallerName = callerName
         update.hasVideo = false
         update.supportsHolding = true
@@ -1906,9 +1702,6 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             if let error = error {
                 NSLog("[PpVoipCall] reportNewIncomingCall failed: \\(error.localizedDescription)")
             }
-            // retainUntilConsumed: the VoIP push often lands while the WebView
-            // is suspended; without it the event is dropped and the JS layer
-            // never learns about the incoming call.
             self?.notifyListeners("callKitReady", data: [
                 "callUUID": uuid.uuidString,
                 "callId": callId,
@@ -1921,156 +1714,134 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
 
     // MARK: - CXProviderDelegate
     public func providerDidReset(_ provider: CXProvider) {
-        if answerFulfilledAt == nil { pendingAnswerAction?.fail() }
-        pendingAnswerAction = nil
-        answerFulfilledAt = nil
-        activeCallUUID = nil; activeCallId = nil; activeCallerNumber = ""; activeCallReportedAt = .distantPast; answerConfirmedForCallId = ""
+        pendingAnswerAction?.fail(); pendingAnswerAction = nil
+        endAnswerBackgroundTask()
+        if nativeEngineOwnsCall {
+            NotificationCenter.default.post(name: Notification.Name("PpPjsipEndRequested"), object: nil)
+        }
+        nativeEngineOwnsCall = false
+        activeCallUUID = nil; activeCallId = nil
+    }
+
+    /// Mute système (bouton CallKit) → coupe le flux micro dans PJSIP.
+    public func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
+        NotificationCenter.default.post(
+            name: Notification.Name("PpPjsipMuteRequested"), object: nil,
+            userInfo: ["muted": action.isMuted]
+        )
+        notifyListeners("callMuted", data: ["muted": action.isMuted])
+        action.fulfill()
+    }
+
+    /// Clavier CallKit → DTMF RFC 2833 côté PJSIP.
+    public func provider(_ provider: CXProvider, perform action: CXPlayDTMFCallAction) {
+        NotificationCenter.default.post(
+            name: Notification.Name("PpPjsipDtmfRequested"), object: nil,
+            userInfo: ["digits": action.digits]
+        )
+        action.fulfill()
     }
 
     public func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
-        // Prepare the route but let CallKit own activation (didActivate:).
-        // Activating the session here races the system session and produces a
-        // connected CallKit call with no audio path.
+        // Never invalidate the first valid answer transaction. A duplicate
+        // CallKit callback must join/lose, not fail the action JS is completing.
+        if pendingAnswerAction != nil {
+            NSLog("[PpVoipCall] duplicate answer action ignored")
+            // Do not show a failed Answer operation for a duplicate callback.
+            // The first action remains authoritative and completes with SIP.
+            action.fulfill()
+            return
+        }
+        // Prepare the route but let CallKit own activation (didActivate:) —
+        // activating here races the system session and yields a dead call.
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .allowBluetoothA2DP])
-        // Settle the transaction BEFORE waking JS. With retainUntilConsumed a
-        // retained Capacitor listener can answer SYNCHRONOUSLY inside
-        // notifyListeners, and completeAnswer() then ran while
-        // pendingAnswerAction was still the PREVIOUS action (or nil): it found
-        // nothing to fulfill, action.fulfill() was never called, and CallKit tore
-        // the call down at the 32s timeout. Fulfill any stale action first, then
-        // publish the authoritative one, then wake JS.
-        pendingAnswerAction?.fulfill()
+
+        // Chemin natif PJSIP : le décrochage est un simple \`pjsua_call_answer\`,
+        // il ne dépend ni de la WebView ni d'un REGISTER JsSIP. On remplit donc
+        // l'action tout de suite (plus de fenêtre de 32 s ni de completeAnswer).
+        if nativeEngineOwnsCall {
+            answerCompleted = true
+            pendingAnswerAction = nil
+            NotificationCenter.default.post(name: Notification.Name("PpVoipCallAnswered"), object: nil, userInfo: ["callId": activeCallId ?? ""])
+            NotificationCenter.default.post(name: Notification.Name("PpPjsipAnswerRequested"), object: nil, userInfo: ["callId": activeCallId ?? ""])
+            notifyListeners("incomingCallAnswered", data: [
+                "callUUID": action.callUUID.uuidString,
+                "callId": activeCallId ?? "",
+                "source": "pjsip"
+            ], retainUntilConsumed: true)
+            action.fulfill()
+            return
+        }
+
+        // Store the transaction BEFORE waking JS. A retained Capacitor listener
+        // can answer synchronously; completeAnswer() must already have the
+        // authoritative CXAnswerCallAction when that callback returns.
         pendingAnswerAction = action
-        // LE CORRECTIF DU BOUTON DECROCHER GELE (3 aout).
-        //
-        // Cette action etait fulfillee seulement apres confirmation du dialogue
-        // SIP par completeAnswer(). Quand le decrochage vient d'un push CallKit
-        // et que JsSIP ne possede plus l'AOR, cette confirmation n'arrive jamais :
-        // CallKit laisse alors son interface figee jusqu'au timeout de 32 s, et le
-        // bouton "decrocher" ne repond plus - exactement le symptome observe.
-        //
-        // La doctrine Apple est de fulfiller des que l'application ACCEPTE de
-        // decrocher, pas quand le media est etabli. L'etablissement reel est
-        // rapporte ensuite par reportCall(with:updated:) ; un echec est signale
-        // par reportCall(with:endedAt:reason:) et non par un bouton mort.
-        action.fulfill()
-        answerFulfilledAt = Date()
-        NSLog("[PpVoipCall] answer action fulfilled immediately callId=%@", activeCallId ?? "")
-        // ring16 - claim audio ownership HERE, not at didActivate. Log 138 shows
-        // three "audio session (re)activated ... hadOutputs=n" emitted by the
-        // keep-alive watchdog BETWEEN the 200 OK and didActivate, because the
-        // ownership flag was only armed at didActivate. Each of those touches the
-        // session while it still has no route, and that is what drives WebKit into
-        // "beginInterruption but session is already interrupted!". From the moment
-        // CallKit asks us to answer, nobody else may touch the session.
-        NotificationCenter.default.post(name: Notification.Name("PpVoipAudioSessionActivated"), object: nil)
-        // Pin the SIP transport + audio session up while the WebView performs
-        // the actual SIP answer, possibly still in the background.
+        answerCompleted = false
+        beginAnswerBackgroundTask()
+        // Si le moteur PJSIP est demarre, l'INVITE natif va arriver d'un
+        // instant a l'autre : reportNativeIncomingCall remplira cette action.
+        NotificationCenter.default.post(name: Notification.Name("PpPjsipAnswerPending"), object: nil, userInfo: ["callId": activeCallId ?? ""])
+        // Keep the SIP transport pinned up while the WebView answers.
         NotificationCenter.default.post(name: Notification.Name("PpVoipCallAnswered"), object: nil, userInfo: ["callId": activeCallId ?? ""])
-        // retainUntilConsumed: Answer can be tapped from the lock screen while
-        // the WebView is suspended; without it the event is dropped and the
-        // call is never picked up on the SIP side.
         notifyListeners("incomingCallAnswered", data: [
             "callUUID": action.callUUID.uuidString,
             "callId": activeCallId ?? ""
         ], retainUntilConsumed: true)
-        // Safety net: never present a falsely connected CallKit call.
-        // 32s is deliberately GREATER than PP_PENDING_ANSWER_TIMEOUT_MS (30s in
-        // ppSipProvider): the pending-answer intent stays valid for 30s while the
-        // caller is still hearing the greeting, so a 12s CallKit timeout used to
-        // fail() the action while the SIP path was still legitimately working.
-        // Ordering must always be: JS watchdogs < SIP intent (30s) < CallKit (32s).
-        // L'action etant deja fulfillee, ce filet ne peut plus "echouer" le
-        // bouton : il termine l'appel proprement si le dialogue SIP ne s'est
-        // jamais etabli, ce qui est la facon correcte de signaler l'echec.
+        // JS keeps the pending SIP-answer intent for 30s. Keep CallKit alive
+        // slightly longer so slow WSS registration/refork can still complete.
         DispatchQueue.main.asyncAfter(deadline: .now() + 32.0) { [weak self, weak action] in
             guard let self = self, let action = action, self.pendingAnswerAction === action else { return }
             self.pendingAnswerAction = nil
-            self.answerFulfilledAt = nil
-            guard let uuid = self.activeCallUUID else { return }
-            NSLog("[PpVoipCall] SIP dialog not confirmed after 32s - ending CallKit call")
-            self.provider?.reportCall(with: uuid, endedAt: Date(), reason: .failed)
-            self.activeCallUUID = nil; self.activeCallId = nil
-            self.activeCallerNumber = ""; self.answerConfirmedForCallId = ""
+            NSLog("[PpVoipCall] answer action timed out — SIP dialog not confirmed")
+            action.fail()
+            self.endAnswerBackgroundTask()
         }
     }
 
+    public func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
+        guard activeCallUUID == action.callUUID else {
+            action.fail()
+            return
+        }
+        let update = CXCallUpdate()
+        update.remoteHandle = action.handle
+        update.hasVideo = false
+        update.supportsDTMF = true
+        update.supportsHolding = false
+        provider.reportCall(with: action.callUUID, updated: update)
+        provider.reportOutgoingCall(with: action.callUUID, startedConnectingAt: Date())
+        action.fulfill()
+    }
+
     public func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
-        // Une action deja fulfillee ne doit pas etre fail() : ce serait une
-        // double resolution, que CallKit journalise comme une erreur.
-        if answerFulfilledAt == nil { pendingAnswerAction?.fail() }
-        pendingAnswerAction = nil
-        answerFulfilledAt = nil
+        pendingAnswerAction?.fail(); pendingAnswerAction = nil
+        endAnswerBackgroundTask()
+        if nativeEngineOwnsCall {
+            // 603 Decline côté PJSIP : un 486 renverrait l'appel en messagerie.
+            NotificationCenter.default.post(name: Notification.Name("PpPjsipEndRequested"), object: nil, userInfo: ["callId": activeCallId ?? ""])
+        }
         notifyListeners("incomingCallRejected", data: [
             "callUUID": action.callUUID.uuidString,
-            "callId": activeCallId ?? ""
+            "callId": activeCallId ?? "",
+            "source": nativeEngineOwnsCall ? "pjsip" : "jssip"
         ])
-        activeCallUUID = nil; activeCallId = nil; activeCallerNumber = ""; activeCallReportedAt = .distantPast; answerConfirmedForCallId = ""
+        activeCallUUID = nil; activeCallId = nil
+        nativeEngineOwnsCall = false
         action.fulfill()
     }
 
     public func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
-        // ring15 - THE AUDIO FIX. This callback is the ONLY moment iOS lets us take
-        // the CallKit-owned session, and it was doing the one thing that breaks
-        // WebRTC: calling setActive(true) on a session CallKit had already
-        // activated, WITHOUT ever configuring category/mode. Log 137 shows the
-        // consequence directly - every activation during a call reports
-        // hadOutputs=n, i.e. AVAudioSession has NO output route, so neither
-        // direction can carry audio.
-        //
-        // Correct order, and it must be exactly this order:
-        //   1. category/mode FIRST. .playAndRecord + .voiceChat is what makes iOS
-        //      attach the earpiece/speaker route and enable the mic. Setting it
-        //      after activation is silently ignored.
-        //   2. setActive(true) is deliberately NOT called again. CallKit already
-        //      activated this session; re-activating it makes iOS re-arbitrate the
-        //      route and drop the outputs (that is the hadOutputs=n we measured).
-        //   3. overrideOutputAudioPort(.none) pins the earpiece, per the product
-        //      rule that the speaker must only ever be enabled by the user tapping
-        //      the dedicated button.
-        do {
-            try audioSession.setCategory(.playAndRecord, mode: .voiceChat,
-                                         options: [.allowBluetoothHFP, .allowBluetoothA2DP])
-            try audioSession.overrideOutputAudioPort(.none)
-        } catch {
-            NSLog("[PpVoipCall] didActivate: category/route failed %@", error.localizedDescription)
-        }
-        let outs = audioSession.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
-        let ins = audioSession.currentRoute.inputs.map { $0.portType.rawValue }.joined(separator: ",")
-        NSLog("[PpVoipCall] CallKit didActivate audio session outputs=[%@] inputs=[%@] sr=%.0f",
-              outs.isEmpty ? "NONE" : outs, ins.isEmpty ? "NONE" : ins, audioSession.sampleRate)
-        // Tell the keep-alive plugin that CallKit owns the session now, so its
-        // 2-second watchdog stops reconfiguring it underneath WebRTC.
-        NotificationCenter.default.post(name: Notification.Name("PpVoipAudioSessionActivated"), object: nil)
-
-        // ring16 - THE REMAINING HALF OF THE AUDIO FIX.
-        // ring15 made the route correct (log 138: outputs=[Receiver],
-        // inputs=[MicrophoneBuiltIn], 48 kHz) yet the call was still silent. The
-        // reason is in the same log, BEFORE this callback fires:
-        //     AudioSession::beginInterruption but session is already interrupted!
-        //     [recording-notice] play blocked "The operation was aborted."
-        // Between the SIP 200 OK and this didActivate the session has no output
-        // route, so WebKit suspends its own audio pipeline. When the route finally
-        // appears, WebKit does NOT resume by itself: the <audio> element stays
-        // paused and the mic capture stays stopped, which is exactly a
-        // two-way-silent call with every indicator green.
-        //
-        // So we tell the web layer that the route is live. The JS side re-attaches
-        // srcObject and calls play() again, which is the only way to pull WebKit
-        // out of its interrupted state.
-        notifyListeners("audioSessionActivated", data: [
-            "outputs": outs,
-            "inputs": ins,
-            "sampleRate": audioSession.sampleRate
-        ])
+        NotificationCenter.default.post(name: Notification.Name("PpCallKitAudioActivated"), object: audioSession)
+        // ring17: JS must only attach/enable the microphone track AFTER CallKit
+        // owns the session, otherwise the outgoing direction stays silent.
+        notifyListeners("audioSessionActivated", data: ["callId": activeCallId ?? ""], retainUntilConsumed: true)
     }
 
     public func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
-        // Logged because a didDeactivate arriving DURING a call is the signature of
-        // a competing setActive() call elsewhere in the app.
-        NSLog("[PpVoipCall] CallKit didDeactivate audio session (call should be over)")
-        NotificationCenter.default.post(name: Notification.Name("PpVoipAudioSessionDeactivated"), object: nil)
+        NotificationCenter.default.post(name: Notification.Name("PpCallKitAudioDeactivated"), object: audioSession)
+        notifyListeners("audioSessionDeactivated", data: ["callId": activeCallId ?? ""])
     }
 }
 `;
@@ -2114,6 +1885,11 @@ public class PpAuthSession: CAPPlugin, CAPBridgedPlugin, ASWebAuthenticationPres
         }
         let scheme = call.getString("scheme") ?? "capacitor"
         DispatchQueue.main.async {
+            guard self.session == nil else {
+                NSLog("[PpAuthSession] duplicate start rejected")
+                call.reject("session_in_progress")
+                return
+            }
             let authSession = ASWebAuthenticationSession(url: url, callbackURLScheme: scheme) { callbackUrl, error in
                 self.session = nil
                 if let error = error {
@@ -2165,10 +1941,9 @@ CAP_PLUGIN(PpSipKeepAlive, "PpSipKeepAlive",
   CAP_PLUGIN_METHOD(getSipServiceStatus, CAPPluginReturnPromise);
   CAP_PLUGIN_METHOD(triggerReregister, CAPPluginReturnPromise);
   CAP_PLUGIN_METHOD(acknowledgeIncoming, CAPPluginReturnPromise);
-  CAP_PLUGIN_METHOD(declareJsOwnsAor, CAPPluginReturnPromise);
-  CAP_PLUGIN_METHOD(declareNativeEngineOwnsAor, CAPPluginReturnPromise);
   CAP_PLUGIN_METHOD(wakeForIncomingCall, CAPPluginReturnPromise);
   CAP_PLUGIN_METHOD(setCallActive, CAPPluginReturnPromise);
+  CAP_PLUGIN_METHOD(declareJsOwnsAor, CAPPluginReturnPromise);
   CAP_PLUGIN_METHOD(setAudioRoute, CAPPluginReturnPromise);
   CAP_PLUGIN_METHOD(getAudioRoute, CAPPluginReturnPromise);
   CAP_PLUGIN_METHOD(addListener, CAPPluginReturnCallback);
@@ -2284,6 +2059,11 @@ function stripInlinePlugins(swift) {
 }
 
 
+// True when the committed PpPjsip plugin sources are present in the iOS tree.
+const PP_HAS_PJSIP = fs.existsSync(
+  path.join(appDir, "ios", "App", "App", "Plugins", "PpPjsip", "PpPjsip.swift")
+);
+
 function hasProjectReference(iosRoot, fileName) {
   const pbx = path.join(iosRoot, "App.xcodeproj", "project.pbxproj");
   if (!fs.existsSync(pbx)) return false;
@@ -2330,38 +2110,65 @@ function ensureXcodeSourceFiles(iosRoot, relativeFiles) {
   return false;
 }
 
-// PJSIP's documentation requires PJ_AUTOCONF=1 to be defined in the Xcode
-// project, otherwise the pjlib headers cannot locate pj/compat/os_auto.h and
-// every file that imports pjsua fails to compile. Injected here so it survives
-// `npx cap sync ios` and never becomes a manual Xcode step to remember.
-// ring21 (Lovable) - Lier libpjsip.xcframework a la cible App + exposer son
-// module.modulemap a Swift. Sans ca `#if canImport(pjsua)` est FAUX et tout le
-// moteur PJSIP est exclu a la compilation, meme si l'archive est visible dans
-// Xcode. C'est la cause de l'absence totale de traces [PpPjsip] dans les logs.
-function ensurePjsipXcframework(iosRoot) {
-  const rel = "App/Plugins/PpPjsip/Frameworks/libpjsip.xcframework";
-  const abs = path.join(iosRoot, rel);
-  if (!fs.existsSync(abs)) {
-    console.log(
-      `[native-config] WARNING: ${rel} absent - le moteur PJSIP ne sera pas compile ` +
-        "(canImport(pjsua) faux). Lance: bash scripts/build-pjsip-ios.sh"
-    );
-    return false;
-  }
-  // Correction redefinition module 'pjsua' :
-  // Xcode copie deja le module.modulemap dans BUILT_PRODUCTS_DIR/include via
-  // la phase 'Copy Headers'. Ajouter les chemins xcframework/*/Headers en plus
-  // cree une double definition → erreur Clang. On n'injecte donc QUE
-  // $(BUILT_PRODUCTS_DIR)/include (deja present par defaut) et on purge toute
-  // entree xcframework/*/Headers precedemment injectee.
+// Retire complètement un fichier source du projet Xcode (références + phase de
+// compilation). Utilisé pour purger les bridges ObjC obsolètes.
+function removeXcodeSourceFile(iosRoot, rel) {
   const pbx = path.join(iosRoot, "App.xcodeproj", "project.pbxproj");
   if (!fs.existsSync(pbx)) return false;
   let text = fs.readFileSync(pbx, "utf8");
   const before = text;
+  const fileName = path.basename(rel);
+  const fileRef = xcodeId(`file:${rel}`);
+  const buildRef = xcodeId(`build:${rel}`);
+  text = text
+    .split("\n")
+    .filter((line) => !(line.includes(fileRef) || line.includes(buildRef) || line.includes(`${fileName} in Sources`)))
+    .join("\n");
+  if (text !== before) {
+    fs.writeFileSync(pbx, text);
+    console.log(`[native-config] removed stale Xcode reference: ${rel}`);
+    return true;
+  }
+  return false;
+}
+
+
+// Lier libpjsip.xcframework à la cible App + exposer son module.modulemap à
+// Swift. Sans ça `#if canImport(pjsua)` est FAUX et tout le moteur PJSIP est
+// exclu à la compilation, même si l'archive est visible dans Xcode.
+const pjsipWarnings = [];
+
+function ensurePjsipXcframework(iosRoot) {
+  const rel = "App/Plugins/PpPjsip/Frameworks/libpjsip.xcframework";
+  const abs = path.join(iosRoot, rel);
+  const present = fs.existsSync(abs);
+  const hasHeaders =
+    present &&
+    fs.readdirSync(abs).some((slice) => fs.existsSync(path.join(abs, slice, "Headers")));
+
+  // Le script ne doit JAMAIS échouer si le binaire manque : le repli JsSIP
+  // prend le relais. On avertit clairement en fin d'exécution.
+  if (!present) {
+    pjsipWarnings.push(`⚠ libpjsip.xcframework absent → lancer scripts/build-pjsip-ios.sh (${rel})`);
+  } else if (!hasHeaders) {
+    pjsipWarnings.push("⚠ libpjsip.xcframework sans dossier Headers → canImport(pjsua) sera faux; relancer scripts/build-pjsip-ios.sh");
+  }
+
+  // Sans binaire sur disque, on n'injecte pas de référence (Xcode refuserait
+  // de compiler un fichier manquant) — le repli JsSIP reste opérationnel.
+  if (!present) return false;
+
+  const pbx = path.join(iosRoot, "App.xcodeproj", "project.pbxproj");
+  if (!fs.existsSync(pbx)) return false;
+
+  let text = fs.readFileSync(pbx, "utf8");
+  const before = text;
+
   const fileName = "libpjsip.xcframework";
   const fileRef = xcodeId(`file:${rel}`);
   const buildRef = xcodeId(`build:${rel}`);
   const buildName = `${fileName} in Frameworks`;
+
   if (!text.includes(`${fileRef} /* ${fileName} */`)) {
     const line = `\t\t${fileRef} /* ${fileName} */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = ${rel}; sourceTree = SOURCE_ROOT; };\n`;
     text = text.replace(/(\/\* End PBXFileReference section \*\/)/, `${line}$1`);
@@ -2375,58 +2182,34 @@ function ensurePjsipXcframework(iosRoot) {
     (match, start, files, end) =>
       files.includes(buildRef) ? match : `${start}${files}\t\t\t\t${buildRef} /* ${buildName} */,\n${end}`
   );
-  // SWIFT_INCLUDE_PATHS / HEADER_SEARCH_PATHS : uniquement $(BUILT_PRODUCTS_DIR)/include.
-  // Ne pas ajouter les chemins xcframework/*/Headers : Xcode les copie deja dans
-  // BUILT_PRODUCTS_DIR/include via la phase 'Copy Headers', et les ajouter en
-  // double provoque 'redefinition of module pjsua'.
-  const builtProductsInclude = `"$(BUILT_PRODUCTS_DIR)/include"`;
+
+  // Réglages de build: on purge les anciens chemins SRCROOT vers les Headers
+  // des tranches (cause de "redefinition of module 'pjsua'") et on pointe
+  // uniquement vers le include généré par Xcode pour l'xcframework.
+  const includes = `\"$(BUILT_PRODUCTS_DIR)/include\"`;
   text = text.replace(/(buildSettings = \{\n)([\s\S]*?)(\n\t*\};)/g, (match, start, body, end) => {
     if (!/PRODUCT_BUNDLE_IDENTIFIER/.test(body)) return match;
     let next = body;
-    // Purger les anciennes entrees xcframework/*/Headers injectees precedemment.
-    next = next.replace(/,?\s*\"\$\(SRCROOT\)\/[^\"]*xcframework[^\"]*/g, "");
     for (const key of ["SWIFT_INCLUDE_PATHS", "HEADER_SEARCH_PATHS"]) {
-      if (next.includes(key)) {
-        // Cle deja presente : s'assurer que $(BUILT_PRODUCTS_DIR)/include est dedans.
-        if (next.includes("BUILT_PRODUCTS_DIR")) continue;
-        next = next.replace(
-          new RegExp(`(${key} = )([^;]*);`),
-          `$1(\n\t\t\t\t\t"$(inherited)",\n\t\t\t\t\t${builtProductsInclude},\n\t\t\t\t);`
-        );
+      const re = new RegExp(`(${key} = )([^;]*);`);
+      if (re.test(next)) {
+        const current = next.match(re)[2];
+        if (current.includes("BUILT_PRODUCTS_DIR)/include") && !current.includes("libpjsip.xcframework")) continue;
+        next = next.replace(re, `$1(\n\t\t\t\t\t"$(inherited)",\n\t\t\t\t\t${includes},\n\t\t\t\t);`);
       } else {
-        next += `\n\t\t\t\t${key} = (\n\t\t\t\t\t"$(inherited)",\n\t\t\t\t\t${builtProductsInclude},\n\t\t\t\t);`;
+        next += `\n\t\t\t\t${key} = (\n\t\t\t\t\t"$(inherited)",\n\t\t\t\t\t${includes},\n\t\t\t\t);`;
       }
     }
     return `${start}${next}${end}`;
   });
+
+
   if (text !== before) {
     fs.writeFileSync(pbx, text);
-    console.log("[native-config] libpjsip.xcframework lie a la cible App (+ chemins de module pjsua).");
+    console.log("[native-config] libpjsip.xcframework lié à la cible App (+ chemins de module pjsua).");
     return true;
   }
   return false;
-}
-function ensurePjsipPreprocessorMacro(iosRoot) {
-  const pbxproj = path.join(iosRoot, "App.xcodeproj", "project.pbxproj");
-  if (!fs.existsSync(pbxproj)) return;
-  let text = fs.readFileSync(pbxproj, "utf8");
-  if (text.includes("PJ_AUTOCONF=1")) return;
-
-  // Target-level configurations are the ones carrying PRODUCT_BUNDLE_IDENTIFIER.
-  // Anchor on INFOPLIST_FILE so both Debug and Release of the App target get it.
-  const anchor = "\t\t\t\tINFOPLIST_FILE = App/Info.plist;\n";
-  if (!text.includes(anchor)) {
-    console.log("[native-config] WARNING: could not anchor PJ_AUTOCONF=1 — add it manually in Build Settings.");
-    return;
-  }
-  const injected = anchor +
-    "\t\t\t\tGCC_PREPROCESSOR_DEFINITIONS = (\n" +
-    "\t\t\t\t\t\"$(inherited)\",\n" +
-    "\t\t\t\t\t\"PJ_AUTOCONF=1\",\n" +
-    "\t\t\t\t);\n";
-  text = text.split(anchor).join(injected);
-  fs.writeFileSync(pbxproj, text);
-  console.log("[native-config] PJ_AUTOCONF=1 added to the App target build settings.");
 }
 
 function ensurePluginRegistration(swift) {
@@ -2434,12 +2217,11 @@ function ensurePluginRegistration(swift) {
   const sipLine = "        bridge?.registerPluginInstance(PpSipKeepAlive())\n";
   const voipLine = "        bridge?.registerPluginInstance(PpVoipCall())\n";
   const authLine = "        bridge?.registerPluginInstance(PpAuthSession())\n";
-  // PpPjsip: native SIP REGISTER probe (TLS 5061), manual trigger only.
   const pjsipLine = "        bridge?.registerPluginInstance(PpPjsip())\n";
   const needsSip = !next.includes("PpSipKeepAlive()");
   const needsVoip = !next.includes("PpVoipCall()");
   const needsAuth = !next.includes("PpAuthSession()");
-  const needsPjsip = !next.includes("PpPjsip()");
+  const needsPjsip = PP_HAS_PJSIP && !next.includes("PpPjsip()");
   if (!needsSip && !needsVoip && !needsAuth && !needsPjsip) return next;
   const lines = `${needsSip ? sipLine : ""}${needsVoip ? voipLine : ""}${needsAuth ? authLine : ""}${needsPjsip ? pjsipLine : ""}`;
   if (next.includes("registerPluginInstance")) {
@@ -2516,7 +2298,6 @@ class AppBridgeViewController: CAPBridgeViewController {
         bridge?.registerPluginInstance(PpSipKeepAlive())
         bridge?.registerPluginInstance(PpVoipCall())
         bridge?.registerPluginInstance(PpAuthSession())
-        bridge?.registerPluginInstance(PpPjsip())
     }
 
     override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .portrait }
@@ -2744,7 +2525,21 @@ function patchIosNativeFiles() {
   writeIfChanged(path.join(iosApp, "Plugins", "PpVoipCall", "PpVoipCall.m"), IOS_VOIP_CALL_BRIDGE);
   writeIfChanged(path.join(iosApp, "Plugins", "PpAuthSession", "PpAuthSession.swift"), IOS_AUTH_SESSION_PLUGIN);
   writeIfChanged(path.join(iosApp, "Plugins", "PpAuthSession", "PpAuthSession.m"), IOS_AUTH_SESSION_BRIDGE);
+  // PpPjsip: sources committed under Plugins/PpPjsip (not generated here).
+  const pjsipDir = path.join(iosApp, "Plugins", "PpPjsip");
+  const hasPjsip = fs.existsSync(path.join(pjsipDir, "PpPjsip.swift"));
+  // Le bridge ObjC CAP_PLUGIN(PpPjsip) faisait double emploi avec
+  // CAPBridgedPlugin + registerPluginInstance : Capacitor gardait la table de
+  // méthodes ObjC (sans isEngineLinked) -> UNIMPLEMENTED et repli JsSIP.
+  const stalePjsipBridge = path.join(pjsipDir, "PpPjsip.m");
+  if (fs.existsSync(stalePjsipBridge)) {
+    fs.rmSync(stalePjsipBridge);
+    console.log("[native-config] removed stale PpPjsip.m (duplicate plugin registration).");
+  }
+
   const iosRoot = path.join(appDir, "ios", "App");
+  removeXcodeSourceFile(iosRoot, "App/Plugins/PpPjsip/PpPjsip.m");
+
   ensureXcodeSourceFiles(iosRoot, [
     "App/Plugins/PpSipKeepAlive/PpSipKeepAlive.swift",
     "App/Plugins/PpSipKeepAlive/PpSipKeepAlive.m",
@@ -2752,15 +2547,19 @@ function patchIosNativeFiles() {
     "App/Plugins/PpVoipCall/PpVoipCall.m",
     "App/Plugins/PpAuthSession/PpAuthSession.swift",
     "App/Plugins/PpAuthSession/PpAuthSession.m",
-    // PpPjsip is authored by hand (not generated by this script), but it still
-    // has to reach the Xcode Sources build phase.
-    "App/Plugins/PpPjsip/PpPjsip.swift",
-    "App/Plugins/PpPjsip/PpPjsip.m",
-    // ring21: le moteur media natif (pjsua) vit dans un fichier separe et doit
-    // etre compile, sinon PpPjsip.swift ne trouve pas PjsipEngine.shared.
-    "App/Plugins/PpPjsip/PpPjsipEngine.swift",
+    ...(hasPjsip
+      ? [
+          "App/Plugins/PpPjsip/PpPjsip.swift",
+
+          ...(fs.existsSync(path.join(pjsipDir, "PpPjsipEngine.swift"))
+            ? ["App/Plugins/PpPjsip/PpPjsipEngine.swift"]
+            : []),
+        ]
+      : []),
   ]);
-  ensurePjsipPreprocessorMacro(iosRoot);
+  if (!hasPjsip) {
+    throw new Error("[native-config] sources PpPjsip absentes — build iOS refusé: aucun moteur média natif ne pourrait répondre aux appels entrants.");
+  }
   ensurePjsipXcframework(iosRoot);
   patchIosAppDelegate(iosApp);
   ensureIosBridgeController(iosApp);
@@ -2782,7 +2581,12 @@ function patchIosNativeFiles() {
   if (!bridgeText.includes("PpSipKeepAlive()") || !bridgeText.includes("PpVoipCall()") || !bridgeText.includes("PpAuthSession()") || !storyboardText.includes('customClass="AppBridgeViewController"')) {
     throw new Error("[native-config] iOS native plugins are not wired into the launch ViewController; aborting sync so SIP/VoIP/OAuth cannot ship UNIMPLEMENTED.");
   }
-  console.log("[native-config] iOS PpSipKeepAlive + PpVoipCall + PpAuthSession plugins applied.");
+  if (hasPjsip && !bridgeText.includes("PpPjsip()")) {
+    throw new Error("[native-config] PpPjsip sources present but not registered in AppBridgeViewController.");
+  }
+  console.log(
+    `[native-config] iOS PpSipKeepAlive + PpVoipCall + PpAuthSession${hasPjsip ? " + PpPjsip" : ""} plugins applied.`
+  );
 }
 
 patchCopiedWebBundles();
@@ -2796,4 +2600,9 @@ patchIosNativeFiles();
 // SceneDelegate patch did not land.
 if (!verifyIosScene({ soft: process.env.PP_SCENE_CHECK_SOFT === "1" })) {
   throw new Error("[native-config] iOS UIScene/SceneDelegate patch missing after cap sync — aborting.");
+}
+
+// Avertissements non bloquants (binaire PJSIP absent → repli JsSIP actif).
+if (pjsipWarnings.length) {
+  console.warn("\n[native-config] " + pjsipWarnings.join("\n[native-config] ") + "\n");
 }

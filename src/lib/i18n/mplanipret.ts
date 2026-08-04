@@ -164,10 +164,6 @@ export const MP_DICT = {
       hungUp: "Appel raccroché",
     },
     call: {
-      // `incoming` was missing while PpActiveCallScreen reads t("call.incoming").
-      // t() returns the raw path when a key is absent, so the incoming-call screen
-      // literally displayed "call.incoming" instead of a label.
-      incoming: "Appel entrant",
       ringing: "Sonnerie…",
       onHold: "En attente",
       mute: "Muet",
@@ -365,10 +361,6 @@ export const MP_DICT = {
       extension: "Ext.",
       addFavorite: "Ajouter aux favoris",
       removeFavorite: "Retirer des favoris",
-      sendSms: "Envoyer un SMS",
-      sendEmail: "Envoyer un courriel",
-      noPhoneForSms: "Aucun numéro pour ce contact",
-      noEmailForContact: "Aucune adresse courriel pour ce contact",
       presence: { available: "Disponible", busy: "Occupé", away: "Absent", offline: "Non disponible", unknown: "Non disponible" },
       directorySection: "Répertoire interne",
     },
@@ -1211,7 +1203,6 @@ export const MP_DICT = {
       hungUp: "Call ended",
     },
     call: {
-      incoming: "Incoming call",
       ringing: "Ringing…",
       onHold: "On hold",
       mute: "Mute",
@@ -1409,10 +1400,6 @@ export const MP_DICT = {
       extension: "Ext.",
       addFavorite: "Add to favorites",
       removeFavorite: "Remove from favorites",
-      sendSms: "Send a text message",
-      sendEmail: "Send an email",
-      noPhoneForSms: "No phone number for this contact",
-      noEmailForContact: "No email address for this contact",
       presence: { available: "Available", busy: "Busy", away: "Away", offline: "Unavailable", unknown: "Unavailable" },
       directorySection: "Internal directory",
     },

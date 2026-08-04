@@ -278,6 +278,15 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     /// guarantees background execution through PushKit, so this is the path that
     /// must bring the AOR back before the PBX times out to voicemail.
     private func wakeForPush(_ why: String) {
+      // PJSIP/TLS est le propriétaire permanent de `<ext>M`. Un push VoIP ne
+      // doit jamais réveiller l'ancien REGISTER WSS par-dessus lui : ce doublon
+      // remplaçait le Contact TLS dans NetSapiens et l'INVITE n'arrivait plus au
+      // moteur capable de répondre.
+      if nativeEngineOwnsAor {
+        NSLog("[PpSipKeepAlive] VoIP push wake skipped — PJSIP owns the AOR")
+        releaseRegistration("pjsip_owns_aor")
+        return
+      }
       // PushKit can wake iOS before the WebView has loaded. Restore the last
       // confirmed SIP configuration so REGISTER never depends on JS startup.
       if host.isEmpty || login.isEmpty || domain.isEmpty { restoreConfig() }

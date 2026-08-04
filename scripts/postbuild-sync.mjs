@@ -32,6 +32,7 @@ function run(cmd) {
 }
 
 try {
+  run("node scripts/strip-obsolete-ios-fallback.mjs");
   for (const p of platforms) run(`npx cap sync ${p}`);
   // Réinjecte les plugins natifs (PpSipKeepAlive / PpVoipCall), l'orientation
   // portrait, les entitlements et les deep links — cap sync peut les écraser.
