@@ -26,37 +26,19 @@ export function getMs365Error(): { message: string; at: number } | null {
   }
 }
 
-/** Broadcast a Microsoft 365 link change so every mounted screen re-evaluates. */
-export function notifyMs365Changed(): void {
-  try {
-    window.dispatchEvent(new CustomEvent("pp:ms365-changed"));
-  } catch {}
-}
-
 /**
  * Derives the Microsoft 365 connection state for the signed-in broker.
- * `missing` = never linked, `expired` = refresh grant is gone,
+ * `missing` = never linked, `expired` = token past its expiry,
  * `error` = last Graph/OAuth call failed, `connected` = healthy.
- *
- * Pass `reloadProfile` (from the mobile Outlet context) so the hook can pull a
- * fresh profile after a reconnect: the cached snapshot still carries the old
- * `ms365_token_expiry`, which would otherwise keep the reconnect banner up even
- * though the OAuth exchange succeeded.
  */
-export function useMs365Status(
-  profile: any,
-  reloadProfile?: () => void | Promise<void>,
-): { state: Ms365State; errorMessage?: string; refresh: () => void } {
+export function useMs365Status(profile: any): { state: Ms365State; errorMessage?: string; refresh: () => void } {
   const [tick, setTick] = useState(0);
   const [errorMessage, setErrorMessage] = useState<string | undefined>(() => getMs365Error()?.message);
 
   const refresh = useCallback(() => {
     setErrorMessage(getMs365Error()?.message);
     setTick((t) => t + 1);
-    try {
-      void reloadProfile?.();
-    } catch {}
-  }, [reloadProfile]);
+  }, []);
 
   useEffect(() => {
     const onVis = () => { if (document.visibilityState === "visible") refresh(); };
@@ -66,18 +48,6 @@ export function useMs365Status(
       document.removeEventListener("visibilitychange", onVis);
       window.removeEventListener("pp:ms365-changed", refresh as EventListener);
     };
-  }, [refresh]);
-
-  // A fresh redirect from the OAuth callback (`?ms365=ok`) means the link was
-  // just re-established: drop the stale error marker and pull the new profile.
-  useEffect(() => {
-    let flagged = false;
-    try {
-      flagged = new URLSearchParams(window.location.search).get("ms365") === "ok";
-    } catch {}
-    if (!flagged) return;
-    setMs365Error(null);
-    refresh();
   }, [refresh]);
 
   let state: Ms365State = "connected";

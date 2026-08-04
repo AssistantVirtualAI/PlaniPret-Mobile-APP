@@ -4,15 +4,19 @@ import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { startSelectedRingtone } from "@/lib/planipret/audio/ringtonePresets";
+import { formatSipParty } from "@/lib/planipret/sip/formatSipParty";
 
 export type InboundCall = { call_id?: string; from_number?: string; caller_name?: string } | null;
 
 export default function InboundCallOverlay({ call, onClose, onAnswer, onReject }: {
   call: InboundCall;
   onClose: () => void;
+  /** When provided, answering delegates to the softphone so the in-call screen
+   *  (with keypad) opens instead of navigating to the call history page. */
   onAnswer?: () => void | Promise<void>;
   onReject?: () => void | Promise<void>;
 }) {
+
   const navigate = useNavigate();
   const [busy, setBusy] = useState(false);
   const [contact, setContact] = useState<{ id?: string; full_name?: string; company?: string; avatar_url?: string; tags?: string[] } | null>(null);
@@ -56,6 +60,8 @@ export default function InboundCallOverlay({ call, onClose, onAnswer, onReject }
     setBusy(true);
     try {
       if (action === "answer" && onAnswer) {
+        // Let the softphone pick up: the full-screen in-call UI (with keypad)
+        // takes over immediately — no navigation away from the call.
         stopRef.current?.();
         await onAnswer();
         onClose();
@@ -67,15 +73,20 @@ export default function InboundCallOverlay({ call, onClose, onAnswer, onReject }
         onClose();
         return;
       }
+      // 2) No click-to-call on the answer path: only a real SIP dialog answers.
+      if (action === "answer") {
+        toast.error("Impossible de décrocher : téléphone non enregistré");
+        return;
+      }
       await supabase.functions.invoke("pp-ns-calls", { body: { action, call_id: call?.call_id } });
       handleClose();
-      if (action === "answer") navigate(`/mplanipret/calls?call=${call?.call_id ?? ""}`);
     } catch (e: any) {
       toast.error(e?.message ?? "Action impossible");
     } finally {
       setBusy(false);
     }
   };
+
 
   const sendToVoicemail = async () => {
     if (busy) return;
@@ -92,12 +103,13 @@ export default function InboundCallOverlay({ call, onClose, onAnswer, onReject }
   };
 
   if (!call) return null;
-  const displayName = contact?.full_name || call.caller_name || call.from_number || "Inconnu";
+  const displayName = contact?.full_name
+    || formatSipParty(call.caller_name, "fr", call.from_number).name;
   const initials = displayName.split(/\s+/).slice(0, 2).map((w) => w[0]).join("").toUpperCase();
 
   return (
-    <div className="absolute inset-0 z-[60] flex flex-col items-center justify-between py-10" style={{ background: "linear-gradient(180deg,#0A1628 0%,#020610 100%)" }}>
-      <button onClick={handleClose} className="absolute top-4 right-4 text-slate-400 hover:text-white text-xs flex items-center gap-1 px-3 py-2 rounded-full" style={{ background: "rgba(255,255,255,0.05)" }}>
+    <div className="absolute inset-0 z-[60] flex flex-col items-center justify-between" style={{ background: "linear-gradient(180deg,#0A1628 0%,#020610 100%)", paddingTop: "calc(env(safe-area-inset-top, 0px) + 24px)", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 24px)" }}>
+      <button onClick={handleClose} className="absolute right-4 text-slate-400 hover:text-white text-xs flex items-center gap-1 px-3 py-2 rounded-full" style={{ background: "rgba(255,255,255,0.05)", top: "calc(env(safe-area-inset-top, 0px) + 16px)" }}>
         <X className="w-4 h-4" /> Ignorer
       </button>
 

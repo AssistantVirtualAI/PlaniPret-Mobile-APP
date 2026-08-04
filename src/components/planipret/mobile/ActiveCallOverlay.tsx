@@ -71,9 +71,6 @@ export default function ActiveCallOverlay({ callId, onClosed }: { callId: string
     if (!callId) return;
     setSpeaker(false);
     void audioRouter.startCallAudio();
-    // Cancel the 1200ms re-assert timer armed by startCallAudio(), otherwise a
-    // stale timer overrides the route of the next call / the user's speaker tap.
-    return () => { audioRouter.stopCallAudio(); };
   }, [callId]);
 
   useEffect(() => {

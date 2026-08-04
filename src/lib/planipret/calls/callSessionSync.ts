@@ -54,65 +54,36 @@ export async function upsertRingingSession(args: {
   } catch { /* best-effort */ }
 }
 
-/** Atomically try to claim the call for this client. Returns true if we won.
- *
- *  IMPORTANT: `pp_claim_call` flips state with `WHERE state='ringing'`, so it
- *  also returns false when THIS device already claimed the call a few hundred
- *  milliseconds earlier (two internal answer paths can fire for the same
- *  INVITE: the CallKit listener and the queued-intent listener). Reporting that
- *  as "answered elsewhere" made the second path hang up the call the first path
- *  had just answered. When the claim is lost we therefore read the row back and
- *  only concede if the winner is a DIFFERENT client.
- */
+/** Atomically try to claim the call for this client. Returns true if we won. */
 export async function claimCall(callId: string, answeredBy: AnsweredBy): Promise<boolean> {
   if (!callId) return true; // no-id calls can't be coordinated; let them proceed
   try {
-    // Second belt. The answer path now sends the SIP 200 OK BEFORE claiming, so
-    // this round-trip is off the critical path - but other callers still await it,
-    // and a slow database request (17 s observed on a cold radio woken by a VoIP
-    // push) must never hold an answer decision long enough for the PBX to roll the
-    // call over to greeting/voicemail. Keep the cross-device arbitration, but fail
-    // open after 1.5 s: answering a call the widget also took is recoverable
-    // (claimHeldByUs / the post-hoc concession handles it), dropping it is not.
+    // Answering SIP is deadline-sensitive: a slow database request must never
+    // hold the INVITE until NetSapiens advances to greeting/voicemail. Keep the
+    // cross-device arbitration, but fail open after 1.5 s so session.answer()
+    // can send its 200 OK while the INVITE is still answerable.
     const claimRequest = supabase.rpc("pp_claim_call", {
       _call_id: callId,
       _answered_by: answeredBy,
     });
-    const timeout = new Promise<{ data: unknown; error: unknown }>((resolve) => {
-      window.setTimeout(() => {
-        console.warn("[claim] pp_claim_call slow → failing open", { callId, answeredBy });
-        resolve({ data: true, error: null });
-      }, 1_500);
+    const timeout = new Promise<{ data: true; error: null }>((resolve) => {
+      window.setTimeout(() => resolve({ data: true, error: null }), 1_500);
     });
-    const { data, error } = await Promise.race([
-      claimRequest as unknown as Promise<{ data: unknown; error: unknown }>,
-      timeout,
-    ]);
+    const { data, error } = await Promise.race([claimRequest, timeout]);
     if (error) return true; // fail open — better to answer than to drop
-    if (Boolean(data)) return true;
-    return await claimHeldByUs(callId, answeredBy);
-  } catch {
-    return true;
-  }
-}
-
-/** Returns true when the existing claim on `callId` belongs to `answeredBy`. */
-async function claimHeldByUs(callId: string, answeredBy: AnsweredBy): Promise<boolean> {
-  try {
-    const { data, error } = await supabase
+    if (data) return true;
+    // Lost claim: re-read `answered_by`. Two answer paths on the SAME device
+    // (CallKit listener + queued intent) race the RPC; the loser must not
+    // conclude "the widget answered" when this very device won 200 ms ago.
+    const { data: row } = await supabase
       .from("planipret_call_sessions")
-      .select("answered_by,state")
+      .select("answered_by")
       .eq("call_id", callId)
       .maybeSingle();
-    if (error || !data) return false; // unknown winner → concede
-    const row = data as { answered_by: AnsweredBy | null; state: SessionState | null };
-    if (row.answered_by === answeredBy) {
-      console.info("[claim] already held by this client → proceeding", { callId, answeredBy });
-      return true;
-    }
+    if (row?.answered_by === answeredBy) return true;
     return false;
   } catch {
-    return false;
+    return true;
   }
 }
 

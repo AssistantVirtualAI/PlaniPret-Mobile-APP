@@ -33,6 +33,7 @@ import MicDeniedBanner from "@/components/planipret/mobile/MicDeniedBanner";
 import PermissionsPrimer from "@/components/planipret/mobile/PermissionsPrimer";
 import { hasSeenPrimer } from "@/lib/native/permissions/orchestrator";
 import { bootstrapPushIfNative } from "@/lib/native/pushBootstrap";
+import { Capacitor } from "@capacitor/core";
 import { listDeviceContacts } from "@/lib/native/permissions/contacts";
 import { tokenize, matchAllTokens } from "@/lib/textNormalize";
 import { prefetchPpContacts, peekPpContacts } from "@/lib/ppContactsCache";
@@ -484,15 +485,12 @@ export default function PlanipretMobile() {
   const [profile, setProfile] = useState<any>(null);
   // REST-only call control: outbound calls ring the broker's registered mobile device.
   // Wait for the profile before SIP init so cold starts do not race auth/profile boot.
-  // `primary`: this instance feeds PpActiveCallScreen (the visible keypad), so it
-  // must own the CallKit answer listener. Without it, ActiveCallOverlay / MMore -
-  // which mount with enabled=true while `profile` is still loading - win ownership
-  // and hold the answer path inside a component that renders no call UI at all.
   const softphone = useMplanipretSoftphone(Boolean(profile?.user_id), { primary: true });
   const attachRestCall = (softphone as any).attachRestCall as ((a: any) => void) | undefined;
   const sipCallLive = ["ringing-in", "ringing-out", "active", "held"].includes(
     String(softphone.snap.callState),
   );
+
   const [loading, setLoading] = useState(true);
   const [accessError, setAccessError] = useState<"unauthenticated" | "missing_profile" | "load_failed" | null>(null);
   const [profileErrorDetail, setProfileErrorDetail] = useState<string>("");
@@ -589,6 +587,52 @@ export default function PlanipretMobile() {
     });
     setInbound({ call_id: controlId, from_number: row.from_number, caller_name: row.caller_name });
   }, [attachRestCall]);
+
+  // A tap on the native iOS incoming-call banner must restore the ringing
+  // screen, not merely navigate to call history. The event may arrive before
+  // this shell/profile mounts on a cold launch, so consume the stored copy too.
+  useEffect(() => {
+    if (!profile?.user_id) return;
+    const consume = (detail: any) => {
+      const callId = String(detail?.callId ?? "");
+      if (!callId) return;
+      const action = String(detail?.action ?? "open");
+      const from = String(detail?.from ?? "");
+      attachRestCall?.({ id: callId, direction: "in", other: from || "Appel entrant", number: from, status: "ringing-in" });
+      setInbound({ call_id: callId, from_number: from, caller_name: from || undefined });
+      navigate("/mplanipret/calls", { replace: true });
+      if (action === "answer") {
+        try { (window as any).__ppPendingAnswer = { callId, ts: Date.now() }; } catch { /* ignore */ }
+        softphone.reregister();
+      } else if (action === "decline") {
+        softphone.hangup();
+        setInbound(null);
+      }
+      try { sessionStorage.removeItem("pp.pending-incoming-action.v1"); } catch { /* ignore */ }
+    };
+    const onAction = (event: Event) => consume((event as CustomEvent).detail);
+    window.addEventListener("pp:incoming-notification-action", onAction);
+    try {
+      const raw = sessionStorage.getItem("pp.pending-incoming-action.v1");
+      if (raw) consume(JSON.parse(raw));
+    } catch { /* ignore */ }
+    return () => window.removeEventListener("pp:incoming-notification-action", onAction);
+  }, [profile?.user_id, attachRestCall, navigate, softphone]);
+
+  useEffect(() => {
+    if (!profile?.user_id) return;
+    const onNativeInvite = (event: Event) => {
+      const invite = (event as CustomEvent).detail ?? {};
+      const callId = String(invite.callId ?? invite.call_id ?? "");
+      if (!callId) return;
+      const from = String(invite.from ?? invite.fromNumber ?? invite.callerNumber ?? "");
+      attachRestCall?.({ id: callId, direction: "in", other: from || "Appel entrant", number: from, status: "ringing-in" });
+      setInbound({ call_id: callId, from_number: from, caller_name: String(invite.callerName ?? "") || undefined });
+      navigate("/mplanipret/calls", { replace: true });
+    };
+    window.addEventListener("pp:sip-incoming-invite", onNativeInvite);
+    return () => window.removeEventListener("pp:sip-incoming-invite", onNativeInvite);
+  }, [profile?.user_id, attachRestCall, navigate]);
   const onAiInsight = useCallback((row: any) => {
     toast(t("toasts.aiAnalysisReady"), {
       description: String(row.ai_summary ?? "").slice(0, 80),
@@ -1138,12 +1182,16 @@ export default function PlanipretMobile() {
 
         <Dialer open={dialerOpen} autoDial={dialerAutoDial} onClose={() => { setDialerOpen(false); setDialerAutoDial(false); }} initial={dialerInit} openMessages={(n) => { setDialerOpen(false); openSmsComposer({ number: n }); }} softphone={softphone} maestroConfigured={Boolean(profile?.maestro_broker_id)} />
         <PpActiveCallScreen softphone={softphone} />
+        {/* A live WebRTC session owns the UI: PpActiveCallScreen already shows
+            the ringing/answer + keypad screen, so the REST overlay must not
+            steal the tap. */}
         <InboundCallOverlay
           call={sipCallLive ? null : inbound}
           onClose={() => setInbound(null)}
           onAnswer={async () => { await softphone.answer(); }}
           onReject={() => { softphone.hangup(); }}
         />
+
         {avaOpen && profile?.user_id && (
           profile.voice_agent_enabled && avaMode === "voice"
             ? (

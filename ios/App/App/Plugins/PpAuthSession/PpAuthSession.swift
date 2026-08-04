@@ -19,6 +19,11 @@ public class PpAuthSession: CAPPlugin, CAPBridgedPlugin, ASWebAuthenticationPres
         }
         let scheme = call.getString("scheme") ?? "capacitor"
         DispatchQueue.main.async {
+            guard self.session == nil else {
+                NSLog("[PpAuthSession] duplicate start rejected")
+                call.reject("session_in_progress")
+                return
+            }
             let authSession = ASWebAuthenticationSession(url: url, callbackURLScheme: scheme) { callbackUrl, error in
                 self.session = nil
                 if let error = error {

@@ -17,17 +17,8 @@ let cachedAt = 0;
 
 /** call keys already announced (module-level → survives re-render/navigation) */
 const announced = new Set<string>();
+const retryCount = new Map<string, number>();
 let currentEl: HTMLAudioElement | null = null;
-
-/**
- * ring16 - true once CallKit has handed us a usable output route for the current
- * call. Playing anything before that corrupts the shared WebKit audio pipeline
- * (see the comment in playRecordingNotice).
- */
-let audioRouteLive = false;
-if (typeof window !== "undefined") {
-  window.addEventListener("pp:audio-route-live", () => { audioRouteLive = true; });
-}
 
 function log(msg: string, detail?: unknown) {
   // eslint-disable-next-line no-console
@@ -70,74 +61,38 @@ async function getNoticeUrl(): Promise<string | null> {
 export async function playRecordingNotice(callKey?: string): Promise<void> {
   const key = callKey && callKey.length ? callKey : "__default__";
   if (announced.has(key)) return;
-  announced.add(key);
-  // keep the set bounded
-  if (announced.size > 50) announced.clear();
 
   try {
     const url = await getNoticeUrl();
     if (!url) { log("notice unavailable (no url) — skipped", { key }); return; }
-
-    // ring16 - Wait for the audio route to exist before creating this element.
-    //
-    // In log 138 this notice was the FIRST thing to touch audio after the 200 OK,
-    // and it did so while AVAudioSession still had no output route (CallKit's
-    // didActivate had not fired yet). The result, verbatim:
-    //     AudioSession::beginInterruption but session is already interrupted!
-    //     [recording-notice] play blocked "The operation was aborted."
-    // A new Audio() on an interrupted session is what pushes WebKit's shared
-    // audio pipeline into its interrupted state - and the CALL's own <audio>
-    // element is in that very same pipeline. A cosmetic notice was therefore
-    // taking down the conversation audio it is supposed to announce.
-    //
-    // So we hold off until the route is live. The native didActivate handler
-    // dispatches pp:audio-route-live; we also cap the wait so the notice still
-    // plays on paths where that event never comes (web, Android).
-    await waitForAudioRoute();
-
     const el = new Audio(url);
     el.volume = 0.9;
     // Do not steal the call's audio session on iOS: keep it inline.
     (el as any).playsInline = true;
     currentEl = el;
-    await el.play().then(
-      () => log("playing", { key }),
-      (e: any) => log("play blocked", e?.message ?? e),
-    );
+    await el.play();
+    announced.add(key);
+    if (announced.size > 50) announced.clear();
+    log("playing", { key });
   } catch (e: any) {
+    // Do not consume the once-per-call slot on a blocked first attempt. CallKit
+    // may activate AVAudioSession a moment later, so retry once on that session.
+    announced.delete(key);
     log("failed", e?.message ?? e);
+    const attempts = retryCount.get(key) ?? 0;
+    if (attempts < 2) {
+      retryCount.set(key, attempts + 1);
+      window.setTimeout(() => { if (!announced.has(key)) void playRecordingNotice(key); }, 750);
+    }
   }
-}
-
-/**
- * ring16 - Resolve once the CallKit audio route is live, or after a short cap.
- * Never rejects: the notice must never be able to hold up or break a call.
- */
-function waitForAudioRoute(maxWaitMs = 2500): Promise<void> {
-  return new Promise<void>((resolve) => {
-    if (typeof window === "undefined") { resolve(); return; }
-    if (audioRouteLive) { resolve(); return; }
-    let done = false;
-    const finish = (why: string) => {
-      if (done) return;
-      done = true;
-      window.clearTimeout(timer);
-      window.removeEventListener("pp:audio-route-live", onLive);
-      log(`notice released (${why})`);
-      resolve();
-    };
-    const onLive = () => finish("audio route live");
-    const timer = window.setTimeout(() => finish(`no route event after ${maxWaitMs}ms`), maxWaitMs);
-    window.addEventListener("pp:audio-route-live", onLive, { once: true });
-  });
 }
 
 /** Called when a call ends so the next call re-plays the notice. */
 export function resetRecordingNotice(callKey?: string) {
   if (callKey) announced.delete(callKey);
   else announced.clear();
-  // ring16 - the next call gets a fresh session; require a fresh route signal.
-  audioRouteLive = false;
+  if (callKey) retryCount.delete(callKey);
+  else retryCount.clear();
   try { currentEl?.pause(); } catch { /* noop */ }
   currentEl = null;
 }

@@ -8,6 +8,9 @@ import { Link } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { logDeepLink } from "@/lib/deepLinkDebug";
+// Import statique : le import() dynamique renvoyait un module vide dans le
+// bundle natif ("ie is not a function"), ce qui cassait « Reconnecter ».
+import { startNativeOAuthSession, canUseNativeAuthSession } from "@/lib/ms365AuthSession";
 
 type Status = "loading" | "disconnected" | "pending" | "connected" | "error";
 
@@ -156,27 +159,21 @@ export default function MaestroConnectCard() {
           // Browser.open cannot return a custom-scheme callback on iOS
           // ("Unable to display URL"): ASWebAuthenticationSession is mandatory.
           logDeepLink({ kind: "info", source: "MaestroConnect", detail: "auth path=ASWebAuthenticationSession" });
-          // NOTE: the exported symbol is startNativeAuthSession (no "OAuth").
-          // Importing a non-existent name yields undefined and throws
-          // "<minified> is not a function" at call time.
-          const mod = await import("@/lib/ms365AuthSession");
-          const startSession = mod.startNativeAuthSession;
-          if (typeof startSession !== "function") {
-            logDeepLink({ kind: "error", source: "MaestroConnect", detail: "native auth bridge missing -> Browser.open fallback" });
-            await Browser.open({ url, presentationStyle: "fullscreen" });
-            toast.info(L.opening);
-            try { localStorage.setItem("pp_maestro_just_connected", String(Date.now())); } catch {}
-            pollStatus();
-            return;
-          }
           let callbackUrl: string | null = null;
           try {
-            callbackUrl = await startSession(url, redirectUri);
+            callbackUrl = typeof startNativeOAuthSession === "function" && canUseNativeAuthSession()
+              ? await startNativeOAuthSession(url, redirectUri)
+              : null;
           } catch (e: any) {
             logDeepLink({ kind: "error", source: "MaestroConnect", detail: `native auth session failed: ${e?.message ?? e}` });
-            throw e;
+            throw new Error(isFr ? "La session Maestro n’a pas pu s’ouvrir. Synchronisez puis réinstallez l’app iOS." : "The Maestro session could not open. Sync and reinstall the iOS app.");
           }
-          if (!callbackUrl) return;
+          if (!callbackUrl) {
+            // User cancelled ASWebAuthenticationSession. Browser.open is not a
+            // valid fallback for a custom iOS scheme ("Unable to display URL").
+            logDeepLink({ kind: "info", source: "MaestroConnect", detail: "ASWebAuthenticationSession cancelled" });
+            return;
+          }
           try { localStorage.setItem("pp_maestro_callback_url", callbackUrl); } catch {}
           const callback = new URL(callbackUrl);
           window.location.href = `/auth/maestro/callback${callback.search}`;

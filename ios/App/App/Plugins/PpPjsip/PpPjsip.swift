@@ -27,8 +27,10 @@ public class PpPjsip: CAPPlugin, CAPBridgedPlugin {
     public let identifier = "PpPjsip"
     public let jsName = "PpPjsip"
     public let pluginMethods: [CAPPluginMethod] = [
+        CAPPluginMethod(name: "isEngineLinked", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "registerTest", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "initialize", returnType: CAPPluginReturnPromise),
+
         CAPPluginMethod(name: "register", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "unregister", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "makeCall", returnType: CAPPluginReturnPromise),
@@ -53,7 +55,22 @@ public class PpPjsip: CAPPlugin, CAPBridgedPlugin {
         #endif
     }
 
+    // MARK: - Lien du moteur
+
+    /// Retourne le résultat exact de `#if canImport(pjsua)` : le JS ne doit
+    /// pré-revendiquer l'AOR `<ext>M` que si ce booléen est vrai.
+    @objc func isEngineLinked(_ call: CAPPluginCall) {
+        #if canImport(pjsua)
+        call.resolve(["linked": true])
+        #else
+        NSLog("[PpPjsip] isEngineLinked=false — libpjsip.xcframework is not linked into the app")
+        call.resolve(["linked": false])
+        #endif
+    }
+
     // MARK: - Sonde TLS
+
+
 
     @objc func registerTest(_ call: CAPPluginCall) {
         #if canImport(pjsua)

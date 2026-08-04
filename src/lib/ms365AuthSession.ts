@@ -25,6 +25,14 @@ export function canUseNativeAuthSession(): boolean {
   return Capacitor.isNativePlatform() && Capacitor.getPlatform() === "ios";
 }
 
+/** Reusable native OAuth session for any custom-scheme callback (Maestro too). */
+export async function startNativeOAuthSession(url: string, redirectUri: string): Promise<string | null> {
+  if (!canUseNativeAuthSession()) return null;
+  const res = await PpAuthSession.start({ url, scheme: schemeFromRedirectUri(redirectUri) });
+  if (res?.cancelled) return null;
+  return res?.url ?? null;
+}
+
 /**
  * Returns the raw callback URL, or null when the native session is
  * unavailable / cancelled (caller should fall back to the browser flow).
@@ -32,9 +40,7 @@ export function canUseNativeAuthSession(): boolean {
 export async function startNativeAuthSession(url: string, redirectUri: string): Promise<string | null> {
   if (!canUseNativeAuthSession()) return null;
   try {
-    const res = await PpAuthSession.start({ url, scheme: schemeFromRedirectUri(redirectUri) });
-    if (res?.cancelled) return null;
-    return res?.url ?? null;
+    return await startNativeOAuthSession(url, redirectUri);
   } catch (e) {
     console.warn("[ms365] native auth session unavailable", (e as Error)?.message ?? e);
     return null;

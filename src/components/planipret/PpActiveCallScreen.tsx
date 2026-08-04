@@ -62,8 +62,6 @@ export default function PpActiveCallScreen({
   const [loadingContacts, setLoadingContacts] = useState(false);
   const [diagOpen, setDiagOpen] = useState(false);
   const [speakerOn, setSpeakerOn] = useState(false);
-  // ring12 - immediate visual feedback for the answer button.
-  const [answering, setAnswering] = useState(false);
 
   useEffect(() => { setAudioEl(audioRef.current); return () => setAudioEl(null); }, [setAudioEl]);
 
@@ -72,7 +70,7 @@ export default function PpActiveCallScreen({
 
   // Reset transient state each new call
   useEffect(() => {
-    if (!active) { setView("main"); setDtmfBuf(""); setTransferQuery(""); setElapsed(0); setAnswering(false); }
+    if (!active) { setView("main"); setDtmfBuf(""); setTransferQuery(""); setElapsed(0); }
   }, [active]);
 
   // A call must never start on the loudspeaker: WebKit/WebRTC defaults to it
@@ -81,10 +79,6 @@ export default function PpActiveCallScreen({
     if (snap.callState !== "active") return;
     setSpeakerOn(false);
     void audioRouter.startCallAudio();
-    // startCallAudio() arms a 1200ms re-assert timer. Cancel it when the call
-    // ends or the screen unmounts: a stale timer would otherwise re-apply the
-    // earpiece route on top of the next call, or fight the user's speaker tap.
-    return () => { audioRouter.stopCallAudio(); };
   }, [snap.callState, snap.callId]);
 
   // Recording notice — played once per call as soon as it connects.
@@ -175,30 +169,15 @@ export default function PpActiveCallScreen({
   const party = formatSipParty(snap.remoteIdentity, "fr", snap.remoteNumber);
   const displayName = party.name;
   const displayNumber = party.subtitle || null;
-  const statusText = isIncoming ? (t("call.incoming") || "Appel entrant")
-    : isOutgoingRinging ? (t("call.ringing") || "Sonnerie…")
-    : isHeld ? (t("call.onHold") || "En attente")
+  // t() renvoie la clé quand la traduction manque : on affiche alors le texte FR.
+  const tr = (key: string, fallback: string) => {
+    const v = t(key);
+    return !v || v === key ? fallback : v;
+  };
+  const statusText = isIncoming ? tr("call.incoming", "Appel entrant")
+    : isOutgoingRinging ? tr("call.ringing", "Sonnerie…")
+    : isHeld ? tr("call.onHold", "En attente")
     : fmt(elapsed);
-
-  /**
-   * Never surface internal transport state on the call screen.
-   *
-   * `snap.errorCause` carries raw diagnostics such as `ws_disconnected`, and it
-   * was being printed under the caller's number. That string is meaningless to a
-   * broker and it is actively misleading here: on a background VoIP push iOS has
-   * suspended the WebView, so the socket IS closed at the instant the incoming
-   * screen appears. The whole push-wake path (wakeForIncoming, the 1.5s native
-   * grace, declareJsOwnsAor) exists precisely to rebuild that socket before the
-   * INVITE lands, so a closed socket at ring time is expected, not a fault.
-   *
-   * Only causes the user can act on are shown (e.g. rejected credentials). Every
-   * transport-level cause stays in the console and in the diagnostic panel,
-   * reachable from the header icon.
-   */
-  const TRANSPORT_NOISE = /ws_|websocket|socket|disconnect|transport|connection error|1001|1006|POSIX|timeout|ice|dead_transport/i;
-  const userFacingError = snap.errorCause && !TRANSPORT_NOISE.test(String(snap.errorCause))
-    ? snap.errorCause
-    : null;
 
   const KEYS = ["1","2","3","4","5","6","7","8","9","*","0","#"];
 
@@ -245,7 +224,12 @@ export default function PpActiveCallScreen({
             {displayNumber && <div className="text-sm text-white/60 mt-1">{displayNumber}</div>}
             <div className="mt-3 text-sm text-white/70">{statusText}</div>
             {dtmfBuf && <div className="mt-2 text-xs text-white/50">DTMF: {dtmfBuf}</div>}
-            {userFacingError && <div className="mt-2 text-xs" style={{ color: "#FCA5A5" }}>{userFacingError}</div>}
+            {/* Internal transport states (ws_disconnected, registration_failed…)
+                are debug tokens: never show them to the user. Only human
+                readable causes are surfaced, and never during an inbound ring. */}
+            {!isIncoming && snap.errorCause && !/^[a-z0-9_.-]+$/.test(String(snap.errorCause)) && (
+              <div className="mt-2 text-xs" style={{ color: "#FCA5A5" }}>{snap.errorCause}</div>
+            )}
           </div>
         )}
 
@@ -359,25 +343,9 @@ export default function PpActiveCallScreen({
                 style={{ width: 72, height: 72, background: "linear-gradient(135deg, #B91C1C, #E84C4C)", boxShadow: "0 8px 24px rgba(232,76,76,0.5)" }}>
                 <PhoneOff className="w-7 h-7" />
               </button>
-              {/* ring12 - log the tap before any await, so a future log can never
-                  again leave it ambiguous whether the button fired at all or the
-                  answer path silently gave up. The spinner state also gives the
-                  user immediate feedback instead of a seemingly dead button. */}
-              <button onClick={() => {
-                  console.info("[answer] ANSWER BUTTON TAPPED", {
-                    sipCallState: snap.callState,
-                    sipCallId: snap.callId || null,
-                    alreadyAnswering: answering,
-                  });
-                  setAnswering(true);
-                  void answer()
-                    .then((ok) => console.info(`[answer] button result \u2192 ${ok ? "connected" : "NOT answered"}`))
-                    .finally(() => setAnswering(false));
-                }}
-                aria-label="Répondre"
-                aria-busy={answering}
+              <button onClick={() => void answer()} aria-label="Répondre"
                 className="rounded-full flex items-center justify-center active:scale-95 transition"
-                style={{ width: 72, height: 72, background: "linear-gradient(135deg, #15803D, #22C55E)", boxShadow: "0 8px 24px rgba(34,197,94,0.5)", opacity: answering ? 0.65 : 1 }}>
+                style={{ width: 72, height: 72, background: "linear-gradient(135deg, #15803D, #22C55E)", boxShadow: "0 8px 24px rgba(34,197,94,0.5)" }}>
                 <Phone className="w-7 h-7" />
               </button>
           </>

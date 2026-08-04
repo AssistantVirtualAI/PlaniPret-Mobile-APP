@@ -2,11 +2,14 @@ import { Capacitor, registerPlugin } from "@capacitor/core";
 import { supabase } from "@/integrations/supabase/client";
 import {
   aorExtension,
+  armAorWatchdog,
   claimAorForNative,
+  isPjsipEnabled,
   normalizeMobileAor,
   preclaimNativeAor,
   releaseAorFromNative,
 } from "./aorArbitration";
+
 
 
 /**
@@ -30,7 +33,9 @@ import {
 export type SipRegistrationState = "registered" | "unregistered" | "failed" | "unavailable";
 
 interface PjsipPlugin {
+  isEngineLinked(): Promise<{ linked: boolean }>;
   initialize(opts: Record<string, unknown>): Promise<{ ok: boolean; username: string }>;
+
   register(): Promise<{ ok: boolean }>;
   unregister(): Promise<{ ok: boolean }>;
   makeCall(opts: { destination: string }): Promise<{ callId: string }>;
@@ -77,6 +82,9 @@ export class NativeSipService {
   private readonly maxRetries = 3;
   private currentCallId: string | null = null;
   private username: string | null = null;
+  /** Appels entrants en cours, pour détecter les manqués (jamais "connected"). */
+  private inboundCalls = new Map<string, { remoteNumber: string | null; remoteName: string | null; answered: boolean; startedAt: string }>();
+
   private extension: string | null = null;
   private initializing: Promise<boolean> | null = null;
   private listenersBound = false;
@@ -102,6 +110,19 @@ export class NativeSipService {
   }
 
   private async doInitialize(): Promise<boolean> {
+    try {
+      return await this.doInitializeInner();
+    } catch (err: any) {
+      // Filet ultime : AUCUNE exception ne doit laisser l'AOR au natif.
+      console.error("[SIP] init natif — exception non gérée:", err?.message ?? err);
+      releaseAorFromNative("native_init_exception");
+      void import("./nativePpSipService").then((m) => m.declarePlanipretNativeEngineOwnsAor(false)).catch(() => undefined);
+      this.setState("unavailable");
+      return false;
+    }
+  }
+
+  private async doInitializeInner(): Promise<boolean> {
     const pjsip = getPjsip();
     if (!pjsip) {
       // Aucun moteur natif : JsSIP redevient légitimement propriétaire.
@@ -109,9 +130,23 @@ export class NativeSipService {
       this.setState("unavailable");
       return false;
     }
+    if (!isPjsipEnabled()) {
+      releaseAorFromNative("pp_pjsip_enabled=false");
+      this.setState("unavailable");
+      return false;
+    }
+    // Le moteur doit être RÉELLEMENT lié avant toute revendication.
+    const linked = await this.probeEngineLinked(pjsip);
+    if (!linked) {
+      releaseAorFromNative("engine_not_linked");
+      void import("./nativePpSipService").then((m) => m.declarePlanipretNativeEngineOwnsAor(false)).catch(() => undefined);
+      this.setState("unavailable");
+      return false;
+    }
     // Le natif est prioritaire dès maintenant : bloque tout REGISTER JsSIP
     // pendant la résolution des identifiants (fenêtre de course → WSS 1001).
     claimAorForNative(null, "native_init_start");
+    armAorWatchdog(() => this.registered);
 
     const { data, error } = await supabase.functions.invoke("ns-resolve-sip-credentials", {
       body: { client_type: "mobile" },
@@ -153,30 +188,45 @@ export class NativeSipService {
       // Le moteur natif possède l'AOR : JsSIP doit cesser de REGISTER et
       // retirer son Contact WebView s'il en avait déjà un.
       claimAorForNative(username, "native_engine_ready");
+      armAorWatchdog(() => this.registered);
       // Bloque explicitement le REGISTER WSS du keep-alive natif : `false`
       // sur jsOwnsAor signifiait auparavant « AOR libre » et créait un doublon.
       void import("./nativePpSipService")
         .then((m) => m.declarePlanipretNativeEngineOwnsAor(true))
         .catch(() => undefined);
 
-      await pjsip.register();
+      // `initialize` envoie déjà le REGISTER : un second appel renvoie
+      // PJSIP_EBUSY. On ne force le REGISTER que s'il échoue silencieusement.
+      await pjsip.register().catch((e: any) => {
+        const c = String(e?.code ?? e?.message ?? "");
+        if (!/EBUSY|busy|already/i.test(c)) throw e;
+      });
       return true;
-    } catch (err: any) {
-      const code = err?.code ?? err?.message ?? "error";
-      if (code === "binary_missing" || code === "unavailable" || code === "UNIMPLEMENTED") {
-        console.warn("[SIP] moteur natif indisponible:", code);
-        // Repli explicite : sans binaire PJSIP, JsSIP reprend l'AOR.
-        releaseAorFromNative(String(code));
-        void import("./nativePpSipService").then((m) => m.declarePlanipretNativeEngineOwnsAor(false)).catch(() => undefined);
-        this.setState("unavailable");
-        return false;
-      }
-      console.error("[SIP] Init échouée:", err);
-      this.setState("failed");
 
+    } catch (err: any) {
+      const code = String(err?.code ?? err?.message ?? err?.errorMessage ?? "error");
+      console.error("[SIP] Init échouée:", code, err);
+      // QUELLE QUE SOIT la raison (binary_missing, timeout, exception), le
+      // chemin legacy JsSIP doit reprendre la main immédiatement.
+      releaseAorFromNative(code);
+      void import("./nativePpSipService").then((m) => m.declarePlanipretNativeEngineOwnsAor(false)).catch(() => undefined);
+      this.setState("unavailable");
       return false;
     }
   }
+
+  /** `isEngineLinked()` natif = résultat de `#if canImport(pjsua)`. */
+  private async probeEngineLinked(pjsip: PjsipPlugin): Promise<boolean> {
+    try {
+      const res = await pjsip.isEngineLinked();
+      if (!res?.linked) console.warn("[SIP] isEngineLinked=false — libpjsip.xcframework absent du binaire");
+      return !!res?.linked;
+    } catch (e: any) {
+      console.warn("[SIP] isEngineLinked indisponible:", e?.message ?? e);
+      return false;
+    }
+  }
+
 
   private setState(state: SipRegistrationState) {
     this.lastState = state;
@@ -217,6 +267,8 @@ export class NativeSipService {
 
     await pjsip.addListener("incomingCall", (call: any) => {
       this.currentCallId = call?.callId ?? null;
+      const cid = call?.callId != null ? String(call.callId) : "unknown";
+      this.inboundCalls.set(cid, { remoteNumber: call?.remoteNumber ?? null, remoteName: call?.remoteName ?? null, answered: false, startedAt: new Date().toISOString() });
       void import("./nativePpSipService").then((m) => m.setPlanipretNativeCallActive(true)).catch(() => undefined);
       // CallKit sonne déjà côté natif : cet event ne sert qu'à l'UI.
       emit("sip-incoming-call", {
@@ -229,66 +281,103 @@ export class NativeSipService {
 
     await pjsip.addListener("callState", (state: any) => {
       const ended = state?.state === "disconnected" || state?.state === "ended";
-      if (ended) this.currentCallId = null;
-      else if (state?.callId) this.currentCallId = String(state.callId);
+      const cid = state?.callId != null ? String(state.callId) : "unknown";
+      const tracked = this.inboundCalls.get(cid);
+      if (tracked && (state?.state === "connected" || state?.state === "confirmed" || state?.state === "answered")) {
+        tracked.answered = true;
+      }
+      if (ended) {
+        this.currentCallId = null;
+        if (tracked) {
+          this.inboundCalls.delete(cid);
+          if (!tracked.answered) void this.logMissedCall(tracked);
+        }
+      } else if (state?.callId) this.currentCallId = String(state.callId);
       void import("./nativePpSipService").then((m) => m.setPlanipretNativeCallActive(!ended)).catch(() => undefined);
       emit("sip-call-state", { ...state, engine: "pjsip" });
-      // Quand l'appel sortant passe en 200 OK (connected), notifier CallKit.
-      if (!ended && state?.direction === "out" && state?.state === "connected") {
-        try {
-          const VoipCall = (window as any)?.Capacitor?.Plugins?.PpVoipCall;
-          if (VoipCall?.reportOutgoingConnected) void VoipCall.reportOutgoingConnected({});
-        } catch { /* noop */ }
-      }
     });
-    // Appels sortants : PpPjsipEngine émet ces events dès que PJSIP lance l'INVITE
-    // ou reçoit 180 Ringing. On les relaie à CallKit via PpVoipCall pour qu'iOS
-    // active l'audio et affiche l'écran d'appel natif.
-    await pjsip.addListener("PpPjsipOutgoingCall", (data: any) => {
-      const callId = String(data?.callId ?? "");
-      const remoteNumber = String(data?.remoteNumber ?? "Unknown");
-      this.currentCallId = callId || null;
-      void import("./nativePpSipService").then((m) => m.setPlanipretNativeCallActive(true)).catch(() => undefined);
-      emit("sip-outgoing-call", { callId, remoteNumber, engine: "pjsip" });
-      // Notifie CallKit via PpVoipCall.startOutgoingCall
-      try {
-        const VoipCall = (window as any)?.Capacitor?.Plugins?.PpVoipCall;
-        if (VoipCall?.startOutgoingCall) void VoipCall.startOutgoingCall({ callId, remoteNumber });
-      } catch { /* noop */ }
-    });
-    await pjsip.addListener("PpPjsipOutgoingRinging", (data: any) => {
-      emit("sip-outgoing-ringing", { ...data, engine: "pjsip" });
-      try {
-        const VoipCall = (window as any)?.Capacitor?.Plugins?.PpVoipCall;
-        if (VoipCall?.reportOutgoingRinging) void VoipCall.reportOutgoingRinging({});
-      } catch { /* noop */ }
-    });
+  }
+
+  /** Journalise un appel entrant jamais répondu dans `planipret_phone_calls`. */
+  private async logMissedCall(call: { remoteNumber: string | null; remoteName: string | null; startedAt: string }) {
+    try {
+      const { data: auth } = await supabase.auth.getUser();
+      const authId = auth?.user?.id;
+      if (!authId) return;
+      const { data: profile } = await supabase
+        .from("planipret_profiles")
+        .select("id, organization_id, ns_extension")
+        .eq("user_id", authId)
+        .maybeSingle();
+      if (!profile?.organization_id) return;
+      await supabase.from("planipret_phone_calls").insert({
+        user_id: (profile as any).id ?? authId,
+        organization_id: (profile as any).organization_id,
+        extension: (profile as any).ns_extension ?? this.username ?? null,
+        direction: "missed",
+        status: "no-answer",
+        from_number: call.remoteNumber,
+        from_name: call.remoteName,
+        to_number: (profile as any).ns_extension ?? this.username ?? null,
+        started_at: call.startedAt,
+        ended_at: new Date().toISOString(),
+        duration_seconds: 0,
+        metadata: { source: "pjsip_native" },
+      } as any);
+    } catch (err) {
+      console.warn("[SIP] log missed call échoué:", err);
+    }
+  }
+
+
+  /** `true` si l'erreur signifie « PJSIP absent du binaire / indisponible ». */
+  private isMissingBinary(err: any): boolean {
+    const blob = `${err?.code ?? ""} ${err?.message ?? ""} ${err?.errorMessage ?? ""}`;
+    return /binary_missing|unavailable|UNIMPLEMENTED|not implemented/i.test(blob);
   }
 
   async answer(): Promise<boolean> {
     const pjsip = getPjsip();
-    if (!pjsip) return false;
+    if (!pjsip) { releaseAorFromNative("answer_plugin_absent"); return false; }
     try {
       const res = await pjsip.answerCall({ callId: this.currentCallId ?? undefined });
       this.currentCallId = res?.callId ?? this.currentCallId;
       return true;
-    } catch (err) {
+    } catch (err: any) {
       console.error("[SIP] answer échoué:", err);
+      if (this.isMissingBinary(err)) {
+        releaseAorFromNative("answer_binary_missing");
+        void import("./nativePpSipService").then((m) => m.declarePlanipretNativeEngineOwnsAor(false)).catch(() => undefined);
+      }
       return false;
     }
   }
 
+
   async hangup(): Promise<boolean> {
+    // CallKit doit être fermé même si PJSIP échoue, sinon l'UI système reste
+    // affichée alors que l'appel est terminé.
+    const endCallKit = () => {
+      const voip = (window as any)?.Capacitor?.Plugins?.PpVoipCall;
+      if (!voip) return;
+      if (voip.endCall) { void Promise.resolve(voip.endCall({})).catch(() => {}); }
+      else if (voip.reportCallEnded) { void Promise.resolve(voip.reportCallEnded({})).catch(() => {}); }
+    };
     const pjsip = getPjsip();
-    if (!pjsip) return false;
+    if (!pjsip) { endCallKit(); releaseAorFromNative("hangup_plugin_absent"); return false; }
     try {
       await pjsip.hangupCall({ callId: this.currentCallId ?? undefined });
       this.currentCallId = null;
+      endCallKit();
       return true;
-    } catch {
+    } catch (err: any) {
+      endCallKit();
+      if (this.isMissingBinary(err)) releaseAorFromNative("hangup_binary_missing");
       return false;
     }
   }
+
+
 
   async makeCall(destination: string): Promise<boolean> {
     const pjsip = getPjsip();

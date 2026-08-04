@@ -10,9 +10,6 @@ import JsSIP from "jssip";
 import { getPpSipReconnectConfig, ppSipBackoffDelay, PP_SIP_RECONNECT_FLOOR_MS } from "./ppSipReconnectConfig";
 import { edgeOnlyWssUrls, isPortalWssUrl } from "./sipEdgePolicy";
 import { checkSipBackendRegistration } from "./sipBackendCheck";
-// nativePpSipService only imports a TYPE from this module, so this is not a
-// runtime cycle.
-import { declarePlanipretJsOwnsAor } from "./nativePpSipService";
 import {
   PP_AOR_CLAIM_EVENT,
   nativeOwnsAor,
@@ -20,8 +17,9 @@ import {
   preclaimNativeAor,
 } from "./aorArbitration";
 
-// ring21 - resout la propriete de l'AOR avant toute creation d'UA JsSIP.
+// Résout la propriété AOR avant toute création d'UA JsSIP.
 preclaimNativeAor();
+
 
 // Let the SBC finish removing the previous Contact before a replacement UA
 // REGISTERs the same AOR. Without this gap NetSapiens closes one WSS with 1001.
@@ -29,18 +27,19 @@ const PP_SIP_UA_SWAP_DELAY_MS = 800;
 /** Must remain shorter than the native CallKit answer watchdog (32s). */
 export const PP_PENDING_ANSWER_TIMEOUT_MS = 30_000;
 
-// ring21 - un seul proprietaire par AOR: le moteur PJSIP natif s'annonce via
-// `pp:sip-native-owns-aor`, apres quoi JsSIP ne doit plus jamais REGISTER.
-// L'etat autoritaire vit dans `aorArbitration` (persiste + pre-claime sur les
-// plateformes natives avant qu'un UA JsSIP puisse le prendre de vitesse).
+// One owner per AOR: the native PJSIP engine announces itself with
+// `pp:sip-native-owns-aor`, after which JsSIP must never REGISTER again.
+// The authoritative state lives in `aorArbitration` (persisted + pre-claimed
+// on native platforms before any JsSIP UA can race it).
 export const ppNativeSipOwnsAor = () => nativeOwnsAor();
 if (typeof window !== "undefined") {
   window.addEventListener(PP_AOR_CLAIM_EVENT, () => {
-    // Demonter immediatement toute registration WebView vivante: la laisser
-    // liee fait fermer la branche native par NetSapiens avec un 1001.
+    // Tear down any live WebView registration immediately: leaving it bound
+    // makes NetSapiens close the native branch with a 1001.
     try { ppSipProvider?.yieldAorToNative(); } catch { /* provider not built yet */ }
   });
 }
+
 
 export type PpSipStatus = "idle" | "connecting" | "connected" | "registered" | "disconnected" | "error";
 export type PpCallState = "idle" | "ringing-out" | "ringing-in" | "active" | "held" | "ended";
@@ -194,17 +193,7 @@ class PpSipProvider {
   };
 
   audioEl: HTMLAudioElement | null = null;
-  /**
-   * ring11 - identities of the remote audio tracks currently wired into
-   * `audioEl`, sorted and joined. Used to make attachRemoteAudio() idempotent:
-   * `new MediaStream(tracks)` allocates a fresh object every time, so an
-   * object-reference comparison can never detect "nothing changed".
-   */
-  private attachedAudioSignature = "";
-  // ring14 - set when NetSapiens unregisters the AOR mid-call. The re-REGISTER
-  // is deliberately postponed until the call ends, because re-registering while
-  // an INVITE is ringing makes the PBX drop the WSS leg and kills the dialog.
-  private pendingReRegisterAfterCall = false;
+  private callKitAudioHookInstalled = false;
   private lastSig = "";
   private lastStartAt = 0;
   private connectingSince = 0;
@@ -214,12 +203,6 @@ class PpSipProvider {
   private wsRetryTimer: ReturnType<typeof setTimeout> | null = null;
   private wsWatchdogTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectVerifyTimer: ReturnType<typeof setTimeout> | null = null;
-  /** ring19 - RTP flow probe. See startRtpProbe(). */
-  private rtpProbeTimer: ReturnType<typeof setInterval> | null = null;
-  private rtpProbeStartedAt = 0;
-  private rtpProbeTicks = 0;
-  private rtpProbeLastBytes = { tx: 0, rx: 0 };
-  private rtpProbeAlerted = false;
   private wsFailures = 0;
   private lastWsDisconnectedAt = 0;
   private lastRegisterAttemptAt = 0;
@@ -398,9 +381,8 @@ class PpSipProvider {
   }
 
   private guardedRegister(reason: string, options: { priority?: boolean } = {}): boolean {
-    // ring21 - un moteur SIP natif (PJSIP) qui detient l'AOR en est le seul
-    // proprietaire: un REGISTER JS sur la meme AOR fait fermer la branche
-    // native par NetSapiens (1001).
+    // A native SIP engine (PJSIP) holding the AOR is the single owner: a JS
+    // REGISTER on the same AOR makes NetSapiens close the native branch (1001).
     if (ppNativeSipOwnsAor()) {
       this.log("warn", `REGISTER blocked: native SIP owns AOR (${reason})`);
       this.pushHistory("blocked", "native_owns_aor");
@@ -408,81 +390,35 @@ class PpSipProvider {
       return false;
     }
     const ua = this.ua;
-    // ring14 - CENTRAL GUARD. A REGISTER sent while a SIP dialog is live makes
-    // NetSapiens close the WSS leg (1001), and the dialog dies with it. This is
-    // the single choke point every REGISTER path goes through, so the rule is
-    // enforced once here instead of at each of the 8 call sites.
-    //
-    // `deferred_after_call` is the one exemption: resetCall() clears the session
-    // before running it, so by then there is no dialog left to protect.
-    if (this.session && reason !== "deferred_after_call") {
-      this.log("warn", `REGISTER blocked - a live SIP dialog must not be disturbed (${reason}, callState=${this.snap.callState})`);
-      this.pendingReRegisterAfterCall = true;
-      return false;
-    }
-    // ring20 - purge the orphan intent BEFORE evaluating the ring15 guard below.
-    // The 2026-08-03 log shows ring15 firing 4 times with callState=idle AFTER the
-    // call was over: the intent had outlived its call (its INVITE never matched,
-    // because the VoIP push Call-ID and the SIP Call-ID are different identifier
-    // spaces on NetSapiens), so it blocked every later REGISTER refresh and put the
-    // NEXT inbound call at risk.
-    //
-    // CAUTION - do NOT purge on `callState === "idle"` alone: that is exactly the
-    // legitimate window ring15 protects (background push, INVITE still in flight,
-    // no session yet). Purging there would resurrect the bug ring15 fixed and send
-    // the caller to voicemail. Two signals separate a real orphan from legitimate
-    // waiting: the intent has expired, or the call it targeted has already ended.
-    if (this.pendingAnswer) {
-      const expired = this.pendingAnswer.expiresAt <= Date.now();
-      const callOver = this.snap.callState === "ended";
-      if (expired || callOver) {
-        this.log("info", `stale answer intent purged - no live call to protect (${reason}, callState=${this.snap.callState}, expired=${expired})`);
-        this.pendingAnswer = null;
-      }
-    }
-    const answerPending = !!this.pendingAnswer && this.pendingAnswer.expiresAt > Date.now();
-    // ring15 - THE DECISIVE FIX. The ring14 guard above only protected a dialog
-    // that had ALREADY arrived (this.session != null). But on a background push the
-    // INVITE has not landed yet: callState is "idle" and this.session is null, so
-    // the guard let the REGISTER through. Log 137 shows it 8 times:
-    //   REGISTER promoted to priority (force_registered_refresh)
-    //     {"answerPending":true,"callState":"idle"}
-    //   priority REGISTER sent (force_registered_refresh)
-    //   ... and "incoming INVITE attached" NEVER appears again.
-    // NetSapiens closes the previous WSS leg on re-REGISTER, so the INVITE that was
-    // in flight toward that leg is lost forever, the queued answer intent never
-    // matches, and the PBX rolls the caller to voicemail (the recording notice the
-    // user hears). A pending answer intent means an INVITE is IN FLIGHT: the socket
-    // that will carry it must not be touched. `deferred_after_call` stays exempt
-    // because resetCall() clears the intent before running it.
-    if (answerPending && reason !== "deferred_after_call") {
-      this.log("warn", `REGISTER blocked - an answer intent is waiting for its INVITE, the socket must not be recycled (${reason}, callState=${this.snap.callState})`);
-      this.pendingReRegisterAfterCall = true;
-      return false;
-    }
-    // An inbound answer intent OUTRANKS every caller-supplied option. Observed in
-    // production: on foreground resume during a ring, `forceReregister()` called
-    // guardedRegister() WITHOUT priority, so the 5000ms debounce swallowed it
-    // (34 x "explicit REGISTER suppressed" in one 4-minute session). The JS side
-    // therefore stayed unregistered, the INVITE only reached the native plugin,
-    // and the answer had no SIP dialog to accept.
-    const priority = !!options.priority || answerPending || this.snap.callState === "ringing-in";
     if (!ua?.isConnected?.()) {
       // An inbound call cannot wait for the backoff curve: rebuild now.
-      if (priority) this.hardRebuild(`${reason}_transport_down`);
+      if (options.priority) this.hardRebuild(`${reason}_transport_down`);
       else this.scheduleSocketReconnect(`${reason}_transport_down`);
       return false;
+    }
+    // ring16: an answer intent is pending. NetSapiens closes the previous WSS
+    // branch on a fresh REGISTER, which silently drops the INVITE in flight
+    // toward that branch. The transport is up, so there is nothing to repair:
+    // never re-REGISTER while an answer is pending, priority or not.
+    if (this.pendingAnswer) {
+      const stale = this.pendingAnswer.expiresAt <= Date.now()
+        || this.snap.callState === "idle"
+        || this.snap.callState === "ended";
+      if (stale) {
+        this.pendingAnswer = null;
+        this.log("info", "stale answer intent purged (no live call)");
+      } else {
+        this.log("warn", `REGISTER blocked: answer pending (${reason})`);
+        this.pushHistory("blocked", "answer_pending");
+        this.emitMetrics();
+        return false;
+      }
     }
     const now = Date.now();
     const minGap = Math.max(5000, getPpSipReconnectConfig().reRegisterDelayMs);
     // Inbound-call recovery must never be swallowed by the debounce: that is
     // exactly what left the extension unregistered while the caller waited.
-    if (priority) {
-      if (!options.priority) {
-        this.log("info", `REGISTER promoted to priority (${reason})`, {
-          answerPending, callState: this.snap.callState,
-        });
-      }
+    if (options.priority) {
       try {
         this.lastRegisterAttemptAt = now;
         ua.register();
@@ -512,12 +448,13 @@ class PpSipProvider {
 
   async init(cfg: PpSipConfig) {
     if (ppSipInitInFlight) return;
-    // ring21 — arbitrage d'AOR : le moteur natif PJSIP est le seul REGISTER
-    // autorise sur `<ext>M`. Creer un UA JsSIP ici (register:true) rouvrirait la
-    // course qui provoque les WSS 1001 et envoie l'appel en messagerie.
+    // Arbitrage d'AOR : le moteur natif PJSIP est le seul REGISTER autorisé sur
+    // `<ext>M`. Créer un UA JsSIP ici (register:true) rouvrirait la course qui
+    // provoque les WSS 1001.
     if (nativeOwnsAor()) {
       this.log("warn", "JsSIP init blocked: native PJSIP owns the AOR");
       this.pushHistory("blocked", "native_owns_aor_init");
+      this.emitMetrics();
       if (this.ua) this.yieldAorToNative();
       return;
     }
@@ -527,6 +464,7 @@ class PpSipProvider {
       this.update({ status: "error", errorCause: "invalid_config" });
       return;
     }
+
     // Registrations must live on a call-processing core node (core1/core2);
     // the portal server accepts REGISTER but does not deliver inbound calls.
     const edgeUrls = edgeOnlyWssUrls([rawWssUrl, ...(cfg.wssUrls || [])]);
@@ -534,12 +472,13 @@ class PpSipProvider {
       this.log("warn", `portal WSS target rejected (${rawWssUrl}) -> using core ${edgeUrls[0]}`);
     }
     const wssUrl = edgeUrls[0];
-    // ring21 — invariant d'AOR : la WebView ne peut REGISTER que `<ext>M`.
+    // Invariant d'AOR : la WebView ne peut REGISTER que `<ext>M`.
     const mobileAor = normalizeMobileAor(cfg.sipUsername || cfg.extension);
     if (mobileAor && mobileAor !== cfg.sipUsername) {
-      this.log("warn", `AOR normalise ${cfg.sipUsername} -> ${mobileAor}`);
+      this.log("warn", `AOR normalisé ${cfg.sipUsername} -> ${mobileAor}`);
     }
     const cleanCfg = { ...cfg, sipUsername: mobileAor || cfg.sipUsername, wssUrl, wssUrls: edgeUrls };
+
     const sig = `${cleanCfg.extension}|${cleanCfg.sipDomain}|${cleanCfg.wssUrl}|${cleanCfg.password}`;
     if (this.ua && sig === this.lastSig && this.snap.status === "registered") {
       return;
@@ -684,36 +623,6 @@ class PpSipProvider {
           this.scheduleSocketReconnect("unregistered_transport_down");
           return;
         }
-        // ring14 - THE call-killer. Proven by the ring13 log:
-        //
-        //   incoming INVITE attached  sipCallId=2026...C148E6
-        //   unregistered on live transport - scheduling guarded re-register
-        //   registration failed: Connection Error
-        //   ws disconnected
-        //   [answer] tapped {hasLiveSipSession:false, sipCallState:"idle"}
-        //   [answer] no inbound SIP INVITE available
-        //
-        // NetSapiens emits `unregistered` on the AOR while the INVITE is
-        // ringing, because the fork legs contend for the same AOR. Re-REGISTER
-        // at that instant makes NetSapiens close the WSS leg, and the dialog
-        // carrying the ringing INVITE dies with it. The user then taps Answer
-        // on a session that no longer exists.
-        //
-        // A ringing or established call ALWAYS outranks registration hygiene.
-        // The registration is only useful to RECEIVE a call; once the INVITE is
-        // in hand it has already served its purpose. Defer every re-REGISTER
-        // until the call is over - resubscribeAfterCall() runs it on cleanup.
-        const callBusy = this.snap.callState === "ringing-in"
-          || this.snap.callState === "active"
-          || this.snap.callState === "connecting"
-          || !!this.session;
-        if (callBusy) {
-          this.log("warn", `unregistered during a live call (${this.snap.callState}) - re-register DEFERRED, keeping the dialog alive`);
-          this.pendingReRegisterAfterCall = true;
-          // Do NOT touch this.snap.status: flipping it to "connected" makes the
-          // UI and the native side believe the AOR is gone mid-ring.
-          return;
-        }
         this.log("warn", "unregistered on live transport - scheduling guarded re-register");
         this.update({ status: "connected", errorCause: "re_registering" });
         // NetSapiens sometimes returns 401/403 mid-session on stale nonce;
@@ -824,23 +733,6 @@ class PpSipProvider {
             try { window.dispatchEvent(new CustomEvent("pp:sip-pending-answer-ready", { detail: { callId } })); } catch {}
           }, 50);
 
-          // ring12 - safety net. The event above is the ONLY thing that turns a
-          // queued push intent into a 200 OK, and its listener is registered
-          // under `if (!isOwner) return`. Waking from background remounts the
-          // softphone instances, so the owner can change between the push and
-          // the INVITE: the event is then dispatched into the void, the intent is
-          // already consumed, and the call rings on forever with a dead answer
-          // button. If nobody has confirmed the dialog shortly after, answer it
-          // here. Post-hoc claim arbitration in the hook still applies, and
-          // losing an arbitration is recoverable while losing the dialog is not.
-          setTimeout(() => {
-            if (this.snap.callState !== "ringing-in" || this.snap.callId !== callId) return;
-            this.log("warn", "no owner answered the queued intent → provider answers the INVITE directly", {
-              sipCallId: callId,
-            });
-            void this.answer(callId);
-          }, 1500);
-
         } else if (pending) {
           this.log("warn", "answer intent expired before INVITE arrived");
           this.pendingAnswer = null;
@@ -851,13 +743,7 @@ class PpSipProvider {
 
 
     session.on("progress", () => { if (!incoming) this.update({ callState: "ringing-out" }); });
-    // ring14 - the 200 OK already promoted the call to "active"; preserve the
-    // original startedAt so the on-screen timer does not jump backwards when a
-    // late ACK arrives.
-    session.on("confirmed", () => this.update({
-      callState: "active",
-      startedAt: this.snap.startedAt ?? Date.now(),
-    }));
+    session.on("confirmed", () => this.update({ callState: "active", startedAt: Date.now() }));
     session.on("failed", (e: any) => {
       if (this.pendingAnswer?.callId === callId) this.pendingAnswer = null;
       this.update({ callState: "ended", errorCause: e?.cause || "failed" });
@@ -886,9 +772,44 @@ class PpSipProvider {
     };
     wire(session.connection);
     session.on("peerconnection", (e: any) => wire(e?.peerconnection || session.connection));
-    session.on("accepted", () => { this.attachRemoteAudio(session.connection); this.startRtpProbe("accepted"); });
-    session.on("confirmed", () => { this.attachRemoteAudio(session.connection); this.startRtpProbe("confirmed"); });
+    session.on("accepted", () => { this.attachRemoteAudio(session.connection); this.ensureLocalAudio(); });
+    session.on("confirmed", () => { this.attachRemoteAudio(session.connection); this.ensureLocalAudio(); });
+    this.installCallKitAudioHook();
   }
+
+  /**
+   * ring17: the outgoing direction (mic → caller) is only guaranteed once
+   * CallKit has activated the AVAudioSession. Re-assert every local sender
+   * track then — WebRTC can hand us a disabled/muted track when the stream was
+   * captured before the system session was owned by CallKit.
+   */
+  private ensureLocalAudio() {
+    try {
+      const pc: RTCPeerConnection | null = (this.session as any)?.connection ?? null;
+      if (!pc) return;
+      let count = 0;
+      for (const sender of pc.getSenders?.() ?? []) {
+        const track = sender.track;
+        if (!track || track.kind !== "audio") continue;
+        if (!track.enabled) track.enabled = true;
+        count += 1;
+      }
+      this.log("info", `local audio attached (${count} track(s))`);
+    } catch (e: any) {
+      this.log("warn", `ensureLocalAudio failed: ${e?.message || e}`);
+    }
+  }
+
+  private installCallKitAudioHook() {
+    if (this.callKitAudioHookInstalled || typeof window === "undefined") return;
+    this.callKitAudioHookInstalled = true;
+    window.addEventListener("pp:callkit-audio-active", () => {
+      this.log("info", "CallKit audio session activated — re-asserting local audio");
+      this.ensureLocalAudio();
+      this.attachRemoteAudio((this.session as any)?.connection ?? null);
+    });
+  }
+
 
   /** Hidden, always-available audio sink so remote audio never depends on a screen being mounted. */
   private ensureAudioEl(): HTMLAudioElement | null {
@@ -918,342 +839,35 @@ class PpSipProvider {
         if (remotes?.length) stream = remotes[0];
       }
       if (!stream) return;
-
-      // ring11 - ROOT CAUSE OF "call answers but there is no sound".
-      //
-      // This method is invoked 4-5 times per call by design (`track` event,
-      // legacy `addstream`, the immediate call in wire(), plus JsSIP's
-      // `accepted` and `confirmed`). The previous guard was
-      //   `if (el.srcObject !== stream) el.srcObject = stream;`
-      // but `new MediaStream(tracks)` above allocates a BRAND NEW object on
-      // every invocation, even when the underlying tracks are identical. The
-      // guard compares object references, so it was ALWAYS true and srcObject
-      // was reassigned every single time.
-      //
-      // On iOS WebKit, reassigning srcObject on a playing <audio> tears down
-      // the render pipeline and requires a fresh play(), which can be rejected
-      // for lack of a recent user gesture. In the ring10 log the 5th attach
-      // fired several seconds INTO the conversation (l.623) - killing audio
-      // that was already working.
-      //
-      // Fix: compare the actual track identities, not object references, and
-      // only touch srcObject when the track set genuinely changed.
-      const signature = stream.getAudioTracks().map((t) => t.id).sort().join(",");
-      const sameTracks = signature !== "" && signature === this.attachedAudioSignature;
-
-      if (!sameTracks) {
-        el.srcObject = stream;
-        this.attachedAudioSignature = signature;
-        this.log("info", `remote audio attached (${stream.getAudioTracks().length} track(s))`);
-      }
-
+      if (el.srcObject !== stream) el.srcObject = stream;
       el.muted = false;
+      el.defaultMuted = false;
       el.volume = 1;
-      // Only (re)start playback when it is actually stopped. Calling play() on
-      // an already-playing element is harmless, but calling it right after a
-      // needless srcObject swap is exactly what produced the dropouts.
-      if (el.paused || el.readyState === 0) {
-        const p = el.play();
-        if (p?.catch) p.catch(() => { setTimeout(() => el.play().catch(() => {}), 300); });
+      const ensurePlaying = () => {
+        el.muted = false;
+        el.volume = 1;
+        void el.play().catch((error) => {
+          this.log("warn", "remote audio play deferred", { error: String(error) });
+        });
+      };
+      for (const track of stream.getAudioTracks()) {
+        track.enabled = true;
+        track.addEventListener("unmute", ensurePlaying, { once: true });
       }
-      if (sameTracks) {
-        this.log("debug", `remote audio already attached (same ${stream.getAudioTracks().length} track(s)) - no-op`);
-      }
+      ensurePlaying();
+      this.log("info", `remote audio attached (${stream.getAudioTracks().length} track(s))`);
     } catch (e: any) {
       this.log("error", `attachRemoteAudio failed: ${e?.message || e}`);
     }
   }
 
-  /**
-   * ring16 - Resume the WebKit audio pipeline once CallKit has handed us a live
-   * audio route.
-   *
-   * Log 138 is unambiguous. The SIP side was perfect: 200 OK sent withStream,
-   * remote audio attached (1 track), and CallKit reported
-   * outputs=[Receiver] inputs=[MicrophoneBuiltIn] sr=48000. The call was still
-   * silent in both directions, and the reason sits two lines earlier in the very
-   * same log:
-   *     AudioSession::beginInterruption but session is already interrupted!
-   *     [recording-notice] play blocked - The operation was aborted.
-   *
-   * Between the 200 OK and CallKit didActivate, AVAudioSession has NO output
-   * route. WebKit reacts by suspending its own audio pipeline: the audio element
-   * is paused and mic capture is stopped. When the route finally shows up WebKit
-   * does NOT resume on its own, and nothing in our code asked it to. Every
-   * indicator is green and no audio flows.
-   *
-   * This method is driven by the native audioSessionActivated event. It
-   * deliberately BYPASSES the ring11 idempotence guard: here the track set is
-   * identical on purpose, and reassigning srcObject is exactly what forces
-   * WebKit to rebuild the render pipeline it tore down.
-   */
-  public resumeAudioAfterRouteActivation(reason = "callkit_did_activate") {
-    try {
-      const el = this.audioEl;
-      const pc: RTCPeerConnection | undefined | null = (this.session as any)?.connection;
-      if (!el || !pc) {
-        this.log("warn", `audio resume skipped - no ${!el ? "audio element" : "peer connection"} (${reason})`);
-        return;
-      }
-
-      const receivers = pc.getReceivers?.() ?? [];
-      const tracks = receivers.map((r) => r.track).filter((t) => t && t.kind === "audio") as MediaStreamTrack[];
-      if (!tracks.length) {
-        this.log("warn", `audio resume skipped - no remote audio track yet (${reason})`);
-        return;
-      }
-
-      // INBOUND: a track disabled while the session was interrupted stays
-      // disabled and carries pure silence.
-      for (const t of tracks) { try { if (!t.enabled) t.enabled = true; } catch { /* noop */ } }
-
-            // OUTBOUND: the mic sender track is stopped the same way, which is why the
-      // caller could not hear us either.
-      //
-      // ring18 - `enabled = true` is NOT enough.
-      //
-      // `enabled` is only a mute flag: flipping it back works when the track is
-      // merely muted, but it cannot revive a track whose readyState has gone to
-      // "ended". When WebKit suspends its pipeline because AVAudioSession has no
-      // route, iOS tears the capture device down and the MediaStreamTrack ENDS.
-      // An ended track can never produce samples again, whatever `enabled` says,
-      // so the caller keeps hearing silence while every local indicator is green.
-      //
-      // The only real repair is a brand new capture (`getUserMedia`) swapped into
-      // the existing RTCRtpSender with `replaceTrack()`. replaceTrack is chosen
-      // deliberately: it substitutes the outgoing media WITHOUT touching the SDP,
-      // so no re-INVITE, no renegotiation and no risk of NetSapiens dropping the
-      // dialog we just fought to keep alive.
-      const senders = pc.getSenders?.() ?? [];
-      let micRestored = 0;
-      let micNeedsRecapture = false;
-      for (const s of senders) {
-        const t = s.track;
-        if (t && t.kind === "audio") {
-          if (t.readyState === "ended") { micNeedsRecapture = true; continue; }
-          try { if (!t.enabled) { t.enabled = true; micRestored++; } } catch { /* noop */ } }
-        // A sender with a null track is the same dead-outbound situation.
-        if (!t && s.track === null) micNeedsRecapture = true;
-      }
-      if (micNeedsRecapture) {
-        // Fire-and-forget: the inbound repair below must not wait on a permission
-        // prompt or a slow capture start.
-        void this.recaptureMicrophone(reason);
-      }
-
-
-      // Force the re-attach. This IS the WebKit pipeline restart.
-      el.srcObject = new MediaStream(tracks);
-      this.attachedAudioSignature = tracks.map((t) => t.id).sort().join(",");
-      el.muted = false;
-      el.volume = 1;
-      const p = el.play();
-      if (p?.catch) {
-        p.catch((e: any) => {
-          this.log("warn", `audio resume play() rejected, retrying: ${e?.message || e}`);
-          setTimeout(() => el.play().catch(() => {}), 250);
-        });
-      }
-      this.log("info", `audio pipeline resumed after route activation (${reason}, ${tracks.length} track(s), mic re-enabled: ${micRestored}, mic recapture: ${micNeedsRecapture ? "y" : "n"})`);
-    } catch (e: any) {
-      this.log("error", `audio resume failed: ${e?.message || e}`);
-    }
-  }
-
-  /**
-   * ring18 - revive a DEAD outbound microphone with a fresh capture.
-   *
-   * `track.enabled = true` only clears a mute flag. When iOS tears the capture
-   * device down (which is what happens when WebKit suspends its pipeline on a
-   * routeless AVAudioSession), the MediaStreamTrack reaches readyState
-   * "ended" and is unrecoverable: it will never emit a sample again. The caller
-   * then hears nothing at all while our own UI shows a healthy call.
-   *
-   * The repair is a new getUserMedia() capture swapped into the live sender with
-   * replaceTrack(). replaceTrack does NOT alter the SDP, so this needs no
-   * re-INVITE and cannot disturb the dialog.
-   *
-   * Guarded against concurrency: didActivate can fire more than once per call
-   * (route changes, speaker toggle), and two simultaneous getUserMedia() calls on
-   * iOS can leave the capture graph in a broken state.
-   */
-  private micRecaptureInFlight = false;
-
-  private async recaptureMicrophone(reason: string): Promise<void> {
-    if (this.micRecaptureInFlight) {
-      this.log("log", `mic recapture already in flight, skipping (${reason})`);
-      return;
-    }
-    this.micRecaptureInFlight = true;
-    try {
-      const pc: RTCPeerConnection | undefined | null = (this.session as any)?.connection;
-      if (!pc) { this.log("warn", `mic recapture skipped - no peer connection (${reason})`); return; }
-
-      const sender = (pc.getSenders?.() ?? []).find(
-        (s) => s.track?.kind === "audio" || (!s.track && (s as any).transport),
-      ) ?? (pc.getSenders?.() ?? [])[0];
-      if (!sender) { this.log("warn", `mic recapture skipped - no audio sender (${reason})`); return; }
-
-      this.log("warn", `mic track is dead - recapturing via getUserMedia (${reason})`);
-
-      // Match the constraints used when the call was set up so the codec and the
-      // noise-suppression behaviour stay identical after the swap.
-      const fresh = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-        video: false,
-      });
-      const newTrack = fresh.getAudioTracks()[0];
-      if (!newTrack) {
-        this.log("error", `mic recapture failed - getUserMedia returned no audio track (${reason})`);
-        return;
-      }
-
-      // Honour the user's mute state: a recapture must not silently unmute.
-      newTrack.enabled = !this.snap.muted;
-
-      const old = sender.track;
-      await sender.replaceTrack(newTrack);
-      // Release the dead device only AFTER the swap, so the sender is never
-      // trackless in between.
-      if (old && old !== newTrack) { try { old.stop(); } catch { /* noop */ } }
-
-      // JsSIP keeps its own view of the mute state and applies it to the tracks
-      // it knows about. After a swap it holds a stale reference, so re-issue the
-      // command to keep session.isMuted() and the Mute button consistent with the
-      // track we just installed.
-      if (this.snap.muted) { try { this.session?.mute({ audio: true }); } catch { /* noop */ } }
-
-      this.log(
-        "info",
-        `mic recaptured and swapped via replaceTrack (${reason}, readyState=${newTrack.readyState}, enabled=${newTrack.enabled ? "y" : "n"})`,
-      );
-    } catch (e: any) {
-      this.log("error", `mic recapture failed: ${e?.message || e}`);
-    } finally {
-      this.micRecaptureInFlight = false;
-    }
-  }
-
-
-  /**
-   * ring19 - RTP flow probe.
-   *
-   * Every fix from ring16 to ring18 targeted a plausible cause of the silence and
-   * every one of them reported a healthy state afterwards, yet no audio ever
-   * passed. The reason we kept guessing is that nothing in this stack ever
-   * measured whether RTP packets actually move. Without byte counters two very
-   * different failures look identical from the logs:
-   *
-   *   - bytesSent stays 0        -> nothing leaves the device (ICE never paired,
-   *                                 SBC/firewall dropping, no local track)
-   *   - bytesReceived stays 0    -> the PBX/SBC is not sending us media
-   *   - both counters climb      -> media DOES flow; the silence is then an OS
-   *                                 rendering/route problem, not a network one
-   *
-   * This probe samples getStats() every 5s and prints the ICE state plus the
-   * cumulative and per-interval byte/packet counters, then raises one explicit
-   * alert if a direction is still at zero after 10s. It is read-only: it never
-   * touches the peer connection, so it cannot itself perturb the media path.
-   */
-  private startRtpProbe(reason: string) {
-    if (this.rtpProbeTimer) return;
-    this.rtpProbeStartedAt = Date.now();
-    this.rtpProbeTicks = 0;
-    this.rtpProbeLastBytes = { tx: 0, rx: 0 };
-    this.rtpProbeAlerted = false;
-    this.log("log", `rtp probe started (${reason})`);
-    const sample = async () => {
-      const pc = this.getActivePeerConnection();
-      if (!pc) { this.stopRtpProbe("no peer connection"); return; }
-      try {
-        const stats = await pc.getStats();
-        let txBytes = 0, rxBytes = 0, txPackets = 0, rxPackets = 0;
-        let localCandidate = "", remoteCandidate = "", pairState = "";
-        let audioLevelOut: number | null = null, audioLevelIn: number | null = null;
-        const candidates: Record<string, any> = {};
-        stats.forEach((r: any) => {
-          if (r.type === "local-candidate" || r.type === "remote-candidate") candidates[r.id] = r;
-        });
-        stats.forEach((r: any) => {
-          if (r.type === "outbound-rtp" && r.kind !== "video") {
-            txBytes += Number(r.bytesSent || 0);
-            txPackets += Number(r.packetsSent || 0);
-          }
-          if (r.type === "inbound-rtp" && r.kind !== "video") {
-            rxBytes += Number(r.bytesReceived || 0);
-            rxPackets += Number(r.packetsReceived || 0);
-          }
-          if (r.type === "media-source" && typeof r.audioLevel === "number") audioLevelOut = r.audioLevel;
-          if (r.type === "inbound-rtp" && typeof r.audioLevel === "number") audioLevelIn = r.audioLevel;
-          if (r.type === "candidate-pair" && (r.selected || r.state === "succeeded")) {
-            pairState = String(r.state || "");
-            const lc = candidates[r.localCandidateId];
-            const rc = candidates[r.remoteCandidateId];
-            if (lc) localCandidate = `${lc.candidateType || "?"}/${lc.protocol || "?"}`;
-            if (rc) remoteCandidate = `${rc.candidateType || "?"}/${rc.protocol || "?"}`;
-          }
-        });
-        const dTx = txBytes - this.rtpProbeLastBytes.tx;
-        const dRx = rxBytes - this.rtpProbeLastBytes.rx;
-        this.rtpProbeLastBytes = { tx: txBytes, rx: rxBytes };
-        this.rtpProbeTicks++;
-        const elapsed = Math.round((Date.now() - this.rtpProbeStartedAt) / 1000);
-        // One single-line record so it is greppable in the Xcode console.
-        this.log(
-          "log",
-          `rtp probe t=${elapsed}s ice=${pc.iceConnectionState}/${pc.connectionState} pair=${pairState || "none"}`
-          + ` ${localCandidate || "?"}->${remoteCandidate || "?"}`
-          + ` tx=${txBytes}B(+${dTx}) rx=${rxBytes}B(+${dRx})`
-          + ` pkt tx=${txPackets} rx=${rxPackets}`
-          + ` level out=${audioLevelOut ?? "n/a"} in=${audioLevelIn ?? "n/a"}`,
-        );
-        // Verdict after 10s, printed once. This is the branch point for the next
-        // round of debugging, so state it in plain terms.
-        if (!this.rtpProbeAlerted && elapsed >= 10) {
-          this.rtpProbeAlerted = true;
-          if (txBytes === 0 && rxBytes === 0) {
-            this.log("error", "rtp probe verdict: NO MEDIA IN EITHER DIRECTION - ICE/SBC/network problem, not an audio-route problem");
-          } else if (txBytes === 0) {
-            this.log("error", "rtp probe verdict: NOTHING SENT (mic path dead or blocked outbound) while inbound flows");
-          } else if (rxBytes === 0) {
-            this.log("error", "rtp probe verdict: NOTHING RECEIVED (PBX/SBC not sending, or inbound blocked) while outbound flows");
-          } else {
-            this.log("log", "rtp probe verdict: MEDIA FLOWS BOTH WAYS - any remaining silence is OS audio rendering/route, not the network");
-          }
-        }
-      } catch (e: any) {
-        this.log("warn", `rtp probe sample failed: ${e?.message || e}`);
-      }
-    };
-    void sample();
-    this.rtpProbeTimer = setInterval(() => { void sample(); }, 5_000);
-  }
-
-  private stopRtpProbe(reason: string) {
-    if (!this.rtpProbeTimer) return;
-    clearInterval(this.rtpProbeTimer);
-    this.rtpProbeTimer = null;
-    this.log("log", `rtp probe stopped after ${this.rtpProbeTicks} sample(s) (${reason})`);
-  }
 
   private resetCall() {
-    this.stopRtpProbe("call reset");
     this.session = null;
-    // ring20 - an answer/decline intent only lives as long as the call it targets.
-    // Keeping it past the end of the call blocks every later REGISTER refresh (the
-    // ring15 guard fires with callState=idle) and jeopardises the NEXT inbound call.
-    // This is the primary purge; the one in guardedRegister() is the safety net for
-    // intents queued on a call that never reached resetCall().
+    // An answer/decline intent only lives as long as the call it targets:
+    // keeping it after the call ends blocks every later REGISTER refresh.
     this.pendingAnswer = null;
     this.pendingDecline = null;
-    // ring11 - the next call gets brand new tracks; drop the signature so the
-    // first attach of that call is not mistaken for a duplicate.
-    this.attachedAudioSignature = "";
-    if (this.audioEl) { try { this.audioEl.srcObject = null; } catch { /* noop */ } }
     this.update({
       callState: "idle",
       remoteIdentity: "",
@@ -1264,21 +878,6 @@ class PpSipProvider {
       muted: false,
       onHold: false,
     });
-    // ring14 - the call is over, registration hygiene may resume. This is the
-    // deferred half of the `unregistered during a live call` guard.
-    if (this.pendingReRegisterAfterCall) {
-      this.pendingReRegisterAfterCall = false;
-      this.log("log", "call ended - running the re-register deferred during the call");
-      setTimeout(() => {
-        try {
-          if (this.ua?.isConnected?.()) {
-            this.guardedRegister("deferred_after_call");
-          } else {
-            this.scheduleSocketReconnect("deferred_after_call_transport_down");
-          }
-        } catch { /* noop */ }
-      }, 800);
-    }
   }
 
 
@@ -1367,38 +966,6 @@ class PpSipProvider {
       });
       this.pendingAnswer = null;
       this.log("info", "200 OK sent (answer)", { withStream: !!mediaStream });
-      // ring14 - promote to "active" on the 200 OK instead of waiting for JsSIP's
-      // `confirmed` event (which needs the caller's ACK).
-      //
-      // The ring13 log proves the ACK can simply never arrive: 456 lines, four
-      // `callState:"ringing-in"`, zero `callState:"active"`, on a call whose
-      // `200 OK sent (answer) {withStream:true}` is right there. Everything keyed
-      // on "active" therefore stayed dormant - CallKit confirmation, the audio
-      // handover, the in-call UI - so the call was silent and CallKit kept
-      // ringing over it.
-      //
-      // We sent the 200 OK: from this side the call IS answered. `confirmed`
-      // remains wired and simply becomes a no-op refresh when the ACK does
-      // arrive; a genuine failure still surfaces through `failed`/`ended`.
-      if (this.snap.callState === "ringing-in") {
-        this.update({
-          callState: "active",
-          startedAt: this.snap.startedAt ?? Date.now(),
-          errorCause: undefined,
-        });
-        this.log("log", "callState -> active on the 200 OK (not waiting for the ACK)");
-      }
-      // ring14 - attach the remote audio right away too. It used to be wired only
-      // to `accepted`/`confirmed`, both of which depend on the caller's ACK; with
-      // no ACK the media path was never bound and the call stayed silent.
-      // attachRemoteAudio() is idempotent (track-signature guard), so the later
-      // `accepted`/`confirmed` handlers simply log a no-op.
-      setTimeout(() => { try { this.attachRemoteAudio(session.connection); } catch { /* noop */ } }, 150);
-      // ring19 - start measuring RTP as soon as we have answered. On this stack the
-      // caller's ACK may never arrive (see above), so we cannot wait for
-      // `confirmed` to begin instrumenting: that is precisely the silent case we
-      // need data on. startRtpProbe() is idempotent.
-      this.startRtpProbe("answered (200 OK sent)");
       return true;
     } catch (error) {
       this.log("error", "answer failed", error);
@@ -1424,17 +991,6 @@ class PpSipProvider {
   hasActiveCall(): boolean {
     return !!this.session && (this.snap.callState === "active" || this.snap.callState === "held");
   }
-  /**
-   * ring15 - True while an answer intent is queued and still valid, i.e. the user
-   * (or CallKit) already accepted a call whose INVITE has not landed yet. In that
-   * window callState is still "idle" and `session` is null, so every "is a call in
-   * progress" check based on callState answers NO and the transport gets recycled
-   * out from under the INVITE. Anything that tears down or re-registers the socket
-   * must consult this too.
-   */
-  hasPendingAnswerIntent(): boolean {
-    return !!this.pendingAnswer && this.pendingAnswer.expiresAt > Date.now();
-  }
   async iceRestart(): Promise<boolean> {
     const s = this.session;
     if (!s) return false;
@@ -1457,12 +1013,13 @@ class PpSipProvider {
    * rebuild the transport and wait for a REAL `registered` event.
    */
   async wakeForIncoming(callId?: string): Promise<boolean> {
-    // ring21 - le reveil push sert a demarrer PJSIP, pas a re-REGISTER la WebView.
+    // Le réveil push sert à démarrer PJSIP, pas à re-REGISTER la WebView.
     if (nativeOwnsAor()) {
       this.log("warn", "push wake ignored: native PJSIP owns the AOR");
       return false;
     }
     if (this.wakeInFlight) {
+
       this.log("info", "joining incoming wake already in flight");
       return this.wakeInFlight;
     }
@@ -1480,111 +1037,47 @@ class PpSipProvider {
     this.log("info", "push wake → transport check", {
       callId: callId ?? "", status: this.snap.status, socketLive: live,
     });
-
-    // ring13 - claim the AOR BEFORE anything else.
-    //
-    // This used to be called only after waitForRegistered(12s) resolved, which is
-    // far outside the native 1.5s grace window. The ring12 log shows the exact
-    // consequence: "declareJsOwnsAor(true)" followed by "push wake: JS did not
-    // claim the AOR in 1.5s -> native REGISTER as fallback". The native stack then
-    // re-registered the AOR and stole it back mid-ring, and since the native stack
-    // has no media plane the INVITE landing there is unanswerable. A push wake IS
-    // the moment JS takes ownership; there is nothing to wait for.
-    // ring21 - si PJSIP possede l'AOR, le JS ne le revendique jamais.
-    void declarePlanipretJsOwnsAor(!nativeOwnsAor());
-    // ring13 - THE fix for "it rings but the answer button does nothing".
-    //
-    // A live socket in `registered` state can already carry the INVITE: there is
-    // nothing to repair, and re-REGISTERing it is actively destructive. Observed
-    // in the ring12 log, in this exact order:
-    //
-    //   push wake -> transport check {status:"registered", socketLive:true}
-    //   priority REGISTER sent (push_wake)
-    //   incoming INVITE attached          <- the INVITE lands
-    //   unregistered on live transport - scheduling guarded re-register
-    //   registration failed: Connection Error
-    //   ws disconnected code=1001         <- socket dies, INVITE dies with it
-    //   [answer] tapped {sipCallState:"idle", sipCallId:null}
-    //   [answer] no inbound SIP INVITE available
-    //
-    // NetSapiens answers a REGISTER on an already-registered AOR by tearing down
-    // the older WSS leg (the same 1001 pattern as the historic double-socket bug).
-    // The dialog carrying the INVITE goes with it, so by the time the user taps
-    // Answer there is no session left - the button cannot possibly work.
-    //
-    // The successful call in the same log proves the inverse: when the INVITE
-    // arrived BEFORE the push, callState was already "ringing-in", the register was
-    // merely "promoted" instead of resetting the transport, and the answer sent a
-    // real 200 OK. That is precisely why it only worked with the app open.
-    if (live && this.snap.status === "registered") {
-      this.log("info", "push wake → transport already registered, no REGISTER needed (socket can carry the INVITE)");
-      if (this.pendingAnswer) this.pendingAnswer.expiresAt = Date.now() + PP_PENDING_ANSWER_TIMEOUT_MS;
-      return true;
+    // A suspended WKWebView can keep a stale `connected` flag after iOS has
+    // discarded the underlying socket. Once Answer is pending, only a fresh
+    // transport is trusted to receive the re-forked INVITE.
+    // ring16: a live socket must never be rebuilt while an answer is pending —
+    // that is what killed the INVITE in flight. Only a dead socket is rebuilt.
+    if (live) {
+      if (this.pendingAnswer) this.log("info", "push wake: live socket kept (answer pending)");
+      else this.guardedRegister("push_wake", { priority: true });
+    } else {
+      this.hardRebuild(this.pendingAnswer ? "push_answer_dead_transport" : "push_wake");
     }
-
-    if (live) this.guardedRegister("push_wake", { priority: true });
-    else this.hardRebuild("push_wake");
 
     let ok = await this.waitForRegistered(12_000);
     if (!ok && this.getSnapshot().callState !== "ringing-in") {
       this.log("warn", "push wake: still unregistered → hard rebuild retry");
       this.hardRebuild("push_wake_retry");
       ok = await this.waitForRegistered(12_000);
-      if (ok) void declarePlanipretJsOwnsAor(!nativeOwnsAor());
     }
-    // JsSIP could not register: hand ownership back so the native keep-alive can
-    // at least keep the phone ringing instead of dropping to voicemail.
-    if (!ok) void declarePlanipretJsOwnsAor(false);
     // A local REGISTER event can be stale while the PBX has no routable mobile
     // contact. Confirm the authoritative AOR before declaring wake successful.
     if (ok && this.getSnapshot().callState !== "ringing-in") {
       const backend = await checkSipBackendRegistration({ force: true, minIntervalMs: 0 });
-      // STRICT `=== false` ONLY. The backend now returns null when it could not
-      // read the PBX registrations at all; treating that as "not registered"
-      // triggered a hard transport rebuild while the portal actually showed the
-      // mobile AOR up, destroying the socket carrying the inbound INVITE.
-      // A `false` is only CREDIBLE when the probe actually read the AOR table.
-      // Observed in production: the function returned `mobile_registered:false`
-      // with `count:0` and `registered_aors:[]` while the PBX portal showed BOTH
-      // 113M and 113W registered. `count:0` means "read nothing", not "nothing is
-      // registered" — acting on it destroyed the socket carrying the INVITE.
-      const reg = backend?.registration;
-      const probeReadSomething = Number(reg?.count ?? 0) > 0;
-      const pbxSaysUnregistered = reg?.mobile_registered === false && probeReadSomething;
-      if (reg?.mobile_registered === false && !probeReadSomething) {
-        this.log("warn", "push wake: PBX says unregistered but probe read 0 AOR → NOT trusted", {
-          count: reg?.count ?? null, probeStatuses: reg?.probe_statuses ?? null,
-        });
-      }
-      // An answer intent in flight forbids any transport teardown: hardRebuild()
-      // destroys the UA, and an INVITE landing inside the swap window is lost.
-      const answerPending = !!this.pendingAnswer && this.pendingAnswer.expiresAt > Date.now();
-      if (pbxSaysUnregistered && answerPending) {
-        this.log("warn", "push wake: rebuild SKIPPED — answer intent in flight", {
-          callId: this.pendingAnswer?.callId ?? "",
-        });
-      }
-      // Re-check the ring state: the diagnostic round-trip takes seconds and an
-      // INVITE may have landed meanwhile. Never rebuild on top of a live ring.
-      if (pbxSaysUnregistered && !answerPending && this.getSnapshot().callState !== "ringing-in") {
+      if (backend?.registration?.mobile_registered === false) {
         this.log("warn", "push wake: local registered but PBX mobile AOR absent → rebuilding");
         this.hardRebuild("push_wake_pbx_unregistered");
         ok = await this.waitForRegistered(12_000);
         if (ok) {
           const verified = await checkSipBackendRegistration({ force: true, minIntervalMs: 0 });
-          const vr = verified?.registration;
-          // Same credibility rule: a `false` backed by an empty read must not
-          // demote a locally confirmed REGISTER to "wake failed".
-          ok = !(vr?.mobile_registered === false && Number(vr?.count ?? 0) > 0);
+          ok = verified?.registration?.mobile_registered !== false;
         }
-      } else if (backend?.registration?.mobile_registered == null) {
-        this.log("warn", "push wake: PBX registration unreadable → trusting local REGISTER", {
-          probeStatuses: backend?.registration?.probe_statuses ?? null,
-        });
       }
     }
     // The answer window only makes sense once the socket can carry an INVITE.
     if (this.pendingAnswer) this.pendingAnswer.expiresAt = Date.now() + PP_PENDING_ANSWER_TIMEOUT_MS;
+    // R5 (ring9): claim/release the shared 113M AOR on the native side so the
+    // keep-alive skips (or performs) its fallback REGISTER accordingly.
+    // Si PJSIP possède l'AOR, le JS ne le revendique jamais.
+    void import("./nativePpSipService")
+      .then((m) => m.declarePlanipretJsOwnsAor(ok && !nativeOwnsAor()))
+
+      .catch(() => undefined);
     this.log(ok ? "info" : "warn", `push wake → ${ok ? "registered" : "NOT registered"}`);
     return ok;
   }
@@ -1629,6 +1122,10 @@ class PpSipProvider {
 
   async forceReregister() {
     try {
+      if (["ringing-in", "ringing-out", "active", "held"].includes(this.snap.callState)) {
+        this.log("info", "force re-register skipped while SIP dialog is live", { callState: this.snap.callState });
+        return;
+      }
       const ua = this.ua;
       if (!ua) return;
       // Only cycle the registration when we actually hold one. Calling
@@ -1811,9 +1308,17 @@ class PpSipProvider {
   }
 
   /**
-   * ring21 - le moteur PJSIP natif vient de prendre l'AOR: liberer sur-le-champ
-   * la registration JsSIP. Sans cela NetSapiens voit deux contacts sur le meme
-   * AOR et ferme la branche native avec un WSS 1001.
+   * Background handoff: remove THIS WebView contact from NetSapiens before the
+   * OS suspends the WebSocket. A suspended socket keeps a dead contact bound to
+   * the extension, NS forks the inbound call to it, the fork fails instantly and
+   * the caller lands in voicemail. Removing it lets the native keep-alive
+   * registration (or the VoIP push) take the call instead.
+   */
+  /**
+   * Le moteur natif vient de revendiquer `<ext>M` : retirer immédiatement le
+   * Contact WebView (unregister ciblé, jamais `all:true`) puis arrêter l'UA.
+   * Sans cela NetSapiens voit deux contacts sur le même AOR et ferme la
+   * branche native avec un WSS 1001.
    */
   yieldAorToNative(): void {
     if (!this.ua) return;
@@ -1827,14 +1332,8 @@ class PpSipProvider {
     setTimeout(() => { try { this.stop(); } catch { /* noop */ } }, 250);
   }
 
-  /**
-   * Background handoff: remove THIS WebView contact from NetSapiens before the
-   * OS suspends the WebSocket. A suspended socket keeps a dead contact bound to
-   * the extension, NS forks the inbound call to it, the fork fails instantly and
-   * the caller lands in voicemail. Removing it lets the native keep-alive
-   * registration (or the VoIP push) take the call instead.
-   */
   async releaseForBackground(): Promise<void> {
+
     if (this.hasActiveCall() || this.snap.callState === "ringing-in" || this.snap.callState === "ringing-out") return;
     // Never drop the registration while an inbound call is being answered.
     if (this.pendingAnswer && this.pendingAnswer.expiresAt > Date.now()) {
@@ -1848,7 +1347,6 @@ class PpSipProvider {
 
   stop(options: { preserveCallIntent?: boolean } = {}) {
     this.stopKeepAlive();
-    this.stopRtpProbe("provider stop");
     if (this.wsRetryTimer) { clearTimeout(this.wsRetryTimer); this.wsRetryTimer = null; }
     if (this.wsWatchdogTimer) { clearTimeout(this.wsWatchdogTimer); this.wsWatchdogTimer = null; }
     if (this.reconnectVerifyTimer) { clearTimeout(this.reconnectVerifyTimer); this.reconnectVerifyTimer = null; }

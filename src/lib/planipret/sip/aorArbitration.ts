@@ -69,6 +69,10 @@ export function claimAorForNative(username?: string | null, reason = "native_eng
 
 /** Le natif rend l'AOR (plugin absent, binaire manquant, échec définitif). */
 export function releaseAorFromNative(reason = "native_unavailable"): void {
+  clearWatchdog();
+  // Purge INCONDITIONNELLE de la persistance : un preclaim périmé en
+  // sessionStorage réactivait le skip du chemin legacy au reload suivant.
+  purgePersistedOwner();
   if (owner !== "native") return;
   owner = "js";
   persist();
@@ -81,6 +85,11 @@ function persist() {
   try {
     window.sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ owner, username: ownedUsername }));
   } catch { /* mode privé */ }
+}
+
+function purgePersistedOwner() {
+  if (!isBrowser) return;
+  try { window.sessionStorage.removeItem(STORAGE_KEY); } catch { /* noop */ }
 }
 
 function restore() {
@@ -96,19 +105,123 @@ function restore() {
   } catch { /* noop */ }
 }
 
+/* ------------------------------------------------------------------ *
+ * Interrupteur persistant `pp_pjsip_enabled` (défaut true)
+ * ------------------------------------------------------------------ */
+
+export const PP_PJSIP_ENABLED_KEY = "pp_pjsip_enabled";
+
+/** Lecture synchrone (localStorage) — utilisée avant le preclaim. */
+export function isPjsipEnabled(): boolean {
+  if (!isBrowser) return true;
+  try {
+    return window.localStorage.getItem(PP_PJSIP_ENABLED_KEY) !== "false";
+  } catch {
+    return true;
+  }
+}
+
+/** Écrit localStorage + Preferences (survit au redémarrage de l'app). */
+export async function setPjsipEnabled(enabled: boolean): Promise<void> {
+  try { window.localStorage.setItem(PP_PJSIP_ENABLED_KEY, enabled ? "true" : "false"); } catch { /* noop */ }
+  try {
+    const { Preferences } = await import("@capacitor/preferences");
+    await Preferences.set({ key: PP_PJSIP_ENABLED_KEY, value: enabled ? "true" : "false" });
+  } catch { /* noop */ }
+  if (!enabled) releaseAorFromNative("pp_pjsip_enabled=false");
+}
+
+/** Recharge la valeur persistée native vers localStorage au démarrage. */
+export async function hydratePjsipEnabled(): Promise<boolean> {
+  try {
+    const { Preferences } = await import("@capacitor/preferences");
+    const { value } = await Preferences.get({ key: PP_PJSIP_ENABLED_KEY });
+    if (value === "false" || value === "true") {
+      try { window.localStorage.setItem(PP_PJSIP_ENABLED_KEY, value); } catch { /* noop */ }
+      if (value === "false") releaseAorFromNative("pp_pjsip_enabled=false");
+      return value === "true";
+    }
+  } catch { /* noop */ }
+  return isPjsipEnabled();
+}
+
+/* ------------------------------------------------------------------ *
+ * Chien de garde : PJSIP doit être `registered` dans les 20 s
+ * ------------------------------------------------------------------ */
+
+const WATCHDOG_MS = 20_000;
+let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
+
+function clearWatchdog() {
+  if (watchdogTimer) { clearTimeout(watchdogTimer); watchdogTimer = null; }
+}
+
+/**
+ * Armé à chaque claim : si l'état natif n'est pas "registered" 20 s plus tard,
+ * l'AOR est restitué à JsSIP pour que l'appel entrant reste décrochable.
+ */
+export function armAorWatchdog(isRegistered: () => boolean): void {
+  clearWatchdog();
+  watchdogTimer = setTimeout(() => {
+    watchdogTimer = null;
+    if (owner !== "native") return;
+    let registered = false;
+    try { registered = !!isRegistered(); } catch { registered = false; }
+    if (registered) return;
+    console.warn("[AOR] watchdog: PJSIP failed to register in 20s → releasing to JsSIP");
+    releaseAorFromNative("watchdog_no_register_20s");
+  }, WATCHDOG_MS);
+}
+
+export function cancelAorWatchdog(): void { clearWatchdog(); }
+
 /**
  * Pré-revendication au chargement : sur iOS/Android avec le plugin PJSIP
- * embarqué, le natif est propriétaire par défaut. Cela ferme la fenêtre de
- * course pendant laquelle JsSIP démarrait un UA et REGISTER-ait `<ext>M`.
+ * réellement LIÉ (isEngineLinked === true), le natif est propriétaire par
+ * défaut. Cela ferme la fenêtre de course pendant laquelle JsSIP démarrait un
+ * UA et REGISTER-ait `<ext>M`.
+ *
+ * `isEngineLinked` est vérifié de façon asynchrone juste après : si le binaire
+ * PJSIP n'est pas dans l'app, l'AOR est immédiatement rendu à JsSIP.
  */
 export function preclaimNativeAor(): boolean {
   restore();
+  if (!isPjsipEnabled()) {
+    releaseAorFromNative("pp_pjsip_enabled=false");
+    return false;
+  }
   try {
     if (!Capacitor.isNativePlatform()) return nativeOwnsAor();
-    if (!Capacitor.isPluginAvailable("PpPjsip")) return nativeOwnsAor();
+    if (!Capacitor.isPluginAvailable("PpPjsip")) {
+      releaseAorFromNative("plugin_not_available");
+      return false;
+    }
   } catch {
-    return nativeOwnsAor();
+    releaseAorFromNative("plugin_probe_failed");
+    return false;
   }
   claimAorForNative(null, "preclaim_native_plugin");
+  void verifyEngineLinked();
   return true;
 }
+
+/** Vérifie que le module pjsua est bien compilé dans le binaire. */
+export async function verifyEngineLinked(): Promise<boolean> {
+  try {
+    const { registerPlugin } = await import("@capacitor/core");
+    const plugin = registerPlugin<{ isEngineLinked(): Promise<{ linked: boolean }> }>("PpPjsip");
+    const res = await plugin.isEngineLinked();
+    if (res?.linked) return true;
+    console.warn("[AOR] isEngineLinked=false → PJSIP absent du binaire");
+    releaseAorFromNative("engine_not_linked");
+    return false;
+  } catch (e) {
+    console.warn("[AOR] isEngineLinked indisponible → restitution à JsSIP", e);
+    releaseAorFromNative("engine_link_probe_failed");
+    return false;
+  }
+}
+
+// Hydratation de l'interrupteur persistant (non bloquante).
+void hydratePjsipEnabled();
+

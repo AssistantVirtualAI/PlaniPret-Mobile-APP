@@ -63,7 +63,7 @@ const fmtTime = (iso: string, lang: "fr" | "en" = "fr", t?: (key: string) => str
 
 export default function MMessages() {
   const { t, lang } = useMplanipretLang();
-  const { profile, openDialer, registerRefresh, reloadProfile } = useOutletContext<PlanipretMobileContext>();
+  const { profile, openDialer, registerRefresh } = useOutletContext<PlanipretMobileContext>();
   const [searchParams] = useSearchParams();
   const initialTab = ((): SubTab => {
     const q = searchParams.get("tab");
@@ -139,8 +139,8 @@ export default function MMessages() {
       <div className="flex-1 overflow-hidden">
         {sub === "sms" && <SmsList profile={profile} openDialer={openDialer} registerRefresh={registerRefresh} initialTo={qTo} />}
         {sub === "team" && <TeamChat profile={profile} />}
-        {sub === "teams365" && <Teams365Panel profile={profile} reloadProfile={reloadProfile} />}
-        {sub === "emails" && <EmailsList profile={profile} initialTo={qTo} initialName={qName} reloadProfile={reloadProfile} />}
+        {sub === "teams365" && <Teams365Panel profile={profile} />}
+        {sub === "emails" && <EmailsList profile={profile} initialTo={qTo} initialName={qName} />}
         {sub === "history" && <EmailHistoryList />}
       </div>
     </div>
@@ -935,12 +935,12 @@ function TeamChat({ profile }: { profile: any }) {
 // ============================================================
 // EMAILS TAB (M365)
 // ============================================================
-export function EmailsList({ profile, initialTo, initialName, reloadProfile }: { profile: any; initialTo?: string; initialName?: string; reloadProfile?: () => void | Promise<void> }) {
+export function EmailsList({ profile, initialTo, initialName }: { profile: any; initialTo?: string; initialName?: string }) {
   const { t, lang } = useMplanipretLang();
   const PAGE_SIZE = 25;
   const [emails, setEmails] = useState<any[] | null>(null);
   const [state, setState] = useState<"loading" | "ready" | "no_m365" | "error">("loading");
-  const { state: ms365State, errorMessage: ms365ErrorMessage } = useMs365Status(profile, reloadProfile);
+  const { state: ms365State, errorMessage: ms365ErrorMessage } = useMs365Status(profile);
   const [active, setActive] = useState<any | null>(null);
   const [composeOpen, setComposeOpen] = useState(false);
   const [composeInit, setComposeInit] = useState<{ to?: string; subject?: string; body?: string }>({});
@@ -2003,13 +2003,13 @@ function saveTeamsCache(payload: any) {
   try { sessionStorage.setItem(TEAMS_CACHE_KEY, JSON.stringify({ ...payload, cachedAt: Date.now() })); } catch { /* */ }
 }
 
-function Teams365Panel({ profile, reloadProfile }: { profile: any; reloadProfile?: () => void | Promise<void> }) {
+function Teams365Panel({ profile }: { profile: any }) {
   const [innerTab, setInnerTab] = useState<Teams365SubTab>("active");
   const cached = loadTeamsCache();
   const [loading, setLoading] = useState(!cached);
   const [refreshing, setRefreshing] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const { state: teamsMs365State, errorMessage: teamsMs365Error } = useMs365Status(profile, reloadProfile);
+  const { state: teamsMs365State, errorMessage: teamsMs365Error } = useMs365Status(profile);
   const [diag, setDiag] = useState<any>(cached?.diagnostics ?? {});
   const [chats, setChats] = useState<any[]>(cached?.chats ?? []);
   const [teams, setTeams] = useState<any[]>(cached?.teams ?? []);

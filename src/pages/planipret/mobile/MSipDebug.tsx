@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { ppSipProvider, type PpSipEvent, type PpSipSnapshot } from "@/lib/planipret/sip/ppSipProvider";
 import { exportSipStability, getSipStabilityReport, resetSipStability } from "@/lib/planipret/sip/sipStabilityMonitor";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import { isPjsipEnabled, nativeOwnsAor, setPjsipEnabled } from "@/lib/planipret/sip/aorArbitration";
 import { runPjsipRegisterProbe, PJSIP_PROBE_PORT, PJSIP_PROBE_SERVER, type PjsipProbeResult } from "@/lib/native/PpPjsipProbe";
 
 const STAGES = ["idle", "connecting", "connected", "registered"] as const;
@@ -115,10 +116,14 @@ export default function MSipDebug() {
       </section>
 
 
-      {/* Sonde PJSIP native — declenchement MANUEL uniquement */}
+      {/* 24h stability soak */}
+      {/* Interrupteur PJSIP (sans rebuild) */}
+      <PjsipToggleCard />
+
+      {/* Sonde PJSIP native (manuelle) */}
       <PjsipProbeCard />
 
-      {/* 24h stability soak */}
+
       <StabilityCard />
 
       {/* Event log */}
@@ -145,66 +150,6 @@ export default function MSipDebug() {
         )}
       </section>
     </div>
-  );
-}
-
-function PjsipProbeCard() {
-  const [running, setRunning] = useState(false);
-  const [mode, setMode] = useState<"probe" | "real" | null>(null);
-  const [res, setRes] = useState<PjsipProbeResult | null>(null);
-  // L'AOR de test <ext>MPROBE n'existe pas dans NetSapiens : elle reçoit un
-  // 403 Forbidden sans challenge 401, donc elle ne peut PAS valider
-  // l'authentification digest. Seule l'AOR de production le permet, au prix
-  // d'une interruption de 2 à 3 s de l'enregistrement JsSIP.
-  const run = async (useRealAor: boolean) => {
-    setRunning(true);
-    setMode(useRealAor ? "real" : "probe");
-    setRes(null);
-    try {
-      const out = await runPjsipRegisterProbe({ useRealAor });
-      setRes(out);
-      if (out.ok) toast.success(`PJSIP REGISTER ${out.code} ${out.reason}`);
-      else toast.error(`PJSIP: ${out.reason}`);
-    } finally {
-      setRunning(false);
-      setMode(null);
-    }
-  };
-  const color = res ? (res.ok ? "#10B981" : "#EF4444") : "#94A3B8";
-  return (
-    <section className="pp-card p-4 space-y-3">
-      <div className="flex items-center gap-2">
-        <Radio className="w-4 h-4" style={{ color }} />
-        <span className="font-bold text-sm" style={{ color: "var(--pp-text-primary)" }}>Sonde PJSIP native (TLS)</span>
-      </div>
-      <p className="text-[11px]" style={{ color: "var(--pp-text-secondary)" }}>
-        REGISTER natif vers {PJSIP_PROBE_SERVER}:{PJSIP_PROBE_PORT}. La sonde sur AOR de
-        test (&lt;ext&gt;PROBE) n'affecte pas l'enregistrement actif, mais NetSapiens la
-        refuse par un 403 sans challenge : elle ne valide donc pas l'authentification.
-        La sonde sur AOR réelle est la seule concluante ; elle interrompt JsSIP 2 à 3 s
-        puis le relance automatiquement.
-      </p>
-      {res && (
-        <div className="text-[11px] font-mono p-2 rounded" style={{ background: "var(--pp-bg-elevated)", color }}>
-          {res.aor ? <div className="opacity-70">{res.aor}</div> : null}
-          <div>{res.code ? `SIP ${res.code} — ` : ""}{res.reason}{res.elapsedMs ? ` (${res.elapsedMs} ms)` : ""}</div>
-        </div>
-      )}
-      <button onClick={() => run(false)} disabled={running}
-        className="w-full py-1.5 rounded-lg text-[11px] font-semibold disabled:opacity-60"
-        style={{ background: "var(--pp-brand-accent)", color: "#fff" }}>
-        {running && mode === "probe" ? "REGISTER en cours…" : "Sonde sur AOR de test (sans impact)"}
-      </button>
-      <button onClick={() => run(true)} disabled={running}
-        className="w-full py-1.5 rounded-lg text-[11px] font-semibold disabled:opacity-60"
-        style={{ background: "#B45309", color: "#fff" }}>
-        {running && mode === "real" ? "REGISTER sur AOR réelle…" : "Sonde sur AOR réelle (coupe JsSIP 2-3 s)"}
-      </button>
-      <p className="text-[10px]" style={{ color: "var(--pp-text-secondary)" }}>
-        Ne pas lancer la sonde sur AOR réelle pendant un appel : elle relâche
-        l'enregistrement le temps du test.
-      </p>
-    </section>
   );
 }
 
@@ -242,6 +187,116 @@ function StabilityCard() {
           {t("screens.sipDebug.startNewTest")}
         </button>
       </div>
+    </section>
+  );
+}
+
+/** Sonde PJSIP native — REGISTER TLS 5061, déclenchement manuel uniquement. */
+const PJSIP_PROBE_LAST_OK_KEY = "pp.pjsip.probe.last-ok.v1";
+
+function PjsipProbeCard() {
+  const [running, setRunning] = useState(false);
+  const [res, setRes] = useState<PjsipProbeResult | null>(null);
+  const [lastOk, setLastOk] = useState<string | null>(() => {
+    try { return localStorage.getItem(PJSIP_PROBE_LAST_OK_KEY); } catch { return null; }
+  });
+
+  const run = async () => {
+    setRunning(true);
+    setRes(null);
+    try {
+      const out = await runPjsipRegisterProbe();
+      setRes(out);
+      // Validation stricte : seul un 200 OK sur le transport TLS compte.
+      const validated = out.ok && out.code === 200 && out.transport === "TLS";
+      if (validated) {
+        const stamp = new Date().toISOString();
+        try { localStorage.setItem(PJSIP_PROBE_LAST_OK_KEY, stamp); } catch { /* noop */ }
+        setLastOk(stamp);
+        toast.success(`PJSIP validé — REGISTER 200 OK en TLS ${PJSIP_PROBE_PORT} (${out.elapsedMs ?? "?"} ms)`);
+      } else if (out.ok) {
+        toast.error(`PJSIP: réponse ${out.code ?? "?"} sur ${out.transport ?? "?"} — attendu 200 OK / TLS`);
+      } else {
+        toast.error(`PJSIP: ${out.reason}`);
+      }
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const validated = !!res && res.ok && res.code === 200 && res.transport === "TLS";
+  const color = res ? (validated ? "#10B981" : "#EF4444") : "#94A3B8";
+
+  return (
+    <section className="pp-card p-4 space-y-3">
+      <div className="flex items-center gap-2">
+        <Radio className="w-4 h-4" style={{ color }} />
+        <span className="font-bold text-sm" style={{ color: "var(--pp-text-primary)" }}>Sonde PJSIP native (TLS)</span>
+      </div>
+      <p className="text-[11px]" style={{ color: "var(--pp-text-secondary)" }}>
+        REGISTER natif vers {PJSIP_PROBE_SERVER}:{PJSIP_PROBE_PORT} sur une AOR de test
+        (&lt;ext&gt;PROBE). N'affecte pas l'enregistrement actif.
+      </p>
+      {res && (
+        <div className="text-[11px] font-mono p-2 rounded space-y-1" style={{ background: "var(--pp-bg-elevated)", color }}>
+          {res.aor ? <div className="opacity-70">{res.aor}</div> : null}
+          <div>{res.code ? `SIP ${res.code} — ` : ""}{res.reason}{res.elapsedMs ? ` (${res.elapsedMs} ms)` : ""}</div>
+          <div className="font-bold">
+            {validated
+              ? `✅ VALIDÉ — 200 OK en TLS ${PJSIP_PROBE_PORT}`
+              : `❌ NON VALIDÉ — attendu 200 OK en TLS ${PJSIP_PROBE_PORT}`}
+          </div>
+        </div>
+      )}
+      {lastOk && !res && (
+        <div className="text-[11px]" style={{ color: "#10B981" }}>
+          Dernière validation TLS 5061 : {new Date(lastOk).toLocaleString("fr-CA")}
+        </div>
+      )}
+      <button onClick={run} disabled={running}
+        className="w-full py-1.5 rounded-lg text-[11px] font-semibold disabled:opacity-60"
+        style={{ background: "var(--pp-brand-accent)", color: "#fff" }}>
+        {running ? "REGISTER en cours…" : "Lancer la sonde PJSIP"}
+      </button>
+    </section>
+  );
+}
+
+/**
+ * Interrupteur persistant `pp_pjsip_enabled` : permet de désactiver le moteur
+ * PJSIP natif (repli JsSIP) sans recompiler l'application.
+ */
+function PjsipToggleCard() {
+  const [enabled, setEnabled] = useState<boolean>(() => isPjsipEnabled());
+  const [owner, setOwner] = useState<string>(() => (nativeOwnsAor() ? "PJSIP (natif)" : "JsSIP (legacy)"));
+
+  useEffect(() => {
+    const tick = setInterval(() => setOwner(nativeOwnsAor() ? "PJSIP (natif)" : "JsSIP (legacy)"), 2000);
+    return () => clearInterval(tick);
+  }, []);
+
+  const toggle = async () => {
+    const next = !enabled;
+    setEnabled(next);
+    await setPjsipEnabled(next);
+    toast.success(next ? "PJSIP activé (redémarrer l'app)" : "PJSIP désactivé — repli JsSIP actif");
+  };
+
+  return (
+    <section className="pp-card p-3 space-y-2">
+      <div className="flex items-center justify-between">
+        <span className="font-bold text-sm" style={{ color: "var(--pp-text-primary)" }}>Moteur PJSIP natif</span>
+        <button
+          onClick={toggle}
+          className="text-[11px] font-bold px-3 py-1.5 rounded-lg"
+          style={{ background: enabled ? "#10B981" : "#94A3B8", color: "#fff" }}
+        >
+          {enabled ? "Activé" : "Désactivé"}
+        </button>
+      </div>
+      <p className="text-[11px]" style={{ color: "var(--pp-text-secondary)" }}>
+        Propriétaire de l'AOR : <span className="font-bold">{owner}</span> — clé <code>pp_pjsip_enabled</code>
+      </p>
     </section>
   );
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import { loadBriefCache, saveBriefCache, isBriefFresh } from "@/lib/planipret/avaBriefCache";
 
 import { useOutletContext, useNavigate } from "react-router-dom";
@@ -70,6 +70,22 @@ export default function MHome() {
     useOutletContext<PlanipretMobileContext>();
   const navigate = useNavigate();
 
+  // Native SIP registration state (PJSIP). Falls back to "rest" when the
+  // native engine isn't available — the REST click-to-call path still works.
+  const [sipStatus, setSipStatus] = useState<"registered" | "rest" | "error">("rest");
+  const [sipExtension, setSipExtension] = useState<string | null>(null);
+  useEffect(() => {
+    const handler = (e: any) => {
+      const d = e?.detail ?? {};
+      setSipStatus(d.registered ? "registered" : d.state === "failed" ? "error" : "rest");
+      setSipExtension(d.extension ?? d.username ?? null);
+    };
+    window.addEventListener("sip-registration-state", handler);
+    return () => window.removeEventListener("sip-registration-state", handler);
+  }, []);
+
+
+
   const [period, setPeriod] = useState<Period>(() => {
     try {
       const saved = localStorage.getItem("pp.mobile.period.v2") as Period | null;
@@ -89,10 +105,9 @@ export default function MHome() {
   const [statsLoading, setStatsLoading] = useState(true);
   const [brief, setBrief] = useState<any | null>(null);
   const [briefLoading, setBriefLoading] = useState(false);
-  const [briefAt, setBriefAt] = useState<number | null>(null);
   const [briefErr, setBriefErr] = useState<string | null>(null);
+  const [briefAt, setBriefAt] = useState<number | null>(null);
   const briefInFlight = useRef(false);
-
 
 
   useMaestroPipelineToasts(profile?.user_id);
@@ -282,8 +297,15 @@ export default function MHome() {
     saveBriefCache(profile?.user_id, period, data, lang);
   };
 
-  useEffect(() => { loadStats(); loadBrief(false); /* eslint-disable-next-line */ }, [profile?.user_id, period]);
 
+  useEffect(() => { loadStats(); loadBrief(false); /* eslint-disable-next-line */ }, [profile?.user_id, period]);
+  // Regenerate the brief in the language selected in the app.
+  const firstLangRun = useRef(true);
+  useEffect(() => {
+    if (firstLangRun.current) { firstLangRun.current = false; return; }
+    loadBrief(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lang]);
   useEffect(() => {
     registerRefresh(async () => { await Promise.all([loadStats(), loadBrief(true)]); });
     return () => registerRefresh(null);
@@ -540,18 +562,23 @@ export default function MHome() {
         loading={msCalendarLoading}
         error={msCalendarError}
         lang={lang}
-        reloadProfile={reloadProfile}
       />
 
-      {/* ===== SIP DEBUG SHORTCUT ===== */}
+      {/* ===== SIP STATUS + DEBUG SHORTCUT ===== */}
       <button
         type="button"
         onClick={() => navigate("/mplanipret/sip-debug")}
         className="w-full flex items-center gap-2 px-3 py-2 rounded-xl active:scale-[0.99] transition"
         style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
       >
-        <span className="w-2 h-2 rounded-full" style={{ background: "#10B981" }} />
-        <span className="text-[12px] font-semibold flex-1 text-left">{t("screens.home.sipDebugTitle")}</span>
+        <span className="w-2 h-2 rounded-full" style={{ background: sipStatus === "error" ? "#EF4444" : "#10B981" }} />
+        <span className="text-[12px] font-semibold flex-1 text-left">
+          {sipStatus === "registered"
+            ? `En ligne — Ext ${sipExtension ?? ""}`.trim()
+            : sipStatus === "error"
+              ? "Hors ligne"
+              : "Prête (REST)"}
+        </span>
         <span className="text-[10px] opacity-70">{t("screens.home.open")}</span>
       </button>
 
@@ -687,16 +714,15 @@ function Kpi({ icon, value, label, accent, pulse, onClick }: {
   );
 }
 
-function MsCalendarSection({ profile, events, loading, error, lang, reloadProfile }: {
+function MsCalendarSection({ profile, events, loading, error, lang }: {
   profile: any; events: any[]; loading: boolean; error: string | null; lang: string;
-  reloadProfile?: () => void | Promise<void>;
 }) {
   const { t } = useMplanipretLang();
   const today = new Date(); today.setHours(0,0,0,0);
   const [cursor, setCursor] = useState(() => { const d=new Date(); d.setDate(1); d.setHours(0,0,0,0); return d; });
   const [selected, setSelected] = useState<Date>(today);
   const [showCreate, setShowCreate] = useState(false);
-  const { state: ms365Status, errorMessage: ms365StatusError } = useMs365Status(profile, reloadProfile);
+  const { state: ms365Status, errorMessage: ms365StatusError } = useMs365Status(profile);
 
   const locale = lang === "en" ? "en-CA" : "fr-CA";
 
