@@ -183,7 +183,6 @@ export default function MCalls() {
   const [visibleCount, setVisibleCount] = useState(25);
   const [degraded, setDegraded] = useState<{ active: boolean; reason?: string; reopens_at?: number | null }>({ active: false });
   const recordingsSyncingRef = useRef(false);
-  const callsRefreshDebounceRef = useRef<number | null>(null);
 
   const userId = profile?.id ?? profile?.user_id;
   const profileAuthId = profile?.user_id;
@@ -258,8 +257,17 @@ export default function MCalls() {
         } as Call;
       });
 
+      // Les appels locaux sans CDR NS (ex. manqués PJSIP, délai NS 30-60 s)
+      // doivent rester visibles : on les fusionne au lieu de les ignorer.
+      const mergedIds = new Set(merged.map((m: any) => m.id));
+      const localOnly = (local ?? []).filter((r: any) => !r.ns_call_id && !mergedIds.has(r.id)) as Call[];
+      const all = [...merged, ...localOnly].sort(
+        (a: any, b: any) => new Date(b.started_at ?? 0).getTime() - new Date(a.started_at ?? 0).getTime()
+      );
+
       // Fallback : si NS ne renvoie rien, montrer le cache local
-      setCalls(merged.length ? merged : ((local ?? []) as Call[]));
+      setCalls(all.length ? all : ((local ?? []) as Call[]));
+
     } catch (e: any) {
       console.error("[pp-ns-cdr] list failed", e);
       toast.error(e?.message ?? "Échec chargement CDR");
@@ -347,17 +355,23 @@ export default function MCalls() {
   // are still missing audio or transcript, then relax to 60s once everything
   // is settled.
   useEffect(() => {
+    // Only poll when recordings tab is open AND some items are still pending.
+    // Start at 30s (not 5s) to avoid constant refreshes.
     if (tab !== "recordings" || !userId) return;
+    const allSettled = recordings.length > 0 && recordings.every((r: any) =>
+      (r.recording_url || r.has_recording) && (r.transcript || r.ai_summary)
+    );
+    if (allSettled) return; // nothing pending — no polling needed
     let cancelled = false;
     let timer: number | null = null;
-    let delay = 5_000;
+    let delay = 30_000; // start at 30s
     const tick = async () => {
       await loadRecordings(true);
       if (cancelled) return;
       const pending = recordings.some((r: any) =>
         !r.recording_url || !r.has_recording || (!r.transcript && !r.ai_summary)
       );
-      delay = pending ? Math.min(delay * 2, 60_000) : 60_000;
+      delay = pending ? Math.min(delay * 2, 120_000) : 120_000; // max 2min
       timer = window.setTimeout(tick, delay);
     };
     timer = window.setTimeout(tick, delay);
@@ -374,26 +388,10 @@ export default function MCalls() {
   }, [load, loadRecordings, registerRefresh]);
 
 
-  // Realtime updates on phone_calls (for new entries + auto-refresh recordings)
-  useEffect(() => {
-    if (!userId) return;
-    const ch = supabase
-      .channel(`planipret-calls:${userId}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "planipret_phone_calls" }, (payload: any) => {
-        const row = payload?.new ?? payload?.old ?? {};
-        if (row.user_id && row.user_id !== userId && row.user_id !== profileAuthId && row.extension !== profileExtension) return;
-        if (callsRefreshDebounceRef.current) window.clearTimeout(callsRefreshDebounceRef.current);
-        callsRefreshDebounceRef.current = window.setTimeout(() => {
-          void load();
-          if (tab === "recordings") void loadRecordings();
-        }, 1_000);
-      })
-      .subscribe();
-    return () => {
-      if (callsRefreshDebounceRef.current) window.clearTimeout(callsRefreshDebounceRef.current);
-      supabase.removeChannel(ch);
-    };
-  }, [userId, profileAuthId, profileExtension, tab, load, loadRecordings]);
+  // Auto-refresh on phone_calls changes is intentionally disabled so the
+  // call history stays stable while the user scrolls. Use the manual refresh
+  // button or pull-to-refresh to reload the list.
+
 
   const missedCount = useMemo(() => calls.filter(isMissed).length, [calls]);
 
@@ -525,7 +523,7 @@ export default function MCalls() {
       </div>
 
       {/* Body */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain">
         {tab === "recordings" ? (
 
           <>
@@ -598,7 +596,7 @@ export default function MCalls() {
                             {header}
                           </div>
                         )}
-                        <CallRow call={c} onTap={() => setSelected(c)} onCall={() => openDialer(otherNumber(c))} showCallBtn={tab === "missed"} />
+                        <CallRow call={c} onTap={() => setSelected(c)} onCall={() => openDialer(otherNumber(c), true)} showCallBtn={tab === "missed"} />
                       </div>
                     );
                   })}
@@ -1039,7 +1037,7 @@ function ClaudeCoachingBlock({ analysis, coachingScore }: { analysis: any; coach
 function CallDetailSheet({
   call, userId, onClose, openDialer, onUpdated,
 }: {
-  call: Call; userId: string; onClose: () => void; openDialer: (n?: string) => void; onUpdated: (c: Call) => void;
+  call: Call; userId: string; onClose: () => void; openDialer: (n?: string, autoDial?: boolean) => void; onUpdated: (c: Call) => void;
 }) {
   const { t, lang } = useMplanipretLang();
   const [insight, setInsight] = useState<Insight | null>(null);
@@ -1311,7 +1309,7 @@ function CallDetailSheet({
           </div>
           <div className="mt-3 flex gap-2">
             <button
-              onClick={() => { openDialer(otherNumber(call)); onClose(); }}
+              onClick={() => { openDialer(otherNumber(call), true); onClose(); }}
               className="flex-1 py-2 rounded-xl text-white text-sm font-semibold flex items-center justify-center gap-2"
               style={{ background: "linear-gradient(135deg, var(--pp-brand-accent-2), var(--pp-brand-accent))" }}
             >
@@ -1941,7 +1939,7 @@ function VoicemailsTab({
     <div className="px-3 pt-3 pb-4">
       {/* ElevenLabs Greeting Studio — text → voice → push to voicemail box */}
       {profile && (
-        <div className="mb-3 rounded-2xl overflow-hidden"
+        <div className={`mb-3 rounded-2xl ${studioOpen ? "overflow-visible" : "overflow-hidden"}`}
           style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)" }}>
           <button
             onClick={() => setStudioOpen((v) => !v)}
@@ -1962,7 +1960,7 @@ function VoicemailsTab({
             <div style={{ color: "var(--pp-text-muted)", fontSize: 18 }}>{studioOpen ? "−" : "+"}</div>
           </button>
           {studioOpen && (
-            <div style={{ borderTop: "1px solid var(--pp-bg-border-2)" }}>
+            <div className="min-h-0 overflow-visible" style={{ borderTop: "1px solid var(--pp-bg-border-2)" }}>
               <GreetingStudio profile={profile} onProfileChange={reloadProfile as any} />
             </div>
           )}

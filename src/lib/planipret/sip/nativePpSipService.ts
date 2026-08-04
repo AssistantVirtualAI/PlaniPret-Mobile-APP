@@ -33,11 +33,10 @@ type PpSipKeepAlivePlugin = {
   requestBatteryOptimizationExemption?: () => Promise<PpNativeSipStatus>;
   triggerReregister?: () => Promise<PpNativeSipStatus>;
   acknowledgeIncoming?: () => Promise<{ ok: boolean }>;
-  declareJsOwnsAor?: (opts: { owns: boolean }) => Promise<{ ok: boolean }>;
-  /** ring21 — le moteur PJSIP natif possède l'AOR : coupe la socket WSS. */
-  declareNativeEngineOwnsAor?: (opts: { owns: boolean }) => Promise<{ ok: boolean }>;
   wakeForIncomingCall?: (opts?: { reason?: string }) => Promise<PpNativeSipStatus>;
   setCallActive?: (opts: { active: boolean }) => Promise<PpNativeSipStatus>;
+  declareJsOwnsAor?: (opts: { owns: boolean }) => Promise<PpNativeSipStatus>;
+  declareNativeEngineOwnsAor?: (opts: { owns: boolean }) => Promise<PpNativeSipStatus>;
   addListener?: (
     event: "sipServiceStatus" | "sipReregisterRequested" | "sipIncomingInvite",
     cb: (data: any) => void,
@@ -55,7 +54,9 @@ type PpVoipCallPlugin = {
       | "voipPushTokenInvalidated"
       | "incomingCallAnswered"
       | "incomingCallRejected"
-      | "callKitReady",
+      | "callKitReady"
+      | "audioSessionActivated"
+      | "audioSessionDeactivated",
     cb: (data: any) => void,
   ) => Promise<ListenerHandle>;
 };
@@ -142,23 +143,17 @@ export async function onPlanipretIncomingCallRejected(cb: (data: { callUUID: str
   return addDedupedCapListener("PpVoipCall", NativePpVoipCall, "incomingCallRejected", (data: any) => cb(data ?? {}));
 }
 
-/**
- * ring16 - Fired from CXProviderDelegate.provider(_:didActivate:), the single
- * moment iOS hands us a usable audio route for a CallKit call.
- *
- * This matters because WebKit suspends its audio pipeline while AVAudioSession
- * has no output route, and does not resume by itself when the route appears.
- * Log 138: outputs=[Receiver] inputs=[MicrophoneBuiltIn] sr=48000 yet the call
- * was silent both ways, with "beginInterruption but session is already
- * interrupted!" recorded just before. The web layer must explicitly restart
- * playback and re-enable the tracks on this signal.
- */
-export async function onPlanipretAudioSessionActivated(
-  cb: (data: { outputs?: string; inputs?: string; sampleRate?: number }) => void,
-): Promise<() => void> {
-  if (platform() !== "ios") return () => undefined;
-  return addDedupedCapListener("PpVoipCall", NativePpVoipCall, "audioSessionActivated", (data: any) => cb(data ?? {}));
+// ring17: CallKit owns the AVAudioSession. The microphone track is only
+// guaranteed live after `didActivate`, so re-assert local audio then.
+if (platform() === "ios") {
+  void addDedupedCapListener("PpVoipCall", NativePpVoipCall, "audioSessionActivated", (data: any) => {
+    try {
+      window.dispatchEvent(new CustomEvent("pp:callkit-audio-active", { detail: data ?? {} }));
+    } catch { /* noop */ }
+  });
 }
+
+
 
 
 /**
@@ -326,48 +321,27 @@ export async function onPlanipretIncomingInvite(cb: (invite: PpIncomingInvite) =
 }
 
 
+/**
+ * R3 (ring9): tell the native keep-alive that JsSIP holds the shared 113M AOR.
+ * The legacy signal was `releaseRegistration("...js_owns")`, which the native
+ * side REFUSES while `incomingPendingUntil` is armed — i.e. exactly while the
+ * phone rings, when the handoff matters most.
+ */
+export async function declarePlanipretJsOwnsAor(owns: boolean): Promise<void> {
+  if (!isPlanipretNativeSipAvailable()) return;
+  try { await NativePpSip.declareJsOwnsAor?.({ owns }); }
+  catch { /* older native build: ignore */ }
+}
+
+/** Keep the legacy WSS native service passive while PJSIP/TLS owns `<ext>M`. */
+export async function declarePlanipretNativeEngineOwnsAor(owns: boolean): Promise<void> {
+  if (!isPlanipretNativeSipAvailable()) return;
+  try { await NativePpSip.declareNativeEngineOwnsAor?.({ owns }); }
+  catch { /* older native build: build guard will prevent release */ }
+}
+
 export async function acknowledgePlanipretIncoming(): Promise<void> {
   if (!isNative()) return;
   try { await NativePpSip.acknowledgeIncoming?.(); }
   catch { /* noop */ }
-}
-
-/**
- * Tell the native keep-alive that JsSIP now holds the (ext)M AOR.
- *
- * JsSIP and PpSipKeepAlive register on the SAME NetSapiens device: whichever
- * stack holds the AOR captures the INVITE, and only JsSIP can negotiate media.
- * After a VoIP push the native side opens a short grace window before
- * re-REGISTERing as a fallback; this call closes that window.
- *
- * It exists because the previous signal was `releaseRegistration("...js_owns")`,
- * which the native layer REFUSES while `incomingPendingUntil` is armed — that is,
- * during a ring, exactly when the hand-off matters.
- */
-export async function declarePlanipretJsOwnsAor(owns = true): Promise<void> {
-  if (!isPlanipretNativeSipAvailable()) return;
-  try { await NativePpSip.declareJsOwnsAor?.({ owns }); }
-  catch (e) {
-    if (!markUnavailable("sip", e, "pp-sip-native")) console.warn("[pp-sip-native] declareJsOwnsAor failed", e);
-  }
-}
-
-/**
- * ring21 — le moteur PJSIP natif (TLS 5061) possède l'AOR `<ext>M`.
- *
- * À la différence de `declarePlanipretJsOwnsAor`, ce signal coupe la socket WSS
- * du keep-alive de façon inconditionnelle : PJSIP REGISTER en TLS et
- * NetSapiens fermerait l'un des deux transports (WSS 1001) si les deux
- * restaient liés à la même AOR.
- *
- * Le `?.` est volontaire : sur un binaire natif antérieur à ring21 la méthode
- * n'existe pas, et l'absence de signal doit rester silencieuse plutôt que de
- * faire échouer l'initialisation du moteur.
- */
-export async function declarePlanipretNativeEngineOwnsAor(owns = true): Promise<void> {
-  if (!isPlanipretNativeSipAvailable()) return;
-  try { await NativePpSip.declareNativeEngineOwnsAor?.({ owns }); }
-  catch (e) {
-    if (!markUnavailable("sip", e, "pp-sip-native")) console.warn("[pp-sip-native] declareNativeEngineOwnsAor failed", e);
-  }
 }

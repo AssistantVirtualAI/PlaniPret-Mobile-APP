@@ -17,6 +17,11 @@ extension Notification.Name {
     static let ppPjsipAnswerRequested = Notification.Name("PpPjsipAnswerRequested")
     /// CallKit demande de raccrocher / refuser l'appel natif.
     static let ppPjsipEndRequested = Notification.Name("PpPjsipEndRequested")
+    /// PJSIP a émis un INVITE sortant → CallKit doit présenter l'appel sortant
+    /// (sans quoi la session audio n'est jamais activée : pas de tonalité).
+    static let ppPjsipOutgoingCall = Notification.Name("PpPjsipOutgoingCall")
+    /// 180/183 reçu sur la jambe sortante → CallKit passe en "ringing".
+    static let ppPjsipOutgoingRinging = Notification.Name("PpPjsipOutgoingRinging")
 }
 
 // MARK: - Callbacks C (état global : aucune capture possible)
@@ -28,7 +33,6 @@ private func ppPjsipLogWriter(_ level: Int32, _ data: UnsafePointer<CChar>?, _ l
 
 private func ppPjsipOnRegState2(_ accId: pjsua_acc_id, _ info: UnsafeMutablePointer<pjsua_reg_info>?) {
     guard let info = info, let rdata = info.pointee.cbparam else { return }
-    // rdata.pointee.code est un Int32 C brut (pas une enum RawRepresentable) — pas de .rawValue
     let code = Int(rdata.pointee.code)
     let reason = ppPjStr(rdata.pointee.reason)
     NSLog("[PpPjsip] REGISTER response acc=%d code=%d reason=%@", accId, code, reason)
@@ -52,8 +56,6 @@ private func ppPjsipOnCallState(_ callId: pjsua_call_id, _ event: UnsafeMutableP
     PjsipEngine.shared.handleCallState(
         callId: callId,
         state: info.state,
-        // info.last_status est de type pjsip_status_code (enum C) — Swift l'importe
-        // comme RawRepresentable avec rawValue de type UInt32.
         lastCode: Int(info.last_status.rawValue),
         remoteUri: ppPjStr(info.remote_info)
     )
@@ -130,8 +132,13 @@ final class PjsipEngine {
     private var domain = ""
     private var registered = false
     private var activeCall: pjsua_call_id = pjsua_call_id(-1)
-    /// callId de l'appel sortant en cours (pour marquer direction="out" dans callState).
-    private var outgoingCallId: pjsua_call_id = pjsua_call_id(-1)
+    /// Décrochage demandé (CallKit) avant l'arrivée de l'INVITE SIP.
+    private var pendingAnswerRequest = false
+    private var pendingAnswerCallId: String?
+    private var pendingAnswerCompletions: [(Bool) -> Void] = []
+
+    /// Appel sortant en cours (piloté par CallKit côté PpVoipCall).
+    private var outgoingCall: pjsua_call_id = pjsua_call_id(-1)
     private var muted = false
     private var speakerOn = false
     private var audioSessionReady = false
@@ -149,9 +156,10 @@ final class PjsipEngine {
         // CallKit a recu un "decrocher" avant que l'INVITE natif ne soit
         // presente : si un appel natif existe deja, on repond immediatement.
         nc.addObserver(forName: Notification.Name("PpPjsipAnswerPending"), object: nil, queue: nil) { [weak self] _ in
-            guard let self = self, self.activeCall >= 0 else { return }
-            self.answer(callId: nil) { _ in }
+            // Si l'INVITE n'est pas encore là, answer() arme pendingAnswer.
+            self?.answer(callId: nil) { _ in }
         }
+
         nc.addObserver(forName: Notification.Name("PpPjsipMuteRequested"), object: nil, queue: nil) { [weak self] note in
             self?.setMute((note.userInfo?["muted"] as? Bool) ?? false)
         }
@@ -246,7 +254,12 @@ final class PjsipEngine {
         acc.contact_rewrite_method = 2
         acc.use_srtp = PJMEDIA_SRTP_OPTIONAL
         acc.srtp_secure_signaling = 0
-        acc.contact_params = ppMakePjStr(";+sip.instance=\"<\(instanceId)>\"", keep: &strings)
+        // Un seul `+sip.instance` : on laisse RFC5626 le générer avec NOTRE
+        // UUID stable au lieu d'ajouter un second param manuel (pjsua émettait
+        // sinon un doublon dont un UUID à zéros).
+        acc.use_rfc5626 = pj_bool_t(1)
+        acc.rfc5626_instance_id = ppMakePjStr(instanceId, keep: &strings)
+
 
         NSLog("[PpPjsip] production REGISTER → sip:%@:%d TLS aor=sip:%@@%@", server, Int32(port), username, domain)
         try check(pjsua_acc_add(&acc, pj_bool_t(1), &accId), "pjsua_acc_add")
@@ -295,15 +308,15 @@ final class PjsipEngine {
                     return
                 }
                 self.activeCall = newCall
-                self.outgoingCallId = newCall
                 self.muted = false
+                self.outgoingCall = newCall
                 NSLog("[PpPjsip] outgoing INVITE → %@ callId=%d", target, newCall)
-                // Notifie l'UI et CallKit que l'appel sortant vient d'être lancé.
-                self.emit("PpPjsipOutgoingCall", [
-                    "callId": String(newCall),
-                    "remoteNumber": ppUserFromUri(target),
-                    "state": "calling"
-                ])
+                DispatchQueue.main.async {
+                    NotificationCenter.default.post(
+                        name: .ppPjsipOutgoingCall, object: nil,
+                        userInfo: ["callId": String(newCall), "destination": destination]
+                    )
+                }
                 completion(.success(String(newCall)))
             }
         }
@@ -311,7 +324,35 @@ final class PjsipEngine {
 
     func answer(callId: String?, completion: @escaping (Bool) -> Void) {
         let target = resolveCall(callId)
-        guard target >= 0 else { completion(false); return }
+        guard target >= 0 else {
+            // L'utilisateur a décroché depuis CallKit avant l'arrivée de
+            // l'INVITE SIP (push VoIP plus rapide que le réseau SIP).
+            // On mémorise l'intention : handleIncomingCall répondra 200 OK.
+            NSLog("[PpPjsip] answer avant INVITE → pendingAnswer armé")
+            lock.lock()
+            pendingAnswerRequest = true
+            pendingAnswerCallId = callId
+            pendingAnswerCompletions.append(completion)
+            lock.unlock()
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 10.0) { [weak self] in
+                guard let self = self else { return }
+                self.lock.lock()
+                let stillPending = self.pendingAnswerRequest
+                let pending = self.pendingAnswerCompletions
+                if stillPending {
+                    self.pendingAnswerRequest = false
+                    self.pendingAnswerCallId = nil
+                    self.pendingAnswerCompletions = []
+                }
+                self.lock.unlock()
+                if stillPending {
+                    NSLog("[PpPjsip] pendingAnswer timeout 10s → no_active_call")
+                    pending.forEach { $0(false) }
+                }
+            }
+            return
+        }
+
         var done = false
         let finish: (Bool) -> Void = { [weak self] ok in
             guard let self = self else { return }
@@ -348,17 +389,49 @@ final class PjsipEngine {
 
 
     func hangup(callId: String?) {
-        let target = resolveCall(callId)
-        guard target >= 0 else { return }
+        // Repli explicite : un callId JS désynchronisé ne doit jamais empêcher
+        // de raccrocher — on retombe sur l'appel actif, puis sur le sortant.
+        var target = resolveCall(callId)
+        if target < 0 { target = activeCall }
+        if target < 0 { target = outgoingCall }
+        // Appel sortant : code 0 → PJSIP choisit CANCEL ou BYE selon l'état.
+        // Appel entrant en sonnerie : 603 Decline (486 renvoie en messagerie).
+        let code = (target >= 0 && target == outgoingCall) ? 0 : 603
+        // CallKit doit se fermer même si la pile SIP ne répond pas.
+        let closeCallKit = {
+            NotificationCenter.default.post(
+                name: Notification.Name("PpPjsipCallEnded"),
+                object: nil,
+                userInfo: ["callId": target >= 0 ? String(target) : "", "reason": "local_hangup"]
+            )
+        }
+        guard target >= 0 else {
+            NSLog("[PpPjsip] hangup sans appel résolu → fermeture CallKit seule")
+            DispatchQueue.main.async { closeCallKit() }
+            return
+        }
+        var done = false
         thread.run { [weak self] in
             guard let self = self else { return }
+            self.registerCurrentThreadIfNeeded()
             self.scheduleOnPjsipThread {
-                // 603 Decline (et non 486) : NetSapiens bascule sur la
-                // messagerie sur 486, un refus explicite arrête la sonnerie.
-                pjsua_call_hangup(target, 603, nil, nil)
+                if done { return }
+                done = true
+                let status = pjsua_call_hangup(target, UInt32(code), nil, nil)
+                NSLog("[PpPjsip] hangup callId=%d code=%d status=%d", target, code, status)
             }
         }
+        // Filet de sécurité si le timer PJSIP ne s'exécute pas.
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            guard let self = self, !done else { return }
+            done = true
+            self.registerCurrentThreadIfNeeded()
+            let status = pjsua_call_hangup(target, UInt32(code), nil, nil)
+            NSLog("[PpPjsip] hangup FALLBACK callId=%d status=%d", target, status)
+        }
+        DispatchQueue.main.async { closeCallKit() }
     }
+
 
     func setMute(_ on: Bool) {
         muted = on
@@ -448,6 +521,24 @@ final class PjsipEngine {
         // Sonnerie 180 immédiate, sinon NetSapiens bascule en messagerie.
         pjsua_call_answer(callId, 180, nil, nil)
 
+        // Décrochage déjà demandé depuis CallKit avant l'arrivée de l'INVITE :
+        // on répond 200 OK immédiatement et on libère les promesses JS.
+        lock.lock()
+        let hasPending = pendingAnswerRequest
+        let pendingCompletions = pendingAnswerCompletions
+        if hasPending {
+            pendingAnswerRequest = false
+            pendingAnswerCallId = nil
+            pendingAnswerCompletions = []
+        }
+        lock.unlock()
+        if hasPending {
+            let status = pjsua_call_answer(callId, 200, nil, nil)
+            NSLog("[PpPjsip] pendingAnswer → 200 OK callId=%d status=%d", callId, status)
+            let ok = status == pj_status_t(0)
+            pendingCompletions.forEach { $0(ok) }
+        }
+
         // CallKit sonne à partir de l'INVITE natif — plus de dépendance JsSIP.
         NotificationCenter.default.post(
             name: .ppPjsipIncomingCall,
@@ -455,6 +546,7 @@ final class PjsipEngine {
             userInfo: ["callId": String(callId), "callerNumber": number, "callerName": name]
         )
         emit("incomingCall", ["callId": String(callId), "remoteNumber": number, "remoteName": name])
+
     }
 
     func handleCallState(callId: pjsua_call_id, state: pjsip_inv_state, lastCode: Int, remoteUri: String) {
@@ -466,23 +558,21 @@ final class PjsipEngine {
         case PJSIP_INV_STATE_DISCONNECTED: label = "disconnected"
         default: label = "unknown"
         }
-        let isOutgoing = (outgoingCallId == callId)
-        let direction = isOutgoing ? "out" : "in"
-        // Notifie la sonnerie sortante (early media / 180 Ringing).
-        if isOutgoing && state == PJSIP_INV_STATE_EARLY {
-            emit("PpPjsipOutgoingRinging", [
-                "callId": String(callId),
-                "remoteNumber": ppUserFromUri(remoteUri),
-                "state": "ringing"
-            ])
-        }
+
+        let isOutgoing = outgoingCall == callId
         emit("callState", [
             "callId": String(callId),
             "state": label,
             "code": lastCode,
-            "remoteNumber": ppUserFromUri(remoteUri),
-            "direction": direction
+            "direction": isOutgoing ? "out" : "in",
+            "remoteNumber": ppUserFromUri(remoteUri)
         ])
+
+        if isOutgoing, state == PJSIP_INV_STATE_EARLY || state == PJSIP_INV_STATE_CALLING {
+            NotificationCenter.default.post(
+                name: .ppPjsipOutgoingRinging, object: nil, userInfo: ["callId": String(callId)]
+            )
+        }
 
         if state == PJSIP_INV_STATE_CONFIRMED {
             NotificationCenter.default.post(
@@ -491,7 +581,7 @@ final class PjsipEngine {
         }
         if state == PJSIP_INV_STATE_DISCONNECTED {
             if activeCall == callId { activeCall = pjsua_call_id(-1) }
-            if outgoingCallId == callId { outgoingCallId = pjsua_call_id(-1) }
+            if outgoingCall == callId { outgoingCall = pjsua_call_id(-1) }
             audioSessionReady = false
             NotificationCenter.default.post(
                 name: .ppPjsipCallEnded, object: nil,
@@ -601,7 +691,8 @@ final class PjsipEngine {
         acc.proxy.0 = ppMakePjStr("sip:\(server):\(port);transport=tls;lr", keep: &strings)
         acc.reg_timeout = 300
         acc.register_on_acc_add = pj_bool_t(1)
-        acc.contact_params = ppMakePjStr(";+sip.instance=\"<\(instanceId)>\"", keep: &strings)
+        acc.use_rfc5626 = pj_bool_t(1)
+        acc.rfc5626_instance_id = ppMakePjStr(instanceId, keep: &strings)
 
         NSLog("[PpPjsip] PROBE REGISTER → sip:%@:%d TLS aor=sip:%@@%@", server, Int32(port), probeUser, domain)
         try check(pjsua_acc_add(&acc, pj_bool_t(1), &probeAccId), "pjsua_acc_add(probe)")
@@ -699,8 +790,6 @@ final class PjsipEngine {
         let count = max(1, MemoryLayout<pj_thread_desc>.size / MemoryLayout<Int>.size)
         let desc = UnsafeMutablePointer<Int>.allocate(capacity: count)
         desc.initialize(repeating: 0, count: count)
-        // pj_thread_t n'est pas importable directement en Swift (opaque C struct) ;
-        // on utilise OpaquePointer comme type de handle.
         var handle: OpaquePointer?
         let status = pj_thread_register("pp-gcd", desc, &handle)
         NSLog("[PpPjsip] pj_thread_register status=%d", status)
@@ -718,9 +807,6 @@ final class PjsipEngine {
             work()
         }
         lock.unlock()
-        // pjsua_schedule_timer2 est une macro C à arguments quand PJ_TIMER_DEBUG est actif
-        // (configuration Debug) : Swift ne peut pas importer les macros C à arguments.
-        // On exécute le travail directement sur le thread PJSIP déjà enregistré.
         ppPjsipEnterContext(nil)
     }
 
@@ -750,10 +836,7 @@ final class PjsipEngine {
               sslBackendPresent ? "OUI" : "NON", count, cipherStatus)
         NSLog("[PpPjsip]   TLS est le SEUL transport natif possible — PJSIP n'a pas de transport SIP/WebSocket.")
 
-        // PJSIP_EUNSUPTRANSPORT = 220003 : #define composé, non importable en Swift.
-        // Valeur numérique stable documentée dans pjsip/sip_errno.h.
-        let ppEunsupTransport: pj_status_t = 220003
-        if status == ppEunsupTransport || !sslBackendPresent {
+        if status == pj_status_t(220003) || !sslBackendPresent {
             NSLog("[PpPjsip] 🔎 CAUSE : PJSIP_EUNSUPTRANSPORT — libpjsip.xcframework construit SANS OpenSSL.")
             NSLog("[PpPjsip]    CORRECTIF : bash scripts/build-pjsip-ios.sh puis npx cap sync ios")
         } else {
