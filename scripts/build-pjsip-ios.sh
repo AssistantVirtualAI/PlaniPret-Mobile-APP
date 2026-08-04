@@ -1,36 +1,22 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Build OpenSSL + pjproject for iOS (device arm64 + simulator arm64) and
 # assemble libpjsip.xcframework for the PpPjsip plugin.
 #
-# Must run on macOS with a FULL Xcode install (not just Command Line Tools).
+# Must run on macOS with Xcode command line tools. This cannot be produced in
+# the Lovable sandbox (no macOS / no iOS SDK).
 #
-#   cd ~/planipret-standalone && bash scripts/build-pjsip-ios.sh
+#   cd apps/planipret-mobile && bash scripts/build-pjsip-ios.sh
 #
 # Output: ios/App/App/Plugins/PpPjsip/Frameworks/libpjsip.xcframework
 #
-# ---------------------------------------------------------------------------
-# TLS EST OBLIGATOIRE. Le transport natif est TLS 5061 : PJSIP n'a pas de
-# transport SIP over WebSocket (la macro PJSIP_TRANSPORT_WSS n'existe pas).
-# Sur un build autoconf, PJ_HAS_SSL_SOCK est DÉTECTÉ par configure à partir
-# d'OpenSSL ; il ne suffit pas de le déclarer dans config_site.h. Sans OpenSSL,
-# la macro retombe à 0, le binaire compile, canImport(pjsua) est vrai, et
-# pjsua_transport_create(PJSIP_TRANSPORT_TLS, …) échoue à l'exécution avec
-# PJSIP_EUNSUPTRANSPORT — cause invisible dans le code Swift. Ce script échoue
-# donc explicitement (exit 1) si configure n'annonce pas
-# « OpenSSL library found, SSL support enabled ».
-#
-# Notes de portabilité vérifiées sur les sources amont :
-#  - Cibles OpenSSL 3.0 réelles (Configurations/15-ios.conf) : ios64-xcrun et
-#    iossimulator-xcrun. « iossimulator-arm64 » N'EXISTE PAS. Les variantes
-#    *-xcrun résolvent le SDK elles-mêmes, donc pas de CROSS_TOP/CROSS_SDK.
-#  - xcrun --sdk attend un nom de SDK en minuscules (iphoneos /
-#    iphonesimulator), jamais un nom de plateforme (iPhoneOS).
-#  - configure-iphone de pjproject code DEVPATH en dur sur iPhoneOS.platform :
-#    pour le simulateur, DEVPATH doit être exporté explicitement, sinon la
-#    passe « simulator » compile en réalité pour le device.
-#  - configure-iphone attend IPHONESDK = chemin COMPLET du SDK, et MIN_IOS = le
-#    flag complet (-mios-version-min=… / -mios-simulator-version-min=…).
-# ---------------------------------------------------------------------------
+# TLS EST OBLIGATOIRE. Le transport natif est TLS 5061 (voir
+# docs/pjsip/TRANSPORT-DECISION.md) : PJSIP n'a pas de transport SIP over
+# WebSocket. Sur un build autoconf, PJ_HAS_SSL_SOCK est DÉTECTÉ par configure
+# à partir d'OpenSSL, il ne suffit pas de le déclarer dans config_site.h. Sans
+# OpenSSL, la macro retombe à 0, le binaire compile, canImport(pjsua) est vrai,
+# et pjsua_transport_create(PJSIP_TRANSPORT_TLS, …) échoue à l'exécution avec
+# PJSIP_EUNSUPTRANSPORT. Ce script échoue donc explicitement (exit 1) si
+# configure n'annonce pas « OpenSSL library found, SSL support enabled ».
 set -euo pipefail
 
 APP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
@@ -38,157 +24,97 @@ WORK="${PJSIP_WORKDIR:-$APP_DIR/.pjsip-build}"
 OUT="$APP_DIR/ios/App/App/Plugins/PpPjsip/Frameworks"
 PJ_TAG="${PJSIP_TAG:-2.15.1}"
 OPENSSL_TAG="${OPENSSL_TAG:-openssl-3.0.15}"
-MIN_IOS_VER="${MIN_IOS_VER:-14.0}"
+MIN_IOS="${MIN_IOS:-14.0}"
 
-# ---------------------------------------------------------------------------
-# 0) Contrôles d'environnement — c'est ici qu'échouait la version précédente
-# ---------------------------------------------------------------------------
-command -v xcodebuild >/dev/null || { echo "❌ xcodebuild introuvable — ce script exige macOS + Xcode."; exit 1; }
-command -v xcrun      >/dev/null || { echo "❌ xcrun introuvable — installe Xcode."; exit 1; }
-command -v libtool    >/dev/null || { echo "❌ libtool introuvable — installe les Xcode command line tools."; exit 1; }
-command -v perl       >/dev/null || { echo "❌ perl introuvable — requis par ./Configure d'OpenSSL."; exit 1; }
-
-DEVELOPER_DIR_PATH="$(xcode-select -p)"
-if [ ! -d "$DEVELOPER_DIR_PATH/Platforms/iPhoneOS.platform" ]; then
-  echo ""
-  echo "❌ ARRÊT — xcode-select pointe vers « $DEVELOPER_DIR_PATH »,"
-  echo "   qui ne contient pas de plateforme iPhoneOS."
-  echo "   C'est le cas quand seuls les Command Line Tools sont sélectionnés :"
-  echo "   aucun SDK iOS n'est alors disponible, d'où « SDK iPhoneOS cannot be located »."
-  echo ""
-  echo "   Corrige avec :"
-  echo "     sudo xcode-select -s /Applications/Xcode.app/Contents/Developer"
-  echo "   puis relance ce script."
-  exit 1
-fi
-
-# xcrun attend des noms de SDK EN MINUSCULES. Passer « iPhoneOS » le fait
-# interpréter comme un chemin relatif → l'erreur observée au premier essai.
-SDK_DEVICE_PATH="$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null || true)"
-SDK_SIM_PATH="$(xcrun --sdk iphonesimulator --show-sdk-path 2>/dev/null || true)"
-
-if [ -z "$SDK_DEVICE_PATH" ] || [ ! -d "$SDK_DEVICE_PATH" ]; then
-  echo "❌ ARRÊT — SDK iphoneos introuvable. SDK disponibles :"
-  xcodebuild -showsdks || true
-  exit 1
-fi
-if [ -z "$SDK_SIM_PATH" ] || [ ! -d "$SDK_SIM_PATH" ]; then
-  echo "❌ ARRÊT — SDK iphonesimulator introuvable. SDK disponibles :"
-  xcodebuild -showsdks || true
-  exit 1
-fi
-
-echo "▶ Xcode      : $DEVELOPER_DIR_PATH"
-echo "▶ SDK device : $SDK_DEVICE_PATH"
-echo "▶ SDK simu   : $SDK_SIM_PATH"
-echo "▶ pjproject  : $PJ_TAG"
-echo "▶ OpenSSL    : $OPENSSL_TAG"
-echo ""
+command -v xcodebuild >/dev/null || { echo "xcodebuild introuvable — ce script exige macOS + Xcode."; exit 1; }
+command -v xcrun >/dev/null || { echo "xcrun introuvable — installe Xcode et sélectionne-le avec xcode-select."; exit 1; }
+command -v libtool >/dev/null || { echo "libtool introuvable — installe les Xcode command line tools."; exit 1; }
 
 mkdir -p "$WORK" "$OUT"
 
 # ---------------------------------------------------------------------------
-# 1) OpenSSL (device arm64 + simulateur arm64)
-#    Cibles ios64-xcrun / iossimulator-xcrun : elles appellent
-#    « xcrun -sdk <sdk> cc » elles-mêmes, donc aucun CROSS_TOP/CROSS_SDK.
+# Détecter automatiquement le SDK iOS installé (ex: iphoneos26.5)
+# xcrun --sdk iphoneos/iphonesimulator fonctionne comme alias générique
+# mais CROSS_TOP attend le nom de plateforme sans version (iPhoneOS/iPhoneSimulator)
+# ---------------------------------------------------------------------------
+IOS_SDK_PATH="$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null || true)"
+SIM_SDK_PATH="$(xcrun --sdk iphonesimulator --show-sdk-path 2>/dev/null || true)"
+if [ -z "$IOS_SDK_PATH" ] || [ -z "$SIM_SDK_PATH" ]; then
+  echo "❌ SDK iOS introuvable. Vérifie: sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer"
+  exit 1
+fi
+# Extraire le nom de plateforme sans version ni .sdk (ex: iPhoneOS)
+IOS_PLATFORM_NAME="$(basename "$IOS_SDK_PATH" | sed 's/[0-9][0-9.]*\.sdk$//' | sed 's/\.sdk$//')"
+SIM_PLATFORM_NAME="$(basename "$SIM_SDK_PATH" | sed 's/[0-9][0-9.]*\.sdk$//' | sed 's/\.sdk$//')"
+echo "▶ SDK détectés: device=$(basename "$IOS_SDK_PATH") simulator=$(basename "$SIM_SDK_PATH")"
+echo "▶ Plateformes: device=$IOS_PLATFORM_NAME simulator=$SIM_PLATFORM_NAME"
+
+# ---------------------------------------------------------------------------
+# 1) OpenSSL pour iPhoneOS.sdk arm64 et iPhoneSimulator.sdk arm64
+#    (guide OpenSSL pour iOS : Configure ios64-cross / iossimulator-arm64)
 # ---------------------------------------------------------------------------
 SSL_SRC="$WORK/openssl-src"
-if [ ! -d "$SSL_SRC/Configure" ] && [ ! -f "$SSL_SRC/Configure" ]; then
-  rm -rf "$SSL_SRC"
-  # Clone complet léger puis checkout du tag : « --depth 1 --branch <tag> » sur
-  # un tag annoté laisse un HEAD détaché sur un objet qui n'est pas le commit
-  # du tag (avertissement « is not a commit! » observé au premier essai).
-  git clone --filter=blob:none --no-checkout \
-    https://github.com/openssl/openssl.git "$SSL_SRC"
-  git -C "$SSL_SRC" checkout -q "tags/$OPENSSL_TAG"
-fi
-if [ -f "$SSL_SRC/VERSION.dat" ]; then
-  echo "▶ OpenSSL source : $(tr '\n' ' ' < "$SSL_SRC/VERSION.dat" | sed 's/  */ /g')"
+if [ ! -d "$SSL_SRC" ]; then
+  git clone --depth 1 --branch "$OPENSSL_TAG" https://github.com/openssl/openssl.git "$SSL_SRC"
 fi
 
-# $3 = flags SUPPLÉMENTAIRES passés à ./Configure, chacun en UN SEUL argument.
-#
-# ./Configure d'OpenSSL n'a aucune branche pour « -arch » : tout argument qui ne
-# commence pas par -, + ou / est interprété comme un NOM DE CIBLE. Passer
-# « -arch arm64 » en deux mots fait donc lire « arm64 » comme une seconde cible :
-#   target already defined - ios64-xcrun (offending arg: arm64)
-# La syntaxe documentée pour un flag à argument séparé est l'encodage %20, que
-# Configure décode en espace : « -arch%20arm64 ».
-#
-# À noter : ios64-xcrun ajoute DÉJÀ « -arch arm64 » elle-même, donc la tranche
-# device n'en a pas besoin. iossimulator-xcrun, elle, ne fixe aucune
-# architecture : il faut l'y préciser.
 build_openssl () {
-  local tag="$1" ossl_target="$2"
-  shift 2
-  local extra_flags=("$@")
+  local tag="$1" sdk_alias="$2" ossl_target="$3"
   local prefix="$WORK/openssl/$tag"
-
   if [ -f "$prefix/lib/libssl.a" ] && [ -f "$prefix/lib/libcrypto.a" ]; then
     echo "▶ OpenSSL: $tag déjà construit → $prefix"
     return 0
   fi
+  local sdk_path
+  sdk_path="$(xcrun --sdk "$sdk_alias" --show-sdk-path)"
+  # Nom de plateforme sans version (iPhoneOS ou iPhoneSimulator)
+  local platform_name
+  platform_name="$(basename "$sdk_path" | sed 's/[0-9][0-9.]*\.sdk$//' | sed 's/\.sdk$//')"
+  echo "▶ OpenSSL: $tag ($platform_name / arm64, $OPENSSL_TAG)"
 
-  echo "▶ OpenSSL: $tag (cible $ossl_target, flags: ${extra_flags[*]})"
   rm -rf "$WORK/openssl-build-$tag"
   cp -R "$SSL_SRC" "$WORK/openssl-build-$tag"
   pushd "$WORK/openssl-build-$tag" >/dev/null
 
-  ./Configure "$ossl_target" no-shared no-dso no-async no-tests no-engine \
-    --prefix="$prefix" "${extra_flags[@]}"
+  export CROSS_TOP="$(xcode-select -p)/Platforms/${platform_name}.platform/Developer"
+  export CROSS_SDK="$(basename "$sdk_path")"
+  export CC="$(xcrun -find clang)"
+  # Passer le sysroot et l'arch explicitement pour que clang trouve les headers iOS
+  export CFLAGS="-arch arm64 -isysroot $sdk_path -mios-version-min=$MIN_IOS"
+  export CXXFLAGS="$CFLAGS"
 
-  # Configure imprime « Failure! build file wasn't produced » sans code d'erreur
-  # utilisable dans certains cas : on vérifie le produit attendu.
-  if [ ! -f configdata.pm ]; then
-    echo "❌ ARRÊT — ./Configure n'a pas produit configdata.pm pour « $tag »."
-    exit 1
-  fi
-
+  ./Configure "$ossl_target" no-shared no-dso no-async no-tests \
+    --prefix="$prefix"
   make -j"$(sysctl -n hw.ncpu)" build_libs
   make install_dev
+
+  unset CROSS_TOP CROSS_SDK CC CFLAGS CXXFLAGS
   popd >/dev/null
 
   # OpenSSL 3.x installe parfois dans lib64 ; configure-iphone attend lib/.
-  if [ ! -d "$prefix/lib" ] && [ -d "$prefix/lib64" ]; then
-    ln -s lib64 "$prefix/lib"
-  fi
-  test -f "$prefix/lib/libssl.a"    || { echo "❌ OpenSSL $tag : libssl.a manquant";    exit 1; }
-  test -f "$prefix/lib/libcrypto.a" || { echo "❌ OpenSSL $tag : libcrypto.a manquant"; exit 1; }
-  test -f "$prefix/include/openssl/ssl.h" || { echo "❌ OpenSSL $tag : en-têtes manquants"; exit 1; }
-
-  # L'architecture doit être arm64 : une erreur de flags produirait silencieusement
-  # du x86_64 et le lien final échouerait bien plus tard, sans cause lisible.
-  local archs
-  archs="$(lipo -archs "$prefix/lib/libcrypto.a" 2>/dev/null || echo '?')"
-  if [ "$archs" != "arm64" ]; then
-    echo "❌ ARRÊT — libcrypto.a ($tag) est en « $archs », attendu « arm64 »."
-    exit 1
-  fi
-  echo "✔ OpenSSL $tag → $prefix (arm64)"
+  if [ ! -d "$prefix/lib" ] && [ -d "$prefix/lib64" ]; then ln -s lib64 "$prefix/lib"; fi
+  test -f "$prefix/lib/libssl.a" || { echo "❌ OpenSSL $tag: libssl.a manquant"; exit 1; }
+  test -f "$prefix/lib/libcrypto.a" || { echo "❌ OpenSSL $tag: libcrypto.a manquant"; exit 1; }
 }
 
-# Device : ios64-xcrun fournit déjà -arch arm64 ; on ne surcharge que la version min.
-build_openssl device    ios64-xcrun        "-mios-version-min=$MIN_IOS_VER" "-fno-common"
-# Simulateur : aucune architecture dans la cible, d'où -arch%20arm64 (encodage %20).
-build_openssl simulator iossimulator-xcrun "-arch%20arm64" "-mios-simulator-version-min=$MIN_IOS_VER" "-fno-common"
-echo ""
+# ios64-xcrun et iossimulator-xcrun sont les cibles modernes pour Xcode récent
+# (ios64-cross n'est plus reconnu depuis OpenSSL 3.x avec Xcode 15+)
+build_openssl device    iphoneos         ios64-xcrun
+build_openssl simulator iphonesimulator  iossimulator-xcrun
 
 # ---------------------------------------------------------------------------
 # 2) pjproject
 # ---------------------------------------------------------------------------
 cd "$WORK"
-if [ ! -d pjproject/.git ]; then
-  rm -rf pjproject
-  git clone --filter=blob:none --no-checkout \
-    https://github.com/pjsip/pjproject.git pjproject
-  git -C pjproject checkout -q "tags/$PJ_TAG"
+if [ ! -d pjproject ]; then
+  git clone --depth 1 --branch "$PJ_TAG" https://github.com/pjsip/pjproject.git
 fi
 cd pjproject
 
-# config_site.h — PJSIP n'a PAS de transport SIP over WebSocket : ne pas
-# ajouter PJSIP_TRANSPORT_WSS, la macro n'existe pas.
+# config_site.h — IMPORTANT : PJSIP n'a PAS de transport SIP over WebSocket.
+# La macro PJSIP_TRANSPORT_WSS n'existe pas ; ne pas l'ajouter.
 # PJ_HAS_SSL_SOCK n'est PAS déclaré ici : sur autoconf il est détecté par
-# configure via --with-ssl, et le forcer masquerait une absence d'OpenSSL.
+# configure à partir de --with-ssl, et le forcer masquerait une absence d'OpenSSL.
 cat > pjlib/include/pj/config_site.h <<'EOF'
 #define PJ_CONFIG_IPHONE 1
 #define PJMEDIA_HAS_VIDEO 0
@@ -198,123 +124,77 @@ cat > pjlib/include/pj/config_site.h <<'EOF'
 EOF
 
 build_arch () {
-  local tag="$1" sdk_path="$2" platform="$3" min_flag="$4"
+  local sdk_alias="$1" arch="$2" tag="$3"
   local ssl_prefix="$WORK/openssl/$tag"
   local log="$WORK/configure-$tag.log"
+  # Résoudre le chemin SDK réel (ex: /path/to/iPhoneOS26.5.sdk)
+  local sdk_path
+  sdk_path="$(xcrun --sdk "$sdk_alias" --show-sdk-path)"
+  local sdk_basename
+  sdk_basename="$(basename "$sdk_path")"  # ex: iPhoneOS26.5.sdk
+  echo "▶ pjproject $PJ_TAG: $tag ($sdk_basename / $arch), --with-ssl=$ssl_prefix"
 
-  echo "▶ pjproject $PJ_TAG : $tag"
-  echo "  SDK        : $sdk_path"
-  echo "  --with-ssl : $ssl_prefix"
-
+  # Dériver le DEVPATH depuis le chemin SDK réel
+  # ex: /Applications/Xcode.app/.../iPhoneSimulator.platform/Developer
+  local platform_dir
+  platform_dir="$(dirname "$(dirname "$sdk_path")")"  # remonte de SDKs/xxx.sdk à Developer
   make distclean >/dev/null 2>&1 || true
-
-  # configure-iphone code DEVPATH en dur sur iPhoneOS.platform. Sans cet
-  # export, la passe simulateur compilerait pour le device et produirait deux
-  # tranches identiques, que xcodebuild -create-xcframework refuse.
-  env \
-    DEVPATH="$DEVELOPER_DIR_PATH/Platforms/${platform}.platform/Developer" \
-    IPHONESDK="$sdk_path" \
-    ARCH="-arch arm64" \
-    MIN_IOS="$min_flag" \
+  DEVPATH="$platform_dir" IPHONESDK="$sdk_basename" ARCH="-arch $arch" \
     ./configure-iphone --with-ssl="$ssl_prefix" \
       --disable-video --disable-libyuv --disable-opencore-amr 2>&1 | tee "$log"
 
-  # Garde-fou n°1 — un TLS silencieusement désactivé coûte des heures de
-  # diagnostic plus tard, avec un PJSIP_EUNSUPTRANSPORT invisible dans le Swift.
+  # Garde-fou n°1 : TLS silencieusement désactivé = des heures de diagnostic
+  # perdues plus tard, avec un PJSIP_EUNSUPTRANSPORT invisible dans le Swift.
   if ! grep -q "OpenSSL library found, SSL support enabled" "$log"; then
     echo ""
-    echo "❌ ARRÊT — configure n'a PAS détecté OpenSSL pour « $tag »."
+    echo "❌ ARRÊT — configure n'a PAS détecté OpenSSL pour '$tag'."
     echo "   Attendu dans la sortie : « OpenSSL library found, SSL support enabled »"
     echo "   Journal complet : $log"
-    echo "   Sans cela PJ_HAS_SSL_SOCK=0, et pjsua_transport_create(PJSIP_TRANSPORT_TLS)"
+    echo "   Sans cela, PJ_HAS_SSL_SOCK=0 et pjsua_transport_create(PJSIP_TRANSPORT_TLS)"
     echo "   échouera à l'exécution avec PJSIP_EUNSUPTRANSPORT."
     exit 1
   fi
-  echo "✔ TLS : « OpenSSL library found, SSL support enabled » ($tag)"
+  echo "✔ TLS: « OpenSSL library found, SSL support enabled » ($tag)"
 
   make dep && make clean && make
 
-  # Garde-fou n°2 — la macro doit être à 1 dans la config effective produite
-  # par autoconf. Bloquant : poursuivre livrerait un xcframework importable
-  # mais sans TLS.
-  if ! grep -qE '^[[:space:]]*#[[:space:]]*define[[:space:]]+PJ_HAS_SSL_SOCK[[:space:]]+1' \
-        pjlib/include/pj/compat/os_auto.h 2>/dev/null; then
-    echo "❌ ARRÊT — PJ_HAS_SSL_SOCK n'est pas à 1 pour « $tag ». Journal : $log"
+  # Garde-fou n°2 : la macro doit être à 1 dans la config effective. Ce test
+  # est bloquant : poursuivre produirait un xcframework importable mais sans TLS.
+  if ! grep -qE '^\s*#\s*define\s+PJ_HAS_SSL_SOCK\s+1' pjlib/include/pj/compat/os_auto.h 2>/dev/null; then
+    echo "❌ ARRÊT — PJ_HAS_SSL_SOCK n'est pas à 1 pour '$tag'. Journal : $log"
     exit 1
   fi
-  echo "✔ PJ_HAS_SSL_SOCK = 1 ($tag)"
 
-  # Une seule archive statique par architecture, OpenSSL inclus : le TLS ne
-  # dépend ainsi pas d'une étape Xcode manuelle facile à oublier.
+  # Étape documentée : une seule archive statique par architecture.
   local dest="$WORK/libs/$tag"
   rm -rf "$dest"; mkdir -p "$dest/parts"
   find . -name '*.a' -path '*-apple-darwin_ios*' -exec cp {} "$dest/parts/" \;
-  local n_parts
-  n_parts="$(find "$dest/parts" -name '*.a' | wc -l | tr -d ' ')"
-  if [ "$n_parts" -lt 5 ]; then
-    echo "❌ ARRÊT — seulement $n_parts archives pjproject trouvées pour « $tag »."
-    echo "   La compilation a probablement échoué en amont."
-    exit 1
-  fi
-  echo "  archives pjproject collectées : $n_parts"
-
+  # OpenSSL est fusionné dans l'archive livrée. Le transport TLS ne dépend donc
+  # pas d'une étape manuelle Xcode facile à oublier après la création du xcframework.
   libtool -static -o "$dest/libPJSIP.a" \
     "$dest/parts"/*.a \
     "$ssl_prefix/lib/libssl.a" \
     "$ssl_prefix/lib/libcrypto.a"
   rm -rf "$dest/parts"
   test -f "$dest/libPJSIP.a" || { echo "❌ libPJSIP.a manquant pour $tag"; exit 1; }
-
-  # Garde-fou n°3 — la tranche doit contenir les symboles TLS d'OpenSSL.
-  #
-  # Ce contrôle NE DOIT PAS passer par un pipe. Avec « set -o pipefail » :
-  #  - nm retourne un code non nul quand l'archive contient des objets sans
-  #    symbole (très nombreux ici, cf. les avertissements libtool) ;
-  #  - grep -q ferme le pipe dès la première correspondance, ce qui tue nm par
-  #    SIGPIPE — donc le pipe échouait PARCE QUE le symbole était trouvé.
-  # D'où la capture en variable avec « || true ».
-  #
-  # Deux contrôles complémentaires :
-  #  1. structurel (ar -t) : les membres d'OpenSSL sont-ils dans l'archive ?
-  #     Insensible au comportement de nm.
-  #  2. symbolique (nm) : _SSL_CTX_new est-il DÉFINI (T/D/S) et non simplement
-  #     référencé (U) ? Sur Mach-O les symboles C portent un underscore.
-  local ar_members n_ssl_members
-  ar_members="$(ar -t "$dest/libPJSIP.a" 2>/dev/null || true)"
-  n_ssl_members="$(printf '%s\n' "$ar_members" | grep -c 'libcrypto-lib-\|libssl-lib-' || true)"
-  if [ "${n_ssl_members:-0}" -lt 10 ]; then
-    echo "❌ ARRÊT — libPJSIP.a ($tag) ne contient que ${n_ssl_members:-0} membres OpenSSL."
-    echo "   libtool n'a pas fusionné libssl.a / libcrypto.a."
-    exit 1
-  fi
-
-  local nm_out ssl_defined
-  nm_out="$(nm -g -arch arm64 "$dest/libPJSIP.a" 2>/dev/null || true)"
-  # Lignes de la forme « <adresse> T _SSL_CTX_new » : définies, pas U.
-  ssl_defined="$(printf '%s\n' "$nm_out" | grep -c '^[0-9a-f]\{8,\} [TDSBtdsb] _SSL_CTX_new$' || true)"
-  if [ "${ssl_defined:-0}" -lt 1 ]; then
-    echo "⚠ nm n'a pas confirmé _SSL_CTX_new comme défini pour « $tag »,"
-    echo "  mais les ${n_ssl_members} membres OpenSSL sont bien présents dans l'archive."
-    echo "  Contrôle structurel retenu, on continue."
-  fi
-  echo "✔ libPJSIP.a ($tag) : OpenSSL fusionné (${n_ssl_members} membres, _SSL_CTX_new défini: ${ssl_defined:-0})"
-  echo ""
 }
 
-build_arch device    "$SDK_DEVICE_PATH" iPhoneOS        "-mios-version-min=$MIN_IOS_VER"
-build_arch simulator "$SDK_SIM_PATH"    iPhoneSimulator "-mios-simulator-version-min=$MIN_IOS_VER"
+# Utiliser les alias génériques xcrun (iphoneos/iphonesimulator) qui fonctionnent
+# avec toutes les versions de SDK (iphoneos26.5, iphoneos17.x, etc.)
+build_arch iphoneos arm64 device
+build_arch iphonesimulator arm64 simulator
 
 # ---------------------------------------------------------------------------
 # 3) En-têtes + xcframework
 # ---------------------------------------------------------------------------
 rm -rf "$WORK/headers"; mkdir -p "$WORK/headers"
-cp -R pjlib/include/.      "$WORK/headers/"
+cp -R pjlib/include/. "$WORK/headers/"
 cp -R pjlib-util/include/. "$WORK/headers/"
-cp -R pjnath/include/.     "$WORK/headers/"
-cp -R pjmedia/include/.    "$WORK/headers/"
-cp -R pjsip/include/.      "$WORK/headers/"
+cp -R pjnath/include/. "$WORK/headers/"
+cp -R pjmedia/include/. "$WORK/headers/"
+cp -R pjsip/include/. "$WORK/headers/"
 
-# Module map : permet « import pjsua » depuis Swift sans bridging header.
+# Module map so Swift can `import pjsua`.
 cat > "$WORK/headers/module.modulemap" <<'EOF'
 module pjsua [system] {
   header "pjsua-lib/pjsua.h"
@@ -324,50 +204,23 @@ EOF
 
 rm -rf "$OUT/libpjsip.xcframework"
 xcodebuild -create-xcframework \
-  -library "$WORK/libs/device/libPJSIP.a"    -headers "$WORK/headers" \
+  -library "$WORK/libs/device/libPJSIP.a" -headers "$WORK/headers" \
   -library "$WORK/libs/simulator/libPJSIP.a" -headers "$WORK/headers" \
   -output "$OUT/libpjsip.xcframework"
 
-echo ""
 # ---------------------------------------------------------------------------
-# 4) Vérifications post-build sur les BINAIRES FINAUX
+# 4) Vérification POST-xcodebuild des binaires livrés (bloquante)
+#    Symboles OpenSSL + transport TLS PJSIP dans chaque tranche, puis test de
+#    lancement réel de pjsua_transport_create(TLS) dans le simulateur.
 # ---------------------------------------------------------------------------
-# verify-pjsip-tls.sh contrôle, sur chaque tranche du xcframework :
-#  - au moins un symbole OpenSSL (SSL_CTX_new, OPENSSL_init_ssl, …) ;
-#  - les symboles PJSIP prouvant que le transport TLS a été compilé
-#    (pjsip_tls_transport_start, pj_ssl_sock_create). Ce second contrôle est
-#    essentiel : il attrape le cas où OpenSSL est fusionné mais où pjproject a
-#    été compilé sans support TLS, qu'une simple recherche de symboles OpenSSL
-#    laisserait passer.
-if [ -f "$APP_DIR/scripts/verify-pjsip-tls.sh" ]; then
-  PJSIP_WORKDIR="$WORK" bash "$APP_DIR/scripts/verify-pjsip-tls.sh" "$OUT/libpjsip.xcframework"
+PJSIP_WORKDIR="$WORK" bash "$APP_DIR/scripts/verify-pjsip-tls.sh" "$OUT/libpjsip.xcframework"
+
+if [ "${PJSIP_SKIP_SELFTEST:-0}" != "1" ]; then
+  PJSIP_WORKDIR="$WORK" bash "$APP_DIR/scripts/pjsip-tls-selftest.sh"
+else
+  echo "↷ self-test TLS ignoré (PJSIP_SKIP_SELFTEST=1)"
 fi
 
-# Le self-test compile et exécute un vrai programme dans le simulateur, qui
-# appelle pjsua_transport_create(PJSIP_TRANSPORT_TLS). C'est la seule preuve
-# à l'EXÉCUTION que le TLS fonctionne. Non bloquant : il dépend d'un runtime de
-# simulateur installé, absent sur certaines machines.
-if [ -f "$APP_DIR/scripts/pjsip-tls-selftest.sh" ]; then
-  if PJSIP_WORKDIR="$WORK" bash "$APP_DIR/scripts/pjsip-tls-selftest.sh"; then
-    echo "✔ self-test TLS réussi dans le simulateur"
-  else
-    echo "⚠ self-test TLS non concluant (runtime de simulateur absent ?) — non bloquant."
-    echo "  Les vérifications statiques sur les binaires sont passées."
-  fi
-fi
-
-echo ""
-echo "✅ libpjsip.xcframework (TLS activé) → $OUT"
-echo ""
-echo "Étape Xcode restante — une seule, non automatisable :"
-echo "  1. Cible App → General → Frameworks, Libraries, and Embedded Content → +"
-echo "     → Add Other… → Add Files… → $OUT/libpjsip.xcframework"
-echo "     → régler « Do Not Embed » (bibliothèque statique)."
-echo "  2. Product → Clean Build Folder, puis Run."
-echo ""
-echo "PJ_AUTOCONF=1 est déjà injecté automatiquement dans le pbxproj par"
-echo "scripts/apply-native-config.mjs — rien à saisir à la main, et cela survit"
-echo "à un npx cap sync ios."
-echo ""
-echo "Puis : panneau de diagnostic SIP → carte « Sonde PJSIP native (TLS) »"
-echo "→ déclenchement MANUEL. Attendu en console Xcode : « registration state: 200 OK »."
+echo "✅ libpjsip.xcframework (TLS activé et vérifié) → $OUT"
+echo "   OpenSSL est inclus dans chaque tranche de l'archive. Ajoute le xcframework"
+echo "   à la cible App (Frameworks, Libraries and Embedded Content), puis: npx cap sync ios"

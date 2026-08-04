@@ -94,30 +94,13 @@ EOF
 
 SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 echo "▶ Compilation du self-test (arm64-simulator)"
-# -DPJ_AUTOCONF=1 est OBLIGATOIRE. Sans lui, pj/config.h n'inclut ni
-# pj/compat/os_auto.h ni pj/compat/m_auto.h (les deux fichiers generes par
-# configure-iphone), donc PJ_HAS_LIMITS_H reste indefini et pj/compat/limits.h
-# emet "limits.h is not found or not supported" avant que la compilation echoue.
-# Reference : pjlib/include/pj/config.h, blocs "#if defined(PJ_AUTOCONF)".
-# La cible Xcode a deja cette macro (injectee par apply-native-config.mjs) ;
-# ce script compile hors Xcode et doit donc la fournir lui-meme.
-CLANG_LOG="$TESTDIR/selftest-compile.log"
-if ! xcrun --sdk iphonesimulator clang \
+xcrun --sdk iphonesimulator clang \
   -arch arm64 -mios-simulator-version-min="${MIN_IOS:-14.0}" -isysroot "$SDK" \
-  -DPJ_AUTOCONF=1 \
   -I "$HEADERS" "$TESTDIR/main.c" "$LIB" \
   -framework Foundation -framework Security -framework AudioToolbox \
   -framework AVFoundation -framework CFNetwork -framework CoreAudio \
-  -framework CoreMedia -framework CoreVideo -framework SystemConfiguration \
-  -framework Network -framework VideoToolbox -framework QuartzCore \
-  -lc++ -lz -lresolv -o "$TESTDIR/pjsip-tls-selftest" 2>&1 | tee "$CLANG_LOG"; then
-  echo ""
-  echo "   Sortie complete du compilateur : $CLANG_LOG"
-  # NE PAS affirmer que les symboles OpenSSL manquent : verify-pjsip-tls.sh est
-  # bloquant et deja passe a ce stade, il a donc prouve le contraire. Une erreur
-  # ici concerne le programme de test lui-meme (macros, frameworks), pas la lib.
-  fail "compilation du programme de test impossible — voir $CLANG_LOG (la bibliotheque, elle, a deja passe les verifications bloquantes de verify-pjsip-tls.sh)"
-fi
+  -lc++ -lz -o "$TESTDIR/pjsip-tls-selftest" \
+  || fail "compilation impossible — le lien contre libPJSIP.a a échoué (symboles OpenSSL manquants ?)"
 
 # Simulateur dédié, booté sans UI.
 UDID="$(xcrun simctl list devices | grep -m1 "$SIM_NAME" | sed -E 's/.*\(([0-9A-F-]{36})\).*/\1/' || true)"

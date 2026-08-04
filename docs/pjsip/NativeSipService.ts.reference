@@ -1,0 +1,217 @@
+import { Capacitor, registerPlugin } from "@capacitor/core";
+import { supabase } from "@/integrations/supabase/client";
+
+/**
+ * Native SIP (PJSIP) service — Planipret Mobile.
+ *
+ * Credentials are resolved per authenticated broker by the
+ * `ns-resolve-sip-credentials` Edge Function (client_type: "mobile"), so this
+ * works for every broker of the planipret.ca domain with no hardcoded values.
+ *
+ * The plugin is looked up through `registerPlugin` (no npm package needed).
+ * If the native engine is not present (web portal, or iOS build without the
+ * PJSIP framework), every call is a no-op and the app keeps using the REST
+ * click-to-call fallback.
+ */
+
+export type SipRegistrationState = "registered" | "unregistered" | "failed" | "unavailable";
+
+interface PjsipPlugin {
+  initialize(opts: Record<string, unknown>): Promise<{ ok: boolean; username: string }>;
+  register(): Promise<void>;
+  unregister(): Promise<void>;
+  makeCall(opts: { destination: string }): Promise<{ callId: string }>;
+  answerCall(opts: { callId?: string }): Promise<{ callId: string }>;
+  hangupCall(opts: { callId?: string }): Promise<void>;
+  setMute(opts: { muted: boolean }): Promise<void>;
+  setSpeaker(opts: { enabled: boolean }): Promise<void>;
+  sendDTMF(opts: { digits: string }): Promise<void>;
+  getState(): Promise<{ available: boolean; registered: boolean; username: string; callId: string }>;
+  addListener(event: string, cb: (data: any) => void): Promise<{ remove: () => Promise<void> }>;
+}
+
+const Pjsip = registerPlugin<PjsipPlugin>("CapacitorPjsip");
+
+const getPjsip = (): PjsipPlugin | null => {
+  if (!Capacitor.isNativePlatform()) return null;
+  if (!Capacitor.isPluginAvailable("CapacitorPjsip")) {
+    console.warn("[SIP] PJSIP plugin not available — REST fallback stays active");
+    return null;
+  }
+  return Pjsip;
+};
+
+const emit = (name: string, detail: any) => {
+  try { window.dispatchEvent(new CustomEvent(name, { detail })); } catch { /* noop */ }
+};
+
+export class NativeSipService {
+  private static instance: NativeSipService;
+  private registered = false;
+  private retryCount = 0;
+  private readonly maxRetries = 3;
+  private currentCallId: string | null = null;
+  private username: string | null = null;
+  private extension: string | null = null;
+  private initializing: Promise<boolean> | null = null;
+  private listenersBound = false;
+
+  static getInstance(): NativeSipService {
+    if (!NativeSipService.instance) NativeSipService.instance = new NativeSipService();
+    return NativeSipService.instance;
+  }
+
+  isRegistered() { return this.registered; }
+  getUsername() { return this.username; }
+  getExtension() { return this.extension; }
+
+  /** Single-flight init: safe to call on every session change. */
+  initialize(): Promise<boolean> {
+    if (this.initializing) return this.initializing;
+    this.initializing = this.doInitialize().finally(() => { this.initializing = null; });
+    return this.initializing;
+  }
+
+  private async doInitialize(): Promise<boolean> {
+    const pjsip = getPjsip();
+    if (!pjsip) {
+      emit("sip-registration-state", { registered: false, state: "unavailable", username: null });
+      return false;
+    }
+
+    const { data, error } = await supabase.functions.invoke("ns-resolve-sip-credentials", {
+      body: { client_type: "mobile" },
+    });
+
+    const password: string | undefined = (data as any)?.sip_password;
+    if (error || !password) {
+      console.error("[SIP] No credentials:", (data as any)?.error ?? error?.message);
+      emit("sip-registration-state", { registered: false, state: "failed", username: null });
+      return false;
+    }
+
+    const username = String((data as any).sip_username ?? "");
+    // Invariant: mobile AOR is `<ext>M` (never `<ext>_mobile`).
+    this.username = username;
+    this.extension = String((data as any).sip_extension ?? username.replace(/[MW]$/i, ""));
+
+    const proxy = String((data as any).sip_proxy ?? (data as any).sip_core_server ?? "");
+    // Transport natif: TLS 5061 UNIQUEMENT. Aucune pile SIP native (PJSIP,
+    // liblinphone) n'implémente SIP over WebSocket (RFC 7118) — WSS 9002 est
+    // réservé à JsSIP dans la WebView. Vérifié le 2026-08-02: core1 répond
+    // en TLS 1.3 (CN valide) et renvoie un 403 Forbidden sur OPTIONS anonyme.
+    const transport = "TLS" as const;
+    const port = 5061;
+
+    console.log("[SIP] Initializing native engine for:", username, transport, proxy);
+
+    try {
+      await this.bindListeners(pjsip);
+
+      await pjsip.initialize({
+        domain: String((data as any).sip_domain ?? ""),
+        username,
+        password,
+        proxy,
+        transport,
+        port,
+        displayName: String((data as any).display_name ?? "Planiprêt"),
+      });
+
+      // Native engine owns the AOR from now on: tell the JS/keep-alive stack
+      // to stop issuing its own REGISTER for this device.
+      emit("pp:sip-native-owns-aor", { username });
+
+      await pjsip.register();
+      return true;
+    } catch (err: any) {
+      const code = err?.code ?? err?.message ?? "error";
+      if (code === "unavailable") {
+        emit("sip-registration-state", { registered: false, state: "unavailable", username });
+        return false;
+      }
+      console.error("[SIP] Init failed:", err);
+      emit("sip-registration-state", { registered: false, state: "failed", username });
+      return false;
+    }
+  }
+
+  private async bindListeners(pjsip: PjsipPlugin) {
+    if (this.listenersBound) return;
+    this.listenersBound = true;
+
+    await pjsip.addListener("registrationState", (state: any) => {
+      this.registered = state?.state === "registered";
+      console.log("[SIP] Registration:", state?.state);
+
+      if (state?.state === "failed" && this.retryCount < this.maxRetries) {
+        this.retryCount++;
+        setTimeout(() => { pjsip.register().catch(() => { /* noop */ }); }, 30000);
+      }
+      if (this.registered) this.retryCount = 0;
+
+      emit("sip-registration-state", {
+        registered: this.registered,
+        username: this.username,
+        extension: this.extension,
+        state: state?.state,
+      });
+    });
+
+    await pjsip.addListener("incomingCall", (call: any) => {
+      this.currentCallId = call?.callId ?? null;
+      emit("sip-incoming-call", {
+        callId: call?.callId,
+        remoteNumber: call?.remoteNumber,
+        remoteName: call?.remoteName || call?.remoteNumber,
+      });
+    });
+
+    await pjsip.addListener("callState", (state: any) => {
+      if (state?.state === "disconnected" || state?.state === "ended") this.currentCallId = null;
+      emit("sip-call-state", state);
+    });
+  }
+
+  async answer(): Promise<boolean> {
+    const pjsip = getPjsip();
+    if (!pjsip || !this.registered) return false;
+    try {
+      await pjsip.answerCall({ callId: this.currentCallId ?? undefined });
+      return true;
+    } catch (err) {
+      console.error("[SIP] answer failed:", err);
+      return false;
+    }
+  }
+
+  async hangup(): Promise<boolean> {
+    const pjsip = getPjsip();
+    if (!pjsip) return false;
+    try {
+      await pjsip.hangupCall({ callId: this.currentCallId ?? undefined });
+      this.currentCallId = null;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async makeCall(destination: string): Promise<boolean> {
+    const pjsip = getPjsip();
+    if (!pjsip || !this.registered) return false;
+    try {
+      const res = await pjsip.makeCall({ destination });
+      this.currentCallId = res?.callId ?? null;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async setMute(muted: boolean) { await getPjsip()?.setMute({ muted }).catch(() => {}); }
+  async setSpeaker(enabled: boolean) { await getPjsip()?.setSpeaker({ enabled }).catch(() => {}); }
+  async sendDTMF(digits: string) { await getPjsip()?.sendDTMF({ digits }).catch(() => {}); }
+}
+
+export const nativeSip = NativeSipService.getInstance();
