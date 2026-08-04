@@ -1285,10 +1285,10 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       const ok = await nativeSip.answer();
       console.info(`[answer] route=PJSIP → ${ok ? "SIP 200 OK sent" : "no native INVITE"}`);
       if (ok) return true;
-      // Échec natif : on rend l'AOR et on retente le chemin legacy DANS LE
-      // MÊME tap (sinon l'utilisateur tape 11 fois sans jamais décrocher).
-      releaseAorFromNative("answer_native_failed");
-      console.warn("[answer] PJSIP failed → retrying legacy route immediately");
+      // This ringing call cannot migrate from TLS to WSS. Flipping the Device
+      // here corrupts the current and next inbound route under live PJSIP.
+      console.warn("[answer] PJSIP has no INVITE; preserving TLS ownership");
+      return false;
     }
 
     const sipSnap = ppSipProvider.getSnapshot();

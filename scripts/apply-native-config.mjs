@@ -1457,13 +1457,22 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             guard let self = self, let uuid = self.activeCallUUID else { return }
             self.provider?.reportOutgoingCall(with: uuid, startedConnectingAt: Date())
         }
+        nc.addObserver(forName: Notification.Name("PpPjsipAnswerResult"), object: nil, queue: .main) { [weak self] note in
+            guard let self = self, let pending = self.pendingAnswerAction else { return }
+            let ok = (note.userInfo?["ok"] as? Bool) ?? false
+            self.pendingAnswerAction = nil
+            self.answerCompleted = ok
+            if ok { pending.fulfill() } else { pending.fail() }
+            self.endAnswerBackgroundTask()
+            NSLog("[PpVoipCall] native SIP answer %@", ok ? "confirmed" : "failed")
+        }
         nc.addObserver(forName: Notification.Name("PpPjsipCallEnded"), object: nil, queue: .main) { [weak self] note in
             guard let self = self, let uuid = self.activeCallUUID else { return }
             let code = (note.userInfo?["code"] as? Int) ?? 0
             let reason: CXCallEndedReason = (code == 486 || code == 603) ? .declinedElsewhere
                 : (code >= 400 && code != 487) ? .failed : .remoteEnded
             self.provider?.reportCall(with: uuid, endedAt: Date(), reason: reason)
-            self.pendingAnswerAction?.fulfill(); self.pendingAnswerAction = nil
+            self.pendingAnswerAction?.fail(); self.pendingAnswerAction = nil
             self.endAnswerBackgroundTask()
             self.activeCallUUID = nil; self.activeCallId = nil
             self.nativeEngineOwnsCall = false
@@ -1768,12 +1777,11 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         let session = AVAudioSession.sharedInstance()
         try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .allowBluetoothA2DP])
 
-        // Chemin natif PJSIP : le décrochage est un simple \`pjsua_call_answer\`,
-        // il ne dépend ni de la WebView ni d'un REGISTER JsSIP. On remplit donc
-        // l'action tout de suite (plus de fenêtre de 32 s ni de completeAnswer).
+        // Keep CallKit pending until pjsua_call_answer really accepts the 200 OK.
         if nativeEngineOwnsCall {
-            answerCompleted = true
-            pendingAnswerAction = nil
+            pendingAnswerAction = action
+            answerCompleted = false
+            beginAnswerBackgroundTask()
             NotificationCenter.default.post(name: Notification.Name("PpVoipCallAnswered"), object: nil, userInfo: ["callId": activeCallId ?? ""])
             NotificationCenter.default.post(name: Notification.Name("PpPjsipAnswerRequested"), object: nil, userInfo: ["callId": activeCallId ?? ""])
             notifyListeners("incomingCallAnswered", data: [
@@ -1781,7 +1789,6 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
                 "callId": activeCallId ?? "",
                 "source": "pjsip"
             ], retainUntilConsumed: true)
-            action.fulfill()
             return
         }
 

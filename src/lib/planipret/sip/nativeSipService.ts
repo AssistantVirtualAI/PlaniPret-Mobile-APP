@@ -206,12 +206,8 @@ export class NativeSipService {
         .then((m) => m.declarePlanipretNativeEngineOwnsAor(true))
         .catch(() => undefined);
 
-      // `initialize` envoie déjà le REGISTER : un second appel renvoie
-      // PJSIP_EBUSY. On ne force le REGISTER que s'il échoue silencieusement.
-      await pjsip.register().catch((e: any) => {
-        const c = String(e?.code ?? e?.message ?? "");
-        if (!/EBUSY|busy|already/i.test(c)) throw e;
-      });
+      // `initialize` adds the account with register_on_acc_add=1 and already
+      // sends REGISTER. A second immediate request races that transaction.
       return true;
 
     } catch (err: any) {
@@ -235,6 +231,28 @@ export class NativeSipService {
     } catch (e: any) {
       console.warn("[SIP] isEngineLinked indisponible:", e?.message ?? e);
       return false;
+    }
+  }
+
+  /**
+   * Force `device-sip-transport-type = TLS` sur le device `<ext>M` juste après
+   * le 200 OK du REGISTER natif. Sans ça, NetSapiens conserve le Contact WSS
+   * 9002 et route les INVITEs entrants vers JsSIP, jamais vers PJSIP/TLS.
+   * Idempotent et throttlé à 60 s.
+   */
+  private lastTlsProvisionAt = 0;
+  private async forceDeviceTlsTransport(): Promise<void> {
+    if (Date.now() - this.lastTlsProvisionAt < 60_000) return;
+    this.lastTlsProvisionAt = Date.now();
+    try {
+      const { data, error } = await supabase.functions.invoke("ns-provision-broker-devices", {
+        body: { transport: "tls", force: true, client_type: "mobile" },
+      });
+      if (error) throw error;
+      console.log("[SIP] device réaligné en TLS après REGISTER natif", data);
+    } catch (e: any) {
+      console.warn("[SIP] échec du réalignement TLS du device:", e?.message ?? e);
+      this.lastTlsProvisionAt = 0;
     }
   }
 
@@ -271,6 +289,9 @@ export class NativeSipService {
       if (state === "registered") {
         this.retryCount = 0;
         claimAorForNative(this.username, "native_registered");
+        // Le PBX garde le Contact WSS du device `<ext>M` tant qu'on ne force
+        // pas le transport : les INVITEs partiraient encore vers JsSIP:9002.
+        void this.forceDeviceTlsTransport();
       }
       this.setState(state);
     });
@@ -426,3 +447,4 @@ export const nativeSip = NativeSipService.getInstance();
 // Arbitrage d'AOR au chargement : si le plugin PJSIP est embarqué, le natif
 // possède `<ext>M` avant que JsSIP puisse tenter le moindre REGISTER.
 preclaimNativeAor();
+

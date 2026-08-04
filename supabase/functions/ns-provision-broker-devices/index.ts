@@ -54,7 +54,7 @@ Deno.serve(async (req) => {
 
   try {
     const body: any = await req.json().catch(() => ({}));
-    const broker_id: string | null = body?.broker_id ?? null;
+    let broker_id: string | null = body?.broker_id ?? null;
     const bulk: boolean = !!body?.bulk;
     const batch_size: number = Math.max(1, Math.min(20, Number(body?.batch_size ?? 8)));
     /**
@@ -93,6 +93,11 @@ Deno.serve(async (req) => {
     let isAdmin = ["admin", "super_admin", "owner", "planipret_admin"].includes(String(callerProfile?.role ?? "").toLowerCase());
     if (!isAdmin) { try { const { data } = await admin.rpc("is_planipret_admin", { _user_id: caller.id }); if (data) isAdmin = true; } catch { /* ignore */ } }
     if (!isAdmin) { try { const { data } = await admin.rpc("is_super_admin", { _user_id: caller.id }); if (data) isAdmin = true; } catch { /* ignore */ } }
+    // Self-provisioning: le client mobile appelle sans broker_id juste après le
+    // 200 OK du REGISTER PJSIP pour forcer le transport TLS sur SON device.
+    if (!bulk && !broker_id && (callerProfile?.id || callerProfile?.user_id)) {
+      broker_id = String(callerProfile?.id ?? callerProfile?.user_id);
+    }
     // Allow self-provisioning: caller may provision their OWN broker record without admin role
     const selfOnly = !isAdmin && !bulk && broker_id && (callerProfile?.user_id === caller.id || callerProfile?.id === caller.id);
     if (!isAdmin && !selfOnly) return json({ error: "forbidden", detail: "admin role required for this operation" }, 403);
@@ -200,6 +205,7 @@ Deno.serve(async (req) => {
           if (forcedTransport) {
             patch["transport"] = forcedTransport;
             patch["device-sip-transport-type"] = forcedTransport;
+            patch["device-provisioning-sip-transport-protocol"] = forcedTransport.toLowerCase();
           }
           const r = await nsFetch(`${base}/${encodeURIComponent(id)}`, {
             method: "PUT", headers: nsHeaders,
@@ -233,6 +239,7 @@ Deno.serve(async (req) => {
             // with whichever stack actually registers (wss = JsSIP, tls = PJSIP).
             "transport": forcedTransport ?? "WSS",
             "device-sip-transport-type": forcedTransport ?? "WSS",
+            "device-provisioning-sip-transport-protocol": (forcedTransport ?? "WSS").toLowerCase(),
             "device-srtp-enabled": "opportunistic",
             "device-sip-allowed-user-agent": "",
             "device-push-enabled": isMobile ? "yes" : "no",

@@ -238,6 +238,7 @@ function deviceCreatePayload(
     "device-sip-nat-traversal-enabled": "automatic",
     transport: nsTransport(transport),
     "device-sip-transport-type": nsTransport(transport),
+    "device-provisioning-sip-transport-protocol": transport,
     "device-srtp-enabled": "opportunistic",
     "device-sip-allowed-user-agent": "",
     "device-push-enabled": isMobile ? "yes" : "no",
@@ -419,6 +420,7 @@ Deno.serve(async (req) => {
       // SIP transport at the core level — a mismatch here means the PBX never
       // forks inbound calls to the contact this client registered.
       "device-sip-transport-type": nsTransport(sipTransport),
+      "device-provisioning-sip-transport-protocol": sipTransport,
       "server-nat": clientType === "mobile" ? "yes" : "no",
       // Documented NS-API v2 keys — default expiry of 60s was dropping the
       // registration between re-REGISTERs; "automatic" NAT traversal keeps the
