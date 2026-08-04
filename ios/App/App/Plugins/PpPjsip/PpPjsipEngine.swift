@@ -131,6 +131,8 @@ final class PjsipEngine {
     private var username = ""
     private var domain = ""
     private var registered = false
+    /// Accessible from other plugins (PpSipKeepAlive) to check AOR ownership.
+    var isRegistered: Bool { registered }
     private var activeCall: pjsua_call_id = pjsua_call_id(-1)
     /// Décrochage demandé (CallKit) avant l'arrivée de l'INVITE SIP.
     private var pendingAnswerRequest = false

@@ -78,6 +78,8 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private let passwordService = "com.planipret.mobile.sip"
     private let passwordAccount = "background-register"
     private var lastPushWakeAt: Date?
+    /// True when PJSIP native engine has successfully registered and owns the AOR.
+    private var nativeEngineOwnsAor: Bool { PjsipEngine.shared.isRegistered }
 
 
     public override func load() {
