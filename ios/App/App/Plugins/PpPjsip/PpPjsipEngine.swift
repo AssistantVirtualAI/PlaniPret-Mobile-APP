@@ -22,6 +22,8 @@ extension Notification.Name {
     static let ppPjsipOutgoingCall = Notification.Name("PpPjsipOutgoingCall")
     /// 180/183 reçu sur la jambe sortante → CallKit passe en "ringing".
     static let ppPjsipOutgoingRinging = Notification.Name("PpPjsipOutgoingRinging")
+    /// Résultat du décrochage natif (ok = true/false) → CallKit complète ou annule.
+    static let ppPjsipAnswerResult = Notification.Name("PpPjsipAnswerResult")
 }
 
 // MARK: - Callbacks C (état global : aucune capture possible)
