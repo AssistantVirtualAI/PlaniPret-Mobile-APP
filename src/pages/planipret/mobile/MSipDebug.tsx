@@ -7,6 +7,7 @@ import { exportSipStability, getSipStabilityReport, resetSipStability } from "@/
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { isPjsipEnabled, nativeOwnsAor, setPjsipEnabled } from "@/lib/planipret/sip/aorArbitration";
 import { runPjsipRegisterProbe, PJSIP_PROBE_PORT, PJSIP_PROBE_SERVER, type PjsipProbeResult } from "@/lib/native/PpPjsipProbe";
+import CallValidationCard from "@/components/planipret/mobile/CallValidationCard";
 
 const STAGES = ["idle", "connecting", "connected", "registered"] as const;
 
@@ -124,6 +125,7 @@ export default function MSipDebug() {
       <PjsipProbeCard />
 
 
+      <CallValidationCard />
       <StabilityCard />
 
       {/* Event log */}

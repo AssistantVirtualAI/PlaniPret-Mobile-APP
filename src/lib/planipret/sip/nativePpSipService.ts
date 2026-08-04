@@ -133,7 +133,7 @@ export async function onPlanipretVoipPushToken(cb: (data: { token: string; bundl
   return addDedupedCapListener("PpVoipCall", NativePpVoipCall, "voipPushToken", (data: any) => cb(data ?? {}));
 }
 
-export async function onPlanipretIncomingCallAnswered(cb: (data: { callUUID: string; callId?: string }) => void): Promise<() => void> {
+export async function onPlanipretIncomingCallAnswered(cb: (data: { callUUID: string; callId?: string; source?: "pjsip" | "jssip" }) => void): Promise<() => void> {
   if (platform() !== "ios") return () => undefined;
   return addDedupedCapListener("PpVoipCall", NativePpVoipCall, "incomingCallAnswered", (data: any) => cb(data ?? {}));
 }

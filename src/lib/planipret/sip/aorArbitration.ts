@@ -224,4 +224,3 @@ export async function verifyEngineLinked(): Promise<boolean> {
 
 // Hydratation de l'interrupteur persistant (non bloquante).
 void hydratePjsipEnabled();
-

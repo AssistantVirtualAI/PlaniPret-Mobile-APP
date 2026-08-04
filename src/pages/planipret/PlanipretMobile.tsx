@@ -1262,5 +1262,3 @@ function Frame({ children, forceDark = false }: { children: React.ReactNode; for
     </div>
   );
 }
-
-

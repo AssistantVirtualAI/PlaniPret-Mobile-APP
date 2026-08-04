@@ -13,25 +13,14 @@ let currentRoute: AudioRoute = "earpiece";
 let reassertTimer: ReturnType<typeof setTimeout> | null = null;
 let routeGeneration = 0;
 
-/**
- * ring11 - the route we last successfully pushed across the native bridge.
- * Distinct from `currentRoute`, which is the route the UI *wants*.
- */
-let appliedRoute: AudioRoute | null = null;
-
 export const audioRouter = {
-  async setRoute(route: AudioRoute, opts: { force?: boolean } = {}): Promise<void> {
+  async setRoute(route: AudioRoute): Promise<void> {
     routeGeneration += 1;
     if (reassertTimer) { clearTimeout(reassertTimer); reassertTimer = null; }
     currentRoute = route;
-    // ring11 - skip the bridge when the route is already applied. Each native
-    // setAudioRoute re-runs overrideOutputAudioPort, and on iOS that perturbs a
-    // live WebRTC render. The ring10 log shows 5 of them on a single call
-    // (mount effect + 1200ms re-assert + call-state re-renders).
-    if (!opts.force && appliedRoute === route) return;
     const b = bridge();
     if (b?.setAudioRoute) {
-      try { await b.setAudioRoute({ route }); appliedRoute = route; return; } catch {}
+      try { await b.setAudioRoute({ route }); return; } catch {}
     }
     // Web fallback: try matching sinkId on every <audio> tag.
     try {
@@ -69,10 +58,7 @@ export const audioRouter = {
     reassertTimer = setTimeout(() => {
       reassertTimer = null;
       if (generation !== routeGeneration) return;
-      // ring11 - this single re-assert is legitimate (CallKit may steal the route
-      // ~1s after the media session activates), so it bypasses the de-dup. It is
-      // now the ONLY forced re-assert during a call.
-      void audioRouter.setRoute(route, { force: true });
+      void audioRouter.setRoute(route);
     }, 1200);
     return route;
   },
@@ -80,7 +66,5 @@ export const audioRouter = {
   stopCallAudio(): void {
     routeGeneration += 1;
     if (reassertTimer) { clearTimeout(reassertTimer); reassertTimer = null; }
-    // ring11 - the next call must be able to assert its route from scratch.
-    appliedRoute = null;
   },
 };

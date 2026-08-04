@@ -611,6 +611,15 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     }).then((fn) => { cleanupVoipIncoming = fn; }).catch(() => undefined);
 
     onPlanipretIncomingCallAnswered((data) => {
+      // Native PJSIP already sends the SIP 200 OK directly from the CallKit
+      // delegate, including while the WebView is suspended. Re-answering from
+      // JS races that native transaction and was a source of no-op green taps.
+      if (data?.source === "pjsip") {
+        setPushRing(null);
+        try { window.dispatchEvent(new CustomEvent("pp:sip-callkit-answered", { detail: data })); } catch {}
+        console.info("[pp-voip] CallKit answer handled entirely by native PJSIP");
+        return;
+      }
       // CallKit stays in "connecting" (and the app never opens on the keypad)
       // until the pending CXAnswerCallAction is fulfilled — that only happens
       // when we report the real outcome back through completeAnswer().
