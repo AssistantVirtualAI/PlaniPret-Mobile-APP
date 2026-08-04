@@ -739,12 +739,12 @@ final class PjsipEngine {
         acc.proxy_cnt = 1
         acc.proxy.0 = ppMakePjStr("sip:\(server):\(port);transport=tls;lr", keep: &strings)
         acc.reg_timeout = 300
-        acc.register_on_acc_add = pj_bool_t(1)
-        acc.use_rfc5626 = pj_bool_t(1)
+        acc.register_on_acc_add = 1
+        acc.use_rfc5626 = 1
         acc.rfc5626_instance_id = ppMakePjStr(instanceId, keep: &strings)
 
         NSLog("[PpPjsip] PROBE REGISTER → sip:%@:%d TLS aor=sip:%@@%@", server, Int32(port), probeUser, domain)
-        try check(pjsua_acc_add(&acc, pj_bool_t(1), &probeAccId), "pjsua_acc_add(probe)")
+        try check(pjsua_acc_add(&acc, 1, &probeAccId), "pjsua_acc_add(probe)")
     }
 
     private func completeRegistrationProbe(code: Int, reason: String) {
@@ -840,7 +840,7 @@ final class PjsipEngine {
         let count = max(1, MemoryLayout<pj_thread_desc>.size / MemoryLayout<Int>.size)
         let desc = UnsafeMutablePointer<Int>.allocate(capacity: count)
         desc.initialize(repeating: 0, count: count)
-        var handle: UnsafeMutablePointer<pj_thread_t>?
+        var handle: OpaquePointer?
         let status = pj_thread_register("pp-worker", desc, &handle)
         NSLog("[PpPjsip] pj_thread_register status=%d", status)
         lock.lock()
