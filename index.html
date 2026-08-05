@@ -77,6 +77,23 @@
           root.innerHTML = '<div data-pp-boot-visible="1" style="color:white;padding:20px;background:#0A1425;min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:system-ui,sans-serif">Démarrage...</div>';
         }
       }, 1200);
+
+      // Filet de sécurité : si React n'a jamais démarré (rechargement du WebView
+      // sur une route profonde comme /auth/maestro/callback), on repart de la
+      // racine une seule fois au lieu de rester sur « Démarrage… ».
+      setTimeout(function () {
+        if (window.__PP_REACT_BOOTED__) return;
+        var deep = location.pathname && location.pathname !== '/' && location.pathname !== '/index.html';
+        if (!deep) return;
+        try {
+          if (sessionStorage.getItem('pp_boot_recovered') === '1') return;
+          sessionStorage.setItem('pp_boot_recovered', '1');
+          if (location.pathname.indexOf('/auth/') === 0) {
+            sessionStorage.setItem('pp_boot_recovered_search', location.search || '');
+          }
+        } catch (_) {}
+        location.replace('/');
+      }, 6000);
     </script>
     <script type="module" src="/src/index.tsx"></script>
   </body>

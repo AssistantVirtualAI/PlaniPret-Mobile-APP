@@ -4,7 +4,7 @@ import { toast } from "sonner";
 import { Capacitor } from "@capacitor/core";
 import { App as CapApp } from "@capacitor/app";
 import { Browser } from "@capacitor/browser";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { logDeepLink } from "@/lib/deepLinkDebug";
@@ -39,6 +39,7 @@ interface StatusData {
  */
 export default function MaestroConnectCard() {
   const { t, lang } = useMplanipretLang();
+  const navigate = useNavigate();
   const [status, setStatus] = useState<Status>("loading");
   const [data, setData] = useState<StatusData>({});
   const [busy, setBusy] = useState(false);
@@ -176,7 +177,11 @@ export default function MaestroConnectCard() {
           }
           try { localStorage.setItem("pp_maestro_callback_url", callbackUrl); } catch {}
           const callback = new URL(callbackUrl);
-          window.location.href = `/auth/maestro/callback${callback.search}`;
+          // NE PAS faire `window.location.href` ici : sur iOS/Android cela
+          // recharge tout le WebView depuis capacitor://localhost/auth/... et
+          // l'app reste bloquée sur l'écran « Démarrage… ». On route côté
+          // client pour rester dans l'application déjà montée.
+          navigate(`/auth/maestro/callback${callback.search}`, { replace: true });
         } else {
           logDeepLink({ kind: "info", source: "MaestroConnect", detail: "auth path=Browser.open (android)" });
           await Browser.open({ url, presentationStyle: "fullscreen" });

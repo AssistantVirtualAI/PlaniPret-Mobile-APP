@@ -80,6 +80,13 @@ function NativeDeepLinkBridge() {
     };
     window.addEventListener("pp-oauth-callback", onAuthSessionCallback);
 
+    // Reprise après un redémarrage du WebView pendant l'OAuth Maestro :
+    // le code d'autorisation est conservé en localStorage, on le rejoue.
+    try {
+      const pending = localStorage.getItem("pp_maestro_callback_url");
+      if (pending) void routeFromUrl(pending, "pendingMaestroCallback");
+    } catch {}
+
     let unsubscribe: null | (() => void) = null;
     (async () => {
       try {

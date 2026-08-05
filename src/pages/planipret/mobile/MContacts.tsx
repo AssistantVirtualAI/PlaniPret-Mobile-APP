@@ -104,6 +104,11 @@ function presenceMeta(raw: string | undefined | null, t: (k: string) => string):
 
 export default function MContacts() {
   const { t } = useMplanipretLang();
+  /** t() renvoie la clé si la traduction manque — ce helper garantit un libellé lisible. */
+  const tr = (k: string, fallback: string) => {
+    const v = t(k);
+    return !v || v === k ? fallback : v;
+  };
   const { openDialer } = useOutletContext<PlanipretMobileContext>();
   const navigate = useNavigate();
   const [tab, setTab] = useState<Tab>("personal");
@@ -435,10 +440,11 @@ export default function MContacts() {
       {/* Pill tabs */}
       <div className="flex gap-1 p-1 mb-4" style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", borderRadius: 12 }}>
         {([
-          { id: "personal", label: t("contacts.personal") || "Personnels", Icon: Users },
-          { id: "favorites", label: t("contacts.favorites") || "Favoris", Icon: Star },
-          { id: "directory", label: t("contacts.directory") || "Annuaire", Icon: BookUser },
-          { id: "clients", label: t("contacts.clients") || "Clients", Icon: Briefcase },
+          // `t()` renvoie la clé quand la traduction manque → fallback explicite.
+          { id: "personal", label: tr("contacts.personal", "Personnels"), Icon: Users },
+          { id: "favorites", label: tr("contacts.favorites", "Favoris"), Icon: Star },
+          { id: "directory", label: tr("contacts.directory", "Répertoire"), Icon: BookUser },
+          { id: "clients", label: tr("contacts.clients", "Clients"), Icon: Briefcase },
         ] as const).map((p) => {
           const active = tab === p.id;
           return (
