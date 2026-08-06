@@ -19,18 +19,10 @@ android {
     }
     signingConfigs {
         release {
-            // Keystore de signature pour la soumission Google Play
-            // Définir dans ~/.gradle/gradle.properties :
-            //   PLANIPRET_KEYSTORE_FILE=/chemin/vers/planipret-release.keystore
-            //   PLANIPRET_KEYSTORE_PASSWORD=votre_mot_de_passe
-            //   PLANIPRET_KEY_ALIAS=planipret
-            //   PLANIPRET_KEY_PASSWORD=votre_mot_de_passe
-            if (project.hasProperty('PLANIPRET_KEYSTORE_FILE')) {
-                storeFile = file(PLANIPRET_KEYSTORE_FILE)
-                storePassword = PLANIPRET_KEYSTORE_PASSWORD
-                keyAlias = PLANIPRET_KEY_ALIAS
-                keyPassword = PLANIPRET_KEY_PASSWORD
-            }
+            storeFile = file('planipret-release.jks')
+            storePassword = 'AssistantVirtual2025$'
+            keyAlias = 'planipret'
+            keyPassword = 'AssistantVirtual2025$'
         }
     }
     buildTypes {
@@ -38,9 +30,7 @@ android {
             minifyEnabled = true
             shrinkResources = true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-            if (project.hasProperty('PLANIPRET_KEYSTORE_FILE')) {
-                signingConfig = signingConfigs.release
-            }
+            signingConfig = signingConfigs.release
         }
         debug {
             minifyEnabled = false
