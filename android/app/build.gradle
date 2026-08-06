@@ -19,7 +19,7 @@ android {
     }
     signingConfigs {
         release {
-            storeFile = file('planipret-release.jks')
+            storeFile = file('/Users/mohamadhassoun/planipret-upload-new.jks')
             storePassword = 'AssistantVirtual2025$'
             keyAlias = 'planipret'
             keyPassword = 'AssistantVirtual2025$'
