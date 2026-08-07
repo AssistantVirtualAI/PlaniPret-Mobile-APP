@@ -32,6 +32,9 @@ export default defineConfig({
       // WebRTC transport, but the mobile app uses WebSocket transport only.
       // Drops ~1.17 MB from the bundle. See src/lib/livekit-shim.ts.
       'livekit-client': path.resolve(__dirname, './src/lib/livekit-shim.ts'),
+      // Stub @capgo/capacitor-updater — not installed (requires Capacitor 8);
+      // the OTA updater uses a dynamic import so the shim silently disables it.
+      '@capgo/capacitor-updater': path.resolve(__dirname, './src/lib/capgo-updater-shim.ts'),
     },
   },
   build: {

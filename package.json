@@ -60,7 +60,6 @@
     "@capacitor/push-notifications": "^6.0.2",
     "@capacitor/splash-screen": "^6.0.2",
     "@capacitor/status-bar": "^6.0.1",
-    "@capgo/capacitor-updater": "^8.51.3",
     "@elevenlabs/client": "^0.12.0",
     "@radix-ui/react-alert-dialog": "^1.1.4",
     "@radix-ui/react-dialog": "^1.1.4",
