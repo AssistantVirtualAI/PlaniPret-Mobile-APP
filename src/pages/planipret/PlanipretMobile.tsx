@@ -37,6 +37,7 @@ import { listDeviceContacts } from "@/lib/native/permissions/contacts";
 import { tokenize, matchAllTokens } from "@/lib/textNormalize";
 import { prefetchPpContacts, peekPpContacts } from "@/lib/ppContactsCache";
 import { PLANIPRET_PROFILE_SAFE_COLUMNS, PLANIPRET_PROFILE_BOOT_COLUMNS } from "@/lib/planipret/profileColumns";
+import { useRemoteConfig } from "@/hooks/useRemoteConfig";
 
 /** Hard timeout guard: never let a hung network call freeze the app shell. */
 function ppWithTimeout<T>(p: PromiseLike<T>, ms: number, label: string): Promise<T> {
@@ -92,11 +93,11 @@ const PlanipretBadge = () => (
 export type PlanipretMobileContext = { profile: any; reloadProfile: () => Promise<void>; openDialer: (number?: string, autoDial?: boolean) => void; openAva: () => void; registerRefresh: (fn: (() => Promise<void> | void) | null) => void; softphone: ReturnType<typeof useMplanipretSoftphone> };
 
 const TABS = [
-  { to: "/mplanipret/home", labelKey: "tabs.home", Icon: Home },
-  { to: "/mplanipret/calls", labelKey: "tabs.calls", Icon: Phone },
-  { to: "/mplanipret/ava", labelKey: "tabs.ava", Icon: Bot },
-  { to: "/mplanipret/messages", labelKey: "tabs.messages", Icon: MessageSquare },
-  { to: "/mplanipret/contacts", labelKey: "tabs.contacts", Icon: Users },
+  { to: "/mplanipret/home", labelKey: "tabs.home", Icon: Home, flag: null },
+  { to: "/mplanipret/calls", labelKey: "tabs.calls", Icon: Phone, flag: null },
+  { to: "/mplanipret/ava", labelKey: "tabs.ava", Icon: Bot, flag: "tab_ava" },
+  { to: "/mplanipret/messages", labelKey: "tabs.messages", Icon: MessageSquare, flag: "tab_messages" },
+  { to: "/mplanipret/contacts", labelKey: "tabs.contacts", Icon: Users, flag: "tab_contacts" },
 ];
 
 
@@ -489,6 +490,9 @@ export default function PlanipretMobile() {
   const navigate = useNavigate();
   const location = useLocation();
   const { t, lang, setLang } = useMplanipretLang();
+  // Onglets pilotés à distance depuis le portail admin (aucun rebuild requis).
+  const { isEnabled: isFeatureEnabled } = useRemoteConfig();
+  const visibleTabs = TABS.filter((tb) => !tb.flag || isFeatureEnabled(tb.flag));
   const [profile, setProfile] = useState<any>(null);
   // REST-only call control: outbound calls ring the broker's registered mobile device.
   // Wait for the profile before SIP init so cold starts do not race auth/profile boot.
@@ -1125,11 +1129,11 @@ export default function PlanipretMobile() {
         )}
 
 
-        {/* Tab bar (5 tabs) */}
-        <nav className="absolute bottom-[22px] inset-x-0 grid grid-cols-5 z-10 pp-mobile-tabbar"
-          style={{ height: 84 }}>
+        {/* Tab bar (onglets pilotés depuis le portail) */}
+        <nav className="absolute bottom-[22px] inset-x-0 grid z-10 pp-mobile-tabbar"
+          style={{ height: 84, gridTemplateColumns: `repeat(${visibleTabs.length || 1}, minmax(0, 1fr))` }}>
 
-          {TABS.map((tabItem) => {
+          {visibleTabs.map((tabItem) => {
             const badge = tabItem.to.endsWith("/messages") ? unreadMsg : 0;
             const isAva = tabItem.to.endsWith("/ava");
             return (

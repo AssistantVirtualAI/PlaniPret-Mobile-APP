@@ -1,14 +1,14 @@
 {
-  "generatedAt": "2026-08-06T02:46:45.292Z",
+  "generatedAt": "2026-08-07T15:40:55.287Z",
   "entry": [
     "src/index.tsx"
   ],
   "ok": true,
   "totals": {
-    "localImportsChecked": 436,
-    "bundledFiles": 177,
+    "localImportsChecked": 443,
+    "bundledFiles": 180,
     "missing": 0,
-    "orphanFiles": 886,
+    "orphanFiles": 887,
     "orphanBrokenImports": 0
   },
   "missing": [],
@@ -596,6 +596,7 @@
     "src/lib/authProviders.ts",
     "src/lib/avaOwner.ts",
     "src/lib/buildVersionPoller.ts",
+    "src/lib/capgo-updater-shim.ts",
     "src/lib/confirmDialog.tsx",
     "src/lib/connectors/base-connector.ts",
     "src/lib/connectors/connector-factory.ts",
