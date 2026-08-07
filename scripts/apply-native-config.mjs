@@ -477,8 +477,8 @@ public class PpSipKeepAliveService extends Service {
     if (activeInviteVia == null || activeInviteFrom == null || activeInviteTo == null || activeInviteCSeq == null) return;
     String toWithTag = activeInviteTo.contains(";tag=") ? activeInviteTo : activeInviteTo + ";tag=" + Long.toHexString(System.nanoTime());
     String response = "SIP/2.0 603 Decline\\r\\nVia: " + activeInviteVia + "\\r\\nFrom: " + activeInviteFrom
-      + "\r\nTo: " + toWithTag + "\r\nCall-ID: " + activeInviteCallId + "\r\nCSeq: " + activeInviteCSeq
-      + "\r\nUser-Agent: Planipret Native KeepAlive\r\nContent-Length: 0\r\n\r\n";
+      + "\\r\\nTo: " + toWithTag + "\\r\\nCall-ID: " + activeInviteCallId + "\\r\\nCSeq: " + activeInviteCSeq
+      + "\\r\\nUser-Agent: Planipret Native KeepAlive\\r\\nContent-Length: 0\\r\\n\\r\\n";
     sendFrame(response);
     clearIncomingNotification(this);
     clearActiveInvite();
