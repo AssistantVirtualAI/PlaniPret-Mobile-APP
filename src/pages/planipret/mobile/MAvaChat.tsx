@@ -367,11 +367,6 @@ export default function MAvaChat() {
           </SheetContent>
         </Sheet>
         <div className="flex items-center gap-2 flex-1 min-w-0">
-          <div className="relative w-9 h-9 rounded-full flex items-center justify-center shrink-0" style={{ background: "conic-gradient(from 0deg, #7C3AED, #2E9BDC, #00D4AA, #7C3AED)", padding: 2 }}>
-            <div className="w-full h-full rounded-full flex items-center justify-center overflow-hidden" style={{ background: "var(--pp-bg-surface)" }}>
-              <img src={avaLogo.url} alt="AVA" className="w-full h-full object-contain p-0.5" />
-            </div>
-          </div>
           <div className="flex flex-col min-w-0">
             <div className="font-semibold truncate leading-tight" style={{ color: "var(--pp-text-primary)", fontFamily: "Urbanist,sans-serif" }}>{currentTitle}</div>
             <div className="text-[10px] leading-tight" style={{ color: "var(--pp-text-muted)", letterSpacing: "0.08em" }}>{t("avaChat.assistantLabel")}</div>
