@@ -150,8 +150,12 @@ export default function MMore() {
     toast.success(t("more.msDisconnected"));
   };
 
+  const { subscribe: subscribeNativePush } = usePlanipretPush();
   const toggleNotif = async (on: boolean) => {
-    if (on && "Notification" in window) {
+    if (on && Capacitor.isNativePlatform()) {
+      const ok = await subscribeNativePush(profile.user_id);
+      if (!ok) return;
+    } else if (on && "Notification" in window) {
       const perm = await Notification.requestPermission();
       if (perm !== "granted") { toast.error(t("more.permissionDenied")); return; }
     }

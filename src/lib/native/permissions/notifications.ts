@@ -3,6 +3,26 @@ import { supabase } from "@/integrations/supabase/client";
 import { ensureIncomingCallActionType, showIncomingCallNotification } from "./localCallNotifications";
 
 let listenersRegistered = false;
+const PENDING_INCOMING_KEY = "pp.pending-incoming-action.v1";
+
+type IncomingNotificationAction = "open" | "answer" | "decline";
+
+function publishIncomingAction(callId: string, action: IncomingNotificationAction, from?: string) {
+  if (!callId) return;
+  const detail = { callId, action, from: from ?? "", ts: Date.now() };
+  try { sessionStorage.setItem(PENDING_INCOMING_KEY, JSON.stringify(detail)); } catch { /* ignore */ }
+  try { window.dispatchEvent(new CustomEvent("pp:incoming-notification-action", { detail })); } catch { /* ignore */ }
+  // Keep the mounted shell alive. A full location.assign() reload used to lose
+  // the native INVITE and leave the user on the calls/home page with no controls.
+  try {
+    if (!window.location.pathname.startsWith("/mplanipret")) {
+      window.location.assign("/mplanipret/calls");
+    } else if (window.location.pathname !== "/mplanipret/calls") {
+      window.history.replaceState(window.history.state, "", "/mplanipret/calls");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    }
+  } catch { /* ignore */ }
+}
 
 export async function ensureNotifications(extension?: string): Promise<PermStatus> {
   let status: PermStatus = "unavailable";
@@ -71,14 +91,32 @@ export async function registerPushListeners(extension?: string) {
           from: data.from ?? data.callerName ?? notif.title ?? "Unknown caller",
         });
       }
+      else if (notif.title) {
+        // Foreground pushes are not surfaced by the OS — mirror them locally so
+        // SMS / voicemail / AI alerts always appear on the device.
+        try {
+          const { LocalNotifications } = await import("@capacitor/local-notifications");
+          await LocalNotifications.schedule({
+            notifications: [{
+              id: Math.floor(Math.random() * 1_000_000_000),
+              title: notif.title,
+              body: notif.body ?? "",
+              channelId: data.category === "sms" ? "sms" : data.category === "voicemail" ? "voicemail" : "planipret_default",
+              extra: data,
+            }],
+          });
+        } catch { /* ignore */ }
+      }
     });
 
     PushNotifications.addListener("pushNotificationActionPerformed", (action) => {
       const data = (action.notification?.data ?? {}) as Record<string, string>;
       const callId = data.call_id ?? data.ns_callid ?? "";
       if (callId) {
-        const act = action.actionId === "decline" ? "decline" : "answer";
-        try { window.location.assign(`/mplanipret/calls?incoming=${encodeURIComponent(callId)}&action=${act}`); } catch { /* ignore */ }
+        const act: IncomingNotificationAction = action.actionId === "decline"
+          ? "decline"
+          : action.actionId === "answer" ? "answer" : "open";
+        publishIncomingAction(callId, act, data.from ?? action.notification?.body);
       }
     });
 
@@ -87,10 +125,14 @@ export async function registerPushListeners(extension?: string) {
       await ensureIncomingCallActionType();
       LocalNotifications.addListener("localNotificationActionPerformed", (event) => {
         const data = (event.notification?.extra ?? {}) as Record<string, string>;
-        const callId = data.callId ?? "";
+        // Native PpSipKeepAlive uses pp_call_id; JS-scheduled notifications use
+        // callId. Accept both so a banner tap always restores the ringing UI.
+        const callId = data.callId ?? data.pp_call_id ?? "";
         if (callId) {
-          const act = event.actionId === "decline" ? "decline" : "answer";
-          try { window.location.assign(`/mplanipret/calls?incoming=${encodeURIComponent(callId)}&action=${act}`); } catch { /* ignore */ }
+          const act: IncomingNotificationAction = event.actionId === "decline"
+            ? "decline"
+            : event.actionId === "answer" ? "answer" : "open";
+          publishIncomingAction(callId, act, event.notification?.body);
         }
       });
     } catch { /* ignore */ }

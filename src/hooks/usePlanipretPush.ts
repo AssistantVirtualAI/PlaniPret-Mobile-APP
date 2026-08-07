@@ -29,6 +29,20 @@ export function usePlanipretPush() {
   const [busy, setBusy] = useState(false);
 
   const subscribe = useCallback(async (userId: string) => {
+    // Native builds (iOS/Android) use APNs/FCM device tokens, not Web Push.
+    try {
+      const { Capacitor } = await import("@capacitor/core");
+      if (Capacitor.isNativePlatform()) {
+        setBusy(true);
+        try {
+          const { ensureNotifications } = await import("@/lib/native/permissions/notifications");
+          const status = await ensureNotifications();
+          if (status === "granted") { toast.success("Notifications activées ✅"); return true; }
+          toast.error("Permission de notification refusée");
+          return false;
+        } finally { setBusy(false); }
+      }
+    } catch { /* fall through to web push */ }
     if (!("serviceWorker" in navigator) || !("PushManager" in window)) { toast.error("Notifications non supportées par ce navigateur"); return false; }
     const publicKey = await fetchVapidPublicKey();
     if (!publicKey) { toast.error("Clé VAPID non configurée (Intégrations → Web Push)"); return false; }
