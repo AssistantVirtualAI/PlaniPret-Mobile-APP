@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import { X, Mic, Send, Settings, AlertTriangle, Sparkles, PhoneOutgoing, MessageSquare, Search, Calendar, Mail, Bot, Map } from "lucide-react";
 import avaLogo from "@/assets/ava-statistics-logo.png.asset.json";
 import AvaOrb, { useAnalyserLevel } from "@/components/planipret/mobile/AvaOrb";
+import AiConsentGate, { hasAiConsent } from "@/components/planipret/mobile/AiConsentGate";
 import VoiceSettingsSheet from "@/components/planipret/mobile/VoiceSettingsSheet";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { getAvaToolLabel } from "@/lib/i18n/avaToolLabels";
@@ -80,6 +81,7 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
   const { lang } = useMplanipretLang();
   const L = useCallback((fr: string, en: string) => (lang === "en" ? en : fr), [lang]);
   const toolLabel = useCallback((name: string) => getAvaToolLabel(name, lang), [lang]);
+  const [aiConsent, setAiConsentState] = useState<boolean>(() => hasAiConsent());
   const [voiceSheetOpen, setVoiceSheetOpen] = useState(false);
   const [state, setState] = useState<AgentState>("idle");
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
@@ -246,6 +248,7 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
   }, [sessionId, userId]);
 
   useEffect(() => {
+    if (!aiConsent) return;
     let cancelled = false;
     (async () => {
       try {
@@ -479,7 +482,7 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initAttempt, lang]);
+  }, [initAttempt, lang, aiConsent]);
 
   const retryConnection = useCallback(() => {
     sessionRowIdRef.current = null;
@@ -550,6 +553,14 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
 
   // ─── render ────────────────────────────────────────────────────
   const ToolIcon = currentTool ? TOOL_ICONS[currentTool] ?? Sparkles : null;
+
+  if (!aiConsent) {
+    return (
+      <div className="absolute inset-0 z-[60]" style={{ background: "rgba(4,11,22,0.97)" }}>
+        <AiConsentGate onAccept={() => setAiConsentState(true)} onDecline={() => (onFallbackToChat ? onFallbackToChat() : onClose())} />
+      </div>
+    );
+  }
 
   return (
     <div className="absolute inset-0 z-[60] flex flex-col" style={{ background: "rgba(4,11,22,0.97)", backdropFilter: "blur(20px)", paddingTop: "calc(env(safe-area-inset-top, 0px) + 20px)", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 8px)" }}>

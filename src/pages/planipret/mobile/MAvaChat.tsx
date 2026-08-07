@@ -9,6 +9,7 @@ import { toast } from "sonner";
 import { Send, Plus, Menu, Loader2, Sparkles, Mic, Square, Volume2, VolumeX, CheckCircle2, MessageSquare, Radio, ChevronLeft, ChevronRight } from "lucide-react";
 import AvaVoiceAgent from "@/components/planipret/mobile/AvaVoiceAgent";
 import AvaOrb from "@/components/planipret/mobile/AvaOrb";
+import AiConsentGate, { hasAiConsent } from "@/components/planipret/mobile/AiConsentGate";
 import AvaMaestroStatus from "@/components/planipret/mobile/AvaMaestroStatus";
 import VoiceSettingsSheet from "@/components/planipret/mobile/VoiceSettingsSheet";
 import avaLogo from "@/assets/ava-statistics-logo.png.asset.json";
@@ -35,6 +36,7 @@ const CANCEL_RE = /^(non|annule|annuler|stop|cancel|cancelled?|no|n\b)/i;
 export default function MAvaChat() {
   const [userId, setUserId] = useState<string | null>(null);
   const [voiceAgentAllowed, setVoiceAgentAllowed] = useState(false);
+  const [aiConsent, setAiConsentState] = useState<boolean>(() => hasAiConsent());
   const [mode, setMode] = useState<"chat" | "voice">(() => (localStorage.getItem("ava_mode") as any) || "chat");
   const [voiceSettingsOpen, setVoiceSettingsOpen] = useState(false);
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -329,6 +331,14 @@ export default function MAvaChat() {
         {voiceSettingsOpen && (
           <VoiceSettingsSheet userId={userId} onClose={() => setVoiceSettingsOpen(false)} />
         )}
+      </div>
+    );
+  }
+
+  if (!aiConsent) {
+    return (
+      <div className="relative" style={{ height: "calc(100dvh - 242px)", minHeight: 400, background: "var(--pp-bg-base)" }}>
+        <AiConsentGate onAccept={() => setAiConsentState(true)} />
       </div>
     );
   }

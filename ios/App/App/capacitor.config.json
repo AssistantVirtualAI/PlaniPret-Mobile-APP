@@ -52,7 +52,6 @@
 		"PreferencesPlugin",
 		"PushNotificationsPlugin",
 		"SplashScreenPlugin",
-		"StatusBarPlugin",
-		"CapacitorUpdaterPlugin"
+		"StatusBarPlugin"
 	]
 }
