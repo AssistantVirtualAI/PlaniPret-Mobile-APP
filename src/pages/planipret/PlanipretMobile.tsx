@@ -19,7 +19,6 @@ import { prefetchRoute, scheduleIdlePrefetch, prefetchAllMplanipret } from "@/li
 import { useAvaNavigation } from "@/hooks/useAvaNavigation";
 const AvaVoiceAgent = lazy(() => import("@/components/planipret/mobile/AvaVoiceAgent"));
 import AvaChatSheet from "@/components/planipret/mobile/AvaChatSheet";
-import avaLogoAsset from "@/assets/ava-statistics-logo.png.asset.json";
 import planipretLogoAsset from "@/assets/planipret-logo.png.asset.json";
 import MobileAuthScreen from "@/components/planipret/mobile/MobileAuthScreen";
 import MobileHeaderControls from "@/components/planipret/mobile/MobileHeaderControls";
@@ -49,28 +48,6 @@ function ppWithTimeout<T>(p: PromiseLike<T>, ms: number, label: string): Promise
 
 
 const ACCENT = "#2E9BDC";
-
-const AvaBadge = ({ compact = false, circle = false }: { compact?: boolean; circle?: boolean }) => {
-  const size = circle ? "100%" : compact ? 18 : 34;
-  return (
-    <div
-      aria-label="AVA"
-      style={{
-        width: size,
-        height: size,
-        borderRadius: "50%",
-        overflow: "hidden",
-        display: "inline-flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "#0A1628",
-        boxShadow: compact ? undefined : "0 0 12px rgba(124,58,237,0.35)",
-      }}
-    >
-      <img src={avaLogoAsset.url} alt="AVA" style={{ width: "100%", height: "100%", objectFit: "cover" }} />
-    </div>
-  );
-};
 
 const PlanipretBadge = () => (
   <div
