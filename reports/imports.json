@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-08-08T01:35:57.982Z",
+  "generatedAt": "2026-08-08T03:05:24.097Z",
   "entry": [
     "src/index.tsx"
   ],
@@ -8,7 +8,7 @@
     "localImportsChecked": 455,
     "bundledFiles": 184,
     "missing": 0,
-    "orphanFiles": 887,
+    "orphanFiles": 890,
     "orphanBrokenImports": 0
   },
   "missing": [],
@@ -634,7 +634,10 @@
     "src/lib/planipret/audio/bluetoothManager.ts",
     "src/lib/planipret/audio/rnnoise.ts",
     "src/lib/planipret/audio/vad.ts",
+    "src/lib/planipret/brokerAccess.ts",
+    "src/lib/planipret/brokerFormat.ts",
     "src/lib/planipret/brokerStats.ts",
+    "src/lib/planipret/commissionStats.ts",
     "src/lib/planipret/design-tokens.ts",
     "src/lib/planipret/pricing.ts",
     "src/lib/planipret/sip/__tests__/ppSipProvider.nativeGuard.test.ts",

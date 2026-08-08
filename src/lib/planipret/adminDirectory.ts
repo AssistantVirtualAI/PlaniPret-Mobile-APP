@@ -47,8 +47,13 @@ export async function getPlanipretBrokerDirectory() {
 
   try {
     const t0 = performance.now();
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) {
+      return { brokers: localList, count: localList.length, nsDomain: null, nsError: "not_authenticated", debug };
+    }
     const { data: nsRes, error: nsErr } = await supabase.functions.invoke("pp-ns-users", { body: {} });
     if (nsErr) throw new Error(nsErr.message);
+
     if ((nsRes as any)?.ok) {
       const nsBrokersRaw = (((nsRes as any).brokers ?? []) as PlanipretBrokerRow[]).filter(isPlanipretActiveBroker);
       // Dedupe by user_id (pp-ns-users can emit the same broker twice — once
