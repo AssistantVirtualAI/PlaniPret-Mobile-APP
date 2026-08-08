@@ -112,6 +112,8 @@ export default function MContacts() {
   const { openDialer } = useOutletContext<PlanipretMobileContext>();
   const navigate = useNavigate();
   const [tab, setTab] = useState<Tab>("personal");
+  const [syncingM365, setSyncingM365] = useState(false);
+
   const [q, setQ] = useState("");
   const [personal, setPersonal] = useState<any[]>(() => {
     const cached = peekPpContacts("list");
@@ -370,6 +372,31 @@ export default function MContacts() {
             <Plus className="w-3.5 h-3.5" /> {t("common.new") || "Nouveau"}
           </button>
         )}
+        {tab === "clients" && (
+          <button
+            disabled={syncingM365}
+            onClick={async () => {
+              setSyncingM365(true);
+              try {
+                const { data, error } = await supabase.functions.invoke("maestro-m365-contact-sync", { body: { limit: 200 } });
+                if (error) throw new Error(error.message);
+                if (!data?.success) throw new Error(data?.error || "Échec de la synchronisation");
+                toast.success(`${data.synced} client(s) synchronisé(s) vers Outlook`, {
+                  description: data.failed ? `${data.failed} échec(s)` : undefined,
+                });
+              } catch (e: any) {
+                toast.error("Synchronisation Outlook impossible", { description: e?.message });
+              } finally {
+                setSyncingM365(false);
+              }
+            }}
+            className="flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-semibold active:scale-95 transition disabled:opacity-60"
+            style={{ background: "var(--pp-brand-accent-2)", border: "1px solid var(--pp-brand-accent)", color: "#fff" }}>
+            {syncingM365 ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Mail className="w-3.5 h-3.5" />}
+            Outlook
+          </button>
+        )}
+
       </div>
 
       {tab === "personal" && contactsPerm !== "unavailable" && (
@@ -702,7 +729,26 @@ function CreateContactSheet({ onClose, onCreated }: { onClose: () => void; onCre
       if (error) throw error;
       if ((data as any)?.error) throw new Error((data as any).error);
       toast.success(t("contacts.created") || "Contact créé");
+
+      // Maestro's API is read-only for client creation: try it, and if it is
+      // refused, open the prefilled Maestro web form so the broker can finish.
+      if (form.phone) {
+        try {
+          const { data: mc } = await supabase.functions.invoke("maestro-client-create", {
+            body: { phone: form.phone, first_name: form.first_name, last_name: form.last_name, email: form.email },
+          });
+          if ((mc as any)?.success) {
+            toast.success("Client créé dans Maestro");
+          } else if ((mc as any)?.web_url) {
+            toast.info("Terminer la création dans Maestro", {
+              description: "Le formulaire s'ouvre prérempli.",
+              action: { label: "Ouvrir", onClick: () => window.open((mc as any).web_url, "_blank") },
+            });
+          }
+        } catch { /* non bloquant */ }
+      }
       onCreated();
+
     } catch (e: any) {
       toast.error(t("contacts.createFailed") || "Échec création", { description: e?.message });
     } finally {

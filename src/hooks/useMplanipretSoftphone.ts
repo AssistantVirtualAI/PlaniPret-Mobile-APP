@@ -1562,6 +1562,18 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       : (restCall?.id && !hasLiveSipSession) ? void restControl("dtmf", { digit: k }) : ppSipProvider.sendDTMF(k),
     transfer: (t: string) => (restCall?.id && !hasLiveSipSession) ? void restControl("transfer", { destination: t, target: t }) : ppSipProvider.transfer(t),
     setSpeaker: (on: boolean) => hasNativeCall ? void nativeSip.setSpeaker(on) : undefined,
+
+    // ---- Multi-ligne (2e appel + conférence 3 voies) --------------------
+    // Disponible uniquement sur la pile JsSIP/WebRTC : le moteur natif PJSIP
+    // n'expose pas encore de 2e ligne.
+    multiLineSupported: hasLiveSipSession && !hasNativeCall,
+    callSecond: (n: string) => ppSipProvider.callSecond(n),
+    hangupSecond: () => ppSipProvider.hangupSecond(),
+    answerSecond: () => ppSipProvider.answerSecond(),
+    declineSecond: () => ppSipProvider.declineSecond(),
+    swapLines: () => ppSipProvider.swapLines(),
+    mergeLines: () => ppSipProvider.mergeLines(),
+
     // The provider owns a persistent hidden <audio> sink; screens must not
     // detach it on unmount (that killed remote audio mid-call).
     setAudioEl: (_el: HTMLAudioElement | null) => {},

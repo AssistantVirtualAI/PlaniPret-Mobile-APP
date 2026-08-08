@@ -68,6 +68,10 @@ export interface PpSipSnapshot {
   startedAt: number | null;
   errorCause?: string;
   lastRegistrationAt: number | null;
+  /** 2e ligne (appel supplémentaire) — null quand il n'y en a pas. */
+  second?: { state: PpCallState; number: string; name: string; startedAt: number | null } | null;
+  /** true quand les deux lignes sont fusionnées en conférence à trois. */
+  conference?: boolean;
 }
 
 
@@ -176,6 +180,12 @@ type EventsListener = (e: PpSipEvent[]) => void;
 class PpSipProvider {
   private ua: any = null;
   private session: any = null;
+  /** 2e ligne (multi-appel / conférence). */
+  private secondSession: any = null;
+  private expectingSecond = false;
+  private confCtx: AudioContext | null = null;
+  private confMic: MediaStream | null = null;
+  private secondAudioEl: HTMLAudioElement | null = null;
   private cfg: PpSipConfig | null = null;
   private listeners = new Set<Listener>();
   private eventListeners = new Set<EventsListener>();
@@ -678,8 +688,27 @@ class PpSipProvider {
       });
       ua.on("newRTCSession", (e: any) => {
         if (!isCurrentUa()) return;
+        // 2e appel demandé par l'utilisateur : ne jamais écraser la ligne 1.
+        if (this.expectingSecond && e.originator === "local") {
+          this.expectingSecond = false;
+          this.attachSecondSession(e.session);
+          return;
+        }
+        // Appel entrant pendant un appel en cours = appel en attente.
+        // Sans cette branche, le nouvel INVITE écrasait la session active et
+        // l'appel courant était perdu.
+        if (e.originator === "remote" && this.session && this.isLineBusy()) {
+          if (this.secondSession) {
+            // Deux lignes déjà occupées → 486 Busy Here.
+            try { e.session.terminate({ status_code: 486, reason_phrase: "Busy Here" }); } catch {}
+            return;
+          }
+          this.attachSecondSession(e.session, true);
+          return;
+        }
         this.attachSession(e.session, e.originator);
       });
+
 
       this.ua = ua;
       ua.start();
@@ -881,6 +910,32 @@ class PpSipProvider {
     // keeping it after the call ends blocks every later REGISTER refresh.
     this.pendingAnswer = null;
     this.pendingDecline = null;
+
+    // Si une 2e ligne existe encore, elle devient l'appel courant au lieu de
+    // fermer l'écran d'appel.
+    if (this.secondSession) {
+      const promoted = this.secondSession;
+      const info = this.snap.second;
+      this.secondSession = null;
+      this.teardownConferenceMix();
+      this.session = promoted;
+      try { promoted.unhold(); } catch {}
+      this.update({
+        callState: "active",
+        remoteIdentity: info?.name || info?.number || "",
+        remoteNumber: info?.number || "",
+        direction: "out",
+        startedAt: info?.startedAt ?? Date.now(),
+        muted: false,
+        onHold: false,
+        second: null,
+        conference: false,
+      });
+      this.attachRemoteAudio((promoted as any).connection);
+      return;
+    }
+
+    this.teardownConferenceMix();
     this.update({
       callState: "idle",
       remoteIdentity: "",
@@ -890,6 +945,8 @@ class PpSipProvider {
       startedAt: null,
       muted: false,
       onHold: false,
+      second: null,
+      conference: false,
     });
   }
 
@@ -986,7 +1043,13 @@ class PpSipProvider {
     }
   }
 
-  hangup() { try { this.session?.terminate(); } catch {} }
+  hangup() {
+    // En conférence / 2e ligne : raccrocher termine TOUTES les jambes.
+    try { this.secondSession?.terminate(); } catch {}
+    this.secondSession = null;
+    this.teardownConferenceMix();
+    try { this.session?.terminate(); } catch {}
+  }
   mute() { this.session?.mute({ audio: true }); this.update({ muted: true }); }
   unmute() { this.session?.unmute({ audio: true }); this.update({ muted: false }); }
   /** Native PJSIP calls have no JsSIP session: reflect their mute state in the snapshot. */
@@ -999,6 +1062,270 @@ class PpSipProvider {
     if (!this.session || !this.cfg) return;
     this.session.refer(`sip:${target}@${this.cfg.sipDomain}`);
   }
+
+  // ---------------------------------------------------------------------
+  // Multi-ligne : 2e appel, permutation, conférence 3 voies
+  // ---------------------------------------------------------------------
+
+  hasSecondLine() { return !!this.secondSession; }
+
+  /**
+   * Place un 2e appel : la ligne courante passe automatiquement en attente,
+   * puis un nouvel INVITE part vers `number`. La 2e session est suivie
+   * séparément (`snap.second`) pour ne jamais écraser l'appel principal.
+   */
+  async callSecond(number: string) {
+    if (!this.cfg || !this.ua) throw new Error("softphone_not_registered");
+    if (!this.session) throw new Error("no_active_call");
+    if (this.secondSession) throw new Error("second_line_busy");
+
+    try { if (!this.snap.onHold) this.session.hold(); } catch {}
+
+    const mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      video: false,
+    });
+    this.expectingSecond = true;
+    this.update({ second: { state: "ringing-out", number, name: number, startedAt: null } });
+    try {
+      const target = `sip:${number}@${this.cfg.sipDomain}`;
+      const session = this.ua.call(target, {
+        mediaStream,
+        mediaConstraints: { audio: true, video: false },
+        rtcOfferConstraints: { offerToReceiveAudio: true, offerToReceiveVideo: false },
+      });
+      if (!session) throw new Error("call_session_not_created");
+    } catch (err: any) {
+      this.expectingSecond = false;
+      this.update({ second: null });
+      try { this.session?.unhold(); } catch {}
+      this.log("error", `second call failed: ${err?.message || err}`);
+      throw err;
+    }
+  }
+
+  /** Raccroche uniquement la 2e ligne et reprend la première. */
+  hangupSecond() {
+    try { this.secondSession?.terminate(); } catch {}
+    this.secondSession = null;
+    this.teardownConferenceMix();
+    this.update({ second: null, conference: false });
+    try { if (this.snap.onHold) this.session?.unhold(); } catch {}
+  }
+
+  /** Permute la ligne active et la ligne en attente. */
+  swapLines() {
+    if (!this.session || !this.secondSession) return;
+    if (this.snap.conference) return;
+    const primary = this.session;
+    const second = this.secondSession;
+    try { if (!this.snap.onHold) primary.hold(); } catch {}
+    try { second.unhold(); } catch {}
+
+    // Échange des rôles : la 2e ligne devient l'appel affiché en grand.
+    this.session = second;
+    this.secondSession = primary;
+    const prevSecond = this.snap.second;
+    const prevMain = {
+      state: (this.snap.callState === "held" ? "held" : this.snap.callState) as PpCallState,
+      number: this.snap.remoteNumber,
+      name: this.snap.remoteIdentity,
+      startedAt: this.snap.startedAt,
+    };
+    this.update({
+      callState: "active",
+      onHold: false,
+      remoteIdentity: prevSecond?.name || prevSecond?.number || "",
+      remoteNumber: prevSecond?.number || "",
+      startedAt: prevSecond?.startedAt ?? Date.now(),
+      second: { ...prevMain, state: "held" },
+    });
+    this.attachRemoteAudio((second as any).connection);
+  }
+
+  /**
+   * Fusionne les deux lignes en conférence à trois.
+   * Le mixage est fait localement (WebAudio) : chaque correspondant reçoit
+   * micro + l'autre correspondant, et le courtier entend les deux.
+   */
+  async mergeLines(): Promise<boolean> {
+    const a = this.session;
+    const b = this.secondSession;
+    if (!a || !b) return false;
+    try {
+      try { a.unhold(); } catch {}
+      try { b.unhold(); } catch {}
+
+      const pcA: RTCPeerConnection | null = (a as any).connection ?? null;
+      const pcB: RTCPeerConnection | null = (b as any).connection ?? null;
+      if (!pcA || !pcB) throw new Error("no_peer_connections");
+
+      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      this.confCtx = ctx;
+      const mic = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: false,
+      });
+      this.confMic = mic;
+      const micSrc = ctx.createMediaStreamSource(mic);
+
+      const remote = (pc: RTCPeerConnection) => {
+        const tracks = (pc.getReceivers?.() ?? []).map((r) => r.track).filter((t) => t && t.kind === "audio") as MediaStreamTrack[];
+        return tracks.length ? ctx.createMediaStreamSource(new MediaStream(tracks)) : null;
+      };
+      const remA = remote(pcA);
+      const remB = remote(pcB);
+
+      const destA = ctx.createMediaStreamDestination();
+      const destB = ctx.createMediaStreamDestination();
+      micSrc.connect(destA); micSrc.connect(destB);
+      remB?.connect(destA);
+      remA?.connect(destB);
+
+      const swap = async (pc: RTCPeerConnection, dest: MediaStreamAudioDestinationNode) => {
+        const sender = (pc.getSenders?.() ?? []).find((s) => s.track?.kind === "audio");
+        const track = dest.stream.getAudioTracks()[0];
+        if (sender && track) await sender.replaceTrack(track);
+      };
+      await swap(pcA, destA);
+      await swap(pcB, destB);
+
+      // Le courtier doit entendre les deux correspondants.
+      this.attachRemoteAudio(pcA);
+      this.attachSecondaryAudio(pcB);
+
+      this.update({
+        conference: true,
+        callState: "active",
+        onHold: false,
+        second: this.snap.second ? { ...this.snap.second, state: "active" } : null,
+      });
+      this.log("info", "conference merge OK (3-way local mix)");
+      return true;
+    } catch (e: any) {
+      this.log("error", `conference merge failed: ${e?.message || e}`);
+      this.teardownConferenceMix();
+      return false;
+    }
+  }
+
+  private teardownConferenceMix() {
+    try { this.confMic?.getTracks().forEach((t) => t.stop()); } catch {}
+    this.confMic = null;
+    try { void this.confCtx?.close(); } catch {}
+    this.confCtx = null;
+    if (this.secondAudioEl) {
+      try { this.secondAudioEl.srcObject = null; this.secondAudioEl.remove(); } catch {}
+      this.secondAudioEl = null;
+    }
+  }
+
+  private attachSecondaryAudio(pc: RTCPeerConnection | null) {
+    try {
+      if (!pc || typeof document === "undefined") return;
+      if (!this.secondAudioEl) {
+        const el = document.createElement("audio");
+        el.autoplay = true;
+        (el as any).playsInline = true;
+        el.setAttribute("playsinline", "true");
+        el.style.display = "none";
+        document.body.appendChild(el);
+        this.secondAudioEl = el;
+      }
+      const tracks = (pc.getReceivers?.() ?? []).map((r) => r.track).filter((t) => t && t.kind === "audio") as MediaStreamTrack[];
+      if (!tracks.length) return;
+      const stream = new MediaStream(tracks);
+      this.secondAudioEl.srcObject = stream;
+      this.secondAudioEl.muted = false;
+      this.secondAudioEl.volume = 1;
+      void this.secondAudioEl.play().catch(() => {});
+    } catch {}
+  }
+
+  private attachSecondSession(session: any, incoming = false) {
+    this.secondSession = session;
+    const remoteUri = session.remote_identity?.uri?.user || "";
+    const remoteName = session.remote_identity?.display_name || remoteUri;
+    const patchSecond = (p: Partial<NonNullable<PpSipSnapshot["second"]>>) => {
+      const cur = this.snap.second ?? {
+        state: (incoming ? "ringing-in" : "ringing-out") as PpCallState,
+        number: remoteUri, name: remoteName, startedAt: null,
+      };
+      this.update({ second: { ...cur, ...p } });
+    };
+    if (incoming) {
+      this.log("info", "call waiting: 2nd INVITE parked on line 2", { from: remoteUri });
+      this.update({ second: { state: "ringing-in", number: remoteUri, name: remoteName, startedAt: null } });
+      try { navigator.vibrate?.([180, 120, 180]); } catch {}
+    } else {
+      patchSecond({ number: remoteUri || this.snap.second?.number || "", name: remoteName || this.snap.second?.name || "" });
+    }
+
+    session.on("progress", () => { if (!incoming) patchSecond({ state: "ringing-out" }); });
+    session.on("confirmed", () => {
+      patchSecond({ state: "active", startedAt: Date.now() });
+      this.attachSecondaryAudio((session as any).connection);
+    });
+    session.on("accepted", () => this.attachSecondaryAudio((session as any).connection));
+    const ended = () => {
+      if (this.secondSession !== session) return;
+      this.secondSession = null;
+      this.teardownConferenceMix();
+      this.update({ second: null, conference: false });
+      // En conférence, la fin d'une jambe laisse l'appel principal actif.
+      try { if (this.snap.onHold) this.session?.unhold(); } catch {}
+    };
+    session.on("failed", ended);
+    session.on("ended", ended);
+  }
+
+  /** true quand la ligne 1 porte un appel réel (sonnerie sortante incluse). */
+  private isLineBusy() {
+    const s = this.snap.callState;
+    return s === "active" || s === "held" || s === "ringing-out" || s === "ringing-in";
+  }
+
+  /**
+   * Appel en attente : répond au 2e appel entrant en mettant automatiquement
+   * le premier en attente. La ligne 1 n'est jamais raccrochée.
+   */
+  async answerSecond(): Promise<boolean> {
+    const second = this.secondSession;
+    if (!second || this.snap.second?.state !== "ringing-in") return false;
+    try { if (!this.snap.onHold) this.session?.hold(); } catch {}
+    let mediaStream: MediaStream | undefined;
+    try {
+      mediaStream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: false,
+      });
+    } catch (e: any) {
+      this.log("warn", `answerSecond: mic unavailable (${e?.name || e})`);
+    }
+    try {
+      second.answer({
+        ...(mediaStream ? { mediaStream } : {}),
+        mediaConstraints: { audio: true, video: false },
+        rtcAnswerConstraints: { offerToReceiveAudio: true, offerToReceiveVideo: false },
+      });
+      this.update({ second: { ...(this.snap.second!), state: "active", startedAt: Date.now() } });
+      this.log("info", "call waiting answered on line 2");
+      return true;
+    } catch (e: any) {
+      this.log("error", `answerSecond failed: ${e?.message || e}`);
+      try { this.session?.unhold(); } catch {}
+      return false;
+    }
+  }
+
+  /** Refuse l'appel en attente sans toucher à l'appel en cours. */
+  declineSecond() {
+    try { this.secondSession?.terminate({ status_code: 486, reason_phrase: "Busy Here" }); } catch {}
+    this.secondSession = null;
+    this.update({ second: null });
+  }
+
+
 
   // ---- Quality/handover helpers used by the audio & network modules ----
   getActivePeerConnection(): RTCPeerConnection | null {

@@ -8,13 +8,16 @@ import { motion, AnimatePresence } from "framer-motion";
 import { supabase } from "@/integrations/supabase/client";
 import {
   Mic, MicOff, Pause, Play, PhoneForwarded, Grid3X3, PhoneOff, Phone,
-  User, Search, X, ChevronLeft, Activity, Volume2, VolumeX, Bluetooth,
+  User, Search, X, ChevronLeft, ChevronDown, Activity, Volume2, VolumeX, Bluetooth,
+  UserPlus, ArrowLeftRight, Users,
 } from "lucide-react";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import type { useMplanipretSoftphone } from "@/hooks/useMplanipretSoftphone";
 import { audioRouter } from "@/lib/planipret/audio/audioRouter";
 import { playRecordingNotice, resetRecordingNotice } from "@/lib/planipret/audio/recordingNotice";
 import { formatSipParty } from "@/lib/planipret/sip/formatSipParty";
+import { callUi, useCallUi } from "@/lib/planipret/callUiStore";
+import PpCallPill from "./PpCallPill";
 import PpCallDiagnosticPanel from "./PpCallDiagnosticPanel";
 
 type Contact = {
@@ -51,11 +54,18 @@ export default function PpActiveCallScreen({
   softphone: ReturnType<typeof useMplanipretSoftphone>;
 }) {
   const { t } = useMplanipretLang();
-  const { snap, answer, hangup, mute, unmute, hold, unhold, sendDTMF, transfer, setAudioEl } = softphone;
+  const {
+    snap, answer, hangup, mute, unmute, hold, unhold, sendDTMF, transfer, setAudioEl,
+    multiLineSupported, callSecond, hangupSecond, swapLines, mergeLines,
+    answerSecond, declineSecond,
+  } = softphone;
+  const { minimized } = useCallUi();
+  const waitingCall = snap.second?.state === "ringing-in";
+
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [elapsed, setElapsed] = useState(0);
-  const [view, setView] = useState<"main" | "keypad" | "transfer">("main");
+  const [view, setView] = useState<"main" | "keypad" | "transfer" | "addcall">("main");
   const [dtmfBuf, setDtmfBuf] = useState("");
   const [transferQuery, setTransferQuery] = useState("");
   const [contacts, setContacts] = useState<Contact[]>([]);
@@ -63,6 +73,8 @@ export default function PpActiveCallScreen({
   const [diagOpen, setDiagOpen] = useState(false);
   const [speakerOn, setSpeakerOn] = useState(false);
   const [audioDev, setAudioDev] = useState(() => audioRouter.devices());
+  const [lineError, setLineError] = useState<string | null>(null);
+  const [merging, setMerging] = useState(false);
 
   useEffect(() => { setAudioEl(audioRef.current); return () => setAudioEl(null); }, [setAudioEl]);
 
@@ -78,8 +90,12 @@ export default function PpActiveCallScreen({
 
   // Reset transient state each new call
   useEffect(() => {
-    if (!active) { setView("main"); setDtmfBuf(""); setTransferQuery(""); setElapsed(0); }
+    if (!active) { setView("main"); setDtmfBuf(""); setTransferQuery(""); setElapsed(0); setLineError(null); callUi.reset(); }
   }, [active]);
+
+  // Un appel entrant — ou un appel en attente — doit revenir en plein écran.
+  useEffect(() => { if (snap.callState === "ringing-in" || waitingCall) callUi.restore(); }, [snap.callState, waitingCall]);
+
 
   // A call must never start on the loudspeaker: WebKit/WebRTC defaults to it
   // once the remote party answers, so we force the earpiece on connect.
@@ -116,9 +132,9 @@ export default function PpActiveCallScreen({
     return () => clearInterval(id);
   }, [snap.callState, snap.startedAt]);
 
-  // Load internal contacts when entering transfer view (once)
+  // Load internal contacts when entering transfer / add-call view (once)
   useEffect(() => {
-    if (view !== "transfer" || contacts.length > 0 || loadingContacts) return;
+    if ((view !== "transfer" && view !== "addcall") || contacts.length > 0 || loadingContacts) return;
     let cancelled = false;
     (async () => {
       setLoadingContacts(true);
@@ -168,6 +184,17 @@ export default function PpActiveCallScreen({
     setTimeout(() => hangup(), 400);
   }, [transfer, hangup]);
 
+  // 2e appel : le 1er passe automatiquement en attente côté provider.
+  const doAddCall = useCallback(async (target: string) => {
+    const to = target.trim(); if (!to) return;
+    setView("main");
+    setTransferQuery("");
+    setLineError(null);
+    try { await callSecond(to); }
+    catch (e: any) { setLineError(e?.message || "Impossible d'ajouter l'appel"); }
+  }, [callSecond]);
+
+
   if (!active) {
     return <audio ref={audioRef} autoPlay style={{ display: "none" }} />;
   }
@@ -193,18 +220,24 @@ export default function PpActiveCallScreen({
   const KEYS = ["1","2","3","4","5","6","7","8","9","*","0","#"];
 
   return (
+    <>
+    {minimized && !isIncoming && <PpCallPill snap={snap} onHangup={() => hangup()} />}
     <AnimatePresence>
       <motion.div
         key="pp-in-call"
         className="fixed inset-0 z-[80] flex flex-col overflow-hidden"
         initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
         style={{
+          // L'écran reste monté quand il est minimisé : la session WebRTC ne
+          // doit jamais être démontée, seul l'affichage est masqué.
+          display: minimized && !isIncoming ? "none" : "flex",
           background: "linear-gradient(160deg, #060D1A 0%, #0A1425 55%, #0D2540 100%)",
           color: "white",
           paddingTop: "env(safe-area-inset-top, 0px)",
           paddingBottom: "env(safe-area-inset-bottom, 0px)",
         }}
       >
+
         <audio ref={audioRef} autoPlay style={{ display: "none" }} />
 
         {/* Header */}
@@ -213,14 +246,19 @@ export default function PpActiveCallScreen({
             <button onClick={() => setView("main")} className="p-2 rounded-full" style={{ background: "rgba(255,255,255,0.08)" }}>
               <ChevronLeft className="w-5 h-5" />
             </button>
+          ) : !isIncoming ? (
+            <button onClick={() => callUi.minimize()} aria-label="Minimiser l'appel" className="p-2 rounded-full" style={{ background: "rgba(255,255,255,0.08)" }}>
+              <ChevronDown className="w-5 h-5" />
+            </button>
           ) : <div className="w-9" />}
           <div className="text-xs text-white/60 uppercase tracking-widest">
-            {view === "keypad" ? "Clavier" : view === "transfer" ? "Transférer" : (isIncoming ? "Entrant" : isOutgoingRinging ? "Sortant" : "En cours")}
+            {view === "keypad" ? "Clavier" : view === "transfer" ? "Transférer" : view === "addcall" ? "Ajouter un appel" : (isIncoming ? "Entrant" : isOutgoingRinging ? "Sortant" : "En cours")}
           </div>
           <button onClick={() => setDiagOpen(true)} aria-label="Diagnostic" className="p-2 rounded-full" style={{ background: "rgba(255,255,255,0.08)" }}>
             <Activity className="w-4 h-4" />
           </button>
         </div>
+
 
         <PpCallDiagnosticPanel open={diagOpen} onClose={() => setDiagOpen(false)} snap={snap} />
 
@@ -260,8 +298,8 @@ export default function PpActiveCallScreen({
           </div>
         )}
 
-        {/* Transfer view */}
-        {view === "transfer" && (
+        {/* Transfer / Add-call view */}
+        {(view === "transfer" || view === "addcall") && (
           <div className="flex-1 flex flex-col px-5 pt-2 min-h-0">
             <div className="relative">
               <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-white/50" />
@@ -278,15 +316,17 @@ export default function PpActiveCallScreen({
               )}
             </div>
 
-            {/* Quick action: transfer to typed string as-is */}
+            {/* Quick action: dial/transfer the typed string as-is */}
             {transferQuery.trim() && !filteredContacts.some((c) => contactDialTarget(c) === transferQuery.trim()) && (
               <button
-                onClick={() => doTransfer(transferQuery.trim())}
+                onClick={() => (view === "addcall" ? doAddCall(transferQuery.trim()) : doTransfer(transferQuery.trim()))}
                 className="mt-3 w-full flex items-center gap-3 px-4 py-3 rounded-xl text-left"
                 style={{ background: "rgba(46,155,220,0.15)", border: "1px solid rgba(46,155,220,0.35)" }}
               >
-                <PhoneForwarded className="w-4 h-4" />
-                <span className="text-sm">Transférer vers <b>{transferQuery.trim()}</b></span>
+                {view === "addcall" ? <UserPlus className="w-4 h-4" /> : <PhoneForwarded className="w-4 h-4" />}
+                <span className="text-sm">
+                  {view === "addcall" ? "Appeler " : "Transférer vers "}<b>{transferQuery.trim()}</b>
+                </span>
               </button>
             )}
 
@@ -302,7 +342,7 @@ export default function PpActiveCallScreen({
                   return (
                     <button
                       key={`${name}-${tgt}-${i}`}
-                      onClick={() => tgt && doTransfer(tgt)}
+                      onClick={() => tgt && (view === "addcall" ? doAddCall(tgt) : doTransfer(tgt))}
                       disabled={!tgt}
                       className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-left active:scale-[0.99] transition disabled:opacity-40"
                       style={{ background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.08)" }}
@@ -316,11 +356,81 @@ export default function PpActiveCallScreen({
                           {tgt || "—"}{c.source ? ` · ${c.source}` : ""}
                         </div>
                       </div>
-                      <PhoneForwarded className="w-4 h-4 text-white/60" />
+                      {view === "addcall" ? <UserPlus className="w-4 h-4 text-white/60" /> : <PhoneForwarded className="w-4 h-4 text-white/60" />}
                     </button>
                   );
                 })}
               </div>
+            </div>
+          </div>
+        )}
+
+
+        {/* Deuxième ligne / conférence */}
+        {view === "main" && !isIncoming && (snap.second || snap.conference || multiLineSupported) && (
+          <div className="shrink-0 px-4 pb-2">
+            {waitingCall && (
+              <div className="flex items-center gap-3 px-4 py-3 rounded-2xl mb-2"
+                style={{ background: "rgba(34,197,94,0.14)", border: "1px solid rgba(34,197,94,0.45)" }}>
+                <div className="w-9 h-9 rounded-full flex items-center justify-center animate-pulse" style={{ background: "rgba(34,197,94,0.28)" }}>
+                  <Phone className="w-4 h-4" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium truncate">{snap.second!.name || snap.second!.number}</div>
+                  <div className="text-[11px] text-white/70">Appel en attente</div>
+                </div>
+                <button onClick={() => declineSecond()} aria-label="Refuser le 2e appel"
+                  className="w-10 h-10 rounded-full flex items-center justify-center"
+                  style={{ background: "linear-gradient(135deg, #B91C1C, #E84C4C)" }}>
+                  <PhoneOff className="w-4 h-4" />
+                </button>
+                <button onClick={() => void answerSecond()} aria-label="Répondre au 2e appel"
+                  className="w-10 h-10 rounded-full flex items-center justify-center"
+                  style={{ background: "linear-gradient(135deg, #15803D, #22C55E)" }}>
+                  <Phone className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+            {snap.second && !waitingCall && (
+              <div className="flex items-center gap-3 px-4 py-3 rounded-2xl mb-2"
+                style={{ background: "rgba(46,155,220,0.12)", border: "1px solid rgba(46,155,220,0.30)" }}>
+                <div className="w-8 h-8 rounded-full flex items-center justify-center" style={{ background: "rgba(46,155,220,0.25)" }}>
+                  {snap.conference ? <Users className="w-4 h-4" /> : <Phone className="w-4 h-4" />}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium truncate">{snap.second.name || snap.second.number}</div>
+                  <div className="text-[11px] text-white/60">
+                    {snap.conference ? "En conférence" : snap.second.state === "ringing-out" ? "Sonnerie…" : "Ligne 2"}
+                  </div>
+                </div>
+                <button onClick={() => hangupSecond()} className="px-3 py-1.5 rounded-lg text-[11px] font-semibold"
+                  style={{ background: "rgba(232,76,76,0.20)", border: "1px solid rgba(232,76,76,0.45)" }}>
+                  Fin ligne 2
+                </button>
+              </div>
+            )}
+
+            {lineError && <div className="text-[11px] mb-2 px-1" style={{ color: "#FCA5A5" }}>{lineError}</div>}
+            <div className="flex gap-2">
+              {!snap.second && multiLineSupported && snap.callState !== "ringing-out" && (
+                <LineBtn icon={<UserPlus className="w-4 h-4" />} label="Ajouter un appel" onClick={() => { setLineError(null); setTransferQuery(""); setView("addcall"); }} />
+              )}
+              {snap.second && !snap.conference && !waitingCall && (
+                <>
+                  <LineBtn icon={<ArrowLeftRight className="w-4 h-4" />} label="Permuter" onClick={() => swapLines()} />
+                  <LineBtn
+                    icon={<Users className="w-4 h-4" />}
+                    label={merging ? "Fusion…" : "Fusionner"}
+                    disabled={merging || snap.second.state !== "active"}
+
+                    onClick={async () => {
+                      setMerging(true); setLineError(null);
+                      try { await mergeLines(); } catch (e: any) { setLineError(e?.message || "Fusion impossible"); }
+                      finally { setMerging(false); }
+                    }}
+                  />
+                </>
+              )}
             </div>
           </div>
         )}
@@ -353,6 +463,7 @@ export default function PpActiveCallScreen({
           </div>
         )}
 
+
         {/* Bottom bar: answer/reject only for inbound calls */}
         {isIncoming && <div className="pb-8 pt-2 flex items-center justify-center gap-8">
           <>
@@ -370,8 +481,20 @@ export default function PpActiveCallScreen({
         </div>}
       </motion.div>
     </AnimatePresence>
+    </>
   );
 }
+
+function LineBtn({ icon, label, onClick, disabled }: { icon: React.ReactNode; label: string; onClick: () => void; disabled?: boolean }) {
+  return (
+    <button onClick={onClick} disabled={disabled}
+      className="flex-1 flex items-center justify-center gap-2 px-3 py-2.5 rounded-2xl text-xs font-semibold active:scale-[0.98] transition disabled:opacity-40"
+      style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.16)", color: "white" }}>
+      {icon}{label}
+    </button>
+  );
+}
+
 
 function CallBtn({ icon, label, onClick, active, danger }: { icon: React.ReactNode; label: string; onClick: () => void; active?: boolean; danger?: boolean }) {
   return (
