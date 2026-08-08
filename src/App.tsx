@@ -31,6 +31,7 @@ const MContacts = lazyWithRetry(() => import('@/pages/planipret/mobile/MContacts
 const MMore = lazyWithRetry(() => import('@/pages/planipret/mobile/MMore'), 'MMore');
 const MPipeline = lazyWithRetry(() => import('@/pages/planipret/mobile/MPipeline'), 'MPipeline');
 const MSearch = lazyWithRetry(() => import('@/pages/planipret/mobile/MSearch'), 'MSearch');
+const MAvaDirectory = lazyWithRetry(() => import('@/pages/planipret/mobile/MAvaDirectory'), 'MAvaDirectory');
 const MStats = lazyWithRetry(() => import('@/pages/planipret/mobile/MStats'), 'MStats');
 const MAvaChat = lazyWithRetry(() => import('@/pages/planipret/mobile/MAvaChat'), 'MAvaChat');
 const MAvaNotifications = lazyWithRetry(() => import('@/pages/planipret/mobile/MAvaNotifications'), 'MAvaNotifications');
@@ -164,6 +165,7 @@ export default function App() {
                     <Route path="more" element={<MMore />} />
                     <Route path="pipeline" element={<MPipeline />} />
                     <Route path="search" element={<MSearch />} />
+                    <Route path="directory" element={<MAvaDirectory />} />
                     <Route path="stats" element={<MStats />} />
                     <Route path="ava" element={<MAvaChat />} />
                     <Route path="change-password" element={<MChangePassword />} />
