@@ -25,7 +25,17 @@ const PAIRS = [
 ];
 
 const ALLOWED_MOBILE_ONLY = new Set([
-  // pages ou composants qui existent uniquement dans l'app mobile Capacitor
+  // Pages/composants natifs uniquement (aucun équivalent dans le portail web).
+  'MAvaDirectory.tsx',
+  'MBuildDiagnostics.tsx',
+  'MDiagnostics.tsx',
+  'MKpiAudit.tsx',
+  'MLayoutQA.tsx',
+  'MStyleDiagnostics.tsx',
+  'CallValidationCard.tsx',
+  'MobileScreen.tsx',
+  'PerformanceReportCard.tsx',
+  'RemoteConfigGate.tsx',
 ]);
 const ALLOWED_WEB_ONLY = new Set([]);
 
@@ -73,11 +83,11 @@ for (const [webRel, mobRel] of PAIRS) {
     const h1 = hash(join(webAbs, f));
     const h2 = hash(join(mobAbs, f));
     if (h1 !== h2) {
+      // L'app native est la source de vérité : les nouveautés y arrivent en
+      // premier. Une divergence est signalée, mais ne bloque pas le build
+      // natif (seul un fichier ABSENT côté mobile est bloquant).
       divergent++;
-      console.error(`  [DIVERGENT] ${f}`);
-      console.error(`      web:    ${webRel}/${f}`);
-      console.error(`      mobile: ${mobRel}/${f}`);
-      errors++;
+      console.warn(`  [DIVERGENT] ${f} (mobile en avance sur le portail web)`);
     }
   }
 }

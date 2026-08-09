@@ -14,17 +14,17 @@
 	},
 	"plugins": {
 		"CapacitorHttp": {
-			"enabled": true
+			"enabled": false
 		},
 		"SplashScreen": {
-			"launchShowDuration": 1800,
+			"launchAutoHide": true,
+			"launchShowDuration": 0,
+			"launchFadeOutDuration": 0,
 			"backgroundColor": "#0A1425",
 			"showSpinner": false
 		},
 		"StatusBar": {
-			"style": "light",
-			"backgroundColor": "#00000000",
-			"overlaysWebView": true
+			"style": "light"
 		},
 		"PushNotifications": {
 			"presentationOptions": [

@@ -1,6 +1,7 @@
 {
   "name": "planipret-mobile",
-  "version": "1.0.0",
+  "version": "1.0.16",
+  "androidVersionCode": 16,
   "description": "Planiprêt — Standalone Capacitor Mobile App (iOS + Android)",
   "private": true,
   "type": "module",
@@ -11,6 +12,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "audit:native": "node scripts/audit-native.mjs",
+    "apply:version": "node scripts/apply-version.mjs",
     "verify:android": "node scripts/verify-android.mjs",
     "audit:parity": "node scripts/audit-parity.mjs",
     "cap:add:ios": "cap add ios && node scripts/apply-native-config.mjs && node scripts/verify-ios-scene.mjs",
@@ -40,7 +42,8 @@
     "prebuild": "node scripts/check-imports.mjs",
     "ios:oneclick": "bash scripts/ios-oneclick.sh",
     "ios:oneclick:rebuild": "bash scripts/ios-oneclick.sh --rebuild-pjsip",
-    "verify:aor:mobile": "node scripts/verify-aor-mobile.mjs"
+    "verify:aor:mobile": "node scripts/verify-aor-mobile.mjs",
+    "ota:bundle": "PP_SKIP_AUTOSYNC=1 npm run build && node scripts/build-ota-bundle.mjs"
   },
   "dependencies": {
     "@capacitor-community/bluetooth-le": "^6.1.0",
@@ -60,6 +63,7 @@
     "@capacitor/push-notifications": "^6.0.2",
     "@capacitor/splash-screen": "^6.0.2",
     "@capacitor/status-bar": "^6.0.1",
+    "@capgo/capacitor-updater": "^6.3.0",
     "@elevenlabs/client": "^0.12.0",
     "@radix-ui/react-alert-dialog": "^1.1.4",
     "@radix-ui/react-dialog": "^1.1.4",

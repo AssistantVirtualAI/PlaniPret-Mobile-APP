@@ -19,6 +19,12 @@ function readCapacitorVersion(): string {
 
 const capacitorVersion = readCapacitorVersion();
 
+// L'updater OTA n'est présent que dans les builds natifs. Quand le paquet
+// n'est pas installé, on l'alias vers un stub pour ne pas casser le build web.
+const hasCapgoUpdater = fs.existsSync(
+  path.resolve(__dirname, 'node_modules/@capgo/capacitor-updater/package.json'),
+);
+
 export default defineConfig({
   plugins: [react()],
   resolve: {
@@ -32,9 +38,9 @@ export default defineConfig({
       // WebRTC transport, but the mobile app uses WebSocket transport only.
       // Drops ~1.17 MB from the bundle. See src/lib/livekit-shim.ts.
       'livekit-client': path.resolve(__dirname, './src/lib/livekit-shim.ts'),
-      // Stub @capgo/capacitor-updater — not installed (requires Capacitor 8);
-      // the OTA updater uses a dynamic import so the shim silently disables it.
-      '@capgo/capacitor-updater': path.resolve(__dirname, './src/lib/capgo-updater-shim.ts'),
+      ...(hasCapgoUpdater
+        ? {}
+        : { '@capgo/capacitor-updater': path.resolve(__dirname, './src/lib/capgo-updater-shim.ts') }),
     },
   },
   build: {

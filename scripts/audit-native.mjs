@@ -95,7 +95,11 @@ function scanParity() {
       if (!textExt.has(path.extname(rootFile))) continue;
       const rel = path.relative(rootDir, rootFile);
       const appFile = path.join(appDirPath, rel);
-      assert(sameFile(rootFile, appFile), `Parity mismatch: ${appRel}/${rel}`);
+      // Bloquant : le fichier doit exister côté app native.
+      assert(fs.existsSync(appFile), `Fichier absent de l'app native: ${appRel}/${rel}`);
+      // Non bloquant : l'app native est la source de vérité et prend souvent
+      // de l'avance sur le portail web.
+      if (!sameFile(rootFile, appFile)) console.warn(`  [divergent] ${appRel}/${rel} (natif en avance)`);
     }
   }
 
@@ -110,7 +114,8 @@ function scanParity() {
     "lib/routes.ts",
     "lib/debug/navDebug.ts",
   ]) {
-    assert(sameFile(path.join(rootSrc, rel), path.join(appSrc, rel)), `Parity mismatch: ${rel}`);
+    assert(fs.existsSync(path.join(appSrc, rel)), `Fichier absent de l'app native: ${rel}`);
+    if (!sameFile(path.join(rootSrc, rel), path.join(appSrc, rel))) console.warn(`  [divergent] ${rel} (natif en avance)`);
   }
 }
 

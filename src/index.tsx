@@ -147,9 +147,7 @@ if (typeof document !== 'undefined') {
 
 /**
  * Android only: make the WebView own the whole screen like iOS.
- * Without this the native launch image (robot) stays visible in a band above
- * the app. We disable status-bar overlay, paint it Planiprêt navy, and hide
- * the splash as soon as we boot.
+ * Configure native edge-to-edge chrome before rendering the app.
  */
 async function configureAndroidChrome() {
   if (!Capacitor.isNativePlatform()) return;
@@ -166,16 +164,14 @@ async function configureAndroidChrome() {
 let splashHidden = false;
 /**
  * Hide the native splash as soon as the web app is ready.
- * `launchAutoHide` is disabled in capacitor.config.ts, so WebKit no longer
- * logs the "SplashScreen timeout" warning: we own the hide, and a safety
- * timer guarantees it always happens even if React never commits.
+ * This is an immediate safety hide; native auto-hide is also enabled.
  */
 async function hideSplash(reason: string) {
   if (splashHidden) return;
   splashHidden = true;
   try {
     const { SplashScreen } = await import('@capacitor/splash-screen');
-    await SplashScreen.hide({ fadeOutDuration: 200 });
+    await SplashScreen.hide({ fadeOutDuration: 0 });
     console.log('[PP] splash hidden', reason);
   } catch {}
 }
@@ -186,7 +182,7 @@ async function bootstrap() {
   console.log('[PP] BUILD MARKER pp-build-2026-08-04-boot-retry');
   console.log('[PP] bootstrap:start', { native: Capacitor.isNativePlatform(), proto: window.location.protocol });
   void configureAndroidChrome();
-  if (Capacitor.getPlatform() === 'android') window.setTimeout(() => { void hideSplash('android-boot'); }, 600);
+  if (Capacitor.getPlatform() === 'android') void hideSplash('android-boot');
   // Safety net: never leave the user staring at the launch image, even if the
   // first React commit never happens (render error, slow chunk, no network).
   window.setTimeout(() => { void hideSplash('safety-timeout'); }, 4000);

@@ -20,20 +20,23 @@ const config: CapacitorConfig = {
     webContentsDebuggingEnabled: false,
   },
   plugins: {
+    // IMPORTANT: must stay disabled. When enabled, the native HTTP bridge
+    // patches window.fetch and drops/overrides the Supabase `Authorization`
+    // header, so every Edge Function call arrives with the anon key
+    // ("invalid claim: missing sub claim" / 401 unauthorized).
     CapacitorHttp: {
-      enabled: true,
+      enabled: false,
     },
     SplashScreen: {
-      launchShowDuration: 1800,
+      // Never hold a native launch screen over the Android WebView.
+      launchAutoHide: true,
+      launchShowDuration: 0,
+      launchFadeOutDuration: 0,
       backgroundColor: '#0A1425',   // Bleu nuit Planiprêt
       showSpinner: false,
     },
     StatusBar: {
       style: 'light',
-      // Transparent + overlaysWebView: la WebView passe sous la status bar
-      // Le header React gère env(safe-area-inset-top) comme sur iOS
-      backgroundColor: '#00000000',
-      overlaysWebView: true,
     },
     PushNotifications: {
       presentationOptions: ['badge', 'sound', 'alert'],

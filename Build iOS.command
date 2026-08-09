@@ -1,14 +1,9 @@
 #!/usr/bin/env bash
-# ─────────────────────────────────────────────────────────────────────────────
-# Planiprêt Mobile — Build iOS en un clic
-# Double-cliquez sur ce fichier dans le Finder pour lancer le build complet.
-#
-# Pour forcer la recompilation de PJSIP :
-#   Ouvrez Terminal et lancez : bash "Build iOS.command" --rebuild-pjsip
-# ─────────────────────────────────────────────────────────────────────────────
-
-# Se placer dans le dossier du projet (même si lancé depuis le Finder)
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
-
+# Double-clique ce fichier dans le Finder pour lancer le build iOS complet.
+cd "$(dirname "$0")"
 bash scripts/ios-oneclick.sh "$@"
+status=$?
+echo ""
+echo "Appuie sur Entrée pour fermer cette fenêtre."
+read -r _
+exit $status
