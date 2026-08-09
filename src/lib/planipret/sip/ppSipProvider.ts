@@ -953,12 +953,22 @@ class PpSipProvider {
 
   async call(number: string) {
     if (!this.cfg || !this.ua) throw new Error("softphone_not_registered");
+    // Ligne 1 : on repart toujours d'un état propre. Un drapeau `expectingSecond`
+    // resté armé (2e appel avorté) détournerait cet appel vers la ligne 2 et
+    // l'écran d'appel ne s'ouvrirait jamais.
+    this.expectingSecond = false;
+    if (!this.session && this.secondSession) {
+      try { this.secondSession.terminate(); } catch {}
+      this.secondSession = null;
+      this.update({ second: null });
+    }
     this.update({ callState: "ringing-out", remoteIdentity: number, remoteNumber: number, direction: "out", errorCause: undefined });
     try {
       const mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
         video: false,
       });
+
       const target = `sip:${number}@${this.cfg.sipDomain}`;
       const session = this.ua.call(target, {
         mediaStream,

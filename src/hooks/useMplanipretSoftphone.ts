@@ -1232,12 +1232,23 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
 
   const placeCall = useCallback(async (destination: string): Promise<OutboundResult> => {
     if (!destination) return { via: "none", ok: false, error: "empty destination" };
-    const mic = await ensureMicPermission();
-    if (mic.state !== "granted") {
+
+    // Le micro ne doit JAMAIS bloquer la séquence d'appel :
+    // - chemin natif PJSIP : la permission RECORD_AUDIO est gérée nativement,
+    //   `getUserMedia` dans la WebView peut échouer sans que l'appel soit
+    //   impossible;
+    // - chemin PBX (click-to-call) : aucun média local n'est requis.
+    // On ne s'en sert donc que pour décider si WebRTC est utilisable.
+    let micGranted = true;
+    try {
+      const mic = await ensureMicPermission();
+      micGranted = mic.state === "granted";
       try { mic.stream?.getTracks().forEach((tr) => tr.stop()); } catch {}
-      return { via: "none", ok: false, error: mic.error ?? "microphone unavailable", micState: mic.state };
+      if (!micGranted) console.warn("[softphone] mic not granted in WebView", mic.state, mic.error);
+    } catch (e: any) {
+      micGranted = false;
+      console.warn("[softphone] mic probe threw", e?.message ?? e);
     }
-    try { mic.stream?.getTracks().forEach((tr) => tr.stop()); } catch {}
 
     if (nativeOwnsAor() && nativeSip.isRegistered()) {
       // L'écran d'appel doit s'ouvrir immédiatement : le premier event natif
@@ -1254,8 +1265,8 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       console.warn("[softphone] native PJSIP call failed; falling back to PBX");
     }
 
-    let canUseSip = registered;
-    if (!canUseSip) {
+    let canUseSip = registered && micGranted;
+    if (!canUseSip && micGranted) {
       try { ppSipProvider.forceReregister(); } catch {}
       await new Promise((resolve) => window.setTimeout(resolve, 1200));
       const st = ppSipProvider.getSnapshot().status;
@@ -1269,10 +1280,11 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
         console.warn("[softphone] WebRTC call failed, falling back to PBX", e?.message ?? e);
       }
     }
-    // 2) Not registered anywhere → NS-API click-to-call (outbound only).
-    console.info("[outbound] route=CLICK-TO-CALL (not registered)", { destination });
+    // 2) Ni natif ni WebRTC utilisable → NS-API click-to-call (sortant only).
+    console.info("[outbound] route=CLICK-TO-CALL", { destination, micGranted, registered });
     return await callViaPBX(destination);
   }, [registered, callViaPBX]);
+
 
 
   // Last-resort pickup: ask NetSapiens to answer the live ringing leg over
