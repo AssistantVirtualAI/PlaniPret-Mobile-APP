@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { applyNativeChrome } from "@/lib/nativeChrome";
 
 export type MpTheme = "light" | "dark";
 const KEY = "mplanipret-theme";
@@ -19,6 +20,8 @@ function applyToDom(t: MpTheme) {
   document.querySelectorAll<HTMLElement>(".planipret-mobile-scope").forEach((el) => {
     el.setAttribute("data-pp-theme", t);
   });
+  // Barre de statut native alignée sur le thème (parité iOS / Android).
+  void applyNativeChrome(t);
 }
 
 export function useMplanipretTheme() {

@@ -134,24 +134,52 @@
 [data-sonner-toast][data-type="info"]    { border-left: 3px solid #2E9BDC !important; }
 [data-sonner-toast][data-type="warning"] { border-left: 3px solid #F5A623 !important; }
 
-/* SMS bubbles */
+/* SMS bubbles
+   IMPORTANT : pas de max-width en % ici. La largeur est déjà bornée par le
+   conteneur (max-w-[80%]) ; un second % imbriqué faisait retomber la bulle sur
+   sa largeur min-content — le texte se coupait lettre par lettre ("O / k"). */
+.planipret-scope .pp-bubble-out,
+.planipret-scope .pp-bubble-in {
+  display: inline-block;
+  max-width: 100%;
+  width: fit-content;
+  padding: 9px 13px;
+  font-size: 14px;
+  line-height: 1.42;
+  overflow-wrap: break-word;
+  word-break: normal;
+  hyphens: auto;
+}
 .planipret-scope .pp-bubble-out {
   background: linear-gradient(135deg, #1A4A8A, #2E9BDC);
   color: #fff;
-  border-radius: 18px 18px 4px 18px;
-  padding: 10px 14px;
-  max-width: 75%;
+  border-radius: 18px 18px 6px 18px;
   margin-left: auto;
+  box-shadow: 0 2px 10px rgba(26, 74, 138, 0.35);
 }
 .planipret-scope .pp-bubble-in {
   background: var(--pp-bg-elevated);
   border: 1px solid var(--pp-bg-border-2);
   color: var(--pp-text-primary);
-  border-radius: 18px 18px 18px 4px;
-  padding: 10px 14px;
-  max-width: 75%;
+  border-radius: 18px 18px 18px 6px;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.18);
 }
-.planipret-scope .pp-bubble-time { font-size: 9px; color: var(--pp-text-faint); margin-top: 4px; }
+/* Bulles enchaînées d'un même expéditeur : coins adoucis, moins d'espace. */
+.planipret-scope .pp-bubble-out.pp-bubble-mid { border-radius: 18px 6px 6px 18px; }
+.planipret-scope .pp-bubble-in.pp-bubble-mid { border-radius: 6px 18px 18px 6px; }
+.planipret-scope .pp-bubble-out.pp-bubble-first { border-radius: 18px 18px 6px 18px; }
+.planipret-scope .pp-bubble-in.pp-bubble-first { border-radius: 18px 18px 18px 6px; }
+.planipret-scope .pp-bubble-time { font-size: 10px; color: var(--pp-text-faint); margin-top: 4px; }
+.planipret-scope .pp-day-sep {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--pp-text-faint); margin: 10px 0 2px;
+}
+.planipret-scope .pp-day-sep::before,
+.planipret-scope .pp-day-sep::after {
+  content: ""; flex: 1; height: 1px; background: var(--pp-bg-border);
+}
+
 
 /* Voicemail player */
 .planipret-scope .pp-vm-player {
@@ -1160,3 +1188,14 @@
 /* Hide scrollbar (used by horizontal tab bars) */
 .no-scrollbar::-webkit-scrollbar { display: none; }
 .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+/* Android: keep momentum scrolling alive inside flex columns.
+   Without min-height:0 a flex-1 scroll area can't shrink and the page freezes. */
+.overflow-y-auto,
+.overflow-auto {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+  touch-action: pan-y;
+}
+.flex-1.overflow-y-auto,
+.flex-1.overflow-auto { min-height: 0; }

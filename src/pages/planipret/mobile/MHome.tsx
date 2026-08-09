@@ -27,6 +27,16 @@ import BriefListenButton from "@/components/planipret/mobile/BriefListenButton";
 type Period = "day" | "week" | "month" | "shift";
 const DEFAULT_PERIOD: Period = "month";
 
+// Courtiers au Québec : l'agenda Microsoft est toujours affiché en heure de Toronto.
+const PP_TZ = "America/Toronto";
+const ppDayKey = (d: Date) => {
+  const p: Record<string, string> = {};
+  for (const part of new Intl.DateTimeFormat("en-CA", {
+    timeZone: PP_TZ, year: "numeric", month: "2-digit", day: "2-digit",
+  }).formatToParts(d)) if (part.type !== "literal") p[part.type] = part.value;
+  return `${p.year}-${p.month}-${p.day}`;
+};
+
 function periodRange(period: Period) {
   const now = new Date();
   const since = new Date(now);
@@ -731,7 +741,7 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
     for (const e of events) {
       const dt = e.start?.dateTime ? new Date(e.start.dateTime) : null;
       if (!dt) continue;
-      const key = `${dt.getFullYear()}-${dt.getMonth()}-${dt.getDate()}`;
+      const key = ppDayKey(dt);
       (map[key] ||= []).push(e);
     }
     for (const k of Object.keys(map)) {
@@ -740,7 +750,7 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
     return map;
   }, [events]);
 
-  const dayKey = (d: Date) => `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+  const dayKey = (d: Date) => ppDayKey(d);
   const selectedEvents = eventsByDay[dayKey(selected)] ?? [];
 
   // Build 6-week grid starting from Sunday
@@ -878,11 +888,11 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
                       <div className="w-14 flex-shrink-0 text-center px-1.5 py-1 rounded-md"
                         style={{ background: "rgba(46,155,220,0.12)", color: "var(--pp-brand-accent)", fontFamily: "Urbanist,sans-serif" }}>
                         <div className="text-[11px] font-bold tabular-nums leading-none">
-                          {start ? start.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" }) : "—"}
+                          {start ? start.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit", timeZone: PP_TZ }) : "—"}
                         </div>
                         {end && (
                           <div className="text-[9px] mt-0.5 opacity-70 tabular-nums leading-none">
-                            {end.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" })}
+                            {end.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit", timeZone: PP_TZ })}
                           </div>
                         )}
                       </div>
@@ -948,7 +958,7 @@ function NewMeetingSheet({
   const [body, setBody] = useState("");
   const [saving, setSaving] = useState(false);
 
-  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "America/Toronto";
+  const tz = "America/Toronto";
 
   const submit = async () => {
     if (!subject.trim()) { toast.error(t("screens.home.titleRequired")); return; }
@@ -959,8 +969,9 @@ function NewMeetingSheet({
           action: "create_calendar_event",
           payload: {
             subject: subject.trim(),
-            start: { dateTime: new Date(start).toISOString(), timeZone: tz },
-            end: { dateTime: new Date(end).toISOString(), timeZone: tz },
+            // datetime-local déjà saisi en heure de Toronto : ne pas convertir en UTC.
+            start: { dateTime: String(start).slice(0, 16), timeZone: tz },
+            end: { dateTime: String(end).slice(0, 16), timeZone: tz },
             body,
             attendees: attendees.split(",").map((s) => s.trim()).filter(Boolean),
             isOnlineMeeting: teams,

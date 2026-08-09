@@ -476,7 +476,7 @@ public class PpSipKeepAliveService extends Service {
     if (activeInviteCallId == null || (requestedCallId != null && !requestedCallId.equals(activeInviteCallId))) return;
     if (activeInviteVia == null || activeInviteFrom == null || activeInviteTo == null || activeInviteCSeq == null) return;
     String toWithTag = activeInviteTo.contains(";tag=") ? activeInviteTo : activeInviteTo + ";tag=" + Long.toHexString(System.nanoTime());
-    String response = "SIP/2.0 603 Decline\\r\\nVia: " + activeInviteVia + "\\r\\nFrom: " + activeInviteFrom
+    String response = "SIP/2.0 603 Decline\r\nVia: " + activeInviteVia + "\r\nFrom: " + activeInviteFrom
       + "\\r\\nTo: " + toWithTag + "\\r\\nCall-ID: " + activeInviteCallId + "\\r\\nCSeq: " + activeInviteCSeq
       + "\\r\\nUser-Agent: Planipret Native KeepAlive\\r\\nContent-Length: 0\\r\\n\\r\\n";
     sendFrame(response);
@@ -2649,6 +2649,124 @@ function patchAndroidManifest() {
   console.log("[native-config] Android deep links + SIP keep-alive service applied.");
 }
 
+/**
+ * Android: écran de lancement en couleur unie (pas d'image robot) + thème
+ * plein écran pour que la WebView occupe tout l'écran comme sur iOS.
+ * Sans ça, l'image de lancement générée reste visible dans une bande en haut.
+ */
+function patchAndroidSplashTheme() {
+  const resRoot = path.join(appDir, "android", "app", "src", "main", "res");
+  if (!fs.existsSync(resRoot)) {
+    console.log("[native-config] Android res/ absent — run npx cap add android first.");
+    return;
+  }
+
+  // 1. Couleurs
+  writeIfChanged(
+    path.join(resRoot, "values", "colors.xml"),
+    `<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="colorPrimary">#0A1425</color>
+    <color name="colorPrimaryDark">#0A1425</color>
+    <color name="colorAccent">#2E9BDC</color>
+    <color name="splashBackground">#0A1425</color>
+    <color name="navBarBackground">#060D1A</color>
+</resources>
+`
+  );
+
+  // 2. Splash = couleur unie, aucune image
+  writeIfChanged(
+    path.join(resRoot, "drawable", "splash.xml"),
+    `<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/splashBackground" />
+</layer-list>
+`
+  );
+
+  // 3. Thèmes plein écran, sans ActionBar, fond navy
+  writeIfChanged(
+    path.join(resRoot, "values", "styles.xml"),
+    `<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="AppTheme" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="android:background">@color/splashBackground</item>
+        <item name="android:windowBackground">@color/splashBackground</item>
+    </style>
+
+    <style name="AppTheme.NoActionBar" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="windowActionBar">false</item>
+        <item name="windowNoTitle">true</item>
+        <item name="android:background">@color/splashBackground</item>
+        <item name="android:windowBackground">@color/splashBackground</item>
+        <item name="android:statusBarColor">@color/splashBackground</item>
+        <item name="android:navigationBarColor">@color/navBarBackground</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <item name="android:windowTranslucentStatus">false</item>
+        <item name="android:windowTranslucentNavigation">false</item>
+        <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
+        <item name="android:windowFullscreen">false</item>
+        <item name="android:fitsSystemWindows">true</item>
+    </style>
+
+    <style name="AppTheme.NoActionBarLaunch" parent="AppTheme.NoActionBar">
+        <item name="android:background">@drawable/splash</item>
+        <item name="android:windowBackground">@drawable/splash</item>
+    </style>
+</resources>
+`
+  );
+
+  // 3b. Android 12+ (API 31) : l'API SplashScreen affiche AUTOMATIQUEMENT
+  // l'icône du launcher (le fameux « robot ») au-dessus du fond, même si le
+  // thème classique n'a aucune image. Il faut neutraliser l'icône animée ici,
+  // sinon elle reste visible en haut de l'écran au démarrage.
+  writeIfChanged(
+    path.join(resRoot, "values-v31", "styles.xml"),
+    `<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="AppTheme.NoActionBarLaunch" parent="AppTheme.NoActionBar">
+        <item name="android:windowBackground">@color/splashBackground</item>
+        <item name="android:windowSplashScreenBackground">@color/splashBackground</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_icon_transparent</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@color/splashBackground</item>
+        <item name="android:windowSplashScreenAnimationDuration">0</item>
+    </style>
+</resources>
+`
+  );
+
+  // Icône de splash 100% transparente : Android 12+ exige un drawable, sinon
+  // il retombe sur l'icône du launcher (le robot).
+  writeIfChanged(
+    path.join(resRoot, "drawable", "splash_icon_transparent.xml"),
+    `<?xml version="1.0" encoding="utf-8"?>
+<shape xmlns:android="http://schemas.android.com/apk/res/android" android:shape="rectangle">
+    <solid android:color="@android:color/transparent" />
+    <size android:width="1dp" android:height="1dp" />
+</shape>
+`
+  );
+
+
+  // 4. Supprimer toute image de lancement générée (le fameux robot)
+  let removed = 0;
+  for (const dir of fs.readdirSync(resRoot)) {
+    if (!dir.startsWith("drawable") && !dir.startsWith("mipmap")) continue;
+    const full = path.join(resRoot, dir);
+    if (!fs.statSync(full).isDirectory()) continue;
+    for (const file of fs.readdirSync(full)) {
+      if (/^(splash|ic_splash|launch_splash|splash_screen)\.(png|jpg|jpeg|webp)$/i.test(file)) {
+        fs.rmSync(path.join(full, file));
+        removed += 1;
+      }
+    }
+  }
+  if (removed) console.log(`[native-config] Android: ${removed} image(s) de splash supprimée(s).`);
+  console.log("[native-config] Android splash/theme plein écran appliqué.");
+}
+
 function patchAndroidNativeFiles() {
   const javaRoot = path.join(appDir, "android", "app", "src", "main", "java");
   if (!fs.existsSync(javaRoot)) {
@@ -2766,7 +2884,11 @@ patchIosInfoPlist();
 patchIosEntitlements();
 patchAndroidManifest();
 patchAndroidNativeFiles();
+patchAndroidSplashTheme();
 patchIosNativeFiles();
+
+// Version / build number alignés iOS + Android depuis package.json.
+await import("./apply-version.mjs").then((m) => m.applyVersion());
 
 // Guard: cap sync can regenerate native files — fail loudly if the UIScene /
 // SceneDelegate patch did not land.

@@ -61,6 +61,37 @@ const fmtTime = (iso: string, lang: "fr" | "en" = "fr", t?: (key: string) => str
   return d.toLocaleDateString(lang === "en" ? "en-CA" : "fr-CA", { day: "2-digit", month: "2-digit" });
 };
 
+/** Heure seule (hh:mm) — utilisée dans le fil, où la date est déjà séparée. */
+const fmtClock = (iso: string, lang: "fr" | "en" = "fr") => {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString(lang === "en" ? "en-CA" : "fr-CA", { hour: "2-digit", minute: "2-digit" });
+};
+
+/** Clé de jour, pour insérer un séparateur de date dans le fil. */
+const dayStamp = (iso: string) => {
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? "" : d.toDateString();
+};
+
+/** Libellé du séparateur : Aujourd'hui / Hier / date longue. */
+const dayLabel = (iso: string, lang: "fr" | "en" = "fr") => {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const now = new Date();
+  const yest = new Date(); yest.setDate(now.getDate() - 1);
+  if (d.toDateString() === now.toDateString()) return lang === "en" ? "Today" : "Aujourd'hui";
+  if (d.toDateString() === yest.toDateString()) return lang === "en" ? "Yesterday" : "Hier";
+  return d.toLocaleDateString(lang === "en" ? "en-CA" : "fr-CA", { weekday: "short", day: "numeric", month: "long" });
+};
+
+/** Deux messages sont regroupés s'ils sont espacés de moins de 3 minutes. */
+const sameMinuteGroup = (a: string, b: string) => {
+  const x = new Date(a).getTime(); const y = new Date(b).getTime();
+  if (Number.isNaN(x) || Number.isNaN(y)) return false;
+  return Math.abs(y - x) < 3 * 60 * 1000;
+};
+
 export default function MMessages() {
   const { t, lang } = useMplanipretLang();
   const { profile, openDialer, registerRefresh } = useOutletContext<PlanipretMobileContext>();
@@ -734,7 +765,7 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
         </button>
       </header>
 
-      <div className="flex-1 overflow-y-auto px-3 py-4 space-y-2" style={{ background: "var(--pp-bg-base)" }}>
+      <div className="flex-1 overflow-y-auto px-3 py-4 space-y-1" style={{ background: "var(--pp-bg-base)", overflowX: "hidden" }}>
         {loading && messages.length === 0 ? (
           <div className="flex items-center justify-center py-12">
             <Loader2 className="w-6 h-6 animate-spin" style={{ color: "var(--pp-brand-accent)" }} />
@@ -747,20 +778,34 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
           messages.map((m, i) => {
             const out = msgIsOut(m, myExt);
             const body = msgBody(m);
+            const prev = i > 0 ? messages[i - 1] : null;
+            const next = i < messages.length - 1 ? messages[i + 1] : null;
+            const sameAsPrev = !!prev && msgIsOut(prev, myExt) === out && sameMinuteGroup(msgTime(prev), msgTime(m));
+            const sameAsNext = !!next && msgIsOut(next, myExt) === out && sameMinuteGroup(msgTime(m), msgTime(next));
+            const showDay = !prev || dayStamp(msgTime(prev)) !== dayStamp(msgTime(m));
+            const pending = String(m.id ?? "").startsWith("tmp-");
+            const shape = sameAsPrev && sameAsNext ? "pp-bubble-mid" : sameAsPrev ? "" : sameAsNext ? "pp-bubble-first" : "";
             return (
-              <div key={msgId(m, i)} className={`flex ${out ? "justify-end" : "justify-start"}`}>
-                <div className="max-w-[78%]">
-                  <div className={out ? "pp-bubble-out" : "pp-bubble-in"} style={{ padding: "8px 12px", fontSize: 14 }}>
-                    {body && <p className="whitespace-pre-wrap break-words">{body}</p>}
+              <div key={msgId(m, i)}>
+                {showDay && <div className="pp-day-sep">{dayLabel(msgTime(m), lang)}</div>}
+                <div className={`flex ${out ? "justify-end" : "justify-start"}`} style={{ marginTop: sameAsPrev ? 2 : 8 }}>
+                  <div className="max-w-[80%] min-w-0">
+                    <div className={`${out ? "pp-bubble-out" : "pp-bubble-in"} ${shape}`} style={pending ? { opacity: 0.65 } : undefined}>
+                      {body && <p className="whitespace-pre-wrap">{body}</p>}
+                    </div>
+                    {!sameAsNext && (
+                      <p className={`pp-bubble-time ${out ? "text-right" : "text-left"}`}>
+                        {fmtClock(msgTime(m), lang)}
+                        {pending ? ` · ${t("common.sending")}` : ""}
+                      </p>
+                    )}
                   </div>
-                  <p className={`text-[10px] mt-1 ${out ? "text-right" : "text-left"}`} style={{ color: "var(--pp-text-faint)" }}>
-                    {fmtTime(msgTime(m), lang, t)}{String(m.id ?? "").startsWith("tmp-") ? ` · ${t("common.sending")}` : ""}
-                  </p>
                 </div>
               </div>
             );
           })
         )}
+
         <div ref={bottomRef} />
       </div>
 
@@ -901,14 +946,14 @@ function TeamChat({ profile }: { profile: any }) {
             const name = senderNames[m.sender_id] ?? t("messages.broker");
             return (
               <div key={m.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
-                <div className="max-w-[78%]">
+                <div className="max-w-[80%] min-w-0">
                   {!mine && (
                     <div className="text-[10px] mb-0.5 px-1" style={{ color: "var(--pp-brand-accent)" }}>{name}</div>
                   )}
-                  <div className={mine ? "pp-bubble-out" : "pp-bubble-in"} style={{ padding: "8px 12px", fontSize: 14 }}>
-                    <p className="whitespace-pre-wrap break-words">{m.message}</p>
+                  <div className={mine ? "pp-bubble-out" : "pp-bubble-in"}>
+                    <p className="whitespace-pre-wrap">{m.message}</p>
                   </div>
-                  <p className={`text-[10px] mt-1 ${mine ? "text-right" : "text-left"}`} style={{ color: "var(--pp-text-faint)" }}>
+                  <p className={`pp-bubble-time ${mine ? "text-right" : "text-left"}`}>
                     {fmtTime(m.created_at, lang, t)}
                   </p>
                 </div>
