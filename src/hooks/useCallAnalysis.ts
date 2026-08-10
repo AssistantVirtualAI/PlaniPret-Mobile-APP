@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { ensureAiConsent } from "@/components/planipret/mobile/AiConsentHost";
 import { supabase } from "@/integrations/supabase/client";
-import { getAiTranscriptSegments, getDisplayTranscript } from "@/lib/planipretTranscript";
 
 export interface CallAnalysisRow {
   id: string;
@@ -116,6 +116,7 @@ export function useCallAnalysis(callId: string | null) {
     setAnalyzing(true);
     setError(null);
     try {
+      if (!(await ensureAiConsent())) { setAnalyzing(false); return; }
       const { data, error: err } = await supabase.functions.invoke("pp-coach-call", {
         body: { call_id: callId, force },
       });
@@ -144,8 +145,8 @@ export function useCallAnalysis(callId: string | null) {
     error,
     analyze,
     reload: () => callId && loadCall(callId),
-    transcript: getDisplayTranscript(call),
-    transcriptSegments: getAiTranscriptSegments(call),
+    transcript: call?.transcript ?? "",
+    transcriptSegments: call?.transcript_segments ?? [],
     coaching: call?.ai_coaching,
     analysis: call?.ai_analysis_json,
     coachingScore: call?.coaching_score,

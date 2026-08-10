@@ -1,5 +1,6 @@
 // AvaChatSheet — Claude-powered AVA chat, styled like the other mobile pages.
 import { useEffect, useRef, useState } from "react";
+import { ensureAiConsent } from "@/components/planipret/mobile/AiConsentHost";
 import { X, Send, Sparkles, Loader2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import ReactMarkdown from "react-markdown";
@@ -53,6 +54,7 @@ export default function AvaChatSheet({ userId, onClose }: { userId: string; onCl
     setInput("");
     setLoading(true);
     try {
+      if (!(await ensureAiConsent())) return;
       const { data, error } = await supabase.functions.invoke("pp-ava-chat", {
         body: { messages: next, user_id: userId, context: avaContext, language: lang },
       });

@@ -3,6 +3,7 @@
  * Uses the exact same shell + routes + providers as /mplanipret on web.
  */
 import { Routes, Route, Navigate, useNavigate } from 'react-router-dom';
+import AiConsentHost from "@/components/planipret/mobile/AiConsentHost";
 import { handleIncomingDeepLink } from '@/lib/deepLinkDebug';
 import { useEffect } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -142,6 +143,7 @@ export default function App() {
           <TooltipProvider>
             <Toaster position="top-center" richColors />
             <NativeBootMarker />
+            <AiConsentHost />
             <PlanipretErrorBoundary>
               <RemoteConfigGate>
               <LazyRouteBoundary>

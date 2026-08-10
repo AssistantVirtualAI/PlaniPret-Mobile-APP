@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { ensureAiConsent } from "@/components/planipret/mobile/AiConsentHost";
 import { useSafeAreaInsets } from "@/hooks/useSafeAreaInsets";
 import { flushSync, createPortal } from "react-dom";
 import { useOutletContext, useSearchParams } from "react-router-dom";
@@ -1798,6 +1799,7 @@ function AiImproveMenu({ text, mode, onResult }: { text: string; mode: "sms" | "
   const run = async (action: "fix" | "improve" | "formal" | "shorter") => {
     setBusy(action);
     try {
+      if (!(await ensureAiConsent())) return;
       const { data, error } = await supabase.functions.invoke("ai-text-improve", {
         body: { text, mode, action },
       });

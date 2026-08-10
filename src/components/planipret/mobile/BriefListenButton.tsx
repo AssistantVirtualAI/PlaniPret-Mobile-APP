@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { ensureAiConsent } from "@/components/planipret/mobile/AiConsentHost";
 import { Headphones, Loader2, Pause, Play } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -53,6 +54,7 @@ export default function BriefListenButton({
     setBusy(true);
     try {
       const clean = text.replace(/[#*_`>]/g, "").replace(/\s+\n/g, "\n").slice(0, 3800);
+      if (!(await ensureAiConsent())) { setBusy(false); return; }
       const { data, error } = await supabase.functions.invoke("pp-ava-tts", {
         body: { text: clean, language: language === "en" ? "en" : "fr" },
       });

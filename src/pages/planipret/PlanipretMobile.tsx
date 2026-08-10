@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useRef, useState, useCallback, lazy, Suspense } from "react";
+import AiConsentHost from "@/components/planipret/mobile/AiConsentHost";
 import { useNavigate, NavLink, Outlet, useLocation } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { supabase } from "@/integrations/supabase/client";
@@ -1047,6 +1048,7 @@ export default function PlanipretMobile() {
 
   return (
     <Frame>
+      <AiConsentHost />
       <div className="h-full flex flex-col relative overflow-hidden" style={{ background: "var(--pp-bg-base)" }}>
 
         {/* Top brand header — AVA (left) · Planiprêt (center) · Settings (right) */}

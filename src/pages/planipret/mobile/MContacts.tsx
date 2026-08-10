@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
+import { ensureAiConsent } from "@/components/planipret/mobile/AiConsentHost";
 import { useOutletContext, useNavigate } from "react-router-dom";
 import { Search, Phone, MessageSquare, Mail, Users, UserCog, BookUser, X, Calendar, ListChecks, Loader2, ExternalLink, Sparkles, Plus, Star, Copy, Send, Filter, Briefcase, Check, AlertTriangle, History } from "lucide-react";
 import { saveAppointment, loadAppointments, subscribeAppointments, type ApptHistoryEntry } from "@/lib/appointmentHistory";
@@ -1099,6 +1100,7 @@ function AiContactImproveButton({ text, onResult, mode, disabled }: { text: stri
     if (!text.trim()) return;
     setBusy(true);
     try {
+      if (!(await ensureAiConsent())) return;
       const { data, error } = await supabase.functions.invoke("ai-text-improve", {
         body: { text, mode, action },
       });

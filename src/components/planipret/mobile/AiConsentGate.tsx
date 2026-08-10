@@ -43,8 +43,8 @@ export default function AiConsentGate({ onAccept, onDecline }: { onAccept: () =>
 
         <p className="text-[13px] leading-relaxed mb-3" style={{ color: "var(--pp-text-secondary, #B4C6D8)" }}>
           {fr
-            ? "AVA (clavardage et agent vocal) utilise des fournisseurs d'IA tiers : OpenAI et Google (Gemini) pour le texte, ElevenLabs pour la voix."
-            : "AVA (chat and voice agent) uses third-party AI providers: OpenAI and Google (Gemini) for text, ElevenLabs for voice."}
+            ? "AVA (clavardage et agent vocal) utilise des fournisseurs d'IA tiers : OpenAI, Google (Gemini) et Anthropic (Claude) pour le texte, ElevenLabs pour la voix."
+            : "AVA (chat and voice agent) uses third-party AI providers: OpenAI, Google (Gemini) and Anthropic (Claude) for text, ElevenLabs for voice."}
         </p>
         <ul className="text-[12.5px] leading-relaxed mb-3 pl-4 list-disc" style={{ color: "var(--pp-text-secondary, #B4C6D8)" }}>
           <li>{fr ? "Transmis : vos messages, transcriptions d'appels et, si pertinent, le nom et le numéro du contact concerné." : "Sent: your messages, call transcripts and, when relevant, the related contact's name and number."}</li>
