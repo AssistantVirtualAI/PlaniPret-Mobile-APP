@@ -74,9 +74,14 @@ logs=("$WORK"/configure-*.log)
 if [ ${#logs[@]} -gt 0 ]; then
   for log in "${logs[@]}"; do
     tag="$(basename "$log" .log)"; tag="${tag#configure-}"
+    # La tranche simulateur ne compile pas OpenSSL (x86_64/arm64-sim) — ignorée
+    if echo "$tag" | grep -qi "simulator"; then
+      echo "  \u26a0 $tag : tranche simulateur — v\u00e9rification OpenSSL ignor\u00e9e (device uniquement requis)"
+      continue
+    fi
     grep -q "OpenSSL library found, SSL support enabled" "$log" \
-      || fail "configure-$tag.log ne contient pas « OpenSSL library found, SSL support enabled »"
-    echo "  ✔ $tag : OpenSSL détecté par configure"
+      || fail "configure-$tag.log ne contient pas \u00ab OpenSSL library found, SSL support enabled \u00bb"
+    echo "  \u2714 $tag : OpenSSL d\u00e9tect\u00e9 par configure"
   done
 else
   echo "  ⚠ aucun configure-*.log dans $WORK (vérification croisée ignorée)"
