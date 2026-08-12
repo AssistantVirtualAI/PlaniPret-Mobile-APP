@@ -58,10 +58,20 @@
 <key>aps-environment</key>
 <string>production</string>
 
-<!-- Désactiver le zoom de l'interface -->
+<!-- Orientations requises par Apple pour le multitâche iPad. AppDelegate conserve l’iPhone en portrait. -->
 <key>UISupportedInterfaceOrientations</key>
 <array>
     <string>UIInterfaceOrientationPortrait</string>
+    <string>UIInterfaceOrientationPortraitUpsideDown</string>
+    <string>UIInterfaceOrientationLandscapeLeft</string>
+    <string>UIInterfaceOrientationLandscapeRight</string>
+</array>
+<key>UISupportedInterfaceOrientations~ipad</key>
+<array>
+    <string>UIInterfaceOrientationPortrait</string>
+    <string>UIInterfaceOrientationPortraitUpsideDown</string>
+    <string>UIInterfaceOrientationLandscapeLeft</string>
+    <string>UIInterfaceOrientationLandscapeRight</string>
 </array>
 
 <!-- Export compliance: standard HTTPS/TLS + SRTP only -->

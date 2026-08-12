@@ -149,10 +149,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         }
     }
 
-    // Portrait-only: matches Info.plist UIInterfaceOrientation restrictions.
-    // Returning .all previously overrode the plist and allowed landscape rotation.
+    // Apple requires every orientation for iPad multitasking. Keep the iPhone
+    // experience portrait-only while allowing the required iPad orientations.
     func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
-        return .portrait
+        return UIDevice.current.userInterfaceIdiom == .pad ? .all : .portrait
     }
 
     func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {

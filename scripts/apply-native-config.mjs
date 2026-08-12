@@ -2412,8 +2412,8 @@ function ensurePluginRegistrationOrThrow(swift, file) {
   return next;
 }
 
-// Force portrait at the AppDelegate level (Info.plist alone is overridden by
-// a .all Swift override in some Capacitor templates).
+// Keep the iPhone UI portrait-only at runtime while allowing every orientation
+// on iPad, as required by Apple for iPad multitasking.
 function patchIosAppDelegate(iosApp) {
   const file = path.join(iosApp, "AppDelegate.swift");
   if (!fs.existsSync(file)) return;
@@ -2422,16 +2422,16 @@ function patchIosAppDelegate(iosApp) {
   if (/supportedInterfaceOrientationsFor/.test(swift)) {
     swift = swift.replace(
       /(func application\(\s*_ application: UIApplication,\s*supportedInterfaceOrientationsFor[^)]*\)\s*->\s*UIInterfaceOrientationMask\s*\{)[\s\S]*?\n\s*\}/,
-      "$1\n        return .portrait\n    }",
+      "$1\n        return UIDevice.current.userInterfaceIdiom == .pad ? .all : .portrait\n    }",
     );
   } else {
-    const insert = `\n    func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {\n        return .portrait\n    }\n`;
+    const insert = `\n    func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {\n        return UIDevice.current.userInterfaceIdiom == .pad ? .all : .portrait\n    }\n`;
     const lastBrace = swift.lastIndexOf("}");
     if (lastBrace > -1) swift = `${swift.slice(0, lastBrace)}${insert}${swift.slice(lastBrace)}`;
   }
   if (swift !== before) {
     writeIfChanged(file, swift);
-    console.log("[native-config] iOS AppDelegate locked to portrait.");
+    console.log("[native-config] iOS AppDelegate: portrait on iPhone, all orientations on iPad.");
   }
 }
 
@@ -2564,10 +2564,13 @@ function patchIosInfoPlist() {
       xml = xml.replace(/\n<\/dict>\s*\n<\/plist>\s*$/, `\n\t<key>${key}</key>\n\t<string>${value}</string>\n</dict>\n</plist>\n`);
     }
   }
-  // Portrait-only (matches the AppDelegate override below).
-  const portraitArray = "\n\t<key>UISupportedInterfaceOrientations</key>\n\t<array>\n\t\t<string>UIInterfaceOrientationPortrait</string>\n\t</array>\n\t<key>UISupportedInterfaceOrientations~ipad</key>\n\t<array>\n\t\t<string>UIInterfaceOrientationPortrait</string>\n\t</array>\n";
+  // Apple checks the base key during archive validation. Both the iPhone and
+  // iPad plist entries therefore enumerate the four required orientations.
+  // AppDelegate keeps the live iPhone UI portrait-only while iPad supports
+  // multitasking in every required orientation.
+  const supportedOrientations = "\n\t<key>UISupportedInterfaceOrientations</key>\n\t<array>\n\t\t<string>UIInterfaceOrientationPortrait</string>\n\t\t<string>UIInterfaceOrientationPortraitUpsideDown</string>\n\t\t<string>UIInterfaceOrientationLandscapeLeft</string>\n\t\t<string>UIInterfaceOrientationLandscapeRight</string>\n\t</array>\n\t<key>UISupportedInterfaceOrientations~ipad</key>\n\t<array>\n\t\t<string>UIInterfaceOrientationPortrait</string>\n\t\t<string>UIInterfaceOrientationPortraitUpsideDown</string>\n\t\t<string>UIInterfaceOrientationLandscapeLeft</string>\n\t\t<string>UIInterfaceOrientationLandscapeRight</string>\n\t</array>\n";
   xml = xml.replace(/\n\t?<key>UISupportedInterfaceOrientations(~ipad)?<\/key>\s*<array>[\s\S]*?<\/array>/g, "");
-  xml = xml.replace(/\n<\/dict>\s*\n<\/plist>\s*$/, `${portraitArray}</dict>\n</plist>\n`);
+  xml = xml.replace(/\n<\/dict>\s*\n<\/plist>\s*$/, `${supportedOrientations}</dict>\n</plist>\n`);
 
   if (!xml.includes("<key>ITSAppUsesNonExemptEncryption</key>")) {
     xml = xml.replace(/\n<\/dict>\s*\n<\/plist>\s*$/, "\n\t<key>ITSAppUsesNonExemptEncryption</key>\n\t<false/>\n</dict>\n</plist>\n");
