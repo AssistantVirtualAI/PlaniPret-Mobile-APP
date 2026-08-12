@@ -476,7 +476,7 @@ public class PpSipKeepAliveService extends Service {
     if (activeInviteCallId == null || (requestedCallId != null && !requestedCallId.equals(activeInviteCallId))) return;
     if (activeInviteVia == null || activeInviteFrom == null || activeInviteTo == null || activeInviteCSeq == null) return;
     String toWithTag = activeInviteTo.contains(";tag=") ? activeInviteTo : activeInviteTo + ";tag=" + Long.toHexString(System.nanoTime());
-    String response = "SIP/2.0 603 Decline\\r\\nVia: " + activeInviteVia + "\\r\\nFrom: " + activeInviteFrom
+    String response = "SIP/2.0 603 Decline\r\nVia: " + activeInviteVia + "\r\nFrom: " + activeInviteFrom
       + "\r\nTo: " + toWithTag + "\r\nCall-ID: " + activeInviteCallId + "\r\nCSeq: " + activeInviteCSeq
       + "\r\nUser-Agent: Planipret Native KeepAlive\r\nContent-Length: 0\r\n\r\n";
     sendFrame(response);
@@ -2565,7 +2565,7 @@ function patchIosInfoPlist() {
     }
   }
   // Portrait-only (matches the AppDelegate override below).
-  const portraitArray = "\n\t<key>UISupportedInterfaceOrientations</key>\n\t<array>\n\t\t<string>UIInterfaceOrientationPortrait</string>\n\t</array>\n\t<key>UISupportedInterfaceOrientations~ipad</key>\n\t<array>\n\t\t<string>UIInterfaceOrientationPortrait</string>\n\t\t<string>UIInterfaceOrientationPortraitUpsideDown</string>\n\t\t<string>UIInterfaceOrientationLandscapeLeft</string>\n\t\t<string>UIInterfaceOrientationLandscapeRight</string>\n\t</array>\n";
+  const portraitArray = "\n\t<key>UISupportedInterfaceOrientations</key>\n\t<array>\n\t\t<string>UIInterfaceOrientationPortrait</string>\n\t</array>\n\t<key>UISupportedInterfaceOrientations~ipad</key>\n\t<array>\n\t\t<string>UIInterfaceOrientationPortrait</string>\n\t</array>\n";
   xml = xml.replace(/\n\t?<key>UISupportedInterfaceOrientations(~ipad)?<\/key>\s*<array>[\s\S]*?<\/array>/g, "");
   xml = xml.replace(/\n<\/dict>\s*\n<\/plist>\s*$/, `${portraitArray}</dict>\n</plist>\n`);
 
