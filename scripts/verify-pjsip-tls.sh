@@ -74,6 +74,12 @@ logs=("$WORK"/configure-*.log)
 if [ ${#logs[@]} -gt 0 ]; then
   for log in "${logs[@]}"; do
     tag="$(basename "$log" .log)"; tag="${tag#configure-}"
+    # PJSIP est requis avec TLS uniquement sur l'iPhone réel. La tranche
+    # iphonesimulator n'embarque pas OpenSSL et ne doit jamais bloquer le build.
+    if [[ "$tag" =~ (^|[-_])(sim|simulator|iphonesimulator)([-_]|$) ]]; then
+      echo "  ⚠ $tag : tranche simulateur — OpenSSL non requis, vérification ignorée"
+      continue
+    fi
     grep -q "OpenSSL library found, SSL support enabled" "$log" \
       || fail "configure-$tag.log ne contient pas « OpenSSL library found, SSL support enabled »"
     echo "  ✔ $tag : OpenSSL détecté par configure"
