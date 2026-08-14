@@ -191,6 +191,15 @@ function toE164(raw: string): string | undefined {
   return undefined;
 }
 
+/**
+ * Le pipeline serveur (`maestro-cdr` / `maestro-sync-call`) crée déjà l'appel
+ * dans Maestro avec `provider_call_id = ns_call_id`. L'appareil utilisait son
+ * propre identifiant SIP : Maestro recevait donc DEUX enregistrements par appel
+ * (et davantage après une relance). Le serveur est désormais l'unique écrivain;
+ * l'appareil ne fait plus que journaliser localement.
+ */
+const DEVICE_CREATES_CALLS = false;
+
 async function post(
   callId: string,
   number: string,
@@ -199,7 +208,13 @@ async function post(
 ): Promise<MaestroPostRecord> {
   const dedupKey = buildDedupKey(direction, number);
   recentDedup.set(dedupKey, { callId, at: Date.now() });
+  if (!DEVICE_CREATES_CALLS) {
+    const rec = upsert(callId, { direction, number, classification, state: "skipped", reason: "server_owns_creation" });
+    log("skipped_server_owns_creation", { callId, dedupKey, direction, number, classification });
+    return rec;
+  }
   upsert(callId, { direction, number, classification, state: "pending", reason: "posting" });
+
 
   const e164 = toE164(number);
   let lastError: string | null = null;

@@ -15,6 +15,7 @@ import {
   setPipelineStep,
   telecomAuth,
 } from "../_shared/maestro.ts";
+import { recordingPermalink } from "../_shared/recording-link.ts";
 
 function pickUrl(d: any): string | null {
   if (!d) return null;
@@ -99,8 +100,75 @@ Deno.serve(async (req) => {
     token: auth.token,
     machine: auth.machine,
   });
-  const url = res.ok ? pickUrl(res.data) : null;
+  let url = res.ok ? pickUrl(res.data) : null;
+  let source: "maestro" | "netsapiens" = "maestro";
   const meta = ((call as any)?.metadata ?? {}) as Record<string, unknown>;
+
+  // Maestro ne génère pas toujours le média (404 récurrent). L'audio réel vit
+  // dans NetSapiens : on le récupère et on pousse le lien dans la fiche
+  // d'appel Maestro, sinon l'enregistrement reste introuvable côté CRM.
+  if (!url) {
+    try {
+      const nsRes = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/ns-get-recording`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
+        },
+        body: JSON.stringify({ call_db_id: call_id, prefer_url: true }),
+      });
+      const nsData = await nsRes.json().catch(() => ({} as any));
+      if (nsData?.available && (nsData.url || nsData.recording_url)) {
+        url = String(nsData.url ?? nsData.recording_url);
+        source = "netsapiens";
+      }
+    } catch (_) { /* non-fatal */ }
+  }
+
+  if (url) {
+    // Maestro n'accepte QUE `status`, `ended_reason`, `ai_summary` et `notes`
+    // sur PUT /calls/{id} (testé : recording_url → 500, POST /recording → 404).
+    // On publie donc un lien d'écoute PERMANENT dans les notes, en préservant
+    // le résumé IA et la transcription déjà poussés.
+    const permalink = await recordingPermalink(String(call_id));
+    const { data: aiCall } = await admin
+      .from("planipret_phone_calls")
+      .select("ai_summary, ai_summary_short, ai_key_points, ai_topics, next_actions, ai_action_items, transcript")
+      .eq("id", call_id)
+      .maybeSingle();
+    const arr = (v: unknown) => (Array.isArray(v) ? v : []);
+    const title = (a: any) => (typeof a === "string" ? a : a?.title ?? a?.description ?? a?.label ?? null);
+    const keyPoints = arr((aiCall as any)?.ai_key_points).length
+      ? arr((aiCall as any)?.ai_key_points)
+      : arr((aiCall as any)?.ai_topics);
+    const actions = arr((aiCall as any)?.next_actions).length
+      ? arr((aiCall as any)?.next_actions)
+      : arr((aiCall as any)?.ai_action_items);
+    const notes = [
+      `Enregistrement: ${permalink}`,
+      keyPoints.length ? `Points clés: ${keyPoints.map(String).join(" • ")}` : null,
+      actions.length ? `Prochaines actions: ${actions.map(title).filter(Boolean).join(" • ")}` : null,
+      (aiCall as any)?.transcript ? `Transcription:\n${String((aiCall as any).transcript).slice(0, 8000)}` : null,
+    ].filter(Boolean).join("\n\n");
+
+    const put = await maestroFetch(cfg, {
+      method: "PUT",
+      path: `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/calls/${encodeURIComponent(String(maestroCallId))}`,
+      token: auth.token,
+      machine: auth.machine,
+      body: {
+        status: "ended",
+        ai_summary: (aiCall as any)?.ai_summary ?? (aiCall as any)?.ai_summary_short ?? undefined,
+        notes,
+      },
+    });
+    await pipelineLog(admin, {
+      call_id, user_id: userId, step: "recording_push", status: put.ok ? "success" : "error",
+      error_message: put.ok ? null : `maestro_put_${put.status}`,
+      payload: { maestro_call_id: maestroCallId, status: put.status, source, permalink },
+    });
+  }
+
 
   if (!url) {
     await admin.from("planipret_phone_calls").update({
@@ -109,7 +177,7 @@ Deno.serve(async (req) => {
     await pipelineLog(admin, {
       call_id, user_id: userId, step: "recording_poll", status: "skipped",
       error_message: "media_not_ready",
-      payload: { maestro_call_id: maestroCallId, status: res.status },
+      payload: { maestro_call_id: maestroCallId, status: res.status, ns_fallback: "unavailable" },
     });
     await admin.from("planipret_recording_uploads").upsert({
       call_id, user_id: userId, maestro_call_id: maestroCallId, status: "pending",
@@ -117,6 +185,7 @@ Deno.serve(async (req) => {
     }, { onConflict: "call_id" }).then(() => {}, () => {});
     return json({ success: true, skipped: "media_not_ready", status: res.status });
   }
+
 
   await admin.from("planipret_phone_calls").update({
     recording_url: (call as any)?.recording_url ?? url,

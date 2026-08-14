@@ -22,7 +22,7 @@ import {
   getMaestroTelecomConfig,
   isMaestroTelecomConfigured,
   maestroTelecomFetch,
-  maestroTelecomMirror,
+  
 } from "../_shared/maestro-telecom.ts";
 
 function normalizeE164(raw: unknown): string | null {
@@ -147,6 +147,34 @@ function newMessageSessionId() {
   return crypto.randomUUID().replace(/-/g, "");
 }
 
+const digitsOnly = (v: unknown) => String(v ?? "").replace(/\D/g, "").slice(-10);
+
+/** Peer number of a locally logged message row. */
+function localPeer(row: any): string {
+  return String((row.direction === "outbound" ? row.to_number : row.from_number) ?? "");
+}
+
+/** Local history rows (planipret_phone_messages) for the current broker. */
+async function getLocalMessages(supabase: any, userId: string, limit = 500): Promise<any[]> {
+  try {
+    const { data, error } = await supabase
+      .from("planipret_phone_messages")
+      .select("id,direction,to_number,from_number,body,thread_id,sent_at,read_at")
+      .eq("user_id", userId)
+      .order("sent_at", { ascending: false })
+      .limit(limit);
+    if (error) {
+      console.warn("[pp-ns-sms] local history error:", error.message);
+      return [];
+    }
+    return data ?? [];
+  } catch (e) {
+    console.warn("[pp-ns-sms] local history error:", e);
+    return [];
+  }
+}
+
+
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -172,12 +200,72 @@ Deno.serve(async (req) => {
     if (action === "threads") {
       const limit = (pick("limit") as string) ?? "50";
       const res = await nsFetch(`${userBase}/messagesessions?limit=${limit}`, { method: "GET" });
+      let threads: any[] = [];
+      let nsWarning: { status: number; body: string } | null = null;
       if (!res.ok) {
-        const txt = await res.text();
-        return jsonResponse({ error: "NS-API threads fetch failed", status: res.status, body: txt }, 502);
+        // Fail-soft: an extension without messaging provisioned must show an
+        // empty inbox, not a blocking error screen.
+        const txt = await res.text().catch(() => "");
+        console.warn(`[pp-ns-sms] messagesessions ${res.status}:`, txt.slice(0, 300));
+        nsWarning = { status: res.status, body: txt.slice(0, 300) };
+      } else {
+        const raw = await res.json().catch(() => null);
+        threads = Array.isArray(raw) ? raw : (raw?.messagesessions ?? raw?.data ?? []);
       }
-      const raw = await res.json();
-      const threads = Array.isArray(raw) ? raw : (raw?.messagesessions ?? raw?.data ?? []);
+
+      // Historique local (planipret_phone_messages) : garantit que les SMS
+      // envoyés/reçus restent visibles même si NS-API n'expose pas la session.
+      const localRows = await getLocalMessages(supabase, ctx.profileId ?? ctx.userId);
+       const nsThreadByPeer = new Map<string, any>();
+       for (const thread of threads) {
+         const key = digitsOnly(
+           thread.destination
+             ?? thread["messagesession-destination"]
+             ?? thread.remote_party
+             ?? thread.phonenumber
+             ?? thread.contact
+             ?? "",
+         );
+         if (key && !nsThreadByPeer.has(key)) nsThreadByPeer.set(key, thread);
+       }
+      const byPeer = new Map<string, any>();
+      for (const row of localRows) {
+        const peer = localPeer(row);
+        const key = digitsOnly(peer);
+         if (!key) continue;
+
+         // NS can return a stale thread after an outgoing send. Keep its real
+         // session id, but promote the newer local message so the conversation
+         // immediately moves to the top and shows the text that was just sent.
+         const nsThread = nsThreadByPeer.get(key);
+         if (nsThread) {
+           const nsTime = new Date(
+             nsThread.last_message_at
+               ?? nsThread.updated_at
+               ?? nsThread.timestamp
+               ?? nsThread["messagesession-last-datetime"]
+               ?? 0,
+           ).getTime();
+           const localTime = new Date(row.sent_at ?? 0).getTime();
+           if (!Number.isFinite(nsTime) || localTime >= nsTime) {
+             nsThread.last_message = row.body;
+             nsThread.last_message_at = row.sent_at;
+           }
+           continue;
+         }
+
+         if (byPeer.has(key)) continue;
+        byPeer.set(key, {
+          id: row.thread_id ?? `local:${peer}`,
+          messagesession_id: row.thread_id ?? `local:${peer}`,
+          destination: peer,
+          last_message: row.body,
+          last_message_at: row.sent_at,
+          unread: 0,
+          source: "local",
+        });
+      }
+      threads = [...threads, ...byPeer.values()];
 
       // Best-effort Maestro inbox enrichment.
       let maestroInbox: any[] = [];
@@ -191,27 +279,61 @@ Deno.serve(async (req) => {
           }
         } catch { /* ignore */ }
       }
-      return jsonResponse({ ok: true, count: threads.length, threads, maestro_inbox: maestroInbox });
+      return jsonResponse({ ok: true, count: threads.length, threads, maestro_inbox: maestroInbox, ns_warning: nsWarning });
     }
 
     if (action === "messages") {
       const threadId = pick("thread_id") as string | undefined;
       if (!threadId) return jsonResponse({ error: "thread_id requis" }, 400);
       const limit = (pick("limit") as string) ?? "100";
-      const res = await nsFetch(
-        `${userBase}/messagesessions/${encodeURIComponent(threadId)}/messages?limit=${limit}`,
-        { method: "GET" }
-      );
-      if (!res.ok) {
-        const txt = await res.text();
-        return jsonResponse({ error: "NS-API messages fetch failed", status: res.status, body: txt }, 502);
+      let messages: any[] = [];
+      if (!threadId.startsWith("local:")) {
+        const res = await nsFetch(
+          `${userBase}/messagesessions/${encodeURIComponent(threadId)}/messages?limit=${limit}`,
+          { method: "GET" }
+        );
+        if (!res.ok) {
+          const txt = await res.text().catch(() => "");
+          console.warn(`[pp-ns-sms] messages ${res.status}:`, txt.slice(0, 300));
+        } else {
+          const raw = await res.json().catch(() => null);
+          messages = Array.isArray(raw) ? raw : (raw?.messages ?? raw?.data ?? []);
+        }
       }
-      const raw = await res.json();
-      const messages = Array.isArray(raw) ? raw : (raw?.messages ?? raw?.data ?? []);
+
+       const phoneHint = (pick("phone_number") as string | undefined)
+        ?? (threadId.startsWith("local:") ? threadId.slice(6) : undefined);
+
+      // Fusion de l'historique local (dédupliqué par corps + minute).
+      try {
+        const localRows = await getLocalMessages(supabase, ctx.profileId ?? ctx.userId);
+        const hintKey = digitsOnly(phoneHint);
+        const seen = new Set(
+          messages.map((m: any) => `${String(m.text ?? m.message ?? m.body ?? "").trim()}|${String(m.timestamp ?? m.created_at ?? "").slice(0, 16)}`),
+        );
+        const merged = localRows
+          .filter((row: any) => row.thread_id === threadId || (hintKey && digitsOnly(localPeer(row)) === hintKey))
+          .map((row: any) => ({
+            id: row.id,
+            direction: row.direction,
+            from: row.from_number,
+            to: row.to_number,
+            "from-number": row.from_number,
+            text: row.body,
+            body: row.body,
+            timestamp: row.sent_at,
+            source: "local",
+          }))
+          .filter((m: any) => !seen.has(`${String(m.text).trim()}|${String(m.timestamp).slice(0, 16)}`));
+        messages = [...messages, ...merged].sort(
+          (a: any, b: any) => +new Date(a.timestamp ?? a.created_at ?? 0) - +new Date(b.timestamp ?? b.created_at ?? 0),
+        );
+      } catch (e) {
+        console.warn("[pp-ns-sms] local merge failed:", e);
+      }
 
       // Best-effort Maestro conversation enrichment (needs a phone hint).
       let maestroMessages: any[] = [];
-      const phoneHint = pick("phone_number") as string | undefined;
       if (ctx.maestroBrokerId && phoneHint) {
         try {
           const cfg = await getMaestroTelecomConfig(supabase);
@@ -227,6 +349,7 @@ Deno.serve(async (req) => {
       }
       return jsonResponse({ ok: true, count: messages.length, messages, maestro_messages: maestroMessages });
     }
+
 
 
     if (action === "sms-numbers") {
@@ -266,10 +389,50 @@ Deno.serve(async (req) => {
       }
 
 
-      // NS-API v2 SMS: POST /users/{ext}/messagesessions/messages creates the
-      // session (if needed) and sends the message in one shot. This is the
-      // endpoint NetSapiens actually accepts — POSTing to /messagesessions
-      // directly returns HTTP 500 on most tenants.
+
+      // ---- Garde d'idempotence -------------------------------------------
+      // AVA (chatbot/voicebot) peut rejouer un tool call, et un double tap
+      // mobile peut envoyer deux fois. On refuse tout SMS identique
+      // (même courtier, même destinataire, même texte) dans les 90 dernières
+      // secondes et on renvoie le succès du premier envoi.
+      try {
+        const since = new Date(Date.now() - 90_000).toISOString();
+        const { data: dup } = await supabase
+          .from("planipret_phone_messages")
+          .select("id, thread_id, sent_at")
+          .eq("user_id", ctx.profileId ?? ctx.userId)
+          .eq("direction", "outbound")
+          .eq("to_number", destination)
+          .eq("body", message)
+          .gte("sent_at", since)
+          .order("sent_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        if (dup?.id) {
+          console.warn("[pp-ns-sms] duplicate suppressed", { to: destination, dup_id: dup.id });
+          return jsonResponse({
+            ok: true,
+            success: true,
+            duplicate: true,
+            message_id: dup.id,
+            thread_id: dup.thread_id ?? thread_id ?? null,
+            to: destination,
+            from: fromNumber,
+            note: "SMS identique déjà envoyé il y a moins de 90 s — envoi ignoré.",
+          }, 200);
+        }
+      } catch (dupErr) {
+        console.warn("[pp-ns-sms] dedupe check failed (non-fatal):", dupErr);
+      }
+
+
+
+
+      // ---- Voie 1 : NS-API v2 (DID NetSapiens du courtier) ----------------
+      // On envoie TOUJOURS via NS-API en priorité : c'est la seule voie qui
+      // respecte `from-number` (le DID réel du courtier). Maestro
+      // `POST /users/{id}/messages` envoie depuis un numéro générique Maestro
+      // et sert donc uniquement de repli.
       const nsBody: Record<string, unknown> = {
         type: type === "chat" ? "chat" : "sms",
         destination,
@@ -299,72 +462,113 @@ Deno.serve(async (req) => {
       let result: any = null;
       try { result = lastText ? JSON.parse(lastText) : {}; } catch { result = { raw: lastText }; }
 
-      if (!res.ok) {
-        console.error("[pp-ns-sms] NS send failed", res.status, path, lastText);
-        return jsonResponse(
-          { ok: false, error: `Envoi SMS refusé (${res.status})`, status: res.status, body: lastText, from: fromNumber, to: destination, endpoint: path },
-          200,
-        );
-      }
-
-      // NS-API returns HTTP 200 even when the message failed downstream —
-      // inspect result body for explicit error/failure flags before claiming success.
       const nsError = result?.error ?? result?.errorMessage ?? result?.error_message ?? result?.message?.error;
       const nsStatus = String(result?.status ?? result?.state ?? "").toLowerCase();
-      if (nsError || nsStatus === "failed" || nsStatus === "error" || result?.ok === false || result?.success === false) {
-        console.error("[pp-ns-sms] NS send returned 200 with error body:", result);
-        return jsonResponse(
-          { ok: false, error: nsError ?? `NS-API a rejeté le SMS (status=${nsStatus || "unknown"})`, ns_result: result, from: fromNumber, to: destination },
-          200,
-        );
-      }
+      const nsRejected = !res.ok || !!nsError || nsStatus === "failed" || nsStatus === "error"
+        || result?.ok === false || result?.success === false;
 
-      const resolvedThreadId = thread_id
-        ?? result?.messagesession_id
-        ?? result?.["messagesession-id"]
-        ?? result?.messagesession
-        ?? sessionId;
-
-      try {
-        const { data: logged } = await supabase
-          .from("planipret_phone_messages")
-          .insert({
-            user_id: ctx.userId,
-            direction: "outbound",
-            to_number: destination,
-            from_number: fromNumber,
-            body: message,
-            type,
-            ns_thread_id: resolvedThreadId,
-            sent_at: new Date().toISOString(),
-          })
-          .select("id")
-          .maybeSingle();
-        if (logged?.id) {
-          fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/maestro-sync-message`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
-            },
-            body: JSON.stringify({ message_id: logged.id }),
-          }).catch(() => {});
+      const logMessage = async (threadId: string | null, nsMsgId: string | null = null) => {
+        try {
+          const { data: logged, error: logError } = await supabase
+            .from("planipret_phone_messages")
+            .insert({
+              // FK fk_phone_messages_profile → planipret_profiles.id
+              user_id: ctx.profileId ?? ctx.userId,
+              direction: "outbound",
+              to_number: destination,
+              from_number: fromNumber,
+              body: message,
+              status: "sent",
+              ns_message_id: nsMsgId,
+              metadata: { type },
+              thread_id: threadId,
+              sent_at: new Date().toISOString(),
+            })
+            .select("id")
+            .maybeSingle();
+          if (logError) console.error("[pp-ns-sms] log insert error:", logError.message);
+          return logged?.id ?? null;
+        } catch (logErr) {
+          console.warn("[pp-ns-sms] log insert failed (non-fatal):", logErr);
+          return null;
         }
-      } catch (logErr) {
-        console.warn("[pp-ns-sms] log insert failed (non-fatal):", logErr);
-      }
+      };
 
-      // Mirror the outbound SMS to Maestro Telecom — fire-and-forget.
-      if (ctx.maestroBrokerId) {
-        maestroTelecomMirror(supabase, `/users/${encodeURIComponent(ctx.maestroBrokerId)}/messages`, {
-          method: "POST",
-          body: { to_user_number: destination, message },
-          action: "sms.send",
-          userId: ctx.userId,
+
+      if (!nsRejected) {
+        const resolvedThreadId = thread_id
+          ?? result?.messagesession_id
+          ?? result?.["messagesession-id"]
+          ?? result?.messagesession
+          ?? sessionId;
+        const messageId = await logMessage(resolvedThreadId, result?.id ?? result?.message_id ?? result?.["message-id"]);
+        // Synchronisation Maestro : on NE renvoie PAS le SMS via Maestro
+        // (mauvais afficheur) — on pousse seulement l'enregistrement pour que
+        // la conversation apparaisse dans Maestro avec le vrai DID NS.
+        if (messageId) {
+          try {
+            await supabase.functions.invoke("maestro-sync-message", { body: { message_id: messageId } });
+          } catch (syncErr) {
+            console.warn("[pp-ns-sms] maestro sync failed (non-fatal):", syncErr);
+          }
+        }
+
+        // ---- Vérification post-envoi ---------------------------------------
+        // On relit la ligne réellement persistée pour confirmer (a) qu'elle est
+        // bien dans l'historique du courtier et (b) que le DID affiché est le
+        // DID NetSapiens attendu.
+        const verification: Record<string, unknown> = {
+          saved: false,
+          did_match: false,
+          expected_from: fromNumber,
+          stored_from: null,
+          thread_id: resolvedThreadId,
+          message_id: messageId,
+        };
+        if (messageId) {
+          try {
+            const { data: check } = await supabase
+              .from("planipret_phone_messages")
+              .select("id, from_number, to_number, thread_id, sent_at, direction")
+              .eq("id", messageId)
+              .maybeSingle();
+            if (check) {
+              verification.saved = true;
+              verification.stored_from = check.from_number;
+              verification.stored_to = check.to_number;
+              verification.sent_at = check.sent_at;
+              verification.thread_id = check.thread_id ?? resolvedThreadId;
+              verification.did_match = digitsOnly(check.from_number ?? "") === digitsOnly(fromNumber);
+            }
+          } catch (vErr) {
+            verification.error = String((vErr as Error).message ?? vErr);
+          }
+        }
+        if (!verification.saved) verification.warning = "message_not_persisted";
+        else if (!verification.did_match) verification.warning = "did_mismatch";
+
+        return jsonResponse({
+          ok: true, via: "ns", result, message_id: messageId,
+          from: fromNumber, to: destination, thread_id: resolvedThreadId,
+          verification,
         });
+
       }
 
-      return jsonResponse({ ok: true, result, from: fromNumber, to: destination, thread_id: resolvedThreadId });
+
+      console.error("[pp-ns-sms] NS send failed", res.status, nsError ?? lastText?.slice(0, 200));
+
+      // ---- PAS de repli Maestro -------------------------------------------
+      // `POST /users/{id}/messages` (Maestro) ignore `from`/`from_number` et
+      // envoie depuis un numéro du pool Maestro (le destinataire voyait le DID
+      // d'un autre courtier). On préfère échouer clairement plutôt que d'envoyer
+      // avec un mauvais afficheur.
+
+      return jsonResponse(
+        { ok: false, error: nsError ?? `Envoi SMS refusé par le PBX (${res.status}) — le message n'a pas été envoyé. Vérifiez que le DID ${fromNumber} est bien attribué à votre extension.`, status: res.status, body: lastText, from: fromNumber, to: destination, endpoint: path },
+        200,
+      );
+
     }
 
     return jsonResponse({ error: `Action inconnue: ${action}` }, 400);

@@ -502,10 +502,15 @@ final class PjsipEngine {
 
     func setSpeaker(_ enabled: Bool) {
         speakerOn = enabled
-        // CallKit possède la session : on ne change QUE la route de sortie.
+        // PpSipKeepAlive est l’unique propriétaire de la session audio iOS.
+        // Éviter deux appels concurrents à overrideOutputAudioPort avec des
+        // modes différents, qui rendent le haut-parleur faible ou étouffé.
         DispatchQueue.main.async {
-            let session = AVAudioSession.sharedInstance()
-            try? session.overrideOutputAudioPort(enabled ? .speaker : .none)
+            NotificationCenter.default.post(
+                name: Notification.Name("PpAudioRouteRequest"),
+                object: nil,
+                userInfo: ["route": enabled ? "speaker" : "earpiece"]
+            )
         }
     }
 

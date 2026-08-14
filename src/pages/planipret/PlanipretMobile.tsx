@@ -39,12 +39,37 @@ import { prefetchPpContacts, peekPpContacts } from "@/lib/ppContactsCache";
 import { PLANIPRET_PROFILE_SAFE_COLUMNS, PLANIPRET_PROFILE_BOOT_COLUMNS } from "@/lib/planipret/profileColumns";
 import { useRemoteConfig } from "@/hooks/useRemoteConfig";
 
+import { retryWithBackoff, adaptiveTimeout } from "@/lib/net/resilient";
+
 /** Hard timeout guard: never let a hung network call freeze the app shell. */
 function ppWithTimeout<T>(p: PromiseLike<T>, ms: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`${label}_timeout`)), ms);
     p.then((v) => { clearTimeout(timer); resolve(v); }, (e) => { clearTimeout(timer); reject(e); });
   });
+}
+
+/**
+ * Last known good profile. On slow cellular the boot query can exceed its
+ * budget; rather than blocking the whole app behind an error card we boot on
+ * the cached copy and refresh in the background.
+ */
+const PP_PROFILE_CACHE_KEY = "pp_profile_boot_cache";
+function readCachedProfile(userId: string): any | null {
+  try {
+    const raw = localStorage.getItem(PP_PROFILE_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed?.profile || parsed.userId !== userId) return null;
+    // 30 days: the profile rarely changes and a stale copy beats a dead app.
+    if (Date.now() - (parsed.at ?? 0) > 30 * 86_400_000) return null;
+    return parsed.profile;
+  } catch { return null; }
+}
+function writeCachedProfile(userId: string, profile: any) {
+  try {
+    localStorage.setItem(PP_PROFILE_CACHE_KEY, JSON.stringify({ userId, profile, at: Date.now() }));
+  } catch { /* quota — non-blocking */ }
 }
 
 
@@ -801,7 +826,7 @@ export default function PlanipretMobile() {
     }
     let session: any = null;
     try {
-      const r: any = await ppWithTimeout(supabase.auth.getSession(), 8000, "get_session");
+      const r: any = await ppWithTimeout(supabase.auth.getSession(), adaptiveTimeout(8000), "get_session");
       session = r?.data?.session ?? null;
     } catch (e) {
       console.warn("[PlanipretMobile] getSession timeout", e);
@@ -841,10 +866,13 @@ export default function PlanipretMobile() {
       }
       if (!currentSession?.access_token) throw new Error("no_session");
 
-      const { data: fnData, error: fnError }: any = await ppWithTimeout(supabase.functions.invoke("pp-mobile-profile", {
-        body: { fields: "safe" },
-        headers: { Authorization: `Bearer ${currentSession.access_token}` },
-      }), 10000, "profile_fn");
+      const { data: fnData, error: fnError }: any = await retryWithBackoff(
+        () => supabase.functions.invoke("pp-mobile-profile", {
+          body: { fields: "safe" },
+          headers: { Authorization: `Bearer ${currentSession.access_token}` },
+        }),
+        { attempts: 2, timeoutMs: 10000, label: "profile_fn" },
+      );
       if (fnError) throw fnError;
       const fnProfile = (fnData as any)?.profile ?? null;
       if (!fnProfile) throw new Error((fnData as any)?.error ?? "missing_profile");
@@ -855,8 +883,18 @@ export default function PlanipretMobile() {
     let error: any = null;
 
     // 1) Stable path: direct RLS-backed profile read. Backend function is fallback only.
+    // Cellular links (LTE/5G) often lose the first request while the radio wakes
+    // up, so the read is retried with a growing budget instead of failing hard.
     try {
-      const direct: any = await ppWithTimeout(supabase.from("planipret_profiles").select(PLANIPRET_PROFILE_BOOT_COLUMNS).eq("user_id", user.id).maybeSingle(), 10000, "profile_query");
+      const direct: any = await retryWithBackoff(
+        () => supabase.from("planipret_profiles").select(PLANIPRET_PROFILE_BOOT_COLUMNS).eq("user_id", user.id).maybeSingle(),
+        {
+          attempts: 3,
+          timeoutMs: 9000,
+          label: "profile_query",
+          onRetry: (n, err) => console.warn(`[PlanipretMobile] profile query attempt ${n} failed`, err),
+        },
+      );
       data = direct.data as any;
       error = direct.error;
     } catch (directErr: any) {
@@ -899,6 +937,19 @@ export default function PlanipretMobile() {
 
     if (error) {
       console.error("[PlanipretMobile] profile query error:", error.message, (error as any).code);
+      // Network failure (timeout / lost radio) → boot on the last known good
+      // profile instead of the dead-end error card, then refresh silently.
+      const cached = readCachedProfile(user.id);
+      const networkish = /timeout|fetch|network|load failed/i.test(String(error.message ?? ""));
+      if (cached && networkish) {
+        console.warn("[PlanipretMobile] booting from cached profile (slow network)");
+        setAccessError(null);
+        setProfileErrorDetail("");
+        setProfile(cached);
+        setLoading(false);
+        if (attempt < 3) setTimeout(() => { void loadProfile(attempt + 1); }, 6000);
+        return;
+      }
       setProfileErrorDetail(error.message || "");
       recordRedirect(location.pathname, ROUTES.MPLANIPRET, "PlanipretMobile.loadProfile", "profile load failed");
       setAccessError("load_failed");
@@ -914,6 +965,7 @@ export default function PlanipretMobile() {
     setAccessError(null);
     setProfileErrorDetail("");
     setProfile(data);
+    writeCachedProfile(user.id, data);
     setLoading(false);
     void supabase
       .from("planipret_profiles")
@@ -921,7 +973,7 @@ export default function PlanipretMobile() {
       .eq("user_id", user.id)
       .maybeSingle()
       .then(async ({ data: full, error: fullError }) => {
-        if (full) setProfile(full);
+        if (full) { setProfile(full); writeCachedProfile(user.id, full); }
         else if (fullError) {
           try {
             const fallbackFull = await loadProfileViaFunction();

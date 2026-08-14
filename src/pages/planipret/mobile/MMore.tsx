@@ -26,6 +26,7 @@ import { useMplanipretSoftphone } from "@/hooks/useMplanipretSoftphone";
 import { ppSipProvider, type PpSipSnapshot } from "@/lib/planipret/sip/ppSipProvider";
 import { Radio } from "lucide-react";
 import { ms365Connected } from "@/lib/planipret/ms365Connected";
+import { retryWithBackoff } from "@/lib/net/resilient";
 
 const initials = (name?: string) =>
   (name ?? "").split(/\s+/).filter(Boolean).slice(0, 2).map((p) => p[0]?.toUpperCase()).join("") || "?";
@@ -51,13 +52,22 @@ export default function MMore() {
 
   const loadMs365Detection = async () => {
     setMs365Detection((d) => ({ ...d, loading: true }));
-    const { data } = await supabase.functions.invoke("ms365-status", { body: {} });
-    const pc = (data as any)?.detection ?? {};
-    setMs365Detection({
-      tenant_id: pc.tenant_id ?? null,
-      client_id: pc.client_id ?? null,
-      loading: false,
-    });
+    try {
+      // Retried: a single cellular timeout used to render Microsoft 365 as
+      // "not configured" even though the account is linked.
+      const { data }: any = await retryWithBackoff(
+        () => supabase.functions.invoke("ms365-status", { body: {} }),
+        { attempts: 3, timeoutMs: 10000, label: "ms365_status" },
+      );
+      const pc = (data as any)?.detection ?? {};
+      setMs365Detection({
+        tenant_id: pc.tenant_id ?? null,
+        client_id: pc.client_id ?? null,
+        loading: false,
+      });
+    } catch {
+      setMs365Detection((d) => ({ ...d, loading: false }));
+    }
   };
   useEffect(() => { loadMs365Detection(); }, []);
 
@@ -136,8 +146,18 @@ export default function MMore() {
   };
 
   const connectMs365 = async () => {
-    const { data, error } = await supabase.functions.invoke("ms365-status", { body: {} });
-    if (error) { toast.error(t("screens.more.msInaccessible"), { description: error.message }); return; }
+    let data: any = null;
+    try {
+      const res: any = await retryWithBackoff(
+        () => supabase.functions.invoke("ms365-status", { body: {} }),
+        { attempts: 3, timeoutMs: 10000, label: "ms365_status" },
+      );
+      if (res.error) throw res.error;
+      data = res.data;
+    } catch (error: any) {
+      toast.error(t("screens.more.msInaccessible"), { description: error?.message });
+      return;
+    }
     const cfg = ((data as any)?.detection ?? {}) as any;
     if (!cfg.client_id) {
       toast.error(t("screens.more.msNotConfigured"));

@@ -40,9 +40,36 @@ Deno.serve(async (req) => {
     }
 
     const auth = await getBrokerAuth(admin, msg.user_id);
+
+    // Le numéro « courtier » : côté local d'un SMS. En entrant, `to_number`
+    // est souvent l'extension NS (ex. 1136) → Maestro refuse (format invalide).
+    // On résout alors le DID réel depuis planipret_profiles.phone.
+    const { data: prof } = await admin
+      .from("planipret_profiles")
+      .select("phone")
+      .or(`user_id.eq.${msg.user_id},id.eq.${msg.user_id}`)
+      .maybeSingle();
+    const brokerNumber = normalizePhone(prof?.phone ?? null);
+
+    const isE164 = (v: string | null) => !!v && /^\+\d{11,15}$/.test(v);
+    const pick = (raw: string | null, fallback: string | null) => {
+      const n = normalizePhone(raw);
+      return isE164(n) ? n : fallback;
+    };
+
     const contact = msg.direction === "inbound"
-      ? normalizePhone(msg.from_number)
-      : normalizePhone(msg.to_number);
+      ? pick(msg.from_number, null)
+      : pick(msg.to_number, null);
+    const fromUser = msg.direction === "inbound"
+      ? (contact ?? brokerNumber)
+      : (pick(msg.from_number, brokerNumber) ?? brokerNumber);
+    const toUser = msg.direction === "inbound"
+      ? (pick(msg.to_number, brokerNumber) ?? brokerNumber)
+      : contact;
+
+    if (!isE164(fromUser) || !isE164(toUser)) {
+      return json({ success: false, error: "invalid_numbers", from: fromUser, to: toUser }, 200);
+    }
 
     const t0 = Date.now();
     const res = await maestroFetchScoped(cfg, {
@@ -55,13 +82,19 @@ Deno.serve(async (req) => {
         message_id: msg.ns_message_id ?? msg.id,
         maestro_broker_id: auth.brokerId,
         direction: msg.direction,
-        from_number: msg.from_number,
-        to_number: msg.to_number,
+        from_number: fromUser,
+        to_number: toUser,
+        from_user_number: fromUser,
+        to_user_number: toUser,
+        user_number: brokerNumber ?? (msg.direction === "inbound" ? toUser : fromUser),
         contact_number: contact,
         body: msg.body ?? "",
+        message: msg.body ?? "",
         sent_at: msg.sent_at ?? msg.created_at,
         channel: "sms",
       },
+
+
     });
 
     await maestroSyncLog(admin, {

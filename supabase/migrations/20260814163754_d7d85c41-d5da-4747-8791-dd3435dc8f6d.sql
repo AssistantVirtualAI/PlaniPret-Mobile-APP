@@ -1,0 +1,1 @@
+update public.planipret_profiles set voice_agent_enabled = true, updated_at = now() where id = 'f9e829ad-e5ff-42ff-8337-2cb508bdd3b5' and voice_agent_enabled is distinct from true;

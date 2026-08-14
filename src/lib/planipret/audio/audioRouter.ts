@@ -93,11 +93,17 @@ export const audioRouter = {
     if (b?.setAudioRoute) {
       try { await b.setAudioRoute({ route }); handled = true; } catch {}
     }
-    // During a native PJSIP/CallKit call the engine also owns the output port.
-    const p = pjsip();
-    if (p?.setSpeaker) {
-      try { await p.setSpeaker({ enabled: route === "speaker" }); handled = true; } catch {}
+    // PpSipKeepAlive is the single owner of the audio session. Only fall back
+    // to the PJSIP speaker toggle when that plugin is unavailable — calling
+    // both made the two modules fight (quiet/muffled loudspeaker) and mapped
+    // "bluetooth" to "earpiece".
+    if (!handled) {
+      const p = pjsip();
+      if (p?.setSpeaker) {
+        try { await p.setSpeaker({ enabled: route === "speaker" }); handled = true; } catch {}
+      }
     }
+
     if (handled) return;
     // Web fallback: try matching sinkId on every <audio> tag.
     try {
@@ -148,19 +154,22 @@ export const audioRouter = {
     currentRoute = route;
     await audioRouter.setRoute(route);
     // Some stacks (CallKit / AudioFocus) re-apply their own route ~1s after the
-    // media session activates, so re-assert once.
+
+    // media session activates, so re-assert once — but never overwrite a change
+    // the user made in the meantime (tap on « haut-parleur »).
     const generation = routeGeneration;
     reassertTimer = setTimeout(() => {
       reassertTimer = null;
       if (generation !== routeGeneration) return;
-      void audioRouter.setRoute(route);
+      void audioRouter.setRoute(currentRoute);
     }, 1200);
     // Second reset pass: NetSapiens/PJSIP can renegotiate media ~2.5 s after
     // answer, which silences the far end if the session was not re-armed.
     setTimeout(() => {
       if (generation !== routeGeneration) return;
-      void audioRouter.resetSession().then(() => audioRouter.setRoute(route));
+      void audioRouter.resetSession().then(() => audioRouter.setRoute(currentRoute));
     }, 2500);
+
     return route;
   },
 
