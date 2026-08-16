@@ -279,18 +279,48 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       }
     }
 
-    private func applyAudioRoute() {
+    /// Mode audio adapté à la sortie : .voiceChat est calibré pour l'écouteur
+    /// et rend le haut-parleur sourd. .videoChat est le mode mains-libres.
+    private func modeFor(_ route: String) -> AVAudioSession.Mode {
+      return route == "speaker" ? .videoChat : .voiceChat
+    }
+
+    private func applyAudioRoute() { applyAudioRoute(retries: 4) }
+
+    /// iOS (CallKit, PJSIP, WebKit) réapplique sa propre route juste après
+    /// l'activation du média : un simple override est souvent écrasé. On
+    /// vérifie donc la route effective et on réessaie.
+    private func applyAudioRoute(retries: Int) {
       let s = AVAudioSession.sharedInstance()
+      let speaker = preferredRoute == "speaker"
+      var opts: AVAudioSession.CategoryOptions = [.allowBluetoothHFP, .allowBluetoothA2DP]
+      if speaker { opts.insert(.defaultToSpeaker) }
+      let wantedMode = modeFor(preferredRoute)
+      if s.category != .playAndRecord || s.mode != wantedMode || s.categoryOptions != opts {
+        try? s.setCategory(.playAndRecord, mode: wantedMode, options: opts)
+      }
+      try? s.setActive(true, options: [])
       switch preferredRoute {
       case "speaker":
+        // Détacher le casque BT : sinon iOS garde la sortie BT malgré l'override.
+        try? s.setPreferredInput(nil)
         try? s.overrideOutputAudioPort(.speaker)
       case "bluetooth":
         try? s.overrideOutputAudioPort(.none)
         if let bt = bluetoothInput() { try? s.setPreferredInput(bt) }
       default:
         try? s.overrideOutputAudioPort(.none)
-        // Auto: a connected Bluetooth headset always wins over the earpiece.
         if let bt = bluetoothInput() { try? s.setPreferredInput(bt) }
+      }
+      let effective = currentAudioRoute()
+      NSLog("[PpSipKeepAlive] route wanted=%@ effective=%@ mode=%@ retries=%d",
+            preferredRoute, effective, s.mode.rawValue, retries)
+      guard retries > 0 else { return }
+      let matches = (effective == preferredRoute) || (preferredRoute == "earpiece" && effective == "bluetooth" && bluetoothAvailable())
+      if !matches {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+          self?.applyAudioRoute(retries: retries - 1)
+        }
       }
     }
 

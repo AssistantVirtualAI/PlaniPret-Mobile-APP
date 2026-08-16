@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 /* ------------------------------------------------------------------ *
@@ -88,7 +89,8 @@ describe("ppSipProvider — transport recovery guard", () => {
     await bootRegistered();
     expect(created.sockets).toHaveLength(1);
     expect(liveUAs()).toHaveLength(1);
-    expect(created.uas[0].config.contact_uri).toBe("sip:113@pbx.example.com;transport=wss;pp-ua=web-113");
+    // AOR séparée : le web s'enregistre sur une AOR dédiée (suffixe M/W).
+    expect(created.uas[0].config.contact_uri).toMatch(/^sip:113[MW]?@pbx\.example\.com;transport=wss;pp-ua=web-113/);
     expect(provider.getSnapshot().status).toBe("registered");
   });
 

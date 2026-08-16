@@ -13,6 +13,8 @@ import {
   maestroFetchScoped,
   maestroSyncLog,
   normalizePhone,
+  pipelineLog,
+
 } from "../_shared/maestro.ts";
 
 Deno.serve(async (req) => {
@@ -107,6 +109,23 @@ Deno.serve(async (req) => {
       duration_ms: Date.now() - t0,
       success: res.ok || res.status === 409,
     });
+
+    // Correlation trace (message_id) — one row per attempt.
+    await pipelineLog(admin, {
+      call_id: null,
+      user_id: msg.user_id,
+      step: "message_push",
+      status: res.ok || res.status === 409 ? "success" : "error",
+      duration_ms: Date.now() - t0,
+      correlation_id: msg.id,
+      entity_type: "message",
+      entity_id: String(res.data?.id ?? res.data?.message_id ?? msg.ns_message_id ?? msg.id),
+      endpoint: res.path,
+      http_status: res.status,
+      error_message: res.ok || res.status === 409 ? undefined : (res.data?.error ?? `maestro_${res.status}`),
+      payload: { direction: msg.direction, contact },
+    }).catch(() => {});
+
 
     if (res.ok || res.status === 409) {
       await admin

@@ -7,7 +7,13 @@ function mapContactsStatus(value: string | undefined | null): PermStatus {
   return "prompt";
 }
 
-export async function getContactsPermissionStatus(): Promise<PermStatus> {
+/**
+ * Raw permission read — never triggers the AVA sync. `listDeviceContacts()`
+ * uses this one: routing it through `getContactsPermissionStatus()` created an
+ * infinite mutual recursion (status → sync → list → status → …) that flooded
+ * the native bridge with `getContacts` / `checkPermissions` calls at boot.
+ */
+async function readContactsPermission(): Promise<PermStatus> {
   let status: PermStatus = "unavailable";
   try {
     if (!(await isNative())) return "unavailable";
@@ -16,10 +22,14 @@ export async function getContactsPermissionStatus(): Promise<PermStatus> {
     status = mapContactsStatus(check.contacts);
   } catch {
     status = "denied";
-  } finally {
-    await setPref("perm_contacts_v1", status);
-    if (status === "granted") void syncDeviceContactsToServer();
   }
+  return status;
+}
+
+export async function getContactsPermissionStatus(): Promise<PermStatus> {
+  const status = await readContactsPermission();
+  await setPref("perm_contacts_v1", status);
+  if (status === "granted") void syncDeviceContactsToServer();
   return status;
 }
 
@@ -65,7 +75,7 @@ export type NativeContactEntry = {
 
 export async function listDeviceContacts(): Promise<NativeContactEntry[]> {
   try {
-    if ((await getContactsPermissionStatus()) !== "granted") return [];
+    if ((await readContactsPermission()) !== "granted") return [];
     const { Contacts } = await import("@capacitor-community/contacts");
     const res = await Contacts.getContacts({
       projection: { name: true, phones: true, emails: true, organization: true },
@@ -111,13 +121,24 @@ export function setDeviceContactSyncEnabled(enabled: boolean) {
   } catch { /* ignore */ }
 }
 
+let syncInFlight: Promise<number> | null = null;
+
 export async function syncDeviceContactsToServer(force = false): Promise<number> {
+  if (syncInFlight) return syncInFlight;
+  syncInFlight = runDeviceContactSync(force).finally(() => { syncInFlight = null; });
+  return syncInFlight;
+}
+
+async function runDeviceContactSync(force: boolean): Promise<number> {
   try {
     if (!isDeviceContactSyncEnabled()) return 0;
     if (!force) {
       const last = Number(localStorage.getItem(SYNC_KEY) ?? 0);
       if (last && Date.now() - last < SYNC_TTL_MS) return 0;
     }
+    // Marque la tentative immédiatement : sans cela, un échec (0 contact,
+    // erreur réseau) relançait la synchro en boucle à chaque vérification.
+    try { localStorage.setItem(SYNC_KEY, String(Date.now())); } catch { /* ignore */ }
     const entries = await listDeviceContacts();
     const contacts = entries
       .filter((c) => c.phone)

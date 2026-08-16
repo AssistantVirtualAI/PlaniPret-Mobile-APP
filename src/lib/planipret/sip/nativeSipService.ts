@@ -227,9 +227,12 @@ export class NativeSipService {
       // sends REGISTER. Do not report the native path ready until its Contact
       // actually received 200 OK; otherwise JsSIP is skipped while PJSIP still
       // cannot receive or answer an INVITE.
-      const registered = await this.waitForRegistration(15_000);
+      // Les cores NetSapiens répondent le 407 en ~14 s sur cellulaire : une
+      // fenêtre de 15 s coupait le handshake en plein vol (PJSIP_EBUSY sur
+      // l'unregister immédiat) et restituait l'AOR à JsSIP pour rien.
+      const registered = await this.waitForRegistration(45_000);
       if (!registered) {
-        console.error("[SIP] REGISTER TLS absent après 15 s — restitution atomique à JsSIP");
+        console.error("[SIP] REGISTER absent après 45 s — restitution atomique à JsSIP");
         if (this.registrationRetryTimer) {
           clearTimeout(this.registrationRetryTimer);
           this.registrationRetryTimer = null;

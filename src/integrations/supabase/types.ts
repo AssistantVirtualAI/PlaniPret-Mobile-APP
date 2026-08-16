@@ -3037,6 +3037,141 @@ export type Database = {
         }
         Relationships: []
       }
+      mobile_app_config: {
+        Row: {
+          app_key: string
+          channel: string
+          created_at: string
+          flags: Json
+          id: string
+          maintenance_message: string | null
+          maintenance_mode: boolean
+          messages: Json
+          min_version: string | null
+          published_at: string | null
+          published_by: string | null
+          recommended_version: string | null
+          settings: Json
+          updated_at: string
+        }
+        Insert: {
+          app_key: string
+          channel?: string
+          created_at?: string
+          flags?: Json
+          id?: string
+          maintenance_message?: string | null
+          maintenance_mode?: boolean
+          messages?: Json
+          min_version?: string | null
+          published_at?: string | null
+          published_by?: string | null
+          recommended_version?: string | null
+          settings?: Json
+          updated_at?: string
+        }
+        Update: {
+          app_key?: string
+          channel?: string
+          created_at?: string
+          flags?: Json
+          id?: string
+          maintenance_message?: string | null
+          maintenance_mode?: boolean
+          messages?: Json
+          min_version?: string | null
+          published_at?: string | null
+          published_by?: string | null
+          recommended_version?: string | null
+          settings?: Json
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      mobile_app_config_audit: {
+        Row: {
+          action: string
+          actor_email: string | null
+          actor_id: string | null
+          app_key: string
+          channel: string
+          created_at: string
+          id: string
+          payload: Json | null
+        }
+        Insert: {
+          action: string
+          actor_email?: string | null
+          actor_id?: string | null
+          app_key: string
+          channel: string
+          created_at?: string
+          id?: string
+          payload?: Json | null
+        }
+        Update: {
+          action?: string
+          actor_email?: string | null
+          actor_id?: string | null
+          app_key?: string
+          channel?: string
+          created_at?: string
+          id?: string
+          payload?: Json | null
+        }
+        Relationships: []
+      }
+      mobile_app_releases: {
+        Row: {
+          app_key: string
+          bundle_path: string
+          bundle_sha256: string | null
+          bundle_size: number | null
+          channel: string
+          created_at: string
+          id: string
+          is_active: boolean
+          native_version_min: string | null
+          notes: string | null
+          published_by: string | null
+          rolled_back_at: string | null
+          updated_at: string
+          version: string
+        }
+        Insert: {
+          app_key: string
+          bundle_path: string
+          bundle_sha256?: string | null
+          bundle_size?: number | null
+          channel?: string
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          native_version_min?: string | null
+          notes?: string | null
+          published_by?: string | null
+          rolled_back_at?: string | null
+          updated_at?: string
+          version: string
+        }
+        Update: {
+          app_key?: string
+          bundle_path?: string
+          bundle_sha256?: string | null
+          bundle_size?: number | null
+          channel?: string
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          native_version_min?: string | null
+          notes?: string | null
+          published_by?: string | null
+          rolled_back_at?: string | null
+          updated_at?: string
+          version?: string
+        }
+        Relationships: []
+      }
       mobile_push_tokens: {
         Row: {
           created_at: string
@@ -8037,6 +8172,42 @@ export type Database = {
         }
         Relationships: []
       }
+      planipret_ava_directory_audit: {
+        Row: {
+          caller: string
+          created_at: string
+          filters: Json
+          id: string
+          query: string
+          results_count: number
+          sources_queried: string[]
+          top_result: string | null
+          user_id: string
+        }
+        Insert: {
+          caller?: string
+          created_at?: string
+          filters?: Json
+          id?: string
+          query?: string
+          results_count?: number
+          sources_queried?: string[]
+          top_result?: string | null
+          user_id: string
+        }
+        Update: {
+          caller?: string
+          created_at?: string
+          filters?: Json
+          id?: string
+          query?: string
+          results_count?: number
+          sources_queried?: string[]
+          top_result?: string | null
+          user_id?: string
+        }
+        Relationships: []
+      }
       planipret_ava_email_analyses: {
         Row: {
           broker_id: string
@@ -8504,6 +8675,326 @@ export type Database = {
           },
         ]
       }
+      planipret_commission_broker_aliases: {
+        Row: {
+          agent_key: string
+          broker_user_id: string | null
+          created_at: string
+          created_by: string | null
+          first_name: string | null
+          id: string
+          last_name: string | null
+          maestro_broker_id: string | null
+          raw_name: string
+          updated_at: string
+        }
+        Insert: {
+          agent_key: string
+          broker_user_id?: string | null
+          created_at?: string
+          created_by?: string | null
+          first_name?: string | null
+          id?: string
+          last_name?: string | null
+          maestro_broker_id?: string | null
+          raw_name: string
+          updated_at?: string
+        }
+        Update: {
+          agent_key?: string
+          broker_user_id?: string | null
+          created_at?: string
+          created_by?: string | null
+          first_name?: string | null
+          id?: string
+          last_name?: string | null
+          maestro_broker_id?: string | null
+          raw_name?: string
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      planipret_commission_imports: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          file_name: string
+          id: string
+          notes: Json
+          row_count: number
+          sheet_names: string[]
+          status: string
+          storage_path: string | null
+          updated_at: string
+          years: number[]
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          file_name: string
+          id?: string
+          notes?: Json
+          row_count?: number
+          sheet_names?: string[]
+          status?: string
+          storage_path?: string | null
+          updated_at?: string
+          years?: number[]
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          file_name?: string
+          id?: string
+          notes?: Json
+          row_count?: number
+          sheet_names?: string[]
+          status?: string
+          storage_path?: string | null
+          updated_at?: string
+          years?: number[]
+        }
+        Relationships: []
+      }
+      planipret_commission_mappings: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          id: string
+          kind: string
+          maestro_broker_id: string | null
+          notes: Json
+          scope: string
+          source_key: string
+          source_label: string | null
+          target_user_id: string | null
+          target_value: string | null
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          kind: string
+          maestro_broker_id?: string | null
+          notes?: Json
+          scope?: string
+          source_key: string
+          source_label?: string | null
+          target_user_id?: string | null
+          target_value?: string | null
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          kind?: string
+          maestro_broker_id?: string | null
+          notes?: Json
+          scope?: string
+          source_key?: string
+          source_label?: string | null
+          target_user_id?: string | null
+          target_value?: string | null
+          updated_at?: string
+        }
+        Relationships: []
+      }
+      planipret_commission_register: {
+        Row: {
+          agent_company: string | null
+          agent_key: string | null
+          agent_name: string | null
+          amount: number
+          broker_user_id: string | null
+          buy_down: number | null
+          cabinet: string | null
+          commission_type: string | null
+          created_at: string
+          date_trans: string | null
+          financial_inst_id: string | null
+          first_name: string | null
+          fiscal_year: number | null
+          id: string
+          import_batch_id: string | null
+          institution: string | null
+          is_adjustment: string | null
+          last_name: string | null
+          loan_amt: number
+          maestro_broker_id: string | null
+          map_status: string
+          match_method: string | null
+          mortgage_type: string | null
+          number: string | null
+          points: number | null
+          primary_client_name: string | null
+          raw: Json
+          row_key: string | null
+          secondary_client_name: string | null
+          sheet_name: string | null
+          source_row: number
+          split_type: string | null
+          target_name: string | null
+          term: string | null
+          updated_at: string
+          ym_key: string | null
+        }
+        Insert: {
+          agent_company?: string | null
+          agent_key?: string | null
+          agent_name?: string | null
+          amount?: number
+          broker_user_id?: string | null
+          buy_down?: number | null
+          cabinet?: string | null
+          commission_type?: string | null
+          created_at?: string
+          date_trans?: string | null
+          financial_inst_id?: string | null
+          first_name?: string | null
+          fiscal_year?: number | null
+          id?: string
+          import_batch_id?: string | null
+          institution?: string | null
+          is_adjustment?: string | null
+          last_name?: string | null
+          loan_amt?: number
+          maestro_broker_id?: string | null
+          map_status?: string
+          match_method?: string | null
+          mortgage_type?: string | null
+          number?: string | null
+          points?: number | null
+          primary_client_name?: string | null
+          raw?: Json
+          row_key?: string | null
+          secondary_client_name?: string | null
+          sheet_name?: string | null
+          source_row?: number
+          split_type?: string | null
+          target_name?: string | null
+          term?: string | null
+          updated_at?: string
+          ym_key?: string | null
+        }
+        Update: {
+          agent_company?: string | null
+          agent_key?: string | null
+          agent_name?: string | null
+          amount?: number
+          broker_user_id?: string | null
+          buy_down?: number | null
+          cabinet?: string | null
+          commission_type?: string | null
+          created_at?: string
+          date_trans?: string | null
+          financial_inst_id?: string | null
+          first_name?: string | null
+          fiscal_year?: number | null
+          id?: string
+          import_batch_id?: string | null
+          institution?: string | null
+          is_adjustment?: string | null
+          last_name?: string | null
+          loan_amt?: number
+          maestro_broker_id?: string | null
+          map_status?: string
+          match_method?: string | null
+          mortgage_type?: string | null
+          number?: string | null
+          points?: number | null
+          primary_client_name?: string | null
+          raw?: Json
+          row_key?: string | null
+          secondary_client_name?: string | null
+          sheet_name?: string | null
+          source_row?: number
+          split_type?: string | null
+          target_name?: string | null
+          term?: string | null
+          updated_at?: string
+          ym_key?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "planipret_commission_register_import_batch_id_fkey"
+            columns: ["import_batch_id"]
+            isOneToOne: false
+            referencedRelation: "planipret_commission_imports"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      planipret_commission_stats: {
+        Row: {
+          broker_name: string
+          broker_user_id: string | null
+          created_at: string
+          cy_commission: number | null
+          cy_deals: number | null
+          cy_volume: number | null
+          dimension: string | null
+          entry_source: string
+          extra: Json
+          fiscal_year: number
+          id: string
+          py_commission: number | null
+          py_deals: number | null
+          py_volume: number | null
+          rank: number | null
+          section: string
+          source_file: string | null
+          sub_dimension: string | null
+          updated_at: string
+          updated_by: string | null
+        }
+        Insert: {
+          broker_name: string
+          broker_user_id?: string | null
+          created_at?: string
+          cy_commission?: number | null
+          cy_deals?: number | null
+          cy_volume?: number | null
+          dimension?: string | null
+          entry_source?: string
+          extra?: Json
+          fiscal_year?: number
+          id?: string
+          py_commission?: number | null
+          py_deals?: number | null
+          py_volume?: number | null
+          rank?: number | null
+          section: string
+          source_file?: string | null
+          sub_dimension?: string | null
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Update: {
+          broker_name?: string
+          broker_user_id?: string | null
+          created_at?: string
+          cy_commission?: number | null
+          cy_deals?: number | null
+          cy_volume?: number | null
+          dimension?: string | null
+          entry_source?: string
+          extra?: Json
+          fiscal_year?: number
+          id?: string
+          py_commission?: number | null
+          py_deals?: number | null
+          py_volume?: number | null
+          rank?: number | null
+          section?: string
+          source_file?: string | null
+          sub_dimension?: string | null
+          updated_at?: string
+          updated_by?: string | null
+        }
+        Relationships: []
+      }
       planipret_consent_settings: {
         Row: {
           consent_delay_seconds: number
@@ -8621,32 +9112,80 @@ export type Database = {
         Row: {
           callerid_name: string | null
           created_at: string
+          display_name: string | null
           domain: string
-          extension: string
+          extension: string | null
           phone_number_digits: string
           phone_number_e164: string
           source: string
+          status: string
           updated_at: string
         }
         Insert: {
           callerid_name?: string | null
           created_at?: string
+          display_name?: string | null
           domain?: string
-          extension: string
+          extension?: string | null
           phone_number_digits: string
           phone_number_e164: string
           source?: string
+          status?: string
           updated_at?: string
         }
         Update: {
           callerid_name?: string | null
           created_at?: string
+          display_name?: string | null
           domain?: string
-          extension?: string
+          extension?: string | null
           phone_number_digits?: string
           phone_number_e164?: string
           source?: string
+          status?: string
           updated_at?: string
+        }
+        Relationships: []
+      }
+      planipret_did_reconcile_reports: {
+        Row: {
+          alert_error: string | null
+          alert_sent: boolean
+          broker_count: number
+          created_at: string
+          domain: string
+          id: string
+          mismatch_count: number
+          orphan_ns_dids: Json
+          rows: Json
+          summary: Json
+          triggered_by: string
+        }
+        Insert: {
+          alert_error?: string | null
+          alert_sent?: boolean
+          broker_count?: number
+          created_at?: string
+          domain?: string
+          id?: string
+          mismatch_count?: number
+          orphan_ns_dids?: Json
+          rows?: Json
+          summary?: Json
+          triggered_by?: string
+        }
+        Update: {
+          alert_error?: string | null
+          alert_sent?: boolean
+          broker_count?: number
+          created_at?: string
+          domain?: string
+          id?: string
+          mismatch_count?: number
+          orphan_ns_dids?: Json
+          rows?: Json
+          summary?: Json
+          triggered_by?: string
         }
         Relationships: []
       }
@@ -9739,9 +10278,14 @@ export type Database = {
       planipret_pipeline_logs: {
         Row: {
           call_id: string | null
+          correlation_id: string | null
           created_at: string
           duration_ms: number | null
+          endpoint: string | null
+          entity_id: string | null
+          entity_type: string | null
           error_message: string | null
+          http_status: number | null
           id: string
           payload: Json | null
           status: string
@@ -9750,9 +10294,14 @@ export type Database = {
         }
         Insert: {
           call_id?: string | null
+          correlation_id?: string | null
           created_at?: string
           duration_ms?: number | null
+          endpoint?: string | null
+          entity_id?: string | null
+          entity_type?: string | null
           error_message?: string | null
+          http_status?: number | null
           id?: string
           payload?: Json | null
           status: string
@@ -9761,9 +10310,14 @@ export type Database = {
         }
         Update: {
           call_id?: string | null
+          correlation_id?: string | null
           created_at?: string
           duration_ms?: number | null
+          endpoint?: string | null
+          entity_id?: string | null
+          entity_type?: string | null
           error_message?: string | null
+          http_status?: number | null
           id?: string
           payload?: Json | null
           status?: string
@@ -9791,8 +10345,10 @@ export type Database = {
           ava_preferred_lang: string
           ava_sessions_count: number
           ava_voice_id: string | null
+          ava_voice_model: string | null
           ava_voice_name: string | null
           ava_voice_similarity: number | null
+          ava_voice_speaker_boost: boolean
           ava_voice_speed: number | null
           ava_voice_stability: number | null
           ava_voice_style: number | null
@@ -9810,11 +10366,13 @@ export type Database = {
           email: string | null
           extension: string | null
           first_login_at: string | null
+          first_name: string | null
           full_name: string | null
           id: string
           language: string
           last_eod_summary_at: string | null
           last_morning_brief_at: string | null
+          last_name: string | null
           login_email: string | null
           maestro_broker_id: string | null
           maestro_broker_token: string | null
@@ -9894,8 +10452,10 @@ export type Database = {
           ava_preferred_lang?: string
           ava_sessions_count?: number
           ava_voice_id?: string | null
+          ava_voice_model?: string | null
           ava_voice_name?: string | null
           ava_voice_similarity?: number | null
+          ava_voice_speaker_boost?: boolean
           ava_voice_speed?: number | null
           ava_voice_stability?: number | null
           ava_voice_style?: number | null
@@ -9913,11 +10473,13 @@ export type Database = {
           email?: string | null
           extension?: string | null
           first_login_at?: string | null
+          first_name?: string | null
           full_name?: string | null
           id?: string
           language?: string
           last_eod_summary_at?: string | null
           last_morning_brief_at?: string | null
+          last_name?: string | null
           login_email?: string | null
           maestro_broker_id?: string | null
           maestro_broker_token?: string | null
@@ -9997,8 +10559,10 @@ export type Database = {
           ava_preferred_lang?: string
           ava_sessions_count?: number
           ava_voice_id?: string | null
+          ava_voice_model?: string | null
           ava_voice_name?: string | null
           ava_voice_similarity?: number | null
+          ava_voice_speaker_boost?: boolean
           ava_voice_speed?: number | null
           ava_voice_stability?: number | null
           ava_voice_style?: number | null
@@ -10016,11 +10580,13 @@ export type Database = {
           email?: string | null
           extension?: string | null
           first_login_at?: string | null
+          first_name?: string | null
           full_name?: string | null
           id?: string
           language?: string
           last_eod_summary_at?: string | null
           last_morning_brief_at?: string | null
+          last_name?: string | null
           login_email?: string | null
           maestro_broker_id?: string | null
           maestro_broker_token?: string | null

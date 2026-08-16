@@ -85,17 +85,43 @@ public class PpSipKeepAlivePlugin extends Plugin {
       android.media.AudioManager am = (android.media.AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
       if (am == null) { call.reject("no_audio_manager"); return; }
       am.setMode(android.media.AudioManager.MODE_IN_COMMUNICATION);
-      if ("speaker".equals(route)) {
-        try { am.stopBluetoothSco(); } catch (Exception ignored) {}
-        am.setBluetoothScoOn(false);
-        am.setSpeakerphoneOn(true);
-      } else if ("bluetooth".equals(route)) {
-        am.setSpeakerphoneOn(false);
-        try { am.startBluetoothSco(); am.setBluetoothScoOn(true); } catch (Exception ignored) {}
-      } else {
-        try { am.stopBluetoothSco(); } catch (Exception ignored) {}
-        am.setBluetoothScoOn(false);
-        am.setSpeakerphoneOn(false);
+      // Android 12+ (API 31) : setSpeakerphoneOn/startBluetoothSco sont
+      // dépréciés et souvent sans effet. Il faut passer par
+      // setCommunicationDevice(), sinon le bouton haut-parleur ne fait rien.
+      boolean routed = false;
+      if (Build.VERSION.SDK_INT >= 31) {
+        try {
+          int wanted = "speaker".equals(route)
+            ? android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+            : ("bluetooth".equals(route) ? android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+                                         : android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE);
+          android.media.AudioDeviceInfo target = null;
+          android.media.AudioDeviceInfo wired = null;
+          for (android.media.AudioDeviceInfo d : am.getAvailableCommunicationDevices()) {
+            if (d.getType() == wanted) { target = d; break; }
+            if (d.getType() == android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET
+             || d.getType() == android.media.AudioDeviceInfo.TYPE_USB_HEADSET) wired = d;
+          }
+          if (target == null && !"speaker".equals(route)) target = wired;
+          if (target != null) {
+            am.clearCommunicationDevice();
+            routed = am.setCommunicationDevice(target);
+          }
+        } catch (Exception ignored) {}
+      }
+      if (!routed) {
+        if ("speaker".equals(route)) {
+          try { am.stopBluetoothSco(); } catch (Exception ignored) {}
+          am.setBluetoothScoOn(false);
+          am.setSpeakerphoneOn(true);
+        } else if ("bluetooth".equals(route)) {
+          am.setSpeakerphoneOn(false);
+          try { am.startBluetoothSco(); am.setBluetoothScoOn(true); } catch (Exception ignored) {}
+        } else {
+          try { am.stopBluetoothSco(); } catch (Exception ignored) {}
+          am.setBluetoothScoOn(false);
+          am.setSpeakerphoneOn(false);
+        }
       }
       call.resolve(new JSObject().put("ok", true).put("route", route));
     } catch (Exception e) { call.reject(e.getMessage()); }
@@ -105,7 +131,13 @@ public class PpSipKeepAlivePlugin extends Plugin {
       android.media.AudioManager am = (android.media.AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
       String route = "earpiece";
       if (am != null) {
-        if (am.isBluetoothScoOn()) route = "bluetooth";
+        android.media.AudioDeviceInfo cur = null;
+        if (Build.VERSION.SDK_INT >= 31) { try { cur = am.getCommunicationDevice(); } catch (Exception ignored) {} }
+        if (cur != null) {
+          int t = cur.getType();
+          if (t == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO) route = "bluetooth";
+          else if (t == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) route = "speaker";
+        } else if (am.isBluetoothScoOn()) route = "bluetooth";
         else if (am.isSpeakerphoneOn()) route = "speaker";
       }
       call.resolve(new JSObject().put("ok", true).put("route", route));

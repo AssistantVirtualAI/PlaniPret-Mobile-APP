@@ -1,3 +1,4 @@
+// @vitest-environment jsdom
 /**
  * Integration tests — mobile Email inbox (EmailsList + EmailDetailSheet).
  *

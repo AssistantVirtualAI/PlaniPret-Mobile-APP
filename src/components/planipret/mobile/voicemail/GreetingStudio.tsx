@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
-import { Play, Pause, Sparkles, Mic, RotateCw, Check, Settings2, ChevronDown, ChevronUp } from "lucide-react";
+import { createAudioGuard } from "@/lib/planipret/audio/audioGuard";
+import { Play, Pause, Sparkles, Mic, RotateCw, Check, Settings2, ChevronDown, ChevronUp, Download } from "lucide-react";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 
 type Voice = {
@@ -75,7 +76,10 @@ export default function GreetingStudio({ profile, onProfileChange }: { profile: 
   const [previewing, setPreviewing] = useState<string | null>(null);
   const [genderFilter, setGenderFilter] = useState<"all" | "F" | "M">("all");
   const [categoryFilter, setCategoryFilter] = useState<"all" | "professional" | "natural" | "custom">("professional");
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const guard = useRef(createAudioGuard());
+  const [audioBusy, setAudioBusy] = useState(false);
+  useEffect(() => guard.current.subscribe(setAudioBusy), []);
+  useEffect(() => () => guard.current.cancel(), []);
 
   const fullName = profile.full_name ?? t("greeting.defaultBroker");
   const charCount = text.length;
@@ -130,15 +134,23 @@ export default function GreetingStudio({ profile, onProfileChange }: { profile: 
     setActiveTemplate(k);
   };
 
+  // Garde-fou : un seul média actif, les clics répétés annulent la lecture
+  // précédente au lieu d'empiler des objets Audio (cause du gel de la page).
   const playVoicePreview = (v: Voice) => {
     if (!v.preview_url) return;
-    if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
-    if (previewing === v.voice_id) { setPreviewing(null); return; }
-    const audio = new Audio(v.preview_url);
-    audio.onended = () => setPreviewing(null);
-    audio.play().catch(() => setPreviewing(null));
-    audioRef.current = audio;
+    if (previewing === v.voice_id) { guard.current.cancel(); setPreviewing(null); return; }
     setPreviewing(v.voice_id);
+    guard.current.play(v.preview_url, () => setPreviewing((cur) => (cur === v.voice_id ? null : cur)));
+  };
+
+  const saveAudio = () => {
+    if (!previewUrl || audioBusy) return;
+    const link = document.createElement("a");
+    link.href = previewUrl;
+    link.download = `message-vocal-${Date.now()}.mp3`;
+    link.rel = "noopener";
+    link.click();
+    toast.success(t("greeting.audioSaved"));
   };
 
   const improveText = async () => {
@@ -154,6 +166,8 @@ export default function GreetingStudio({ profile, onProfileChange }: { profile: 
   const generate = async (pushToNs: boolean) => {
     if (!selectedVoice) { toast.error(t("greeting.voiceLoadFailed") || "Choisissez une voix"); return; }
     if (text.trim().length < 10) { toast.error(t("greeting.draftTooShort")); return; }
+    if (generating || audioBusy) return; // anti double-soumission
+    guard.current.cancel();               // stoppe toute lecture en cours
     setGenerating(true);
     setGenStep(pushToNs ? t("greeting.activation") : t("greeting.generation"));
     const { data, error } = await supabase.functions.invoke("pp-greeting-generate", {
@@ -184,6 +198,7 @@ export default function GreetingStudio({ profile, onProfileChange }: { profile: 
       toast.success(d.pushed_to_ns ? t("greeting.activated") : `${t("greeting.pushFailed")}: ${d.push_error}`);
       onProfileChange?.();
     } else {
+      onProfileChange?.();
       toast.success(t("greeting.audioGenerated"));
     }
   };
@@ -290,7 +305,7 @@ export default function GreetingStudio({ profile, onProfileChange }: { profile: 
                 aria-checked={selectedVoice === v.voice_id}
                 aria-label={`${t("greeting.selectVoice")} ${v.name}`}
                 tabIndex={0}
-                onClick={() => setSelectedVoice(v.voice_id)}
+                onClick={() => { if (!generating) setSelectedVoice(v.voice_id); }}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setSelectedVoice(v.voice_id); }
                 }}
@@ -317,10 +332,15 @@ export default function GreetingStudio({ profile, onProfileChange }: { profile: 
                   {v.preview_url && (
                     <button type="button"
                       aria-label={`${t("greeting.preview")} ${v.name}`}
+                      disabled={generating || (audioBusy && previewing !== v.voice_id)}
+                      aria-busy={audioBusy && previewing === v.voice_id}
                       onClick={(e) => { e.stopPropagation(); playVoicePreview(v); }}
-                      className="text-[10px] px-2 py-0.5 rounded flex items-center gap-1 min-h-[28px]"
+                      className="text-[10px] px-2 py-0.5 rounded flex items-center gap-1 min-h-[28px] disabled:opacity-50"
                       style={{ background: "rgba(255,255,255,0.05)", color: TOKENS.text }}>
-                      {previewing === v.voice_id ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />} {t("greeting.preview")}
+                      {audioBusy && previewing === v.voice_id
+                        ? <RotateCw className="w-3 h-3 animate-spin" />
+                        : previewing === v.voice_id ? <Pause className="w-3 h-3" /> : <Play className="w-3 h-3" />}
+                      {t("greeting.preview")}
                     </button>
                   )}
                 </div>
@@ -362,7 +382,7 @@ export default function GreetingStudio({ profile, onProfileChange }: { profile: 
       {/* Step 3 - Generate */}
       <div>
         <div className="text-[10px] uppercase tracking-widest mb-2 font-semibold" style={{ color: TOKENS.muted }}>{t("greeting.previewGenerate")}</div>
-        <button onClick={() => generate(false)}
+        <button onClick={() => generate(false)} disabled={generating || audioBusy} aria-busy={generating}
           disabled={!selectedVoice || text.length < 10 || generating}
           className="w-full h-[52px] rounded-xl text-[15px] font-semibold text-white disabled:opacity-50 transition"
           style={{ background: "linear-gradient(135deg,#1A4A8A,#2E9BDC)" }}>
@@ -379,6 +399,11 @@ export default function GreetingStudio({ profile, onProfileChange }: { profile: 
                 {t("greeting.voice")} : {previewVoiceName}
               </span>
             </div>
+            <button onClick={saveAudio}
+              className="w-full h-11 rounded-xl text-[13px] font-medium flex items-center justify-center gap-1.5 mb-2"
+              style={{ background: TOKENS.card, color: TOKENS.text, border: `1px solid ${TOKENS.border}` }}>
+              <Download className="w-4 h-4" /> {t("greeting.saveAudio")}
+            </button>
             <div className="grid grid-cols-2 gap-2">
               <button onClick={() => generate(false)} disabled={generating}
                 className="h-11 rounded-xl text-[13px] font-medium flex items-center justify-center gap-1.5"

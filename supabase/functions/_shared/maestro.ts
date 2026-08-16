@@ -482,7 +482,7 @@ export function normalizePhone(input?: string | null): string | null {
   return s.startsWith("+") ? s : `+${s}`;
 }
 
-/** Insert a row into planipret_pipeline_logs (debug per call). */
+/** Insert a row into planipret_pipeline_logs (debug + correlation per call/message). */
 export async function pipelineLog(
   admin: SupabaseClient,
   args: {
@@ -493,6 +493,15 @@ export async function pipelineLog(
     duration_ms?: number;
     payload?: unknown;
     error_message?: string;
+    /** Correlation id shared by every step of one unit of work. */
+    correlation_id?: string | null;
+    /** call | message | recording | transcript | ai */
+    entity_type?: string | null;
+    /** provider id (maestro_call_id, ns_call_id, message id…) */
+    entity_id?: string | null;
+    /** remote endpoint hit at this step */
+    endpoint?: string | null;
+    http_status?: number | null;
   },
 ) {
   try {
@@ -504,11 +513,22 @@ export async function pipelineLog(
       duration_ms: args.duration_ms ?? null,
       payload: args.payload ?? null,
       error_message: args.error_message ?? null,
+      correlation_id: args.correlation_id ?? args.call_id ?? null,
+      entity_type: args.entity_type ?? null,
+      entity_id: args.entity_id ?? null,
+      endpoint: args.endpoint ?? null,
+      http_status: args.http_status ?? null,
     });
   } catch (e) {
     console.warn("pipelineLog failed", e);
   }
 }
+
+/** Stable correlation id for a unit of work (call, sms, recording…). */
+export function newCorrelationId(prefix = "corr"): string {
+  return `${prefix}_${crypto.randomUUID()}`;
+}
+
 
 /** Insert/append to low-level Maestro API sync log. */
 export async function maestroSyncLog(

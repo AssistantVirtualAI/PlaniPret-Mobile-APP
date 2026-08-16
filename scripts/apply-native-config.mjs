@@ -191,17 +191,43 @@ public class PpSipKeepAlivePlugin extends Plugin {
       android.media.AudioManager am = (android.media.AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
       if (am == null) { call.reject("no_audio_manager"); return; }
       am.setMode(android.media.AudioManager.MODE_IN_COMMUNICATION);
-      if ("speaker".equals(route)) {
-        try { am.stopBluetoothSco(); } catch (Exception ignored) {}
-        am.setBluetoothScoOn(false);
-        am.setSpeakerphoneOn(true);
-      } else if ("bluetooth".equals(route)) {
-        am.setSpeakerphoneOn(false);
-        try { am.startBluetoothSco(); am.setBluetoothScoOn(true); } catch (Exception ignored) {}
-      } else {
-        try { am.stopBluetoothSco(); } catch (Exception ignored) {}
-        am.setBluetoothScoOn(false);
-        am.setSpeakerphoneOn(false);
+      // Android 12+ (API 31) : setSpeakerphoneOn/startBluetoothSco sont
+      // dépréciés et souvent sans effet. Il faut passer par
+      // setCommunicationDevice(), sinon le bouton haut-parleur ne fait rien.
+      boolean routed = false;
+      if (Build.VERSION.SDK_INT >= 31) {
+        try {
+          int wanted = "speaker".equals(route)
+            ? android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+            : ("bluetooth".equals(route) ? android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+                                         : android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE);
+          android.media.AudioDeviceInfo target = null;
+          android.media.AudioDeviceInfo wired = null;
+          for (android.media.AudioDeviceInfo d : am.getAvailableCommunicationDevices()) {
+            if (d.getType() == wanted) { target = d; break; }
+            if (d.getType() == android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET
+             || d.getType() == android.media.AudioDeviceInfo.TYPE_USB_HEADSET) wired = d;
+          }
+          if (target == null && !"speaker".equals(route)) target = wired;
+          if (target != null) {
+            am.clearCommunicationDevice();
+            routed = am.setCommunicationDevice(target);
+          }
+        } catch (Exception ignored) {}
+      }
+      if (!routed) {
+        if ("speaker".equals(route)) {
+          try { am.stopBluetoothSco(); } catch (Exception ignored) {}
+          am.setBluetoothScoOn(false);
+          am.setSpeakerphoneOn(true);
+        } else if ("bluetooth".equals(route)) {
+          am.setSpeakerphoneOn(false);
+          try { am.startBluetoothSco(); am.setBluetoothScoOn(true); } catch (Exception ignored) {}
+        } else {
+          try { am.stopBluetoothSco(); } catch (Exception ignored) {}
+          am.setBluetoothScoOn(false);
+          am.setSpeakerphoneOn(false);
+        }
       }
       call.resolve(new JSObject().put("ok", true).put("route", route));
     } catch (Exception e) { call.reject(e.getMessage()); }
@@ -211,7 +237,13 @@ public class PpSipKeepAlivePlugin extends Plugin {
       android.media.AudioManager am = (android.media.AudioManager) getContext().getSystemService(Context.AUDIO_SERVICE);
       String route = "earpiece";
       if (am != null) {
-        if (am.isBluetoothScoOn()) route = "bluetooth";
+        android.media.AudioDeviceInfo cur = null;
+        if (Build.VERSION.SDK_INT >= 31) { try { cur = am.getCommunicationDevice(); } catch (Exception ignored) {} }
+        if (cur != null) {
+          int t = cur.getType();
+          if (t == android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO) route = "bluetooth";
+          else if (t == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) route = "speaker";
+        } else if (am.isBluetoothScoOn()) route = "bluetooth";
         else if (am.isSpeakerphoneOn()) route = "speaker";
       }
       call.resolve(new JSObject().put("ok", true).put("route", route));
@@ -472,7 +504,7 @@ public class PpSipKeepAliveService extends Service {
     }
   }
 
-  private void sendDecline(String requestedCallId) throws Exception {
+  private void sendDecline(String requestedCallId) {
     if (activeInviteCallId == null || (requestedCallId != null && !requestedCallId.equals(activeInviteCallId))) return;
     if (activeInviteVia == null || activeInviteFrom == null || activeInviteTo == null || activeInviteCSeq == null) return;
     String toWithTag = activeInviteTo.contains(";tag=") ? activeInviteTo : activeInviteTo + ";tag=" + Long.toHexString(System.nanoTime());
@@ -883,18 +915,48 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       }
     }
 
-    private func applyAudioRoute() {
+    /// Mode audio adapté à la sortie : .voiceChat est calibré pour l'écouteur
+    /// et rend le haut-parleur sourd. .videoChat est le mode mains-libres.
+    private func modeFor(_ route: String) -> AVAudioSession.Mode {
+      return route == "speaker" ? .videoChat : .voiceChat
+    }
+
+    private func applyAudioRoute() { applyAudioRoute(retries: 4) }
+
+    /// iOS (CallKit, PJSIP, WebKit) réapplique sa propre route juste après
+    /// l'activation du média : un simple override est souvent écrasé. On
+    /// vérifie donc la route effective et on réessaie.
+    private func applyAudioRoute(retries: Int) {
       let s = AVAudioSession.sharedInstance()
+      let speaker = preferredRoute == "speaker"
+      var opts: AVAudioSession.CategoryOptions = [.allowBluetoothHFP, .allowBluetoothA2DP]
+      if speaker { opts.insert(.defaultToSpeaker) }
+      let wantedMode = modeFor(preferredRoute)
+      if s.category != .playAndRecord || s.mode != wantedMode || s.categoryOptions != opts {
+        try? s.setCategory(.playAndRecord, mode: wantedMode, options: opts)
+      }
+      try? s.setActive(true, options: [])
       switch preferredRoute {
       case "speaker":
+        // Détacher le casque BT : sinon iOS garde la sortie BT malgré l'override.
+        try? s.setPreferredInput(nil)
         try? s.overrideOutputAudioPort(.speaker)
       case "bluetooth":
         try? s.overrideOutputAudioPort(.none)
         if let bt = bluetoothInput() { try? s.setPreferredInput(bt) }
       default:
         try? s.overrideOutputAudioPort(.none)
-        // Auto: a connected Bluetooth headset always wins over the earpiece.
         if let bt = bluetoothInput() { try? s.setPreferredInput(bt) }
+      }
+      let effective = currentAudioRoute()
+      NSLog("[PpSipKeepAlive] route wanted=%@ effective=%@ mode=%@ retries=%d",
+            preferredRoute, effective, s.mode.rawValue, retries)
+      guard retries > 0 else { return }
+      let matches = (effective == preferredRoute) || (preferredRoute == "earpiece" && effective == "bluetooth" && bluetoothAvailable())
+      if !matches {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+          self?.applyAudioRoute(retries: retries - 1)
+        }
       }
     }
 
@@ -2412,8 +2474,8 @@ function ensurePluginRegistrationOrThrow(swift, file) {
   return next;
 }
 
-// Keep the iPhone UI portrait-only at runtime while allowing every orientation
-// on iPad, as required by Apple for iPad multitasking.
+// Force portrait at the AppDelegate level (Info.plist alone is overridden by
+// a .all Swift override in some Capacitor templates).
 function patchIosAppDelegate(iosApp) {
   const file = path.join(iosApp, "AppDelegate.swift");
   if (!fs.existsSync(file)) return;
@@ -2564,10 +2626,8 @@ function patchIosInfoPlist() {
       xml = xml.replace(/\n<\/dict>\s*\n<\/plist>\s*$/, `\n\t<key>${key}</key>\n\t<string>${value}</string>\n</dict>\n</plist>\n`);
     }
   }
-  // Apple checks the base key during archive validation. Both the iPhone and
-  // iPad plist entries therefore enumerate the four required orientations.
-  // AppDelegate keeps the live iPhone UI portrait-only while iPad supports
-  // multitasking in every required orientation.
+  // Apple requires all four orientations for iPad multitasking. AppDelegate keeps
+  // iPhone portrait-only while iPad supports every required orientation.
   const supportedOrientations = "\n\t<key>UISupportedInterfaceOrientations</key>\n\t<array>\n\t\t<string>UIInterfaceOrientationPortrait</string>\n\t\t<string>UIInterfaceOrientationPortraitUpsideDown</string>\n\t\t<string>UIInterfaceOrientationLandscapeLeft</string>\n\t\t<string>UIInterfaceOrientationLandscapeRight</string>\n\t</array>\n\t<key>UISupportedInterfaceOrientations~ipad</key>\n\t<array>\n\t\t<string>UIInterfaceOrientationPortrait</string>\n\t\t<string>UIInterfaceOrientationPortraitUpsideDown</string>\n\t\t<string>UIInterfaceOrientationLandscapeLeft</string>\n\t\t<string>UIInterfaceOrientationLandscapeRight</string>\n\t</array>\n";
   xml = xml.replace(/\n\t?<key>UISupportedInterfaceOrientations(~ipad)?<\/key>\s*<array>[\s\S]*?<\/array>/g, "");
   xml = xml.replace(/\n<\/dict>\s*\n<\/plist>\s*$/, `${supportedOrientations}</dict>\n</plist>\n`);

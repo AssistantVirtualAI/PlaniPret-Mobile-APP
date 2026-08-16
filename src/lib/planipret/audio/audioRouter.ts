@@ -97,7 +97,26 @@ export const audioRouter = {
     // to the PJSIP speaker toggle when that plugin is unavailable — calling
     // both made the two modules fight (quiet/muffled loudspeaker) and mapped
     // "bluetooth" to "earpiece".
-    if (!handled) {
+    if (handled) {
+      // Vérifier la route effective : CallKit / PJSIP / AudioManager peuvent
+      // réécrire la sortie juste après. Si le natif n'a pas suivi, on relance
+      // et on retombe sur le toggle PJSIP en dernier recours.
+      const generation = routeGeneration;
+      const d = await audioRouter.refreshDevices();
+      if (generation === routeGeneration && d.route !== route) {
+        try { await b.setAudioRoute({ route }); } catch {}
+        const d2 = await audioRouter.refreshDevices();
+        if (generation === routeGeneration && d2.route !== route) {
+          const p = pjsip();
+          if (p?.setSpeaker) { try { await p.setSpeaker({ enabled: route === "speaker" }); } catch {} }
+        }
+      }
+      // L'UI doit refléter le choix de l'utilisateur même si la lecture native
+      // arrive en retard.
+      if (generation === routeGeneration) { devices = { ...devices, route }; currentRoute = route; emit(); }
+      return;
+    }
+    {
       const p = pjsip();
       if (p?.setSpeaker) {
         try { await p.setSpeaker({ enabled: route === "speaker" }); handled = true; } catch {}

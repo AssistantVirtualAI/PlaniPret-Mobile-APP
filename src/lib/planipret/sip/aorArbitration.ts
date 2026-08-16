@@ -195,7 +195,7 @@ export async function hydratePjsipEnabled(): Promise<boolean> {
  * Chien de garde : PJSIP doit être `registered` dans les 20 s
  * ------------------------------------------------------------------ */
 
-const WATCHDOG_MS = 20_000;
+const WATCHDOG_MS = 45_000;
 let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
 
 function clearWatchdog() {
@@ -215,8 +215,8 @@ export function armAorWatchdog(isRegistered: () => boolean): void {
     let registered = false;
     try { registered = !!isRegistered(); } catch { registered = false; }
     if (registered) return;
-    console.warn("[AOR] watchdog: PJSIP not registered after 20s — native ownership preserved");
-    emit("pp:sip-native-registration-stalled", { username: ownedUsername, reason: "watchdog_no_register_20s" });
+    console.warn("[AOR] watchdog: PJSIP not registered after 45s — native ownership preserved");
+    emit("pp:sip-native-registration-stalled", { username: ownedUsername, reason: "watchdog_no_register_45s" });
   }, WATCHDOG_MS);
 }
 
