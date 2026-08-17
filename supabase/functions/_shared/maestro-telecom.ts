@@ -1,6 +1,6 @@
 // Shared helper for calling the Maestro Telecom REST API from Planiprêt edge
 // functions. Config is stored in `planipret_integration_secrets` under provider
-// `maestro_telecom` and falls back to env vars for local development.
+// `maestro_telecom` and falls back to production environment variables.
 //
 // Features:
 //  - Exponential backoff retry (0/408/429/5xx) with jitter, bounded attempts
@@ -11,7 +11,7 @@
 import type { SupabaseClient } from "npm:@supabase/supabase-js@2";
 
 export interface MaestroTelecomConfig {
-  url: string;   // e.g. https://client-dev.planipret.com/telecom/api/v1 (no trailing slash)
+  url: string;   // https://client.planipret.com/telecom/api/v1 (no trailing slash)
   key: string;   // machine API key (Bearer)
 }
 
@@ -47,7 +47,7 @@ export async function getMaestroTelecomConfig(admin: SupabaseClient): Promise<Ma
     url: (apiUrl
       || Deno.env.get("MAESTRO_TELECOM_BASE_URL")
       || Deno.env.get("MAESTRO_TELECOM_API_URL")
-      || "https://client-dev.planipret.com/telecom/api/v1").replace(/\/$/, ""),
+      || "https://client.planipret.com/telecom/api/v1").replace(/\/$/, ""),
     key: apiKey
       || Deno.env.get("MAESTRO_MACHINE_API_KEY")
       || Deno.env.get("MAESTRO_TELECOM_API_KEY")
@@ -239,8 +239,9 @@ export async function pingMaestroTelecom(admin: SupabaseClient, userId?: string 
   // anything else (200, 404, 400…) means the API reached us and accepted
   // the Bearer token, so we consider connectivity + auth as OK.
   const paths = userId
-    ? [`/users/${encodeURIComponent(userId)}/communications/recent`]
-    : [`/users/me`, `/me`, `/health`, `/`];
+    ? [`/users/${encodeURIComponent(userId)}/communications/recent`, `/user`]
+    : [`/user`];
+
   let last: Awaited<ReturnType<typeof maestroTelecomFetch>> | null = null;
   for (const p of paths) {
     const r = await maestroTelecomFetch(cfg, p, { method: "GET", maxAttempts: 1, timeoutMs: 5000 });
@@ -272,18 +273,18 @@ export async function getMaestroBrokerId(admin: SupabaseClient, userId: string):
     // the caller — resolve both so the broker id is never silently missing.
     let { data } = await admin
       .from("planipret_profiles")
-      .select("maestro_broker_id")
+      .select("maestro_telecom_user_id")
       .eq("user_id", userId)
       .maybeSingle();
     if (!data) {
       const byId = await admin
         .from("planipret_profiles")
-        .select("maestro_broker_id")
+        .select("maestro_telecom_user_id")
         .eq("id", userId)
         .maybeSingle();
       data = byId.data as any;
     }
-    const raw = (data as any)?.maestro_broker_id;
+    const raw = (data as any)?.maestro_telecom_user_id;
     if (!raw) return null;
     const id = String(raw).trim();
     // Maestro identifies brokers by an internal numeric user id (e.g. "67").

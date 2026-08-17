@@ -27,6 +27,45 @@ function metaString(meta: unknown, key: string): string | null {
   return typeof value === "string" && value.trim() ? value : null;
 }
 
+/**
+ * Rule #4 (Scott / Telecom REST API): never POST a call record for an INBOUND
+ * call coming from another broker's VoIP number/extension — the caller side
+ * already created the record (rule #2). This avoids duplicate call rows.
+ * Client → broker inbound calls are still posted.
+ */
+async function isInternalBrokerCaller(admin: any, rawFrom: string | null): Promise<boolean> {
+  const raw = String(rawFrom ?? "").trim();
+  if (!raw) return false;
+  const digits = raw.replace(/\D/g, "");
+  // Bare extension (3–6 digits) => internal leg.
+  if (digits.length > 0 && digits.length <= 6) return true;
+
+  const e164 = normalizePhone(raw);
+  const candidates = [e164, digits, digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : null]
+    .filter(Boolean) as string[];
+
+  try {
+    const { data: dids } = await admin
+      .from("planipret_did_assignments")
+      .select("extension")
+      .or(candidates.map((c) => `phone_number_e164.eq.${c},phone_number_digits.eq.${c}`).join(","))
+      .limit(1);
+    if ((dids ?? []).length > 0) return true;
+  } catch { /* non-fatal */ }
+
+  try {
+    const { data: prof } = await admin
+      .from("planipret_profiles")
+      .select("id")
+      .in("phone", candidates)
+      .limit(1);
+    if ((prof ?? []).length > 0) return true;
+  } catch { /* non-fatal */ }
+
+  return false;
+}
+
+
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -50,6 +89,17 @@ Deno.serve(async (req) => {
       return json({ success: true, already_synced: true });
     }
 
+    // Rule #4: inbound leg from another broker's VoIP number => the caller
+    // already posted the record. Skip to avoid duplicates.
+    if (call.direction === "inbound" && !(call as any).maestro_call_id) {
+      if (await isInternalBrokerCaller(admin, call.from_number)) {
+        console.log(`[maestro-cdr] skip internal inbound leg call=${call_id} from=${call.from_number}`);
+        await setPipelineStep(admin, call_id, "cdr", "done", { skipped: "internal_broker_inbound" });
+        return json({ success: true, skipped: "internal_broker_inbound" }, 200);
+      }
+    }
+
+
     const cfg = await getMaestroConfig(admin);
     if (!cfg.url || !cfg.key) {
       await updateCallPipeline(admin, call_id, { step: "error", error: "maestro_not_configured" });
@@ -60,7 +110,9 @@ Deno.serve(async (req) => {
     await updateCallPipeline(admin, call_id, { step: "client_lookup", started: true, error: null });
     await pipelineLog(admin, { call_id, user_id: call.user_id, step: "client_lookup", status: "started" });
 
-    const auth = await telecomAuth(admin, call.user_id, true);
+    // Telecom writes require the machine API key. Broker OAuth is only for the
+    // CRM identity/directory endpoints and causes HTTP 500 on call creation.
+    const auth = await telecomAuth(admin, call.user_id, false);
 
     // ── STEP 1: client lookup (cache-first) ─────────────────────
     let maestroClientId = call.maestro_client_id ?? null;
@@ -156,20 +208,19 @@ Deno.serve(async (req) => {
     const answeredAt = metaString(metadata, "call-answer-datetime") ?? metaString(metadata, "answered_at") ?? startedAt;
     const endedAt = call.ended_at ?? metaString(metadata, "call-disconnect-datetime") ?? metaString(metadata, "ended_at") ?? startedAt;
 
-    const body = {
+    // Keep creation payload to Maestro's documented minimum. Completion data,
+    // summary and notes are sent afterward with PUT /calls/{id}.
+    const body: Record<string, unknown> = {
       provider_call_id: call.ns_call_id ?? call.id,
-      to_user_number: call.direction === "inbound" ? normalizePhone(call.from_number) : normalizePhone(call.to_number),
-      from_user_number: call.direction === "inbound" ? normalizePhone(call.to_number) : normalizePhone(call.from_number),
-      status: "ended",
+      status: "dialing",
       direction: call.direction,
-      duration_seconds: call.duration_seconds ?? 0,
-      initiated_at: startedAt,
-      answered_at: answeredAt,
-      ended_at: endedAt,
-      notes: null,
-      ai_summary: null,
-      broker_ext: profile?.ns_extension ?? null,
     };
+    if (call.direction === "inbound") {
+      body.from_user_number = normalizePhone(call.from_number);
+      body.to_user_id = Number(auth.brokerId);
+    } else {
+      body.to_user_number = normalizePhone(call.to_number);
+    }
 
 
     const t0 = Date.now();
@@ -180,26 +231,26 @@ Deno.serve(async (req) => {
           `matched_by=${diag?.matched_by ?? "none"} stored=${diag?.stored_broker_id ?? "-"} ` +
           `sip_probe=${diag?.sip_probe_result ?? "-"} cooldown=${diag?.cooldown_active ?? false}`,
       );
-      await setPipelineStep(admin, call_id, "cdr", "error", { reason: "maestro_broker_id_missing", diag });
+      await setPipelineStep(admin, call_id, "cdr", "error", { reason: "maestro_telecom_user_id_missing", diag });
       await pipelineLog(admin, {
         call_id,
         user_id: call.user_id,
         step: "cdr",
         status: "error",
-        error_message: "maestro_broker_id_missing",
+        error_message: "maestro_telecom_user_id_missing",
         payload: { diag },
       });
       const retry = await scheduleCdrRetry(admin, {
         call_id,
         user_id: call.user_id,
-        reason: "maestro_broker_id_missing",
-        error: diag?.reason ?? "maestro_broker_id_missing",
+        reason: "maestro_telecom_user_id_missing",
+        error: diag?.reason ?? "maestro_telecom_user_id_missing",
         permanent: true,
       });
       return json({
         success: false,
-        error: "maestro_broker_id_missing",
-        hint: "Set maestro_broker_id (numeric Telecom user id, e.g. 67) via Admin → Telecom Mapping.",
+        error: "maestro_telecom_user_id_missing",
+        hint: "Reconnect the broker's Telecom identity so the numeric Telecom user ID is linked.",
         permanent: true,
         diag,
         retry,
@@ -244,7 +295,15 @@ Deno.serve(async (req) => {
           error_message: "maestro_call_id_missing",
           payload: { detail: summary.detail, response_status: res.status },
         });
-        return json({ success: false, error: "maestro_call_id_missing", detail: summary.detail, status: res.status }, 424);
+        const retry = await scheduleCdrRetry(admin, {
+          call_id,
+          user_id: call.user_id,
+          reason: "maestro_call_id_missing",
+          error: summary.detail,
+          status: res.status,
+          permanent: false,
+        });
+        return json({ success: false, error: "maestro_call_id_missing", detail: summary.detail, status: res.status, retry }, 424);
       }
       await admin
         .from("planipret_phone_calls")
@@ -328,7 +387,12 @@ Deno.serve(async (req) => {
     const failure = summarizeMaestroFailure(res.status, res.data);
     await updateCallPipeline(admin, call_id, { step: "error", error: `${failure.error}_${res.status}` });
     await setPipelineStep(admin, call_id, "cdr", "error", { status: res.status });
-    await pipelineLog(admin, { call_id, user_id: call.user_id, step: "cdr_sync", status: "error", duration_ms: ms, error_message: failure.error });
+    await pipelineLog(admin, {
+      call_id, user_id: call.user_id, step: "cdr_sync", status: "error", duration_ms: ms,
+      correlation_id: call.id, entity_type: "call", entity_id: call.ns_call_id ?? call.id,
+      endpoint: res.endpoint, http_status: res.status, error_message: failure.error,
+      payload: { broker_id: auth.brokerId, client_id: maestroClientId, response: res.data ?? null },
+    });
     await maestroAudit(admin, "cdr_failed", { call_id, status: res.status, error: failure.error, detail: failure.detail });
     await broadcastPipeline(admin, call.user_id, "pipeline_error", { call_id, step: "cdr_sync", error: `${failure.error} (${res.status})` });
     const retry = await scheduleCdrRetry(admin, {

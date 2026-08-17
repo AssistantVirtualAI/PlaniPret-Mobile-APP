@@ -233,6 +233,16 @@ export default function MContacts() {
     return () => window.clearTimeout(id);
   }, [tab, load]);
 
+  useEffect(() => {
+    const refreshMaestroClients = () => {
+      setClients([]);
+      loadedTabsRef.current.delete("clients");
+      if (tab === "clients") void load("clients", { force: true, limit: 500 });
+    };
+    window.addEventListener("maestro:connected", refreshMaestroClients);
+    return () => window.removeEventListener("maestro:connected", refreshMaestroClients);
+  }, [tab, load]);
+
   // Prefetch personal + directory in parallel after first paint so subsequent
   // tab switches render from memory. Dedup + TTL handled by ppContactsCache.
   useEffect(() => {

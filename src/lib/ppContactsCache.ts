@@ -7,8 +7,12 @@
  */
 import { supabase } from "@/integrations/supabase/client";
 
-type Action = "list" | "shared" | "directory" | "maestro";
-type Entry = { at: number; value: any[] };
+type Action = "list" | "shared" | "directory" | "maestro" | "maestro_clients" | "maestro_brokers";
+const ALL_ACTIONS: Action[] = ["list", "shared", "directory", "maestro", "maestro_clients", "maestro_brokers"];
+type Entry = { at: number; value: any[]; scope?: string | null };
+
+/** Maestro-scoped lists must never be reused across Maestro accounts. */
+const MAESTRO_SCOPED: Action[] = ["maestro", "maestro_clients", "maestro_brokers"];
 
 const TTL_MS = 60_000;
 const LS_PREFIX = "pp:contacts:cache:v1:";
@@ -16,8 +20,23 @@ const LS_TTL_MS = 24 * 60 * 60 * 1000; // keep stale copy up to 24h
 
 const cache = new Map<Action, Entry>();
 const inflight = new Map<Action, Promise<any[]>>();
+let cacheGeneration = 0;
 
 function lsKey(action: Action) { return `${LS_PREFIX}${action}`; }
+
+function currentScope(): string | null {
+  try { return localStorage.getItem("pp:contacts:maestro_user_id"); } catch { return null; }
+}
+
+/** A Maestro-scoped entry is only valid for the currently linked Maestro id. */
+function scopeValid(action: Action, entry: Entry | null | undefined): boolean {
+  if (!entry) return false;
+  if (!MAESTRO_SCOPED.includes(action)) return true;
+  const scope = currentScope();
+  // Unknown scope, or an entry written before scoping existed → do not trust it.
+  if (!scope || !entry.scope) return false;
+  return String(entry.scope) === String(scope);
+}
 
 function loadFromDisk(action: Action): Entry | null {
   try {
@@ -26,6 +45,7 @@ function loadFromDisk(action: Action): Entry | null {
     const parsed = JSON.parse(raw) as Entry;
     if (!parsed || !Array.isArray(parsed.value)) return null;
     if (Date.now() - parsed.at > LS_TTL_MS) return null;
+    if (!scopeValid(action, parsed)) { localStorage.removeItem(lsKey(action)); return null; }
     return parsed;
   } catch { return null; }
 }
@@ -35,7 +55,7 @@ function saveToDisk(action: Action, entry: Entry) {
 }
 
 // Seed in-memory cache from disk on module init (synchronous, no I/O beyond localStorage).
-(["list", "shared", "directory", "maestro"] as Action[]).forEach((a) => {
+ALL_ACTIONS.forEach((a) => {
   const disk = loadFromDisk(a);
   if (disk) cache.set(a, disk);
 });
@@ -47,7 +67,38 @@ function keyFor(payload: any): any[] {
 const isTransient = (msg: string) =>
   /failed to send a request|failed to fetch|networkerror|aborted|load failed/i.test(msg);
 
-async function fetchNs(action: Exclude<Action, "maestro">, limit: number): Promise<any[]> {
+const LS_MAESTRO_ID = "pp:contacts:maestro_user_id";
+
+/**
+ * The Maestro list is scoped to the broker's Maestro user id. If that id
+ * changes (reconnect on another Maestro account), every cached list is stale
+ * and must be dropped — otherwise the Contacts screen keeps showing the
+ * previous account's clients.
+ */
+function syncMaestroScope(id: string | null | undefined) {
+  if (!id) return;
+  try {
+    const prev = localStorage.getItem(LS_MAESTRO_ID);
+    if (prev !== String(id)) {
+      localStorage.setItem(LS_MAESTRO_ID, String(id));
+      if (prev) invalidatePpContacts();
+    }
+  } catch { /* storage disabled */ }
+}
+
+/** Scott's new Maestro endpoints: /users/{id}/clients and /users/{id}/brokers. */
+async function fetchMaestroList(kind: "clients" | "brokers", limit: number): Promise<any[]> {
+  const { data, error } = await supabase.functions.invoke("maestro-actions", {
+    body: { action: kind === "clients" ? "list_clients" : "list_brokers", payload: { limit, refresh: true } },
+  });
+  const payload: any = data ?? {};
+  if (error && !payload?.success) throw new Error(payload?.error || error.message || kind);
+  syncMaestroScope(payload?.maestro_user_id);
+  const list = payload[kind];
+  return Array.isArray(list) ? list : [];
+}
+
+async function fetchNs(action: Exclude<Action, "maestro" | "maestro_clients" | "maestro_brokers">, limit: number): Promise<any[]> {
   // The directory payload is large; a suspended WebView or a route change can
   // abort the request mid-flight. Retry transient transport failures once
   // before surfacing an error so screens don't log false negatives.
@@ -98,15 +149,25 @@ export async function getPpContacts(
   const now = Date.now();
   if (!opts.force) {
     const hit = cache.get(action);
-    if (hit && now - hit.at < TTL_MS) return hit.value;
+    if (hit && now - hit.at < TTL_MS && scopeValid(action, hit)) return hit.value;
     const pending = inflight.get(action);
     if (pending) return pending;
   }
   const p = (async () => {
+    const generation = cacheGeneration;
     const value = action === "maestro"
       ? await fetchMaestro()
+      : action === "maestro_clients"
+      ? await fetchMaestroList("clients", opts.limit ?? 500)
+      : action === "maestro_brokers"
+      ? await fetchMaestroList("brokers", opts.limit ?? 500)
       : await fetchNs(action, opts.limit ?? 500);
-    const entry: Entry = { at: Date.now(), value };
+    // A Maestro reconnect may happen while an old request is still running.
+    // Never let that old response repopulate the cache for the new account.
+    if (generation !== cacheGeneration) {
+      return getPpContacts(action, { ...opts, force: true });
+    }
+    const entry: Entry = { at: Date.now(), value, scope: currentScope() };
     cache.set(action, entry);
     saveToDisk(action, entry);
     return value;
@@ -120,11 +181,13 @@ export async function getPpContacts(
 }
 
 export function invalidatePpContacts(action?: Action) {
+  cacheGeneration += 1;
   if (action) { cache.delete(action); try { localStorage.removeItem(lsKey(action)); } catch {} }
   else {
     cache.clear();
+    inflight.clear();
     try {
-      (["list", "shared", "directory", "maestro"] as Action[]).forEach((a) => localStorage.removeItem(lsKey(a)));
+      ALL_ACTIONS.forEach((a) => localStorage.removeItem(lsKey(a)));
     } catch {}
   }
 }
@@ -132,7 +195,8 @@ export function invalidatePpContacts(action?: Action) {
 /** Synchronous peek — returns a cached value if it exists, even if it's stale (< 24h). */
 export function peekPpContacts(action: Action): any[] | null {
   const hit = cache.get(action);
-  if (hit) return hit.value;
+  if (hit && scopeValid(action, hit)) return hit.value;
+  if (hit) cache.delete(action);
   const disk = loadFromDisk(action);
   if (disk) { cache.set(action, disk); return disk.value; }
   return null;
@@ -153,4 +217,10 @@ export function prefetchPpContacts(
     if (hit && Date.now() - hit.at < TTL_MS) continue;
     void getPpContacts(action, { limit }).catch(() => {});
   }
+}
+
+// A Maestro (re)connect can switch the broker's Maestro user id — drop every
+// cached contacts list so the next read hits the new account.
+if (typeof window !== "undefined") {
+  window.addEventListener("maestro:connected", () => invalidatePpContacts());
 }

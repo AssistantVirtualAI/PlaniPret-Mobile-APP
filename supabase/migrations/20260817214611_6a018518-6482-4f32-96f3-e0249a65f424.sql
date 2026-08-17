@@ -1,0 +1,13 @@
+REVOKE EXECUTE ON FUNCTION public.create_planipret_sip_secret(text, text, uuid) FROM authenticated;
+REVOKE EXECUTE ON FUNCTION public.read_planipret_sip_secret(text) FROM authenticated;
+REVOKE EXECUTE ON FUNCTION public.verify_tenant_isolation(uuid) FROM authenticated;
+REVOKE EXECUTE ON FUNCTION public.verify_org_isolation() FROM authenticated;
+REVOKE EXECUTE ON FUNCTION public.pp_audit_realtime_check() FROM authenticated;
+REVOKE EXECUTE ON FUNCTION public.generate_api_key() FROM authenticated;
+REVOKE EXECUTE ON FUNCTION public.generate_unique_username(text) FROM authenticated;
+REVOKE EXECUTE ON FUNCTION public.generate_agent_slug(text) FROM authenticated;
+REVOKE EXECUTE ON FUNCTION public.cleanup_expired_maestro_oauth_states() FROM authenticated;
+REVOKE EXECUTE ON FUNCTION public.log_access_violation(uuid, text, text, jsonb) FROM authenticated;
+REVOKE EXECUTE ON FUNCTION public.assert_org_access(uuid, text, text) FROM authenticated;
+REVOKE EXECUTE ON FUNCTION public.increment_sms_unread(uuid) FROM authenticated;
+REVOKE EXECUTE ON FUNCTION public.create_organization_for_user(text, text) FROM authenticated;

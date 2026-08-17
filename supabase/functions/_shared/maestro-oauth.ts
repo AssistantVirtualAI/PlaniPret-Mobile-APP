@@ -19,8 +19,9 @@ export interface MaestroOAuthEnv {
 
 export function getMaestroOAuthEnv(): MaestroOAuthEnv {
   return {
-    authUrl:        Deno.env.get("MAESTRO_OAUTH_AUTHORIZE_URL")       ?? "",
-    tokenUrl:       Deno.env.get("MAESTRO_OAUTH_TOKEN_URL")           ?? "",
+    // Production OAuth host (staging is dev.planipret.com)
+    authUrl:        Deno.env.get("MAESTRO_OAUTH_AUTHORIZE_URL")       ?? "https://courtier.planipret.com/fr/oauth/authorize",
+    tokenUrl:       Deno.env.get("MAESTRO_OAUTH_TOKEN_URL")           ?? "https://courtier.planipret.com/fr/oauth/token",
     clientId:       Deno.env.get("MAESTRO_OAUTH_CLIENT_ID")           ?? "2",
     clientSecret:   Deno.env.get("MAESTRO_OAUTH_CLIENT_SECRET")       ?? "",
     scope:          Deno.env.get("MAESTRO_OAUTH_SCOPE")               ?? "api",
@@ -142,16 +143,32 @@ export async function persistTokenSet(
  * profile row is keyed by `id`, so every refreshed token was thrown away and
  * `maestro_token_expires_at` stayed permanently in the past.
  */
+async function resolveProfileId(admin: SupabaseClient, userId: string): Promise<string | null> {
+  const byUser = await admin.from("planipret_profiles").select("id").eq("user_id", userId).limit(1);
+  const hit = (byUser.data ?? [])[0];
+  if (hit?.id) return hit.id as string;
+  const byId = await admin.from("planipret_profiles").select("id").eq("id", userId).limit(1);
+  return ((byId.data ?? [])[0]?.id as string) ?? null;
+}
+
 async function updateProfileByEitherKey(
   admin: SupabaseClient,
   userId: string,
   patch: Record<string, unknown>,
   label: string,
 ): Promise<boolean> {
+  // NB: an UPDATE filtered with `.or(user_id.eq,id.eq)` fails on PostgREST with
+  // "column planipret_profiles.user_id does not exist", which silently dropped
+  // every freshly issued token. Resolve the primary key first, then update on it.
+  const profileId = await resolveProfileId(admin, userId);
+  if (!profileId) {
+    console.error(`[maestro-oauth] ${label} matched ZERO profile rows`, { userId });
+    return false;
+  }
   const { data, error } = await admin
     .from("planipret_profiles")
     .update(patch)
-    .or(`user_id.eq.${userId},id.eq.${userId}`)
+    .eq("id", profileId)
     .select("id");
   if (error) {
     console.error(`[maestro-oauth] ${label} update failed`, error.message);
@@ -168,12 +185,15 @@ export async function getUserMaestroAccessToken(
   admin: SupabaseClient,
   userId: string,
 ): Promise<string | null> {
+  const profileId = await resolveProfileId(admin, userId);
+  if (!profileId) return null;
   const { data: prof } = await admin
     .from("planipret_profiles")
     .select("maestro_broker_token, maestro_refresh_token, maestro_token_expires_at, maestro_oauth_client")
-    .or(`user_id.eq.${userId},id.eq.${userId}`)
+    .eq("id", profileId)
     .maybeSingle();
   if (!prof?.maestro_broker_token) return null;
+
 
   // Maestro (Laravel Passport) can issue non-expiring tokens: the token
   // endpoint then returns no `expires_in` and we store NULL. NULL means
@@ -210,23 +230,47 @@ export async function fetchMaestroUserProfile(env: MaestroOAuthEnv, accessToken:
   const root = (
     Deno.env.get("MAESTRO_TELECOM_BASE_URL")
     ?? Deno.env.get("MAESTRO_API_BASE_URL")
-    ?? "https://client-dev.planipret.com/telecom/api/v1"
+    ?? "https://client.planipret.com/telecom/api/v1"
   ).replace(/\/$/, "");
   // Confirmed with Scott: with an OAuth access token (no machine=1),
   // GET /user returns the authenticated broker profile { id, first_name, last_name, email }.
-  try {
-    const r = await fetchWithTimeout(`${root}/user`, {
-      headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
-    }, 6_000);
-    if (r.ok) {
-      const j = await r.json();
-      if (j && typeof j === "object" && Object.keys(j).length > 0) return j;
-      console.warn("[maestro-oauth] GET /user returned an empty object — token may be a machine key");
-    } else {
-      console.warn("[maestro-oauth] GET /user failed", r.status);
+  // Some deployments only answer on /users/me or /me, so try each in order.
+  const paths = ["/user", "/users/me", "/me", "/broker", "/brokers/me"];
+  for (const path of paths) {
+    try {
+      const r = await fetchWithTimeout(`${root}${path}`, {
+        headers: { Authorization: `Bearer ${accessToken}`, Accept: "application/json" },
+      }, 6_000);
+      const text = await r.text();
+      if (!r.ok) {
+        console.warn("[maestro-oauth] GET", path, "failed", r.status, text.slice(0, 200));
+        continue;
+      }
+      let j: any = null;
+      try { j = JSON.parse(text); } catch { j = null; }
+      const body = j?.data ?? j?.result ?? j?.user ?? j;
+      if (body && typeof body === "object" && Object.keys(body).length > 0) {
+        console.log("[maestro-oauth] identity resolved via", path, JSON.stringify(body).slice(0, 300));
+        return body;
+      }
+      console.warn("[maestro-oauth] GET", path, "returned empty payload", text.slice(0, 200));
+    } catch (e) {
+      console.warn("[maestro-oauth] GET", path, "error", (e as Error).message);
     }
-  } catch (e) {
-    console.warn("[maestro-oauth] GET /user error", (e as Error).message);
+  }
+  return null;
+}
+
+/** Extract the authenticated Maestro broker/user id from identity payloads. */
+export function extractMaestroBrokerId(payload: any): string | null {
+  const candidates = [
+    payload?.broker_id, payload?.maestro_broker_id, payload?.broker?.id,
+    payload?.user?.broker_id, payload?.data?.broker_id, payload?.id,
+    payload?.user?.id, payload?.user_id, payload?.sub,
+  ];
+  for (const candidate of candidates) {
+    const value = String(candidate ?? "").trim();
+    if (/^\d+$/.test(value)) return value;
   }
   return null;
 }

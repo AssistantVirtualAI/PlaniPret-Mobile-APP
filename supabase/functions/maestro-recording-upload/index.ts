@@ -89,9 +89,9 @@ Deno.serve(async (req) => {
   }
 
   const cfg = await getMaestroConfig(admin);
-  const auth = await telecomAuth(admin, userId ?? "", true);
+  const auth = await telecomAuth(admin, userId ?? "", false);
   if (!cfg.url || !cfg.key || !auth.brokerId) {
-    return json({ success: false, error: !auth.brokerId ? "maestro_broker_id_missing" : "maestro_not_configured" });
+    return json({ success: false, error: !auth.brokerId ? "maestro_telecom_user_id_missing" : "maestro_not_configured" });
   }
 
   const res = await maestroFetch(cfg, {
@@ -164,8 +164,13 @@ Deno.serve(async (req) => {
     });
     await pipelineLog(admin, {
       call_id, user_id: userId, step: "recording_push", status: put.ok ? "success" : "error",
-      error_message: put.ok ? null : `maestro_put_${put.status}`,
-      payload: { maestro_call_id: maestroCallId, status: put.status, source, permalink },
+      error_message: put.ok ? null : `maestro_put_${put.status}: ${typeof (put as any).data === "string" ? String((put as any).data).slice(0, 300) : JSON.stringify((put as any).data ?? {}).slice(0, 300)}`,
+      endpoint: (put as any).path ?? null,
+      http_status: put.status,
+      entity_type: "call",
+      entity_id: String(maestroCallId),
+      correlation_id: String(call_id),
+      payload: { maestro_call_id: maestroCallId, status: put.status, source, permalink, response: (put as any).data ?? null },
     });
   }
 

@@ -8,14 +8,28 @@ import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import {
   exchangeAuthorizationCode,
+  extractMaestroBrokerId,
   fetchMaestroUserProfile,
   getMaestroOAuthEnv,
   isMaestroOAuthConfigured,
   persistTokenSet,
 } from "../_shared/maestro-oauth.ts";
+import { resolveMaestroIdForUser, resolveTelecomUserId } from "../_shared/maestro-broker-directory.ts";
 
 const j = (b: unknown, s = 200) =>
   new Response(JSON.stringify(b), { status: s, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+
+function brokerIdFromAccessToken(accessToken: string): string | null {
+  const parts = accessToken.split(".");
+  if (parts.length !== 3) return null;
+  try {
+    const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
+    const candidate = payload?.broker_id ?? payload?.maestro_broker_id ?? payload?.user_id ?? payload?.sub ?? null;
+    return candidate === null || candidate === undefined ? null : String(candidate).trim() || null;
+  } catch {
+    return null;
+  }
+}
 
 async function saveIntegrationState(
   admin: ReturnType<typeof createClient>,
@@ -97,21 +111,54 @@ Deno.serve(async (req) => {
 
     // If we know the user, persist per-broker. Otherwise keep the global fallback
     // in planipret_integration_secrets so nothing is lost.
+    let resolvedBrokerId: string | null = null;
+    let resolvedBy: string | null = null;
+    let telecomUserId: string | null = null;
+    let telecomMatchedBy: string | null = null;
     if (userId) {
       const isMobile = !!storedCodeVerifier;
       await persistTokenSet(admin, userId, exch.data, isMobile);
 
-      // Best-effort: hydrate maestro_broker_id + maestro_email from /users/me
+      // Read the id we had BEFORE this reconnect so we can detect a stale value.
+      const { data: prevProf } = await admin
+        .from("planipret_profiles")
+        .select("id, user_id, maestro_broker_id")
+        .or(`user_id.eq.${userId},id.eq.${userId}`)
+        .limit(1)
+        .maybeSingle();
+      const previousId = (prevProf as any)?.maestro_broker_id
+        ? String((prevProf as any).maestro_broker_id).trim()
+        : null;
+
+      // A reconnect must never retain a broker id from the previous Maestro
+      // account while the fresh identity is being resolved.
+      if ((prevProf as any)?.id) {
+        await admin.from("planipret_profiles").update({ maestro_broker_id: null }).eq("id", (prevProf as any).id);
+      }
+
+      // Authoritative: GET /user with the *freshly issued* access token.
       const me = await fetchMaestroUserProfile(env, exch.data.access_token);
       if (me) {
-        const mid = (me as any).id ?? (me as any).user?.id ?? (me as any).user_id ?? null;
+        const mid = extractMaestroBrokerId(me);
         const email = String((me as any).email ?? (me as any).user?.email ?? "").toLowerCase().trim();
         const remoteName = [(me as any).first_name, (me as any).last_name].filter(Boolean).join(" ").trim();
         const patch: Record<string, unknown> = {};
-        if (mid) patch.maestro_broker_id = String(mid);
+        if (mid) {
+          resolvedBrokerId = String(mid).trim();
+          resolvedBy = "oauth_user_endpoint";
+          patch.maestro_broker_id = resolvedBrokerId;
+        }
         if (email) patch.maestro_email = email;
         if (Object.keys(patch).length) {
-          await admin.from("planipret_profiles").update(patch).eq("user_id", userId);
+          const pid = (prevProf as any)?.id ?? null;
+          const upd = admin.from("planipret_profiles").update(patch);
+          const { error: upErr } = pid ? await upd.eq("id", pid) : await upd.eq("user_id", userId);
+          if (upErr) console.error("[maestro-oauth-callback] profile patch failed", upErr.message);
+        }
+        if (previousId && resolvedBrokerId && previousId !== resolvedBrokerId) {
+          console.warn("[maestro-oauth-callback] maestro_broker_id_changed", JSON.stringify({
+            user_id: userId, previous: previousId, current: resolvedBrokerId,
+          }));
         }
         // Names are intentionally NOT copied: Maestro's first_name/last_name can be
         // stale on shared/test accounts. Log a mismatch so it can be fixed upstream.
@@ -131,6 +178,54 @@ Deno.serve(async (req) => {
         }
       }
 
+
+      // Some production OAuth responses expose the authenticated broker only
+      // in the signed access-token claims while GET /user is unavailable.
+      if (!resolvedBrokerId) {
+        const tokenBrokerId = brokerIdFromAccessToken(exch.data.access_token);
+        if (tokenBrokerId) {
+          resolvedBrokerId = tokenBrokerId;
+          resolvedBy = "oauth_token_claim";
+          const pid = (prevProf as any)?.id ?? null;
+          const upd = admin.from("planipret_profiles").update({ maestro_broker_id: tokenBrokerId });
+          const { error: tokenUpErr } = pid ? await upd.eq("id", pid) : await upd.eq("user_id", userId);
+          if (tokenUpErr) console.error("[maestro-oauth-callback] token broker id patch failed", tokenUpErr.message);
+        }
+      }
+
+      // Fallback when /user gives no id: force a fresh directory match by email
+      // (never trust the previously stored id after a reconnect).
+      if (!resolvedBrokerId) {
+        const r = await resolveMaestroIdForUser(admin, userId, { force: true });
+        if (r.maestro_broker_id) {
+          resolvedBrokerId = r.maestro_broker_id;
+          resolvedBy = r.matched_by ?? "directory";
+        } else {
+          console.warn("[maestro-oauth-callback] broker_id_unresolved", JSON.stringify({ user_id: userId, error: r.error }));
+        }
+      }
+
+      // Auto-detect the *telecom* user id for this broker (separate namespace
+      // from the CRM/OAuth broker id) so call/SMS/recording sync works right away.
+      try {
+        if ((prevProf as any)?.id) {
+          await admin.from("planipret_profiles")
+            .update({ maestro_telecom_user_id: null, maestro_telecom_linked_at: null })
+            .eq("id", (prevProf as any).id);
+        }
+        const tel = await resolveTelecomUserId(admin, userId, {
+          candidate: resolvedBrokerId,
+          force: true,
+        });
+        telecomUserId = tel.id;
+        telecomMatchedBy = tel.matched_by;
+        if (!tel.id) {
+          console.warn("[maestro-oauth-callback] telecom_id_unresolved", JSON.stringify({ user_id: userId, error: tel.error }));
+        }
+      } catch (e) {
+        console.error("[maestro-oauth-callback] telecom resolve failed", (e as Error).message);
+      }
+
       // Consume the state row.
       await admin.from("planipret_maestro_oauth_states").delete().eq("state", state);
     } else {
@@ -146,6 +241,10 @@ Deno.serve(async (req) => {
       user_bound: !!userId,
       has_refresh: !!exch.data.refresh_token,
       expires_in: exch.data.expires_in ?? null,
+      maestro_broker_id: resolvedBrokerId,
+      matched_by: resolvedBy,
+      maestro_telecom_user_id: telecomUserId,
+      telecom_matched_by: telecomMatchedBy,
     });
   } catch (e) {
     console.error("[maestro-oauth-callback]", e);

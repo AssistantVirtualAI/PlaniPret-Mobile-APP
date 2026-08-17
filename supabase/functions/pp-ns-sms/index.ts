@@ -148,6 +148,42 @@ function newMessageSessionId() {
 }
 
 const digitsOnly = (v: unknown) => String(v ?? "").replace(/\D/g, "").slice(-10);
+const normalizeMessageBody = (v: unknown) => String(v ?? "")
+  .normalize("NFKC")
+  .replace(/[\u00a0\u2000-\u200d\u202f\u2060\ufeff]/g, " ")
+  .replace(/\s+/g, " ")
+  .trim();
+
+const messageDirection = (m: any) => {
+  const raw = String(m.direction ?? "").toLowerCase();
+  if (["outbound", "out", "sent", "orig"].includes(raw)) return "out";
+  if (["inbound", "in", "received", "term"].includes(raw)) return "in";
+  return "unknown";
+};
+
+const messageTimestamp = (m: any) => {
+  const raw = m.timestamp ?? m.created_at ?? m.sent_at ?? m["message-datetime"];
+  if (!raw) return Number.NaN;
+  return new Date(typeof raw === "string" && !raw.includes("T") ? `${raw.replace(" ", "T")}Z` : raw).getTime();
+};
+
+function dedupeMergedMessages(messages: any[]) {
+  const kept: any[] = [];
+  for (const message of messages) {
+    const body = normalizeMessageBody(message.body ?? message.message ?? message.text ?? message["message-text"]);
+    const timestamp = messageTimestamp(message);
+    const index = kept.findIndex((candidate) => {
+      if (!body || normalizeMessageBody(candidate.body ?? candidate.message ?? candidate.text ?? candidate["message-text"]) !== body) return false;
+      const candidateTimestamp = messageTimestamp(candidate);
+      if (!Number.isFinite(timestamp) || !Number.isFinite(candidateTimestamp) || Math.abs(timestamp - candidateTimestamp) >= 5 * 60_000) return false;
+      const differentSources = candidate.source === "local" || message.source === "local";
+      return differentSources || messageDirection(candidate) !== messageDirection(message);
+    });
+    if (index === -1) kept.push(message);
+    else if (message.source === "local" && messageDirection(message) === "out") kept[index] = message;
+  }
+  return kept;
+}
 
 /** Peer number of a locally logged message row. */
 function localPeer(row: any): string {
@@ -325,7 +361,7 @@ Deno.serve(async (req) => {
             source: "local",
           }))
           .filter((m: any) => !seen.has(`${String(m.text).trim()}|${String(m.timestamp).slice(0, 16)}`));
-        messages = [...messages, ...merged].sort(
+        messages = dedupeMergedMessages([...messages, ...merged]).sort(
           (a: any, b: any) => +new Date(a.timestamp ?? a.created_at ?? 0) - +new Date(b.timestamp ?? b.created_at ?? 0),
         );
       } catch (e) {
@@ -363,11 +399,18 @@ Deno.serve(async (req) => {
       const type = (pick("type") as string) ?? "sms";
       const thread_id = pick("thread_id") as string | undefined;
       let from = pick("from") as string | undefined;
+      // Clé d'idempotence fournie par le client (mobile / AVA). Elle survit
+      // au rafraîchissement de page : deux envois portant la même clé ne
+      // peuvent jamais créer deux SMS.
+      const idempotencyKey = String(pick("idempotency_key") ?? "").trim().slice(0, 120) || null;
+      const correlationId = idempotencyKey ?? crypto.randomUUID();
 
       console.info("[pp-ns-sms] send request", {
+        correlation_id: correlationId, idempotency_key: idempotencyKey,
         userId: ctx.userId, extension: ctx.extension, domain: ctx.nsDomain,
         to_raw: to, from_raw: from, thread_id, msg_len: message?.length ?? 0,
       });
+
 
       if (!to || !message) {
         return jsonResponse({ ok: false, error: "Paramètres manquants: 'to' et 'message' sont requis", missing: { to: !to, message: !message } }, 400);
@@ -390,11 +433,34 @@ Deno.serve(async (req) => {
 
 
 
+      // ---- Garde d'idempotence (clé explicite, fenêtre 24 h) --------------
+      if (idempotencyKey) {
+        try {
+          const { data: known } = await supabase
+            .from("planipret_phone_messages")
+            .select("id, thread_id, sent_at")
+            .eq("idempotency_key", idempotencyKey)
+            .maybeSingle();
+          if (known?.id) {
+            console.warn("[pp-ns-sms] idempotent replay", { correlation_id: correlationId, message_id: known.id });
+            return jsonResponse({
+              ok: true, success: true, duplicate: true,
+              message_id: known.id, thread_id: known.thread_id ?? thread_id ?? null,
+              to: destination, from: fromNumber, correlation_id: correlationId,
+              note: "SMS déjà envoyé (clé d'idempotence identique) — envoi ignoré.",
+            }, 200);
+          }
+        } catch (idemErr) {
+          console.warn("[pp-ns-sms] idempotency lookup failed (non-fatal):", idemErr);
+        }
+      }
+
       // ---- Garde d'idempotence -------------------------------------------
       // AVA (chatbot/voicebot) peut rejouer un tool call, et un double tap
       // mobile peut envoyer deux fois. On refuse tout SMS identique
       // (même courtier, même destinataire, même texte) dans les 90 dernières
       // secondes et on renvoie le succès du premier envoi.
+
       try {
         const since = new Date(Date.now() - 90_000).toISOString();
         const { data: dup } = await supabase
@@ -480,19 +546,54 @@ Deno.serve(async (req) => {
               body: message,
               status: "sent",
               ns_message_id: nsMsgId,
-              metadata: { type },
+              idempotency_key: idempotencyKey,
+              metadata: { type, correlation_id: correlationId, idempotency_key: idempotencyKey },
               thread_id: threadId,
               sent_at: new Date().toISOString(),
             })
             .select("id")
             .maybeSingle();
-          if (logError) console.error("[pp-ns-sms] log insert error:", logError.message);
+          if (logError) {
+            // 23505 = collision sur la clé d'idempotence → la ligne existe déjà.
+            if ((logError as any).code === "23505" && idempotencyKey) {
+              const { data: existing } = await supabase
+                .from("planipret_phone_messages")
+                .select("id")
+                .eq("idempotency_key", idempotencyKey)
+                .maybeSingle();
+              console.warn("[pp-ns-sms] insert deduped by unique index", { correlation_id: correlationId, message_id: existing?.id });
+              return existing?.id ?? null;
+            }
+            console.error("[pp-ns-sms] log insert error:", logError.message);
+          }
           return logged?.id ?? null;
         } catch (logErr) {
           console.warn("[pp-ns-sms] log insert failed (non-fatal):", logErr);
           return null;
         }
       };
+
+      // Journal corrélé de la tentative d'envoi NS (une ligne par envoi).
+      const logSmsStep = async (status: "success" | "error", messageId: string | null) => {
+        try {
+          await supabase.from("planipret_pipeline_logs").insert({
+            call_id: null,
+            user_id: ctx.profileId ?? ctx.userId,
+            step: "sms_send",
+            status,
+            correlation_id: correlationId,
+            entity_type: "message",
+            entity_id: messageId,
+            endpoint: path,
+            http_status: res.status,
+            error_message: status === "error" ? String(nsError ?? `ns_${res.status}`) : null,
+            payload: { to: destination, from: fromNumber, len: message.length, idempotency_key: idempotencyKey },
+          });
+        } catch (e) {
+          console.warn("[pp-ns-sms] pipeline log failed (non-fatal):", e);
+        }
+      };
+
 
 
       if (!nsRejected) {
@@ -502,16 +603,18 @@ Deno.serve(async (req) => {
           ?? result?.messagesession
           ?? sessionId;
         const messageId = await logMessage(resolvedThreadId, result?.id ?? result?.message_id ?? result?.["message-id"]);
+        await logSmsStep("success", messageId);
         // Synchronisation Maestro : on NE renvoie PAS le SMS via Maestro
         // (mauvais afficheur) — on pousse seulement l'enregistrement pour que
         // la conversation apparaisse dans Maestro avec le vrai DID NS.
         if (messageId) {
           try {
-            await supabase.functions.invoke("maestro-sync-message", { body: { message_id: messageId } });
+            await supabase.functions.invoke("maestro-sync-message", { body: { message_id: messageId, correlation_id: correlationId } });
           } catch (syncErr) {
             console.warn("[pp-ns-sms] maestro sync failed (non-fatal):", syncErr);
           }
         }
+
 
         // ---- Vérification post-envoi ---------------------------------------
         // On relit la ligne réellement persistée pour confirmer (a) qu'elle est
@@ -550,13 +653,15 @@ Deno.serve(async (req) => {
         return jsonResponse({
           ok: true, via: "ns", result, message_id: messageId,
           from: fromNumber, to: destination, thread_id: resolvedThreadId,
+          correlation_id: correlationId,
           verification,
         });
 
       }
 
+      await logSmsStep("error", null);
+      console.error("[pp-ns-sms] NS send failed", { correlation_id: correlationId, status: res.status, error: nsError ?? lastText?.slice(0, 200) });
 
-      console.error("[pp-ns-sms] NS send failed", res.status, nsError ?? lastText?.slice(0, 200));
 
       // ---- PAS de repli Maestro -------------------------------------------
       // `POST /users/{id}/messages` (Maestro) ignore `from`/`from_number` et
@@ -565,7 +670,7 @@ Deno.serve(async (req) => {
       // avec un mauvais afficheur.
 
       return jsonResponse(
-        { ok: false, error: nsError ?? `Envoi SMS refusé par le PBX (${res.status}) — le message n'a pas été envoyé. Vérifiez que le DID ${fromNumber} est bien attribué à votre extension.`, status: res.status, body: lastText, from: fromNumber, to: destination, endpoint: path },
+        { ok: false, error: nsError ?? `Envoi SMS refusé par le PBX (${res.status}) — le message n'a pas été envoyé. Vérifiez que le DID ${fromNumber} est bien attribué à votre extension.`, status: res.status, body: lastText, from: fromNumber, to: destination, endpoint: path, correlation_id: correlationId },
         200,
       );
 

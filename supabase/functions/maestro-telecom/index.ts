@@ -9,7 +9,6 @@ import {
   isMaestroTelecomConfigured,
   maestroTelecomFetch,
 } from "../_shared/maestro-telecom.ts";
-import { getUserMaestroAccessToken } from "../_shared/maestro-oauth.ts";
 
 const json = (b: unknown, s = 200) =>
   new Response(JSON.stringify(b), { status: s, headers: { ...corsHeaders, "Content-Type": "application/json" } });
@@ -45,11 +44,11 @@ Deno.serve(async (req) => {
     if (path.includes("{me}")) {
       const { data: prof } = await admin
         .from("planipret_profiles")
-        .select("maestro_broker_id")
+        .select("maestro_telecom_user_id")
         .eq("user_id", u.user.id)
         .maybeSingle();
-      const meId = prof?.maestro_broker_id;
-      if (!meId) return json({ ok: false, error: "no_maestro_broker_id", needs_link: true }, 200);
+      const meId = prof?.maestro_telecom_user_id;
+      if (!meId) return json({ ok: false, error: "no_maestro_telecom_user_id", needs_link: true }, 200);
       resolvedMeId = meId;
       path = path.replaceAll("{me}", encodeURIComponent(String(meId)));
     }
@@ -59,13 +58,6 @@ Deno.serve(async (req) => {
       for (const [k, v] of Object.entries(query)) {
         if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
       }
-    }
-
-    // Prefer the broker's per-user OAuth token when available (auto-refresh),
-    // fall back to the machine key from the shared config.
-    const userToken = await getUserMaestroAccessToken(admin, u.user.id);
-    if (!userToken) {
-      return json({ ok: false, error: "maestro_reconnect_required", needs_reauth: true }, 200);
     }
 
     const endpoint = `${url.pathname}${url.search}`;
@@ -90,7 +82,6 @@ Deno.serve(async (req) => {
     const r = await maestroTelecomFetch(cfg, endpoint, {
       method,
       body: upstreamBody,
-      token: userToken,
     });
 
     if (!r.ok) {

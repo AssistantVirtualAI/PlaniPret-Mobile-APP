@@ -153,7 +153,7 @@ Deno.serve(async (req) => {
       steps.cdr = { ok: true, skipped: "already_synced" };
     }
 
-    const auth = await telecomAuth(admin, call.user_id);
+    const auth = await telecomAuth(admin, call.user_id, false);
     log("broker_auth", {
       user_id: call.user_id,
       broker_id: auth.brokerId,
@@ -166,12 +166,12 @@ Deno.serve(async (req) => {
         user_id: call.user_id,
         step: "maestro_sync",
         status: "error",
-        error_message: "maestro_broker_id_missing",
+        error_message: "maestro_telecom_user_id_missing",
       });
       return json({
         success: false,
-        error: "maestro_broker_id_missing",
-        hint: "Set maestro_broker_id (numeric broker ID from Scott, e.g. 67 or 93135) on planipret_profiles for this user.",
+        error: "maestro_telecom_user_id_missing",
+        hint: "Reconnect the broker's Telecom identity so the numeric Telecom user ID is linked.",
         steps,
       }, 200);
     }
@@ -246,7 +246,13 @@ Deno.serve(async (req) => {
       await pipelineLog(admin, {
         call_id, user_id: call.user_id, step: "ai_summary_push",
         status: res.ok ? "success" : "error",
-        payload: { status: res.status, lead_score: call.lead_score },
+        correlation_id: call_id,
+        entity_type: "ai",
+        entity_id: String(mId),
+        endpoint: res.endpoint,
+        http_status: res.status,
+        error_message: res.ok ? undefined : failure?.error,
+        payload: { status: res.status, broker_id: auth.brokerId, client_id: call.maestro_client_id, lead_score: call.lead_score, response: res.data ?? null },
       });
 
       // ── 5. High-priority tasks ───────────────────────────

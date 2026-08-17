@@ -8,7 +8,17 @@ vi.mock("@/integrations/supabase/client", () => ({
   supabase: {
     functions: { invoke: (name: string, opts?: any) => invoke(name, opts) },
     from: (table: string) => from(table),
+    auth: {
+      getSession: () => Promise.resolve({ data: { session: null } }),
+      getUser: () => Promise.resolve({ data: { user: null } }),
+    },
   },
+}));
+
+// AVA calls are gated behind the AI consent gate; treat consent as granted.
+vi.mock("@/components/planipret/mobile/AiConsentGate", () => ({
+  hasAiConsent: () => true,
+  default: () => null,
 }));
 
 import { callAva, applyAvaSuggestion } from "../avaProactive";

@@ -207,6 +207,7 @@ export default function MaestroConnectCard() {
     try {
       const { error } = await supabase.functions.invoke("maestro-oauth-disconnect", { body: {} });
       if (error) throw error;
+      window.dispatchEvent(new Event("maestro:connected"));
       toast.success(L.disconnectOk);
       await load();
     } catch (e: any) {

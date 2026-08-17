@@ -22,7 +22,7 @@ Deno.serve(async (req) => {
   if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405);
 
   try {
-    const { message_id, force } = await req.json().catch(() => ({}));
+    const { message_id, force, correlation_id: bodyCorrelationId } = await req.json().catch(() => ({}));
     if (!message_id) return json({ success: false, error: "message_id_required" }, 400);
 
     const admin = adminClient();
@@ -81,19 +81,8 @@ Deno.serve(async (req) => {
       brokerId: auth.brokerId,
       idempotencyKey: msg.id,
       body: {
-        message_id: msg.ns_message_id ?? msg.id,
-        maestro_broker_id: auth.brokerId,
-        direction: msg.direction,
-        from_number: fromUser,
-        to_number: toUser,
-        from_user_number: fromUser,
-        to_user_number: toUser,
-        user_number: brokerNumber ?? (msg.direction === "inbound" ? toUser : fromUser),
-        contact_number: contact,
-        body: msg.body ?? "",
+        to_user_number: contact,
         message: msg.body ?? "",
-        sent_at: msg.sent_at ?? msg.created_at,
-        channel: "sms",
       },
 
 
@@ -117,13 +106,15 @@ Deno.serve(async (req) => {
       step: "message_push",
       status: res.ok || res.status === 409 ? "success" : "error",
       duration_ms: Date.now() - t0,
-      correlation_id: msg.id,
+      correlation_id: String(bodyCorrelationId ?? (meta.correlation_id as string | undefined) ?? msg.id),
       entity_type: "message",
       entity_id: String(res.data?.id ?? res.data?.message_id ?? msg.ns_message_id ?? msg.id),
       endpoint: res.path,
       http_status: res.status,
-      error_message: res.ok || res.status === 409 ? undefined : (res.data?.error ?? `maestro_${res.status}`),
-      payload: { direction: msg.direction, contact },
+      error_message: res.ok || res.status === 409
+        ? undefined
+        : `maestro_${res.status}: ${typeof res.data === "string" ? res.data.slice(0, 300) : JSON.stringify(res.data ?? {}).slice(0, 300)}`,
+      payload: { direction: msg.direction, contact, response: res.data ?? null },
     }).catch(() => {});
 
 

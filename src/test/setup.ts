@@ -14,9 +14,6 @@ Object.defineProperty(window, "matchMedia", {
   }),
 });
 
-if (!(URL as any).createObjectURL) {
-  (URL as any).createObjectURL = () => "blob:mock";
-}
-if (!(URL as any).revokeObjectURL) {
-  (URL as any).revokeObjectURL = () => {};
-}
+// jsdom does not implement Blob URL helpers used by attachment downloads.
+if (typeof URL.createObjectURL !== "function") (URL as any).createObjectURL = () => "blob:stub";
+if (typeof URL.revokeObjectURL !== "function") (URL as any).revokeObjectURL = () => {};

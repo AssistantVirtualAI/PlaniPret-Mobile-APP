@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "postbuild": "node scripts/strip-obsolete-ios-fallback.mjs && node scripts/verify-sip-bundle.mjs && node scripts/postbuild-sync.mjs",
+    "postbuild": "node scripts/strip-obsolete-ios-fallback.mjs && node scripts/verify-sip-bundle.mjs && node scripts/postbuild-sync.mjs && node scripts/security-gate.mjs",
     "preview": "vite preview",
     "test": "vitest run",
     "audit:native": "node scripts/audit-native.mjs",
@@ -43,7 +43,8 @@
     "ios:oneclick": "bash scripts/ios-oneclick.sh",
     "ios:oneclick:rebuild": "bash scripts/ios-oneclick.sh --rebuild-pjsip",
     "verify:aor:mobile": "node scripts/verify-aor-mobile.mjs",
-    "ota:bundle": "PP_SKIP_AUTOSYNC=1 npm run build && node scripts/build-ota-bundle.mjs"
+    "ota:bundle": "PP_SKIP_AUTOSYNC=1 npm run build && node scripts/build-ota-bundle.mjs",
+    "security:gate": "node scripts/security-gate.mjs"
   },
   "dependencies": {
     "@capacitor-community/bluetooth-le": "^6.1.0",
@@ -91,6 +92,7 @@
   },
   "devDependencies": {
     "@capacitor/cli": "^6.1.2",
+    "@testing-library/jest-dom": "^6.6.3",
     "@testing-library/react": "^16.3.2",
     "@types/react": "^18.2.0",
     "@types/react-dom": "^18.2.0",

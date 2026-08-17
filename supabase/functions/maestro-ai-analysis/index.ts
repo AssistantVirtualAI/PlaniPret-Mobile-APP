@@ -122,22 +122,38 @@ Deno.serve(async (req) => {
       })
       .eq("id", call_id);
 
-    // Push to Maestro
+    // Push through the supported broker-scoped call update. Keep the local AI
+    // stage separate from the remote Maestro delivery status.
+    let maestroPushed = false;
     try {
       const cfg = await getMaestroConfig(admin);
-      if (cfg.url && cfg.key) {
-        const auth = await getBrokerAuth(admin, call.user_id);
-        const mId = call.maestro_call_id ?? call.ns_call_id ?? call.id;
-        await maestroFetch(cfg, {
-          method: "POST",
-          path: `/api/v1/calls/${encodeURIComponent(mId)}/ai_summary`,
+      if (cfg.url && cfg.key && call.maestro_call_id) {
+        const auth = await getBrokerAuth(admin, call.user_id, false);
+        const coaching = analysis.coaching ?? {};
+        const pushed = await maestroFetch(cfg, {
+          method: "PUT",
+          path: `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/calls/${encodeURIComponent(String(call.maestro_call_id))}`,
           token: auth.token,
           body: {
-            summary_text: analysis.summary_text,
-            key_points: analysis.key_points,
-            next_actions: (analysis.next_actions ?? []).map((a: any) => a.title),
-            sentiment: analysis.sentiment,
+            status: "ended",
+            ai_summary: analysis.summary_text,
+            notes: [
+              analysis.key_points?.length ? `Points clés: ${analysis.key_points.join(" • ")}` : null,
+              coaching.overall ? `Coaching IA: ${coaching.overall}` : null,
+              coaching.strengths?.length ? `Forces: ${coaching.strengths.join(" • ")}` : null,
+              coaching.improvements?.length ? `Améliorations: ${coaching.improvements.join(" • ")}` : null,
+              analysis.next_actions?.length ? `Prochaines actions: ${analysis.next_actions.map((a: any) => a.title).join(" • ")}` : null,
+              `Transcription:\n${String(call.transcript).slice(0, 8000)}`,
+            ].filter(Boolean).join("\n\n"),
           },
+        });
+        maestroPushed = pushed.ok;
+        await pipelineLog(admin, {
+          call_id, user_id: call.user_id, step: "ai_summary_push", status: pushed.ok ? "success" : "error",
+          correlation_id: call_id, entity_type: "ai", entity_id: String(call.maestro_call_id),
+          endpoint: pushed.endpoint, http_status: pushed.status,
+          error_message: pushed.ok ? undefined : `maestro_${pushed.status}`,
+          payload: { broker_id: auth.brokerId, client_id: call.maestro_client_id, response: pushed.data ?? null },
         });
       }
     } catch (e) {
@@ -193,7 +209,7 @@ Deno.serve(async (req) => {
       lead_temperature: analysis.lead_temperature,
       coaching_score: analysis.coaching?.score,
       has_transcript: true,
-      maestro_synced: true,
+      maestro_synced: maestroPushed,
       tasks_created: (analysis.next_actions ?? []).filter((a: any) => a.priority === "high").length,
     });
 

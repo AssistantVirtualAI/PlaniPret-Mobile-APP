@@ -73,11 +73,11 @@ async function seedIds(admin: SupabaseClient): Promise<string[]> {
   try {
     const { data } = await admin
       .from("planipret_profiles")
-      .select("maestro_broker_id")
-      .not("maestro_broker_id", "is", null)
+      .select("maestro_telecom_user_id")
+      .not("maestro_telecom_user_id", "is", null)
       .limit(25);
     for (const r of data ?? []) {
-      const v = String((r as any).maestro_broker_id ?? "").trim();
+      const v = String((r as any).maestro_telecom_user_id ?? "").trim();
       if (/^\d+$/.test(v) && !out.includes(v)) out.push(v);
     }
   } catch { /* ignore */ }
@@ -148,7 +148,7 @@ export function findByEmail(entries: BrokerDirectoryEntry[], email: string): Bro
 }
 
 /**
- * Resolve + persist `planipret_profiles.maestro_broker_id` from the broker's
+ * Resolve + persist `planipret_profiles.maestro_telecom_user_id` from the broker's
  * email (Microsoft email first, then account email). Falls back to extension
  * and phone matching against the same directory.
  */
@@ -161,12 +161,13 @@ export async function linkBrokerIdByEmail(
     extension?: string | null;
     phone?: string | null;
     maestro_broker_id?: string | null;
+    maestro_telecom_user_id?: string | null;
     full_name?: string | null;
   },
   opts: { force?: boolean } = {},
 ): Promise<{ ok: boolean; maestro_broker_id: string | null; matched_by: string | null; error?: string }> {
-  if (!opts.force && profile.maestro_broker_id && /^\d+$/.test(String(profile.maestro_broker_id).trim())) {
-    return { ok: true, maestro_broker_id: String(profile.maestro_broker_id).trim(), matched_by: "already_linked" };
+  if (!opts.force && profile.maestro_telecom_user_id && /^\d+$/.test(String(profile.maestro_telecom_user_id).trim())) {
+    return { ok: true, maestro_broker_id: String(profile.maestro_telecom_user_id).trim(), matched_by: "already_linked" };
   }
   const { entries, error } = await loadBrokerDirectory(admin);
   if (!entries.length) return { ok: false, maestro_broker_id: null, matched_by: null, error: error ?? "directory_unavailable" };
@@ -201,7 +202,7 @@ export async function linkBrokerIdByEmail(
 
   const { error: upErr } = await admin
     .from("planipret_profiles")
-    .update({ maestro_broker_id: hit.id })
+    .update({ maestro_telecom_user_id: hit.id, maestro_telecom_linked_at: new Date().toISOString() })
     .eq("id", profile.id);
   if (upErr) return { ok: false, maestro_broker_id: hit.id, matched_by: matchedBy, error: upErr.message };
 
@@ -217,11 +218,60 @@ export async function resolveMaestroIdForUser(
 ): Promise<{ maestro_broker_id: string | null; matched_by: string | null; error?: string }> {
   const { data } = await admin
     .from("planipret_profiles")
-    .select("id, user_id, email, ms365_email, extension, phone, full_name, maestro_broker_id")
+    .select("id, user_id, email, ms365_email, extension, phone, full_name, maestro_broker_id, maestro_telecom_user_id")
     .or(`user_id.eq.${userId},id.eq.${userId}`)
     .limit(1)
     .maybeSingle();
   if (!data) return { maestro_broker_id: null, matched_by: null, error: "profile_not_found" };
   const r = await linkBrokerIdByEmail(admin, data as any, opts);
   return { maestro_broker_id: r.maestro_broker_id, matched_by: r.matched_by, error: r.error };
+}
+
+/**
+ * Authoritative resolver for the **Telecom** user id (`/telecom/api/v1/users/{id}`).
+ * The CRM/OAuth broker id lives in a different namespace and must never be sent
+ * to the telecom API unless it is proven valid there (SIP probe).
+ *
+ * Order: stored maestro_telecom_user_id → directory match (email/ext/phone/name)
+ *        → candidate CRM id validated with GET /users/{id}/sip.
+ */
+export async function resolveTelecomUserId(
+  admin: SupabaseClient,
+  authUserId: string | null | undefined,
+  opts: { candidate?: string | null; force?: boolean } = {},
+): Promise<{ id: string | null; matched_by: string | null; profile_id: string | null; error?: string }> {
+  if (!authUserId) return { id: null, matched_by: null, profile_id: null, error: "no_user" };
+  const { data: prof } = await admin
+    .from("planipret_profiles")
+    .select("id, user_id, email, ms365_email, extension, phone, full_name, maestro_broker_id, maestro_telecom_user_id")
+    .or(`user_id.eq.${authUserId},id.eq.${authUserId}`)
+    .limit(1)
+    .maybeSingle();
+  if (!prof) return { id: null, matched_by: null, profile_id: null, error: "profile_not_found" };
+
+  const stored = String((prof as any).maestro_telecom_user_id ?? "").trim();
+  if (!opts.force && /^\d+$/.test(stored)) {
+    return { id: stored, matched_by: "stored", profile_id: (prof as any).id };
+  }
+
+  const linked = await linkBrokerIdByEmail(admin, prof as any, { force: opts.force }).catch(() => null);
+  if (linked?.ok && linked.maestro_broker_id) {
+    return { id: linked.maestro_broker_id, matched_by: linked.matched_by, profile_id: (prof as any).id };
+  }
+
+  // Last resort: validate a candidate (CRM/OAuth) id against the telecom API.
+  const candidate = String(opts.candidate ?? (prof as any).maestro_broker_id ?? "").trim();
+  if (/^\d+$/.test(candidate)) {
+    const cfg = await getMaestroTelecomConfig(admin);
+    if (isMaestroTelecomConfigured(cfg)) {
+      const probe = await maestroTelecomFetch(cfg, `/users/${candidate}/sip`, { method: "GET", maxAttempts: 1, timeoutMs: 7000 });
+      if (probe.ok) {
+        await admin.from("planipret_profiles")
+          .update({ maestro_telecom_user_id: candidate, maestro_telecom_linked_at: new Date().toISOString() })
+          .eq("id", (prof as any).id);
+        return { id: candidate, matched_by: "sip_probe", profile_id: (prof as any).id };
+      }
+    }
+  }
+  return { id: null, matched_by: null, profile_id: (prof as any).id, error: linked?.error ?? "telecom_id_unresolved" };
 }

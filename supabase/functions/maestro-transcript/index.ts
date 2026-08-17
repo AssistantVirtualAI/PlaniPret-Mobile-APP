@@ -111,7 +111,7 @@ Deno.serve(async (req) => {
     if (call.maestro_call_id) {
       try {
         const cfg = await getMaestroConfig(admin);
-        const tAuth = await telecomAuth(admin, call.user_id ?? "");
+        const tAuth = await telecomAuth(admin, call.user_id ?? "", false);
         if (cfg.url && cfg.key && tAuth.brokerId) {
           const base = `/api/v1/users/${encodeURIComponent(String(tAuth.brokerId))}/calls/${encodeURIComponent(String(call.maestro_call_id))}`;
           const r = await maestroFetch(cfg, { method: "GET", path: `${base}/transcription`, token: tAuth.token });
@@ -219,22 +219,26 @@ Deno.serve(async (req) => {
       })
       .eq("id", call.id);
 
-    // 4. Push to Maestro
+    // 4. Push to Maestro through the supported call update contract. Maestro
+    // has no dedicated transcript upload endpoint.
     try {
       const cfg = await getMaestroConfig(admin);
-      if (cfg.url && cfg.key) {
-        const auth = await getBrokerAuth(admin, call.user_id);
-        const mId = call.maestro_call_id ?? call.ns_call_id ?? call.id;
-        await maestroFetch(cfg, {
-          method: "POST",
-          path: `/api/v1/calls/${encodeURIComponent(mId)}/transcript`,
+      if (cfg.url && cfg.key && call.maestro_call_id) {
+        const auth = await telecomAuth(admin, call.user_id, false);
+        const pushed = await maestroFetch(cfg, {
+          method: "PUT",
+          path: `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/calls/${encodeURIComponent(String(call.maestro_call_id))}`,
           token: auth.token,
           body: {
-            language: "fr-CA",
-            text: result.text,
-            segments: result.segments,
-            confidence: 0.95,
+            status: "ended",
+            notes: `Transcription:\n${result.text.slice(0, 8000)}`,
           },
+        });
+        await pipelineLog(admin, {
+          call_id, user_id: call.user_id, step: "transcript_push", status: pushed.ok ? "success" : "error",
+          correlation_id: call_id, entity_type: "transcript", entity_id: String(call.maestro_call_id),
+          endpoint: pushed.endpoint, http_status: pushed.status,
+          error_message: pushed.ok ? undefined : `maestro_${pushed.status}`,
         });
       }
     } catch (e) {

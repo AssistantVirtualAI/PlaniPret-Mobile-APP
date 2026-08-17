@@ -26,6 +26,10 @@ Deno.serve(async (req) => {
       maestro_scope: null,
       maestro_connected: false,
       maestro_oauth_client: null,
+      // Drop the resolved identity so the next connect re-resolves the real
+      // broker id instead of reusing a stale (dev/test) one.
+      maestro_broker_id: null,
+      maestro_email: null,
     }).eq("user_id", u.user.id);
     if (error) return j({ error: error.message }, 500);
 

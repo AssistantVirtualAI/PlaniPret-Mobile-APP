@@ -164,7 +164,10 @@ export async function resolveBrokerIdFromTelecom(
     const ids = Array.from({ length: Math.min(25, maxId - start + 1) }, (_, i) => start + i);
     const found = (await Promise.all(ids.map(match))).find(Boolean);
     if (found) {
-      await admin.from("planipret_profiles").update({ maestro_broker_id: found }).eq("id", profile.id);
+      await admin.from("planipret_profiles").update({
+        maestro_telecom_user_id: found,
+        maestro_telecom_linked_at: new Date().toISOString(),
+      }).eq("id", profile.id);
       if (diag) diag.sip_probe_result = `matched_id_${found}`;
       console.log(`[maestro.brokerId] resolved broker id ${found} for user ${userId} (ext=${ext || "-"} phone=${phone || "-"})`);
       return found;
@@ -182,8 +185,8 @@ export async function loadBrokerProfile(
   admin: SupabaseClient,
   userId: string,
   diag?: BrokerAuthDiag,
-): Promise<{ id: string; maestro_broker_id: string | null; extension: string | null; phone: string | null } | null> {
-  const cols = "id, user_id, maestro_broker_id, extension, phone";
+): Promise<{ id: string; maestro_broker_id: string | null; maestro_telecom_user_id: string | null; extension: string | null; phone: string | null } | null> {
+  const cols = "id, user_id, maestro_broker_id, maestro_telecom_user_id, extension, phone";
   // planipret_phone_calls.user_id may hold either auth.users.id or the profile id.
   const both = await admin.from("planipret_profiles").select(cols).or(`user_id.eq.${userId},id.eq.${userId}`).limit(2);
   const rows = (both.data ?? []) as any[];
@@ -235,7 +238,9 @@ export async function getBrokerAuth(
       diag.reason = "no_planipret_profile_matches_user_id_or_profile_id";
       console.warn(`[maestro.brokerId] no profile for ${userId} (searched planipret_profiles.user_id then .id)`);
     }
-    brokerId = profile?.maestro_broker_id ? String(profile.maestro_broker_id).trim() : null;
+    // CRM OAuth identity and Telecom Communications identity are different
+    // namespaces. Never send the CRM broker id to /telecom/api/v1.
+    brokerId = profile?.maestro_telecom_user_id ? String(profile.maestro_telecom_user_id).trim() : null;
     diag.stored_broker_id = brokerId;
 
     if (brokerId && !/^\d+$/.test(brokerId)) {
@@ -357,22 +362,38 @@ export async function maestroFetch(cfg: MaestroConfig, opts: CallOpts) {
   // `?machine=1` is present — always append it.
   const suffix = opts.machine === false ? "" : `${opts.path.includes("?") ? "&" : "?"}machine=1`;
   const endpoint = `${cfg.url}${opts.path}${suffix}`;
-  const res = await fetch(endpoint, {
-    method: opts.method ?? "GET",
-    headers,
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
-  });
-  const text = await res.text();
-  let data: any = null;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    data = { raw: text };
+  const retryable = new Set([0, 408, 425, 429, 500, 502, 503, 504]);
+  let last = { ok: false, status: 0, data: null as any, endpoint };
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 10_000);
+    try {
+      const res = await fetch(endpoint, {
+        method: opts.method ?? "GET",
+        headers,
+        body: opts.body ? JSON.stringify(opts.body) : undefined,
+        signal: controller.signal,
+      });
+      const text = await res.text();
+      let data: any = null;
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch {
+        data = { raw: text };
+      }
+      const raw = typeof data?.raw === "string" ? data.raw : "";
+      const contentType = res.headers.get("content-type") ?? "";
+      const htmlLogin = /text\/html/i.test(contentType) || /<html|<body|form-signin|\/login/i.test(raw);
+      last = { ok: res.ok && !htmlLogin, status: res.status, data: htmlLogin ? { error: "maestro_html_login_response", raw } : data, endpoint };
+    } catch (error) {
+      last = { ok: false, status: 0, data: { error: (error as Error)?.message ?? "network_error" }, endpoint };
+    } finally {
+      clearTimeout(timeout);
+    }
+    if (last.ok || !retryable.has(last.status) || attempt === 2) return last;
+    await new Promise((resolve) => setTimeout(resolve, 400 * (2 ** attempt) + Math.floor(Math.random() * 250)));
   }
-  const raw = typeof data?.raw === "string" ? data.raw : "";
-  const contentType = res.headers.get("content-type") ?? "";
-  const htmlLogin = /text\/html/i.test(contentType) || /<html|<body|form-signin|\/login/i.test(raw);
-  return { ok: res.ok && !htmlLogin, status: res.status, data: htmlLogin ? { error: "maestro_html_login_response", raw } : data, endpoint };
+  return last;
 }
 
 /**

@@ -1,0 +1,1 @@
+update public.planipret_profiles set maestro_telecom_user_id = null, maestro_telecom_linked_at = null where email = 'mhassoun@assistantvirtualai.com';

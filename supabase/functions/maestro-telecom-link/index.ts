@@ -1,5 +1,5 @@
 // maestro-telecom-link — resolve the broker's Maestro Telecom user id and
-// persist it on planipret_profiles.maestro_broker_id.
+// persist it on planipret_profiles.maestro_telecom_user_id.
 //
 // POST body: { action: "link", ms_access_token?: string }
 //
@@ -56,7 +56,7 @@ Deno.serve(async (req) => {
 
     const { data: profile } = await admin
       .from("planipret_profiles")
-      .select("id, user_id, email, ms365_email, extension, phone, maestro_broker_id")
+      .select("id, user_id, email, ms365_email, extension, phone, maestro_broker_id, maestro_telecom_user_id")
       .eq("user_id", userId)
       .maybeSingle();
     if (!profile) return j({ ok: false, error: "profile_not_found" });
@@ -120,7 +120,7 @@ Deno.serve(async (req) => {
 
     await admin
       .from("planipret_profiles")
-      .update({ maestro_broker_id: matched.id })
+      .update({ maestro_telecom_user_id: matched.id, maestro_telecom_email: matched.email, maestro_telecom_linked_at: new Date().toISOString() })
       .eq("user_id", userId);
 
     return j({ ok: true, maestro_id: matched.id });

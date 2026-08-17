@@ -26,6 +26,7 @@ import EmailBodyFrame from "@/components/planipret/mobile/EmailBodyFrame";
 import { ms365Connected } from "@/lib/planipret/ms365Connected";
 import { Ms365ConnectionNotice } from "@/components/planipret/mobile/Ms365ConnectionNotice";
 import { useMs365Status } from "@/hooks/useMs365Status";
+import { dedupeSmsMessages } from "@/lib/planipret/smsDedupe";
 
 
 type SubTab = "sms" | "team" | "teams365" | "emails" | "history" | "roster";
@@ -244,6 +245,13 @@ const msgIsOut = (m: any, myExt: string) => {
   const from = m.from ?? m.source ?? m["from-user-id"] ?? m["from-number"] ?? "";
   const fromStr = String(from);
   return fromStr === myExt || fromStr.startsWith(`${myExt}@`);
+};
+
+/** Hash court et stable d'une chaîne (clé d'idempotence). */
+const hashText = (str: string) => {
+  let h = 0;
+  for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0;
+  return h;
 };
 
 type SmsRecipient = {
@@ -629,6 +637,29 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
   const [error, setError] = useState<string | null>(null);
   const [currentThreadId, setCurrentThreadId] = useState<string>(thId);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollBoxRef = useRef<HTMLDivElement>(null);
+  const atBottomRef = useRef(true);
+  const [visibleCount, setVisibleCount] = useState(40);
+  const [showJump, setShowJump] = useState(false);
+  const [newCount, setNewCount] = useState(0);
+  const visibleMessages = messages.slice(-visibleCount);
+  const loadOlder = () => {
+    const box = scrollBoxRef.current;
+    const prevHeight = box?.scrollHeight ?? 0;
+    setVisibleCount((n) => n + 40);
+    // Compensation de hauteur : le point de lecture reste stable.
+    requestAnimationFrame(() => {
+      if (!box) return;
+      box.scrollTop += box.scrollHeight - prevHeight;
+    });
+  };
+  const jumpToBottom = () => {
+    const box = scrollBoxRef.current;
+    if (box) box.scrollTop = box.scrollHeight;
+    atBottomRef.current = true;
+    setShowJump(false);
+    setNewCount(0);
+  };
   const inputRef = useRef<HTMLInputElement>(null);
   const autoSentRef = useRef(false);
 
@@ -643,7 +674,7 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
       if (err) throw err;
       const list: NsMessage[] = (data as any)?.messages ?? [];
       list.sort((a, b) => +new Date(msgTime(a)) - +new Date(msgTime(b)));
-      setMessages(list);
+      setMessages(dedupeSmsMessages(list, myExt));
     } catch (e: any) {
       console.error("[pp-ns-sms] messages", e);
       setError(e?.message ?? t("messages.sendFailed"));
@@ -653,7 +684,14 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
   };
 
   useEffect(() => { loadMessages(); /* eslint-disable-next-line */ }, [currentThreadId]);
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages.length]);
+  useEffect(() => {
+    const box = scrollBoxRef.current;
+    if (!box) return;
+    if (!atBottomRef.current) { setNewCount((n) => n + 1); setShowJump(true); return; } // ne pas voler le scroll si l'utilisateur lit plus haut
+    box.scrollTop = box.scrollHeight;
+    setNewCount(0);
+    setShowJump(false);
+  }, [messages.length]);
   useEffect(() => {
     const focus = () => inputRef.current?.focus({ preventScroll: true });
     const raf = window.requestAnimationFrame(focus);
@@ -673,10 +711,13 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
       body,
       timestamp: new Date().toISOString(),
     };
-    setMessages((prev) => [...prev, optimistic]);
+    atBottomRef.current = true;
+    setMessages((prev) => dedupeSmsMessages([...prev, optimistic], myExt));
     setText("");
     try {
-      const payload = { action: "send", to: number, message: body, ...(currentThreadId ? { thread_id: currentThreadId } : {}) };
+      // Clé d'idempotence stable : survit au retry, au double tap et au refresh.
+      const idempotencyKey = optimistic.id.replace("tmp-", "sms-") + "-" + Math.abs(hashText(`${number}|${body}`)).toString(36);
+      const payload = { action: "send", to: number, message: body, idempotency_key: idempotencyKey, ...(currentThreadId ? { thread_id: currentThreadId } : {}) };
       console.info("[pp-ns-sms] send →", { to: number, len: body.length, thread_id: currentThreadId ?? null });
       // Retry automatique avec backoff exponentiel (2s → 6s → 18s).
       const d: any = await retryWithBackoff(async () => {
@@ -776,7 +817,19 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
             {error}
           </div>
         ) : (
-          messages.map((m, i) => {
+          <>
+          {messages.length > visibleCount && (
+            <div className="flex justify-center pb-2">
+              <button
+                onClick={loadOlder}
+                className="text-[11px] px-3 py-1.5 rounded-full"
+                style={{ background: "var(--pp-bg-surface)", color: "var(--pp-text-secondary)", border: "1px solid var(--pp-bg-border)" }}
+              >
+                Charger les messages plus anciens
+              </button>
+            </div>
+          )}
+          {visibleMessages.map((m, i) => {
             const out = msgIsOut(m, myExt);
             const body = msgBody(m);
             const prev = i > 0 ? messages[i - 1] : null;
@@ -804,7 +857,8 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
                 </div>
               </div>
             );
-          })
+          })}
+          </>
         )}
 
         <div ref={bottomRef} />
@@ -964,6 +1018,16 @@ function TeamChat({ profile }: { profile: any }) {
         )}
         <div ref={bottomRef} />
       </div>
+
+      {showJump && (
+        <button
+          onClick={jumpToBottom}
+          className="absolute right-4 bottom-24 z-20 px-3 py-2 rounded-full text-xs font-semibold shadow-lg flex items-center gap-1.5"
+          style={{ background: "var(--pp-brand-accent)", color: "#fff" }}
+        >
+          ↓ {newCount > 0 ? `${newCount} nouveau${newCount > 1 ? "x" : ""}` : "Revenir en bas"}
+        </button>
+      )}
       <Composer text={text} setText={setText} onSend={send} sending={sending} placeholder={t("messages.teamPlaceholder")} />
 
       <AvaSummarizeSheet
