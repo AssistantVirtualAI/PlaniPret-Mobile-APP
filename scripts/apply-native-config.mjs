@@ -504,7 +504,7 @@ public class PpSipKeepAliveService extends Service {
     }
   }
 
-  private void sendDecline(String requestedCallId) {
+  private void sendDecline(String requestedCallId) throws Exception {
     if (activeInviteCallId == null || (requestedCallId != null && !requestedCallId.equals(activeInviteCallId))) return;
     if (activeInviteVia == null || activeInviteFrom == null || activeInviteTo == null || activeInviteCSeq == null) return;
     String toWithTag = activeInviteTo.contains(";tag=") ? activeInviteTo : activeInviteTo + ";tag=" + Long.toHexString(System.nanoTime());
@@ -915,8 +915,8 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       }
     }
 
-    /// Mode audio adapté à la sortie : .voiceChat est calibré pour l'écouteur
-    /// et rend le haut-parleur sourd. .videoChat est le mode mains-libres.
+    /// Mode audio adapté à la sortie : voiceChat est calibré pour l'écouteur.
+    /// videoChat est le mode mains-libres et préserve le haut-parleur.
     private func modeFor(_ route: String) -> AVAudioSession.Mode {
       return route == "speaker" ? .videoChat : .voiceChat
     }
@@ -2484,16 +2484,16 @@ function patchIosAppDelegate(iosApp) {
   if (/supportedInterfaceOrientationsFor/.test(swift)) {
     swift = swift.replace(
       /(func application\(\s*_ application: UIApplication,\s*supportedInterfaceOrientationsFor[^)]*\)\s*->\s*UIInterfaceOrientationMask\s*\{)[\s\S]*?\n\s*\}/,
-      "$1\n        return UIDevice.current.userInterfaceIdiom == .pad ? .all : .portrait\n    }",
+      "$1\n        return .portrait\n    }",
     );
   } else {
-    const insert = `\n    func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {\n        return UIDevice.current.userInterfaceIdiom == .pad ? .all : .portrait\n    }\n`;
+    const insert = `\n    func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {\n        return .portrait\n    }\n`;
     const lastBrace = swift.lastIndexOf("}");
     if (lastBrace > -1) swift = `${swift.slice(0, lastBrace)}${insert}${swift.slice(lastBrace)}`;
   }
   if (swift !== before) {
     writeIfChanged(file, swift);
-    console.log("[native-config] iOS AppDelegate: portrait on iPhone, all orientations on iPad.");
+    console.log("[native-config] iOS AppDelegate locked to portrait.");
   }
 }
 
@@ -2626,11 +2626,11 @@ function patchIosInfoPlist() {
       xml = xml.replace(/\n<\/dict>\s*\n<\/plist>\s*$/, `\n\t<key>${key}</key>\n\t<string>${value}</string>\n</dict>\n</plist>\n`);
     }
   }
-  // Apple requires all four orientations for iPad multitasking. AppDelegate keeps
-  // iPhone portrait-only while iPad supports every required orientation.
-  const supportedOrientations = "\n\t<key>UISupportedInterfaceOrientations</key>\n\t<array>\n\t\t<string>UIInterfaceOrientationPortrait</string>\n\t\t<string>UIInterfaceOrientationPortraitUpsideDown</string>\n\t\t<string>UIInterfaceOrientationLandscapeLeft</string>\n\t\t<string>UIInterfaceOrientationLandscapeRight</string>\n\t</array>\n\t<key>UISupportedInterfaceOrientations~ipad</key>\n\t<array>\n\t\t<string>UIInterfaceOrientationPortrait</string>\n\t\t<string>UIInterfaceOrientationPortraitUpsideDown</string>\n\t\t<string>UIInterfaceOrientationLandscapeLeft</string>\n\t\t<string>UIInterfaceOrientationLandscapeRight</string>\n\t</array>\n";
+  // App Store requires every supported orientation for iPad multitasking.
+  // AppDelegate keeps the runtime interface portrait-only on iPhone.
+  const portraitArray = "\n\t<key>UISupportedInterfaceOrientations</key>\n\t<array>\n\t\t<string>UIInterfaceOrientationPortrait</string>\n\t\t<string>UIInterfaceOrientationPortraitUpsideDown</string>\n\t\t<string>UIInterfaceOrientationLandscapeLeft</string>\n\t\t<string>UIInterfaceOrientationLandscapeRight</string>\n\t</array>\n\t<key>UISupportedInterfaceOrientations~ipad</key>\n\t<array>\n\t\t<string>UIInterfaceOrientationPortrait</string>\n\t\t<string>UIInterfaceOrientationPortraitUpsideDown</string>\n\t\t<string>UIInterfaceOrientationLandscapeLeft</string>\n\t\t<string>UIInterfaceOrientationLandscapeRight</string>\n\t</array>\n";
   xml = xml.replace(/\n\t?<key>UISupportedInterfaceOrientations(~ipad)?<\/key>\s*<array>[\s\S]*?<\/array>/g, "");
-  xml = xml.replace(/\n<\/dict>\s*\n<\/plist>\s*$/, `${supportedOrientations}</dict>\n</plist>\n`);
+  xml = xml.replace(/\n<\/dict>\s*\n<\/plist>\s*$/, `${portraitArray}</dict>\n</plist>\n`);
 
   if (!xml.includes("<key>ITSAppUsesNonExemptEncryption</key>")) {
     xml = xml.replace(/\n<\/dict>\s*\n<\/plist>\s*$/, "\n\t<key>ITSAppUsesNonExemptEncryption</key>\n\t<false/>\n</dict>\n</plist>\n");

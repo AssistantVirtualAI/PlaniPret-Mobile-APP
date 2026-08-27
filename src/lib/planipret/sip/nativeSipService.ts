@@ -10,6 +10,7 @@ import {
   releaseAorFromNative,
 } from "./aorArbitration";
 import { pinnedCoreHost } from "./sipEdgePolicy";
+import { trackRegisterAttempt, logRegisterMetricsSummary, type RegisterTracker } from "./registerMetrics";
 
 
 
@@ -92,6 +93,8 @@ export class NativeSipService {
   private lastState: SipRegistrationState = "unavailable";
   private registrationWaiters: Array<(registered: boolean) => void> = [];
   private registrationRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Chronomètre/métriques de la tentative REGISTER en cours. */
+  private registerTracker: RegisterTracker | null = null;
 
   static getInstance(): NativeSipService {
     if (!NativeSipService.instance) NativeSipService.instance = new NativeSipService();
@@ -203,6 +206,8 @@ export class NativeSipService {
     try {
       await this.bindListeners(pjsip);
 
+      this.registerTracker = trackRegisterAttempt("TLS");
+
       await pjsip.initialize({
         domain: String(creds.sip_domain ?? ""),
         username,
@@ -233,6 +238,9 @@ export class NativeSipService {
       const registered = await this.waitForRegistration(45_000);
       if (!registered) {
         console.error("[SIP] REGISTER absent après 45 s — restitution atomique à JsSIP");
+        this.registerTracker?.failure("watchdog_45s");
+        this.registerTracker = null;
+        logRegisterMetricsSummary("register_watchdog");
         if (this.registrationRetryTimer) {
           clearTimeout(this.registrationRetryTimer);
           this.registrationRetryTimer = null;
@@ -249,6 +257,8 @@ export class NativeSipService {
 
     } catch (err: any) {
       const code = String(err?.code ?? err?.message ?? err?.errorMessage ?? "error");
+      this.registerTracker?.failure(code);
+      this.registerTracker = null;
       // Détail complet : les erreurs Capacitor ne sérialisent pas via console.error.
       console.error("[SIP] Init échouée:", code, JSON.stringify({
         code: err?.code ?? null,
@@ -376,6 +386,16 @@ export class NativeSipService {
     await pjsip.addListener("registrationState", (payload: any) => {
       const state = (payload?.state ?? "failed") as SipRegistrationState;
       console.log("[SIP] REGISTER:", state, payload?.code ?? "", payload?.reason ?? "");
+
+      // Métriques terrain : latence REGISTER TLS, 407 tardifs, PJSIP_EBUSY.
+      const sipCode = Number(payload?.code ?? 0);
+      if (sipCode === 407 || sipCode === 401) this.registerTracker?.challenge(sipCode);
+      if (state === "registered") { this.registerTracker?.success(); this.registerTracker = null; }
+      else if (state === "failed") {
+        this.registerTracker?.failure(payload?.reason ?? `sip_${sipCode || "failed"}`);
+        this.registerTracker = null;
+      }
+
 
       if (state === "failed" && this.retryCount < this.maxRetries) {
         this.retryCount++;

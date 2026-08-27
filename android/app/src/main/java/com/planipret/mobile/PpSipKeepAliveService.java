@@ -188,7 +188,7 @@ public class PpSipKeepAliveService extends Service {
     }
   }
 
-  private void sendDecline(String requestedCallId) {
+  private void sendDecline(String requestedCallId) throws Exception {
     if (activeInviteCallId == null || (requestedCallId != null && !requestedCallId.equals(activeInviteCallId))) return;
     if (activeInviteVia == null || activeInviteFrom == null || activeInviteTo == null || activeInviteCSeq == null) return;
     String toWithTag = activeInviteTo.contains(";tag=") ? activeInviteTo : activeInviteTo + ";tag=" + Long.toHexString(System.nanoTime());

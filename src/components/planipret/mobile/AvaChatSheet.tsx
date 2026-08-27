@@ -7,8 +7,12 @@ import ReactMarkdown from "react-markdown";
 import avaLogo from "@/assets/ava-statistics-logo.png.asset.json";
 import { useAvaContext } from "@/hooks/useAvaContext";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import ReconnectStatus from "@/components/planipret/mobile/ReconnectStatus";
 
 type Msg = { role: "user" | "assistant"; content: string };
+
+/** Tentatives de reconnexion automatique du chatbot avant abandon. */
+const MAX_CHAT_RETRIES = 3;
 
 export default function AvaChatSheet({ userId, onClose }: { userId: string; onClose: () => void }) {
   const { lang } = useMplanipretLang();
@@ -26,6 +30,8 @@ export default function AvaChatSheet({ userId, onClose }: { userId: string; onCl
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const [lockedHeight, setLockedHeight] = useState<number | null>(null);
   const avaContext = useAvaContext();
+  const [reconnectInfo, setReconnectInfo] = useState<{ attempt: number; nextAt: number | null } | null>(null);
+  const cancelledRef = useRef(false);
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
@@ -53,19 +59,61 @@ export default function AvaChatSheet({ userId, onClose }: { userId: string; onCl
     setMessages(next);
     setInput("");
     setLoading(true);
-    try {
-      if (!(await ensureAiConsent())) return;
+    cancelledRef.current = false;
+
+    const ask = async () => {
       const { data, error } = await supabase.functions.invoke("pp-ava-chat", {
         body: { messages: next, user_id: userId, context: avaContext, language: lang },
       });
       if (error) throw error;
-      const reply = (data as any)?.reply ?? (data as any)?.message ?? (lang === "fr" ? "Désolée, je n'ai pas de réponse pour le moment." : "Sorry, I don't have an answer right now.");
-      setMessages((m) => [...m, { role: "assistant", content: reply }]);
-    } catch (e: any) {
-      setMessages((m) => [...m, { role: "assistant", content: `⚠️ ${lang === "fr" ? "Erreur" : "Error"}: ${e?.message ?? (lang === "fr" ? "indisponible" : "unavailable")}` }]);
+      return (data as any)?.reply ?? (data as any)?.message
+        ?? (lang === "fr" ? "Désolée, je n'ai pas de réponse pour le moment." : "Sorry, I don't have an answer right now.");
+    };
+
+    try {
+      if (!(await ensureAiConsent())) return;
+      let lastErr: any;
+      for (let attempt = 1; attempt <= MAX_CHAT_RETRIES + 1; attempt++) {
+        if (cancelledRef.current) return;
+        try {
+          const reply = await ask();
+          if (cancelledRef.current) return;
+          setReconnectInfo(null);
+          setMessages((m) => [...m, { role: "assistant", content: reply }]);
+          return;
+        } catch (e: any) {
+          lastErr = e;
+          if (attempt > MAX_CHAT_RETRIES) break;
+          // Boucle de reconnexion visible : spinner + compte à rebours + annulation.
+          const delay = Math.round(Math.min(8000, 700 * 2 ** (attempt - 1)) * (0.7 + Math.random() * 0.6));
+          setReconnectInfo({ attempt, nextAt: Date.now() + delay });
+          const waited = await new Promise<boolean>((resolve) => {
+            const online = () => { cleanup(); resolve(true); };
+            const timer = setTimeout(() => { cleanup(); resolve(true); }, delay);
+            const poll = setInterval(() => { if (cancelledRef.current) { cleanup(); resolve(false); } }, 150);
+            const cleanup = () => { clearTimeout(timer); clearInterval(poll); window.removeEventListener("online", online); };
+            window.addEventListener("online", online, { once: true });
+          });
+          if (!waited || cancelledRef.current) return;
+          setReconnectInfo({ attempt: attempt + 1, nextAt: null });
+        }
+      }
+      setReconnectInfo(null);
+      setMessages((m) => [...m, { role: "assistant", content: `⚠️ ${lang === "fr" ? "Erreur" : "Error"}: ${lastErr?.message ?? (lang === "fr" ? "indisponible" : "unavailable")}` }]);
     } finally {
+      setReconnectInfo(null);
       setLoading(false);
     }
+  };
+
+  const cancelReconnect = () => {
+    cancelledRef.current = true;
+    setReconnectInfo(null);
+    setLoading(false);
+    setMessages((m) => [...m, {
+      role: "assistant",
+      content: lang === "fr" ? "⏹️ Reconnexion annulée. Réessayez quand vous voulez." : "⏹️ Reconnection cancelled. Try again anytime.",
+    }]);
   };
 
   return (
@@ -153,14 +201,26 @@ export default function AvaChatSheet({ userId, onClose }: { userId: string; onCl
             </div>
           </div>
         ))}
-        {loading && (
+        {reconnectInfo && (
+          <ReconnectStatus
+            attempt={reconnectInfo.attempt}
+            maxAttempts={MAX_CHAT_RETRIES}
+            nextAttemptAt={reconnectInfo.nextAt}
+            onCancel={cancelReconnect}
+            lang={lang === "fr" ? "fr" : "en"}
+            label={lang === "fr" ? "Reconnexion à AVA…" : "Reconnecting to AVA…"}
+          />
+        )}
+        {loading && !reconnectInfo && (
           <div className="flex justify-start">
             <div
               className="px-3.5 py-2.5 rounded-2xl flex items-center gap-2"
               style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border)" }}
             >
               <Loader2 className="w-3.5 h-3.5 animate-spin" style={{ color: "var(--pp-agent)" }} />
-              <span style={{ fontSize: 12, color: "var(--pp-text-muted)" }}>AVA réfléchit…</span>
+              <span style={{ fontSize: 12, color: "var(--pp-text-muted)" }}>
+                {lang === "fr" ? "AVA réfléchit…" : "AVA is thinking…"}
+              </span>
             </div>
           </div>
         )}

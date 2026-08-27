@@ -28,6 +28,7 @@ import { useMplanipretTheme } from "@/hooks/useMplanipretTheme";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { ROUTES } from "@/lib/routes";
 import { recordRedirect } from "@/lib/debug/navDebug";
+import { invokeEdge, onAuthRequired } from "@/lib/planipret/edgeAuth";
 import { useMplanipretSoftphone } from "@/hooks/useMplanipretSoftphone";
 import MicDeniedBanner from "@/components/planipret/mobile/MicDeniedBanner";
 import { requestPermissionsAfterLogin } from "@/lib/native/requestPermissionsAfterLogin";
@@ -536,6 +537,13 @@ export default function PlanipretMobile() {
   const handlePull = async () => { if (refreshFn.current) await refreshFn.current(); };
   const { ref: scrollRef, pullDist, refreshing, threshold } = usePullToRefresh(handlePull);
 
+  // Any Edge Function rejecting the session (401) routes here: clear message,
+  // then back to the login screen instead of a silent failure / blank screen.
+  useEffect(() => onAuthRequired(() => {
+    toast.error(t("screens.shell.sessionExpired") || "Session expirée — veuillez vous reconnecter.");
+    setAccessError("unauthenticated");
+  }), [t]);
+
   // Keep Microsoft 365 + Maestro OAuth sessions alive: refresh on boot, on
   // foreground, and every 20 minutes so connections never silently drop.
   useEffect(() => {
@@ -544,7 +552,8 @@ export default function PlanipretMobile() {
     const ping = () => {
       if (Date.now() - last < 60_000) return;
       last = Date.now();
-      supabase.functions.invoke("pp-connections-keepalive", { body: {} }).catch(() => {});
+      // Silent: a background keepalive must never bounce the user to login.
+      void invokeEdge("pp-connections-keepalive", {}, { silent: true }).catch(() => {});
     };
     ping();
     const onVis = () => { if (document.visibilityState === "visible") ping(); };

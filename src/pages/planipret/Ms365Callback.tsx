@@ -69,7 +69,7 @@ export default function Ms365Callback() {
       }
     } catch {}
     const details = parsed?.details;
-    const msg = parsed?.error ?? e.message ?? "Échec OAuth";
+    const msg = parsed?.message ?? parsed?.error ?? e.message ?? "Échec OAuth";
     const full = details ? `${msg} — ${details.error_description ?? details.error ?? ""}`.trim() : msg;
     return { data: parsed, errMsg: full };
   }
@@ -188,7 +188,7 @@ export default function Ms365Callback() {
             body: { code, redirect_uri, code_verifier },
             headers: { Authorization: `Bearer ${session.access_token}` },
           }),
-          25000,
+          15000,
           "ms365-oauth-exchange",
         );
         const errMsg = exchangeError?.message ?? null;

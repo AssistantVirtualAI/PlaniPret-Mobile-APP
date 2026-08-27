@@ -6,6 +6,7 @@ import { useOutletContext, useSearchParams } from "react-router-dom";
 import { retryWithBackoff } from "@/lib/planipret/retryBackoff";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
+import { retryWithBackoff } from "@/lib/net/resilient";
 import {
   Plus, X, ArrowLeft, Phone, Send, Paperclip, MessageSquare, Zap,
   Users, Mail, Sparkles, Loader2, RefreshCw, Reply, Circle, CheckCircle2, AlertTriangle, RotateCw,
@@ -1063,6 +1064,7 @@ export function EmailsList({ profile, initialTo, initialName }: { profile: any; 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialTo]);
 
+  const [emailsError, setEmailsError] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
@@ -1070,10 +1072,27 @@ export function EmailsList({ profile, initialTo, initialName }: { profile: any; 
   const load = async () => {
     if (!ms365Connected(profile)) { setState("no_m365"); return; }
     setState((s) => (s === "ready" ? s : "loading"));
-    const { data, error } = await supabase.functions.invoke("ms365-actions", {
-      body: { action: "read_emails", payload: { top: PAGE_SIZE, skip: 0 } },
-    });
-    if (error || !(data as any)?.success) { setState("error"); return; }
+    // Cellular networks drop a single request often enough that one timeout
+    // used to render the whole inbox as "erreur edge function".
+    let data: any = null;
+    let error: any = null;
+    try {
+      const res: any = await retryWithBackoff(
+        () => supabase.functions.invoke("ms365-actions", {
+          body: { action: "read_emails", payload: { top: PAGE_SIZE, skip: 0 } },
+        }),
+        { attempts: 3, timeoutMs: 20000, label: "ms365_read_emails" },
+      );
+      data = res?.data; error = res?.error;
+    } catch (e) { error = e; }
+    if (error || !(data as any)?.success) {
+      const detail = (data as any)?.error ?? (error as any)?.message ?? "";
+      console.error("[emails] load failed", detail);
+      setEmailsError(String(detail).slice(0, 180) || null);
+      setState("error");
+      return;
+    }
+    setEmailsError(null);
     const list = ((data as any).emails ?? (data as any).messages ?? []) as any[];
     setEmails(list);
     setHasMore(Boolean((data as any).hasMore) && list.length === PAGE_SIZE);
@@ -1165,6 +1184,7 @@ export function EmailsList({ profile, initialTo, initialName }: { profile: any; 
       {state === "error" && (
         <div className="text-center py-10">
           <p className="text-sm" style={{ color: "var(--pp-text-muted)" }}>{t("messages.emailsLoadFailed")}</p>
+          {emailsError && <p className="mt-1 text-[11px]" style={{ color: "var(--pp-text-muted)" }}>{emailsError}</p>}
           <button
             onClick={load}
             className="mt-3 text-xs px-3 py-1.5 rounded-full"

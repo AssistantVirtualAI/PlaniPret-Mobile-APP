@@ -8,7 +8,7 @@
  *
  * READ-ONLY on NetSapiens — never touches routing, answering rules or DIDs.
  */
-import { supabase } from "@/integrations/supabase/client";
+import { invokeEdge } from "@/lib/planipret/edgeAuth";
 
 export type SipBackendCheck = {
   ok: boolean;
@@ -53,8 +53,11 @@ export async function checkSipBackendRegistration(
   lastCheckAt = now;
   inFlight = (async () => {
     try {
-      const { data, error } = await supabase.functions.invoke("pp-sip-registration-check", { body: {} });
-      if (error || !data?.ok) return null;
+      // Background poll: stay silent so it never bounces the user to login.
+      const { data, error, unauthorized } = await invokeEdge<SipBackendCheck & { ok?: boolean }>(
+        "pp-sip-registration-check", {}, { silent: true },
+      );
+      if (unauthorized || error || !data?.ok) return null;
       lastResult = data as SipBackendCheck;
       return lastResult;
     } catch {

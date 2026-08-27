@@ -279,8 +279,8 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       }
     }
 
-    /// Mode audio adapté à la sortie : .voiceChat est calibré pour l'écouteur
-    /// et rend le haut-parleur sourd. .videoChat est le mode mains-libres.
+    /// Mode audio adapté à la sortie : voiceChat est calibré pour l'écouteur.
+    /// videoChat est le mode mains-libres et préserve le haut-parleur.
     private func modeFor(_ route: String) -> AVAudioSession.Mode {
       return route == "speaker" ? .videoChat : .voiceChat
     }

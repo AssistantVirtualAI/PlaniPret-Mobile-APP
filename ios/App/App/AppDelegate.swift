@@ -152,7 +152,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     // Apple requires every orientation for iPad multitasking. Keep the iPhone
     // experience portrait-only while allowing the required iPad orientations.
     func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
-        return UIDevice.current.userInterfaceIdiom == .pad ? .all : .portrait
+        return .portrait
     }
 
     func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {

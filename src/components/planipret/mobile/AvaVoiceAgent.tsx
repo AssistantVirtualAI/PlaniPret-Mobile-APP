@@ -10,6 +10,7 @@ import { X, Mic, Send, Settings, AlertTriangle, Sparkles, PhoneOutgoing, Message
 import avaLogo from "@/assets/ava-statistics-logo.png.asset.json";
 import AvaOrb, { useAnalyserLevel } from "@/components/planipret/mobile/AvaOrb";
 import AiConsentGate, { hasAiConsent } from "@/components/planipret/mobile/AiConsentGate";
+import ReconnectStatus from "@/components/planipret/mobile/ReconnectStatus";
 import VoiceSettingsSheet from "@/components/planipret/mobile/VoiceSettingsSheet";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { getAvaToolLabel } from "@/lib/i18n/avaToolLabels";
@@ -228,6 +229,8 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
   const connectionGenerationRef = useRef(0);
   const recoveryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const automaticRecoveriesRef = useRef(0);
+  /** État visible de la boucle de reconnexion (spinner + compte à rebours). */
+  const [reconnectInfo, setReconnectInfo] = useState<{ attempt: number; nextAt: number | null } | null>(null);
 
   const logSession = useCallback(async (patch: {
     connection_type?: string; agent_id?: string;
@@ -361,6 +364,7 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
           onConnect: () => {
             if (cancelled || generation !== connectionGenerationRef.current) return;
             connectedAtRef.current = Date.now();
+            setReconnectInfo(null);
             setState("listening");
           },
           onDisconnect: (info: any) => {
@@ -376,12 +380,18 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
               const relaunch = () => {
                 if (recoveryTimerRef.current) { clearTimeout(recoveryTimerRef.current); recoveryTimerRef.current = null; }
                 window.removeEventListener("online", relaunch);
-                if (!cancelled && generation === connectionGenerationRef.current) setInitAttempt((n) => n + 1);
+                if (!cancelled && generation === connectionGenerationRef.current) {
+                  setReconnectInfo({ attempt: automaticRecoveriesRef.current, nextAt: null });
+                  setInitAttempt((n) => n + 1);
+                }
               };
               window.addEventListener("online", relaunch, { once: true });
-              recoveryTimerRef.current = setTimeout(relaunch, reconnectDelay(automaticRecoveriesRef.current));
+              const delay = reconnectDelay(automaticRecoveriesRef.current);
+              setReconnectInfo({ attempt: automaticRecoveriesRef.current, nextAt: Date.now() + delay });
+              recoveryTimerRef.current = setTimeout(relaunch, delay);
               return;
             }
+            setReconnectInfo(null);
             logSession({ disconnect_reason: reason, ended: true });
             setState("idle");
           },
@@ -510,11 +520,23 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
     if (state === "connecting") return;
     if (recoveryTimerRef.current) { clearTimeout(recoveryTimerRef.current); recoveryTimerRef.current = null; }
     automaticRecoveriesRef.current = 0;
+    setReconnectInfo(null);
     sessionRowIdRef.current = null;
     connectedAtRef.current = 0;
     sessionIdRef.current = `s_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     setInitAttempt((n) => n + 1);
   }, [state]);
+
+  /** Annulation utilisateur explicite de la boucle de reconnexion. */
+  const cancelReconnect = useCallback(() => {
+    if (recoveryTimerRef.current) { clearTimeout(recoveryTimerRef.current); recoveryTimerRef.current = null; }
+    connectionGenerationRef.current += 1;
+    automaticRecoveriesRef.current = MAX_AUTO_RECOVERIES;
+    setReconnectInfo(null);
+    try { convRef.current?.endSession(); } catch { /* noop */ }
+    logSession({ disconnect_reason: "user_cancelled_reconnect", ended: true });
+    setState("idle");
+  }, [logSession]);
 
   useEffect(() => { scrollRef.current?.scrollTo({ top: 999999, behavior: "smooth" }); }, [transcript.length]);
 
@@ -607,6 +629,18 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
           </button>
         </div>
       </div>
+
+      {/* Bandeau de reconnexion — spinner, compte à rebours, annulation */}
+      {reconnectInfo && (
+        <ReconnectStatus
+          attempt={reconnectInfo.attempt}
+          maxAttempts={MAX_AUTO_RECOVERIES}
+          nextAttemptAt={reconnectInfo.nextAt}
+          onCancel={cancelReconnect}
+          lang={lang}
+          label={L("Reconnexion vocale…", "Reconnecting voice…")}
+        />
+      )}
 
       {/* Tool notif */}
       {toolNotif && (
