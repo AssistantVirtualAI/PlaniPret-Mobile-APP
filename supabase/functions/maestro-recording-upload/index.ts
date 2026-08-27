@@ -133,7 +133,7 @@ Deno.serve(async (req) => {
     const permalink = await recordingPermalink(String(call_id));
     const { data: aiCall } = await admin
       .from("planipret_phone_calls")
-      .select("ai_summary, ai_summary_short, ai_key_points, ai_topics, next_actions, ai_action_items, transcript")
+      .select("ai_summary, ai_summary_short, ai_key_points, ai_topics, next_actions, ai_action_items, transcript, ai_coaching, coaching_score, lead_score, lead_temperature")
       .eq("id", call_id)
       .maybeSingle();
     const arr = (v: unknown) => (Array.isArray(v) ? v : []);
@@ -146,8 +146,17 @@ Deno.serve(async (req) => {
       : arr((aiCall as any)?.ai_action_items);
     const notes = [
       `Enregistrement: ${permalink}`,
+      (aiCall as any)?.ai_summary || (aiCall as any)?.ai_summary_short
+        ? `Résumé IA: ${(aiCall as any)?.ai_summary ?? (aiCall as any)?.ai_summary_short}`
+        : null,
       keyPoints.length ? `Points clés: ${keyPoints.map(String).join(" • ")}` : null,
       actions.length ? `Prochaines actions: ${actions.map(title).filter(Boolean).join(" • ")}` : null,
+      (aiCall as any)?.ai_coaching
+        ? `Coaching IA${(aiCall as any)?.coaching_score != null ? ` (${(aiCall as any).coaching_score}/100)` : ""}:\n${JSON.stringify((aiCall as any).ai_coaching).slice(0, 4000)}`
+        : null,
+      (aiCall as any)?.lead_score != null
+        ? `Score du lead: ${(aiCall as any).lead_score}${(aiCall as any)?.lead_temperature ? ` (${(aiCall as any).lead_temperature})` : ""}`
+        : null,
       (aiCall as any)?.transcript ? `Transcription:\n${String((aiCall as any).transcript).slice(0, 8000)}` : null,
     ].filter(Boolean).join("\n\n");
 

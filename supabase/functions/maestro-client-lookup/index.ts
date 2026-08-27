@@ -1,5 +1,11 @@
 // GET /functions/v1/maestro-client-lookup?phone={e164}&call_id={uuid?}
-// Looks up a Maestro client by phone, caches result on planipret_phone_calls.
+// Looks up a Maestro client by phone, resolves their most recent dossier when
+// Maestro exposes one, and caches the result on planipret_phone_calls.
+//
+// The response is designed so the caller never faces an empty screen:
+//   - found + latest_deal -> open the dossier
+//   - found, no dossier   -> open_action "contact" with contact_url
+//   - not found / error   -> found:false, the UI keeps the local contact card
 import {
   adminClient,
   corsHeaders,
@@ -10,6 +16,8 @@ import {
   maestroFetch,
   normalizePhone,
 } from "../_shared/maestro.ts";
+import { clientUrl, fetchClientDeals } from "../_shared/maestro-deals.ts";
+
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -26,9 +34,10 @@ Deno.serve(async (req) => {
 
     const auth = await getBrokerAuth(admin, userIdHeader);
     const res = await maestroFetch(cfg, {
-      method: "GET",
-      path: `/api/v1/clients/lookup?phone=${encodeURIComponent(phone)}`,
+      method: "POST",
+      path: `/api/v1/users/${encodeURIComponent(String(auth.brokerId ?? ""))}/lookup-by-phone`,
       token: auth.token,
+      body: { phone },
     });
 
     if (res.status === 404 || (res.ok && !res.data)) {
@@ -49,6 +58,21 @@ Deno.serve(async (req) => {
         .eq("id", callId);
     }
 
+    // Best-effort dossier resolution. When Maestro exposes no dossier for this
+    // client we still return an actionable target (the contact record) so the
+    // caller can offer "Ouvrir la fiche contact" instead of an empty screen.
+    const { deals, source } = clientId
+      ? await fetchClientDeals(cfg, {
+        token: auth.token,
+        brokerId: auth.brokerId ? String(auth.brokerId) : null,
+        clientId: String(clientId),
+        inline: client,
+      })
+      : { deals: [], source: "none" };
+
+    const latestDeal = deals[0] ?? null;
+    const contactUrl = clientId ? clientUrl(String(clientId)) : null;
+
     return json({
       found: true,
       client_id: clientId,
@@ -56,8 +80,16 @@ Deno.serve(async (req) => {
       company: client?.company ?? null,
       mortgage_stage: client?.mortgage_stage ?? null,
       tags: client?.tags ?? [],
+      contact_url: contactUrl,
+      latest_deal: latestDeal,
+      deals_count: deals.length,
+      deals_source: source,
+      // What the UI should do when the broker taps the banner.
+      open_action: latestDeal ? "deal" : contactUrl ? "contact" : "none",
+      open_url: latestDeal?.url ?? contactUrl,
       raw: client,
     });
+
   } catch (e: any) {
     console.error("maestro-client-lookup error", e);
     return json({ found: false, error: e?.message ?? "server_error" }, 500);

@@ -383,6 +383,25 @@ Deno.serve(async (req) => {
       return json({ transcript_text: fallbackTranscript, stub: true, reason, fetchErrors, retry_after_ms: retryAfterMs, pending_sync: storagePendingSync || reason === "recording-not-synced", cid }, 200);
     }
 
+    // Empty-recording guard: a header-only WAV (~1.3 KB) carries no audio and the STT
+    // provider always rejects it with HTTP 400. Skip the upload entirely.
+    const MIN_AUDIO_BYTES = 2048;
+    if (audioBytes.length < MIN_AUDIO_BYTES) {
+      await writeTranscript(fallbackTranscript, "stub-empty-recording");
+      await audit("no-audio", {
+        error_code: "empty-recording",
+        message: `Aucun son capté dans l'enregistrement (${audioBytes.length} octets).`,
+        metadata: { bytes: audioBytes.length, min_bytes: MIN_AUDIO_BYTES },
+      });
+      return json({
+        transcript_text: fallbackTranscript,
+        stub: true,
+        reason: "empty-recording",
+        size: audioBytes.length,
+        cid,
+      }, 200);
+    }
+
     // Gemini supports inline audio up to ~20MB
     if (audioBytes.length > 20 * 1024 * 1024) {
       await writeTranscript(fallbackTranscript, "stub-too-large");

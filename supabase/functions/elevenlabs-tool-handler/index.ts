@@ -58,10 +58,78 @@ Deno.serve(async (req) => {
         break;
       }
       case "create_task": {
-        const r = await callFn("maestro-actions", authHeader, { action: "create_task", payload: parameters });
-        result = r?.success ? { success: true, task_id: r.task_id ?? r.id ?? null, message: "Tâche créée" } : { success: false, error: r?.error ?? "Échec création tâche" };
+        // Same secure gateway as the AVA chatbot (Planiprêt Task API).
+        const r = await callFn("planipret-task-api", authHeader, {
+          action: "create",
+          source: "ava_voice",
+          target: parameters.target ?? parameters.xid ?? parameters.client_id,
+          target_type: String(parameters.target_type ?? parameters.type ?? "user").toLowerCase(),
+          notes: parameters.notes ?? parameters.title ?? parameters.description,
+          description: parameters.description,
+          due_at: parameters.due_at ?? parameters.date ?? parameters.due_date,
+          // Auto-assigned to the connected broker when no assignee is given.
+          assignee_id: parameters.assignee_id ?? parameters.users_id,
+          status: parameters.status,
+          sync_calendar: parameters.sync_calendar === true,
+          notification: parameters.notification === true,
+          recurrence: parameters.recurrence ?? null,
+        });
+        result = r?.success
+          ? { success: true, task_id: r.task_id ?? r.task?.id ?? null, message: "Tâche créée" }
+          : { success: false, error: r?.error ?? "Échec création tâche", fields: r?.fields ?? null, message: r?.message };
         break;
       }
+      case "update_task": {
+        const taskId = parameters.task_id ?? parameters.id;
+        if (!taskId) { result = { success: false, error: "task_id_required" }; break; }
+        const changes = parameters.changes ?? {
+          date: parameters.due_at ?? parameters.date,
+          notes: parameters.notes,
+          description: parameters.description,
+          users_id: parameters.assignee_id ?? parameters.users_id,
+          status_option_id: parameters.status_option_id,
+        };
+        const r = await callFn("planipret-task-api", authHeader, {
+          action: "update", source: "ava_voice", task_id: String(taskId), changes,
+        });
+        result = r?.success
+          ? { success: true, task_id: String(taskId), message: "Tâche modifiée" }
+          : { success: false, error: r?.error ?? "Échec modification tâche", fields: r?.fields ?? null };
+        break;
+      }
+      case "delete_task":
+      case "cancel_task": {
+        const taskId = parameters.task_id ?? parameters.id;
+        if (!taskId) { result = { success: false, error: "task_id_required" }; break; }
+        if (parameters.confirmed !== true) {
+          result = {
+            success: false,
+            needs_confirmation: true,
+            message: `Je vais annuler la tâche ${taskId}. Confirmes-tu ?`,
+          };
+          break;
+        }
+        const r = await callFn("planipret-task-api", authHeader, {
+          action: "delete", source: "ava_voice", task_id: String(taskId),
+        });
+        result = r?.success
+          ? { success: true, task_id: String(taskId), message: "Tâche annulée" }
+          : { success: false, error: r?.error ?? "Échec annulation tâche" };
+        break;
+      }
+      case "list_tasks": {
+        const r = await callFn("planipret-task-api", authHeader, {
+          action: "list", source: "ava_voice",
+          status: parameters.status ?? "pending",
+          filter: parameters.filter ?? "open",
+          limit: parameters.limit ?? 10,
+        });
+        result = r?.success
+          ? { success: true, tasks: r.tasks ?? [], counts: r.counts ?? null }
+          : { success: false, error: r?.error ?? "Échec liste tâches" };
+        break;
+      }
+
       case "create_calendar_event": {
         const [m, ms] = await Promise.all([
           callFn("maestro-actions", authHeader, { action: "create_event", payload: parameters }),

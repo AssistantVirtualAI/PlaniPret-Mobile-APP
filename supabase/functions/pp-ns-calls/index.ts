@@ -11,9 +11,6 @@ import {
   nsFetch,
 } from "../_shared/planipret-ns.ts";
 import {
-  getMaestroTelecomConfig,
-  isMaestroTelecomConfigured,
-  maestroTelecomFetch,
   maestroTelecomMirror,
 } from "../_shared/maestro-telecom.ts";
 
@@ -133,34 +130,6 @@ Deno.serve(async (req) => {
       const ok = res.ok || res.status === 202;
       if (ok) {
         const nsCallId = parsed?.["call-id"] ?? parsed?.call_id ?? parsed?.id ?? clientCallId;
-        let maestroCallIdCreated: string | null = null;
-
-        // Mirror to Maestro Telecom (best-effort, blocking here so we can
-        // capture the returned maestro id and persist it locally). The
-        // configured timeout in maestroTelecomFetch keeps this bounded.
-        if (ctx.maestroBrokerId) {
-          try {
-            const cfg = await getMaestroTelecomConfig(guard.supabase);
-            if (isMaestroTelecomConfigured(cfg)) {
-              const r = await maestroTelecomFetch<any>(
-                cfg,
-                `/users/${encodeURIComponent(ctx.maestroBrokerId)}/calls`,
-                {
-                  method: "POST",
-                  body: {
-                    provider_call_id: nsCallId,
-                    to_user_number: dest,
-                    status: "dialing",
-                    direction: "outbound",
-                  },
-                },
-              );
-              maestroCallIdCreated = r.data?.id ?? r.data?.call_id ?? null;
-            }
-          } catch (e) {
-            console.warn("[pp-ns-calls] maestro mirror (start) failed:", (e as Error)?.message);
-          }
-        }
 
         try {
           await guard.supabase.from("planipret_phone_calls").insert({
@@ -174,7 +143,9 @@ Deno.serve(async (req) => {
             to_number: dest,
             status: "outbound_ringing",
             started_at: new Date().toISOString(),
-            maestro_call_id: maestroCallIdCreated,
+            // The CDR pipeline is the single source allowed to create the
+            // Maestro communication row after the provider call id is stable.
+            maestro_call_id: null,
             metadata: { rest_originated: true, requested_client_type: requestedClientType, forced_client_type: clientType, client_call_id: clientCallId, call_orig_user: callOrigUser, device_name: deviceName },
           });
         } catch { /* non-fatal */ }

@@ -16,6 +16,9 @@ import {
   updateCallPipeline,
 } from "../_shared/maestro.ts";
 
+// Un WAV « en-tête seulement » (~1,3 Ko) ne contient aucun son : le fournisseur STT
+// le refuse systématiquement en HTTP 400. On n'envoie rien en dessous de ce seuil.
+const MIN_AUDIO_BYTES = 2048;
 
 async function transcribeViaLovable(audioUrl: string, auth?: string): Promise<{ text: string; segments: any[] } | null> {
   const apiKey = Deno.env.get("LOVABLE_API_KEY");
@@ -25,6 +28,10 @@ async function transcribeViaLovable(audioUrl: string, auth?: string): Promise<{ 
     const audioRes = await fetch(audioUrl, auth ? { headers: { Authorization: auth } } : undefined);
     if (!audioRes.ok) return null;
     const blob = await audioRes.blob();
+    if (blob.size < MIN_AUDIO_BYTES) {
+      console.warn("[maestro-transcript] empty recording, skipping STT", { bytes: blob.size, audioUrl: audioUrl.slice(0, 80) });
+      return null;
+    }
     const form = new FormData();
     form.append("file", blob, "call.wav");
     form.append("model", "openai/gpt-4o-mini-transcribe");
@@ -160,6 +167,10 @@ Deno.serve(async (req) => {
         const apiKey = Deno.env.get("LOVABLE_API_KEY");
         if (apiKey) {
           const blob = await proxyRes.blob();
+          // Empty-recording guard: header-only audio is always rejected (HTTP 400).
+          if (blob.size < MIN_AUDIO_BYTES) {
+            console.warn("[maestro-transcript] empty recording, skipping STT", { bytes: blob.size });
+          } else {
           const form = new FormData();
           form.append("file", blob, "call.wav");
           form.append("model", "openai/gpt-4o-mini-transcribe");
@@ -172,7 +183,9 @@ Deno.serve(async (req) => {
             const data = await stt.json().catch(() => ({}));
             if (data?.text) result = { text: data.text, segments: data.segments ?? [] };
           }
+          }
         }
+
       }
       source = result ? "lovable" as any : source;
     }

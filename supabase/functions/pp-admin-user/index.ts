@@ -83,6 +83,8 @@ async function nsFetch(path: string, init: RequestInit = {}) {
   return { ok: res.ok, status: res.status, data };
 }
 
+import { assignDidToExtension } from "../_shared/pp-did-routing.ts";
+
 function nsUserPayload(fullName: string, email: string, extension: string, password?: string) {
   const [firstName, ...rest] = String(fullName || extension).trim().split(/\s+/);
   const lastName = rest.join(" ") || "Courtier";
@@ -101,7 +103,7 @@ function nsUserPayload(fullName: string, email: string, extension: string, passw
     "voicemail-transcription-enabled": "Deepgram",
     "email-send-alert-new-voicemail-enabled": "yes",
     "email-send-alert-new-missed-call-enabled": "yes",
-    "ring-no-answer-timeout-seconds": 25,
+    "ring-no-answer-timeout-seconds": 30,
     ...(password ? { "user-password": password, password } : {}),
   };
 }
@@ -116,6 +118,85 @@ async function ensureNsUser(fullName: string, email: string, extension: string, 
   if (!created.ok && created.status !== 409) return { ok: false, status: created.status, data: created.data };
   const verify = await nsFetch(`/domains/${encodeURIComponent(NS_DEFAULT_DOMAIN)}/users/${encodeURIComponent(extension)}`);
   return { ok: verify.ok || created.ok || created.status === 409, created: created.ok, status: verify.status || created.status, data: created.data };
+}
+
+/** Full removal from the phone system: devices first, then the subscriber. */
+async function deleteNsUserFull(domain: string, extension: string) {
+  const out: any = { extension, devices_deleted: 0, user_status: null, ok: false };
+  try {
+    const devs = await nsFetch(`/domains/${encodeURIComponent(domain)}/users/${encodeURIComponent(extension)}/devices`);
+    const list = Array.isArray(devs.data) ? devs.data : (devs.data?.devices ?? []);
+    for (const d of list) {
+      const id = String(d?.device ?? d?.aor ?? d?.["device-sip-registration-user"] ?? "").replace(/^sip:/, "").split("@")[0];
+      if (!id) continue;
+      const r = await nsFetch(
+        `/domains/${encodeURIComponent(domain)}/users/${encodeURIComponent(extension)}/devices/${encodeURIComponent(id)}`,
+        { method: "DELETE" },
+      );
+      if (r.ok || r.status === 404) out.devices_deleted++;
+    }
+  } catch { /* best effort */ }
+  const del = await nsFetch(
+    `/domains/${encodeURIComponent(domain)}/users/${encodeURIComponent(extension)}`,
+    { method: "DELETE" },
+  );
+  out.user_status = del.status;
+  out.ok = del.ok || del.status === 404;
+  return out;
+}
+
+/** All NS subscribers of the domain (paginated). */
+async function nsListUsers(domain: string): Promise<any[]> {
+  const all: any[] = [];
+  const seen = new Set<string>();
+  // NS-API v2 paginates with `start` (offset), not `page`.
+  for (let start = 0; start < 20000; start += 200) {
+    const r = await nsFetch(`/domains/${encodeURIComponent(domain)}/users?limit=200&start=${start}`);
+    const items = Array.isArray(r.data) ? r.data : (r.data?.users ?? []);
+    if (!r.ok || items.length === 0) break;
+    let added = 0;
+    for (const u of items) {
+      const key = String(u?.user ?? u?.extension ?? "");
+      if (!key || seen.has(key)) continue;
+      seen.add(key);
+      all.push(u);
+      added++;
+    }
+    if (items.length < 200 || added === 0) break;
+  }
+  return all;
+}
+
+
+const nsEmailOf = (u: any) => String(u?.email ?? u?.["email-address"] ?? u?.email_address ?? "").trim().toLowerCase();
+const nsExtOf = (u: any) => String(u?.user ?? u?.extension ?? u?.user_id ?? u?.id ?? "").trim();
+
+
+
+/** Ensure the user is a member of the org so portal guards (organizations list) let them in. */
+async function ensureOrgMembership(
+  admin: ReturnType<typeof supaAdmin>,
+  userId: string,
+  orgId: string,
+  isAdmin: boolean,
+) {
+  try {
+    const { data: existing } = await admin.from("organization_members")
+      .select("id").eq("user_id", userId).eq("organization_id", orgId).maybeSingle();
+    if (!existing) {
+      await admin.from("organization_members").insert({
+        user_id: userId,
+        organization_id: orgId,
+        accepted_at: new Date().toISOString(),
+      });
+    }
+  } catch (e) { console.error("organization_members", e); }
+  try {
+    await admin.from("org_members").upsert(
+      { user_id: userId, org_id: orgId, role: isAdmin ? "customer_admin" : "user" },
+      { onConflict: "user_id,org_id" },
+    );
+  } catch (e) { console.error("org_members", e); }
 }
 
 function randomPassword(len = 22): string {
@@ -185,6 +266,55 @@ async function ensureMobileDevice(
   return { device_id: targetId, created: true };
 }
 
+/**
+ * Assigne automatiquement le premier DID disponible à un nouveau poste.
+ * Écriture ciblée d'UN numéro (payload complet) + relecture obligatoire :
+ * sans `dial-rule-translation-destination-user`, le PBX répond
+ * « the number can't be completed as dialled ».
+ */
+async function autoAssignDid(admin: any, extension: string, fullName?: string) {
+  try {
+    const { data: free } = await admin
+      .from("planipret_did_assignments")
+      .select("phone_number_e164")
+      .eq("domain", NS_DEFAULT_DOMAIN)
+      .eq("status", "available")
+      .is("extension", null)
+      .order("phone_number_digits")
+      .limit(1)
+      .maybeSingle();
+    const e164 = String(free?.phone_number_e164 ?? "");
+    if (!e164) {
+      return { assigned: false, reason: "no_available_did", diagnostic: "Aucun numéro disponible dans l'inventaire DID." };
+    }
+    const r = await assignDidToExtension(NS_DEFAULT_DOMAIN, e164, extension);
+    if (r.verified) {
+      await admin.from("planipret_did_assignments")
+        .update({
+          status: "assigned",
+          extension,
+          display_name: fullName ?? null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("domain", NS_DEFAULT_DOMAIN)
+        .eq("phone_number_digits", r.phone_number);
+    }
+    await admin.from("planipret_did_routing_snapshots").insert({
+      domain: NS_DEFAULT_DOMAIN,
+      phone_number: r.phone_number,
+      destination_user: r.live.destination_user,
+      dial_rule_application: r.live.dial_rule_application,
+      dial_rule_parameter: r.live.dial_rule_parameter,
+      description: r.live.description,
+      enabled: r.live.enabled,
+      source: "auto_assign_new_user",
+    });
+    return { assigned: r.verified, e164, extension, diagnostic: r.diagnostic };
+  } catch (e) {
+    return { assigned: false, reason: "error", diagnostic: String((e as Error)?.message ?? e) };
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   try {
@@ -250,15 +380,21 @@ Deno.serve(async (req) => {
         organization_id: profile.organization_id,
         role: "planipret_broker",
       }, { onConflict: "user_id,organization_id" });
+      await ensureOrgMembership(admin, created.user.id, profile.organization_id, false);
 
       // 4) Dedicated {ext}_mobile device so the mobile app rings in parallel
       //    with the widget (widget device is NEVER touched here).
       const mobile = await ensureMobileDevice(admin, newProfile.id, ns_extension, NS_DEFAULT_DOMAIN);
 
+      // 5) Assignation automatique d'un DID au nouveau poste : sans destination
+      //    `user_XXXX` dans le PBX, l'opérateur répond « the number can't be
+      //    completed as dialled ». Écriture ciblée + relecture obligatoire.
+      const did = await autoAssignDid(admin, ns_extension, full_name);
+
       await logAudit(admin, req, {
         admin_id: profile.id, action: "USER_CREATE",
         resource_type: "user", resource_id: created.user.id,
-        metadata: { email, extension: ns_extension, ns_status: nsUserRes.status, mobile_device: mobile.device_id, mobile_error: mobile.error ?? null },
+        metadata: { email, extension: ns_extension, ns_status: nsUserRes.status, mobile_device: mobile.device_id, mobile_error: mobile.error ?? null, did: did },
       });
 
       // Welcome sequence (best-effort)
@@ -292,6 +428,9 @@ Deno.serve(async (req) => {
         mobile_device_id: mobile.device_id,
         mobile_device_created: mobile.created,
         mobile_device_error: mobile.error ?? null,
+        did_assigned: did.assigned ?? false,
+        did_e164: (did as any).e164 ?? null,
+        did_diagnostic: did.diagnostic ?? null,
       });
     }
 
@@ -361,6 +500,7 @@ Deno.serve(async (req) => {
         organization_id: profile.organization_id,
         role: "planipret_broker",
       }, { onConflict: "user_id,organization_id" });
+      await ensureOrgMembership(admin, userId, profile.organization_id, false);
 
       await logAudit(admin, req, {
         admin_id: profile.id, action: "USER_PROVISION_FROM_NS",
@@ -461,25 +601,119 @@ Deno.serve(async (req) => {
         .eq("user_id", user_id)
         .maybeSingle();
 
+      let nsResult: any = null;
       if (target) {
         const domain = target.ns_domain || NS_DEFAULT_DOMAIN;
         const ext = String(target.ns_extension || target.extension || "");
-        if (ext) {
-          await nsFetch(
-            `/domains/${encodeURIComponent(domain)}/users/${encodeURIComponent(ext)}`,
-            { method: "DELETE" },
-          ).catch(() => null);
-        }
+        if (ext) nsResult = await deleteNsUserFull(domain, ext).catch(() => null);
       }
 
       await admin.from("planipret_profiles").delete().eq("user_id", user_id);
       await admin.auth.admin.deleteUser(user_id).catch(() => null);
       await logAudit(admin, req, {
         admin_id: profile.id, action: "USER_DELETE",
-        resource_type: "user", resource_id: user_id,
+        resource_type: "user", resource_id: user_id, metadata: { ns: nsResult },
       });
-      return jsonResponse({ success: true });
+      return jsonResponse({ success: true, ns: nsResult });
     }
+
+    // Bulk removal (portal + phone system) by email and/or extension.
+    // payload: { emails?: string[], extensions?: string[], domain?, dry_run? }
+    if (action === "bulk_delete") {
+      const domain = String(payload?.domain || NS_DEFAULT_DOMAIN);
+      const dryRun = payload?.dry_run === true;
+      const emails: string[] = (payload?.emails ?? []).map((e: string) => String(e).trim().toLowerCase()).filter(Boolean);
+      const extensions: string[] = (payload?.extensions ?? []).map((e: any) => String(e).trim()).filter(Boolean);
+      if (emails.length === 0 && extensions.length === 0) {
+        return jsonResponse({ success: false, error: "emails ou extensions requis" }, 400);
+      }
+
+      const nsUsers = await nsListUsers(domain);
+      const byEmail = new Map<string, any>();
+      for (const u of nsUsers) { const e = nsEmailOf(u); if (e) byEmail.set(e, u); }
+
+      const targets = new Map<string, { extension: string; email: string }>();
+      for (const ext of extensions) targets.set(ext, { extension: ext, email: "" });
+      for (const email of emails) {
+        const u = byEmail.get(email);
+        if (u) { const ext = nsExtOf(u); if (ext) targets.set(ext, { extension: ext, email }); }
+      }
+
+      const results: any[] = [];
+      for (const t of targets.values()) {
+        if (dryRun) { results.push({ ...t, dry_run: true }); continue; }
+        const ns = await deleteNsUserFull(domain, t.extension).catch((e) => ({ ok: false, error: String(e) }));
+        results.push({ ...t, ns });
+      }
+
+      // Portal-side cleanup (profiles + auth users) for the given emails.
+      let profilesDeleted = 0;
+      let authDeleted = 0;
+      if (!dryRun && emails.length > 0) {
+        const { data: profs } = await admin
+          .from("planipret_profiles").select("user_id, email").in("email", emails);
+        for (const p of profs ?? []) {
+          if (p.user_id) { await admin.auth.admin.deleteUser(p.user_id).catch(() => null); authDeleted++; }
+        }
+        const { count } = await admin
+          .from("planipret_profiles").delete({ count: "exact" }).in("email", emails);
+        profilesDeleted = count ?? (profs?.length ?? 0);
+      }
+
+      await logAudit(admin, req, {
+        admin_id: profile.id, action: "USER_BULK_DELETE",
+        metadata: { domain, dry_run: dryRun, requested: emails.length + extensions.length, ns_deleted: results.length, profilesDeleted, authDeleted },
+      });
+      return jsonResponse({
+        success: true, domain, dry_run: dryRun,
+        requested: emails.length + extensions.length,
+        ns_found: results.length, ns_results: results,
+        profiles_deleted: profilesDeleted, auth_deleted: authDeleted,
+      });
+    }
+
+    // Find NS subscribers that no longer exist in the portal (orphans left
+    // behind by portal-only deletions), and optionally delete them.
+    if (action === "purge_ns_orphans") {
+      const domain = String(payload?.domain || NS_DEFAULT_DOMAIN);
+      const confirm = payload?.confirm === true;
+      const nsUsers = await nsListUsers(domain);
+      const { data: profs } = await admin
+        .from("planipret_profiles").select("email, extension, ns_extension");
+      const keepExt = new Set<string>();
+      const keepEmail = new Set<string>();
+      for (const p of profs ?? []) {
+        if (p.extension) keepExt.add(String(p.extension));
+        if (p.ns_extension) keepExt.add(String(p.ns_extension));
+        if (p.email) keepEmail.add(String(p.email).toLowerCase());
+      }
+      const orphans = nsUsers.filter((u) => {
+        const ext = nsExtOf(u);
+        const email = nsEmailOf(u);
+        if (!ext || /^\d{7,}$/.test(ext)) return false;
+        if (keepExt.has(ext)) return false;
+        if (email && keepEmail.has(email)) return false;
+        return true;
+      }).map((u) => ({ extension: nsExtOf(u), email: nsEmailOf(u) }));
+
+      const results: any[] = [];
+      if (confirm) {
+        for (const o of orphans) {
+          const ns = await deleteNsUserFull(domain, o.extension).catch((e) => ({ ok: false, error: String(e) }));
+          results.push({ ...o, ns });
+        }
+        await logAudit(admin, req, {
+          admin_id: profile.id, action: "NS_PURGE_ORPHANS",
+          metadata: { domain, count: results.length },
+        });
+      }
+      return jsonResponse({
+        success: true, domain, confirm,
+        ns_total: nsUsers.length, orphans_count: orphans.length,
+        orphans: orphans.slice(0, 500), deleted: results.length,
+      });
+    }
+
 
     if (action === "reset_password") {
       const { email } = payload ?? {};
@@ -535,6 +769,7 @@ Deno.serve(async (req) => {
           { user_id, organization_id: orgId, role: "planipret_admin" },
           { onConflict: "user_id,organization_id" },
         );
+        await ensureOrgMembership(admin, user_id, orgId, true);
       } else {
         await admin
           .from("user_roles")
@@ -631,6 +866,7 @@ Deno.serve(async (req) => {
         organization_id: existing?.organization_id ?? profile.organization_id,
         role: "planipret_admin",
       }, { onConflict: "user_id,organization_id" });
+      await ensureOrgMembership(admin, userId, existing?.organization_id ?? profile.organization_id, true);
 
 
       await logAudit(admin, req, {

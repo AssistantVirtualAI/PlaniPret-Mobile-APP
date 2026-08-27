@@ -15,6 +15,7 @@ import {
   updateCallPipeline,
 } from "../_shared/maestro.ts";
 import { callAnthropic } from "../_shared/anthropic.ts";
+import { recordingPermalink } from "../_shared/recording-link.ts";
 
 
 
@@ -130,6 +131,7 @@ Deno.serve(async (req) => {
       if (cfg.url && cfg.key && call.maestro_call_id) {
         const auth = await getBrokerAuth(admin, call.user_id, false);
         const coaching = analysis.coaching ?? {};
+        const recordingLink = await recordingPermalink(String(call_id)).catch(() => null);
         const pushed = await maestroFetch(cfg, {
           method: "PUT",
           path: `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/calls/${encodeURIComponent(String(call.maestro_call_id))}`,
@@ -138,6 +140,8 @@ Deno.serve(async (req) => {
             status: "ended",
             ai_summary: analysis.summary_text,
             notes: [
+              recordingLink ? `Enregistrement: ${recordingLink}` : null,
+              analysis.summary_text ? `Résumé IA: ${analysis.summary_text}` : null,
               analysis.key_points?.length ? `Points clés: ${analysis.key_points.join(" • ")}` : null,
               coaching.overall ? `Coaching IA: ${coaching.overall}` : null,
               coaching.strengths?.length ? `Forces: ${coaching.strengths.join(" • ")}` : null,

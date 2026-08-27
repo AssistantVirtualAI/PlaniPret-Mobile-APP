@@ -36,19 +36,73 @@ Deno.serve(async (req) => {
 
   const body = await req.json().catch(() => ({}));
   const domain = String(body?.domain ?? "planipret.ca");
+  const action = String(body?.action ?? "list");
+
+  // ---- Mutations (DB only — NetSapiens DID objects are never written from here) ----
+  if (action === "assign" || action === "release") {
+    const e164 = String(body?.e164 ?? "").trim();
+    if (!e164) return json({ success: false, error: "Numéro manquant" }, 400);
+
+    if (action === "release") {
+      const { error } = await admin.from("planipret_did_assignments")
+        .update({ status: "available", extension: null, display_name: null, callerid_name: null, updated_at: new Date().toISOString() })
+        .eq("phone_number_e164", e164)
+        .eq("domain", domain);
+      if (error) return json({ success: false, error: error.message }, 500);
+      return json({ success: true, e164, status: "available" });
+    }
+
+    const extension = String(body?.extension ?? "").trim();
+    if (!extension) return json({ success: false, error: "Poste manquant" }, 400);
+    const { data: target } = await admin.from("planipret_profiles")
+      .select("full_name")
+      .eq("extension", extension)
+      .maybeSingle();
+    const { error } = await admin.from("planipret_did_assignments")
+      .update({
+        status: "assigned",
+        extension,
+        display_name: target?.full_name ?? null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("phone_number_e164", e164)
+      .eq("domain", domain);
+    if (error) return json({ success: false, error: error.message }, 500);
+    return json({ success: true, e164, status: "assigned", extension });
+  }
+
+  // ---- List ----
   const { data, error } = await admin.from("planipret_did_assignments")
-    .select("phone_number_e164,phone_number_digits,extension")
+    .select("phone_number_e164,phone_number_digits,extension,status,display_name,callerid_name,updated_at")
     .eq("domain", domain)
     .order("phone_number_e164");
   if (error) return json({ success: false, error: error.message }, 500);
 
-  const numbers = (data ?? []).map((row) => ({
+  const numbers = (data ?? []).map((row: any) => ({
     raw: row.phone_number_digits,
     e164: row.phone_number_e164,
     pretty: pretty(row.phone_number_e164),
     extension: row.extension,
+    status: row.status ?? (row.extension ? "assigned" : "available"),
+    display_name: row.display_name ?? row.callerid_name ?? null,
+    updated_at: row.updated_at,
     application: "user",
-    active: true,
+    active: !!row.extension,
   }));
-  return json({ success: true, domain, count: numbers.length, numbers });
+
+  const brokers = action === "list_with_brokers"
+    ? ((await admin.from("planipret_profiles")
+        .select("extension,full_name,email")
+        .not("extension", "is", null)
+        .order("extension")).data ?? [])
+    : [];
+
+  return json({
+    success: true,
+    domain,
+    count: numbers.length,
+    available: numbers.filter((n) => n.status === "available").length,
+    numbers,
+    brokers,
+  });
 });

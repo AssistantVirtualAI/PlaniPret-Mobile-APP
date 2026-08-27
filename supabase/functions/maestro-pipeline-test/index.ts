@@ -32,49 +32,76 @@ Deno.serve(async (req) => {
   if (!cfg.url || !cfg.key) {
     return json({ success: false, error: "maestro_not_configured" }, 200);
   }
-  const tok = cfg.key;
+
+  // Resolve the caller's broker identity so the probes hit the same
+  // /telecom/api/v1/users/{brokerId}/... endpoints production uses.
+  let callerId: string | null = null;
+  try {
+    const jwt = req.headers.get("Authorization")?.replace(/^Bearer\s+/i, "") ?? "";
+    if (jwt) {
+      const { data } = await admin.auth.getUser(jwt);
+      callerId = data?.user?.id ?? null;
+    }
+  } catch { /* anonymous / machine run */ }
+
+  const auth = await getBrokerAuth(admin, callerId);
+  const tok = auth.token || cfg.key;
+  const brokerId = auth.brokerId;
+  const base = brokerId ? `/api/v1/users/${brokerId}` : null;
 
   await run("1. API connection", async () => {
-    const r = await maestroFetch(cfg, { method: "GET", path: "/api/v1/clients?limit=1", token: tok });
-    return { ok: r.ok, details: { status: r.status } };
+    if (!base) return { ok: false, details: { error: "broker_id_unresolved" } };
+    const r = await maestroFetch(cfg, { method: "GET", path: `${base}/clients?limit=1&machine=1`, token: tok });
+    return { ok: r.ok, details: { status: r.status, broker_id: brokerId } };
   });
 
   await run("2. Client lookup", async () => {
-    const r = await maestroFetch(cfg, { method: "GET", path: "/api/v1/clients/lookup?phone=%2B15140000000", token: tok });
+    if (!base) return { ok: false, details: { error: "broker_id_unresolved" } };
+    const r = await maestroFetch(cfg, { method: "GET", path: `${base}/clients?search=%2B15140000000&machine=1`, token: tok });
     return { ok: r.status < 500, details: { status: r.status } };
   });
 
   await run("3. POST CDR (dry)", async () => {
+    if (!base) return { ok: false, details: { error: "broker_id_unresolved" } };
     const r = await maestroFetch(cfg, {
-      method: "POST", path: "/api/v1/calls/cdr", token: tok,
+      method: "POST", path: `${base}/calls?machine=1`, token: tok,
       idempotencyKey: `test-${Date.now()}`,
-      body: { call_id: `test-${Date.now()}`, direction: "outbound", caller_number: "+15140000000", callee_number: "+15140000001", duration_sec: 1, test: true },
+      body: {
+        provider_call_id: `pipeline-test-${Date.now()}`,
+        direction: "outbound",
+        from_user_number: "+15140000000",
+        to_user_number: "+15140000001",
+        status: "dialing",
+      },
     });
-    return { ok: r.ok || r.status === 409 || r.status === 400, details: { status: r.status } };
+    return { ok: r.ok || r.status === 409 || r.status === 422, details: { status: r.status } };
   });
 
   await run("4. POST transcript (dry)", async () => {
+    if (!base) return { ok: false, details: { error: "broker_id_unresolved" } };
     const r = await maestroFetch(cfg, {
-      method: "POST", path: `/api/v1/calls/test-${Date.now()}/transcript`, token: tok,
-      body: { language: "fr-CA", text: "test", segments: [], confidence: 0.9 },
+      method: "PUT", path: `${base}/calls/pipeline-test-${Date.now()}?machine=1`, token: tok,
+      body: { transcript: "test" },
     });
     return { ok: r.ok || r.status === 404, details: { status: r.status } };
   });
 
   await run("5. POST ai_summary (dry)", async () => {
+    if (!base) return { ok: false, details: { error: "broker_id_unresolved" } };
     const r = await maestroFetch(cfg, {
-      method: "POST", path: `/api/v1/calls/test-${Date.now()}/ai_summary`, token: tok,
-      body: { summary_text: "test", key_points: [], next_actions: [], sentiment: "neutral" },
+      method: "PUT", path: `${base}/calls/pipeline-test-${Date.now()}?machine=1`, token: tok,
+      body: { ai_summary: "test" },
     });
     return { ok: r.ok || r.status === 404, details: { status: r.status } };
   });
 
-  await run("6. POST task (dry)", async () => {
+  await run("6. POST message (dry)", async () => {
+    if (!base) return { ok: false, details: { error: "broker_id_unresolved" } };
     const r = await maestroFetch(cfg, {
-      method: "POST", path: `/api/v1/clients/test/tasks`, token: tok,
-      body: { title: "test", priority: "low" },
+      method: "GET", path: `${base}/messages?limit=1&machine=1`, token: tok,
     });
-    return { ok: r.ok || r.status === 404 || r.status === 400, details: { status: r.status } };
+    // The messages route is POST-only on Maestro: 405 proves it is reachable.
+    return { ok: r.ok || r.status === 404 || r.status === 405, details: { status: r.status } };
   });
 
   await run("7. Webhook signature", async () => {

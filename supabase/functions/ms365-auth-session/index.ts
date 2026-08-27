@@ -62,7 +62,7 @@ Deno.serve(async (req) => {
     const msEmail = normalizeEmail(me?.mail) ?? normalizeEmail(me?.userPrincipalName);
     if (!msEmail) return json({ success: false, error: "microsoft_email_missing" }, 400);
 
-    const { data: profile, error: profileError } = await admin
+    let { data: profile, error: profileError } = await admin
       .from("planipret_profiles")
       .select("id,user_id,email,login_email,full_name,mobile_app_enabled,status")
       .or(`email.ilike.${msEmail},login_email.ilike.${msEmail},ms365_email.ilike.${msEmail}`)
@@ -70,7 +70,31 @@ Deno.serve(async (req) => {
       .maybeSingle();
 
     if (profileError) return json({ success: false, error: profileError.message }, 500);
-    if (!profile?.user_id) return json({ success: false, error: "account_not_linked", email: msEmail }, 403);
+
+    // Fallback: the Microsoft address may differ from the portal email.
+    // Look the user up in auth by the Microsoft email, then by alias table.
+    if (!profile?.user_id) {
+      const { data: list } = await admin.auth.admin.listUsers({ page: 1, perPage: 200 });
+      const match = list?.users?.find((u) => (u.email ?? "").toLowerCase() === msEmail);
+      if (match?.id) {
+        const { data: byUser } = await admin
+          .from("planipret_profiles")
+          .select("id,user_id,email,login_email,full_name,mobile_app_enabled,status")
+          .eq("user_id", match.id)
+          .limit(1)
+          .maybeSingle();
+        if (byUser?.user_id) profile = byUser;
+      }
+    }
+
+    if (!profile?.user_id) {
+      return json({
+        success: false,
+        error: "account_not_linked",
+        email: msEmail,
+        message: `Aucun compte du portail n'est associé à l'adresse Microsoft ${msEmail}. Demandez à un administrateur d'ajouter cette adresse à votre profil.`,
+      }, 403);
+    }
     if (profile.mobile_app_enabled === false) return json({ success: false, error: "mobile_access_disabled" }, 403);
     if (profile.status && ["inactive", "disabled", "banned", "suspended"].includes(String(profile.status).toLowerCase())) {
       return json({ success: false, error: "account_inactive" }, 403);

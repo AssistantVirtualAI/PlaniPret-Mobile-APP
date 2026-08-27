@@ -1,0 +1,1 @@
+ALTER TABLE public.planipret_maestro_oauth_states ADD COLUMN IF NOT EXISTS platform text NOT NULL DEFAULT 'web';

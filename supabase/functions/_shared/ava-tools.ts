@@ -133,13 +133,41 @@ function buildSpecs(mk: (name: string, description: string, properties?: Record<
       client_id: { type: "string", description: "ID du client" },
       limit: { type: "number", description: "Nombre d'entrées (défaut: 20)" },
     }, ["client_id"]),
-    mk("create_task", "Crée une tâche de suivi dans Maestro. Demande confirmation.", {
-      client_id: { type: "string", description: "ID du client" },
-      title: { type: "string", description: "Description de la tâche" },
-      due_date: { type: "string", description: "ISO 8601 (optionnel)" },
-      priority: { type: "string", description: "low, medium ou high" },
-      notes: { type: "string", description: "Notes (optionnel)" },
-    }, ["client_id", "title"]),
+    // ── Planiprêt Task API (POST/PUT/DELETE /api/main/tasks) ──
+    mk("list_tasks", "Liste les tâches du courtier (en retard, aujourd'hui, à venir). Fuseau America/Toronto.", {
+      status: { type: "string", description: "pending, done ou all (défaut: pending)" },
+      filter: { type: "string", description: "overdue (en retard), today (aujourd'hui), upcoming (à venir), open (toutes les ouvertes, défaut) ou all" },
+      from: { type: "string", description: "Date de début ISO (optionnel)" },
+      to: { type: "string", description: "Date de fin ISO (optionnel)" },
+      page: { type: "number", description: "Page (défaut: 1)" },
+      limit: { type: "number", description: "Nombre max par page (défaut: 25)" },
+    }),
+    mk("get_task", "Détail d'une tâche.", { task_id: { type: "string", description: "ID de la tâche" } }, ["task_id"]),
+    mk("list_task_targets", "Cibles de tâche valides (task_targets de l'API Clients) : id utilisateur du client et ids de contrats. À utiliser AVANT create_task pour obtenir le bon xid.", {
+      search: { type: "string", description: "Nom ou courriel du client (optionnel)" },
+    }),
+    mk("create_task", "Crée une tâche Planiprêt. Sans cible, la tâche vise et s'auto-assigne au courtier connecté. Résume et demande TOUJOURS confirmation avant d'appeler.", {
+      target: { type: "string", description: "xid Planiprêt (optionnel pour une tâche personnelle) : id utilisateur si target_type=user, id de contrat si target_type=contract" },
+      target_type: { type: "string", description: "user (défaut) ou contract" },
+      notes: { type: "string", description: "Note de la tâche (obligatoire)" },
+      due_at: { type: "string", description: "Échéance, heure America/Toronto (YYYY-MM-DD HH:mm:ss ou ISO)" },
+      description: { type: "string", description: "Description longue (optionnel)" },
+      assignee_id: { type: "number", description: "users_id assigné — par défaut le Maestro ID du créateur ; fournir pour assigner à quelqu'un d'autre" },
+      status: { type: "string", description: "Statut initial (optionnel)" },
+      sync_calendar: { type: "boolean", description: "Créer l'événement calendrier — false par défaut" },
+      notification: { type: "boolean", description: "Envoyer une notification — false par défaut" },
+      recurrence: { type: "object", description: "{ value, pattern: day|week|month|year, on: 0-6 }" },
+    }, ["notes", "due_at"]),
+
+    mk("update_task", "Modifie une tâche (date, notes, description, statut, récurrence). Demande confirmation.", {
+      task_id: { type: "string", description: "ID de la tâche" },
+      changes: { type: "object", description: "Champs modifiés : date, notes, description, status_option_id, update_status, is_recurring, recurring_value, recurring_pattern, next_send_date, recurring_on" },
+    }, ["task_id", "changes"]),
+    mk("delete_task", "Supprime une tâche (soft delete). Confirmation explicite OBLIGATOIRE : rappeler avec confirmed=true.", {
+      task_id: { type: "string", description: "ID de la tâche" },
+      confirmed: { type: "boolean", description: "true seulement après confirmation explicite du courtier" },
+    }, ["task_id"]),
+
     mk("create_appointment", "Crée un rendez-vous dans Maestro + M365.", {
       client_id: { type: "string", description: "ID du client" },
       title: { type: "string", description: "Titre" },
@@ -159,6 +187,73 @@ function buildSpecs(mk: (name: string, description: string, properties?: Record<
       last_name: { type: "string", description: "Nom (optionnel)" },
       notes: { type: "string", description: "Notes (optionnel)" },
     }, ["phone"]),
+
+    // Maestro — endpoints production par courtier (/users/{id}/...)
+    mk("list_my_clients", "Liste les clients Maestro du courtier connecté (endpoint production /users/{id}/clients).", {
+      search: { type: "string", description: "Recherche par nom, téléphone ou email (optionnel)" },
+      limit: { type: "number", description: "Nombre (défaut: 25)" },
+    }),
+    mk("get_maestro_client_profile", "Profil détaillé d'un client Maestro du courtier (/users/{id}/clients/{client_id}/profile).", {
+      client_id: { type: "string", description: "ID du client Maestro" },
+    }, ["client_id"]),
+    mk("list_my_brokers", "Liste les courtiers/collègues Maestro visibles (/users/{id}/brokers).", {
+      search: { type: "string", description: "Recherche (optionnel)" },
+      limit: { type: "number", description: "Nombre (défaut: 25)" },
+    }),
+    mk("get_maestro_broker_profile", "Profil d'un courtier Maestro (/users/{id}/brokers/{broker_id}/profile).", {
+      broker_id: { type: "string", description: "ID du courtier Maestro" },
+    }, ["broker_id"]),
+
+    // Commissions (API officielle Planiprêt — données financières sensibles)
+    mk("get_commission_summary", "Résumé agrégé des commissions du courtier connecté (total, nombre de dépôts, moyenne, volume de prêts, top institutions). Ne jamais divulguer de détail client à voix haute. Nécessite que le courtier ait activé « Inclure les commissions dans AVA ».", {
+      period: { type: "string", description: "month (défaut), quarter, year, ytd ou custom" },
+      date_from: { type: "string", description: "AAAA-MM-JJ si period=custom" },
+      date_to: { type: "string", description: "AAAA-MM-JJ si period=custom" },
+      commission_type: { type: "string", description: "base (défaut), bonus, bonus2 ou perform" },
+    }),
+    mk("get_commission_by_lender", "Répartition des commissions par institution financière (prêteur) sur une période.", {
+      period: { type: "string", description: "month (défaut), quarter, year, ytd ou custom" },
+      date_from: { type: "string", description: "AAAA-MM-JJ si period=custom" },
+      date_to: { type: "string", description: "AAAA-MM-JJ si period=custom" },
+      limit: { type: "number", description: "Nombre d'institutions (défaut 5)" },
+    }),
+    mk("compare_commission_periods", "Compare les commissions de la période courante avec la précédente (mois, trimestre ou année).", {
+      period: { type: "string", description: "month (défaut), quarter ou year" },
+    }),
+    mk("list_commission_deposits", "Liste détaillée des dépôts de commissions (contrat, institution, montant, date). Données sensibles : à utiliser seulement sur demande explicite du courtier.", {
+      period: { type: "string", description: "month (défaut), quarter, year, ytd ou custom" },
+      date_from: { type: "string", description: "AAAA-MM-JJ si period=custom" },
+      date_to: { type: "string", description: "AAAA-MM-JJ si period=custom" },
+      limit: { type: "number", description: "Nombre de dépôts (défaut 10, max 50)" },
+    }),
+    mk("list_financial_institutions", "Liste des institutions financières disponibles pour filtrer les rapports de commissions."),
+
+    // Alias conformes au contrat officiel (mêmes schémas chat + ElevenLabs)
+    mk("get_commission_deposits", "Dépôts de commissions filtrés (contrat, institution, montant, date). Données sensibles : sur demande explicite seulement.", {
+      date_from: { type: "string", description: "AAAA-MM-JJ (avec date_to)" },
+      date_to: { type: "string", description: "AAAA-MM-JJ (avec date_from)" },
+      financial_inst_id: { type: "string", description: "ID institution financière (optionnel)" },
+      commission_type: { type: "string", description: "base (défaut), bonus, bonus2 ou perform" },
+      split_type: { type: "string", description: "planipret, planipret_override ou planipret_external" },
+      number_prefix: { type: "string", description: "Préfixe de numéro de contrat" },
+      order_by: { type: "string", description: "date_trans (défaut), amount, institution, number…" },
+      sort: { type: "string", description: "asc ou desc (défaut desc)" },
+      limit: { type: "number", description: "Nombre de dépôts (défaut 10, max 50)" },
+    }),
+    mk("get_commission_agents", "Liste des courtiers disponibles pour filtrer les rapports de commissions (soi-même et son équipe ; tous les courtiers pour un admin)."),
+    mk("get_financial_institutions", "Liste des institutions financières (nom français en priorité) pour filtrer les commissions."),
+    mk("open_commission_report", "Ouvre la page mobile détaillée des commissions dans l'application avec les filtres demandés.", {
+      period: { type: "string", description: "month, quarter, year, ytd ou custom" },
+      date_from: { type: "string", description: "AAAA-MM-JJ (optionnel)" },
+      date_to: { type: "string", description: "AAAA-MM-JJ (optionnel)" },
+      commission_type: { type: "string", description: "base, bonus, bonus2 ou perform" },
+      financial_inst_id: { type: "string", description: "ID institution (optionnel)" },
+    }),
+
+
+
+
+
 
     // Microsoft 365
     mk("read_emails", "Lit les derniers courriels M365.", {
@@ -200,9 +295,18 @@ function buildSpecs(mk: (name: string, description: string, properties?: Record<
     mk("search_ms365_contacts", "Cherche un contact dans l'annuaire Microsoft 365 (People/Contacts). Utilise pour trouver un email, un numéro de téléphone ou vérifier si quelqu'un existe.", {
       query: { type: "string", description: "Nom, prénom ou email à rechercher" },
     }, ["query"]),
-    mk("find_contact", "Cherche un contact dans les contacts Planiprêt ET l'annuaire M365. Retourne nom, email, téléphone.", {
-      query: { type: "string", description: "Nom ou email à chercher" },
+    mk("find_contact", "Cherche une personne PARTOUT : contacts du cellulaire du courtier, annuaire de l'entreprise (extensions et contacts partagés), clients Maestro, contacts Outlook/M365. Accepte prénom seul, nom de famille seul, nom complet dans n'importe quel ordre, courriel, entreprise ou numéro. Utilise cet outil avant d'appeler ou d'écrire à quelqu'un dont tu n'as pas le numéro.", {
+      query: { type: "string", description: "Prénom, nom, nom complet, courriel, entreprise ou numéro" },
+      limit: { type: "number", description: "Nombre max de résultats (défaut 10)" },
     }, ["query"]),
+    mk("search_directory", "Recherche unifiée identique à find_contact, avec filtre optionnel par source.", {
+      query: { type: "string", description: "Texte recherché" },
+      sources: { type: "string", description: "Filtre optionnel séparé par virgules : device, directory, maestro, microsoft" },
+      limit: { type: "number", description: "Nombre max de résultats (défaut 10)" },
+    }, ["query"]),
+    mk("list_company_directory", "Liste l'annuaire de l'entreprise (collègues, extensions, contacts partagés).", {
+      limit: { type: "number", description: "Nombre max d'entrées (défaut 50)" },
+    }),
 
     // Navigation & stats
     mk("navigate_to", "Navigue vers une page de l'app Planiprêt.", {
@@ -216,6 +320,35 @@ function buildSpecs(mk: (name: string, description: string, properties?: Record<
       call_id: { type: "string", description: "ID de l'appel" },
       open_tab: { type: "string", description: "recording | transcript | coaching (optionnel)" },
     }, ["call_id"]),
+    mk("open_dialer", "Ouvre le composeur d'appel dans l'app avec un numéro pré-rempli.", {
+      phone: { type: "string", description: "Numéro E.164" },
+      name: { type: "string", description: "Nom affiché (optionnel)" },
+    }, ["phone"]),
+    mk("open_sms_composer", "Ouvre l'écran SMS avec destinataire et texte pré-remplis.", {
+      phone: { type: "string", description: "Numéro E.164" },
+      message: { type: "string", description: "Texte pré-rempli (optionnel)" },
+    }, ["phone"]),
+    mk("open_email_composer", "Ouvre le composeur de courriel M365 pré-rempli.", {
+      to: { type: "string", description: "Adresse courriel" },
+      subject: { type: "string", description: "Objet (optionnel)" },
+      body: { type: "string", description: "Corps (optionnel)" },
+    }, ["to"]),
+    mk("create_calendar_event", "Crée un événement dans le calendrier Microsoft 365.", {
+      subject: { type: "string", description: "Titre" },
+      start_datetime: { type: "string", description: "ISO 8601" },
+      duration_minutes: { type: "number", description: "Durée (défaut: 60)" },
+      attendees: { type: "string", description: "Courriels séparés par virgule (optionnel)" },
+      body: { type: "string", description: "Description (optionnel)" },
+    }, ["subject", "start_datetime"]),
+    mk("move_calendar_event", "Déplace un événement du calendrier M365.", {
+      event_id: { type: "string", description: "ID de l'événement" },
+      start_datetime: { type: "string", description: "Nouvelle date/heure ISO 8601" },
+      duration_minutes: { type: "number", description: "Durée (optionnel)" },
+    }, ["event_id", "start_datetime"]),
+    mk("cancel_calendar_event", "Annule un événement du calendrier M365.", {
+      event_id: { type: "string", description: "ID de l'événement" },
+      comment: { type: "string", description: "Message d'annulation (optionnel)" },
+    }, ["event_id"]),
     mk("get_sms_conversations", "Liste les dernières conversations SMS.", {
       limit: { type: "number", description: "Nombre (défaut: 10)" },
     }),
@@ -290,10 +423,10 @@ function buildSpecs(mk: (name: string, description: string, properties?: Record<
 export const EXPECTED_TOOL_NAMES = [
   "make_call","get_active_calls","hangup_call","get_call_history","get_recording","get_transcript","send_sms","get_sms_conversations","get_voicemails",
   "analyze_call","get_hot_leads","get_coaching_summary",
-  "search_client","get_client_profile","get_client_history","update_client","create_task","create_appointment","get_pending_tasks","get_upcoming_appointments","create_client",
+  "search_client","get_client_profile","get_client_history","update_client","list_tasks","get_task","list_task_targets","create_task","update_task","delete_task","create_appointment","get_pending_tasks","get_upcoming_appointments","create_client",
   "read_emails","get_unread_emails","get_recent_emails","summarize_email","send_email","search_contact","propose_email_reply","summarize_inbox",
   "update_calendar_event","delete_calendar_event","get_calendar_today","get_calendar_week","get_upcoming_meetings",
-  "search_ms365_contacts","find_contact",
+  "search_ms365_contacts","find_contact","search_directory","list_company_directory",
   "list_teams_chats","create_teams_chat","send_teams_message",
   "navigate_to","show_client_in_app","open_call_detail",
   "get_daily_briefing","get_my_stats","get_performance_report","generate_voicemail_greeting","explain_feature","get_integration_status",

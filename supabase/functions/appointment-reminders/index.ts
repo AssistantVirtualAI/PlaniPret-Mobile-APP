@@ -20,16 +20,16 @@ Deno.serve(async (req) => {
     const horizon = new Date(now.getTime() + 25 * 60 * 60 * 1000);
     const { data: appts, error } = await admin
       .from("appointments")
-      .select("id, organization_id, contact_name, contact_email, contact_phone, scheduled_at, reminder_offsets, status, meeting_url, location_type")
-      .gte("scheduled_at", now.toISOString())
-      .lte("scheduled_at", horizon.toISOString())
+      .select("id, organization_id, attendee_name, attendee_email, attendee_phone, start_time, reminder_offsets, status, meeting_url, location_type")
+      .gte("start_time", now.toISOString())
+      .lte("start_time", horizon.toISOString())
       .neq("status", "cancelled");
     if (error) throw error;
 
     let sent = 0;
     for (const a of appts ?? []) {
       const offsets: number[] = a.reminder_offsets ?? [1440, 60];
-      const at = new Date(a.scheduled_at).getTime();
+      const at = new Date(a.start_time).getTime();
       for (const off of offsets) {
         const trigger = at - off * 60_000;
         // only fire if we're within ±5min window of the trigger
@@ -45,13 +45,13 @@ Deno.serve(async (req) => {
         if (dup) continue;
 
         const subject = `Reminder: appointment in ${off >= 60 ? Math.round(off / 60) + "h" : off + "min"}`;
-        const html = `<p>Hi ${a.contact_name ?? ""},</p>
-          <p>This is a reminder of your appointment scheduled for <b>${new Date(a.scheduled_at).toLocaleString()}</b>.</p>
+        const html = `<p>Hi ${a.attendee_name ?? ""},</p>
+          <p>This is a reminder of your appointment scheduled for <b>${new Date(a.start_time).toLocaleString()}</b>.</p>
           ${a.meeting_url ? `<p>Join here: <a href="${a.meeting_url}">${a.meeting_url}</a></p>` : ""}`;
 
         let status = "skipped";
         let errMsg: string | null = null;
-        if (RESEND && LOVABLE && a.contact_email) {
+        if (RESEND && LOVABLE && a.attendee_email) {
           try {
             const r = await fetch("https://connector-gateway.lovable.dev/resend/emails", {
               method: "POST",
@@ -62,7 +62,7 @@ Deno.serve(async (req) => {
               },
               body: JSON.stringify({
                 from: "Notifications <onboarding@resend.dev>",
-                to: [a.contact_email],
+                to: [a.attendee_email],
                 subject,
                 html,
               }),

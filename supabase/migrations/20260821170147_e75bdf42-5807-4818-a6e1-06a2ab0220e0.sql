@@ -1,0 +1,1 @@
+UPDATE public.planipret_profiles SET ms365_email = 'tmastroberardino@planipret.com' WHERE email = 'tmastro@planipret.com' AND ms365_email IS NULL;

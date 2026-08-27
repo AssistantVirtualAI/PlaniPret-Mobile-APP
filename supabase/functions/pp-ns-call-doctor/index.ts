@@ -18,6 +18,7 @@
  */
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { nsFetch, requirePlanipretBroker, jsonResponse } from "../_shared/planipret-ns.ts";
+import { buildCdrE2eReport } from "../_shared/pp-cdr-e2e.ts";
 
 const CORE_HOST = /(^|\.)core\d+\.[^/]*ucstack\.io$/i;
 const PORTAL_HOST = /(^|\.)(portal\d*|voice)[^/]*\.(ucstack\.io|ava-telecom\.ca)$/i;
@@ -238,7 +239,56 @@ Deno.serve(async (req) => {
     data: { mine: mine.length, total: dids.length, broken: brokenDid.length },
   });
 
+  /* ---------------- 6. Bout en bout : CDR reçu + poussé vers Maestro ---------------- */
+  const sinceIso = new Date(Date.now() - 30 * 24 * 3_600_000).toISOString();
+  const [lastCallRes, lastPushRes, lastFailRes] = await Promise.all([
+    supabase
+      .from("planipret_phone_calls")
+      .select("created_at")
+      .eq("extension", ext)
+      .gte("created_at", sinceIso)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    supabase
+      .from("planipret_maestro_sync_log")
+      .select("created_at")
+      .eq("success", true)
+      .gte("created_at", sinceIso)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    supabase
+      .from("planipret_maestro_sync_log")
+      .select("created_at, response_status, action")
+      .eq("success", false)
+      .gte("created_at", sinceIso)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+  ]);
+
+  const lastCallAt = (lastCallRes.data as any)?.created_at ?? null;
+  const lastPushAt = (lastPushRes.data as any)?.created_at ?? null;
+  const lastFail = lastFailRes.data as any;
+  // Erreur pertinente seulement si elle est postérieure au dernier succès.
+  const failIsCurrent = !!lastFail
+    && (!lastPushAt || Date.parse(lastFail.created_at) > Date.parse(lastPushAt));
+
+  const e2e = buildCdrE2eReport({
+    webhookSubscription: !!callSub,
+    lastCallAt,
+    lastMaestroPushAt: lastPushAt,
+    lastMaestroError: failIsCurrent
+      ? `${lastFail.action ?? "push"} → HTTP ${lastFail.response_status ?? "?"} (${lastFail.created_at})`
+      : null,
+  });
+  for (const c of e2e.checks) {
+    checks.push({ id: `cdr_${c.id}`, label: c.label, status: c.status, detail: c.detail, action: c.action });
+  }
+
   const failed = checks.filter((c) => c.status === "fail");
+
   const warned = checks.filter((c) => c.status === "warn");
 
   return jsonResponse({
@@ -253,6 +303,7 @@ Deno.serve(async (req) => {
         ? `${warned.length} avertissement(s) — les appels peuvent être instables.`
         : "Chaîne d'appel complète et cohérente.",
     checks,
+    cdr_e2e: { verdict: e2e.verdict, summary: e2e.summary, last_call_at: lastCallAt, last_maestro_push_at: lastPushAt },
     checked_at: new Date().toISOString(),
   });
 });

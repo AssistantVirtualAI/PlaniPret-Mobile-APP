@@ -16,7 +16,7 @@ const json = (b: unknown, s = 200) =>
 const SuggestionSchema = z.object({
   id: z.string(),
   label: z.string(),
-  kind: z.enum(["call", "sms", "email", "reminder", "maestro_action", "ms365_action", "open_voice", "open_coach"]),
+  kind: z.enum(["call", "sms", "email", "reminder", "maestro_action", "ms365_action", "open_voice", "open_coach", "commission_action", "open_commissions"]),
   payload: z.record(z.string(), z.any()).optional(),
 });
 
@@ -26,6 +26,8 @@ const OutputSchema = z.object({
   openCoach: z.boolean().optional(),
   openVoice: z.boolean().optional(),
 });
+
+const COMMISSION_ACTIONS = new Set(["summary", "deposits", "agents", "institutions"]);
 
 const MUTATING_MS365 = new Set(["send_email", "create_calendar_event", "update_calendar_event", "delete_calendar_event", "send_teams_message", "reply_teams_message"]);
 const MS365_ACTIONS = new Set(["connection_status", "read_emails", "read_email_detail", "list_calendar_events", "send_email", "create_calendar_event", "update_calendar_event", "delete_calendar_event", "send_teams_message", "reply_teams_message", "search_contact"]);
@@ -99,7 +101,8 @@ function wantsSendEmail(text: string) {
 }
 
 function wantsContactLookup(text: string) {
-  return /(contact|répertoire|repertoire|directory|courriel de|email de|adresse de|coordonn[ée]es|num[ée]ro de)/i.test(text)
+  return /(contact|répertoire|repertoire|directory|annuaire|courriel de|email de|adresse de|coordonn[ée]es|num[ée]ro de)/i.test(text)
+    || /\b(appelle|appeler|call|t[ée]l[ée]phone[rz]?|texte[rz]?|texto|sms|message)\b/i.test(text)
     || wantsSendEmail(text);
 }
 
@@ -108,47 +111,56 @@ function extractNameTokens(text: string): { emails: string[]; names: string[] } 
   const quoted = Array.from(text.matchAll(/["“']([^"”']{2,60})["”']/g)).map(m => m[1]);
   const caps = Array.from(text.matchAll(/\b([A-ZÉÈÀÂÊÎÔÛÇ][a-zéèàâêîôûç'\-]{1,}(?:\s+[A-ZÉÈÀÂÊÎÔÛÇ][a-zéèàâêîôûç'\-]{1,}){0,2})\b/g)).map(m => m[1]);
   const stop = new Set(["Bonjour", "Salut", "Hello", "Envoie", "Envoyer", "Envoi", "Courriel", "Email", "Mail", "Contact", "Ava", "AVA", "Microsoft", "Teams", "Outlook"]);
-  const names = Array.from(new Set([...quoted, ...caps.filter(n => !stop.has(n.split(" ")[0]))])).slice(0, 5);
+  // Also catch lowercase names right after an action verb ("appelle jean tremblay").
+  const afterVerb = Array.from(
+    text.matchAll(/\b(?:appelle[rz]?|appeler|call|t[ée]l[ée]phone[rz]?|texte[rz]?|envoie|écris|ecris)\s+(?:un\s+)?(?:sms|texto|message|courriel|email)?\s*(?:à|a|to)?\s*([\p{L}'\-]{2,}(?:\s+[\p{L}'\-]{2,}){0,2})/giu),
+  ).map((m) => m[1].trim());
+  const names = Array.from(new Set([...quoted, ...afterVerb, ...caps.filter(n => !stop.has(n.split(" ")[0]))])).slice(0, 5);
   return { emails: Array.from(new Set(emails)).slice(0, 5), names };
 }
 
+/**
+ * Unified directory lookup — delegates to pp-contact-search so the chatbot sees
+ * the exact same universe as the ElevenLabs voice agent: device contacts,
+ * company directory (extensions + shared), Maestro clients and Outlook/M365.
+ */
 async function searchDirectory(
-  admin: ReturnType<typeof createClient>,
+  _admin: ReturnType<typeof createClient>,
   userId: string,
   tokens: { emails: string[]; names: string[] },
 ) {
+  const queries = Array.from(new Set([...tokens.emails, ...tokens.names])).slice(0, 5);
+  if (!queries.length) return [];
+  const settled = await Promise.allSettled(queries.map(async (q) => {
+    const r = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/pp-contact-search`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ query: q, limit: 5, _caller: "ava_chat", _user_id: userId }),
+    });
+    const j = await r.json().catch(() => ({}));
+    return Array.isArray(j?.contacts) ? j.contacts : [];
+  }));
+
   const results: any[] = [];
   const seen = new Set<string>();
-  const push = (r: any) => {
-    const k = `${(r.email ?? "").toLowerCase()}|${(r.phone ?? "").toString()}|${(r.full_name ?? "").toLowerCase()}`;
-    if (seen.has(k)) return;
-    seen.add(k);
-    results.push(r);
-  };
-  for (const em of tokens.emails) {
-    const { data } = await admin.from("planipret_contacts")
-      .select("full_name, email, phone_display")
-      .eq("user_id", userId).ilike("email", em).limit(3);
-    (data ?? []).forEach((r: any) => push({ full_name: r.full_name, email: r.email, phone: r.phone_display, source: "contacts" }));
-  }
-  for (const name of tokens.names) {
-    const pattern = `%${name}%`;
-    const [{ data: c }, { data: mc }] = await Promise.all([
-      admin.from("planipret_contacts")
-        .select("full_name, email, phone_display")
-        .eq("user_id", userId).ilike("full_name", pattern).limit(3),
-      admin.from("planipret_maestro_clients")
-        .select("first_name, last_name, email, phone, mobile")
-        .or(`first_name.ilike.${pattern},last_name.ilike.${pattern}`)
-        .limit(3),
-    ]);
-    (c ?? []).forEach((r: any) => push({ full_name: r.full_name, email: r.email, phone: r.phone_display, source: "contacts" }));
-    (mc ?? []).forEach((r: any) => push({
-      full_name: `${r.first_name ?? ""} ${r.last_name ?? ""}`.trim(),
-      email: r.email,
-      phone: r.phone ?? r.mobile,
-      source: "maestro",
-    }));
+  for (const s of settled) {
+    if (s.status !== "fulfilled") continue;
+    for (const c of s.value) {
+      const k = `${(c.email ?? "").toLowerCase()}|${(c.phone ?? "")}|${(c.name ?? "").toLowerCase()}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      results.push({
+        full_name: c.name,
+        email: c.email ?? null,
+        phone: c.phone ?? c.extension ?? null,
+        extension: c.extension ?? null,
+        company: c.company ?? null,
+        source: c.source,
+      });
+    }
   }
   return results.slice(0, 10);
 }
@@ -221,6 +233,44 @@ Deno.serve(async (req) => {
     if (confirmAction) {
       const kind = String(confirmAction.kind ?? "");
       const payload = (confirmAction.payload && typeof confirmAction.payload === "object") ? confirmAction.payload : {};
+      if (kind === "commission_action") {
+        const action = String(payload.action ?? "summary");
+        if (!COMMISSION_ACTIONS.has(action)) {
+          return json({ reply: L("Action de commissions inconnue.", "Unknown commission action."), suggestions: [] }, 400);
+        }
+        const exec = await invokeFunction("planipret-commission-reports", authHeader, {
+          action,
+          filters: (payload.filters && typeof payload.filters === "object") ? payload.filters : payload,
+        });
+        const d: any = exec.data ?? {};
+        const ok = exec.ok && d?.success !== false && !d?.error;
+        await logAvaAction(admin, profile, u.user.id, `commission_${action}`, { action }, ok, { ok }, ok ? null : (d.error ?? `HTTP ${exec.status}`));
+        if (!ok) {
+          const err = String(d.error ?? d.message ?? `HTTP ${exec.status}`);
+          const reply = /maestro_not_connected|maestro_user_id_unresolved|409/.test(err)
+            ? L("Ton compte n'est pas lié à Maestro. Va dans Plus → Connexions pour connecter Maestro, puis réessaie.",
+                "Your account isn't linked to Maestro. Go to More → Connections to connect Maestro, then try again.")
+            : `${L("Rapport de commissions indisponible", "Commission report unavailable")}: ${err}`;
+          return json({ reply, result: d, suggestions: [] });
+        }
+        const sum = d.summary ?? d;
+        const money = (n: unknown) => new Intl.NumberFormat(lang === "fr" ? "fr-CA" : "en-CA", { style: "currency", currency: "CAD", maximumFractionDigits: 0 }).format(Number(n ?? 0));
+        const lines: string[] = [];
+        if (typeof sum?.total_commission === "number") {
+          lines.push(L(`Commissions totales: ${money(sum.total_commission)}`, `Total commissions: ${money(sum.total_commission)}`));
+          if (sum.deposit_count != null) lines.push(L(`Dépôts: ${sum.deposit_count}`, `Deposits: ${sum.deposit_count}`));
+          if (sum.average_commission != null) lines.push(L(`Moyenne: ${money(sum.average_commission)}`, `Average: ${money(sum.average_commission)}`));
+          if (sum.total_loan_volume) lines.push(L(`Volume de prêts: ${money(sum.total_loan_volume)}`, `Loan volume: ${money(sum.total_loan_volume)}`));
+          for (const inst of (Array.isArray(sum.top_institutions) ? sum.top_institutions.slice(0, 5) : [])) {
+            lines.push(`• ${inst.name ?? inst.institution ?? "—"} — ${money(inst.total ?? inst.total_commission)}`);
+          }
+        }
+        return json({
+          reply: lines.length ? lines.join("\n") : L("Aucune commission pour cette période.", "No commissions for this period."),
+          result: d,
+          suggestions: [{ id: `open-comm-${Date.now()}`, label: L("Ouvrir les commissions", "Open commissions"), kind: "open_commissions", payload: (payload.filters ?? {}) }],
+        });
+      }
       if (kind === "ms365_action") {
         const action = String(payload.action ?? "");
         if (!MS365_ACTIONS.has(action)) return json({ reply: L("Action Microsoft inconnue.", "Unknown Microsoft action."), suggestions: [] }, 400);
@@ -499,7 +549,10 @@ SMS non lus: ${smsUnread ?? 0}`;
 
     const gateway = createLovableAiGatewayProvider(lovableKey);
 
+    const nowTo = new Date().toLocaleString("fr-CA", { timeZone: "America/Toronto", dateStyle: "full", timeStyle: "short" });
+    const todayIso = new Date().toLocaleDateString("en-CA", { timeZone: "America/Toronto" });
     let system = `Tu es AVA, l'assistante d'un courtier hypothécaire au Québec (application Planiprêt Mobile).
+ DATE ET HEURE ACTUELLES (fuseau America/Toronto): ${nowTo} (ISO: ${todayIso}). Utilise TOUJOURS cette date comme référence pour « aujourd'hui », « demain », « cette semaine » et pour tout rendez-vous créé. N'invente jamais une autre date.
  Tu as accès en direct aux données du courtier: appels (planipret_phone_calls), SMS, messagerie vocale, leads chauds, rappels/tâches, calendrier Microsoft 365, courriels Microsoft, Teams, pipeline Maestro.
  Intégrations connectées: ${integrations.join(" · ")}.
  IMPORTANT: quand des données sont fournies dans [Contexte] ci-dessous, utilise-les pour répondre concrètement. Ne dis JAMAIS que tu n'as pas d'intégration ou d'accès — tu peux consulter appels, SMS, courriels, calendrier et pipeline. Si aucune donnée n'apparaît dans le contexte pour la question posée, dis simplement qu'il n'y a rien à afficher pour cette période.
@@ -509,6 +562,8 @@ SMS non lus: ${smsUnread ?? 0}`;
  Réponds court et actionnable. Tu peux proposer jusqu'à 4 suggestions (kind: call/sms/email/reminder/maestro_action/ms365_action/open_voice/open_coach).
  Pour 'call' mets payload.number. Pour 'sms' mets payload.number et payload.message. Pour 'email' préfère ms365_action avec payload.action='send_email'. Pour 'reminder' payload.title/due_at. Pour 'maestro_action' payload.action et payload.* requis.
  MAESTRO CLIENTS/COURTIERS: tu peux consulter la liste des clients et des courtiers du courtier ainsi que leurs profils détaillés. Utilise kind='maestro_action' avec payload.action parmi: list_clients (payload.search, payload.offset pour pagination, payload.limit), client_profile (payload.client_id), list_brokers (payload.search, payload.offset pour pagination), broker_profile (payload.broker_id). Si la section "Clients Maestro" ou "Courtiers Maestro" apparaît dans [Contexte], réponds directement avec ces données (nom, téléphone, courriel) sans redemander.
+
+ COMMISSIONS: pour toute question sur les commissions, dépôts, prêteurs ou volume, utilise kind='commission_action' avec payload.action parmi: summary, deposits, agents (admin), institutions, et payload.filters (period, date_from, date_to, commission_type, financial_inst_id). Réponds avec des montants agrégés; ne divulgue jamais de noms de clients complets. Propose kind='open_commissions' pour ouvrir la page détaillée.
  Pour Microsoft utilise kind='ms365_action' et payload.action parmi: read_emails, read_email_detail, list_calendar_events, send_email, create_calendar_event, update_calendar_event, delete_calendar_event, send_teams_message, reply_teams_message, search_contact.
  RÉPERTOIRE: quand l'utilisateur demande d'envoyer un courriel/SMS/appel à une personne par son nom, cherche d'abord son adresse dans [Contexte] (section "Contacts trouvés" + "Contact Microsoft"). Si tu trouves une correspondance unique, propose directement l'action ms365_action send_email (payload.to = [email], subject, body) pour confirmation. Si plusieurs correspondances, liste-les et demande laquelle. Si aucune, propose un ms365_action search_contact avec payload.query = nom, ou demande l'adresse exacte.
  Pour créer un rendez-vous: payload.action='create_calendar_event' avec subject, start:{dateTime,timeZone}, end:{dateTime,timeZone}, attendees (array d'emails), isOnlineMeeting (défaut true = lien Teams auto).

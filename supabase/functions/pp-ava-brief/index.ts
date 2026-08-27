@@ -7,6 +7,51 @@ import { generateText } from "npm:ai";
 import { z } from "npm:zod";
 import { createLovableAiGatewayProvider } from "../_shared/ai-gateway.ts";
 import { MS365_DELEGATED_SCOPES, refreshMicrosoftAccessToken } from "../_shared/ms365.ts";
+import { getUserMaestroAccessToken } from "../_shared/maestro-oauth.ts";
+import { commissionGet, summarize } from "../_shared/commission-reports.ts";
+
+/**
+ * Commissions in the daily brief are OPT-IN only.
+ * `planipret_settings.preferences.ava_include_commissions` must be explicitly true.
+ * Returns null when disabled, not connected, or on any error (never blocks the brief).
+ */
+async function buildCommissionStats(admin: any, authUserId: string, sinceIso: string) {
+  try {
+    const { data: settings } = await admin.from("planipret_settings")
+      .select("preferences").eq("user_id", authUserId).maybeSingle();
+    const prefs = (settings?.preferences ?? {}) as Record<string, unknown>;
+    if (prefs.ava_include_commissions !== true) return null;
+
+    const token = await getUserMaestroAccessToken(admin, authUserId);
+    if (!token) return { enabled: true, connected: false };
+
+    const qs = new URLSearchParams({
+      commission_type: "base",
+      date_from: sinceIso.slice(0, 10),
+      date_to: new Date().toISOString().slice(0, 10),
+      per_page: "200",
+      page: "1",
+      order_by: "date_trans",
+      sort: "desc",
+    });
+    const r = await commissionGet(`/api/main/commissions/reports/deposits?${qs}`, token, `brief-${authUserId.slice(0, 8)}`);
+    if (!r.ok) return { enabled: true, connected: true, error: true };
+    const rows = Array.isArray(r.data?.data) ? r.data.data : [];
+    const s = summarize(rows);
+    return {
+      enabled: true,
+      connected: true,
+      total_commission: s.total_commission,
+      deposit_count: s.deposit_count,
+      average_commission: s.average_commission,
+      total_loan_volume: s.total_loan_volume,
+      top_institutions: s.top_institutions.slice(0, 5),
+    };
+  } catch {
+    return null;
+  }
+}
+
 
 const GRAPH = "https://graph.microsoft.com/v1.0";
 
@@ -463,6 +508,8 @@ Deno.serve(async (req) => {
         buildMicrosoftStats(admin, profile, sinceIso).catch(() => ({ connected: false })),
         new Promise((res) => setTimeout(() => res({ connected: false, timeout: true }), 15000)),
       ]),
+      // Opt-in only (planipret_settings.preferences.ava_include_commissions === true)
+      commissions: await buildCommissionStats(admin, effectiveUserId ?? profile.user_id, sinceIso),
     };
 
 
@@ -478,40 +525,46 @@ Deno.serve(async (req) => {
 
     const system = lang === "fr"
       ? `Tu es AVA, l'assistante d'un courtier hypothécaire au Québec. Tu reçois les statistiques réelles du courtier ${profile.full_name ?? ""} pour ${periodLabelFr}.
-Génère un brief DÉTAILLÉ, professionnel et actionnable, ENTIÈREMENT en français du Québec (aucun mot en anglais).
-Tu dois couvrir DEUX sources: la téléphonie (appels, textos, boîtes vocales, leads) ET Microsoft 365 (stats.microsoft: courriels reçus/envoyés/non lus/marqués, expéditeurs principaux, réunions Outlook tenues et à venir, tâches To Do). Si stats.microsoft.connected est faux, mentionne une seule fois que Microsoft 365 n'est pas connecté et invite à le connecter.
-- headline: 1 phrase percutante citant les chiffres clés réels (appels, manqués, minutes, textos, courriels non lus, réunions).
-- overview: 8 à 12 phrases d'analyse approfondie: volume d'appels entrants vs sortants, taux de réponse, durée moyenne, activité texto, messages vocaux en attente, charge de la boîte courriel Microsoft 365 (reçus/envoyés/non lus, expéditeurs récurrents), agenda Outlook (réunions tenues, minutes en réunion, prochaines réunions avec noms et heures), tâches To Do en attente, corrélations entre les canaux (ex.: clients qui écrivent ET appellent), tendance et qualité des conversations (résumés IA, score de coaching).
-- metrics: 8 à 12 indicateurs { label, value } tirés des chiffres exacts, incluant obligatoirement les courriels Microsoft 365, les non lus, les réunions tenues/à venir et les tâches ouvertes quand Microsoft est connecté.
-- highlights: 5 à 6 faits saillants nommant les vrais contacts, expéditeurs de courriels, sujets de courriels non lus et réunions à venir.
-- priorities: 5 à 6 actions concrètes ordonnées par urgence (max 14 mots chacune), en nommant la personne, le numéro, le sujet du courriel ou la réunion.
-- risks: jusqu'à 4 risques (appels manqués sans rappel, courriels non lus/marqués, réunions sans préparation, tâches en retard).
-- tips: 5 à 6 conseils de coaching { title, detail } — chaque "detail" = 2 à 3 phrases concrètes basées sur les chiffres (relances, plages horaires les plus productives, traitement des courriels par blocs, préparation des réunions Outlook, suivi des leads chauds, textos non lus, boîtes vocales).
-- focus: 1 phrase « objectif du jour » chiffré et mesurable couvrant téléphonie ET courriel/agenda.
-- suggestions: jusqu'à 4 actions cliquables (call/sms/email/reminder) avec si pertinent un numéro extrait des données.`
+Génère un brief COURT, professionnel et actionnable, ENTIÈREMENT en français du Québec (aucun mot en anglais). Sois concis : le courtier lit ça en 15 secondes sur son téléphone.
+Couvre la téléphonie (appels, textos, boîtes vocales, leads) ET Microsoft 365 (courriels non lus, réunions, tâches) seulement si les chiffres le justifient.
+- headline: 1 phrase courte (max 20 mots) avec les 2-3 chiffres clés.
+- overview: 2 à 3 phrases MAXIMUM. Pas de paragraphe.
+- metrics: 4 à 6 indicateurs { label, value } tirés des chiffres exacts.
+- highlights: max 3 faits saillants très courts.
+- priorities: exactement 3 actions concrètes, max 10 mots chacune, en nommant la personne ou le sujet.
+- risks: max 2 risques, max 8 mots chacun.
+- tips: 2 conseils { title, detail } — chaque "detail" = 1 seule phrase.
+- focus: 1 phrase courte, chiffrée et mesurable.
+- suggestions: jusqu'à 3 actions cliquables (call/sms/email/reminder) avec un numéro si pertinent.`
       : `You are AVA, the assistant of a mortgage broker in Quebec. You receive the real statistics of broker ${profile.full_name ?? ""} for ${periodLabelEn}.
-Generate a DETAILED, professional and actionable brief, ENTIRELY in English (no French words at all).
-You must cover TWO sources: telephony (calls, texts, voicemails, leads) AND Microsoft 365 (stats.microsoft: emails received/sent/unread/flagged, top senders, Outlook meetings held and upcoming, To Do tasks). If stats.microsoft.connected is false, mention once that Microsoft 365 is not connected and invite the broker to connect it.
-- headline: 1 punchy sentence quoting the real key numbers (calls, missed, minutes, texts, unread emails, meetings).
-- overview: 8 to 12 sentences of deep analysis: inbound vs outbound volume, answer rate, average duration, texting activity, pending voicemails, Microsoft 365 inbox load (received/sent/unread, recurring senders), Outlook calendar (meetings held, meeting minutes, next meetings with names and times), open To Do tasks, cross-channel correlations (clients who both email and call), trend and conversation quality (AI summaries, coaching score).
-- metrics: 8 to 12 indicators { label, value } from the exact numbers, mandatorily including Microsoft 365 emails, unread, meetings held/upcoming and open tasks when Microsoft is connected.
-- highlights: 5 to 6 highlights naming real contacts, email senders, unread email subjects and upcoming meetings.
-- priorities: 5 to 6 concrete actions ordered by urgency (max 14 words each), naming the person, number, email subject or meeting.
-- risks: up to 4 risks (missed calls not returned, unread/flagged emails, unprepared meetings, overdue tasks).
-- tips: 5 to 6 coaching tips { title, detail } — each "detail" = 2 to 3 concrete sentences based on the numbers (follow-ups, most productive time slots, batching email, preparing Outlook meetings, hot-lead nurturing, unread texts, voicemails).
-- focus: 1 measurable "goal of the day" sentence covering both telephony AND email/calendar.
-- suggestions: up to 4 clickable actions (call/sms/email/reminder) with a number extracted from the data when relevant.`;
+Generate a SHORT, professional and actionable brief, ENTIRELY in English (no French words at all). Be concise: the broker reads this in 15 seconds on a phone.
+Cover telephony (calls, texts, voicemails, leads) AND Microsoft 365 (unread emails, meetings, tasks) only when the numbers justify it.
+- headline: 1 short sentence (max 20 words) with the 2-3 key numbers.
+- overview: 2 to 3 sentences MAXIMUM. No paragraph.
+- metrics: 4 to 6 indicators { label, value } from the exact numbers.
+- highlights: max 3 very short highlights.
+- priorities: exactly 3 concrete actions, max 10 words each, naming the person or subject.
+- risks: max 2 risks, max 8 words each.
+- tips: 2 coaching tips { title, detail } — each "detail" = a single sentence.
+- focus: 1 short, measurable sentence.
+- suggestions: up to 3 clickable actions (call/sms/email/reminder) with a number when relevant.`;
 
     const userPrompt = lang === "fr"
       ? `Statistiques réelles (JSON):\n${JSON.stringify(stats).slice(0, 24000)}\n\nUtilise ces chiffres exacts (appels, manqués, minutes, textos, boîtes vocales, leads chauds, rendez-vous, contacts actifs) ET les données Microsoft 365 du champ "microsoft" (courriels, non lus, expéditeurs, réunions Outlook à venir, tâches To Do). N'invente rien. Réponds uniquement en français du Québec : chaque champ (headline, overview, metrics.label, highlights, priorities, risks, tips.title, tips.detail, focus, suggestions.label) doit être rédigé en français, sans aucun mot anglais.`
       : `Real statistics (JSON):\n${JSON.stringify(stats).slice(0, 24000)}\n\nUse these exact numbers (calls, missed, minutes, texts, voicemails, hot leads, meetings, active contacts) AND the Microsoft 365 data in the "microsoft" field (emails, unread, senders, upcoming Outlook meetings, To Do tasks). Do not invent anything. Answer strictly in English: every field (headline, overview, metrics.label, highlights, priorities, risks, tips.title, tips.detail, focus, suggestions.label) must be written in English, with no French words.`;
+
+    const commissionNote = (stats as any).commissions
+      ? (lang === "fr"
+        ? `\n\nLe courtier a activé l'inclusion des commissions : utilise stats.commissions (total, nombre de dépôts, moyenne, volume de prêts, top institutions) dans UNE seule courte phrase de l'overview et un indicateur metrics. Ne divulgue aucun nom de client.`
+        : `\n\nThe broker enabled commission inclusion: use stats.commissions (total, deposit count, average, loan volume, top lenders) in one overview sentence and one metric. Never disclose client names.`)
+      : (lang === "fr" ? `\n\nN'évoque JAMAIS les commissions ou revenus : la préférence est désactivée.` : `\n\nNEVER mention commissions or revenue: the preference is disabled.`);
 
     let result: any;
     try {
       const r = await generateText({
         model: gateway("google/gemini-2.5-flash"),
         system: `${system}\n\nRéponds UNIQUEMENT avec un objet JSON valide (pas de texte autour, pas de balises markdown) respectant exactement ces clés: headline (string), overview (string), priorities (string[]), risks (string[]), highlights (string[]), metrics ({label,value}[]), tips ({title,detail}[]), focus (string), suggestions ({label,kind,number}[]).`,
-        prompt: userPrompt,
+        prompt: userPrompt + commissionNote,
       });
       let out: any = (r as any).text;
       if (typeof out === "string") {
@@ -521,13 +574,18 @@ You must cover TWO sources: telephony (calls, texts, voicemails, leads) AND Micr
         out = JSON.parse(start >= 0 && end > start ? cleaned.slice(start, end + 1) : cleaned);
       }
       result = BriefSchema.parse(out);
-      result.priorities = (result.priorities ?? []).slice(0, 8);
-      result.risks = (result.risks ?? []).slice(0, 5);
-      result.highlights = (result.highlights ?? []).slice(0, 8);
-      result.metrics = (result.metrics ?? []).slice(0, 14);
-      result.tips = (result.tips ?? []).slice(0, 7);
+      // Hard caps: keep the mobile brief skimmable even if the model overshoots.
+      result.priorities = (result.priorities ?? []).slice(0, 3);
+      result.risks = (result.risks ?? []).slice(0, 2);
+      result.highlights = (result.highlights ?? []).slice(0, 3);
+      result.metrics = (result.metrics ?? []).slice(0, 6);
+      result.tips = (result.tips ?? []).slice(0, 2);
       result.suggestions = (result.suggestions ?? [])
-        .filter((x: any) => ["call", "sms", "email", "reminder"].includes(x.kind)).slice(0, 5);
+        .filter((x: any) => ["call", "sms", "email", "reminder"].includes(x.kind)).slice(0, 3);
+      if (typeof result.overview === "string") {
+        const sentences = result.overview.split(/(?<=[.!?])\s+/).slice(0, 3);
+        result.overview = sentences.join(" ").trim();
+      }
       const fb = buildFallbackBrief(stats, period, lang);
       if (!result.metrics?.length) result.metrics = fb.metrics;
       if (!result.overview) result.overview = fb.overview;

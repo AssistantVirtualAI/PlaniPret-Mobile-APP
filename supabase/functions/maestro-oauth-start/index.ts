@@ -77,6 +77,7 @@ Deno.serve(async (req) => {
       state,
       user_id: u.user.id,
       redirect_uri: redirectUri,
+      platform,
       ...(codeVerifier ? { code_verifier: codeVerifier } : {}),
     });
 
@@ -86,6 +87,12 @@ Deno.serve(async (req) => {
     url.searchParams.set("redirect_uri", redirectUri);
     if (env.scope) url.searchParams.set("scope", env.scope);
     url.searchParams.set("state", state);
+    // "Reconnecter" doit forcer un nouvel écran de connexion/consentement,
+    // sinon Maestro réutilise silencieusement la session existante.
+    if (body?.force === true) {
+      url.searchParams.set("prompt", "login");
+      url.searchParams.set("approval_prompt", "force");
+    }
     if (isMobile && codeChallenge) {
       url.searchParams.set("code_challenge", codeChallenge);
       url.searchParams.set("code_challenge_method", "S256");

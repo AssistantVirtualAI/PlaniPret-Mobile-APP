@@ -115,7 +115,7 @@ export async function authBroker(req: Request) {
   }
   const { data: profile } = await admin
     .from("planipret_profiles")
-    .select("id, extension, ns_extension, ns_domain, role, ns_jwt, ns_refresh_token, ns_jwt_expires_at, organization_id")
+    .select("id, user_id, full_name, email, ms365_email, phone, extension, ns_extension, ns_domain, role, ns_jwt, ns_refresh_token, ns_jwt_expires_at, organization_id, maestro_broker_id, maestro_telecom_user_id")
     .eq("user_id", userId)
     .maybeSingle();
   if (!profile || profile.organization_id !== AVA_ORG_ID) {

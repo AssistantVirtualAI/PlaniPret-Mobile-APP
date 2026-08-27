@@ -15,6 +15,9 @@ Deno.serve(async (req) => {
 
     // Decode base64 to bytes
     const bin = Uint8Array.from(atob(audio), (c) => c.charCodeAt(0));
+    // Empty-recording guard: a header-only clip has no speech and the STT provider
+    // always rejects it with HTTP 400. Surface it instead of uploading.
+    if (bin.length < 2048) return j({ error: "no_audio_captured", bytes: bin.length }, 400);
     const ext = mime.includes("mp4") ? "mp4" : mime.includes("wav") ? "wav" : mime.includes("mpeg") ? "mp3" : "webm";
     const blob = new Blob([bin], { type: mime });
     const form = new FormData();

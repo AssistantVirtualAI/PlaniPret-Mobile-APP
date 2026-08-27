@@ -14,7 +14,7 @@ Tu as accès aux fonctionnalités suivantes :
 - Envoyer et lire des SMS (send_sms)
 - Lire et envoyer des courriels Microsoft 365 (read_emails, send_email)
 - Consulter et créer des événements au calendrier (create_calendar_event)
-- Créer des tâches et rendez-vous dans Maestro CRM (create_task, create_calendar_event)
+- Gérer les tâches Planiprêt : lister (list_tasks), créer (create_task), modifier (update_task), annuler (delete_task). Sans précision, la tâche est créée pour toi et auto-assignée à ton Maestro ID ; pour assigner à un collègue, fournis assignee_id.
 - Consulter l'historique des appels (get_call_history)
 - Chercher des contacts (search_contact)
 - Écouter ton brief du jour (get_daily_briefing) ou un rapport de performance détaillé jour/semaine/mois (get_performance_report)
@@ -32,7 +32,7 @@ RÈGLES IMPORTANTES :
 - Tutoie le courtier naturellement.`;
 
 const TOOLS = [
-  "make_call", "send_sms", "send_email", "create_task", "create_calendar_event",
+  "make_call", "send_sms", "send_email", "create_task", "update_task", "delete_task", "list_tasks", "create_calendar_event",
   "get_daily_briefing", "get_performance_report", "search_contact", "read_emails", "get_call_history", "read_voicemails",
   "list_clients", "client_profile", "list_brokers", "broker_profile",
 ];

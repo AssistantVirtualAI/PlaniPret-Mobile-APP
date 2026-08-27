@@ -5,6 +5,20 @@ import { authBroker, corsHeaders, jsonResponse, nsBrokerFetch } from "../_shared
 import { normalizePhoneE164 } from "../_shared/phone-normalize.ts";
 import { linkBrokerIdByEmail, resolveTelecomUserId } from "../_shared/maestro-broker-directory.ts";
 import { claudeText } from "../_shared/anthropic.ts";
+import {
+  getMaestroOAuthEnv,
+  getUserMaestroAccessToken,
+  fetchMaestroUserProfile,
+  extractMaestroBrokerId,
+} from "../_shared/maestro-oauth.ts";
+import {
+  buildDepositQuery,
+  commissionGet,
+  summarize,
+  institutionLabel,
+  num,
+} from "../_shared/commission-reports.ts";
+
 
 
 
@@ -138,6 +152,26 @@ async function broadcastNav(ctx: Ctx, route: string, extra?: any) {
   } catch (_) { /* noop */ }
 }
 
+/** Tell every open session (MHome, other devices) that tasks changed. */
+async function broadcastTasks(ctx: Ctx, event: string, taskId?: string | null) {
+  try {
+    const channel = ctx.admin.channel(`pp-tasks:${ctx.userId}`);
+    await channel.send({ type: "broadcast", event: "tasks", payload: { change: event, task_id: taskId ?? null, at: new Date().toISOString() } });
+    await ctx.admin.removeChannel(channel);
+  } catch (_) { /* noop */ }
+}
+
+/** Single secure gateway for every task read/write (never call Planiprêt directly). */
+async function taskApi(ctx: Ctx, body: Record<string, unknown>): Promise<ToolResult> {
+  const r = await callPlanipretFunction(ctx, "planipret-task-api", { ...body, source: "ava" });
+  const data = (r.data ?? {}) as ToolResult;
+  if (!r.httpOk && data.success === undefined) {
+    return { success: false, error: "task_api_unreachable", status: r.status };
+  }
+  return data;
+}
+
+
 // ─── helpers ────────────────────────────────────────────────────────────
 async function msAction(ctx: Ctx, action: string, payload: any) {
   const r = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/ms365-actions`, {
@@ -230,6 +264,13 @@ async function callClaude(system: string, userText: string): Promise<string | nu
   if (!r.ok) return null;
   const j = await r.json();
   return j.choices?.[0]?.message?.content ?? null;
+}
+
+// Telephony rows are written with either the auth user id or the Planiprêt
+// profile id depending on the ingest path (webhook vs app). Query both.
+function ownerIds(ctx: Ctx): string[] {
+  return [...new Set([ctx.userId, (ctx.profile as any)?.id, (ctx.profile as any)?.user_id]
+    .filter(Boolean).map(String))];
 }
 
 // ─── tool implementations ───────────────────────────────────────────────
@@ -339,7 +380,7 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
     const days = p?.days ?? 7;
     const since = new Date(Date.now() - days * 86400000).toISOString();
     let q = ctx.admin.from("planipret_phone_calls").select("*")
-      .eq("user_id", ctx.userId).gte("created_at", since)
+      .in("user_id", ownerIds(ctx)).gte("created_at", since)
       .order("created_at", { ascending: false }).limit(limit);
     if (p?.direction) q = q.ilike("direction", `%${p.direction}%`);
     const { data } = await q;
@@ -420,13 +461,13 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
   async get_sms_conversations(ctx, p) {
     const limit = Math.min(p?.limit ?? 10, 30);
     const { data } = await ctx.admin.from("planipret_phone_messages")
-      .select("*").eq("user_id", ctx.userId).order("created_at", { ascending: false }).limit(limit);
+      .select("*").in("user_id", ownerIds(ctx)).order("created_at", { ascending: false }).limit(limit);
     return { success: true, messages: data ?? [], count: data?.length ?? 0 };
   },
 
   async get_voicemails(ctx, p) {
     const { data } = await ctx.admin.from("planipret_voicemails")
-      .select("*").eq("user_id", ctx.userId).eq("folder", p?.folder ?? "inbox")
+      .select("*").in("user_id", ownerIds(ctx)).eq("folder", p?.folder ?? "inbox")
       .order("created_at", { ascending: false }).limit(p?.limit ?? 10);
     const unread = (data ?? []).filter((v: any) => !v.is_read).length;
     return { success: true, voicemails: data ?? [], unread_count: unread };
@@ -463,7 +504,7 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
     const since = new Date(Date.now() - 7 * 86400000).toISOString();
     const { data } = await ctx.admin.from("planipret_phone_calls")
       .select("contact_name, contact_number, lead_score, lead_temperature, created_at, ai_client_insights")
-      .eq("user_id", ctx.userId).eq("lead_temperature", "hot")
+      .in("user_id", ownerIds(ctx)).eq("lead_temperature", "hot")
       .gte("created_at", since).order("lead_score", { ascending: false }).limit(limit);
     return { success: true, leads: data ?? [], count: data?.length ?? 0 };
   },
@@ -472,7 +513,7 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
     const days = p?.period === "month" ? 30 : p?.period === "today" ? 1 : 7;
     const since = new Date(Date.now() - days * 86400000).toISOString();
     const { data } = await ctx.admin.from("planipret_phone_calls")
-      .select("ai_coaching").eq("user_id", ctx.userId).gte("created_at", since).not("ai_coaching", "is", null);
+      .select("ai_coaching").in("user_id", ownerIds(ctx)).gte("created_at", since).not("ai_coaching", "is", null);
     const scores = (data ?? []).map((r: any) => r.ai_coaching?.score).filter((n: any) => typeof n === "number");
     const avg = scores.length ? scores.reduce((a: number, b: number) => a + b, 0) / scores.length : 0;
     return { success: true, avg_score: Math.round(avg * 10) / 10, calls_analyzed: scores.length };
@@ -587,25 +628,79 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
     return r?.success ? { success: true, profile: r.profile ?? r.data ?? null } : { success: false, error: r?.error ?? "maestro_broker_profile_failed" };
   },
 
-  async create_task(ctx, p) {
-    const r = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/maestro-task`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        maestro_client_id: p.client_id,
-        title: p.title,
-        due_date: p.due_date ?? new Date(Date.now() + 86400000).toISOString(),
-        priority: p.priority ?? "medium",
-        notes: p.notes,
-        _user_id: ctx.userId,
-      }),
+  // ===== PLANIPRÊT TASK API (POST/PUT/DELETE /api/main/tasks) =====
+  async list_tasks(ctx, p) {
+    return await taskApi(ctx, {
+      action: "list",
+      status: p?.status ?? "pending",
+      filter: p?.filter ?? "open",
+      from: p?.from, to: p?.to,
+      page: p?.page ?? 1,
+      limit: p?.limit ?? 25,
     });
-    const j = await r.json().catch(() => ({}));
-    return { success: r.ok, task_id: j.task_id, message: `Tâche "${p.title}" créée` };
   },
+
+  async get_task(ctx, p) {
+    if (!p?.task_id) return { success: false, error: "task_id_required" };
+    return await taskApi(ctx, { action: "get", task_id: String(p.task_id) });
+  },
+
+  async list_task_targets(ctx, p) {
+    return await taskApi(ctx, { action: "client_targets", search: p?.search ? String(p.search) : undefined });
+  },
+
+  async create_task(ctx, p) {
+    const target = p?.target ?? p?.xid ?? p?.client_id;
+    const target_type = String(p?.target_type ?? p?.type ?? "user").toLowerCase();
+    const notes = p?.notes ?? p?.title;
+    const due_at = p?.due_at ?? p?.date ?? p?.due_date;
+    if (target_type !== "user" && target_type !== "contract") {
+      return { success: false, error: "clarification_needed", message: "Le type de cible doit être « user » ou « contract »." };
+    }
+    if (target_type === "contract" && !target) {
+      return { success: false, error: "clarification_needed", message: "Quel contrat (xid) veux-tu cibler ?" };
+    }
+    if (!notes) return { success: false, error: "clarification_needed", message: "Quelle note veux-tu inscrire sur la tâche ?" };
+    if (!due_at) return { success: false, error: "clarification_needed", message: "Pour quelle date et heure (fuseau America/Toronto) ?" };
+    const r = await taskApi(ctx, {
+      // No target → the gateway auto-targets and auto-assigns the broker.
+      action: "create", target, target_type, notes, due_at,
+      description: p?.description, assignee_id: p?.assignee_id ?? p?.users_id, status: p?.status,
+      sync_calendar: p?.sync_calendar === true, notification: p?.notification === true,
+      recurrence: p?.recurrence ?? null,
+    });
+    if ((r as any)?.success) await broadcastTasks(ctx, "created", (r as any).task_id);
+    return r;
+  },
+
+
+  async update_task(ctx, p) {
+    if (!p?.task_id) return { success: false, error: "task_id_required" };
+    const changes = p?.changes ?? {};
+    if (!changes || typeof changes !== "object" || !Object.keys(changes).length) {
+      return { success: false, error: "clarification_needed", message: "Que dois-je modifier sur cette tâche ?" };
+    }
+    const r = await taskApi(ctx, { action: "update", task_id: String(p.task_id), changes });
+    if ((r as any)?.success) await broadcastTasks(ctx, "updated", String(p.task_id));
+    return r;
+  },
+
+  async delete_task(ctx, p) {
+    if (!p?.task_id) return { success: false, error: "task_id_required" };
+    // Deletion ALWAYS requires an explicit confirmation, even in autonomous mode.
+    if (p?.confirmed !== true) {
+      return {
+        success: false,
+        needs_confirmation: true,
+        error: "confirmation_required",
+        message: `Je vais supprimer la tâche ${p.task_id}. Confirme-tu la suppression ? Rappelle delete_task avec confirmed=true.`,
+      };
+    }
+    const r = await taskApi(ctx, { action: "delete", task_id: String(p.task_id) });
+    if ((r as any)?.success) await broadcastTasks(ctx, "deleted", String(p.task_id));
+    return r;
+  },
+
 
   async create_appointment(ctx, p) {
     const duration = p.duration_minutes ?? 60;
@@ -664,21 +759,10 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
   },
 
   async get_pending_tasks(ctx, p) {
-    try {
-      const uid = await maestroUserId(ctx);
-      if (!uid) return MAESTRO_NOT_LINKED;
-      const limit = p?.limit ?? 10;
-      try {
-        const result = await maestroFetch(ctx, `/users/${uid}/tasks?status=pending&limit=${limit}`);
-        const tasks = result?.data ?? result?.tasks ?? result ?? [];
-        const now = Date.now();
-        const overdue = (Array.isArray(tasks) ? tasks : []).filter((t: any) => t.due_date && new Date(t.due_date).getTime() < now).length;
-        return { success: true, tasks, overdue_count: overdue, source: "maestro" };
-      } catch (_) {
-        return { success: true, tasks: [], overdue_count: 0, source: "none", message: "Maestro n'expose pas encore les tâches en production." };
-      }
-    } catch (e) { return { success: false, error: String(e) }; }
+    // Legacy alias — the Planiprêt Task API gateway is now the single source.
+    return await TOOLS.list_tasks(ctx, { status: "pending", limit: p?.limit ?? 10 });
   },
+
 
   async get_upcoming_appointments(ctx, p) {
     try {
@@ -1209,7 +1293,7 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
     const since = new Date(Date.now() - days * 86400000).toISOString();
     const { data } = await ctx.admin.from("planipret_phone_calls")
       .select("direction, duration_seconds, lead_temperature, ai_coaching")
-      .eq("user_id", ctx.userId).gte("created_at", since);
+      .in("user_id", ownerIds(ctx)).gte("created_at", since);
     const rows = data ?? [];
     const total = rows.length;
     const out = rows.filter((c: any) => /out/i.test(c.direction ?? "")).length;
@@ -1369,7 +1453,274 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
       return { success: true, communication_id: result?.id, message: `Communication ${channel} enregistrée dans Maestro.` };
     } catch (e) { return { success: false, error: String(e), message: `Push communication Maestro échoué : ${e}` }; }
   },
+
+  // ===== COMMISSIONS (API officielle Planiprêt, lecture seule) =====
+  async get_commission_summary(ctx, p) {
+    const g = await commissionGuard(ctx);
+    if ("error" in g) return g.error;
+    const range = commissionRange(p);
+    if ("error" in range) return range.error;
+    const r = await commissionSummaryFor(g, range, p?.commission_type);
+    if ("error" in r) return r.error;
+    const s = r.summary;
+    return {
+      success: true,
+      period: range.label,
+      total_commission: s.total_commission,
+      deposit_count: s.deposit_count,
+      average_commission: s.average_commission,
+      total_loan_volume: s.total_loan_volume,
+      adjustments: s.adjustments,
+      top_institutions: s.top_institutions.slice(0, 5),
+      truncated: s.truncated,
+      message: `${fmtCad(s.total_commission)} en commissions sur ${s.deposit_count} dépôt(s) pour ${range.label}.`,
+    };
+  },
+
+  async get_commission_by_lender(ctx, p) {
+    const g = await commissionGuard(ctx);
+    if ("error" in g) return g.error;
+    const range = commissionRange(p);
+    if ("error" in range) return range.error;
+    const r = await commissionSummaryFor(g, range);
+    if ("error" in r) return r.error;
+    const limit = Math.min(Math.max(Number(p?.limit ?? 5) || 5, 1), 15);
+    const list = r.summary.top_institutions.slice(0, limit);
+    return {
+      success: true,
+      period: range.label,
+      lenders: list,
+      message: list.length
+        ? list.map((i: any) => `${i.institution}: ${fmtCad(i.amount)} (${i.count})`).join(" · ")
+        : `Aucune commission pour ${range.label}.`,
+    };
+  },
+
+  async compare_commission_periods(ctx, p) {
+    const g = await commissionGuard(ctx);
+    if ("error" in g) return g.error;
+    const unit = ["month", "quarter", "year"].includes(p?.period) ? p.period : "month";
+    const cur = commissionRange({ period: unit });
+    const prev = commissionRange({ period: unit, previous: true });
+    if ("error" in cur) return cur.error;
+    if ("error" in prev) return prev.error;
+    const [a, b] = await Promise.all([commissionSummaryFor(g, cur), commissionSummaryFor(g, prev)]);
+    if ("error" in a) return a.error;
+    if ("error" in b) return b.error;
+    const delta = a.summary.total_commission - b.summary.total_commission;
+    const pct = b.summary.total_commission ? Math.round((delta / b.summary.total_commission) * 1000) / 10 : null;
+    return {
+      success: true,
+      current: { period: cur.label, total: a.summary.total_commission, deposits: a.summary.deposit_count },
+      previous: { period: prev.label, total: b.summary.total_commission, deposits: b.summary.deposit_count },
+      delta: Math.round(delta * 100) / 100,
+      delta_pct: pct,
+      message: `${cur.label}: ${fmtCad(a.summary.total_commission)} vs ${prev.label}: ${fmtCad(b.summary.total_commission)}${pct == null ? "" : ` (${pct > 0 ? "+" : ""}${pct} %)`}.`,
+    };
+  },
+
+  async list_commission_deposits(ctx, p) {
+    const g = await commissionGuard(ctx);
+    if ("error" in g) return g.error;
+    const range = commissionRange(p);
+    if ("error" in range) return range.error;
+    const limit = Math.min(Math.max(Number(p?.limit ?? 10) || 10, 1), 50);
+    const qs = buildDepositQuery({
+      users_id: g.usersId,
+      date_from: range.from, date_to: range.to,
+      order_by: "date_trans", sort: "desc", page: 1, per_page: limit,
+    });
+    const res = await commissionGet(`/api/main/commissions/reports/deposits?${qs}`, g.token, g.cid);
+    if (!res.ok) return commissionUpstreamError(res);
+    const rows = Array.isArray(res.data?.data) ? res.data.data : [];
+    return {
+      success: true,
+      period: range.label,
+      total_available: Number(res.data?.meta?.total ?? rows.length),
+      deposits: rows.map((d: any) => ({
+        number: d.number ?? null,
+        institution: d.institution ?? null,
+        amount: commissionNum(d.amount),
+        loan_amount: commissionNum(d.loan_amt),
+        date: d.date_trans ? String(d.date_trans).slice(0, 10) : null,
+        commission_type: d.commission_type ?? null,
+      })),
+    };
+  },
+
+  async list_financial_institutions(ctx) {
+    const g = await commissionGuard(ctx);
+    if ("error" in g) return g.error;
+    const res = await commissionGet("/api/main/financial-institutions", g.token, g.cid);
+    if (!res.ok) return commissionUpstreamError(res);
+    const list = Array.isArray(res.data?.data) ? res.data.data : Array.isArray(res.data) ? res.data : [];
+    return {
+      success: true,
+      institutions: list.map((i: any) => ({ id: i?.id ?? null, label: institutionLabel(i) })).filter((i: any) => i.id != null),
+    };
+  },
+
+  // ---- Alias conformes au contrat officiel ----
+  async get_commission_deposits(ctx, p) {
+    const range = p?.date_from || p?.date_to
+      ? { period: "custom", date_from: p?.date_from, date_to: p?.date_to }
+      : { period: p?.period ?? "month" };
+    return await TOOLS.list_commission_deposits(ctx, { ...p, ...range });
+  },
+
+  async get_commission_agents(ctx) {
+    const g = await commissionGuard(ctx);
+    if ("error" in g) return g.error;
+    const res = await commissionGet("/api/main/commissions/reports/agents", g.token, g.cid);
+    if (!res.ok) return commissionUpstreamError(res);
+    const list = Array.isArray(res.data?.data) ? res.data.data : Array.isArray(res.data) ? res.data : [];
+    return { success: true, agents: list.map(mapCommissionAgent).filter((a: any) => a.users_id != null) };
+  },
+
+  async get_financial_institutions(ctx) {
+    return await TOOLS.list_financial_institutions(ctx, {});
+  },
+
+  async open_commission_report(ctx, p) {
+    const role = String((ctx.profile as any)?.role ?? "");
+    if (role !== "broker" && role !== "admin") {
+      return { success: false, error: "forbidden", message: "Les rapports de commissions sont réservés aux courtiers et administrateurs." };
+    }
+    const qp = new URLSearchParams();
+    for (const k of ["period", "date_from", "date_to", "commission_type", "financial_inst_id"]) {
+      const v = p?.[k] ?? p?.filters?.[k];
+      if (v != null && String(v).trim() !== "") qp.set(k, String(v).trim().slice(0, 40));
+    }
+    const path = `/mplanipret/commissions${qp.toString() ? `?${qp}` : ""}`;
+    return {
+      success: true,
+      navigate: path,
+      action: "navigate",
+      message: "J'ouvre le rapport de commissions détaillé.",
+    };
+  },
 };
+
+/** Agent row → { users_id, name } tolerant to Maestro field shapes. */
+function mapCommissionAgent(a: any) {
+  const name = [a?.agent_name, a?.name, a?.full_name,
+    [a?.first_name, a?.last_name].filter(Boolean).join(" ").trim(),
+    a?.target_name, a?.email]
+    .map((v) => (v == null ? "" : String(v).trim()))
+    .find((v) => v.length > 0) ?? "—";
+  return { users_id: a?.users_id ?? a?.agent_name_id ?? a?.id ?? null, name };
+}
+
+
+const fmtCad = (n: number) =>
+  new Intl.NumberFormat("fr-CA", { style: "currency", currency: "CAD", maximumFractionDigits: 0 }).format(n || 0);
+
+const commissionNum = num;
+
+function commissionUpstreamError(r: { status: number; data: any }) {
+  return {
+    success: false,
+    error: `maestro_${r.status}`,
+    message: r.status === 401
+      ? "Session Maestro expirée : reconnecte ton compte Maestro dans Réglages."
+      : "Maestro n'a pas pu fournir les rapports de commissions pour le moment.",
+  };
+}
+
+/** Consent + role + Maestro identity gate for every commission tool. */
+async function commissionGuard(ctx: Ctx): Promise<
+  { token: string; usersId: string; cid: string } | { error: ToolResult }
+> {
+  const role = String((ctx.profile as any)?.role ?? "");
+  if (role !== "broker" && role !== "admin") {
+    return { error: { success: false, error: "forbidden", message: "Les commissions sont réservées aux courtiers." } };
+  }
+  const { data: settings } = await ctx.admin
+    .from("planipret_settings").select("preferences").eq("user_id", ctx.userId).maybeSingle();
+  if ((settings?.preferences as any)?.ava_include_commissions !== true) {
+    return {
+      error: {
+        success: false,
+        error: "commissions_not_authorized",
+        message: "Les commissions ne sont pas partagées avec AVA. Active « Inclure les commissions dans AVA » dans Plus › Commissions pour que je puisse les consulter.",
+      },
+    };
+  }
+  const token = await getUserMaestroAccessToken(ctx.admin, ctx.userId);
+  if (!token) {
+    return { error: { success: false, error: "maestro_not_connected", message: "Ton compte Maestro n'est pas connecté." } };
+  }
+  let usersId = (ctx.profile as any)?.maestro_broker_id ? String((ctx.profile as any).maestro_broker_id) : "";
+  if (!/^\d+$/.test(usersId)) {
+    const identity = await fetchMaestroUserProfile(getMaestroOAuthEnv(), token);
+    usersId = String(extractMaestroBrokerId(identity) ?? "");
+  }
+  if (!/^\d+$/.test(usersId)) {
+    return { error: { success: false, error: "broker_id_unresolved", message: "Impossible de résoudre ton identifiant Maestro." } };
+  }
+  return { token, usersId, cid: crypto.randomUUID().slice(0, 8) };
+}
+
+/** Period → America/Toronto date window (YYYY-MM-DD). */
+function commissionRange(p: any): { from: string; to: string; label: string } | { error: ToolResult } {
+  const period = String(p?.period ?? "month");
+  const previous = p?.previous === true;
+  const now = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Toronto" }));
+  const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+  if (period === "custom") {
+    const from = String(p?.date_from ?? "").slice(0, 10);
+    const to = String(p?.date_to ?? "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+      return { error: { success: false, error: "invalid_range", message: "Précise les dates de début et de fin (AAAA-MM-JJ)." } };
+    }
+    return { from: `${from} 00:00:00`, to: `${to} 23:59:59`, label: `${from} → ${to}` };
+  }
+  let start: Date, end: Date, label: string;
+  if (period === "year") {
+    const y = now.getFullYear() - (previous ? 1 : 0);
+    start = new Date(y, 0, 1); end = new Date(y, 11, 31); label = `${y}`;
+  } else if (period === "ytd") {
+    const y = now.getFullYear();
+    start = new Date(y, 0, 1); end = now; label = `${y} à ce jour`;
+  } else if (period === "quarter") {
+    let q = Math.floor(now.getMonth() / 3) - (previous ? 1 : 0);
+    let y = now.getFullYear();
+    if (q < 0) { q = 3; y -= 1; }
+    start = new Date(y, q * 3, 1); end = new Date(y, q * 3 + 3, 0); label = `T${q + 1} ${y}`;
+  } else {
+    const d = new Date(now.getFullYear(), now.getMonth() - (previous ? 1 : 0), 1);
+    start = d; end = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+    label = d.toLocaleDateString("fr-CA", { month: "long", year: "numeric" });
+  }
+  return { from: `${iso(start)} 00:00:00`, to: `${iso(end)} 23:59:59`, label };
+}
+
+async function commissionSummaryFor(
+  g: { token: string; usersId: string; cid: string },
+  range: { from: string; to: string; label: string },
+  commissionType?: string,
+): Promise<{ summary: ReturnType<typeof summarize> } | { error: ToolResult }> {
+  const rows: any[] = [];
+  let page = 1;
+  while (page <= 5) {
+    const qs = buildDepositQuery({
+      users_id: g.usersId,
+      date_from: range.from, date_to: range.to,
+      commission_type: ["base", "bonus", "bonus2", "perform"].includes(String(commissionType)) ? String(commissionType) : "base",
+      page, per_page: 200,
+    });
+    const res = await commissionGet(`/api/main/commissions/reports/deposits?${qs}`, g.token, g.cid);
+    if (!res.ok) return { error: commissionUpstreamError(res) };
+    const batch = Array.isArray(res.data?.data) ? res.data.data : [];
+    rows.push(...batch);
+    const last = Number(res.data?.meta?.last_page ?? 1);
+    if (page >= last || batch.length === 0) break;
+    page += 1;
+  }
+  return { summary: summarize(rows, page > 5) };
+}
+
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });

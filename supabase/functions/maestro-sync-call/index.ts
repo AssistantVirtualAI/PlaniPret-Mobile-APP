@@ -24,6 +24,7 @@ import {
   telecomAuth,
   updateCallPipeline,
 } from "../_shared/maestro.ts";
+import { recordingPermalink } from "../_shared/recording-link.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -196,7 +197,13 @@ Deno.serve(async (req) => {
         .select(CALL_COLUMNS)
         .eq("id", call_id)
         .maybeSingle();
-      if (fresh) call = fresh;
+      if (fresh) {
+        call = fresh;
+        transcript = fresh.transcript ?? fresh.transcript_raw ?? transcript;
+        steps.transcript = transcript && transcript.trim().length >= 20
+          ? { ok: true, generated: true }
+          : { ok: false, generated: true, error: tr.data?.error ?? "transcript_unavailable" };
+      }
     } else if (mId) {
       // Scott's Telecom API has no transcript upload endpoint; the transcript
       // is pushed inside the call PUT below (notes field).
@@ -204,6 +211,26 @@ Deno.serve(async (req) => {
       await setPipelineStep(admin, call_id, "transcript", "done", { pushed: true });
     } else {
       steps.transcript = { ok: false, skipped: "maestro_call_id_missing", error: "maestro_call_id_missing" };
+    }
+
+    // `maestro-transcript` also starts analysis asynchronously, but the
+    // orchestrator must not finish before that analysis exists. Generate (or
+    // reuse) it now, then reload so summary/coaching are delivered in this run.
+    if (transcript && !(call.ai_summary ?? call.ai_summary_short)) {
+      const aiResult = await invoke("maestro-ai-analysis", { call_id });
+      const { data: analyzed } = await admin
+        .from("planipret_phone_calls")
+        .select(CALL_COLUMNS)
+        .eq("id", call_id)
+        .maybeSingle();
+      if (analyzed) call = analyzed;
+      if (!(call.ai_summary ?? call.ai_summary_short)) {
+        steps.ai = {
+          ok: false,
+          status: aiResult.status,
+          error: aiResult.data?.error ?? "ai_analysis_missing",
+        };
+      }
     }
 
     // ── 4. AI summary + analytics (reuse existing analysis) ─
@@ -222,16 +249,23 @@ Deno.serve(async (req) => {
           ? asArray(aij.key_points)
           : asArray(call.ai_topics);
 
+      const recordingLink = await recordingPermalink(String(call_id)).catch(() => null);
       const res = await maestroFetch(cfg, {
         method: "PUT",
         path: `/api/v1/users/${encodeURIComponent(String(auth.brokerId ?? ""))}/calls/${encodeURIComponent(String(mId))}`,
         token: auth.token,
+        // Maestro n'accepte que `status`, `ai_summary` et `notes` sur ce PUT :
+        // tout le reste (coaching, scores, transcription) part dans `notes`.
         body: {
           status: "ended",
           ai_summary: summary,
           notes: [
+            recordingLink ? `Enregistrement: ${recordingLink}` : null,
+            summary ? `Résumé IA: ${summary}` : null,
             keyPoints.length ? `Points clés: ${keyPoints.map(String).join(" • ")}` : null,
             nextActions.length ? `Prochaines actions: ${nextActions.map(actionTitle).filter(Boolean).join(" • ")}` : null,
+            call.ai_coaching ? `Coaching IA${call.coaching_score != null ? ` (${call.coaching_score}/100)` : ""}:\n${String(call.ai_coaching).slice(0, 4000)}` : null,
+            call.lead_score != null ? `Score du lead: ${call.lead_score}${call.lead_temperature ? ` (${call.lead_temperature})` : ""}` : null,
             transcript ? `Transcription:\n${String(transcript).slice(0, 8000)}` : null,
           ].filter(Boolean).join("\n\n") || null,
         },

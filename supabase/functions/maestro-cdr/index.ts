@@ -21,6 +21,7 @@ import {
   updateCallPipeline,
 } from "../_shared/maestro.ts";
 import { markCdrRetrySucceeded, scheduleCdrRetry } from "../_shared/maestro-cdr-retry.ts";
+import { callDedupeKey, claimCallPost, releaseClaim, saveClaimResult } from "../_shared/maestro-call-dedupe.ts";
 
 function metaString(meta: unknown, key: string): string | null {
   const value = (meta as Record<string, unknown> | null)?.[key];
@@ -210,12 +211,14 @@ Deno.serve(async (req) => {
 
     // Keep creation payload to Maestro's documented minimum. Completion data,
     // summary and notes are sent afterward with PUT /calls/{id}.
+    // Maestro only accepts "inbound" | "outbound"; missed/no-answer legs are inbound.
+    const apiDirection = call.direction === "outbound" ? "outbound" : "inbound";
     const body: Record<string, unknown> = {
       provider_call_id: call.ns_call_id ?? call.id,
       status: "dialing",
-      direction: call.direction,
+      direction: apiDirection,
     };
-    if (call.direction === "inbound") {
+    if (apiDirection === "inbound") {
       body.from_user_number = normalizePhone(call.from_number);
       body.to_user_id = Number(auth.brokerId);
     } else {
@@ -257,10 +260,47 @@ Deno.serve(async (req) => {
       }, 200);
     }
 
-    const existingMaestroCallId = (call as any).maestro_call_id ?? null;
+    let existingMaestroCallId = (call as any).maestro_call_id ?? null;
+
+    // ── De-duplication: one Maestro record per physical call ──
+    // NetSapiens emits several legs per call and the mobile app may already
+    // have posted the same call live. Claim a shared key first.
+    const dedupeKey = callDedupeKey({
+      direction: apiDirection,
+      remoteNumber: apiDirection === "inbound" ? call.from_number : call.to_number,
+      startedAt: startedAt ?? call.started_at,
+      fallback: call.ns_call_id ?? call.id,
+    });
+    if (!existingMaestroCallId) {
+      const claim = await claimCallPost(admin, {
+        userId: call.user_id,
+        dedupeKey,
+        providerCallId: call.ns_call_id ?? call.id,
+        localCallId: call.id,
+        source: "maestro-cdr",
+      });
+      if (!claim.owner) {
+        if (claim.maestroCallId) {
+          await admin
+            .from("planipret_phone_calls")
+            .update({ maestro_synced: true, maestro_call_id: claim.maestroCallId })
+            .eq("id", call.id);
+          await setPipelineStep(admin, call_id, "cdr", "done", { deduped: true, maestro_call_id: claim.maestroCallId });
+          console.log(`[maestro-cdr] dedupe reuse call=${call_id} key=${dedupeKey} maestro=${claim.maestroCallId}`);
+          return json({ success: true, deduped: true, maestro_call_id: claim.maestroCallId });
+        }
+        // Another publisher is mid-flight: do not create a second record.
+        console.log(`[maestro-cdr] dedupe wait call=${call_id} key=${dedupeKey}`);
+        await setPipelineStep(admin, call_id, "cdr", "running", { deduped_pending: true });
+        return json({ success: true, deduped: true, pending: true });
+      }
+    }
+
     const res = await maestroFetch(cfg, {
-      method: force && existingMaestroCallId ? "PUT" : "POST",
-      path: force && existingMaestroCallId
+      // Retries, webhooks and sweepers must update the existing Maestro row.
+      // POSTing again whenever `force` is false created orphan duplicates.
+      method: existingMaestroCallId ? "PUT" : "POST",
+      path: existingMaestroCallId
         ? `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/calls/${encodeURIComponent(String(existingMaestroCallId))}`
         : `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/calls`,
       token: auth.token,
@@ -269,6 +309,7 @@ Deno.serve(async (req) => {
       idempotencyKey: call.id,
     }) as any;
     const ms = Date.now() - t0;
+
 
     await maestroSyncLog(admin, {
       user_id: call.user_id,
@@ -312,6 +353,8 @@ Deno.serve(async (req) => {
           maestro_call_id: maestroCallId,
         })
         .eq("id", call.id);
+      await saveClaimResult(admin, { userId: call.user_id, dedupeKey, maestroCallId: String(maestroCallId) });
+
       await updateCallPipeline(admin, call_id, { step: "cdr_sent" });
       await setPipelineStep(admin, call_id, "cdr", "done", { conflict: res.status === 409 });
       await pipelineLog(admin, {
@@ -384,7 +427,10 @@ Deno.serve(async (req) => {
       return json({ success: true, maestro_call_id: maestroCallId, client_id: maestroClientId, retry: { status: "succeeded" } });
     }
 
+    // Failed POST → release the claim so a retry can publish this call later.
+    await releaseClaim(admin, { userId: call.user_id, dedupeKey });
     const failure = summarizeMaestroFailure(res.status, res.data);
+
     await updateCallPipeline(admin, call_id, { step: "error", error: `${failure.error}_${res.status}` });
     await setPipelineStep(admin, call_id, "cdr", "error", { status: res.status });
     await pipelineLog(admin, {

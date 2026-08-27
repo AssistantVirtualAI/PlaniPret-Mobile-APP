@@ -29,26 +29,15 @@ Deno.serve(async (req) => {
       return new Response(JSON.stringify({ success: false, error: microsoftOAuthErrorMessage(d), details: d, auth_mode: token.usedClientSecret ? "confidential" : "public", retried_public: token.retriedPublic }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
+    // Graph /me is on the critical path: cap it so a slow Graph call can't
+    // keep the mobile "Connexion à Microsoft 365…" spinner alive.
     const meRes = await fetch("https://graph.microsoft.com/v1.0/me?$select=id,displayName,mail,userPrincipalName", {
       headers: { Authorization: `Bearer ${d.access_token}` },
-    });
-    const me = await meRes.json().catch(() => ({}));
+      signal: AbortSignal.timeout(8000),
+    }).catch(() => null);
+    const me = meRes ? await meRes.json().catch(() => ({})) : {};
 
     const msEmail = me?.mail ?? me?.userPrincipalName ?? null;
-
-    // Auto-link Maestro Telecom user by email (best-effort, non-blocking).
-    let maestroLink: { user_id?: string; email?: string } | null = null;
-    if (msEmail) {
-      try {
-        const linkRes = await admin.functions.invoke("maestro-actions", {
-          body: { action: "find_user_by_email", payload: { email: msEmail } },
-        });
-        const u = (linkRes.data as any)?.user;
-        if (u?.id) maestroLink = { user_id: String(u.id), email: u.email ?? msEmail };
-      } catch (e) {
-        console.warn("[ms365-oauth-exchange] maestro link failed", (e as any)?.message);
-      }
-    }
 
     await admin.from("planipret_profiles").update({
       ms365_access_token: d.access_token,
@@ -56,13 +45,33 @@ Deno.serve(async (req) => {
       ms365_scopes: d.scope ?? requestedScope,
       ms365_token_expiry: new Date(Date.now() + Number(d.expires_in ?? 3600) * 1000).toISOString(),
       ms365_email: msEmail,
-      ...(maestroLink ? {
-        maestro_telecom_user_id: maestroLink.user_id,
-        maestro_telecom_email: maestroLink.email,
-        maestro_telecom_linked_at: new Date().toISOString(),
-      } : {}),
     }).eq("user_id", userId);
-    return new Response(JSON.stringify({ success: true, ms_access_token: d.access_token, account: { email: msEmail, name: me?.displayName ?? null }, scopes: d.scope ?? requestedScope, auth_mode: token.usedClientSecret ? "confidential" : "public", retried_public: token.retriedPublic, maestro_link: maestroLink }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+
+    // Maestro Telecom auto-link used to run inline and could add 10-30s to the
+    // callback. It is best-effort, so it now runs after the response is sent.
+    if (msEmail) {
+      const link = (async () => {
+        try {
+          const linkRes = await admin.functions.invoke("maestro-actions", {
+            body: { action: "find_user_by_email", payload: { email: msEmail } },
+          });
+          const u = (linkRes.data as any)?.user;
+          if (u?.id) {
+            await admin.from("planipret_profiles").update({
+              maestro_telecom_user_id: String(u.id),
+              maestro_telecom_email: u.email ?? msEmail,
+              maestro_telecom_linked_at: new Date().toISOString(),
+            }).eq("user_id", userId);
+          }
+        } catch (e) {
+          console.warn("[ms365-oauth-exchange] maestro link failed", (e as any)?.message);
+        }
+      })();
+      try { (globalThis as any).EdgeRuntime?.waitUntil?.(link); } catch { /* noop */ }
+    }
+
+    return new Response(JSON.stringify({ success: true, ms_access_token: d.access_token, account: { email: msEmail, name: me?.displayName ?? null }, scopes: d.scope ?? requestedScope, auth_mode: token.usedClientSecret ? "confidential" : "public", retried_public: token.retriedPublic }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+
   } catch (e: any) {
     console.error("[ms365-oauth-exchange] unhandled", e?.message, e?.stack);
     return new Response(JSON.stringify({ success: false, error: e?.message ?? "Erreur" }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
