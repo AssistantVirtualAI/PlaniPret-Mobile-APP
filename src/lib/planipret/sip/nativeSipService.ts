@@ -5,6 +5,7 @@ import {
   armAorWatchdog,
   claimAorForNative,
   isPjsipEnabled,
+  nativeOwnsAor,
   normalizeMobileAor,
   preclaimNativeAor,
   releaseAorFromNative,

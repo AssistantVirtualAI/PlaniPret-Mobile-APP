@@ -382,8 +382,8 @@ export default function GreetingStudio({ profile, onProfileChange }: { profile: 
       {/* Step 3 - Generate */}
       <div>
         <div className="text-[10px] uppercase tracking-widest mb-2 font-semibold" style={{ color: TOKENS.muted }}>{t("greeting.previewGenerate")}</div>
-        <button onClick={() => generate(false)} disabled={generating || audioBusy} aria-busy={generating}
-          disabled={!selectedVoice || text.length < 10 || generating}
+        <button onClick={() => generate(false)} aria-busy={generating}
+          disabled={!selectedVoice || text.length < 10 || generating || audioBusy}
           className="w-full h-[52px] rounded-xl text-[15px] font-semibold text-white disabled:opacity-50 transition"
           style={{ background: "linear-gradient(135deg,#1A4A8A,#2E9BDC)" }}>
           {generating ? genStep : t("greeting.generateAudio")}

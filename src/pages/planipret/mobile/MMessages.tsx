@@ -6,7 +6,7 @@ import { useOutletContext, useSearchParams } from "react-router-dom";
 import { retryWithBackoff } from "@/lib/planipret/retryBackoff";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
-import { retryWithBackoff } from "@/lib/net/resilient";
+import { retryWithBackoff as retryNet } from "@/lib/net/resilient";
 import {
   Plus, X, ArrowLeft, Phone, Send, Paperclip, MessageSquare, Zap,
   Users, Mail, Sparkles, Loader2, RefreshCw, Reply, Circle, CheckCircle2, AlertTriangle, RotateCw,
@@ -865,6 +865,16 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
         <div ref={bottomRef} />
       </div>
 
+      {showJump && (
+        <button
+          onClick={jumpToBottom}
+          className="absolute right-4 bottom-24 z-20 px-3 py-2 rounded-full text-xs font-semibold shadow-lg flex items-center gap-1.5"
+          style={{ background: "var(--pp-brand-accent)", color: "#fff" }}
+        >
+          ↓ {newCount > 0 ? `${newCount} nouveau${newCount > 1 ? "x" : ""}` : "Revenir en bas"}
+        </button>
+      )}
+
       <Composer
         inputRef={inputRef}
         autoFocus
@@ -1020,15 +1030,6 @@ function TeamChat({ profile }: { profile: any }) {
         <div ref={bottomRef} />
       </div>
 
-      {showJump && (
-        <button
-          onClick={jumpToBottom}
-          className="absolute right-4 bottom-24 z-20 px-3 py-2 rounded-full text-xs font-semibold shadow-lg flex items-center gap-1.5"
-          style={{ background: "var(--pp-brand-accent)", color: "#fff" }}
-        >
-          ↓ {newCount > 0 ? `${newCount} nouveau${newCount > 1 ? "x" : ""}` : "Revenir en bas"}
-        </button>
-      )}
       <Composer text={text} setText={setText} onSend={send} sending={sending} placeholder={t("messages.teamPlaceholder")} />
 
       <AvaSummarizeSheet
@@ -1077,7 +1078,7 @@ export function EmailsList({ profile, initialTo, initialName }: { profile: any; 
     let data: any = null;
     let error: any = null;
     try {
-      const res: any = await retryWithBackoff(
+      const res: any = await retryNet(
         () => supabase.functions.invoke("ms365-actions", {
           body: { action: "read_emails", payload: { top: PAGE_SIZE, skip: 0 } },
         }),

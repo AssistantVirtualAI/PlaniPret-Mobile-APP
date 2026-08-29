@@ -220,5 +220,5 @@ if (missing.length > 0) {
 console.log(green(`[check-imports] \u2713 ${checked} local imports across ${reachable.size} bundled files all resolve`));
 if (orphanIssues.length > 0) {
   console.log(yellow(`[check-imports] ! ${orphanIssues.length} broken import(s) in ${new Set(orphanIssues.map((o) => o.file)).size} unbundled file(s) (not shipped):`));
-  for (const { file, line, spec } of orphanIssues) console.log(yellow(`    ${file}:${line} \u2192 "${spec}"`));
+  for (const { file, line, spec } of orphanIssues) console.log(yellow(`    ${file}:${line} → "${spec}"`));
 }

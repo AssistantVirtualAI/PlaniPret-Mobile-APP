@@ -86,9 +86,9 @@ export default function MStyleDiagnostics() {
         Device.getInfo().catch(() => ({ osVersion: "—", model: "—" })),
       ]);
       setBuild({
-        appVersion: appInfo.versionName ?? "—",
+        appVersion: (appInfo as any).versionName ?? "—",
         appBuild: (appInfo as any).build ?? "—",
-        appId: appInfo.id ?? "—",
+        appId: (appInfo as any).id ?? "—",
         platform: Capacitor.getPlatform(),
         isNative: Capacitor.isNativePlatform(),
         osVersion: (deviceInfo as any).osVersion ?? "—",

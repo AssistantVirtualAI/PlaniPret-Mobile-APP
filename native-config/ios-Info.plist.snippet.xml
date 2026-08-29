@@ -58,7 +58,8 @@
 <key>aps-environment</key>
 <string>production</string>
 
-<!-- Orientations requises par Apple pour le multitâche iPad. AppDelegate conserve l’iPhone en portrait. -->
+<!-- Orientations déclarées pour conformité App Store et multitâche iPad.
+     AppDelegate conserve le portrait uniquement à l’exécution sur iPhone. -->
 <key>UISupportedInterfaceOrientations</key>
 <array>
     <string>UIInterfaceOrientationPortrait</string>

@@ -23,6 +23,9 @@ import { retryWithBackoff } from "@/lib/net/resilient";
 import { Ms365ConnectionNotice } from "@/components/planipret/mobile/Ms365ConnectionNotice";
 import { useMs365Status } from "@/hooks/useMs365Status";
 import BriefListenButton from "@/components/planipret/mobile/BriefListenButton";
+import CommissionHomeCard from "@/components/planipret/mobile/CommissionHomeCard";
+import TasksHomeCard from "@/components/planipret/mobile/TasksHomeCard";
+
 
 
 type Period = "day" | "week" | "month" | "shift";
@@ -570,6 +573,14 @@ export default function MHome() {
           </>
         )}
       </section>
+
+      {/* ===== COMMISSIONS (KPI + tendance 6 mois + prêteurs) ===== */}
+      <CommissionHomeCard profile={profile} lang={lang} />
+
+      {/* ===== TÂCHES MAESTRO (aperçu) ===== */}
+      <TasksHomeCard profile={profile} lang={lang} />
+
+
 
       {/* ===== MICROSOFT CALENDAR (month grid + agenda) ===== */}
       <MsCalendarSection

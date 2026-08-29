@@ -33,11 +33,6 @@ async function nativeRemove(key: string): Promise<void> {
   } catch {}
 }
 
-/**
- * Fetches Microsoft SSO start configuration from the versioned
- * `pp-ms-auth-start` edge function. Falls back to `ms365-public-config`
- * for backward compatibility if the new function is not yet deployed.
- */
 async function fetchStartConfig(): Promise<any | null> {
   const start = await supabase.functions.invoke("pp-ms-auth-start", { body: {} });
   if (!start.error && (start.data as any)?.configured) return start.data;
@@ -52,8 +47,8 @@ export async function isMs365LoginConfigured(): Promise<boolean> {
 }
 
 export async function startMicrosoftSignIn(
-  nextPath = "/post-login",
-  opts?: { loginHint?: string; prompt?: "select_account" | "consent" | "login" | "none" },
+  nextPath = "/mplanipret/home",
+  opts?: { loginHint?: string; prompt?: "select_account" | "consent" | "none" },
 ): Promise<void> {
   const cfg = await fetchStartConfig();
   if (!cfg?.configured || !cfg?.client_id) {
@@ -80,10 +75,10 @@ export function getMicrosoftSignInIntent(): string | null {
 }
 
 export async function getMicrosoftSignInIntentAsync(): Promise<string | null> {
-  return getMicrosoftSignInIntent() || (await nativeGet(INTENT_KEY));
+  return getMicrosoftSignInIntent() || await nativeGet(INTENT_KEY);
 }
 
-export function getMicrosoftSignInNext(defaultPath = "/post-login"): string {
+export function getMicrosoftSignInNext(defaultPath = "/mplanipret"): string {
   try {
     const next = localStorage.getItem(NEXT_KEY) || defaultPath;
     return next.startsWith("/") && !next.startsWith("//") ? next : defaultPath;
@@ -92,7 +87,7 @@ export function getMicrosoftSignInNext(defaultPath = "/post-login"): string {
   }
 }
 
-export async function getMicrosoftSignInNextAsync(defaultPath = "/post-login"): Promise<string> {
+export async function getMicrosoftSignInNextAsync(defaultPath = "/mplanipret/home"): Promise<string> {
   const next = getMicrosoftSignInNext(defaultPath);
   if (next !== defaultPath) return next;
   const nativeNext = await nativeGet(NEXT_KEY);

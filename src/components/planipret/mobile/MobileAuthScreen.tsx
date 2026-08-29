@@ -142,7 +142,7 @@ export default function MobileAuthScreen({ onLoggedIn, msRedirect = "/mplanipret
     try {
       await startMicrosoftSignIn(msRedirect, {
         loginHint: email.trim() || undefined,
-        prompt: "login",
+        prompt: "select_account",
       });
     }
     catch (error: any) {

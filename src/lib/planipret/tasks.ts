@@ -1,9 +1,9 @@
 // Mobile-side task helpers. Pure logic lives in the shared module used by the
 // edge function so the client and the server never disagree on formatting.
-export * from "../../../supabase/functions/_shared/planipret-tasks";
+export * from "@/lib/planipret/shared/planipretTasks";
 
 import { invokeEdge } from "@/lib/planipret/edgeAuth";
-import type { NormalizedTask, TaskBuckets } from "../../../supabase/functions/_shared/planipret-tasks";
+import type { NormalizedTask, TaskBuckets } from "@/lib/planipret/shared/planipretTasks";
 
 export type TaskSource = "api" | "projection" | "unavailable";
 

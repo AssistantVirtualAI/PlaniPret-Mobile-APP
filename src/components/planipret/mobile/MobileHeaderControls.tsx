@@ -14,12 +14,13 @@ const STATUS_COLOR: Record<string, string> = {
 };
 
 export default function MobileHeaderControls({ profile, reloadProfile }: { profile: any; reloadProfile: () => Promise<void> | void }) {
-  const { t, lang, toggle: toggleLang } = useMplanipretLang();
+  const { lang, toggle: toggleLang } = useMplanipretLang();
   const { theme, toggle: toggleTheme } = useMplanipretTheme();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [unread, setUnread] = useState(0);
 
+  // Mirror the active theme on <html> so Tailwind `dark:` utilities react too.
   useEffect(() => {
     if (theme === "dark") document.documentElement.classList.add("dark");
     else document.documentElement.classList.remove("dark");
@@ -40,8 +41,8 @@ export default function MobileHeaderControls({ profile, reloadProfile }: { profi
       } catch { /* noop */ }
     };
     load();
-    const t = setInterval(load, 30000);
-    return () => { cancelled = true; clearInterval(t); };
+    const timer = setInterval(load, 30000);
+    return () => { cancelled = true; clearInterval(timer); };
   }, []);
 
   const initials = (profile?.full_name || profile?.email || "?")
@@ -49,8 +50,7 @@ export default function MobileHeaderControls({ profile, reloadProfile }: { profi
   const status = profile?.status ?? "available";
 
   const btn: CSSProperties = {
-    width: 32,
-    height: 32,
+    width: 32, height: 32,
     background: "var(--pp-bg-elevated)",
     border: "1px solid var(--pp-bg-border-2)",
     color: "var(--pp-text-secondary)",
@@ -73,6 +73,7 @@ export default function MobileHeaderControls({ profile, reloadProfile }: { profi
           <Languages className="w-3.5 h-3.5" />
           <span className="sr-only">{lang === "fr" ? "EN" : "FR"}</span>
         </button>
+
         <button
           onClick={toggleTheme}
           style={btn}
@@ -81,15 +82,22 @@ export default function MobileHeaderControls({ profile, reloadProfile }: { profi
         >
           {theme === "dark" ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
         </button>
-        <button onClick={() => navigate("/mplanipret/more")}
+
+        <button
+          onClick={() => navigate("/mplanipret/more")}
           style={btn}
-          aria-label="Settings">
+          aria-label="Settings"
+        >
           <SettingsIcon className="w-4 h-4" />
         </button>
-        <button onClick={() => navigate("/mplanipret/notifications")}
+
+        {/* Bell */}
+        <button
+          onClick={() => navigate("/mplanipret/notifications")}
           className="relative"
           style={btn}
-          aria-label="Notifications">
+          aria-label="Notifications"
+        >
           <Bell className="w-4 h-4" />
           {unread > 0 && (
             <span style={{
@@ -100,7 +108,10 @@ export default function MobileHeaderControls({ profile, reloadProfile }: { profi
             }}>{unread > 99 ? "99+" : unread}</span>
           )}
         </button>
-        <button onClick={() => setOpen(true)}
+
+        {/* Avatar initiales + status dot */}
+        <button
+          onClick={() => setOpen(true)}
           className="relative flex items-center justify-center rounded-full font-bold text-white"
           style={{
             width: 32, height: 32,
@@ -109,10 +120,13 @@ export default function MobileHeaderControls({ profile, reloadProfile }: { profi
             fontSize: 12,
             flexShrink: 0,
           }}
-          aria-label={t("header.profile")}>
+          aria-label="Profile"
+        >
           {initials}
-          <span className="absolute -bottom-0.5 -right-0.5 rounded-full"
-            style={{ width: 9, height: 9, background: STATUS_COLOR[status], border: "1.5px solid var(--pp-bg-surface)" }} />
+          <span
+            className="absolute -bottom-0.5 -right-0.5 rounded-full"
+            style={{ width: 9, height: 9, background: STATUS_COLOR[status], border: "1.5px solid var(--pp-bg-surface)" }}
+          />
         </button>
       </div>
       {open && <MobileProfileSheet profile={profile} reloadProfile={reloadProfile} onClose={() => setOpen(false)} />}

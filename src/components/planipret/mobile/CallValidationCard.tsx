@@ -30,7 +30,10 @@ export default function CallValidationCard() {
   const [ext, setExt] = useState(() => localStorage.getItem(STORAGE_KEY) || "");
   const [run, setRun] = useState<ValidationRun | null>(() => callValidator.snapshot());
 
-  useEffect(() => callValidator.subscribe(setRun), []);
+  useEffect(() => {
+    const unsubscribe = callValidator.subscribe(setRun);
+    return () => { unsubscribe(); };
+  }, []);
 
   const busy = run?.verdict === "running";
 
