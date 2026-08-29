@@ -30,8 +30,8 @@ function patchAndroid() {
     return;
   }
   let text = fs.readFileSync(file, "utf8");
-  text = text.replace(/versionCode\s+\d+/, `versionCode ${VERSION_CODE}`);
-  text = text.replace(/versionName\s+"[^"]*"/, `versionName "${VERSION_NAME}"`);
+  text = text.replace(/versionCode\s*(?:=\s*)?\d+/, `versionCode = ${VERSION_CODE}`);
+  text = text.replace(/versionName\s*(?:=\s*)?"[^"]*"/, `versionName = "${VERSION_NAME}"`);
   if (writeIfChanged(file, text)) {
     console.log(`[version] Android -> versionCode ${VERSION_CODE}, versionName ${VERSION_NAME}`);
   }

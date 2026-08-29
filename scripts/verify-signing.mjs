@@ -123,17 +123,22 @@ if (wantAndroid) {
   const gradlePath = path.join(appDir, "android/app/build.gradle");
   if (exists(gradlePath)) {
     const gradle = read(gradlePath);
-    check(gradle.includes(`applicationId "${appId}"`) || gradle.includes(`applicationId '${appId}'`),
-      `Android signing : applicationId doit être ${appId}`);
+    check(
+      gradle.includes(`applicationId "${appId}"`) ||
+      gradle.includes(`applicationId '${appId}'`) ||
+      gradle.includes(`applicationId = "${appId}"`) ||
+      gradle.includes(`applicationId = '${appId}'`),
+      `Android signing : applicationId doit être ${appId}`
+    );
     check(/signingConfigs\s*{[\s\S]*release/.test(gradle),
       "Android signing : aucun signingConfigs.release — le bundle ne pourra pas être publié sur Play");
     check(/buildTypes\s*{[\s\S]*release[\s\S]*signingConfig/.test(gradle),
       "Android signing : buildTypes.release doit référencer un signingConfig");
-    const vc = gradle.match(/versionCode\s+(\d+)/)?.[1];
+    const vc = gradle.match(/versionCode\s*(?:=\s*)?(\d+)/)?.[1];
     if (vc && Number(vc) !== Number(pkg.androidVersionCode)) {
       failures.push(`Android : versionCode (${vc}) ≠ package.json androidVersionCode (${pkg.androidVersionCode})`);
     } else if (vc) passed.push("Android : versionCode aligné sur package.json");
-    const vn = gradle.match(/versionName\s+["']([^"']+)["']/)?.[1];
+    const vn = gradle.match(/versionName\s*(?:=\s*)?["']([^"']+)["']/)?.[1];
     if (vn && vn !== pkg.version) {
       failures.push(`Android : versionName (${vn}) ≠ package.json version (${pkg.version})`);
     }
