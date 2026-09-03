@@ -5,10 +5,7 @@ import { toast } from "sonner";
 import { ppSipProvider, type PpSipEvent, type PpSipSnapshot } from "@/lib/planipret/sip/ppSipProvider";
 import { exportSipStability, getSipStabilityReport, resetSipStability } from "@/lib/planipret/sip/sipStabilityMonitor";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
-import { isPjsipEnabled, nativeOwnsAor, setPjsipEnabled } from "@/lib/planipret/sip/aorArbitration";
-import { nativeSip } from "@/lib/planipret/sip/nativeSipService";
-import { runPjsipRegisterProbe, PJSIP_PROBE_PORT, PJSIP_PROBE_SERVER, type PjsipProbeResult } from "@/lib/native/PpPjsipProbe";
-import CallValidationCard from "@/components/planipret/mobile/CallValidationCard";
+import { checkSipBackendRegistration, getLastSipBackendCheck, type SipBackendCheck } from "@/lib/planipret/sip/sipBackendCheck";
 
 const STAGES = ["idle", "connecting", "connected", "registered"] as const;
 
@@ -38,6 +35,7 @@ export default function MSipDebug() {
   const { t, lang } = useMplanipretLang();
   const [snap, setSnap] = useState<PpSipSnapshot>(() => ppSipProvider.getSnapshot());
   const [events, setEvents] = useState<PpSipEvent[]>(() => ppSipProvider.getEvents());
+  const [pbx, setPbx] = useState<SipBackendCheck | null>(() => getLastSipBackendCheck());
 
   useEffect(() => {
     const us = ppSipProvider.subscribe(setSnap);
@@ -45,10 +43,28 @@ export default function MSipDebug() {
     return () => { us(); ue(); };
   }, []);
 
+  // Live PBX-side truth: the local stack can be idle while the extension is
+  // really registered (native engine / other client). Poll the server.
+  useEffect(() => {
+    let alive = true;
+    const run = async (force = false) => {
+      const res = await checkSipBackendRegistration({ force });
+      if (alive && res) setPbx(res);
+    };
+    run(true);
+    const id = setInterval(() => run(false), 30_000);
+    const onVis = () => { if (document.visibilityState === "visible") run(true); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { alive = false; clearInterval(id); document.removeEventListener("visibilitychange", onVis); };
+  }, []);
+
   const cfg = ppSipProvider.getConfig();
-  const rawIdx = STAGES.indexOf(snap.status as any);
+  const pbxRegistered = Boolean(pbx?.registration?.mobile_registered || (pbx?.registration?.count ?? 0) > 0);
+  const status = pbxRegistered && snap.status !== "registered" ? "registered" : snap.status;
+  const rawIdx = STAGES.indexOf(status as any);
   const currentIdx = rawIdx >= 0 ? rawIdx : 0;
-  const isError = snap.status === "error";
+  const isError = status === "error";
+
 
   const copy = async () => {
     const payload = [
@@ -89,16 +105,16 @@ export default function MSipDebug() {
       {/* Status card */}
       <section className="pp-card p-4 space-y-3">
         <div className="flex items-center gap-2">
-          <Radio className="w-4 h-4" style={{ color: STATUS_COLOR[snap.status] }} />
+          <Radio className="w-4 h-4" style={{ color: STATUS_COLOR[status] }} />
           <span className="font-bold text-sm" style={{ color: "var(--pp-text-primary)" }}>{t("screens.sipDebug.stateTitle")}</span>
-          <span className="ml-auto px-2 py-0.5 rounded-full text-[11px] font-bold" style={{ background: STATUS_COLOR[snap.status], color: "#fff" }}>
-            {snap.status.toUpperCase()}
+          <span className="ml-auto px-2 py-0.5 rounded-full text-[11px] font-bold" style={{ background: STATUS_COLOR[status], color: "#fff" }}>
+            {status.toUpperCase()}
           </span>
         </div>
 
         <div className="flex items-center gap-1">
           {STAGES.map((s, i) => (
-            <StageDot key={s} label={s} active={!isError && currentIdx === i && s !== "registered"} done={!isError && ((snap.status === "registered" && currentIdx >= i) || currentIdx > i)} error={isError && i === Math.min(currentIdx, STAGES.length - 1)} />
+            <StageDot key={s} label={s} active={!isError && currentIdx === i && s !== "registered"} done={!isError && ((status === "registered" && currentIdx >= i) || currentIdx > i)} error={isError && i === Math.min(currentIdx, STAGES.length - 1)} />
           ))}
         </div>
 
@@ -110,7 +126,7 @@ export default function MSipDebug() {
         )}
 
         <div className="grid grid-cols-2 gap-2 text-[11px]" style={{ color: "var(--pp-text-secondary)" }}>
-          <div><span className="opacity-60">{t("screens.sipDebug.extShort")}</span> {cfg?.sipUsername ?? "—"}</div>
+          <div><span className="opacity-60">{t("screens.sipDebug.extShort")}</span> {cfg?.sipUsername ?? pbx?.extension ?? "—"}</div>
           <div><span className="opacity-60">{t("screens.sipDebug.domainShort")}</span> {cfg?.sipDomain ?? "—"}</div>
           <div className="col-span-2 truncate"><span className="opacity-60">{t("screens.sipDebug.wssShort")}</span> {cfg?.wssUrl ?? "—"}</div>
           <div className="col-span-2"><span className="opacity-60">{t("screens.sipDebug.lastRegistration")}</span> {snap.lastRegistrationAt ? new Date(snap.lastRegistrationAt).toLocaleTimeString(lang === "fr" ? "fr-CA" : "en-CA") : "—"}</div>
@@ -118,19 +134,7 @@ export default function MSipDebug() {
       </section>
 
 
-      {/* État réel du moteur natif (les champs WSS ci-dessus restent vides
-          quand PJSIP possède l'AOR : ce n'est pas une panne). */}
-      <NativeEngineCard />
-
       {/* 24h stability soak */}
-      {/* Interrupteur PJSIP (sans rebuild) */}
-      <PjsipToggleCard />
-
-      {/* Sonde PJSIP native (manuelle) */}
-      <PjsipProbeCard />
-
-
-      <CallValidationCard />
       <StabilityCard />
 
       {/* Event log */}
@@ -157,83 +161,6 @@ export default function MSipDebug() {
         )}
       </section>
     </div>
-  );
-}
-
-/**
- * État réel du moteur natif PJSIP.
- *
- * Sur iOS, PJSIP possède `<ext>M` et la pile JsSIP n'est jamais configurée :
- * la carte d'état plus haut affiche donc `IDLE` avec Ext/Domaine vides même
- * quand tout va bien. Cette carte montre l'état vrai et permet de relancer
- * l'initialisation (utile après une réinstallation de l'app).
- */
-function NativeEngineCard() {
-  const [state, setState] = useState(() => ({
-    available: nativeSip.isAvailable(),
-    registered: nativeSip.isRegistered(),
-    username: nativeSip.getUsername(),
-    extension: nativeSip.getExtension(),
-    engineState: nativeSip.getState(),
-  }));
-  const [repairing, setRepairing] = useState(false);
-
-  const refresh = () => setState({
-    available: nativeSip.isAvailable(),
-    registered: nativeSip.isRegistered(),
-    username: nativeSip.getUsername(),
-    extension: nativeSip.getExtension(),
-    engineState: nativeSip.getState(),
-  });
-
-  useEffect(() => {
-    const id = setInterval(() => { void nativeSip.refreshState().finally(refresh); }, 10000);
-    return () => clearInterval(id);
-  }, []);
-
-  const repair = async () => {
-    setRepairing(true);
-    try {
-      const ok = await Promise.race([
-        nativeSip.repairRegistration(),
-        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 55_000)),
-      ]);
-      refresh();
-      ok
-        ? toast.success("Moteur natif enregistré")
-        : toast.error("Le SIP ne s’est pas enregistré. Vérifiez le réseau puis réessayez.");
-    } catch (e: any) {
-      toast.error(e?.message ?? "Réparation échouée");
-    } finally {
-      setRepairing(false);
-    }
-  };
-
-  const color = state.registered ? "#10B981" : state.available ? "#F59E0B" : "#EF4444";
-
-  return (
-    <section className="pp-card p-4 space-y-3">
-      <div className="flex items-center gap-2">
-        <Radio className="w-4 h-4" style={{ color }} />
-        <span className="font-bold text-sm" style={{ color: "var(--pp-text-primary)" }}>Moteur natif PJSIP</span>
-        <span className="ml-auto px-2 py-0.5 rounded-full text-[11px] font-bold" style={{ background: color, color: "#fff" }}>
-          {state.registered ? "REGISTERED" : state.engineState.toUpperCase()}
-        </span>
-      </div>
-      <div className="grid grid-cols-2 gap-2 text-[11px]" style={{ color: "var(--pp-text-secondary)" }}>
-        <div><span className="opacity-60">AOR</span> {state.username ?? "—"}</div>
-        <div><span className="opacity-60">Poste</span> {state.extension ?? "—"}</div>
-        <div className="col-span-2"><span className="opacity-60">Plugin</span> {state.available ? "disponible" : "absent"}</div>
-      </div>
-      <button
-        onClick={repair}
-        disabled={repairing}
-        className="w-full py-2 rounded-lg text-[12px] font-semibold disabled:opacity-60"
-        style={{ background: "var(--pp-brand-accent)", color: "#fff" }}
-      >
-        {repairing ? "Réparation…" : "Réparer / réenregistrer le SIP"}
-      </button>
-    </section>
   );
 }
 
@@ -271,127 +198,6 @@ function StabilityCard() {
           {t("screens.sipDebug.startNewTest")}
         </button>
       </div>
-    </section>
-  );
-}
-
-/** Sonde PJSIP native — REGISTER TLS 5061, déclenchement manuel uniquement. */
-const PJSIP_PROBE_LAST_OK_KEY = "pp.pjsip.probe.last-ok.v1";
-
-function PjsipProbeCard() {
-  const [running, setRunning] = useState(false);
-  const [res, setRes] = useState<PjsipProbeResult | null>(null);
-  const [lastOk, setLastOk] = useState<string | null>(() => {
-    try { return localStorage.getItem(PJSIP_PROBE_LAST_OK_KEY); } catch { return null; }
-  });
-
-  const run = async () => {
-    setRunning(true);
-    setRes(null);
-    try {
-      const out = await runPjsipRegisterProbe();
-      setRes(out);
-      // Validation stricte : seul un 200 OK sur le transport TLS compte.
-      const validated = out.ok && out.code === 200 && out.transport === "TLS";
-      if (validated) {
-        const stamp = new Date().toISOString();
-        try { localStorage.setItem(PJSIP_PROBE_LAST_OK_KEY, stamp); } catch { /* noop */ }
-        setLastOk(stamp);
-        toast.success(`PJSIP validé — REGISTER 200 OK en TLS ${PJSIP_PROBE_PORT} (${out.elapsedMs ?? "?"} ms)`);
-      } else if (out.ok) {
-        toast.error(`PJSIP: réponse ${out.code ?? "?"} sur ${out.transport ?? "?"} — attendu 200 OK / TLS`);
-      } else {
-        toast.error(`PJSIP: ${out.reason}`);
-      }
-    } finally {
-      setRunning(false);
-    }
-  };
-
-  const validated = !!res && res.ok && res.code === 200 && res.transport === "TLS";
-  const color = res ? (validated ? "#10B981" : "#EF4444") : "#94A3B8";
-
-  return (
-    <section className="pp-card p-4 space-y-3">
-      <div className="flex items-center gap-2">
-        <Radio className="w-4 h-4" style={{ color }} />
-        <span className="font-bold text-sm" style={{ color: "var(--pp-text-primary)" }}>Sonde PJSIP native (TLS)</span>
-      </div>
-      <p className="text-[11px]" style={{ color: "var(--pp-text-secondary)" }}>
-        Vérifie que le moteur PJSIP est lié et enregistré en TLS sur {PJSIP_PROBE_SERVER}:{PJSIP_PROBE_PORT}.
-        Si la registration native est déjà active, elle est rapportée telle quelle — aucun second
-        enregistrement n'est créé.
-
-      </p>
-      {res && (
-        <div className="text-[11px] font-mono p-2 rounded space-y-1" style={{ background: "var(--pp-bg-elevated)", color }}>
-          {res.aor ? <div className="opacity-70">{res.aor}</div> : null}
-          <div>{res.code ? `SIP ${res.code} — ` : ""}{res.reason}{res.elapsedMs ? ` (${res.elapsedMs} ms)` : ""}</div>
-          <div className="font-bold">
-            {validated
-              ? `✅ VALIDÉ — 200 OK en TLS ${PJSIP_PROBE_PORT}`
-              : `❌ NON VALIDÉ — attendu 200 OK en TLS ${PJSIP_PROBE_PORT}`}
-          </div>
-        </div>
-      )}
-      {lastOk && !res && (
-        <div className="text-[11px]" style={{ color: "#10B981" }}>
-          Dernière validation TLS 5061 : {new Date(lastOk).toLocaleString("fr-CA")}
-        </div>
-      )}
-      <button onClick={run} disabled={running}
-        className="w-full py-1.5 rounded-lg text-[11px] font-semibold disabled:opacity-60"
-        style={{ background: "var(--pp-brand-accent)", color: "#fff" }}>
-        {running ? "REGISTER en cours…" : "Lancer la sonde PJSIP"}
-      </button>
-    </section>
-  );
-}
-
-/**
- * Interrupteur persistant `pp_pjsip_enabled` : permet de désactiver le moteur
- * PJSIP natif (repli JsSIP) sans recompiler l'application.
- */
-function PjsipToggleCard() {
-  const [enabled, setEnabled] = useState<boolean>(() => isPjsipEnabled());
-  const [owner, setOwner] = useState<string>(() => (nativeOwnsAor() ? "PJSIP (natif)" : "JsSIP (legacy)"));
-
-  useEffect(() => {
-    const tick = setInterval(() => setOwner(nativeOwnsAor() ? "PJSIP (natif)" : "JsSIP (legacy)"), 2000);
-    return () => clearInterval(tick);
-  }, []);
-
-  const toggle = async () => {
-    const next = !enabled;
-    // Désactiver PJSIP pendant qu'il détient l'AOR renvoie le device en WSS et
-    // fait sonner dans le vide : on exige une confirmation explicite.
-    if (!next && nativeOwnsAor()) {
-      const ok = window.confirm(
-        "PJSIP détient actuellement l'enregistrement SIP (TLS 5061). Le désactiver rebascule le poste en WebSocket et les appels entrants risquent d'aller à la messagerie. Continuer ?"
-      );
-      if (!ok) return;
-    }
-    setEnabled(next);
-    await setPjsipEnabled(next);
-    toast.success(next ? "PJSIP activé (redémarrer l'app)" : "PJSIP désactivé — repli JsSIP actif");
-  };
-
-
-  return (
-    <section className="pp-card p-3 space-y-2">
-      <div className="flex items-center justify-between">
-        <span className="font-bold text-sm" style={{ color: "var(--pp-text-primary)" }}>Moteur PJSIP natif</span>
-        <button
-          onClick={toggle}
-          className="text-[11px] font-bold px-3 py-1.5 rounded-lg"
-          style={{ background: enabled ? "#10B981" : "#94A3B8", color: "#fff" }}
-        >
-          {enabled ? "Activé" : "Désactivé"}
-        </button>
-      </div>
-      <p className="text-[11px]" style={{ color: "var(--pp-text-secondary)" }}>
-        Propriétaire de l'AOR : <span className="font-bold">{owner}</span> — clé <code>pp_pjsip_enabled</code>
-      </p>
     </section>
   );
 }

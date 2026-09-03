@@ -11,6 +11,7 @@ import {
   LogOut, Trash2, ChevronRight, Bot, Sparkles, X, Download, Shield, BellOff, Settings as SettingsIcon, BarChart3, Voicemail, Edit3, Languages, ExternalLink,
 } from "lucide-react";
 import { openBrokerPortal } from "@/lib/planipret/openBrokerPortal";
+import { getAppVersionInfo } from "@/lib/planipret/appVersion";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
 import { usePlanipretPush } from "@/hooks/usePlanipretPush";
 
@@ -26,7 +27,7 @@ import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import Ms365StatusBadge from "@/components/planipret/Ms365StatusBadge";
 import { openMs365Authorize } from "@/lib/ms365OAuth";
 import { useMplanipretSoftphone } from "@/hooks/useMplanipretSoftphone";
-import { ppSipProvider, type PpSipSnapshot } from "@/lib/planipret/sip/ppSipProvider";
+import { checkSipBackendRegistration, getLastSipBackendCheck, type SipBackendCheck } from "@/lib/planipret/sip/sipBackendCheck";
 import { Radio, Wallet, Users as UsersIcon } from "lucide-react";
 import { ms365Connected } from "@/lib/planipret/ms365Connected";
 
@@ -46,6 +47,8 @@ export default function MMore() {
   const [taskDiagOpen, setTaskDiagOpen] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
   const [openingPortal, setOpeningPortal] = useState(false);
+  const [appVersion, setAppVersion] = useState("…");
+  useEffect(() => { getAppVersionInfo().then((v) => setAppVersion(v.label)).catch(() => setAppVersion("—")); }, []);
   const [notifEnabled, setNotifEnabled] = useState<boolean>(() => localStorage.getItem("planipret_notif") === "1");
   const [darkMode, setDarkMode] = useState<boolean>(() => localStorage.getItem("planipret_dark") === "1");
   const [agentOn, setAgentOn] = useState<boolean>(() => localStorage.getItem("planipret_agent_on") !== "0");
@@ -98,12 +101,28 @@ export default function MMore() {
     })();
   }, [profile?.id]);
 
-  const { sipConnected, reregister } = useMplanipretSoftphone();
-  const nsConnected = !!(profile?.ns_extension ?? profile?.extension) && sipConnected;
+  const { snap: rawSipSnap, sipConnected: rawSipConnected, reregister } = useMplanipretSoftphone();
+  const [pbx, setPbx] = useState<SipBackendCheck | null>(() => getLastSipBackendCheck());
+  useEffect(() => {
+    let stop = false;
+    const run = async (force = false) => {
+      const res = await checkSipBackendRegistration({ force }).catch(() => null);
+      if (!stop && res) setPbx(res);
+    };
+    run(true);
+    const id = setInterval(() => run(true), 30000);
+    const onVis = () => { if (document.visibilityState === "visible") run(true); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { stop = true; clearInterval(id); document.removeEventListener("visibilitychange", onVis); };
+  }, []);
+  const pbxRegistered = Boolean(pbx?.registration?.mobile_registered || (pbx?.registration?.count ?? 0) > 0);
+  const sipSnap = pbxRegistered && rawSipSnap.status !== "registered"
+    ? { ...rawSipSnap, status: "registered" as const }
+    : rawSipSnap;
+  const sipConnected = rawSipConnected || pbxRegistered;
+  const nsConnected = !!(profile?.ns_extension ?? profile?.extension ?? pbx?.extension) && sipConnected;
   const isMs365Connected = ms365Connected(profile);
 
-  const [sipSnap, setSipSnap] = useState<PpSipSnapshot>(() => ppSipProvider.getSnapshot());
-  useEffect(() => ppSipProvider.subscribe(setSipSnap), []);
   const sipStatusColor: Record<string, string> = {
     idle: "#94A3B8", connecting: "#F59E0B", connected: "#3B82F6",
     registered: "#10B981", disconnected: "#94A3B8", error: "#EF4444",
@@ -473,7 +492,7 @@ export default function MMore() {
             ].join(" · ");
             ((data as any)?.coherent ? toast.success : toast.warning)(`${t("more.diagnostic")}: ${flags}`);
           }} chevron />
-        <Row icon={<Info className="w-4 h-4" />} label={t("more.appVersion")} right={<span style={{ fontSize: 12, color: "var(--pp-text-faint)" }}>v1.0.0 (build 1)</span>} />
+        <Row icon={<Info className="w-4 h-4" />} label={t("more.appVersion")} right={<span style={{ fontSize: 12, color: "var(--pp-text-faint)" }}>{appVersion}</span>} />
       </Section>
 
       <button

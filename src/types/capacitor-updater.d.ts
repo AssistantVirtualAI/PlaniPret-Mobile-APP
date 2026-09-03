@@ -5,5 +5,6 @@ declare module "@capgo/capacitor-updater" {
     next(options: { id: string }): Promise<void>;
     reset(): Promise<void>;
     notifyAppReady(): Promise<void>;
+    current(): Promise<{ bundle?: { id?: string; version?: string } }>;
   };
 }

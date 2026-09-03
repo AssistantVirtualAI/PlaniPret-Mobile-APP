@@ -1,15 +1,15 @@
 {
-  "generatedAt": "2026-09-03T22:27:49.731Z",
+  "generatedAt": "2026-09-03T23:18:52.971Z",
   "entry": [
     "src/index.tsx"
   ],
   "ok": true,
   "totals": {
-    "localImportsChecked": 531,
-    "bundledFiles": 212,
+    "localImportsChecked": 524,
+    "bundledFiles": 210,
     "missing": 0,
-    "orphanFiles": 916,
-    "orphanBrokenImports": 1
+    "orphanFiles": 919,
+    "orphanBrokenImports": 2
   },
   "missing": [],
   "orphanFiles": [
@@ -287,6 +287,7 @@
     "src/components/planipret/admin/integrations/NsTranscriptionProbe.tsx",
     "src/components/planipret/ava/AvaHistorySheet.tsx",
     "src/components/planipret/mobile/ActiveCallOverlay.tsx",
+    "src/components/planipret/mobile/CallValidationCard.tsx",
     "src/components/planipret/mobile/HandoverIndicator.tsx",
     "src/components/planipret/mobile/IdentityCard.tsx",
     "src/components/planipret/mobile/MobilePageSkeleton.tsx",
@@ -621,6 +622,7 @@
     "src/lib/livekit-shim.ts",
     "src/lib/logger.ts",
     "src/lib/motion-shim.tsx",
+    "src/lib/native/PpPjsipProbe.ts",
     "src/lib/pbx/auditLog.ts",
     "src/lib/pbx/sources.ts",
     "src/lib/pbx-ring-groups.ts",
@@ -662,6 +664,7 @@
     "src/lib/planipret/sip/__tests__/ppSipProvider.reconnect.test.ts",
     "src/lib/planipret/sip/__tests__/registerLatency.test.ts",
     "src/lib/planipret/sip/__tests__/registerMetrics.test.ts",
+    "src/lib/planipret/sip/callValidation.ts",
     "src/lib/planipret/timeBuckets.ts",
     "src/lib/planipretTranscript.ts",
     "src/lib/portalGuardMonitoring.ts",
@@ -931,6 +934,12 @@
     "src/vite-env.d.ts"
   ],
   "orphanBrokenImports": [
+    {
+      "file": "src/lib/planipret/portalAccess.ts",
+      "line": 12,
+      "spec": "@/components/planipret/PortalDomainGate",
+      "expected": "apps/planipret-mobile/src/components/planipret/PortalDomainGate.(ts|tsx)"
+    },
     {
       "file": "src/pages/planipret/broker/PBMaestroClients.tsx",
       "line": 8,

@@ -33,14 +33,10 @@ import { useMplanipretSoftphone } from "@/hooks/useMplanipretSoftphone";
 import MicDeniedBanner from "@/components/planipret/mobile/MicDeniedBanner";
 import { requestPermissionsAfterLogin } from "@/lib/native/requestPermissionsAfterLogin";
 import { bootstrapPushIfNative } from "@/lib/native/pushBootstrap";
-import { Capacitor } from "@capacitor/core";
 import { listDeviceContacts } from "@/lib/native/permissions/contacts";
 import { tokenize, matchAllTokens } from "@/lib/textNormalize";
 import { prefetchPpContacts, peekPpContacts } from "@/lib/ppContactsCache";
 import { PLANIPRET_PROFILE_SAFE_COLUMNS, PLANIPRET_PROFILE_BOOT_COLUMNS } from "@/lib/planipret/profileColumns";
-import { useRemoteConfig } from "@/hooks/useRemoteConfig";
-
-import { retryWithBackoff, adaptiveTimeout } from "@/lib/net/resilient";
 
 /** Hard timeout guard: never let a hung network call freeze the app shell. */
 function ppWithTimeout<T>(p: PromiseLike<T>, ms: number, label: string): Promise<T> {
@@ -48,29 +44,6 @@ function ppWithTimeout<T>(p: PromiseLike<T>, ms: number, label: string): Promise
     const timer = setTimeout(() => reject(new Error(`${label}_timeout`)), ms);
     p.then((v) => { clearTimeout(timer); resolve(v); }, (e) => { clearTimeout(timer); reject(e); });
   });
-}
-
-/**
- * Last known good profile. On slow cellular the boot query can exceed its
- * budget; rather than blocking the whole app behind an error card we boot on
- * the cached copy and refresh in the background.
- */
-const PP_PROFILE_CACHE_KEY = "pp_profile_boot_cache";
-function readCachedProfile(userId: string): any | null {
-  try {
-    const raw = localStorage.getItem(PP_PROFILE_CACHE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (!parsed?.profile || parsed.userId !== userId) return null;
-    // 30 days: the profile rarely changes and a stale copy beats a dead app.
-    if (Date.now() - (parsed.at ?? 0) > 30 * 86_400_000) return null;
-    return parsed.profile;
-  } catch { return null; }
-}
-function writeCachedProfile(userId: string, profile: any) {
-  try {
-    localStorage.setItem(PP_PROFILE_CACHE_KEY, JSON.stringify({ userId, profile, at: Date.now() }));
-  } catch { /* quota — non-blocking */ }
 }
 
 
@@ -97,11 +70,11 @@ const PlanipretBadge = () => (
 export type PlanipretMobileContext = { profile: any; reloadProfile: () => Promise<void>; openDialer: (number?: string, autoDial?: boolean) => void; openAva: () => void; registerRefresh: (fn: (() => Promise<void> | void) | null) => void; softphone: ReturnType<typeof useMplanipretSoftphone> };
 
 const TABS = [
-  { to: "/mplanipret/home", labelKey: "tabs.home", Icon: Home, flag: null },
-  { to: "/mplanipret/calls", labelKey: "tabs.calls", Icon: Phone, flag: null },
-  { to: "/mplanipret/ava", labelKey: "tabs.ava", Icon: Bot, flag: "tab_ava" },
-  { to: "/mplanipret/messages", labelKey: "tabs.messages", Icon: MessageSquare, flag: "tab_messages" },
-  { to: "/mplanipret/contacts", labelKey: "tabs.contacts", Icon: Users, flag: "tab_contacts" },
+  { to: "/mplanipret/home", labelKey: "tabs.home", Icon: Home },
+  { to: "/mplanipret/calls", labelKey: "tabs.calls", Icon: Phone },
+  { to: "/mplanipret/ava", labelKey: "tabs.ava", Icon: Bot },
+  { to: "/mplanipret/messages", labelKey: "tabs.messages", Icon: MessageSquare },
+  { to: "/mplanipret/contacts", labelKey: "tabs.contacts", Icon: Users },
 ];
 
 
@@ -494,9 +467,6 @@ export default function PlanipretMobile() {
   const navigate = useNavigate();
   const location = useLocation();
   const { t, lang, setLang } = useMplanipretLang();
-  // Onglets pilotés à distance depuis le portail admin (aucun rebuild requis).
-  const { isEnabled: isFeatureEnabled } = useRemoteConfig();
-  const visibleTabs = TABS.filter((tb) => !tb.flag || isFeatureEnabled(tb.flag));
   const [profile, setProfile] = useState<any>(null);
   // REST-only call control: outbound calls ring the broker's registered mobile device.
   // Wait for the profile before SIP init so cold starts do not race auth/profile boot.
@@ -505,7 +475,6 @@ export default function PlanipretMobile() {
   const sipCallLive = ["ringing-in", "ringing-out", "active", "held"].includes(
     String(softphone.snap.callState),
   );
-
   const [loading, setLoading] = useState(true);
   const [accessError, setAccessError] = useState<"unauthenticated" | "missing_profile" | "load_failed" | null>(null);
   const [profileErrorDetail, setProfileErrorDetail] = useState<string>("");
@@ -616,52 +585,6 @@ export default function PlanipretMobile() {
     });
     setInbound({ call_id: controlId, from_number: row.from_number, caller_name: row.caller_name });
   }, [attachRestCall]);
-
-  // A tap on the native iOS incoming-call banner must restore the ringing
-  // screen, not merely navigate to call history. The event may arrive before
-  // this shell/profile mounts on a cold launch, so consume the stored copy too.
-  useEffect(() => {
-    if (!profile?.user_id) return;
-    const consume = (detail: any) => {
-      const callId = String(detail?.callId ?? "");
-      if (!callId) return;
-      const action = String(detail?.action ?? "open");
-      const from = String(detail?.from ?? "");
-      attachRestCall?.({ id: callId, direction: "in", other: from || "Appel entrant", number: from, status: "ringing-in" });
-      setInbound({ call_id: callId, from_number: from, caller_name: from || undefined });
-      navigate("/mplanipret/calls", { replace: true });
-      if (action === "answer") {
-        try { (window as any).__ppPendingAnswer = { callId, ts: Date.now() }; } catch { /* ignore */ }
-        softphone.reregister();
-      } else if (action === "decline") {
-        softphone.hangup();
-        setInbound(null);
-      }
-      try { sessionStorage.removeItem("pp.pending-incoming-action.v1"); } catch { /* ignore */ }
-    };
-    const onAction = (event: Event) => consume((event as CustomEvent).detail);
-    window.addEventListener("pp:incoming-notification-action", onAction);
-    try {
-      const raw = sessionStorage.getItem("pp.pending-incoming-action.v1");
-      if (raw) consume(JSON.parse(raw));
-    } catch { /* ignore */ }
-    return () => window.removeEventListener("pp:incoming-notification-action", onAction);
-  }, [profile?.user_id, attachRestCall, navigate, softphone]);
-
-  useEffect(() => {
-    if (!profile?.user_id) return;
-    const onNativeInvite = (event: Event) => {
-      const invite = (event as CustomEvent).detail ?? {};
-      const callId = String(invite.callId ?? invite.call_id ?? "");
-      if (!callId) return;
-      const from = String(invite.from ?? invite.fromNumber ?? invite.callerNumber ?? "");
-      attachRestCall?.({ id: callId, direction: "in", other: from || "Appel entrant", number: from, status: "ringing-in" });
-      setInbound({ call_id: callId, from_number: from, caller_name: String(invite.callerName ?? "") || undefined });
-      navigate("/mplanipret/calls", { replace: true });
-    };
-    window.addEventListener("pp:sip-incoming-invite", onNativeInvite);
-    return () => window.removeEventListener("pp:sip-incoming-invite", onNativeInvite);
-  }, [profile?.user_id, attachRestCall, navigate]);
   const onAiInsight = useCallback((row: any) => {
     toast(t("toasts.aiAnalysisReady"), {
       description: String(row.ai_summary ?? "").slice(0, 80),
@@ -842,7 +765,7 @@ export default function PlanipretMobile() {
     }
     let session: any = null;
     try {
-      const r: any = await ppWithTimeout(supabase.auth.getSession(), adaptiveTimeout(8000), "get_session");
+      const r: any = await ppWithTimeout(supabase.auth.getSession(), 8000, "get_session");
       session = r?.data?.session ?? null;
     } catch (e) {
       console.warn("[PlanipretMobile] getSession timeout", e);
@@ -882,13 +805,10 @@ export default function PlanipretMobile() {
       }
       if (!currentSession?.access_token) throw new Error("no_session");
 
-      const { data: fnData, error: fnError }: any = await retryWithBackoff(
-        () => supabase.functions.invoke("pp-mobile-profile", {
-          body: { fields: "safe" },
-          headers: { Authorization: `Bearer ${currentSession.access_token}` },
-        }),
-        { attempts: 2, timeoutMs: 10000, label: "profile_fn" },
-      );
+      const { data: fnData, error: fnError }: any = await ppWithTimeout(supabase.functions.invoke("pp-mobile-profile", {
+        body: { fields: "safe" },
+        headers: { Authorization: `Bearer ${currentSession.access_token}` },
+      }), 10000, "profile_fn");
       if (fnError) throw fnError;
       const fnProfile = (fnData as any)?.profile ?? null;
       if (!fnProfile) throw new Error((fnData as any)?.error ?? "missing_profile");
@@ -899,18 +819,8 @@ export default function PlanipretMobile() {
     let error: any = null;
 
     // 1) Stable path: direct RLS-backed profile read. Backend function is fallback only.
-    // Cellular links (LTE/5G) often lose the first request while the radio wakes
-    // up, so the read is retried with a growing budget instead of failing hard.
     try {
-      const direct: any = await retryWithBackoff(
-        () => supabase.from("planipret_profiles").select(PLANIPRET_PROFILE_BOOT_COLUMNS).eq("user_id", user.id).maybeSingle(),
-        {
-          attempts: 3,
-          timeoutMs: 9000,
-          label: "profile_query",
-          onRetry: (n, err) => console.warn(`[PlanipretMobile] profile query attempt ${n} failed`, err),
-        },
-      );
+      const direct: any = await ppWithTimeout(supabase.from("planipret_profiles").select(PLANIPRET_PROFILE_BOOT_COLUMNS).eq("user_id", user.id).maybeSingle(), 10000, "profile_query");
       data = direct.data as any;
       error = direct.error;
     } catch (directErr: any) {
@@ -953,19 +863,6 @@ export default function PlanipretMobile() {
 
     if (error) {
       console.error("[PlanipretMobile] profile query error:", error.message, (error as any).code);
-      // Network failure (timeout / lost radio) → boot on the last known good
-      // profile instead of the dead-end error card, then refresh silently.
-      const cached = readCachedProfile(user.id);
-      const networkish = /timeout|fetch|network|load failed/i.test(String(error.message ?? ""));
-      if (cached && networkish) {
-        console.warn("[PlanipretMobile] booting from cached profile (slow network)");
-        setAccessError(null);
-        setProfileErrorDetail("");
-        setProfile(cached);
-        setLoading(false);
-        if (attempt < 3) setTimeout(() => { void loadProfile(attempt + 1); }, 6000);
-        return;
-      }
       setProfileErrorDetail(error.message || "");
       recordRedirect(location.pathname, ROUTES.MPLANIPRET, "PlanipretMobile.loadProfile", "profile load failed");
       setAccessError("load_failed");
@@ -981,7 +878,6 @@ export default function PlanipretMobile() {
     setAccessError(null);
     setProfileErrorDetail("");
     setProfile(data);
-    writeCachedProfile(user.id, data);
     setLoading(false);
     void supabase
       .from("planipret_profiles")
@@ -989,7 +885,7 @@ export default function PlanipretMobile() {
       .eq("user_id", user.id)
       .maybeSingle()
       .then(async ({ data: full, error: fullError }) => {
-        if (full) { setProfile(full); writeCachedProfile(user.id, full); }
+        if (full) setProfile(full);
         else if (fullError) {
           try {
             const fallbackFull = await loadProfileViaFunction();
@@ -1021,7 +917,7 @@ export default function PlanipretMobile() {
       toast.error(error.message || t("home.connectionImpossible"));
       return;
     }
-    // On native, trigger the OS permission prompts directly (no in-app primer page).
+    // On native, show the VoIP rationale primer (which runs the permission flow).
     // On web, this is a no-op.
     void requestPermissionsAfterLogin();
     toast.success(t("auth.success"));
@@ -1040,7 +936,7 @@ export default function PlanipretMobile() {
     if (!profile?.user_id) return;
     const ext = profile?.ns_extension || profile?.extension || "";
     void bootstrapPushIfNative(ext);
-    void requestPermissionsAfterLogin(ext);
+    void requestPermissionsAfterLogin();
     // Warm the directory/personal/shared/Maestro caches in parallel so the
     // dialer's Search tab and Contacts render from memory instantly.
     const actions: Array<"list" | "shared" | "directory" | "maestro"> = ["list", "shared", "directory"];
@@ -1090,6 +986,20 @@ export default function PlanipretMobile() {
               <p style={{ fontSize: 11, opacity: 0.7, color: "var(--pp-text-secondary)", marginBottom: 12, wordBreak: "break-word" }}>{profileErrorDetail}</p>
             )}
             <button onClick={() => { setProfileErrorDetail(""); setAccessError(null); setLoading(true); void loadProfile(); }} className="pp-btn-primary inline-block">{t("common.retry")}</button>
+            <button
+              onClick={async () => {
+                try { await supabase.auth.signOut(); } catch { /* ignore */ }
+                setProfile(null);
+                setProfileErrorDetail("");
+                setAccessError("unauthenticated");
+                setLoading(false);
+              }}
+              className="w-full mt-3 text-[12px] font-semibold"
+              style={{ color: "var(--pp-brand-accent)", minHeight: 44 }}
+            >
+              {t("common.logout")}
+            </button>
+
           </div>
         </div>
       </Frame>
@@ -1176,11 +1086,11 @@ export default function PlanipretMobile() {
         )}
 
 
-        {/* Tab bar (onglets pilotés depuis le portail) */}
-        <nav className="absolute bottom-[22px] inset-x-0 grid z-10 pp-mobile-tabbar"
-          style={{ height: 84, gridTemplateColumns: `repeat(${visibleTabs.length || 1}, minmax(0, 1fr))` }}>
+        {/* Tab bar (5 tabs) */}
+        <nav className="absolute bottom-[22px] inset-x-0 grid grid-cols-5 z-10 pp-mobile-tabbar"
+          style={{ height: 84 }}>
 
-          {visibleTabs.map((tabItem) => {
+          {TABS.map((tabItem) => {
             const badge = tabItem.to.endsWith("/messages") ? unreadMsg : 0;
             const isAva = tabItem.to.endsWith("/ava");
             return (
@@ -1253,16 +1163,12 @@ export default function PlanipretMobile() {
 
         <Dialer open={dialerOpen} autoDial={dialerAutoDial} onClose={() => { setDialerOpen(false); setDialerAutoDial(false); }} initial={dialerInit} openMessages={(n) => { setDialerOpen(false); openSmsComposer({ number: n }); }} softphone={softphone} maestroConfigured={Boolean(profile?.maestro_broker_id)} />
         <PpActiveCallScreen softphone={softphone} />
-        {/* A live WebRTC session owns the UI: PpActiveCallScreen already shows
-            the ringing/answer + keypad screen, so the REST overlay must not
-            steal the tap. */}
         <InboundCallOverlay
           call={sipCallLive ? null : inbound}
           onClose={() => setInbound(null)}
           onAnswer={async () => { await softphone.answer(); }}
           onReject={() => { softphone.hangup(); }}
         />
-
         {avaOpen && profile?.user_id && (
           profile.voice_agent_enabled && avaMode === "voice"
             ? (
@@ -1319,7 +1225,7 @@ function Frame({ children, forceDark = false }: { children: React.ReactNode; for
           ? "linear-gradient(160deg, #060D1A 0%, #0A1425 100%)"
           : "linear-gradient(160deg, #EEF2F8 0%, #DCE3EC 100%)",
       }}>
-      <div id="pp-mobile-frame" className="planipret-mobile-phone overflow-hidden w-full h-full md:w-[390px] md:h-[844px] md:rounded-[44px] relative"
+      <div id="pp-mobile-frame" className="planipret-mobile-phone overflow-hidden w-full h-full md:w-[390px] md:h-[844px] md:max-h-full md:rounded-[44px] relative"
         style={{
           background: "var(--pp-bg-base)",
           border: "1px solid var(--pp-bg-border-2)",

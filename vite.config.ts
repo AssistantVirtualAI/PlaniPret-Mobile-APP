@@ -18,6 +18,7 @@ function readCapacitorVersion(): string {
 }
 
 const capacitorVersion = readCapacitorVersion();
+const mobilePackage = JSON.parse(fs.readFileSync(path.resolve(__dirname, 'package.json'), 'utf8'));
 
 // L'updater OTA n'est présent que dans les builds natifs. Quand le paquet
 // n'est pas installé, on l'alias vers un stub pour ne pas casser le build web.
@@ -92,6 +93,8 @@ export default defineConfig({
     __APP_ID__: JSON.stringify('planipret'),
     'import.meta.env.VITE_BUILD_ID': JSON.stringify(buildId),
     'import.meta.env.VITE_BUILD_TIME': JSON.stringify(buildTime),
+    'import.meta.env.VITE_APP_VERSION': JSON.stringify(String(mobilePackage.version ?? 'unknown')),
+    'import.meta.env.VITE_NATIVE_BUILD': JSON.stringify(String(mobilePackage.androidVersionCode ?? 'unknown')),
     'import.meta.env.VITE_CAPACITOR_VERSION': JSON.stringify(capacitorVersion),
   },
 });
