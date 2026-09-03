@@ -1,3 +1,4 @@
+import { aiFetch } from "../_shared/claude-compat.ts";
 // pp-moh-improve — corrige/réécrit un texte d'annonce de musique d'attente
 // avec Claude (via Lovable AI Gateway). Admin Planiprêt uniquement.
 import { corsHeaders, json, requirePlanipretAdmin } from "../_shared/pp-admin.ts";
@@ -15,7 +16,7 @@ Deno.serve(async (req) => {
     };
   if (text.trim().length < 5) return json({ success: false, error: "text_too_short" }, 400);
 
-  const key = Deno.env.get("LOVABLE_API_KEY");
+  const key = Deno.env.get("ANTHROPIC_API_KEY");
   if (!key) return json({ success: false, error: "lovable_ai_not_configured" }, 500);
 
   const sys = language === "en"
@@ -23,7 +24,7 @@ Deno.serve(async (req) => {
     : `Tu réécris des scripts d'annonce de musique d'attente pour le système téléphonique d'un cabinet de courtage hypothécaire. Rends-les clairs, chaleureux, ${tone}, et faciles à lire à voix haute. Le script doit durer moins d'environ ${max_seconds} secondes à l'oral (~${Math.round(max_seconds * 2.3)} mots). Corrige l'orthographe et la grammaire (français du Québec). Réponds UNIQUEMENT avec le script final — pas de guillemets, pas de préambule, pas de notes.`;
 
   try {
-    const r = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    const r = await aiFetch("https://ai.lovable/v1/chat/completions", {
       method: "POST",
       headers: {
         Authorization: `Bearer ${key}`,

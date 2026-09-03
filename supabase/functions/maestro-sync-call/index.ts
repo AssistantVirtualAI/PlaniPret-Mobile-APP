@@ -24,6 +24,7 @@ import {
   telecomAuth,
   updateCallPipeline,
 } from "../_shared/maestro.ts";
+import { callCorrelationId, ensureMaestroCall } from "../_shared/maestro-guard.ts";
 import { recordingPermalink } from "../_shared/recording-link.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -175,6 +176,28 @@ Deno.serve(async (req) => {
         hint: "Reconnect the broker's Telecom identity so the numeric Telecom user ID is linked.",
         steps,
       }, 200);
+    }
+    // ── Garde-fou strict : CDR confirmé AVANT enregistrement / transcription / IA.
+    // Tant que Maestro ne reconnaît pas le call id, on s'arrête et on laisse le
+    // retry planifié rejouer (évite les maestro_put_404 / maestro_404 en cascade).
+    const guard = await ensureMaestroCall(admin, { callId: String(call_id), step: "maestro_sync" });
+    if (!guard.ok) {
+      steps.guard = { ok: false, reason: guard.reason, permanent: !!guard.permanent, strikes: guard.strikes ?? null };
+      await pipelineLog(admin, {
+        call_id, user_id: call.user_id, step: "maestro_sync", status: "skipped",
+        correlation_id: callCorrelationId(String(call_id)), entity_type: "call",
+        error_message: guard.reason ?? "maestro_call_unconfirmed",
+        payload: { steps, permanent: !!guard.permanent },
+      });
+      return json({
+        success: false,
+        error: guard.reason ?? "maestro_call_unconfirmed",
+        retry_pending: !guard.permanent,
+        steps,
+      }, 200);
+    }
+    if (guard.maestroCallId && guard.maestroCallId !== call.maestro_call_id) {
+      call = { ...call, maestro_call_id: guard.maestroCallId };
     }
     const mId = call.maestro_call_id;
 

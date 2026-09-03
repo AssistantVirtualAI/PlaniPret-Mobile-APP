@@ -1,3 +1,4 @@
+import { aiFetch } from "../_shared/claude-compat.ts";
 // AVA Planiprêt — secure server-side tool router for the ElevenLabs agent.
 // Every tool the agent triggers passes through here. Logs each call into
 // planipret_ava_conversations.
@@ -254,9 +255,9 @@ async function callClaude(system: string, userText: string): Promise<string | nu
   if (res) return res;
 
   // fallback Lovable AI
-  const lk = Deno.env.get("LOVABLE_API_KEY");
+  const lk = Deno.env.get("ANTHROPIC_API_KEY");
   if (!lk) return null;
-  const r = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+  const r = await aiFetch("https://ai.lovable/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json", "Lovable-API-Key": lk },
     body: JSON.stringify({ model: "google/gemini-3-flash-preview", messages: [{ role: "system", content: system }, { role: "user", content: userText }] }),
@@ -1100,10 +1101,10 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
     }
     if (!bodyText) return { success: false, error: "no_content_to_summarize" };
 
-    const key = Deno.env.get("LOVABLE_API_KEY");
-    if (!key) return { success: true, summary: bodyText.slice(0, 400), message: "Résumé indisponible (LOVABLE_API_KEY manquant)" };
+    const key = Deno.env.get("ANTHROPIC_API_KEY");
+    if (!key) return { success: true, summary: bodyText.slice(0, 400), message: "Résumé indisponible (ANTHROPIC_API_KEY manquant)" };
 
-    const aiRes = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    const aiRes = await aiFetch("https://ai.lovable/v1/chat/completions", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Lovable-API-Key": key },
       body: JSON.stringify({
@@ -1350,7 +1351,7 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
         { name: "Maestro", status: prof?.maestro_connected ? "connected" : "not_connected", message: "" },
         { name: "Microsoft 365", status: prof?.ms365_access_token ? "connected" : "not_connected", message: "" },
         { name: "ElevenLabs", status: Deno.env.get("ELEVENLABS_API_KEY") ? "connected" : "not_connected", message: "" },
-        { name: "Anthropic / Lovable AI", status: Deno.env.get("LOVABLE_API_KEY") ? "connected" : "not_connected", message: "" },
+        { name: "Anthropic / Lovable AI", status: Deno.env.get("ANTHROPIC_API_KEY") ? "connected" : "not_connected", message: "" },
       ],
     };
   },

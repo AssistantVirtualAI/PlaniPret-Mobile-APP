@@ -150,6 +150,14 @@ async function nsPut(path: string, payload: Record<string, unknown>) {
   });
 }
 
+async function nsPatch(path: string, payload: Record<string, unknown>) {
+  return await nsFetch(path, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
 async function nsPost(path: string, payload: Record<string, unknown>) {
   return await nsFetch(path, {
     method: "POST",
@@ -207,8 +215,8 @@ function queueRingRuleResync(brokerId: string, reason: string, force = false) {
  *
  * The client therefore declares which transport it will actually register with:
  *  - `wss` (default) — WebView / JsSIP over wss:9002 on a core node.
- *  - `tcp` (mobile default) — native SIP over sip:5060 on a core node.
- *  - `tls` — native SIP over sip:5061 (optionnel, plus sécurisé).
+ *  - `tls` (mobile default) — native SIP over sip:5061 on a core node.
+ *  - `tcp` — legacy native fallback only.
  */
 type SipTransport = "wss" | "tls" | "tcp";
 const nsTransport = (t: SipTransport) => (t === "tls" ? "TLS" : t === "tcp" ? "TCP" : "WSS");
@@ -259,7 +267,7 @@ Deno.serve(async (req) => {
   // Invariant AOR/transport : `<ext>M` = app native PJSIP/TLS uniquement,
   // `<ext>W` = navigateur JsSIP/WSS. Jamais l'inverse, sinon le dernier
   // REGISTER reçu vole le Contact et les appels partent au mauvais client.
-  const sipTransport: SipTransport = clientType === "mobile" ? "tcp" : "wss";
+  const sipTransport: SipTransport = clientType === "mobile" ? "tls" : "wss";
 
 
   const authHeader = req.headers.get("Authorization") ?? "";
@@ -272,11 +280,12 @@ Deno.serve(async (req) => {
 
   const { data: profile } = await userClient
     .from("planipret_profiles")
-    .select("id, user_id, full_name, email, ns_extension, ns_domain, maestro_broker_id")
+    .select("id, user_id, full_name, email, extension, ns_extension, ns_domain, maestro_broker_id")
     .eq("user_id", user.id)
     .maybeSingle();
 
-  if (!profile?.ns_extension) {
+  const profileExtension = String(profile?.extension || profile?.ns_extension || "").trim();
+  if (!profileExtension) {
     return json({
       ok: false,
       error: "no_extension",
@@ -284,7 +293,10 @@ Deno.serve(async (req) => {
     }, 200);
   }
 
-  const ext = String(profile.ns_extension);
+  // `extension` is the portal/PBX source of truth. `ns_extension` is retained
+  // only as a legacy fallback so a stale manual NS link can never register the
+  // mobile app on an old subscriber (for example 1702 instead of 1372).
+  const ext = profileExtension;
   const domain = profile.ns_domain || NS_DEFAULT_DOMAIN;
   const deviceName = deviceNameFor(ext, clientType);
   const brokerDisplayName = String((profile as any).full_name || (profile as any).email || ext).trim();
@@ -394,6 +406,30 @@ Deno.serve(async (req) => {
   // also make two devices share a password. Only a newly self-healed device uses
   // our per-device deterministic fallback.
   const admin = createClient(SUPABASE_URL, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+
+  // Keep the outbound caller ID aligned with the DID assigned to this exact
+  // extension. A stale shared caller ID makes callbacks reach another broker
+  // or a disconnected number even though the SIP account itself is healthy.
+  const { data: didRow } = await admin
+    .from("planipret_did_assignments")
+    .select("phone_number_digits, phone_number_e164")
+    .eq("domain", domain)
+    .eq("extension", ext)
+    .eq("status", "assigned")
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const assignedCallerId = String(didRow?.phone_number_digits ?? didRow?.phone_number_e164 ?? "").replace(/\D/g, "");
+  let callerIdRepair: { ok: boolean; status: number } | null = null;
+  if (assignedCallerId) {
+    const repaired = await nsPatch(
+      `/domains/${encodeURIComponent(domain)}/users/${encodeURIComponent(ext)}`,
+      {
+        "caller-id-number": assignedCallerId,
+      },
+    );
+    callerIdRepair = { ok: repaired.ok, status: repaired.status };
+  }
   const secretName = clientType === "mobile"
     ? `pp_sip_${profile.id}_mobile`
     : `pp_sip_${profile.id}_widget`;
@@ -464,5 +500,7 @@ Deno.serve(async (req) => {
     sip_state: sipState,
     device_registered: sipState === "registered",
     repair_status: repairStatus ? { ok: repairStatus.ok, status: repairStatus.status } : null,
+    caller_id_number: assignedCallerId || null,
+    caller_id_repair: callerIdRepair,
   });
 });

@@ -1,3 +1,4 @@
+import { aiFetch } from "../_shared/claude-compat.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { z } from "npm:zod@3.23.8";
@@ -69,7 +70,7 @@ Deno.serve(async (req) => {
       recent_sync_jobs: jobs.data ?? [],
     };
 
-    const apiKey = Deno.env.get("LOVABLE_API_KEY");
+    const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
     const fallback = () => {
       const msg = parsed.data.message.toLowerCase();
       const action = msg.includes("sync") || msg.includes("refresh")
@@ -88,7 +89,7 @@ Only propose sync actions. For destructive or unsupported requests, proposal mus
 Context: ${JSON.stringify(context).slice(0, 18000)}
 User: ${parsed.data.message}`;
 
-    const ai = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    const ai = await aiFetch("https://ai.lovable/v1/chat/completions", {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({

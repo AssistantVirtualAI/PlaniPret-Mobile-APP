@@ -548,17 +548,24 @@ export default function PlanipretMobile() {
   // foreground, and every 20 minutes so connections never silently drop.
   useEffect(() => {
     if (!profile?.user_id) return;
-    let last = 0;
+    // Spaced out on purpose: each Microsoft refresh can raise a "new sign-in"
+    // alert on the broker's account. We ping at most once every 6 hours
+    // (persisted across app launches) and let the server refresh only when a
+    // token is actually about to expire.
+    const KEY = `pp-keepalive-last-${profile.user_id}`;
+    const MIN_INTERVAL = 6 * 60 * 60 * 1000;
     const ping = () => {
-      if (Date.now() - last < 60_000) return;
-      last = Date.now();
+      let last = 0;
+      try { last = Number(localStorage.getItem(KEY) ?? 0); } catch { /* noop */ }
+      if (Date.now() - last < MIN_INTERVAL) return;
+      try { localStorage.setItem(KEY, String(Date.now())); } catch { /* noop */ }
       // Silent: a background keepalive must never bounce the user to login.
       void invokeEdge("pp-connections-keepalive", {}, { silent: true }).catch(() => {});
     };
     ping();
     const onVis = () => { if (document.visibilityState === "visible") ping(); };
     document.addEventListener("visibilitychange", onVis);
-    const iv = setInterval(ping, 20 * 60 * 1000);
+    const iv = setInterval(ping, MIN_INTERVAL);
     return () => { document.removeEventListener("visibilitychange", onVis); clearInterval(iv); };
   }, [profile?.user_id]);
 

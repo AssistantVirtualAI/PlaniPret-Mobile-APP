@@ -72,6 +72,7 @@ Deno.serve(async (req) => {
     }
 
     await admin.from("planipret_profiles").update({
+      extension,
       ns_extension: extension,
       ns_domain: domain,
       ns_sip_username: String(nsUser["login-username"] ?? extension),
@@ -98,6 +99,7 @@ Deno.serve(async (req) => {
     if (!nsUser) return json({ error: "extension_not_found" }, 404);
 
     await admin.from("planipret_profiles").update({
+      extension,
       ns_extension: extension,
       ns_domain: domain,
       ns_sip_username: String(nsUser["login-username"] ?? extension),

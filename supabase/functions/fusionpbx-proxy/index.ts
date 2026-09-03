@@ -1,3 +1,4 @@
+import { aiFetch } from "../_shared/claude-compat.ts";
 // FusionPBX v7 REST proxy for the AVA Statistic / Lemtel app.
 // All client calls authenticate via Supabase JWT; the FusionPBX credentials
 // (URL, username, API key, domain UUID) live only in Vault.
@@ -41,6 +42,16 @@ const ACTIVE_CALLS_TTL_MS = 5_000;
 // Cache for live system health (per origin)
 const SYSTEM_HEALTH_CACHE = new Map<string, LiveCacheEntry>();
 const SYSTEM_HEALTH_TTL_MS = 10_000;
+
+// Circuit breaker for CDR endpoints denied by FusionPBX (403 on every URL).
+// This is a permission problem on the PBX side (`xml_cdr_view` / API access for
+// the REST user), not a transient error: retrying every poll only produced a
+// storm of 502s and one failed sync job per tick. Remember the denial for a few
+// minutes and short-circuit instead.
+const CDR_DENIED: { until: number; attempts: unknown[] } = { until: 0, attempts: [] };
+const CDR_DENIED_TTL_MS = 5 * 60_000;
+let LAST_CDR_FAIL_JOB = 0;
+const CDR_FAIL_JOB_THROTTLE_MS = 5 * 60_000;
 
 function fusionBaseOrigin(baseUrl: string) {
   try { return new URL(baseUrl).origin.replace(/\/+$/, ""); }
@@ -130,7 +141,7 @@ async function getFusionSessionCookie(baseUrl: string): Promise<string> {
   return cookie;
 }
 
-Deno.serve(async (req) => {
+const handler = async (req: Request): Promise<Response> => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
   // Per-request correlation id. Echoed in every error response + every log line
@@ -173,7 +184,7 @@ Deno.serve(async (req) => {
   // domain_uuid is being acted upon. This lets each customer's admin manage
   // their own phone system through the proxy.
   if (!isServiceCall && userId) {
-    const readOnly = new Set(["ping", "debug-raw", "resolve-domain", "diagnostics", "list-extensions", "list-domains", "list-cdrs", "get-cdrs", "sync-cdrs", "backfill-cdrs", "sync-domains", "sync-voicemail-messages", "sync-ivr-options", "sync-all", "get-recording", "get-recording-signed-url", "list-queues", "queue-login", "queue-logout", "queue-pause", "list-ivrs", "list-ring-groups", "list-moh", "list-recordings", "list-devices", "list-destinations", "list-voicemails", "list-voicemail-messages", "list-registrations", "get-registrations", "get-registrations-live", "list-gateways", "list-gateways-all-domains", "list-gateways-merged", "get-gateways", "list-sip-profiles", "list-conferences", "list-hold-music", "list-dialplans", "get-extension", "sync_status", "sync-status", "list-active-calls", "get-active-calls-live", "system-status", "get-system-health-live", "desktop-audit", "pbx-health-check", "health-check"]);
+    const readOnly = new Set(["ping", "debug-raw", "resolve-domain", "diagnostics", "list-extensions", "list-domains", "list-cdrs", "get-cdrs", "sync-cdrs", "backfill-cdrs", "sync-domains", "sync-voicemail-messages", "sync-ivr-options", "sync-all", "get-recording", "get-recording-signed-url", "list-queues", "queue-login", "queue-logout", "queue-pause", "list-ivrs", "list-ring-groups", "list-moh", "list-recordings", "list-devices", "list-destinations", "list-voicemails", "list-voicemail-messages", "list-registrations", "get-registrations", "get-registrations-live", "list-gateways", "list-gateways-all-domains", "list-gateways-merged", "get-gateways", "list-sip-profiles", "list-conferences", "list-hold-music", "list-dialplans", "get-extension", "sync_status", "sync-status", "list-active-calls", "get-active-calls-live", "system-status", "get-system-health-live", "desktop-audit", "pbx-health-check", "health-check", "healthcheck"]);
     const isRead = readOnly.has(_earlyAction);
     const rpcName = isRead ? "is_lemtel_member" : "is_lemtel_admin";
     const { data: allowed } = await admin.rpc(rpcName, { _user_id: userId });
@@ -239,6 +250,143 @@ Deno.serve(async (req) => {
   const action: string = body.action || "ping";
   organization_id = body.organization_id || LEMTEL_ORG;
   const params = body.params || {};
+
+  // ─── Healthcheck ────────────────────────────────────────────────────────
+  // Self-contained upstream connectivity probe. Never throws: every failure
+  // mode returns an explicit machine-readable `reason` + human `message`.
+  // Body: { action: "healthcheck", deep?: boolean }  (deep also tests the web
+  // UI PHP session login used for recording downloads).
+  if (action === "healthcheck") {
+    const startedAll = Date.now();
+    const checks: Array<Record<string, unknown>> = [];
+    const addCheck = (name: string, ok: boolean, extra: Record<string, unknown> = {}) =>
+      checks.push({ name, ok, ...extra });
+
+    // 1) Configuration
+    const secretNames = ["FUSIONPBX_API_URL", "FUSIONPBX_USERNAME", "FUSIONPBX_API_KEY", "FUSIONPBX_DOMAIN_UUID"];
+    const missing = secretNames.filter((n) => !Deno.env.get(n));
+    addCheck("config", missing.length === 0, { missing });
+    if (missing.length > 0) {
+      return json({
+        ok: false,
+        status: "down",
+        reason: "MISSING_SECRET",
+        message: `Configuration incomplète : ${missing.join(", ")} manquant(s) dans le coffre.`,
+        checks,
+        correlation_id: correlationId,
+        checked_at: new Date().toISOString(),
+      }, 503, { "X-Request-Id": correlationId });
+    }
+
+    const apiBase = (Deno.env.get("FUSIONPBX_API_URL") || "").replace(/\/+$/, "").replace(/\/app\/api(\/\d+)?$/, "");
+    const apiKey = Deno.env.get("FUSIONPBX_API_KEY")!;
+    const domainUuid = Deno.env.get("FUSIONPBX_DOMAIN_UUID")!;
+
+    const fail = (reason: string, message: string, status = 503, extra: Record<string, unknown> = {}) =>
+      json({
+        ok: false, status: "down", reason, message, checks,
+        total_ms: Date.now() - startedAll, correlation_id: correlationId,
+        checked_at: new Date().toISOString(), ...extra,
+      }, status, { "X-Request-Id": correlationId });
+
+    // 2) TCP/TLS + HTTP reachability of the FusionPBX host
+    const t1 = Date.now();
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 8000);
+      const res = await fetch(`${apiBase}/login.php`, { redirect: "manual", signal: ctrl.signal });
+      clearTimeout(timer);
+      await res.body?.cancel();
+      addCheck("reachable", true, { http_status: res.status, latency_ms: Date.now() - t1, url: apiBase });
+    } catch (e: any) {
+      const aborted = e?.name === "AbortError";
+      addCheck("reachable", false, { latency_ms: Date.now() - t1, url: apiBase, error: String(e?.message ?? e) });
+      return fail(
+        aborted ? "FUSIONPBX_TIMEOUT" : "FUSIONPBX_UNREACHABLE",
+        aborted
+          ? `Le serveur FusionPBX (${apiBase}) n'a pas répondu en 8 s.`
+          : `Impossible de joindre FusionPBX (${apiBase}) : ${String(e?.message ?? e)}`,
+      );
+    }
+
+    // 3) REST API auth + a real read against the configured domain
+    const t2 = Date.now();
+    let apiStatus = 0;
+    let apiRaw = "";
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 10_000);
+      const res = await fetch(`${apiBase}/app/api/7/extensions?domain_uuid=${domainUuid}&limit=1`, {
+        headers: { Authorization: `Basic ${apiKey}`, Accept: "application/json" },
+        signal: ctrl.signal,
+      });
+      clearTimeout(timer);
+      apiStatus = res.status;
+      apiRaw = (await res.text()).slice(0, 300);
+    } catch (e: any) {
+      const aborted = e?.name === "AbortError";
+      addCheck("api", false, { latency_ms: Date.now() - t2, error: String(e?.message ?? e) });
+      return fail(
+        aborted ? "FUSIONPBX_TIMEOUT" : "FUSIONPBX_UNREACHABLE",
+        aborted
+          ? "L'API FusionPBX n'a pas répondu en 10 s."
+          : `Erreur réseau sur l'API FusionPBX : ${String(e?.message ?? e)}`,
+      );
+    }
+
+    const apiLatency = Date.now() - t2;
+    if (apiStatus === 401 || apiStatus === 403) {
+      addCheck("api", false, { http_status: apiStatus, latency_ms: apiLatency });
+      return fail("FUSIONPBX_AUTH_FAILED", apiStatus === 403
+        ? "FusionPBX a refusé l'accès (403) — la clé API est valide mais l'utilisateur n'a pas les permissions requises (ex. extension_view / xml_cdr_view)."
+        : "Authentification refusée par FusionPBX (401) — vérifiez FUSIONPBX_API_KEY.", 503, { http_status: apiStatus });
+    }
+    if (apiStatus === 404) {
+      addCheck("api", false, { http_status: 404, latency_ms: apiLatency });
+      return fail("ENDPOINT_NOT_FOUND", "L'API FusionPBX ne connaît pas /app/api/7/extensions — vérifiez FUSIONPBX_API_URL ou la version de l'API.", 503);
+    }
+    if (apiStatus >= 500) {
+      addCheck("api", false, { http_status: apiStatus, latency_ms: apiLatency, raw: apiRaw });
+      return fail("FUSIONPBX_UPSTREAM_ERROR", `FusionPBX a répondu ${apiStatus} — le serveur PBX est en erreur.`, 503, { http_status: apiStatus });
+    }
+
+    let parsed: any = null;
+    try { parsed = apiRaw ? JSON.parse(apiRaw) : {}; } catch { /* not JSON */ }
+    if (parsed === null) {
+      addCheck("api", false, { http_status: apiStatus, latency_ms: apiLatency, raw: apiRaw });
+      return fail("INVALID_RESPONSE", "FusionPBX a répondu autre chose que du JSON (page de login ou proxy intermédiaire ?).", 503);
+    }
+    addCheck("api", true, { http_status: apiStatus, latency_ms: apiLatency });
+
+    // 4) Domain resolution sanity
+    addCheck("domain", !!domainUuid, { domain_uuid: domainUuid });
+
+    // 5) Optional deep check: web UI session (used for recording downloads)
+    if (body.deep === true) {
+      const t3 = Date.now();
+      try {
+        const cookie = await getFusionSessionCookie(apiBase);
+        addCheck("web_session", !!cookie, { latency_ms: Date.now() - t3 });
+        if (!cookie) {
+          return fail("FUSIONPBX_SESSION_FAILED", "Connexion à l'interface web FusionPBX impossible — les téléchargements d'enregistrements échoueront.");
+        }
+      } catch (e: any) {
+        addCheck("web_session", false, { latency_ms: Date.now() - t3, error: String(e?.message ?? e) });
+        return fail("FUSIONPBX_SESSION_FAILED", `Session web FusionPBX indisponible : ${String(e?.message ?? e)}`);
+      }
+    }
+
+    return json({
+      ok: true,
+      status: "healthy",
+      reason: null,
+      message: "FusionPBX est joignable et authentifié.",
+      checks,
+      total_ms: Date.now() - startedAll,
+      correlation_id: correlationId,
+      checked_at: new Date().toISOString(),
+    }, 200, { "X-Request-Id": correlationId });
+  }
 
   // Secrets
   const required = (n: string) => {
@@ -1423,6 +1571,10 @@ Deno.serve(async (req) => {
     ];
 
     async function fetchCdrsWithFallback(extraQp: Record<string, string> = {}) {
+      // Short-circuit while FusionPBX is denying CDR access (403 everywhere).
+      if (CDR_DENIED.until > Date.now()) {
+        return { ok: false, endpoint: null, records: [] as any[], attempts: CDR_DENIED.attempts as any[], denied: true };
+      }
       // Try cached endpoint first
       const { data: integ } = await admin.from("pbx_integrations")
         .select("id, config").eq("organization_id", organization_id).maybeSingle();
@@ -1490,7 +1642,14 @@ Deno.serve(async (req) => {
           attempts.push({ endpoint: ep, status: 0, error: e?.message || String(e) });
         }
       }
-      return { ok: false, endpoint: null, records: [] as any[], attempts };
+      // Every endpoint denied → PBX permission problem, open the breaker.
+      const allForbidden = attempts.length > 0 && attempts.some((a) => a.status === 403) &&
+        attempts.every((a) => a.status === 403 || a.status === 404 || a.status === 401);
+      if (allForbidden) {
+        CDR_DENIED.until = Date.now() + CDR_DENIED_TTL_MS;
+        CDR_DENIED.attempts = attempts;
+      }
+      return { ok: false, endpoint: null, records: [] as any[], attempts, denied: allForbidden };
     }
 
     // ---- CDR endpoint diagnostic ----
@@ -1591,11 +1750,26 @@ Deno.serve(async (req) => {
         const r = await fetchCdrsWithFallback(extra);
         if (!r.ok) {
           if (i === 0) {
-            await admin.from("pbx_sync_jobs").insert({
-              organization_id, job_type: action, status: "failed",
-              started_at: new Date().toISOString(), completed_at: new Date().toISOString(),
-              error: `No working CDR endpoint. Attempts: ${JSON.stringify(r.attempts).slice(0, 1500)}`, stats: {},
-            });
+            const denied = (r as any).denied === true;
+            // Throttle the failed-job rows: pollers hit this every 20-30s.
+            if (Date.now() - LAST_CDR_FAIL_JOB > CDR_FAIL_JOB_THROTTLE_MS) {
+              LAST_CDR_FAIL_JOB = Date.now();
+              await admin.from("pbx_sync_jobs").insert({
+                organization_id, job_type: action, status: "failed",
+                started_at: new Date().toISOString(), completed_at: new Date().toISOString(),
+                error: `No working CDR endpoint. Attempts: ${JSON.stringify(r.attempts).slice(0, 1500)}`, stats: {},
+              });
+            }
+            if (denied) {
+              // Upstream permission problem, not a proxy crash: report it as a
+              // failed dependency with an actionable message instead of a 502 storm.
+              return json({
+                error: "FUSIONPBX_CDR_FORBIDDEN",
+                message: "FusionPBX refuse l'accès aux CDR (403). Activez les permissions xml_cdr_view / xml_cdr_all pour l'utilisateur API dans Group Manager.",
+                attempts: r.attempts,
+                cdrs: [], records: [], data: [],
+              }, 424);
+            }
             return json({ error: "NO_CDR_ENDPOINT", attempts: r.attempts }, 502);
           }
           allErrors.push(`page ${i}: fetch_failed`);
@@ -3127,8 +3301,8 @@ Deno.serve(async (req) => {
     // Transcription & summary via Lovable AI Gateway
     // ============================================================
     if (action === "transcribe-recording" || action === "summarize-recording") {
-      const lovableKey = Deno.env.get("LOVABLE_API_KEY");
-      if (!lovableKey) return json({ error: "LOVABLE_API_KEY not configured" }, 400);
+      const lovableKey = Deno.env.get("ANTHROPIC_API_KEY");
+      if (!lovableKey) return json({ error: "ANTHROPIC_API_KEY not configured" }, 400);
       const recordingId = (params as any).recording_id || (body as any).recording_id;
       if (!recordingId) return json({ error: "recording_id required" }, 400);
 
@@ -3155,7 +3329,7 @@ Deno.serve(async (req) => {
         for (let i = 0; i < bytes.length; i += 0x8000) b64 += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + 0x8000)));
         b64 = btoa(b64);
 
-        const aiRes = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+        const aiRes = await aiFetch("https://ai.lovable/v1/chat/completions", {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${lovableKey}` },
           body: JSON.stringify({
@@ -3204,7 +3378,7 @@ Deno.serve(async (req) => {
       if (!transcript?.content) return json({ error: "no transcript available; transcribe first" }, 400);
 
       await admin.from("pbx_call_recordings").update({ summary_status: "pending" }).eq("id", recordingId);
-      const aiRes = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      const aiRes = await aiFetch("https://ai.lovable/v1/chat/completions", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${lovableKey}` },
         body: JSON.stringify({
@@ -3317,4 +3491,64 @@ Deno.serve(async (req) => {
     }
     return json({ error: "INTERNAL", correlation_id: correlationId, message: e?.message || String(e) }, 500, { "X-Request-Id": correlationId });
   }
+};
+
+/**
+ * Records every proxy call (action, status, duration) into
+ * `planipret_proxy_health` so the Maestro dashboard can chart 502/timeout
+ * rates. Telemetry failures never affect the response.
+ */
+async function recordProxyHealth(row: Record<string, unknown>) {
+  try {
+    const url = Deno.env.get("SUPABASE_URL");
+    const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+    if (!url || !key) return;
+    await fetch(`${url}/rest/v1/planipret_proxy_health`, {
+      method: "POST",
+      headers: { apikey: key, Authorization: `Bearer ${key}`, "content-type": "application/json", Prefer: "return=minimal" },
+      body: JSON.stringify({ function_name: "fusionpbx-proxy", ...row }),
+    });
+  } catch { /* ignore */ }
+}
+
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") return handler(req);
+  const t0 = Date.now();
+  let action = "unknown";
+  let cloned = req;
+  try {
+    const copy = req.clone();
+    cloned = req;
+    const parsed = await copy.json().catch(() => null);
+    if (parsed && typeof parsed.action === "string") action = parsed.action;
+  } catch { /* non-JSON body */ }
+
+  let res: Response;
+  try {
+    res = await handler(cloned);
+  } catch (e: any) {
+    await recordProxyHealth({
+      action, status_code: 500, outcome: "crash",
+      duration_ms: Date.now() - t0, error_code: "UNCAUGHT", message: String(e?.message || e).slice(0, 500),
+    });
+    throw e;
+  }
+
+  const status = res.status;
+  if (status >= 400) {
+    let errorCode: string | null = null;
+    try {
+      const peek = await res.clone().json();
+      errorCode = typeof peek?.error === "string" ? peek.error : null;
+    } catch { /* non-JSON */ }
+    const timeout = /timeout|timed out/i.test(errorCode ?? "");
+    void recordProxyHealth({
+      action, status_code: status,
+      outcome: timeout ? "timeout" : status === 502 ? "bad_gateway" : "error",
+      duration_ms: Date.now() - t0, error_code: errorCode,
+    });
+  } else {
+    void recordProxyHealth({ action, status_code: status, outcome: "ok", duration_ms: Date.now() - t0 });
+  }
+  return res;
 });

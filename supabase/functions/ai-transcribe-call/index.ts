@@ -1,3 +1,4 @@
+import { aiFetch } from "../_shared/claude-compat.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { callAnthropic } from "../_shared/anthropic.ts";
 
@@ -354,10 +355,9 @@ Deno.serve(async (req) => {
 
     console.log("ai-transcribe-call audio resolution", { call_record_id, audioSource, bytes: audioBytes?.length || 0, fetchErrors });
 
-    const lovableKey = Deno.env.get("LOVABLE_API_KEY") || null;
-    // NOTE: We do NOT abort here if lovableKey is absent — Whisper (OPENAI_API_KEY) is
-    // the primary provider and does not need LOVABLE_API_KEY. Lovable Gateway is only
-    // used as a fallback after Whisper fails. We only abort if BOTH keys are absent.
+    const sttKey = Deno.env.get("OPENAI_API_KEY") || null;
+    // STT runs on OpenAI (Whisper primary, gpt-4o-mini-transcribe secondary).
+    // Claude has no audio endpoint; it only cleans up the text afterwards.
     if (!audioBytes || audioBytes.length === 0) {
       // Surface specific PBX errors so the UI can show actionable messages.
       const errBlob = fetchErrors.join(" | ");
@@ -409,32 +409,30 @@ Deno.serve(async (req) => {
       return json({ transcript_text: fallbackTranscript, stub: true, reason: "audio-too-large", size: audioBytes.length });
     }
 
-    // STT: Lovable Gateway gpt-4o-mini-transcribe ONLY (no audio fallback).
-    // Claude 3.5 Sonnet runs after for TEXT cleanup / speaker labels.
+    // STT: OpenAI Whisper (primary audio). Claude runs after for TEXT cleanup / speaker labels.
     const audioFormat = audioMime.split("/")[1] || "wav";
     const sttPrompt = "Transcription d'un appel téléphonique en français canadien. Préserver les noms propres, montants et numéros. Inclure les hésitations.";
 
     type ProviderResult = { text?: string; provider: string; model: string; error?: string; status?: number };
 
-    const tryGatewayTranscribe = async (model: string): Promise<ProviderResult> => {
-      if (!lovableKey) return { error: "no-lovable-key", provider: "lovable-ai", model };
+    const trySecondaryTranscribe = async (model: string): Promise<ProviderResult> => {
+      if (!sttKey) return { error: "no-openai-key", provider: "openai", model };
       const ext = ({ mpeg: "mp3", mp3: "mp3", wav: "wav", webm: "webm", ogg: "ogg", mp4: "m4a" } as Record<string, string>)[audioFormat] || "wav";
       const fd = new FormData();
       fd.append("model", model);
       fd.append("file", new Blob([audioBytes!], { type: audioMime }), `recording.${ext}`);
       fd.append("prompt", sttPrompt);
-      const r = await fetch("https://ai.gateway.lovable.dev/v1/audio/transcriptions", {
+      const r = await aiFetch("https://ai.internal/v1/audio/transcriptions", {
         method: "POST",
-        headers: { "Lovable-API-Key": lovableKey, "X-Lovable-AIG-SDK": "edge-function" },
         body: fd,
       });
       if (!r.ok) {
         const errTxt = await r.text();
         console.error(`gateway STT ${model} error`, r.status, errTxt.slice(0, 300));
-        return { error: errTxt.slice(0, 400), status: r.status, provider: "lovable-ai", model };
+        return { error: errTxt.slice(0, 400), status: r.status, provider: "openai", model };
       }
       const d = await r.json();
-      return { text: String(d?.text || "").trim(), provider: "lovable-ai", model };
+      return { text: String(d?.text || "").trim(), provider: "openai", model };
     };
 
     // Claude post-processing: TEXT cleanup only (Anthropic Messages API has no audio input).
@@ -494,9 +492,9 @@ Deno.serve(async (req) => {
 
     // Guard: abort early only if BOTH providers are unavailable.
     const openaiKeyPresent = !!Deno.env.get("OPENAI_API_KEY");
-    if (!openaiKeyPresent && !lovableKey) {
+    if (!openaiKeyPresent && !sttKey) {
       await writeTranscript(fallbackTranscript, "stub-no-key");
-      await audit("missing-key", { error_code: "no-ai-keys", message: "Neither OPENAI_API_KEY nor LOVABLE_API_KEY is configured", provider: "none" });
+      await audit("missing-key", { error_code: "no-ai-keys", message: "OPENAI_API_KEY is not configured", provider: "none" });
       return json({ transcript_text: fallbackTranscript, stub: true, reason: "missing-ai-key", fetchErrors });
     }
     // Mark as processing so the UI badge can show "en cours" via polling/Realtime.
@@ -508,12 +506,12 @@ Deno.serve(async (req) => {
       console.log("[ai-transcribe-call] STT OK via Whisper-1", { length: sttResult.text.length });
     } else {
       attempts.push({ provider: sttResult.provider, model: sttResult.model, status: sttResult.status, error: (sttResult.error || "empty").slice(0, 200) });
-      console.warn("[ai-transcribe-call] Whisper-1 FAILED → falling back to Gemini (Lovable Gateway)", {
+      console.warn("[ai-transcribe-call] Whisper-1 FAILED → falling back to gpt-4o-mini-transcribe", {
         status: sttResult.status, error: (sttResult.error || "empty").slice(0, 200),
       });
-      // FALLBACK ONLY: Lovable Gateway gpt-4o-mini-transcribe (Gemini-backed).
-      sttResult = await tryGatewayTranscribe("openai/gpt-4o-mini-transcribe");
-      if (sttResult.text) console.log("[ai-transcribe-call] STT OK via Gemini fallback");
+      // SECONDARY: OpenAI gpt-4o-mini-transcribe.
+      sttResult = await trySecondaryTranscribe("gpt-4o-mini-transcribe");
+      if (sttResult.text) console.log("[ai-transcribe-call] STT OK via gpt-4o-mini-transcribe");
     }
     const final: ProviderResult | null = sttResult.text ? sttResult : null;
     if (!sttResult.text) {

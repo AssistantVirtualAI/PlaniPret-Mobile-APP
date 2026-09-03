@@ -144,6 +144,10 @@ Deno.serve(async (req) => {
         }, 409, cid);
       }
       filters.users_id = resolvedUsersId;
+    } else if (role === "admin" && !filters.users_id && resolvedUsersId) {
+      // Un admin ne rapatrie jamais la firme entière par défaut : sans courtier
+      // explicitement choisi, la portée reste son propre identifiant Maestro.
+      filters.users_id = resolvedUsersId;
     }
 
     // ---- Institutions ----------------------------------------------------
@@ -198,42 +202,41 @@ Deno.serve(async (req) => {
     }
 
 
-    // ---- Sources (fan-out admin) -----------------------------------------
-    // Un jeton Maestro ne voit que les dépôts de son propriétaire. Pour un
-    // admin sans filtre de courtier, on interroge Maestro avec le jeton de
-    // chaque courtier connecté et on agrège les résultats.
+    // ---- Source unique (aucun fan-out firme) ------------------------------
+    // Volume oblige : on n'interroge jamais Maestro avec les jetons de tous les
+    // courtiers. La portée est toujours UN courtier — soi-même par défaut, ou
+    // celui explicitement sélectionné par un admin.
     type Src = { token: string; label: string; user_id: string | null };
     const failures: { broker: string; status: number; message: string }[] = [];
     let coverage = { connected: 1, total: 1 };
 
     async function collectSources(): Promise<Src[]> {
-      // A true firm credential is queried once without users_id: Maestro then
-      // returns every broker visible to the firm. Do not fan out the same token
-      // over local profiles, which created empty/duplicate requests.
+      const selected = filters.users_id ? String(filters.users_id) : null;
+      const isOwn = !selected || (resolvedUsersId && selected === String(resolvedUsersId));
+
+      if (isOwn) {
+        return [{ token: ownToken ?? token, label: String(profile.full_name ?? profile.email ?? "moi"), user_id: user.id }];
+      }
+
+      // Admin qui consulte un autre courtier : jeton firme si disponible,
+      // sinon le jeton personnel de CE courtier uniquement.
       if (firmToken.token) {
-        coverage = { connected: 1, total: 1 };
         return [{ token: firmToken.token, label: "Planiprêt", user_id: null }];
       }
-      const list: Src[] = [{ token, label: String(profile.full_name ?? profile.email ?? "moi"), user_id: user.id }];
-      if (role !== "admin" || filters.users_id) return list;
-      const [{ data: peers }, { count: totalBrokers }] = await Promise.all([
-        admin.from("planipret_profiles")
-          .select("id, user_id, full_name, email")
-          .eq("maestro_connected", true)
-          .not("maestro_broker_token", "is", null)
-          .limit(200),
-        admin.from("planipret_profiles").select("id", { count: "exact", head: true }),
-      ]);
-      for (const p of peers ?? []) {
-        const pid = (p as any).user_id ?? (p as any).id;
-        if (!pid || pid === user.id) continue;
-        const t = await getUserMaestroAccessToken(admin, pid).catch(() => null);
-        const label = String((p as any).full_name ?? (p as any).email ?? pid);
-        if (!t) { failures.push({ broker: label, status: 409, message: "maestro_not_connected" }); continue; }
-        list.push({ token: t, label, user_id: pid });
+      const { data: peer } = await admin
+        .from("planipret_profiles")
+        .select("id, user_id, full_name, email")
+        .eq("maestro_broker_id", selected)
+        .limit(1)
+        .maybeSingle();
+      const pid = (peer as any)?.user_id ?? (peer as any)?.id ?? null;
+      const label = String((peer as any)?.full_name ?? (peer as any)?.email ?? selected);
+      const t = pid ? await getUserMaestroAccessToken(admin, pid).catch(() => null) : null;
+      if (!t) {
+        failures.push({ broker: label, status: 409, message: "maestro_not_connected" });
+        return [];
       }
-      coverage = { connected: list.length, total: Number(totalBrokers ?? list.length) };
-      return list;
+      return [{ token: t, label, user_id: pid }];
     }
 
     /** Parcourt toutes les pages de dépôts pour un jeton donné. */

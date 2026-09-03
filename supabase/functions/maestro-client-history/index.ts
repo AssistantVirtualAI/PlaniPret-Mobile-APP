@@ -24,11 +24,11 @@ Deno.serve(async (req) => {
     const auth = await getBrokerAuth(admin, userIdHeader);
     const [comms, ai] = await Promise.all([
       maestroFetch(cfg, {
-        path: `/api/v1/clients/${encodeURIComponent(clientId)}/communications?limit=${limit}`,
+        path: `/api/v1/users/${encodeURIComponent(String(auth.brokerId ?? ""))}/user-communications/${encodeURIComponent(clientId)}`,
         token: auth.token,
       }),
       maestroFetch(cfg, {
-        path: `/api/v1/clients/${encodeURIComponent(clientId)}/ai_history?limit=${limit}`,
+        path: `/api/v1/users/${encodeURIComponent(String(auth.brokerId ?? ""))}/clients/${encodeURIComponent(clientId)}/profile`,
         token: auth.token,
       }),
     ]);

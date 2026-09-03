@@ -105,7 +105,7 @@ Deno.serve(async (req) => {
       const providerLabel = (() => {
         if (!rawProvider) return null;
         if (rawProvider.includes('openai') && rawProvider.includes('whisper')) return 'Whisper-1';
-        if (rawProvider.includes('gpt-4o-mini-transcribe') || rawProvider.includes('lovable-ai')) return 'Gemini (fallback)';
+        if (rawProvider.includes('gpt-4o-mini-transcribe') || rawProvider.includes('lovable-ai')) return 'OpenAI (fallback)';
         if (isStub) return `Échec (${rawProvider.replace('stub-', '')})`;
         return rawProvider;
       })();

@@ -1,3 +1,4 @@
+import { aiFetch } from "../_shared/claude-compat.ts";
 // AVA Planiprêt — improve a voicemail greeting text via Lovable AI.
 import { authBroker, corsHeaders, jsonResponse } from "../_shared/ns-broker.ts";
 
@@ -11,14 +12,14 @@ Deno.serve(async (req) => {
   };
   if (text.trim().length < 5) return jsonResponse({ success: false, error: "text_too_short" }, 400);
 
-  const key = Deno.env.get("LOVABLE_API_KEY");
+  const key = Deno.env.get("ANTHROPIC_API_KEY");
   if (!key) return jsonResponse({ success: false, error: "lovable_ai_not_configured" }, 500);
 
   const sys = language === "en"
     ? "You rewrite voicemail greetings to be more professional, warm and concise. Preserve essential info. Output the rewritten greeting ONLY — no quotes, no preamble."
     : "Tu réécris des messages de boîte vocale pour qu'ils soient plus professionnels, chaleureux et concis. Conserve les informations essentielles. Réponds UNIQUEMENT avec le nouveau message — pas de guillemets, pas de préambule.";
 
-  const r = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+  const r = await aiFetch("https://ai.lovable/v1/chat/completions", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${key}`,

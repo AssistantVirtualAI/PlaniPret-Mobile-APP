@@ -513,7 +513,7 @@ Deno.serve(async (req) => {
     };
 
 
-    const lovableKey = Deno.env.get("LOVABLE_API_KEY");
+    const lovableKey = Deno.env.get("ANTHROPIC_API_KEY");
     if (!lovableKey) {
       const fallback = buildFallbackBrief(stats, period, lang);
       return json({ ...fallback, stats, language: lang, cached: false, degraded: true });

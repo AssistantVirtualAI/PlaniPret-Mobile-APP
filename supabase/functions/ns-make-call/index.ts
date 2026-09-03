@@ -15,8 +15,15 @@ import {
 
 function toE164(raw: string): string {
   const s = String(raw).trim();
-  if (s.startsWith("+")) return s;
+  if (s.startsWith("+")) {
+    // Un poste interne préfixé par erreur (+1136) doit rester un poste.
+    const inner = s.slice(1).replace(/\D/g, "");
+    if (inner.length <= 6) return inner;
+    return s;
+  }
   let d = s.replace(/\D/g, "");
+  // Appel interne : composer le poste directement, sans indicatif.
+  if (d.length >= 2 && d.length <= 6) return d;
   if (d.length === 10) d = "1" + d;
   return "+" + d;
 }

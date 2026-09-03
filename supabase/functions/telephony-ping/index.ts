@@ -89,7 +89,7 @@ Deno.serve(async (req) => {
 
     const ai: ServiceStatus = await (async () => {
       if (mockMode) return { ok: true, latency_ms: 10, detail: "mock" };
-      const lovableKey = Deno.env.get("LOVABLE_API_KEY");
+      const lovableKey = Deno.env.get("ANTHROPIC_API_KEY");
       const anthropic = Deno.env.get("ANTHROPIC_API_KEY") || cfg.ANTHROPIC_API_KEY;
       if (lovableKey) return { ok: true, latency_ms: 1, detail: "lovable-gateway" };
       if (anthropic) return { ok: true, latency_ms: 1, detail: "anthropic" };

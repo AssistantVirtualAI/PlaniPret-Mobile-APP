@@ -1,3 +1,4 @@
+import { aiFetch } from "../_shared/claude-compat.ts";
 // planipret-admin-ava-analytics — Admin AVA + Microsoft 365 analytics.
 // Returns real cross-broker AVA activity and, when broker tokens exist, Microsoft Graph email/meeting stats.
 import { createClient } from "npm:@supabase/supabase-js@2";
@@ -527,9 +528,9 @@ Deno.serve(async (req) => {
     let insights = fallbackInsights(aggregate);
     if (includeInsights) {
       try {
-        const key = Deno.env.get("LOVABLE_API_KEY");
+        const key = Deno.env.get("ANTHROPIC_API_KEY");
         if (key) {
-          const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+          const res = await aiFetch("https://ai.lovable/v1/chat/completions", {
             method: "POST",
             headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
             body: JSON.stringify({

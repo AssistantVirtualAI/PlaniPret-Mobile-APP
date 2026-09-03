@@ -384,7 +384,7 @@ export function readAssignment(raw: any): { ids: string[]; source: "users" | "us
 
   const fromUsers = clean(raw?.users);
   if (fromUsers.length) return { ids: fromUsers, source: "users" };
-  const fromUsersId = clean(raw?.users_id ?? raw?.assignee_id ?? raw?.assigned_to ?? raw?.user_id);
+  const fromUsersId = clean(raw?.users_id ?? raw?.delegate_users_id ?? raw?.assignee_id ?? raw?.assigned_to ?? raw?.user_id);
   if (fromUsersId.length) return { ids: fromUsersId, source: "users_id" };
   // Last resort: a `user` task implicitly belongs to its target.
   const type = String(raw?.type ?? raw?.task_type ?? "").toLowerCase();
@@ -398,7 +398,9 @@ export function normalizeTask(input: any): NormalizedTask {
   const raw = input && typeof input === "object" && input.raw && typeof input.raw === "object"
     ? { ...input.raw, ...input, raw: undefined }
     : input;
-  const id = String(raw?.id ?? raw?.task_id ?? "");
+  // Maestro's Task List API identifies rows as `referral_option_id`, while
+  // mutation/readback responses use `id` or `task_id`.
+  const id = String(raw?.id ?? raw?.task_id ?? raw?.referral_option_id ?? "");
   const typeRaw = String(raw?.type ?? raw?.task_type ?? "").toLowerCase();
   const assignment = readAssignment(raw);
 
@@ -410,7 +412,8 @@ export function normalizeTask(input: any): NormalizedTask {
     status: raw?.status != null ? String(raw.status) : (raw?.status_option_id != null ? String(raw.status_option_id) : null),
     type: typeRaw === "user" || typeRaw === "contract" ? (typeRaw as TaskType) : null,
     xid: raw?.xid != null ? String(raw.xid) : null,
-    target_name: raw?.client_name ?? raw?.contact_name ?? raw?.user_name ?? raw?.target_name ?? null,
+    target_name: raw?.client_name ?? raw?.contact_name ?? raw?.user_name ?? raw?.target_name
+      ?? ([raw?.client_first_name, raw?.client_last_name].filter(Boolean).join(" ").trim() || null),
     is_recurring: truthy(raw?.is_recurring),
     recurring_pattern: raw?.recurring_pattern ? String(raw.recurring_pattern) : null,
     created_by_ava: truthy(raw?.created_by_ava) || String(raw?.source ?? "").toLowerCase().includes("ava"),

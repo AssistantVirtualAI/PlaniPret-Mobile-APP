@@ -1,3 +1,4 @@
+import { aiFetch } from "../_shared/claude-compat.ts";
 // ms365-stats — Microsoft 365 usage stats (emails + meetings) with AI insights.
 // Auth: user JWT. Body: { days?: 7|30|90, insights?: boolean }
 import { createClient } from "npm:@supabase/supabase-js@2";
@@ -120,9 +121,9 @@ Deno.serve(async (req) => {
     let insights: string[] = [];
     if (wantInsights) {
       try {
-        const key = Deno.env.get("LOVABLE_API_KEY");
+        const key = Deno.env.get("ANTHROPIC_API_KEY");
         if (key) {
-          const r = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+          const r = await aiFetch("https://ai.lovable/v1/chat/completions", {
             method: "POST",
             headers: { "Content-Type": "application/json", "Authorization": `Bearer ${key}` },
             body: JSON.stringify({

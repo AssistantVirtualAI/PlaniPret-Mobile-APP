@@ -1,6 +1,8 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import webpush from "npm:web-push@3.6.7";
+import { sendNativeAlertPush } from "../_shared/native-push.ts";
+
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -49,21 +51,29 @@ Deno.serve(async (req) => {
     }).select("id").maybeSingle();
 
     if (!allowed) return json({ delivered: 0, blocked_by_preference: true, logged: true });
-    if (!vapidReady) return json({ delivered: 0, logged: true, reason: "vapid_not_configured" });
 
-    const { data: subs } = await admin.from("planipret_push_subscriptions").select("id,endpoint,p256dh,auth").eq("user_id", user_id);
-    if (!subs?.length) return json({ delivered: 0, logged: true, reason: "no_subscription" });
+    // 1) Native devices (iOS APNs / Android FCM) — the installed mobile apps.
+    const native = await sendNativeAlertPush(admin, user_id, {
+      title,
+      body: text ?? "",
+      category: cat,
+      data: { ...(data ?? {}), ...(finalDeepLink ? { deep_link: String(finalDeepLink) } : {}) },
+    });
 
-    const payload = JSON.stringify({ title, body: text ?? "", data: { ...(data ?? {}), category: cat, deep_link: finalDeepLink }, icon: icon ?? "/icon-192.png" });
-    let delivered = 0;
+    // 2) Browsers (Web Push / VAPID).
+    let delivered = native.delivered;
     const expired: string[] = [];
-    for (const s of subs) {
-      try {
-        await webpush.sendNotification({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }, payload);
-        delivered++;
-      } catch (err: any) {
-        const code = err?.statusCode;
-        if (code === 404 || code === 410) expired.push(s.id);
+    if (vapidReady) {
+      const { data: subs } = await admin.from("planipret_push_subscriptions").select("id,endpoint,p256dh,auth").eq("user_id", user_id);
+      const payload = JSON.stringify({ title, body: text ?? "", data: { ...(data ?? {}), category: cat, deep_link: finalDeepLink }, icon: icon ?? "/icon-192.png" });
+      for (const s of subs ?? []) {
+        try {
+          await webpush.sendNotification({ endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } }, payload);
+          delivered++;
+        } catch (err: any) {
+          const code = err?.statusCode;
+          if (code === 404 || code === 410) expired.push(s.id);
+        }
       }
     }
     if (delivered > 0 && notifRow?.id) {
@@ -71,7 +81,11 @@ Deno.serve(async (req) => {
         .update({ delivered: true }).eq("id", notifRow.id);
     }
     if (expired.length) await admin.from("planipret_push_subscriptions").delete().in("id", expired);
-    return json({ delivered, expired: expired.length });
+    if (delivered === 0) {
+      return json({ delivered: 0, logged: true, reason: native.reason ?? (vapidReady ? "no_subscription" : "vapid_not_configured"), native });
+    }
+    return json({ delivered, native, expired: expired.length });
+
   } catch (e) {
     return json({ error: (e as Error).message }, 500);
   }

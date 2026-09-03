@@ -1,3 +1,4 @@
+import { aiFetch } from "../_shared/claude-compat.ts";
 // mobile-home-stats: aggregated Home dashboard stats + AI summary/insights.
 // Scopes strictly to the signed-in softphone user's extension + organization.
 // Returns counts for period (today | week | month) plus AI summary + insights.
@@ -161,7 +162,7 @@ async function generateAI(args: { lang: "fr" | "en"; period: Period; stats: any;
     : `This period: ${stats.calls.received} answered, ${stats.calls.missed} missed, ${stats.calls.outbound} outbound. ${stats.voicemails.new} new voicemail(s), ${stats.sms.unread} unread SMS.`;
   const insights = buildInsights(stats, prior, lang);
 
-  const apiKey = Deno.env.get("LOVABLE_API_KEY");
+  const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
   if (!apiKey) return { summary: fallbackSummary, insights };
 
   try {
@@ -172,7 +173,7 @@ async function generateAI(args: { lang: "fr" | "en"; period: Period; stats: any;
       ? "Tu es AVA, assistante des utilisateurs de téléphonie Lemtel. Génère un résumé quotidien concis (1-2 phrases) en français naturel à partir des statistiques fournies. Pas d'emojis."
       : "You are AVA, assistant for Lemtel phone users. Generate a concise 1-2 sentence natural-language summary in English from the provided stats. No emojis.";
     const user = JSON.stringify({ name, period: periodLabel, stats });
-    const res = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    const res = await aiFetch("https://ai.lovable/v1/chat/completions", {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({

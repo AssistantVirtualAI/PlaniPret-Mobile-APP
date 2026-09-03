@@ -209,3 +209,6 @@ verify_jwt = true
 
 [functions.pp-recording-play]
 verify_jwt = false
+
+[functions.maestro-oauth-state-info]
+verify_jwt = false

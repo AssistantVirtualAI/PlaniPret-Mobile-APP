@@ -1,3 +1,4 @@
+import { aiFetch } from "../_shared/claude-compat.ts";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { mirrorCallAnalysisToMaestro } from "../_shared/maestro-telecom.ts";
@@ -217,7 +218,7 @@ Deno.serve(async (req) => {
     }
 
     const apiKey = (await getSecret(admin, "anthropic", "api_key")) ?? Deno.env.get("ANTHROPIC_API_KEY");
-    const lovableKey = Deno.env.get("LOVABLE_API_KEY");
+    const lovableKey = Deno.env.get("ANTHROPIC_API_KEY");
     const openaiKey = Deno.env.get("OPENAI_API_KEY");
 
 
@@ -307,7 +308,7 @@ ${String(transcript).slice(0, 18000)}`;
 
     } else if (lovableKey) {
       modelUsed = "google/gemini-2.5-pro";
-      const aiRes = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      const aiRes = await aiFetch("https://ai.lovable/v1/chat/completions", {
         method: "POST",
         headers: { "Lovable-API-Key": lovableKey, "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -334,7 +335,7 @@ ${String(transcript).slice(0, 18000)}`;
         return new Response(JSON.stringify({ success: false, error: "OpenAI error", details: (e as Error).message }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
       }
     } else {
-      return new Response(JSON.stringify({ success: false, error: "Aucune clé IA configurée (ANTHROPIC_API_KEY, LOVABLE_API_KEY ou OPENAI_API_KEY)" }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+      return new Response(JSON.stringify({ success: false, error: "Aucune clé IA configurée (ANTHROPIC_API_KEY, ANTHROPIC_API_KEY ou OPENAI_API_KEY)" }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
 

@@ -552,7 +552,7 @@ Deno.serve(async (req) => {
       // Propagate name / extension changes to NS and verify the user exists there.
       if (current) {
         const domain = current.ns_domain || NS_DEFAULT_DOMAIN;
-        const oldExt = String(current.ns_extension || current.extension || "");
+        const oldExt = String(current.extension || current.ns_extension || "");
         const newExt = String(allowed.extension ?? oldExt);
         const nextName = String(allowed.full_name ?? current.full_name ?? newExt);
         const nextEmail = String(current.email ?? "");

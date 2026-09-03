@@ -30,6 +30,8 @@ export interface UsePlanipretTasks {
   loadingMore: boolean;
   loading: boolean;
   refreshing: boolean;
+  /** ISO timestamp of the last successful Maestro synchronisation. */
+  lastSyncAt: string | null;
   source: TaskSource;
   error: string | null;
   message: string | null;
@@ -39,10 +41,20 @@ export interface UsePlanipretTasks {
   remove: (taskId: string) => Promise<any>;
 }
 
-export function usePlanipretTasks(userId: string | null | undefined): UsePlanipretTasks {
+export interface UsePlanipretTasksOptions {
+  /** Admin only: scope the list to another broker's Maestro id (read-only). */
+  brokerId?: string | null;
+}
+
+export function usePlanipretTasks(
+  userId: string | null | undefined,
+  options: UsePlanipretTasksOptions = {},
+): UsePlanipretTasks {
+  const brokerId = options.brokerId ?? null;
   const [tasks, setTasks] = useState<NormalizedTask[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [lastSyncAt, setLastSyncAt] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [source, setSource] = useState<TaskSource>("projection");
   const [error, setError] = useState<string | null>(null);
@@ -74,16 +86,16 @@ export function usePlanipretTasks(userId: string | null | undefined): UsePlanipr
 
   // Paint the per-user cache immediately.
   useEffect(() => {
-    if (!userId) return;
+    if (!userId || brokerId) return;
     const cached = loadTaskCache(userId);
     if (cached.length) { setTasks(cached); setLoading(false); }
-  }, [userId]);
+  }, [userId, brokerId]);
 
   const refresh = useCallback(async () => {
     if (!userId) return;
     const gen = ++generation.current;
     setRefreshing(true);
-    const res = await listTasks({ status: "pending", filter, page: 1, limit: PAGE_SIZE });
+    const res = await listTasks({ filter, page: 1, limit: PAGE_SIZE, broker_id: brokerId });
     if (gen !== generation.current) return; // stale identity/response
     setRefreshing(false);
     setLoading(false);
@@ -95,23 +107,24 @@ export function usePlanipretTasks(userId: string | null | undefined): UsePlanipr
     setTotal(res.total);
     setHasMore(res.has_more);
     if (res.success && res.source !== "unavailable") {
+      setLastSyncAt(new Date().toISOString());
       const merged = mergePending(res.tasks);
       setTasks(merged);
-      saveTaskCache(userId, merged);
+      if (!brokerId) saveTaskCache(userId, merged);
     } else if (res.source === "unavailable") {
       // Planiprêt exposes no upstream GET: never wipe what we already know.
       const fallback = mergePending(loadTaskCache(userId));
       setTasks(fallback);
       if (!fallback.length) clearTaskCache(userId);
     }
-  }, [userId, filter, mergePending]);
+  }, [userId, filter, brokerId, mergePending]);
 
   const loadMore = useCallback(async () => {
     if (!userId || !hasMore || loadingMore) return;
     const gen = generation.current;
     setLoadingMore(true);
     const next = page + 1;
-    const res = await listTasks({ status: "pending", filter, page: next, limit: PAGE_SIZE });
+    const res = await listTasks({ filter, page: next, limit: PAGE_SIZE, broker_id: brokerId });
     setLoadingMore(false);
     if (gen !== generation.current) return;
     if (!res.success) return;
@@ -123,7 +136,7 @@ export function usePlanipretTasks(userId: string | null | undefined): UsePlanipr
       const seen = new Set(cur.map((t) => t.id));
       return [...cur, ...res.tasks.filter((t) => !seen.has(t.id))];
     });
-  }, [userId, filter, page, hasMore, loadingMore]);
+  }, [userId, filter, brokerId, page, hasMore, loadingMore]);
 
   const setFilter = useCallback((f: TaskFilterValue) => {
     setFilterState(f);
@@ -149,6 +162,8 @@ export function usePlanipretTasks(userId: string | null | undefined): UsePlanipr
     if (!userId) return;
     const channel = supabase.channel(`pp-tasks:${userId}`)
       .on("broadcast", { event: "tasks" }, () => { void refresh(); })
+      .on("postgres_changes", { event: "*", schema: "public", table: "planipret_tasks_projection" }, () => { void refresh(); })
+      .on("postgres_changes", { event: "*", schema: "public", table: "planipret_task_mutations" }, () => { void refresh(); })
       .subscribe();
     return () => { void supabase.removeChannel(channel); };
   }, [userId, refresh]);
@@ -227,7 +242,7 @@ export function usePlanipretTasks(userId: string | null | undefined): UsePlanipr
 
   return {
     tasks, buckets, counts, openCount, filter, setFilter, page, total, hasMore,
-    loadMore, loadingMore, loading, refreshing, source, error, message,
+    loadMore, loadingMore, loading, refreshing, lastSyncAt, source, error, message,
     refresh, create, update, remove,
   };
 }

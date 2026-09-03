@@ -60,7 +60,7 @@ Deno.serve(async (req) => {
       context = `Domain: ${sp?.sip_domain || "n/a"}. Calls today: ${callsToday ?? 0}. Queues: ${(queues ?? []).map((q: any) => q.name).join(", ")}. Extensions: ${(extensions ?? []).map((e: any) => e.extension).join(", ")}.`;
     }
 
-    const key = Deno.env.get("LOVABLE_API_KEY");
+    const key = Deno.env.get("ANTHROPIC_API_KEY");
     const openaiKey = Deno.env.get("OPENAI_API_KEY");
     if (!key && !openaiKey) return json({ answer: "AVA is not configured yet (missing AI key)." });
 

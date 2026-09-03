@@ -44,10 +44,27 @@ export interface ListTaskOptions {
   filter?: TaskFilterValue;
   page?: number;
   limit?: number;
+  /** Admin only: inspect another broker's Maestro tasks. */
+  broker_id?: string | null;
+}
+
+export interface TaskHistoryEvent {
+  id: string;
+  action: string;
+  created_at: string;
+  user_id: string | null;
+  metadata: Record<string, unknown> | null;
+}
+
+/** Audit trail (created / updated / deleted / denied) for one Maestro task. */
+export async function taskHistory(task_id: string): Promise<TaskHistoryEvent[]> {
+  const d = await invoke({ action: "history", task_id });
+  return Array.isArray(d?.events) ? (d.events as TaskHistoryEvent[]) : [];
 }
 
 export async function listTasks(opts: ListTaskOptions = {}): Promise<TaskListResult> {
-  const d = await invoke({ action: "list", ...opts });
+  const { broker_id, ...rest } = opts;
+  const d = await invoke({ action: "list", ...rest, ...(broker_id ? { broker_id } : {}) });
   const tasks = Array.isArray(d?.tasks) ? d.tasks : [];
   return {
     success: !!d?.success,

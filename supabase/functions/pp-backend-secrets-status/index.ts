@@ -9,7 +9,7 @@ const SUPABASE_ANON_KEY = Deno.env.get("SUPABASE_ANON_KEY")!;
 /** integration_key -> [backend secret names that satisfy it] */
 const MAP: Record<string, string[]> = {
   ns_api: ["NS_API_KEY", "NS_API_BASE_URL", "NS_DEFAULT_DOMAIN"],
-  anthropic: ["ANTHROPIC_API_KEY", "LOVABLE_API_KEY"],
+  anthropic: ["ANTHROPIC_API_KEY", "ANTHROPIC_API_KEY"],
   openai: ["OPENAI_API_KEY"],
   elevenlabs: ["ELEVENLABS_API_KEY"],
   ms365: ["MICROSOFT_CLIENT_ID", "MICROSOFT_CLIENT_SECRET", "MICROSOFT_TENANT_ID"],

@@ -21,7 +21,7 @@ import { trackRegisterAttempt, logRegisterMetricsSummary, type RegisterTracker }
  * Les identifiants sont résolus par courtier via l'Edge Function
  * `ns-resolve-sip-credentials` (client_type: "mobile") — aucune valeur en dur.
  *
- * Transport : TCP 5060 (défaut mobile, TLS 5061 optionnel). Aucune pile SIP native n'implémente SIP
+ * Transport : TLS 5061 pour le moteur mobile natif. Aucune pile SIP native n'implémente SIP
  * over WebSocket (RFC 7118) ; WSS 9002 reste réservé à JsSIP dans la WebView.
  *
  * Invariant d'AOR : une seule pile REGISTER sur `<ext>M`. Dès que le moteur
@@ -34,6 +34,18 @@ import { trackRegisterAttempt, logRegisterMetricsSummary, type RegisterTracker }
  */
 
 export type SipRegistrationState = "registered" | "unregistered" | "failed" | "unavailable";
+
+const NATIVE_BRIDGE_TIMEOUT_MS = 20_000;
+
+function withNativeTimeout<T>(operation: Promise<T>, label: string, timeoutMs = NATIVE_BRIDGE_TIMEOUT_MS): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label}_timeout`)), timeoutMs);
+    operation.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); },
+    );
+  });
+}
 
 interface PjsipPlugin {
   isEngineLinked(): Promise<{ linked: boolean }>;
@@ -116,6 +128,50 @@ export class NativeSipService {
     return this.initializing;
   }
 
+  /** Recovery entry point used by SIP Debug. Every native bridge call is
+   * bounded so a stalled Capacitor promise can never leave the button spinning. */
+  async repairRegistration(): Promise<boolean> {
+    const pjsip = getPjsip();
+    if (!pjsip) return false;
+
+    const snapshot = await withNativeTimeout(pjsip.getState(), "sip_state").catch(() => null);
+    if (snapshot?.registered) {
+      this.username = snapshot.username || this.username;
+      this.extension = this.extension ?? aorExtension(this.username ?? "");
+      this.setState("registered");
+      return true;
+    }
+
+    // An account can survive a WebView reload while the JS singleton loses its
+    // state. Try one quick REGISTER first. If it does not recover, rebuild the
+    // native account with freshly resolved credentials: keeping a stale native
+    // account was the reason the repair button could finish without ever
+    // registering after a Microsoft logout/login or credential rotation.
+    if (snapshot?.available && snapshot.username) {
+      this.username = snapshot.username;
+      this.extension = aorExtension(snapshot.username);
+      claimAorForNative(snapshot.username, "manual_repair_existing_account");
+      await this.bindListeners(pjsip);
+      await withNativeTimeout(pjsip.register(), "sip_reregister").catch((error) => {
+        console.error("[SIP] réenregistrement natif échoué:", error);
+      });
+      const registered = await this.waitForRegistration(18_000);
+      if (registered) return true;
+
+      try { await withNativeTimeout(pjsip.unregister(), "sip_unregister_stale", 5_000); } catch { /* best effort */ }
+      this.registered = false;
+      this.retryCount = 0;
+      this.setState("unregistered");
+      return withNativeTimeout(this.doInitializeInner(), "sip_reinitialize", 50_000).catch((error) => {
+        console.error("[SIP] reconstruction du compte natif échouée:", error);
+        this.setState("failed");
+        return false;
+      });
+    }
+
+    return withNativeTimeout(this.initialize(), "sip_initialize", 55_000);
+  }
+
   private async doInitialize(): Promise<boolean> {
     try {
       return await this.doInitializeInner();
@@ -143,7 +199,7 @@ export class NativeSipService {
       return false;
     }
     // Le moteur doit être RÉELLEMENT lié avant toute revendication.
-    const linked = await this.probeEngineLinked(pjsip);
+    const linked = await withNativeTimeout(this.probeEngineLinked(pjsip), "sip_engine_probe");
     if (!linked) {
       releaseAorFromNative("engine_not_linked");
       void import("./nativePpSipService").then((m) => m.declarePlanipretNativeEngineOwnsAor(false)).catch(() => undefined);
@@ -155,12 +211,11 @@ export class NativeSipService {
     claimAorForNative(null, "native_init_start");
     armAorWatchdog(() => this.registered);
 
-    const { data, error } = await supabase.functions.invoke("ns-resolve-sip-credentials", {
-      // `transport: "tls"` aligns the NS Device object on TLS 5061 — ONE
-      // transport per AOR. Without it the PBX still advertises WSS for `<ext>M`
-      // and never forks inbound calls to the native TLS contact.
-      body: { client_type: "mobile", transport: "tcp" },
-    });
+    const { data, error } = await withNativeTimeout(supabase.functions.invoke("ns-resolve-sip-credentials", {
+      // Align the NS Device object with the native PJSIP TLS contact — ONE
+      // transport per AOR. `<ext>W` remains the separate WSS browser AOR.
+      body: { client_type: "mobile", transport: "tls" },
+    }), "sip_credentials");
 
     const creds = (data ?? {}) as Record<string, string>;
     const password = creds.sip_password;
@@ -174,15 +229,13 @@ export class NativeSipService {
       this.setState("failed");
       return false;
     }
-    // Diagnostic : le resolver DOIT renvoyer `tls`. S'il renvoie `wss`, le
-    // device `<ext>M` reste en WSS 9002 côté PBX et les INVITE n'arrivent
-    // jamais sur PJSIP. On force alors un realignement TLS explicite.
+    // Diagnostic: the resolver must return a native transport, never WSS.
     const resolvedTransport = String(creds.sip_transport ?? "").toLowerCase();
     if (resolvedTransport && resolvedTransport !== "tcp" && resolvedTransport !== "tls") {
       console.warn(
-        `[SIP] ns-resolve-sip-credentials a renvoyé sip_transport="${resolvedTransport}" alors que TLS était demandé — realignement TLS forcé`,
+        `[SIP] ns-resolve-sip-credentials a renvoyé sip_transport="${resolvedTransport}" alors que TLS était demandé — réalignement natif forcé`,
       );
-      void this.forceDeviceTlsTransport({ sipPort: 5060, contact: creds.sip_native_uri ?? creds.sip_tcp_uri ?? "" }, true);
+      void this.forceDeviceTlsTransport({ sipPort: 5061, contact: creds.sip_native_uri ?? creds.sip_tls_uri ?? "" }, true);
     }
 
 
@@ -199,17 +252,17 @@ export class NativeSipService {
     if (rawProxy && !rawProxy.includes(proxy)) {
       console.warn("[SIP] core-server", rawProxy, "rejeté (portail/non-core) → épinglé", proxy);
     }
-    const transport = "TCP" as const;
-    const port = 5060;
+    const transport = "TLS" as const;
+    const port = 5061;
 
     console.log("[SIP] Init moteur natif:", username, transport, proxy, port);
 
     try {
       await this.bindListeners(pjsip);
 
-      this.registerTracker = trackRegisterAttempt("TLS");
+    this.registerTracker = trackRegisterAttempt("TLS");
 
-      await pjsip.initialize({
+      await withNativeTimeout(pjsip.initialize({
         domain: String(creds.sip_domain ?? ""),
         username,
         password,
@@ -217,7 +270,7 @@ export class NativeSipService {
         transport,
         port,
         displayName: String(creds.display_name ?? "Planiprêt"),
-      });
+      }), "sip_native_initialize");
 
       // Le moteur natif possède l'AOR : JsSIP doit cesser de REGISTER et
       // retirer son Contact WebView s'il en avait déjà un.
@@ -303,7 +356,7 @@ export class NativeSipService {
   private tlsProvisionInFlight = false;
 
   private async forceDeviceTlsTransport(payload?: any, urgent = false): Promise<void> {
-    const port = Number(payload?.sipPort ?? 5060);
+    const port = Number(payload?.sipPort ?? 5061);
     const contact = String(payload?.contact ?? "").trim();
     const registrationServer = String(payload?.registrationServer ?? payload?.server ?? "").trim();
     // Garde : un contact vide produit `sip:@` côté NetSapiens, ce qui casse le
@@ -317,7 +370,7 @@ export class NativeSipService {
     // Idempotence : chaque reprovisioning provoque un cycle Expires:0 côté
     // NetSapiens, fenêtre pendant laquelle les appels partent en messagerie.
     // On ne réécrit que si le contact/port TLS a réellement changé.
-    const signature = `tcp:${port}:${contact}`;
+    const signature = `tls:${port}:${contact}`;
     if (this.lastTlsProvisionSignature === signature && this.lastTlsProvisionOk) {
       if (!urgent) return;
       // Même en urgence, on ne réécrit pas plus d'une fois par minute.
@@ -373,6 +426,8 @@ export class NativeSipService {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        const index = this.registrationWaiters.indexOf(finish);
+        if (index >= 0) this.registrationWaiters.splice(index, 1);
         resolve(ok);
       };
       const timer = setTimeout(() => finish(false), timeoutMs);
@@ -579,6 +634,8 @@ export class NativeSipService {
       const snapshot = await pjsip.getState();
       this.registered = !!snapshot?.registered;
       this.lastState = this.registered ? "registered" : "unregistered";
+      this.username = snapshot?.username || this.username;
+      this.extension = this.extension ?? aorExtension(this.username ?? "");
       this.currentCallId = snapshot?.callId || null;
       return snapshot;
     } catch {

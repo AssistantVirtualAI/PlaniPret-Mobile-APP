@@ -73,7 +73,7 @@ Deno.serve(async (req) => {
     };
 
     const makePayload = (p: any) => {
-      const ext = String(p.ns_extension ?? p.extension ?? "").trim();
+      const ext = String(p.extension ?? p.ns_extension ?? "").trim();
       const [first, ...rest] = String(p.full_name ?? ext).trim().split(/\s+/);
       const last = rest.join(" ") || "Courtier";
       return {
@@ -93,12 +93,12 @@ Deno.serve(async (req) => {
         "voicemail-transcription-enabled": "Deepgram",
         "email-send-alert-new-voicemail-enabled": "yes",
         "email-send-alert-new-missed-call-enabled": "yes",
-        "ring-no-answer-timeout-seconds": 25,
+        "ring-no-answer-timeout-seconds": 30,
       };
     };
 
     const upsertNsUser = async (p: any) => {
-      const ext = String(p.ns_extension ?? p.extension ?? "").trim();
+      const ext = String(p.extension ?? p.ns_extension ?? "").trim();
       if (!ext) return { ok: false, error: "missing_extension" };
       const domain = String(p.ns_domain ?? NS_DOMAIN);
       const url = `${NS_API_BASE_URL}/domains/${encodeURIComponent(domain)}/users/${encodeURIComponent(ext)}`;
@@ -122,18 +122,18 @@ Deno.serve(async (req) => {
       const brokerId = String(body?.broker_id ?? body?.user_id ?? "");
       const selected = action === "sync_one"
         ? (profiles ?? []).filter((p: any) => p.id === brokerId || p.user_id === brokerId)
-        : (profiles ?? []).filter((p: any) => String(p.ns_extension ?? p.extension ?? "").trim());
+        : (profiles ?? []).filter((p: any) => String(p.extension ?? p.ns_extension ?? "").trim());
       let created = 0, updated = 0, failed = 0;
       const results: any[] = [];
       for (const p of selected) {
         const r = await upsertNsUser(p);
-        results.push({ broker_id: p.id, extension: p.ns_extension ?? p.extension, ...r });
+        results.push({ broker_id: p.id, extension: p.extension ?? p.ns_extension, ...r });
         if (r.ok && r.created) created++;
         else if (r.ok) updated++;
         else failed++;
         if (r.ok) {
           await admin.from("planipret_profiles").update({
-            ns_extension: p.ns_extension ?? p.extension,
+            ns_extension: p.extension ?? p.ns_extension,
             ns_domain: p.ns_domain ?? NS_DOMAIN,
             ns_linked: true,
             ns_linked_at: new Date().toISOString(),
@@ -157,7 +157,8 @@ Deno.serve(async (req) => {
 
       const profile = (profiles ?? []).find((p) =>
         (p.email?.toLowerCase() === email && email) ||
-        (p.ns_extension && String(p.ns_extension) === ext)
+        (p.extension && String(p.extension) === ext) ||
+        (!p.extension && p.ns_extension && String(p.ns_extension) === ext)
       );
 
       if (!profile) {
@@ -167,7 +168,9 @@ Deno.serve(async (req) => {
       }
       matched++;
       const patch: Record<string, unknown> = {
-        ns_extension: ext,
+        // Never let an unrelated/stale PBX subscriber overwrite an extension
+        // already assigned by the portal. Keep both fields aligned.
+        ns_extension: profile.extension ?? ext,
         extension: profile.extension ?? ext,
         ns_domain: NS_DOMAIN,
         ns_sip_username: ext,

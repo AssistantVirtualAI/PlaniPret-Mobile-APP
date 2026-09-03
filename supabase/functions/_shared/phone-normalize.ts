@@ -9,6 +9,9 @@ export function normalizePhoneE164(input: string | null | undefined, defaultCoun
   const digits = raw.replace(/[^\d]/g, "");
   if (!digits) return null;
 
+  // Poste interne (2 à 6 chiffres) : on compose le poste tel quel, jamais +1XXXX.
+  if (digits.length <= 6) return digits;
+
   let normalized: string;
   if (hasPlus) {
     normalized = `+${digits}`;

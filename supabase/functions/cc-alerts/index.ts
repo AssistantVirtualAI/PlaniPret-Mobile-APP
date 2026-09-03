@@ -69,7 +69,7 @@ Deno.serve(async (req) => {
     if (critical.length && emails.length) {
       try {
         const apiKey = Deno.env.get("RESEND_API_KEY");
-        const lovableKey = Deno.env.get("LOVABLE_API_KEY");
+        const lovableKey = Deno.env.get("ANTHROPIC_API_KEY");
         if (apiKey && lovableKey) {
           await fetch("https://connector-gateway.lovable.dev/resend/emails", {
             method: "POST",

@@ -23,9 +23,9 @@ Deno.serve(async (req) => {
     const like = `%${norm.slice(-10)}%`;
 
     const [calls, messages, voicemails] = await Promise.all([
-      supa.from("planipret_phone_calls").select("id,direction,caller_number,callee_number,from_name,to_name,duration_seconds,lead_score,started_at,created_at")
+      supa.from("planipret_phone_calls").select("id,direction,from_number,to_number,from_name,to_name,duration_seconds,lead_score,started_at,created_at")
         .eq("user_id", userId)
-        .or(`caller_number.ilike.${like},callee_number.ilike.${like}`)
+        .or(`from_number.ilike.${like},to_number.ilike.${like}`)
         .order("created_at", { ascending: false }).limit(200),
       supa.from("planipret_phone_messages").select("id,direction,from_number,to_number,body,created_at")
         .eq("user_id", userId)

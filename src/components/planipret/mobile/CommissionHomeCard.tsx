@@ -42,9 +42,12 @@ export default function CommissionHomeCard({ profile, lang }: { profile: any; la
     const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
     const rangeStart = new Date(now.getFullYear(), now.getMonth() - 5, 1);
 
+    // Toujours scoper sur le courtier connecté (les admins voyaient sinon les
+    // commissions de tout le cabinet sur leur écran d'accueil).
+    const ownId = profile?.maestro_broker_id ? String(profile.maestro_broker_id) : "";
     const call = (from: Date, to: Date) =>
       supabase.functions.invoke("planipret-commission-reports", {
-        body: { action: "summary", filters: { date_from: pad(from), date_to: pad(to), commission_type: "base" } },
+        body: { action: "summary", filters: { date_from: pad(from), date_to: pad(to), commission_type: "base", ...(ownId ? { users_id: ownId } : {}) } },
       });
 
     (async () => {
@@ -85,7 +88,7 @@ export default function CommissionHomeCard({ profile, lang }: { profile: any; la
     })().catch(() => { if (!cancelled) setFailed(true); });
 
     return () => { cancelled = true; };
-  }, [allowed, fr]);
+  }, [allowed, fr, profile?.maestro_broker_id]);
 
   const delta = useMemo(() => {
     if (!state || !state.prevTotal) return null;

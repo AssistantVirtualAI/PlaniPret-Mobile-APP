@@ -38,7 +38,7 @@ Deno.serve(async (req) => {
 
     const res = await maestroFetch(cfg, {
       method: "POST",
-      path: `/api/v1/clients/${encodeURIComponent(maestro_client_id)}/appointments`,
+      path: `/api/v1/users/${encodeURIComponent(String(auth.brokerId ?? ""))}/clients/${encodeURIComponent(maestro_client_id)}/appointments`,
       token: auth.token,
       body: {
         title,

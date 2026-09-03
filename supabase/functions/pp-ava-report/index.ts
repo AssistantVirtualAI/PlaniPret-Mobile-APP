@@ -99,7 +99,7 @@ Deno.serve(async (req) => {
       reminders_pending: reminders.filter((r: any) => r.status === "pending").length,
     };
 
-    const key = Deno.env.get("LOVABLE_API_KEY");
+    const key = Deno.env.get("ANTHROPIC_API_KEY");
     if (!key) return json({ report: fallbackReport(language, period, profile, stats, calls, sms, voicemails), period, stats, degraded: true });
     const gateway = createLovableAiGatewayProvider(key);
 

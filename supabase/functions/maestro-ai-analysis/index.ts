@@ -15,6 +15,7 @@ import {
   updateCallPipeline,
 } from "../_shared/maestro.ts";
 import { callAnthropic } from "../_shared/anthropic.ts";
+import { callCorrelationId, ensureMaestroCall } from "../_shared/maestro-guard.ts";
 import { recordingPermalink } from "../_shared/recording-link.ts";
 
 
@@ -128,7 +129,10 @@ Deno.serve(async (req) => {
     let maestroPushed = false;
     try {
       const cfg = await getMaestroConfig(admin);
-      if (cfg.url && cfg.key && call.maestro_call_id) {
+      // Garde-fou: ne jamais pousser un résumé sur un maestro_call_id périmé.
+      const guard = await ensureMaestroCall(admin, { callId: String(call_id), step: "ai_summary_push" });
+      if (cfg.url && cfg.key && guard.ok && guard.maestroCallId) {
+        (call as any).maestro_call_id = guard.maestroCallId;
         const auth = await getBrokerAuth(admin, call.user_id, false);
         const coaching = analysis.coaching ?? {};
         const recordingLink = await recordingPermalink(String(call_id)).catch(() => null);
@@ -154,10 +158,17 @@ Deno.serve(async (req) => {
         maestroPushed = pushed.ok;
         await pipelineLog(admin, {
           call_id, user_id: call.user_id, step: "ai_summary_push", status: pushed.ok ? "success" : "error",
-          correlation_id: call_id, entity_type: "ai", entity_id: String(call.maestro_call_id),
+          correlation_id: callCorrelationId(String(call_id)), entity_type: "ai", entity_id: String(call.maestro_call_id),
           endpoint: pushed.endpoint, http_status: pushed.status,
           error_message: pushed.ok ? undefined : `maestro_${pushed.status}`,
           payload: { broker_id: auth.brokerId, client_id: call.maestro_client_id, response: pushed.data ?? null },
+        });
+      } else if (!guard.ok) {
+        await pipelineLog(admin, {
+          call_id, user_id: call.user_id, step: "ai_summary_push", status: "skipped",
+          correlation_id: callCorrelationId(String(call_id)), entity_type: "ai",
+          error_message: guard.reason ?? "maestro_call_unavailable",
+          payload: { permanent: !!guard.permanent, strikes: guard.strikes ?? null },
         });
       }
     } catch (e) {

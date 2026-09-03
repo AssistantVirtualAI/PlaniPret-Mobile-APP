@@ -1,3 +1,4 @@
+import { aiFetch } from "../_shared/claude-compat.ts";
 // AVA — Distille les préférences apprises par courtier à partir du feedback des 14 derniers jours
 // Trigger : cron quotidien (x-ava-service). Aussi appelable manuellement par un courtier pour son propre profil.
 import { createClient } from "npm:@supabase/supabase-js@2";
@@ -9,8 +10,8 @@ const j = (b: unknown, s = 200) =>
 const SYSTEM = `Tu es un analyste. À partir des retours (up/down/modified/skipped) d'un courtier hypothécaire sur des actions IA proposées par AVA, distille en FRANÇAIS 4 à 8 règles courtes que la prochaine génération de brouillons doit respecter pour ce courtier précis. Format : liste à puces "- règle". Aucune intro. Pas plus de 800 caractères.`;
 
 async function distill(samples: any[]): Promise<string> {
-  const key = Deno.env.get("LOVABLE_API_KEY");
-  if (!key) throw new Error("LOVABLE_API_KEY missing");
+  const key = Deno.env.get("ANTHROPIC_API_KEY");
+  if (!key) throw new Error("ANTHROPIC_API_KEY missing");
   const userMsg = samples.map((s, i) =>
     `#${i + 1} [${s.rating}${s.action_type ? " · " + s.action_type : ""}]
 ${s.comment ? "Commentaire: " + s.comment + "\n" : ""}${
@@ -18,7 +19,7 @@ ${s.comment ? "Commentaire: " + s.comment + "\n" : ""}${
     }${s.final_content && s.final_content !== s.original_draft ? "Version envoyée:\n" + s.final_content.slice(0, 500) : ""}`
   ).join("\n---\n");
 
-  const r = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+  const r = await aiFetch("https://ai.lovable/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json", "Lovable-API-Key": key },
     body: JSON.stringify({

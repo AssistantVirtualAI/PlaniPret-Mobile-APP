@@ -42,7 +42,7 @@ Deno.serve(async (req) => {
 
   let q = admin
     .from("planipret_phone_messages")
-    .select("id, user_id, direction, from_number, to_number, body, sent_at, maestro_synced")
+    .select("id, user_id, direction, from_number, to_number, body, sent_at, maestro_synced, status, ns_message_id, metadata")
     .neq("maestro_synced", true)
     .gte("sent_at", new Date(Date.now() - maxAgeHours * 3600_000).toISOString())
     .order("sent_at", { ascending: true })
@@ -51,6 +51,19 @@ Deno.serve(async (req) => {
 
   const { data: rows, error } = await q;
   if (error) return json({ error: error.message }, 500);
+
+  const MAX_PUSH_ATTEMPTS = 5;
+
+  // Réconciliation des statuts « stuck » : NetSapiens a bien accepté ces SMS
+  // (ns_message_id présent), seul le libellé importé est resté à « sending ».
+  const { data: stuck } = await admin
+    .from("planipret_phone_messages")
+    .update({ status: "sent" })
+    .eq("status", "sending")
+    .not("ns_message_id", "is", null)
+    .lt("sent_at", new Date(Date.now() - 15 * 60_000).toISOString())
+    .select("id");
+  const stuckFixed = stuck?.length ?? 0;
 
   // Dédoublonnage local : une seule ligne par (user, direction, corps, numéros, minute).
   const seen = new Set<string>();
@@ -63,6 +76,8 @@ Deno.serve(async (req) => {
     ].join("|");
     if (seen.has(key)) { duplicates.push(r.id); continue; }
     seen.add(key);
+    const attempts = Number((r.metadata as any)?.maestro_push_attempts ?? 0);
+    if (attempts >= MAX_PUSH_ATTEMPTS) continue; // circuit breaker: plus de maestro_500 en boucle
     if (batch.length < limit) batch.push(r);
   }
 
@@ -89,6 +104,17 @@ Deno.serve(async (req) => {
       const terminal = !ok && (data?.error === "invalid_numbers" || data?.error === "message_not_found");
       if (terminal) {
         await admin.from("planipret_phone_messages").update({ maestro_synced: true }).eq("id", msg.id);
+      } else if (!ok) {
+        const attempts = Number((msg.metadata as any)?.maestro_push_attempts ?? 0) + 1;
+        await admin.from("planipret_phone_messages").update({
+          metadata: {
+            ...((msg.metadata as any) ?? {}),
+            maestro_push_attempts: attempts,
+            maestro_push_last_error: data?.error ?? `http_${res.status}`,
+            maestro_push_last_at: new Date().toISOString(),
+            maestro_push_state: attempts >= MAX_PUSH_ATTEMPTS ? "failed" : "retrying",
+          },
+        }).eq("id", msg.id);
       }
       results.push({ message_id: msg.id, ok, closed: terminal ? data?.error : undefined, error: ok ? null : (data?.error ?? `http_${res.status}`) });
     } catch (e) {
@@ -100,6 +126,7 @@ Deno.serve(async (req) => {
     success: true,
     candidates: rows?.length ?? 0,
     duplicates_closed: duplicates.length,
+    stuck_status_fixed: stuckFixed,
     processed: results.length,
     pushed: results.filter((r) => r.ok).length,
     failed: results.filter((r) => !r.ok && !r.closed).length,

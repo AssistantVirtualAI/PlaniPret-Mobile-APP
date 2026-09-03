@@ -135,7 +135,7 @@ export default function MaestroConnectCard() {
   }, [load, pollStatus]);
 
 
-  const startAuth = async () => {
+  const startAuth = async (force = false) => {
     if (authInFlight.current) return;
     authInFlight.current = true;
     setBusy(true);
@@ -147,12 +147,15 @@ export default function MaestroConnectCard() {
         ? "planipret://auth/maestro/callback"
         : `${window.location.origin}/auth/maestro/callback`;
 
+      let mustForceLogin = force;
+      try { mustForceLogin = mustForceLogin || localStorage.getItem("pp_maestro_force_login") === "1"; } catch { /* ignore */ }
       const { data: res, error } = await supabase.functions.invoke("maestro-oauth-start", {
-        body: { platform, redirect_uri: redirectUri, origin: window.location.origin },
+        body: { platform, redirect_uri: redirectUri, origin: window.location.origin, force: mustForceLogin },
       });
       if (error) throw error;
       const url = (res as any)?.authorize_url;
       if (!url) throw new Error((res as any)?.error || "no_authorize_url");
+      try { localStorage.removeItem("pp_maestro_force_login"); } catch { /* ignore */ }
 
       if (isNative) {
         logDeepLink({ kind: "info", source: "MaestroConnect", detail: `opening Maestro with redirect_uri=${redirectUri}` });
@@ -163,7 +166,7 @@ export default function MaestroConnectCard() {
           let callbackUrl: string | null = null;
           try {
             callbackUrl = typeof startNativeOAuthSession === "function" && canUseNativeAuthSession()
-              ? await startNativeOAuthSession(url, redirectUri)
+              ? await startNativeOAuthSession(url, redirectUri, mustForceLogin)
               : null;
           } catch (e: any) {
             logDeepLink({ kind: "error", source: "MaestroConnect", detail: `native auth session failed: ${e?.message ?? e}` });
@@ -207,6 +210,9 @@ export default function MaestroConnectCard() {
     try {
       const { error } = await supabase.functions.invoke("maestro-oauth-disconnect", { body: {} });
       if (error) throw error;
+      // The next connection must show Maestro's login page instead of silently
+      // reusing the browser/webview SSO session.
+      try { localStorage.setItem("pp_maestro_force_login", "1"); } catch { /* ignore */ }
       window.dispatchEvent(new Event("maestro:connected"));
       toast.success(L.disconnectOk);
       await load();
@@ -294,7 +300,7 @@ export default function MaestroConnectCard() {
         <div className="flex gap-2 mt-3">
           {status !== "connected" ? (
             <button
-              onClick={startAuth}
+              onClick={() => startAuth(false)}
               disabled={busy || data.configured === false}
               className="flex items-center justify-center gap-1 flex-1 rounded-md"
               style={{
@@ -308,7 +314,10 @@ export default function MaestroConnectCard() {
           ) : (
             <>
               <button
-                onClick={startAuth}
+                onClick={async () => {
+                  try { await supabase.functions.invoke("maestro-oauth-disconnect", { body: {} }); } catch { /* ignore */ }
+                  await startAuth(true);
+                }}
                 disabled={busy}
                 className="flex items-center justify-center gap-1 flex-1 rounded-md"
                 style={{ background: "var(--pp-bg-border-2)", color: "var(--pp-text-primary)", fontSize: 12, fontWeight: 600, padding: "8px 10px" }}

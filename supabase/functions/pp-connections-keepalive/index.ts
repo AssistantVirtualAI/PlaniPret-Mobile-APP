@@ -22,12 +22,18 @@ type Profile = {
 const SELECT =
   "id, user_id, ms365_refresh_token, ms365_token_expiry, maestro_refresh_token, maestro_token_expires_at";
 
+// Refresh only when the token is about to die. Each Microsoft refresh can
+// trigger a "new sign-in" alert on the broker's account, so we never refresh
+// proactively "just in case" — only within this window before expiry.
+const MS_REFRESH_WINDOW_MS = 5 * 60 * 1000;
+const MAESTRO_REFRESH_WINDOW_MS = 10 * 60 * 1000;
+
 async function keepAlive(admin: ReturnType<typeof createClient>, p: Profile) {
   const out = { ms365: "skipped" as string, maestro: "skipped" as string };
 
   if (p.ms365_refresh_token) {
     const exp = p.ms365_token_expiry ? Date.parse(p.ms365_token_expiry) : 0;
-    if (!exp || exp - Date.now() < 10 * 60 * 1000) {
+    if (!exp || exp - Date.now() < MS_REFRESH_WINDOW_MS) {
       try {
         const token = await refreshMicrosoftAccessToken(admin as any, p as any, MS365_DELEGATED_SCOPES);
         out.ms365 = token ? "refreshed" : "failed";
@@ -41,13 +47,18 @@ async function keepAlive(admin: ReturnType<typeof createClient>, p: Profile) {
   }
 
   if (p.maestro_refresh_token) {
-    try {
-      // getUserMaestroAccessToken refreshes + persists when near expiry.
-      const token = await getUserMaestroAccessToken(admin as any, p.user_id);
-      out.maestro = token ? "ok" : "failed";
-    } catch (e) {
-      console.warn("[keepalive] maestro refresh failed", p.user_id, (e as Error).message);
-      out.maestro = "failed";
+    const mexp = p.maestro_token_expires_at ? Date.parse(p.maestro_token_expires_at) : 0;
+    if (!mexp || mexp - Date.now() < MAESTRO_REFRESH_WINDOW_MS) {
+      try {
+        // getUserMaestroAccessToken refreshes + persists when near expiry.
+        const token = await getUserMaestroAccessToken(admin as any, p.user_id);
+        out.maestro = token ? "ok" : "failed";
+      } catch (e) {
+        console.warn("[keepalive] maestro refresh failed", p.user_id, (e as Error).message);
+        out.maestro = "failed";
+      }
+    } else {
+      out.maestro = "fresh";
     }
   }
 
@@ -100,7 +111,7 @@ Deno.serve(async (req) => {
       success: true,
       ...result,
       ms365_connected: result.ms365 !== "failed" && !!(profile as Profile).ms365_refresh_token,
-      maestro_connected: result.maestro === "ok",
+      maestro_connected: result.maestro === "ok" || result.maestro === "fresh",
     });
   } catch (e) {
     console.error("[pp-connections-keepalive]", e);

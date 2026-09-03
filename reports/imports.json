@@ -1,15 +1,15 @@
 {
-  "generatedAt": "2026-08-12T19:38:23.372Z",
+  "generatedAt": "2026-09-03T22:27:49.731Z",
   "entry": [
     "src/index.tsx"
   ],
   "ok": true,
   "totals": {
-    "localImportsChecked": 467,
-    "bundledFiles": 186,
+    "localImportsChecked": 531,
+    "bundledFiles": 212,
     "missing": 0,
-    "orphanFiles": 890,
-    "orphanBrokenImports": 0
+    "orphanFiles": 916,
+    "orphanBrokenImports": 1
   },
   "missing": [],
   "orphanFiles": [
@@ -295,6 +295,7 @@
     "src/components/planipret/mobile/NewMsEventSheet.tsx",
     "src/components/planipret/mobile/PerformanceReportCard.tsx",
     "src/components/planipret/mobile/PermissionsPrimer.tsx",
+    "src/components/planipret/mobile/__tests__/MCommissionCharts.test.tsx",
     "src/components/planipret/mobile/call/CallAudioSheet.tsx",
     "src/components/planipret/mobile/call/NetworkBadge.tsx",
     "src/components/planipret/widget/WidgetCallDetail.tsx",
@@ -590,6 +591,7 @@
     "src/hooks/useWebhookEndpoints.ts",
     "src/hooks/useWeeklyReport.ts",
     "src/hooks/useWorkspaceMetrics.ts",
+    "src/lib/__tests__/ppContactsCache.test.ts",
     "src/lib/__tests__/toastError.test.ts",
     "src/lib/adminInvoke.ts",
     "src/lib/auth/consumeAppLoginToken.ts",
@@ -628,20 +630,40 @@
     "src/lib/pdf/downloadBlob.ts",
     "src/lib/perfMetrics.ts",
     "src/lib/permissions.ts",
+    "src/lib/planipret/__tests__/smsDedupe.test.ts",
     "src/lib/planipret/adminCounts.ts",
     "src/lib/planipret/adminDirectory.ts",
     "src/lib/planipret/adminReportFilters.ts",
+    "src/lib/planipret/audio/__tests__/audioGuard.test.ts",
+    "src/lib/planipret/audio/__tests__/voicemailAudioSwitch.e2e.test.tsx",
     "src/lib/planipret/audio/bluetoothManager.ts",
     "src/lib/planipret/audio/rnnoise.ts",
     "src/lib/planipret/audio/vad.ts",
+    "src/lib/planipret/avaMutations.ts",
     "src/lib/planipret/brokerAccess.ts",
+    "src/lib/planipret/brokerCoverage.ts",
     "src/lib/planipret/brokerFormat.ts",
     "src/lib/planipret/brokerStats.ts",
     "src/lib/planipret/commissionStats.ts",
+    "src/lib/planipret/commissionsCache.ts",
+    "src/lib/planipret/commissionsPdf.ts",
     "src/lib/planipret/design-tokens.ts",
+    "src/lib/planipret/downloadRecording.ts",
+    "src/lib/planipret/exportVisuals.ts",
+    "src/lib/planipret/maestroDossier.ts",
+    "src/lib/planipret/net/__tests__/reconnectLoop.test.ts",
+    "src/lib/planipret/net/reconnectLoop.ts",
+    "src/lib/planipret/overviewInsights.ts",
+    "src/lib/planipret/overviewInsightsCache.ts",
+    "src/lib/planipret/portalAccess.ts",
+    "src/lib/planipret/portalAudit.ts",
     "src/lib/planipret/pricing.ts",
     "src/lib/planipret/sip/__tests__/ppSipProvider.nativeGuard.test.ts",
     "src/lib/planipret/sip/__tests__/ppSipProvider.reconnect.test.ts",
+    "src/lib/planipret/sip/__tests__/registerLatency.test.ts",
+    "src/lib/planipret/sip/__tests__/registerMetrics.test.ts",
+    "src/lib/planipret/timeBuckets.ts",
+    "src/lib/planipretTranscript.ts",
     "src/lib/portalGuardMonitoring.ts",
     "src/lib/postLoginRoute.ts",
     "src/lib/ppBootLoader.ts",
@@ -868,7 +890,10 @@
     "src/pages/planipret/admin/PAUsers.tsx",
     "src/pages/planipret/admin/PAVoicemails.tsx",
     "src/pages/planipret/admin/PlanipretAdminLayout.tsx",
+    "src/pages/planipret/broker/PBMaestroClients.tsx",
     "src/pages/planipret/mobile/__tests__/EmailsList.integration.test.tsx",
+    "src/pages/planipret/mobile/__tests__/MCommissions.e2e.test.tsx",
+    "src/pages/planipret/mobile/__tests__/MTasks.e2e.test.tsx",
     "src/pages/platform/AIUsage.tsx",
     "src/pages/platform/SystemHealth.tsx",
     "src/pages/platform/TelephonyQA.tsx",
@@ -899,10 +924,18 @@
     "src/services/__tests__/avaProactive.test.ts",
     "src/test/mmoreRoutes.test.ts",
     "src/test/setup.ts",
+    "src/types/capacitor-updater.d.ts",
     "src/types/elevenlabs-full.ts",
     "src/types/elevenlabs.ts",
     "src/utils/pdfExport.ts",
     "src/vite-env.d.ts"
   ],
-  "orphanBrokenImports": []
+  "orphanBrokenImports": [
+    {
+      "file": "src/pages/planipret/broker/PBMaestroClients.tsx",
+      "line": 8,
+      "spec": "./PlanipretBrokerLayout",
+      "expected": "resolved relative to /home/ubuntu/planipret-build/src/pages/planipret/broker/PBMaestroClients.tsx"
+    }
+  ]
 }

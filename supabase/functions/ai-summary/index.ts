@@ -1,3 +1,4 @@
+import { aiFetch } from "../_shared/claude-compat.ts";
 // ai-summary: short natural-language AVA briefing from dashboard stats.
 // POST { range: 'today'|'7d'|'30d'|'custom', stats: {...}, periodLabel?: string }
 const cors = {
@@ -10,16 +11,20 @@ const json = (b: unknown, s = 200) =>
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: cors });
   try {
-    const key = Deno.env.get("LOVABLE_API_KEY");
-    if (!key) return json({ error: "LOVABLE_API_KEY missing" }, 500);
+    // Claude primary, OpenAI failover (handled inside aiFetch): only fail when
+    // neither provider is configured.
+    const key = Deno.env.get("ANTHROPIC_API_KEY");
+    if (!key && !Deno.env.get("OPENAI_API_KEY")) {
+      return json({ error: "No AI provider configured (ANTHROPIC_API_KEY or OPENAI_API_KEY)" }, 500);
+    }
     const body = await req.json().catch(() => ({}));
     const { range = "today", stats = {}, periodLabel } = body || {};
 
     const prompt = `You are AVA, an analyst for a call center. Summarize this period in 2-3 short sentences (max 60 words). Mention answer rate, peak hour, busiest extension, and one actionable insight. Be concrete and use the numbers. Period: ${periodLabel || range}. Stats: ${JSON.stringify(stats)}`;
 
-    const r = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    const r = await aiFetch("https://ai.lovable/v1/chat/completions", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "Lovable-API-Key": key },
+      headers: { "Content-Type": "application/json", "Lovable-API-Key": key ?? "" },
       body: JSON.stringify({
         model: "google/gemini-2.5-flash",
         messages: [

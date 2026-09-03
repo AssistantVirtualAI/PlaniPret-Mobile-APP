@@ -1,6 +1,7 @@
+import { aiFetch } from "../_shared/claude-compat.ts";
 import { serve } from "https://deno.land/std@0.190.0/http/server.ts";
 
-const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
+const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY");
 const RESEND_API_KEY = Deno.env.get("RESEND_API_KEY");
 const ADMIN_EMAIL = Deno.env.get("ADMIN_NOTIFICATION_EMAIL");
 
@@ -142,8 +143,9 @@ serve(async (req) => {
           .map((m: any) => ({ role: m.role, content: String(m.content ?? '').slice(0, 4000) }))
       : [];
 
-    if (!LOVABLE_API_KEY) {
-      throw new Error("LOVABLE_API_KEY is not configured");
+    // Claude primary, OpenAI failover inside aiFetch.
+    if (!ANTHROPIC_API_KEY && !Deno.env.get("OPENAI_API_KEY")) {
+      throw new Error("No AI provider configured (ANTHROPIC_API_KEY or OPENAI_API_KEY)");
     }
 
     const systemPrompt = language === "fr" ? SYSTEM_PROMPT_FR : SYSTEM_PROMPT_EN;
@@ -153,10 +155,10 @@ serve(async (req) => {
       await sendConversationEmail(messages, language);
     }
 
-    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    const response = await aiFetch("https://ai.lovable/v1/chat/completions", {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${LOVABLE_API_KEY}`,
+        Authorization: `Bearer ${ANTHROPIC_API_KEY ?? ""}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({

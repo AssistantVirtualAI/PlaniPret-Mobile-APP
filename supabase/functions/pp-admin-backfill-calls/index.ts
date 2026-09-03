@@ -44,6 +44,8 @@ async function processOne(row: any, downstreamAuth: string, forceAi: boolean) {
   }
 }
 
+const MAX_TRANSCRIPT_ATTEMPTS = 6;
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   try {
@@ -83,10 +85,9 @@ Deno.serve(async (req) => {
     // (Le pipeline pp-admin-transcribe marque transcript_pending si l'audio
     // n'est pas encore disponible côté PBX — inutile de re-tenter en boucle
     // dans la même invocation, on filtre les tentatives récentes < 10 min.)
-    const tenMinAgo = new Date(Date.now() - 10 * 60_000).toISOString();
     const { data: rows, error } = await admin
       .from("planipret_phone_calls")
-      .select("id, transcript, analyzed_at, ai_summary, ai_coaching, coaching_score, analysis_in_progress, analysis_locked_at, transcript_last_attempt_at, ns_call_id, ns_callid, ns_cdr_id, ns_orig_callid, duration_seconds, has_recording")
+      .select("id, transcript, analyzed_at, ai_summary, ai_coaching, coaching_score, analysis_in_progress, analysis_locked_at, transcript_last_attempt_at, transcript_attempts, ns_call_id, ns_callid, ns_cdr_id, ns_orig_callid, duration_seconds, has_recording")
       .or([
         "has_recording.eq.true",
         "ns_call_id.not.is.null",
@@ -105,9 +106,16 @@ Deno.serve(async (req) => {
         const lockedAt = new Date(r.analysis_locked_at || 0).getTime();
         if (Date.now() - lockedAt < 120_000) return false;
       }
-      // Skip retry storm: if a transcript attempt failed in the last 10 min,
-      // wait — the audio is probably still not on the PBX yet.
-      if (r.transcript_last_attempt_at && !r.transcript && r.transcript_last_attempt_at > tenMinAgo) return false;
+      // Give up after MAX_TRANSCRIPT_ATTEMPTS: NetSapiens never returns audio
+      // for these (expired retention or desynced call-id). Retrying forever
+      // burns function time and floods the logs with TRANSCRIPT_PENDING.
+      if (!forceAi && !r.transcript && Number(r.transcript_attempts ?? 0) >= MAX_TRANSCRIPT_ATTEMPTS) return false;
+      // Exponential-ish backoff between attempts (10 min, doubling, capped 24 h).
+      if (r.transcript_last_attempt_at && !r.transcript) {
+        const attempts = Number(r.transcript_attempts ?? 0);
+        const waitMs = Math.min(10 * 60_000 * Math.pow(2, Math.max(0, attempts - 1)), 24 * 60 * 60_000);
+        if (Date.now() - new Date(r.transcript_last_attempt_at).getTime() < waitMs) return false;
+      }
       if (!forceAi && r.transcript && r.analyzed_at && r.ai_summary && r.ai_coaching && r.coaching_score != null) return false;
       return true;
     });

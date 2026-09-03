@@ -98,10 +98,11 @@ function buildSpecs(mk: (name: string, description: string, properties?: Record<
 
   return [
     // Telephony
-    mk("make_call", "Lance un appel téléphonique vers un numéro ou contact. Demande toujours confirmation avant d'appeler.", {
-      to_number: { type: "string", description: "Numéro E.164 (ex: +15145551234)" },
+    mk("make_call", "Lance un appel téléphonique vers un numéro externe ou un poste interne. Demande toujours confirmation avant d'appeler.", {
+      to_number: { type: "string", description: "Numéro externe en E.164 (ex: +15145551234) OU poste interne de 2 à 6 chiffres composé tel quel (ex: 1136 — jamais +11136)" },
       contact_name: { type: "string", description: "Nom du contact (optionnel)" },
     }, ["to_number"]),
+
     mk("get_active_calls", "Récupère la liste des appels en cours actifs."),
     mk("hangup_call", "Raccroche et termine un appel actif.", { call_id: { type: "string", description: "ID de l'appel" } }, ["call_id"]),
     mk("get_call_history", "Récupère l'historique des appels avec scores IA et températures de leads.", {

@@ -1,3 +1,4 @@
+import { aiFetch } from "../_shared/claude-compat.ts";
 // pp-coach-call — Coaching + résumé + transcription corrigée via Lovable AI Gateway
 // Une seule analyse par appel. Verrou pour éviter les analyses simultanées.
 // Broadcast Realtime pour synchroniser admin portal / mobile / widget.
@@ -9,8 +10,8 @@ import { callAnthropic } from "../_shared/anthropic.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
 const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY");
+
 
 const json = (p: any, s = 200) =>
   new Response(JSON.stringify(p), { status: s, headers: { ...corsHeaders, "Content-Type": "application/json" } });
@@ -49,7 +50,7 @@ Réponds STRICTEMENT en JSON valide, sans markdown, avec ce schéma:
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
-  if (!LOVABLE_API_KEY && !ANTHROPIC_API_KEY) return json({ error: "No AI key configured (ANTHROPIC_API_KEY or LOVABLE_API_KEY)" }, 500);
+  if (!ANTHROPIC_API_KEY && !ANTHROPIC_API_KEY) return json({ error: "No AI key configured (ANTHROPIC_API_KEY or ANTHROPIC_API_KEY)" }, 500);
 
   let body: any = {};
   try { body = await req.json(); } catch { /* empty */ }
@@ -227,11 +228,11 @@ Direction: ${row.direction ?? "?"} · Durée: ${row.duration_seconds ?? "?"}s`;
 
 
     async function callLovable(): Promise<{ ok: boolean; content?: string; status?: number; error?: string }> {
-      if (!LOVABLE_API_KEY) return { ok: false, error: "no_lovable_key" };
+      if (!ANTHROPIC_API_KEY) return { ok: false, error: "no_lovable_key" };
       const AI_MODEL = Deno.env.get("PP_COACH_MODEL") ?? "google/gemini-2.5-pro";
-      const r = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      const r = await aiFetch("https://ai.lovable/v1/chat/completions", {
         method: "POST",
-        headers: { "Content-Type": "application/json", "Lovable-API-Key": LOVABLE_API_KEY },
+        headers: { "Content-Type": "application/json", "Lovable-API-Key": ANTHROPIC_API_KEY },
         body: JSON.stringify({
           model: AI_MODEL,
           messages: [
@@ -281,7 +282,7 @@ Direction: ${row.direction ?? "?"} · Durée: ${row.duration_seconds ?? "?"}s`;
       && v?.coaching && typeof v.coaching === "object"
       && typeof v?.score === "number"
     );
-    if (!hasRequiredOutput(parsed) && usedProvider === "claude" && LOVABLE_API_KEY) {
+    if (!hasRequiredOutput(parsed) && usedProvider === "claude" && ANTHROPIC_API_KEY) {
       const retry = await callLovable();
       if (retry.ok) {
         try {

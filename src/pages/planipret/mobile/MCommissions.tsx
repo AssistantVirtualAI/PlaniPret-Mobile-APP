@@ -121,7 +121,16 @@ export default function MCommissions() {
 
   const [institutions, setInstitutions] = useState<{ id: number; label: string }[]>([]);
   const [agents, setAgents] = useState<{ users_id: number; name: string }[]>([]);
-  const [agentId, setAgentId] = useState<string>("");
+  // Les admins voient par défaut TOUT le cabinet (bascule explicite en haut de
+  // page). Les courtiers restent scopés sur leur propre identifiant Maestro.
+  const isAdmin = role === "admin";
+  const ownId = profile?.maestro_broker_id ? String(profile.maestro_broker_id) : "";
+  const [agentId, setAgentId] = useState<string>(() => {
+    const q = sp.get("users_id");
+    if (q && /^\d+$/.test(q)) return q;
+    return isAdmin ? "" : ownId;
+  });
+
   const [detail, setDetail] = useState<DepositRow | null>(null);
 
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -253,6 +262,29 @@ export default function MCommissions() {
           </button>
         ))}
       </div>
+
+      {/* Portée (admins seulement) : cabinet vs personnel */}
+      {isAdmin && (
+        <div className="flex gap-2 mb-3">
+          {[
+            { id: "", label: fr ? "Tous les courtiers" : "All brokers" },
+            { id: ownId, label: fr ? "Mes commissions" : "My commissions" },
+          ].filter((s) => s.id !== "" ? !!ownId : true).map((s) => (
+            <button key={s.id || "all"} onClick={() => setAgentId(s.id)}
+              className="flex-1 px-3 py-2 rounded-xl text-[12.5px] font-semibold"
+              style={{
+                minHeight: 44,
+                background: agentId === s.id ? "var(--pp-brand-accent, #9B7FE8)" : "var(--pp-bg-surface, #0A1628)",
+                color: agentId === s.id ? "#0A1628" : "var(--pp-text-secondary, #B4C6D8)",
+                border: "1px solid var(--pp-bg-border, rgba(155,127,232,0.28))",
+              }}>
+              {s.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+
 
       {period === "custom" && (
         <div className="flex gap-2 mb-3">

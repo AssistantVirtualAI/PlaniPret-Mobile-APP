@@ -11,7 +11,7 @@ import { Capacitor, registerPlugin } from "@capacitor/core";
  * session with zero prompts.
  */
 type PpAuthSessionPlugin = {
-  start(options: { url: string; scheme: string }): Promise<{ url?: string; cancelled?: boolean }>;
+  start(options: { url: string; scheme: string; ephemeral?: boolean }): Promise<{ url?: string; cancelled?: boolean }>;
 };
 
 const PpAuthSession = registerPlugin<PpAuthSessionPlugin>("PpAuthSession");
@@ -26,9 +26,9 @@ export function canUseNativeAuthSession(): boolean {
 }
 
 /** Reusable native OAuth session for any custom-scheme callback (Maestro too). */
-export async function startNativeOAuthSession(url: string, redirectUri: string): Promise<string | null> {
+export async function startNativeOAuthSession(url: string, redirectUri: string, ephemeral = false): Promise<string | null> {
   if (!canUseNativeAuthSession()) return null;
-  const res = await PpAuthSession.start({ url, scheme: schemeFromRedirectUri(redirectUri) });
+  const res = await PpAuthSession.start({ url, scheme: schemeFromRedirectUri(redirectUri), ephemeral });
   if (res?.cancelled) return null;
   return res?.url ?? null;
 }

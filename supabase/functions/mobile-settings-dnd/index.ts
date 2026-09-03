@@ -46,7 +46,7 @@ Deno.serve(async (req) => {
 
     let nsStatus: number | null = null;
     let nsOk = false;
-    const nsExt = profile?.ns_extension ?? profile?.extension ?? sp?.extension;
+    const nsExt = profile?.extension ?? profile?.ns_extension ?? sp?.extension;
     const nsDomain = profile?.ns_domain ?? Deno.env.get("NS_DEFAULT_DOMAIN") ?? "planipret.ca";
     if (nsExt) {
       const nsRes = await nsFetch(

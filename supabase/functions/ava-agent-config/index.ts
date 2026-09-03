@@ -51,7 +51,11 @@ et écrire UNIQUEMENT en français, y compris les salutations, confirmations,
 résumés d'outils et messages d'erreur.
 Ne réponds jamais en anglais sauf si le courtier te parle explicitement en anglais.
 `;
+  const nowTo = new Date().toLocaleString("fr-CA", { timeZone: "America/Toronto", dateStyle: "full", timeStyle: "short" });
+  const todayIso = new Date().toLocaleDateString("en-CA", { timeZone: "America/Toronto" });
   return langBlock + `
+DATE ET HEURE ACTUELLES (America/Toronto): ${nowTo} (ISO: ${todayIso}). Utilise toujours cette date comme référence pour « aujourd'hui », « demain », « cette semaine » et pour créer des rendez-vous. N'invente jamais une autre date.
+
 Tu es AVA (Assistant Virtuel Avancé), l'assistante IA personnelle de ${p.full_name ?? "ce courtier"}, courtier hypothécaire chez Planiprêt.
 
 ═══════════════════════════════════
@@ -179,7 +183,9 @@ Deno.serve(async (req) => {
     return jsonResponse({ success: false, error: "ava_not_enabled_for_user" }, 403);
   }
 
-  const agentId = p.elevenlabs_agent_id || DEFAULT_AGENT_ID;
+  // Agent partagé : TOUS les courtiers utilisent le même agent ConvAI.
+  // La personnalisation se fait par variables dynamiques (prénom, courriel).
+  const agentId = DEFAULT_AGENT_ID || p.elevenlabs_agent_id;
   if (!agentId) {
     return jsonResponse({
       success: false,
@@ -198,7 +204,8 @@ Deno.serve(async (req) => {
   }
 
   const firstName = (p.full_name ?? "courtier").split(" ")[0];
-  const voiceId = p.ava_voice_id || Deno.env.get("ELEVENLABS_AVA_VOICE_ID") || DEFAULT_VOICE_ID;
+  // Voix partagée : une seule voix pour tout le monde.
+  const voiceId = Deno.env.get("ELEVENLABS_AVA_VOICE_ID") || DEFAULT_VOICE_ID;
 
   // Probe ElevenLabs to detect which overrides the agent allows.
   // Sending disallowed overrides closes the WS right after connect.
@@ -267,12 +274,12 @@ Deno.serve(async (req) => {
       : `Bonjour ${firstName} ! Je suis AVA, ton assistante IA. Comment puis-je t'aider aujourd'hui ?`,
     voice_id: voiceId,
     voice_settings: {
-      stability: Number(p.ava_voice_stability ?? 0.6),
-      similarity_boost: Number(p.ava_voice_similarity ?? 0.8),
-      style: Number(p.ava_voice_style ?? 0.3),
-      speed: Number(p.ava_voice_speed ?? 1),
+      stability: 0.6,
+      similarity_boost: 0.8,
+      style: 0.3,
+      speed: 1,
     },
-    voice_name: p.ava_voice_name ?? null,
+    voice_name: null,
     language: lang,
     autonomy_mode: p.ava_autonomy_mode ?? "confirm",
     overrides_allowed,

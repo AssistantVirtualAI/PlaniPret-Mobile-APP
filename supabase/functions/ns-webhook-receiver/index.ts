@@ -364,7 +364,7 @@ async function processEvent(event: any) {
   } else if (type === "message.inbound") {
     const { data: inboundMsg } = await admin.from("planipret_phone_messages").insert({
       user_id: userId, direction: "inbound",
-      from_number: data.from_number ?? data.from ?? null,
+      from_number: data.from_number ?? data.from ?? null, ns_message_id: data.id ?? data.message_id ?? data["message-id"] ?? null, thread_id: data.messagesession_id ?? data["messagesession-id"] ?? null,
       to_number: data.to_number ?? data.to ?? null,
       body: data.body ?? data.message ?? "",
       type: "sms",
@@ -396,7 +396,7 @@ async function processEvent(event: any) {
     const vmId = data.vm_id ?? data.id;
     await admin.from("planipret_voicemails").insert({
       user_id: userId, vm_id: vmId,
-      from_number: data.from_number ?? data.from ?? null,
+      from_number: data.from_number ?? data.from ?? null, ns_message_id: data.id ?? data.message_id ?? data["message-id"] ?? null, thread_id: data.messagesession_id ?? data["messagesession-id"] ?? null,
       duration_seconds: data.duration ?? data.duration_seconds ?? null,
       is_read: false,
     });

@@ -75,9 +75,11 @@ export async function callEdge<T = any>(
 export function toE164(raw: string): string {
   if (!raw) return raw;
   const trimmed = raw.trim();
-  if (trimmed.startsWith("+")) return "+" + trimmed.slice(1).replace(/\D/g, "");
-  const digits = trimmed.replace(/\D/g, "");
-  if (digits.length === 10) return "+1" + digits;
-  if (digits.length === 11 && digits.startsWith("1")) return "+" + digits;
-  return digits ? "+" + digits : trimmed;
+  const allDigits = trimmed.replace(/\D/g, "");
+  // Appel interne : composer le poste directement (jamais +1XXXX).
+  if (allDigits.length >= 2 && allDigits.length <= 6) return allDigits;
+  if (trimmed.startsWith("+")) return "+" + allDigits;
+  if (allDigits.length === 10) return "+1" + allDigits;
+  if (allDigits.length === 11 && allDigits.startsWith("1")) return "+" + allDigits;
+  return allDigits ? "+" + allDigits : trimmed;
 }

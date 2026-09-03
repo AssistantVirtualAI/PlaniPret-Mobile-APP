@@ -70,7 +70,7 @@ Deno.serve(async (req) => {
     const batch_size: number = Math.max(1, Math.min(20, Number(body?.batch_size ?? 10)));
     // Floor raised to 30s: NS subscription delivery is a 3s DB poll, then APNs
     // VoIP push + app wake + REGISTER + INVITE must all fit inside the ring.
-    const ring_timeout: number = Math.max(30, Math.min(120, Number(body?.ring_timeout ?? 35)));
+    const ring_timeout: number = Math.max(30, Math.min(120, Number(body?.ring_timeout ?? 30)));
 
     // DID ROUTING IS READ-ONLY. NetSapiens owns DID→user assignments; automated
     // rewrites clobbered the portal's assignments. Never write phonenumbers here.

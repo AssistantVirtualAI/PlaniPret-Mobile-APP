@@ -16,6 +16,7 @@ import {
   telecomAuth,
 } from "../_shared/maestro.ts";
 import { recordingPermalink } from "../_shared/recording-link.ts";
+import { callCorrelationId, ensureMaestroCall } from "../_shared/maestro-guard.ts";
 
 function pickUrl(d: any): string | null {
   if (!d) return null;
@@ -45,47 +46,32 @@ Deno.serve(async (req) => {
   const userId = call?.user_id ?? null;
   let maestroCallId = (call as any)?.maestro_call_id ?? null;
 
-  if (!maestroCallId) {
+  const correlation_id = callCorrelationId(String(call_id));
+
+  // Garde-fou: le maestro_call_id doit exister CÔTÉ Maestro avant tout PUT.
+  // (source des maestro_put_404 en boucle: id périmé jamais invalidé)
+  const guard = await ensureMaestroCall(admin, { callId: String(call_id), step: "recording_poll" });
+  if (!guard.ok) {
     await pipelineLog(admin, {
-      call_id, user_id: userId, step: "cdr_sync", status: "started",
-      payload: { reason: "recording_poll_missing_maestro_call_id" },
+      call_id, user_id: userId, step: "recording_poll", status: "skipped",
+      error_message: guard.reason ?? "maestro_call_unavailable",
+      correlation_id, entity_type: "call",
+      payload: { permanent: !!guard.permanent, strikes: guard.strikes ?? null },
     });
-
-    const cdrRes = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/maestro-cdr`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
-      },
-      body: JSON.stringify({ call_id, force: true }),
-    });
-    const cdrData = await cdrRes.json().catch(() => ({}));
-
+    await admin.from("planipret_recording_uploads").upsert({
+      call_id, user_id: userId, status: guard.permanent ? "failed" : "skipped",
+      error_message: guard.reason ?? "maestro_call_unavailable", updated_at: new Date().toISOString(),
+    }, { onConflict: "call_id" }).then(() => {}, () => {});
+    return json({ success: false, error: guard.reason ?? "maestro_call_unavailable", permanent: !!guard.permanent }, 424);
+  }
+  maestroCallId = guard.maestroCallId;
+  {
     const refreshed = await admin
       .from("planipret_phone_calls")
       .select("id, user_id, maestro_call_id, recording_url, metadata")
       .eq("id", call_id)
       .maybeSingle();
     call = refreshed.data ?? call;
-    maestroCallId = (call as any)?.maestro_call_id ?? null;
-
-    if (maestroCallId) {
-      await pipelineLog(admin, {
-        call_id, user_id: userId, step: "cdr_sync", status: "success",
-        payload: { maestro_call_id: maestroCallId, repaired_before_recording: true },
-      });
-    } else {
-    await pipelineLog(admin, {
-      call_id, user_id: userId, step: "recording_poll", status: "skipped",
-      error_message: "maestro_call_id_missing",
-      payload: { cdr_status: cdrRes.status, cdr_error: cdrData?.error ?? null, cdr_detail: cdrData?.detail ?? null },
-    });
-    await admin.from("planipret_recording_uploads").upsert({
-      call_id, user_id: userId, status: "skipped",
-      error_message: "maestro_call_id_missing", updated_at: new Date().toISOString(),
-    }, { onConflict: "call_id" }).then(() => {}, () => {});
-    return json({ success: false, error: "maestro_call_id_missing", cdr: cdrData }, 424);
-    }
   }
 
   const cfg = await getMaestroConfig(admin);
@@ -178,7 +164,7 @@ Deno.serve(async (req) => {
       http_status: put.status,
       entity_type: "call",
       entity_id: String(maestroCallId),
-      correlation_id: String(call_id),
+      correlation_id,
       payload: { maestro_call_id: maestroCallId, status: put.status, source, permalink, response: (put as any).data ?? null },
     });
   }

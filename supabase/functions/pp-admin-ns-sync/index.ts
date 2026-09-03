@@ -583,7 +583,15 @@ async function syncMessages(admin: ReturnType<typeof createClient>, domain: stri
       to_number: normalizePhone(val(m, ["to", "to_number", "to-number", "destination", "destination-number", "terminating-number", "terminating-user-id", "dialed"])),
       body: val(m, ["body", "message", "text", "content", "message-text"], ""),
       media_urls: val(m, ["media_urls", "media-urls", "attachments", "media"], []),
-      status: val(m, ["status", "delivery_status", "delivery-status"], null),
+      // NetSapiens renvoie « sending » sur l'historique importé : on normalise
+      // pour ne pas créer de faux SMS bloqués côté portail.
+      status: (() => {
+        const raw = String(val(m, ["status", "delivery_status", "delivery-status"], "") ?? "").toLowerCase();
+        if (!raw) return null;
+        if (raw.includes("fail") || raw.includes("error") || raw.includes("reject")) return "failed";
+        if (raw.includes("deliver") || raw.includes("sent") || raw.includes("sending") || raw.includes("complete")) return "sent";
+        return raw;
+      })(),
       sent_at: toIso(val(m, ["sent_at", "sent-at", "time", "created_at", "message-datetime", "timestamp", "date"])),
       metadata: { ...m, extension: ext },
     };

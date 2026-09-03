@@ -137,3 +137,45 @@ export async function sendFcmDataMessage(
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
 }
+
+/**
+ * Send a user-visible notification (banner + sound) to an Android device.
+ * Used for SMS / voicemail / AI alerts — incoming calls keep using the
+ * data-only path above.
+ */
+export async function sendFcmNotification(
+  sa: ServiceAccount,
+  token: string,
+  opts: { title: string; body?: string; data?: Record<string, string>; channelId?: string },
+): Promise<FcmSendResult> {
+  try {
+    const accessToken = await getAccessToken(sa);
+    const res = await fetch(
+      `https://fcm.googleapis.com/v1/projects/${sa.project_id}/messages:send`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: {
+            token,
+            notification: { title: opts.title, body: opts.body ?? "" },
+            data: opts.data ?? {},
+            android: {
+              priority: "HIGH",
+              notification: {
+                channel_id: opts.channelId ?? "planipret_default",
+                default_sound: true,
+              },
+            },
+          },
+        }),
+      },
+    );
+    if (res.ok) return { ok: true, status: res.status };
+    const text = await res.text().catch(() => "");
+    const unregistered = res.status === 404 || /UNREGISTERED|NOT_FOUND/i.test(text);
+    return { ok: false, status: res.status, unregistered, error: text.slice(0, 300) };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}

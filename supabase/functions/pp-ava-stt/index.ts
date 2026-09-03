@@ -1,3 +1,4 @@
+import { aiFetch } from "../_shared/claude-compat.ts";
 // pp-ava-stt — Speech to text for AVA voice input.
 // Accepts { audio: base64, mime: string } and returns { text }.
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
@@ -10,7 +11,7 @@ Deno.serve(async (req) => {
   try {
     const { audio, mime = "audio/webm" } = await req.json();
     if (!audio || typeof audio !== "string") return j({ error: "audio_required" }, 400);
-    const key = Deno.env.get("LOVABLE_API_KEY");
+    const key = Deno.env.get("OPENAI_API_KEY");
     if (!key) return j({ error: "gateway_key_missing" }, 500);
 
     // Decode base64 to bytes
@@ -24,7 +25,7 @@ Deno.serve(async (req) => {
     form.append("file", blob, `audio.${ext}`);
     form.append("model", "openai/gpt-4o-mini-transcribe");
 
-    const res = await fetch("https://ai.gateway.lovable.dev/v1/audio/transcriptions", {
+    const res = await aiFetch("https://ai.lovable/v1/audio/transcriptions", {
       method: "POST",
       headers: { Authorization: `Bearer ${key}` },
       body: form,

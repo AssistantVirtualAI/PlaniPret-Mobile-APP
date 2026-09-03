@@ -1,3 +1,4 @@
+import { aiFetch } from "../_shared/claude-compat.ts";
 // ai-text-improve — Améliore ou corrige un texte (SMS ou courriel) avec Claude
 // Input  : { text: string, mode: "sms" | "email", action: "fix" | "improve" | "formal" | "shorter" }
 // Output : { success: true, result: string } | { success: false, error: string }
@@ -73,9 +74,9 @@ async function callClaude(system: string, userText: string): Promise<string | nu
   if (res) return res;
 
   // Fallback Lovable AI gateway
-  const lk = Deno.env.get("LOVABLE_API_KEY");
+  const lk = Deno.env.get("ANTHROPIC_API_KEY");
   if (!lk) return null;
-  const r = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+  const r = await aiFetch("https://ai.lovable/v1/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json", "Lovable-API-Key": lk },
     body: JSON.stringify({

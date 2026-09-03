@@ -1,3 +1,4 @@
+import { aiFetch } from "../_shared/claude-compat.ts";
 // @ts-nocheck
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { callAnthropic } from "../_shared/anthropic.ts";
@@ -15,7 +16,7 @@ const json = (body: unknown, status = 200) =>
   });
 
 const ELEVEN_KEY = Deno.env.get("ELEVENLABS_API_KEY") ?? "";
-const LOVABLE_KEY = Deno.env.get("LOVABLE_API_KEY") ?? "";
+const LOVABLE_KEY = Deno.env.get("ANTHROPIC_API_KEY") ?? "";
 
 /**
  * Static (cacheable) prompts — keep byte-identical across calls so Anthropic
@@ -94,7 +95,7 @@ async function summarizeText(text: string): Promise<{ summary: string; tags: str
 
   // 2) Fallback: Lovable AI Gateway.
   if (!LOVABLE_KEY) return { summary: "", tags: [] };
-  const r = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+  const r = await aiFetch("https://ai.lovable/v1/chat/completions", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

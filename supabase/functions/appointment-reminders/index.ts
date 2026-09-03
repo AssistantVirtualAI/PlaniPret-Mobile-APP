@@ -12,7 +12,7 @@ Deno.serve(async (req) => {
     const URL_ = Deno.env.get("SUPABASE_URL")!;
     const SERVICE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     const RESEND = Deno.env.get("RESEND_API_KEY");
-    const LOVABLE = Deno.env.get("LOVABLE_API_KEY");
+    const LOVABLE = Deno.env.get("ANTHROPIC_API_KEY");
     const admin = createClient(URL_, SERVICE);
 
     const now = new Date();

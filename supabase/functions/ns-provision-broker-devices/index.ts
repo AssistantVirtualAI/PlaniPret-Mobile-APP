@@ -156,7 +156,7 @@ Deno.serve(async (req) => {
     };
 
     const provision = async (broker: any) => {
-      const ext = broker.ns_extension ?? broker.extension;
+      const ext = broker.extension ?? broker.ns_extension;
       const domain = broker.ns_domain || NS_DEFAULT_DOMAIN;
       if (!ext) return { broker_id: broker.user_id, success: false, error: "no_extension" };
 
@@ -306,6 +306,7 @@ Deno.serve(async (req) => {
       } catch { /* optional */ }
 
       const { error: uErr } = await admin.from("planipret_profiles").update({
+        extension: ext,
         ns_mobile_device_id: mobileId,
         ns_widget_device_id: widgetId,
          ns_sip_password_ref_mobile: mobileSecretName,

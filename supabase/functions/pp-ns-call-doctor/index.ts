@@ -130,8 +130,12 @@ Deno.serve(async (req) => {
   }
 
   /* ---------------- 2. Registrations ---------------- */
-  const regRes = await nsJson(`/domains/${encDomain}/users/${encExt}/subscriber-registrations`);
-  const regs = asArray(regRes.body);
+  // NS-API v2 exposes live registration state on each Device object; there is
+  // no reliable subscriber-registrations endpoint. Querying that old path made
+  // healthy phones appear offline and hid the actual device/core mismatch.
+  const regs = devices.filter((d) =>
+    String(d?.["device-sip-registration-state"] ?? d?.["registration-state"] ?? "").toLowerCase() === "registered"
+  );
   if (!regs.length) {
     checks.push({
       id: "registrations",
@@ -143,13 +147,13 @@ Deno.serve(async (req) => {
   } else {
     const summary = regs.map((r) => {
       const aor = String(r?.aor ?? r?.device ?? r?.["device-aor"] ?? "").replace(/^sip:/, "");
-      const server = hostOf(r?.["core-server"] ?? r?.server ?? r?.["registration-server"]);
+      const server = hostOf(r?.["device-sip-registration-core-server"] ?? r?.["core-server"] ?? r?.server);
       return {
         aor,
         server,
         onCore: !!server && CORE_HOST.test(server) && !PORTAL_HOST.test(server),
-        expires: r?.expires ?? r?.["expiration-seconds"] ?? null,
-        userAgent: r?.["user-agent"] ?? r?.useragent ?? null,
+        expires: r?.["device-sip-registration-expires-datetime"] ?? null,
+        userAgent: r?.["device-sip-registration-user-agent"] ?? r?.["user-agent"] ?? null,
       };
     });
     const offCore = summary.filter((s) => s.server && !s.onCore);
@@ -183,14 +187,14 @@ Deno.serve(async (req) => {
   const active = rules.filter((r) => String(r?.["time-frame"] ?? r?.timeframe ?? "").length > 0);
   const simringHit = rules.find((r) => {
     const blob = JSON.stringify(r ?? {});
-    return blob.includes(mobileId) || /simultaneous|sim-?ring/i.test(blob);
+    return blob.includes("<OwnDevices>") || blob.includes(mobileId) || /simultaneous|sim-?ring/i.test(blob);
   });
   checks.push({
     id: "answer_rules",
     label: "Règles de réponse (SimRing)",
     status: simringHit ? "ok" : rules.length ? "warn" : "fail",
     detail: simringHit
-      ? `SimRing actif et incluant ${mobileId}.`
+      ? `SimRing actif et incluant les appareils du poste ${ext}.`
       : rules.length
         ? `${rules.length} règle(s) trouvée(s) mais aucune ne fait sonner ${mobileId}.`
         : "Aucune règle de réponse : l'appel n'est jamais forké vers le mobile.",

@@ -5,11 +5,60 @@
  * (Microsoft sign-in / app boot) failed.
  */
 import { useEffect, useState } from "react";
-import { Link2, Loader2, CheckCircle2, XCircle } from "lucide-react";
+import { Link2, Loader2, CheckCircle2, XCircle, Eraser } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 
 type Props = { lang?: "fr" | "en"; className?: string };
+
+/** Human readable explanation for a Maestro relink failure. */
+function explainRelinkError(reason: string, fr: boolean): string {
+  const map: Record<string, [string, string]> = {
+    no_directory_match: [
+      "Aucune correspondance dans l'annuaire Maestro pour votre courriel. Demandez à un administrateur d'ajouter votre courriel @planipret.com dans Maestro.",
+      "No Maestro directory match for your email. Ask an administrator to add your @planipret.com email in Maestro.",
+    ],
+    maestro_not_connected: [
+      "Votre session Maestro a expiré. Touchez « Se connecter à Maestro » pour vous authentifier à nouveau.",
+      "Your Maestro session expired. Tap “Connect to Maestro” to sign in again.",
+    ],
+    token_expired: [
+      "Le jeton Maestro est expiré. Reconnectez-vous à Maestro.",
+      "The Maestro token expired. Reconnect to Maestro.",
+    ],
+    missing_config: [
+      "La configuration Maestro est incomplète côté serveur. Contactez un administrateur.",
+      "Maestro configuration is incomplete on the server. Contact an administrator.",
+    ],
+    unauthorized: [
+      "Accès refusé par Maestro. Vérifiez que votre compte courtier est actif.",
+      "Access denied by Maestro. Check that your broker account is active.",
+    ],
+  };
+  const hit = map[reason];
+  if (hit) return fr ? hit[0] : hit[1];
+  return fr
+    ? `Reconnexion Maestro impossible (${reason}). Purgez les caches puis réessayez.`
+    : `Maestro reconnection failed (${reason}). Purge the caches then retry.`;
+}
+
+/** Clear every local Maestro/task cache without restarting the app. */
+async function purgeMaestroCaches(): Promise<void> {
+  try {
+    for (const key of Object.keys(localStorage)) {
+      if (/^(pp_tasks_cache_|pp_maestro|maestro_|pp_commission|pp_contacts)/i.test(key)) localStorage.removeItem(key);
+    }
+  } catch { /* noop */ }
+  try {
+    for (const key of Object.keys(sessionStorage)) {
+      if (/^(pp_|maestro)/i.test(key)) sessionStorage.removeItem(key);
+    }
+  } catch { /* noop */ }
+  try {
+    const keys = (await window.caches?.keys?.()) ?? [];
+    await Promise.all(keys.map((k) => window.caches.delete(k)));
+  } catch { /* noop */ }
+}
 
 export default function MaestroRelinkButton({ lang = "fr", className = "" }: Props) {
   const fr = lang === "fr";
@@ -17,6 +66,7 @@ export default function MaestroRelinkButton({ lang = "fr", className = "" }: Pro
   const [brokerId, setBrokerId] = useState<string | null>(null);
   const [matchedBy, setMatchedBy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [purging, setPurging] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -55,16 +105,14 @@ export default function MaestroRelinkButton({ lang = "fr", className = "" }: Pro
         toast.success(fr ? `Maestro relié (ID ${d.maestro_broker_id})` : `Maestro linked (ID ${d.maestro_broker_id})`);
       } else {
         const reason = String(d?.error ?? "no_directory_match");
-        setError(reason);
-        toast.error(
-          reason === "no_directory_match"
-            ? (fr ? "Aucune correspondance dans l'annuaire Maestro pour votre courriel." : "No Maestro directory match for your email.")
-            : reason,
-        );
+        const explained = explainRelinkError(reason, fr);
+        setError(explained);
+        toast.error(fr ? "Reconnexion Maestro échouée" : "Maestro reconnection failed", { description: explained });
       }
     } catch (e: any) {
-      setError(e?.message ?? "error");
-      toast.error(e?.message ?? (fr ? "Relien Maestro impossible" : "Maestro relink failed"));
+      const explained = explainRelinkError(String(e?.message ?? "network_error"), fr);
+      setError(explained);
+      toast.error(fr ? "Reconnexion Maestro échouée" : "Maestro reconnection failed", { description: explained });
     } finally {
       setBusy(false);
     }
@@ -80,6 +128,23 @@ export default function MaestroRelinkButton({ lang = "fr", className = "" }: Pro
         <span className="text-sm font-semibold flex-1">
           {fr ? "Identifiant courtier Maestro" : "Maestro broker ID"}
         </span>
+        <button
+          onClick={async () => {
+            setPurging(true);
+            await purgeMaestroCaches();
+            setPurging(false);
+            setError(null);
+            toast.success(fr ? "Caches purgés — aucun redémarrage requis" : "Caches purged — no restart needed");
+            void relink();
+          }}
+          disabled={purging || busy}
+          aria-label={fr ? "Purger les caches" : "Purge caches"}
+          className="text-[11px] font-semibold px-3 py-1.5 rounded-full disabled:opacity-60 inline-flex items-center gap-1"
+          style={{ background: "rgba(255,255,255,0.06)", border: "1px solid #17527d", color: "#8FA8C0" }}
+        >
+          {purging ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Eraser className="w-3.5 h-3.5" />}
+          {fr ? "Purger" : "Purge"}
+        </button>
         <button
           onClick={relink}
           disabled={busy}

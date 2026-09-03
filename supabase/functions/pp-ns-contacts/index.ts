@@ -28,6 +28,46 @@ Deno.serve(async (req) => {
   }
   const action = (body?.action ?? url.searchParams.get("action") ?? "list").toString();
 
+  // Backward compatibility for installed mobile builds that still route the
+  // Maestro tabs through pp-ns-contacts. Forward them server-side so users do
+  // not need to reinstall the app just to load Clients / Brokers.
+  if (action === "maestro_clients" || action === "maestro_brokers") {
+    const authHeader = req.headers.get("Authorization") ?? "";
+    const backendUrl = Deno.env.get("SUPABASE_URL") ?? "";
+    const anonKey = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+    if (!backendUrl || !authHeader) {
+      return jsonResponse({ error: "Session expirée. Reconnectez-vous." }, 401);
+    }
+    try {
+      const upstream = await fetch(`${backendUrl}/functions/v1/maestro-actions`, {
+        method: "POST",
+        headers: {
+          Authorization: authHeader,
+          apikey: anonKey,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          action: action === "maestro_clients" ? "list_clients" : "list_brokers",
+          payload: { limit: body?.limit ?? 500 },
+        }),
+      });
+      const result = await upstream.json().catch(() => ({}));
+      const key = action === "maestro_clients" ? "clients" : "brokers";
+      if (!upstream.ok || result?.success === false) {
+        return jsonResponse({ error: result?.error ?? "Maestro indisponible", [key]: [], contacts: [] });
+      }
+      const rows = Array.isArray(result?.[key]) ? result[key] : [];
+      // Older mobile builds read `contacts` (ppContactsCache.keyFor); expose both.
+      return jsonResponse({ ok: true, success: true, count: rows.length, [key]: rows, contacts: rows });
+    } catch (error) {
+      return jsonResponse({
+        error: error instanceof Error ? error.message : "Maestro indisponible",
+        [action === "maestro_clients" ? "clients" : "brokers"]: [],
+        contacts: [],
+      });
+    }
+  }
+
   const userBase = `/domains/${encodeURIComponent(ctx.nsDomain)}/users/${encodeURIComponent(ctx.extension)}`;
   const domainBase = `/domains/${encodeURIComponent(ctx.nsDomain)}`;
 

@@ -81,20 +81,22 @@ async function ensureQueue(domain: string, ext: string) {
   const q = queueExt(ext);
   const base = `/domains/${encodeURIComponent(domain)}/callqueues`;
   const read = await ns(`${base}/${encodeURIComponent(q)}`);
+  // La musique d'attente vient du MOH du DOMAINE (`/domains/{d}/moh`), où le
+  // fichier unique est l'avis d'enregistrement : la file n'expose aucun champ
+  // MOH propre. L'avis est donc joué pendant que les agents sonnent et coupe
+  // net au décrochage (contrairement à l'intro de file, non interruptible).
   const payload: Record<string, unknown> = {
     synchronous: "yes",
-    "call-queue": q,
-    name: `Avis ${ext}`,
+    queue: q,
     description: `Annonce d'enregistrement — entrants du courtier ${ext}`,
-    "queue-type": "Ring All",
-    "music-on-hold-enabled": "yes",
-    "music-on-hold-name": MOH_NAME,
-    "queue-intro-message-enabled": "yes",
-    "queue-intro-message-name": MOH_NAME,
-    "queue-max-wait-seconds": 45,
-    "queue-forward-timeout-destination": `vmail_${ext}`,
-    enabled: "yes",
+    "callqueue-dispatch-type": "Ring All",
+    "callqueue-calculate-statistics": "yes",
+    "callqueue-agent-dispatch-timeout-seconds": 30,
+    "callqueue-max-wait-timeout-minutes": 1,
+    "callqueue-require-available-agents-to-accept-new-callers": "no",
+    "callqueue-force-full-intro-playback": "no",
   };
+
   const write = read.ok
     ? await ns(`${base}/${encodeURIComponent(q)}`, { method: "PUT", body: JSON.stringify(payload) })
     : await ns(base, { method: "POST", body: JSON.stringify({ ...payload, "call-queue": q }) });
@@ -102,15 +104,17 @@ async function ensureQueue(domain: string, ext: string) {
   // Agent unique = le courtier (ses propres devices sonnent).
   const agents = await ns(`${base}/${encodeURIComponent(q)}/agents`);
   const list = Array.isArray(agents.data) ? agents.data : [];
-  const present = list.some((a: any) => String(a?.user ?? a?.agent ?? "") === ext);
+  const present = list.some((a: any) =>
+    String(a?.["callqueue-agent-id"] ?? a?.user ?? a?.agent ?? "").split("@")[0].replace("sip:", "") === ext);
+
   let agentWrite: any = null;
   if (!present) {
     agentWrite = await ns(`${base}/${encodeURIComponent(q)}/agents`, {
       method: "POST",
-      body: JSON.stringify({ synchronous: "yes", user: ext, "device-id": ext, enabled: "yes" }),
+      body: JSON.stringify({ synchronous: "yes", queue: q, user: ext, device: `sip:${ext}@${domain}`, "device-id": ext, enabled: "yes" }),
     });
   }
-  return { queue: q, created: !read.ok, write: { status: write.status, ok: write.ok }, agent: agentWrite ? { status: agentWrite.status, ok: agentWrite.ok } : { skipped: true } };
+  return { queue: q, created: !read.ok, write: { status: write.status, ok: write.ok, error: write.ok ? undefined : write.data }, agent: agentWrite ? { status: agentWrite.status, ok: agentWrite.ok, error: agentWrite.ok ? undefined : agentWrite.data } : { skipped: true } };
 }
 
 /** DID → file d'attente (avis) ; l'invariant destination-user reste rempli. */
@@ -141,8 +145,62 @@ function userPayload(ext: string, domain: string, current: any) {
   };
 }
 
+/** Lit une file et vérifie qu'elle est apte à sonner le courtier avec l'avis. */
+async function diagnoseQueue(domain: string, ext: string) {
+  const q = queueExt(ext);
+  const r = await ns(`/domains/${encodeURIComponent(domain)}/callqueues/${encodeURIComponent(q)}`);
+  const o = one(r.data) ?? {};
+  const dispatchOk = String(o["callqueue-dispatch-type"] ?? "") === "Ring All";
+  const hasAgent = Number(o["callqueue-count-agents-total"] ?? 0) >= 1;
+  const healthy = r.ok && dispatchOk && hasAgent;
+  return {
+    extension: ext,
+    queue: q,
+    exists: r.ok,
+    dispatch_ok: dispatchOk,
+    has_agent: hasAgent,
+    healthy,
+    needs_repair: r.ok && !healthy,
+  };
+}
+
+
+/** Diagnostic + réparation ciblée des files défectueuses. */
+async function autoheal(domain: string, targets: { ext: string }[], apply: boolean) {
+  const checks = [];
+  for (const { ext } of targets) checks.push(await diagnoseQueue(domain, ext));
+  const broken = checks.filter((c) => c.needs_repair);
+  const fixed = [];
+  if (apply) for (const b of broken) fixed.push(await ensureQueue(domain, b.extension));
+  return { checked: checks.length, broken_count: broken.length, broken, fixed, checks };
+}
+
+/** Auto-réparation au démarrage (cold start) — une seule fois par instance. */
+let bootHealDone = false;
+async function bootSelfHeal() {
+  if (bootHealDone || !NS_API_KEY || !SERVICE_KEY) return;
+  bootHealDone = true;
+  try {
+    const db = createClient(Deno.env.get("SUPABASE_URL")!, SERVICE_KEY);
+    const { data: rows } = await db
+      .from("planipret_did_assignments")
+      .select("extension");
+    const targets = (rows ?? [])
+      .map((r: any) => ({ ext: String(r.extension ?? "").trim() }))
+      .filter((r) => /^[0-9]{2,10}$/.test(r.ext));
+    if (!targets.length) return;
+    const res = await autoheal(NS_DEFAULT_DOMAIN, targets, true);
+    console.log(`[boot-selfheal] files vérifiées=${res.checked} réparées=${res.broken_count}`);
+  } catch (e) {
+    console.error("[boot-selfheal] échec", String(e));
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+  // Self-heal au démarrage : uniquement sur demande explicite (cron/admin),
+  // sinon il monopolise le worker et fait expirer les requêtes de lecture.
+  if (req.headers.get("x-selfheal") === "1") queueMicrotask(() => { void bootSelfHeal(); });
   try {
     const authHeader = req.headers.get("Authorization") ?? "";
     const cronHeader = req.headers.get("x-cron-secret") ?? "";
@@ -168,13 +226,18 @@ Deno.serve(async (req) => {
       .order("phone_number_digits", { ascending: true });
     if (error) return json({ success: false, error: error.message }, 500);
 
-    const targets = (rows ?? [])
+    const offset = Number.isFinite(Number(body?.offset)) ? Math.max(0, Number(body?.offset)) : 0;
+    const limit = Number.isFinite(Number(body?.limit)) && Number(body?.limit) > 0 ? Number(body.limit) : 0;
+
+    const allTargets = (rows ?? [])
       .map((r: any) => ({
         pn: pbxId(r.phone_number_digits || r.phone_number_e164),
         ext: String(r.extension ?? "").trim(),
       }))
       .filter((r) => r.pn && /^[0-9]{2,10}$/.test(r.ext))
       .filter((r) => !onlyExt || r.ext === onlyExt);
+
+    const targets = limit ? allTargets.slice(offset, offset + limit) : allTargets.slice(offset);
 
     if (action === "status") {
       const items = [];
@@ -201,12 +264,51 @@ Deno.serve(async (req) => {
       });
     }
 
+    // Répare les files existantes (coupe l'intro bloquante) sans toucher aux DID.
+    if (action === "diagnose" || action === "autoheal") {
+      const res = await autoheal(domain, targets, action === "autoheal");
+      return json({ success: true, action, domain, ...res });
+    }
+
+    // Lecture brute (GET only) pour mise au point.
+    if (action === "ns_get") {
+      const path = String(body?.path ?? "");
+      if (!path.startsWith("/domains/")) return json({ success: false, error: "path invalide" }, 400);
+      const r = await ns(path);
+      return json({ success: true, status: r.status, data: r.data });
+    }
+
+    // Outil de mise au point : PUT arbitraire sur une file + relecture.
+    if (action === "probe_queue") {
+      const q = queueExt(String(body?.extension ?? "111"));
+      const base = `/domains/${encodeURIComponent(domain)}/callqueues/${encodeURIComponent(q)}`;
+      const put = await ns(base, { method: "PUT", body: JSON.stringify({ synchronous: "yes", queue: q, ...(body?.payload ?? {}) }) });
+      const back = await ns(base);
+      return json({ success: true, put: { status: put.status, data: put.data }, read: one(back.data) });
+    }
+
+    if (action === "repair_queues") {
+      const fixed = [];
+      for (const { ext } of targets) fixed.push(await ensureQueue(domain, ext));
+      return json({ success: true, action, domain, note: "Intro de file désactivée; avis joué en musique d'attente (coupe au décrochage).", fixed });
+    }
+
     if (action === "enable" || action === "disable") {
+
       const results = [];
       for (const { pn, ext } of targets) {
         const q = queueExt(ext);
-        let queueInfo: unknown = null;
-        if (action === "enable") queueInfo = await ensureQueue(domain, ext);
+        let queueInfo: any = null;
+        if (action === "enable") {
+          queueInfo = await ensureQueue(domain, ext);
+          // SÉCURITÉ : ne jamais repointer un DID vers une file qui n'existe pas.
+          const check = await ns(`/domains/${encodeURIComponent(domain)}/callqueues/${encodeURIComponent(q)}`);
+          if (!check.ok) {
+            results.push({ phone_number: pn, extension: ext, queue: q, queue_setup: queueInfo, skipped: "queue introuvable — DID inchangé", ok: false });
+            continue;
+          }
+        }
+
 
         const cur = await ns(pnPath(domain, pn));
         const payload = action === "enable"
@@ -240,7 +342,7 @@ Deno.serve(async (req) => {
       });
     }
 
-    return json({ success: false, error: `unknown action ${action}`, hint: "status | enable | disable" }, 400);
+    return json({ success: false, error: `unknown action ${action}`, hint: "status | diagnose | autoheal | repair_queues | enable | disable" }, 400);
   } catch (e) {
     return json({ success: false, error: String(e) }, 500);
   }

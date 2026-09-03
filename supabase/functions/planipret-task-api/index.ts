@@ -64,6 +64,45 @@ function makeApiFetch(token: string | null) {
  */
 let noUpstreamListUntil = 0; // negative cache: upstream exposes no GET (404/405)
 
+/** Maestro may return a plain array or a Laravel-style paginated envelope. */
+function extractTaskRows(payload: any): any[] {
+  if (Array.isArray(payload)) return payload;
+  if (!payload || typeof payload !== "object") return [];
+  const candidates = [
+    payload.tasks,
+    payload.items,
+    payload.results,
+    payload.data,
+    payload.data?.tasks,
+    payload.data?.items,
+    payload.data?.results,
+    payload.data?.data,
+    payload.response?.data,
+    payload.response?.tasks,
+  ];
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) return candidate;
+  }
+  // Some Maestro deployments wrap paginator data more than once
+  // (`data.data`, `data.tasks.data`, `response.data.items`, ...). Walk only
+  // conventional envelope keys so unrelated metadata arrays cannot be tasks.
+  const envelopeKeys = ["data", "tasks", "items", "results", "response", "payload"];
+  const seen = new Set<any>();
+  const walk = (value: any, depth: number): any[] => {
+    if (Array.isArray(value)) return value;
+    if (!value || typeof value !== "object" || depth > 5 || seen.has(value)) return [];
+    seen.add(value);
+    for (const key of envelopeKeys) {
+      const found = walk(value[key], depth + 1);
+      if (found.length) return found;
+    }
+    return [];
+  };
+  const nested = walk(payload, 0);
+  if (nested.length) return nested;
+  return [];
+}
+
 function makeListFetch(token: string | null) {
   return async (
     maestroId: string,
@@ -76,12 +115,15 @@ function makeListFetch(token: string | null) {
     qs.set("limit", "200");
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
 
+    // Measured on production (broker 393): the Task List API scopes reads with
+    // singular `user_id`. `users_id` is used by task writes but returns an empty
+    // page on GET, as does `xid=&type=user`; empty 200s must not short-circuit.
     const candidates = [
+      `${API_BASE}/api/main/tasks${suffix}${suffix ? "&" : "?"}user_id=${maestroId}`,
+      `${API_BASE}/api/main/tasks${suffix}${suffix ? "&" : "?"}users_id=${maestroId}`,
       `${TELECOM_BASE}/users/${maestroId}/tasks${suffix}`,
       `${API_BASE}/telecom/api/v1/users/${maestroId}/tasks${suffix}`,
       `${API_BASE}/api/main/tasks${suffix}${suffix ? "&" : "?"}xid=${maestroId}&type=user`,
-      `${API_BASE}/api/main/tasks${suffix}${suffix ? "&" : "?"}users_id=${maestroId}`,
-      `${API_BASE}/api/main/tasks/list${suffix}${suffix ? "&" : "?"}users_id=${maestroId}`,
       `${API_BASE}/api/main/users/${maestroId}/tasks${suffix}`,
     ];
 
@@ -92,6 +134,7 @@ function makeListFetch(token: string | null) {
 
     let lastStatus = 0;
     let allMissing = true;
+    let emptyOk: UpstreamList | null = null;
     for (const url of candidates) {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
@@ -105,10 +148,20 @@ function makeListFetch(token: string | null) {
           if (res.status !== 404 && res.status !== 405 && res.status !== 501) allMissing = false;
           continue;
         }
+        allMissing = false;
         const j = await res.json().catch(() => null);
-        const raw = Array.isArray(j) ? j : (j?.data ?? j?.tasks ?? j?.items ?? []);
-        const tasks = (Array.isArray(raw) ? raw : []).map(normalizeTask).filter((t: any) => t.id);
-        return { ok: true, tasks, endpoint: url.split("?")[0], status: res.status };
+        const tasks = extractTaskRows(j).map(normalizeTask).filter((t: any) => t.id);
+        console.info("[planipret-task-api] list probe", {
+          endpoint: url.split("?")[0],
+          maestroId,
+          status: res.status,
+          topLevelKeys: j && typeof j === "object" && !Array.isArray(j) ? Object.keys(j).slice(0, 20) : [],
+          extracted: tasks.length,
+        });
+        const out = { ok: true, tasks, endpoint: url.split("?")[0], status: res.status };
+        if (tasks.length) return out;
+        // 200 but empty: remember it and keep probing the other shapes.
+        emptyOk = emptyOk ?? out;
       } catch {
         lastStatus = 599;
         allMissing = false;
@@ -116,10 +169,12 @@ function makeListFetch(token: string | null) {
         clearTimeout(timer);
       }
     }
+    if (emptyOk) return emptyOk;
     // Every documented/known read route answered 404/405 → stop hammering
     // Planiprêt for 10 minutes and serve the local mirror instead.
     if (allMissing) noUpstreamListUntil = Date.now() + 10 * 60 * 1000;
     return { ok: false, tasks: [], endpoint: null, status: lastStatus };
+
   };
 }
 

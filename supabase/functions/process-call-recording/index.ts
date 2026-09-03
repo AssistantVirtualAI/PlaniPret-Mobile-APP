@@ -1,3 +1,4 @@
+import { aiFetch } from "../_shared/claude-compat.ts";
 // process-call-recording: single idempotent pipeline that transcribes + analyzes + coaches a call recording.
 // Short-circuits when results already exist so we never bill or run twice for the same recording.
 // Writes an audit trail of every run to public.call_intelligence_audit.
@@ -12,7 +13,7 @@ const corsHeaders = {
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const ANON = Deno.env.get("SUPABASE_ANON_KEY")!;
-const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY")!;
+const ANTHROPIC_API_KEY = Deno.env.get("ANTHROPIC_API_KEY")!;
 
 const json = (b: unknown, s = 200) =>
   new Response(JSON.stringify(b), { status: s, headers: { ...corsHeaders, "Content-Type": "application/json" } });
@@ -260,10 +261,10 @@ Deno.serve(async (req) => {
       }
 
       const destination = call.destination ?? call.destination_number ?? "unknown";
-      const aiRes = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      const aiRes = await aiFetch("https://ai.lovable/v1/chat/completions", {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${LOVABLE_API_KEY}`,
+          Authorization: `Bearer ${ANTHROPIC_API_KEY}`,
           "Content-Type": "application/json",
           "X-Lovable-AIG-SDK": "edge-function",
         },

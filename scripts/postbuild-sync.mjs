@@ -14,10 +14,17 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-if (process.env.PP_SKIP_AUTOSYNC === "1") {
-  console.log("↷ postbuild: auto-sync natif désactivé (PP_SKIP_AUTOSYNC=1)");
+const skipRaw = process.env.PP_SKIP_AUTOSYNC;
+const skip = skipRaw !== undefined && skipRaw !== "" && skipRaw !== "0" && skipRaw.toLowerCase() !== "false";
+
+if (skip) {
+  console.log(
+    `↷ postbuild: cap sync automatique ignoré (PP_SKIP_AUTOSYNC=${skipRaw}) — ce script composé exécute déjà son propre \`cap sync\`.`,
+  );
   process.exit(0);
 }
+
+console.log("▶ postbuild: PP_SKIP_AUTOSYNC non défini — cap sync natif automatique activé");
 
 const platforms = ["ios", "android"].filter((p) => existsSync(resolve(ROOT, p)));
 

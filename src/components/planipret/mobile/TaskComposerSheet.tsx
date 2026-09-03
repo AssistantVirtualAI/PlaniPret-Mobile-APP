@@ -34,7 +34,7 @@ interface Props {
   lang: "fr" | "en";
   defaultTarget?: string | null;
   busy?: boolean;
-  initial?: Partial<TaskComposerValue> & { task_id?: string };
+  initial?: Partial<TaskComposerValue> & { task_id?: string; target_name?: string };
   /** Per-field validation errors returned by the gateway (HTTP 422). */
   fieldErrors?: Record<string, string> | null;
   onClose: () => void;
@@ -163,7 +163,7 @@ export default function TaskComposerSheet({ open, lang, defaultTarget, busy, ini
     setTab("quick");
     setPicked(null);
     setClientQuery("");
-    setClientName("");
+    setClientName(initial?.target_name ?? "");
     setSelectedTarget(null);
     requestAnimationFrame(() => {
       if (panelRef.current) panelRef.current.scrollTop = 0;
@@ -185,6 +185,30 @@ export default function TaskComposerSheet({ open, lang, defaultTarget, busy, ini
     void getPpContacts("maestro_brokers", { force: true, limit: 500 }).then((v) => { if (alive) setPeople(v || []); }).catch(() => {});
     return () => { alive = false; };
   }, [open, step]);
+
+  // Editing an existing task: resolve the client name from the Maestro
+  // `task_targets` metadata so the sheet shows the name, never the raw xid.
+  useEffect(() => {
+    if (!open || clientName || !target) return;
+    const id = String(target);
+    const match = targets.find(
+      (t) => String(t.user?.id ?? "") === id || String(t.client_id ?? "") === id || t.contracts.some((c) => String(c.id) === id),
+    );
+    if (match) {
+      setClientName(match.name);
+      setSelectedTarget(match);
+      return;
+    }
+    // Fallback: resolve against the cached Maestro contacts so the sheet
+    // always shows the client name instead of the raw xid.
+    const contact = (clients as any[]).find(
+      (c) => String(c?.id ?? "") === id
+        || String(c?.client_id ?? "") === id
+        || (Array.isArray(c?.contracts) && c.contracts.some((ct: any) => String(ct?.id ?? "") === id)),
+    );
+    const name = contact?.name ?? [contact?.first_name, contact?.last_name].filter(Boolean).join(" ").trim();
+    if (name) setClientName(name);
+  }, [open, target, targets, clients, clientName]);
 
   useEffect(() => {
     if (!open) return;

@@ -6,6 +6,9 @@ export function normalizePhone(raw: string | null | undefined): string | null {
   if (!raw) return null;
   const digits = String(raw).replace(/[^\d+]/g, "");
   if (!digits) return null;
+  // Poste interne (2 à 6 chiffres) : composer directement le poste.
+  const onlyDigits = digits.replace(/\D/g, "");
+  if (onlyDigits && onlyDigits.length <= 6) return onlyDigits;
   if (digits.startsWith("+")) {
     const d = digits.slice(1).replace(/\D/g, "");
     if (d.length >= 10 && d.length <= 15) return `+${d}`;

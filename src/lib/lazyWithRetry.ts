@@ -39,7 +39,15 @@ export function lazyWithRetry<T extends ComponentType<any>>(
       try { alreadyTried = sessionStorage.getItem(storageKey) === "1"; } catch {}
       if (!alreadyTried) {
         try { sessionStorage.setItem(storageKey, "1"); } catch {}
-        window.location.reload();
+        try {
+          const regs = await navigator.serviceWorker?.getRegistrations?.() ?? [];
+          await Promise.all(regs.map((registration) => registration.unregister()));
+          const keys = await window.caches?.keys?.() ?? [];
+          await Promise.all(keys.map((cacheKey) => window.caches.delete(cacheKey)));
+        } catch { /* continue with cache-busted reload */ }
+        const url = new URL(window.location.href);
+        url.searchParams.set("_pp_chunk", Date.now().toString(36));
+        window.location.replace(url.toString());
         return new Promise<never>(() => {});
       }
     }

@@ -161,10 +161,16 @@ Deno.serve(async (req) => {
     const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
     const { action, payload = {} } = await req.json();
     const cfg = await getMaestroConfig(admin);
-    if (!cfg.url || !cfg.key) {
-      if (action !== "find_user_by_email" && action !== "test") {
-        return new Response(JSON.stringify({ success: false, error: "Maestro non configuré" }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-      }
+    // Only the CRM actions below talk to the `maestro` (CRM) base URL/key.
+    // Everything else (clients, brokers, contacts, communications) runs on the
+    // separate `maestro_telecom` config, so a missing CRM secret must not 500
+    // the whole endpoint.
+    const CRM_ACTIONS = new Set(["create_task", "create_event", "list_tasks", "list_events"]);
+    if ((!cfg.url || !cfg.key) && CRM_ACTIONS.has(action)) {
+      return new Response(
+        JSON.stringify({ success: false, error: "Maestro non configuré", code: "maestro_not_configured" }),
+        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } },
+      );
     }
     const h = { Authorization: `Bearer ${cfg.key}`, "Content-Type": "application/json", "X-Account-Id": cfg.accountId };
     const j = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });

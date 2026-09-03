@@ -34,9 +34,9 @@ Deno.serve(async (req) => {
 
     const [calls, messages, voicemails, insights] = await Promise.all([
       want("calls")
-        ? supa.from("planipret_phone_calls").select("id,direction,caller_number,callee_number,from_name,to_name,duration_seconds,lead_score,lead_temperature,started_at,created_at")
+        ? supa.from("planipret_phone_calls").select("id,direction,from_number,to_number,from_name,to_name,duration_seconds,lead_score,lead_temperature,started_at,created_at")
             .eq("user_id", userId)
-            .or(`caller_number.ilike.${like},callee_number.ilike.${like},from_name.ilike.${like},to_name.ilike.${like}`)
+            .or(`from_number.ilike.${like},to_number.ilike.${like},from_name.ilike.${like},to_name.ilike.${like}`)
             .order("created_at", { ascending: false }).range(from, to)
         : Promise.resolve({ data: [] as any[] }),
       want("messages")
