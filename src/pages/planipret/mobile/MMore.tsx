@@ -28,7 +28,7 @@ import Ms365StatusBadge from "@/components/planipret/Ms365StatusBadge";
 import { openMs365Authorize } from "@/lib/ms365OAuth";
 import { useMplanipretSoftphone } from "@/hooks/useMplanipretSoftphone";
 import { checkSipBackendRegistration, getLastSipBackendCheck, type SipBackendCheck } from "@/lib/planipret/sip/sipBackendCheck";
-import { Radio, Wallet, Users as UsersIcon } from "lucide-react";
+import { Radio, Wallet, Users as UsersIcon, ListChecks } from "lucide-react";
 import { ms365Connected } from "@/lib/planipret/ms365Connected";
 
 const initials = (name?: string) =>
@@ -263,6 +263,9 @@ export default function MMore() {
         <Row icon={<Sparkles className="w-4 h-4" />} label={t("screens.more.discussWithAva")} sub={t("screens.more.avaAssistantSub")} onClick={() => navigate("/mplanipret/ava")} chevron />
         <Row icon={<Bell className="w-4 h-4" />} label={t("screens.more.avaNotifTitle")} sub={t("screens.more.avaNotifSub")} onClick={() => navigate("/mplanipret/notifications")} chevron />
         <Row icon={<BarChart3 className="w-4 h-4" />} label={t("more.pipelineFiles")} onClick={() => navigate("/mplanipret/pipeline")} chevron />
+        <Row icon={<ListChecks className="w-4 h-4" />} label={t("nav.tasks") === "nav.tasks" ? "Tâches" : t("nav.tasks")}
+          sub={lang === "fr" ? "Vos tâches Maestro" : "Your Maestro tasks"}
+          onClick={() => navigate("/mplanipret/tasks")} chevron />
         <Row icon={<BarChart3 className="w-4 h-4" />} label={t("more.performance")} onClick={() => navigate("/mplanipret/stats")} chevron />
         {(profile?.role === "broker" || profile?.role === "admin") && (
           <Row icon={<Wallet className="w-4 h-4" />} label="Commissions" onClick={() => navigate("/mplanipret/commissions")} chevron />
@@ -356,7 +359,7 @@ export default function MMore() {
           <Ms365StatusBadge />
           <div className="flex items-center gap-3">
             <button
-              onClick={() => navigate("/mplanipret/diagnostics")}
+              onClick={() => navigate("/mplanipret/connections")}
               className="text-[11px] font-semibold"
               style={{ color: "#22c55e" }}
             >{t("screens.more.endpointsLink")}</button>
