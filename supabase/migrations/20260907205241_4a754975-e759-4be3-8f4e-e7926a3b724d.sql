@@ -1,0 +1,2 @@
+-- Le rattrapage est maintenant une file bornée auto-enchaînée, donc aucun traitement périodique permanent n'est requis.
+SELECT cron.unschedule(jobid) FROM cron.job WHERE jobname = 'pp-maestro-visibility-backfill';

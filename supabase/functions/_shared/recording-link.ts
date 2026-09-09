@@ -15,5 +15,6 @@ export async function signRecordingToken(callId: string): Promise<string> {
 }
 
 export async function recordingPermalink(callId: string): Promise<string> {
-  return `${SUPABASE_URL}/functions/v1/pp-recording-play?c=${encodeURIComponent(callId)}&t=${await signRecordingToken(callId)}`;
+  // `f=…​.wav` : certains lecteurs (dont Maestro) déduisent le type du suffixe.
+  return `${SUPABASE_URL}/functions/v1/pp-recording-play?c=${encodeURIComponent(callId)}&t=${await signRecordingToken(callId)}&f=${encodeURIComponent(callId)}.wav`;
 }

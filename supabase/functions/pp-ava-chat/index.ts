@@ -373,17 +373,7 @@ Deno.serve(async (req) => {
       }
 
       if (kind === "sms") {
-        const to = String(payload.number ?? payload.to ?? "");
-        const message = String(payload.text ?? payload.message ?? "");
-        if (!to || !message) return json({ reply: L("Numéro ou message SMS manquant.", "Missing SMS number or message."), suggestions: [] }, 400);
-        if (body?.approved !== true) return json({ reply: L("Confirmez avant l'envoi du SMS.", "Please confirm before sending the text."), suggestions: [confirmAction] });
-        const exec = await invokeFunction("pp-ns-sms", authHeader, { action: "send", to, message });
-        const ok = !!(exec.data?.ok ?? exec.data?.success) && exec.ok;
-        await logAvaAction(admin, profile, u.user.id, "sms_send", { to, message }, ok, exec.data, ok ? null : (exec.data?.error ?? `HTTP ${exec.status}`));
-        return json({
-          reply: ok ? L("SMS envoyé.", "Text message sent.") : `${L("SMS non envoyé", "Text message not sent")}: ${exec.data?.error ?? exec.status}`,
-          result: exec.data, suggestions: [],
-        });
+        return json({ reply: L("L’envoi de textos est désactivé.", "Text messaging is disabled."), result: { blocked: true }, suggestions: [] });
       }
       if (kind === "call") {
         const to = String(payload.number ?? payload.to ?? "");

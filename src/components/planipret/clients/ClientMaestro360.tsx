@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CalendarClock, ChevronDown, ChevronRight, ExternalLink, FolderKanban, Phone, PhoneIncoming, PhoneMissed, PhoneOutgoing, Search, Wallet } from "lucide-react";
+import { AlertTriangle, CalendarClock, ChevronDown, ChevronRight, FolderKanban, Phone, PhoneIncoming, PhoneMissed, PhoneOutgoing, Search, Wallet } from "lucide-react";
 import MaestroTaskRow from "@/components/planipret/mobile/MaestroTaskRow";
 import { formatTaskDue, type NormalizedTask } from "@/lib/planipret/tasks";
 import {
-  buildClientBundles, fetchClientCalls, fetchClientDeals, fetchClientDeposits,
+  buildClientBundles, fetchClientCalls, fetchClientContacts, fetchClientDeals, fetchClientDeposits,
   type ClientBundle, type ClientCall, type ClientDeal, type ClientDeposit,
 } from "@/lib/planipret/clientMaestro";
 import { supabase } from "@/integrations/supabase/client";
@@ -33,26 +33,34 @@ export default function ClientMaestro360({
   const [deals, setDeals] = useState<ClientDeal[]>([]);
   const [deposits, setDeposits] = useState<ClientDeposit[]>([]);
   const [calls, setCalls] = useState<ClientCall[]>([]);
+  const [contacts, setContacts] = useState<{ name: string; phone: string | null }[]>([]);
   const [q, setQ] = useState("");
+  const [qDebounced, setQDebounced] = useState("");
   const [open, setOpen] = useState<string | null>(null);
   const [alertsOnly, setAlertsOnly] = useState(false);
 
   const idsKey = userIds.filter(Boolean).sort().join(",");
 
+  useEffect(() => {
+    const t = setTimeout(() => setQDebounced(q.trim()), 250);
+    return () => clearTimeout(t);
+  }, [q]);
+
   const load = useCallback(async () => {
     const ids = idsKey ? idsKey.split(",") : [];
-    const [d, dep, cl] = await Promise.all([
+    const [d, dep, cl, ct] = await Promise.all([
       fetchClientDeals(ids),
       fetchClientDeposits(),
       fetchClientCalls(ids),
+      fetchClientContacts(ids, { search: qDebounced }),
     ]);
-    setDeals(d); setDeposits(dep); setCalls(cl);
-  }, [idsKey]);
+    setDeals(d); setDeposits(dep); setCalls(cl); setContacts(ct);
+  }, [idsKey, qDebounced]);
 
   useEffect(() => { void load(); }, [load]);
 
-  // Temps réel : les dossiers et dépôts se rafraîchissent dès que Maestro
-  // pousse une modification (même logique que les tâches).
+  // Synchronisation automatique : temps réel Maestro (dossiers, dépôts,
+  // appels, contacts), rafraîchissement périodique et retour au premier plan.
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
     const bump = () => {
@@ -64,11 +72,27 @@ export default function ClientMaestro360({
       .on("postgres_changes", { event: "*", schema: "public", table: "planipret_pipeline" }, bump)
       .on("postgres_changes", { event: "*", schema: "public", table: "planipret_commission_register" }, bump)
       .on("postgres_changes", { event: "*", schema: "public", table: "planipret_phone_calls" }, bump)
+      .on("postgres_changes", { event: "*", schema: "public", table: "planipret_contacts" }, bump)
       .subscribe();
-    return () => { if (timer) clearTimeout(timer); void supabase.removeChannel(ch); };
+
+    const poll = setInterval(() => {
+      if (document.visibilityState === "visible") void load();
+    }, 60_000);
+    const onVisible = () => { if (document.visibilityState === "visible") bump(); };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+
+    return () => {
+      if (timer) clearTimeout(timer);
+      clearInterval(poll);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+      void supabase.removeChannel(ch);
+    };
   }, [load, idsKey]);
 
-  const bundles = useMemo(() => buildClientBundles(tasks, deals, deposits, calls), [tasks, deals, deposits, calls]);
+
+  const bundles = useMemo(() => buildClientBundles(tasks, deals, deposits, calls, [], contacts), [tasks, deals, deposits, calls, contacts]);
 
   const rows = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -173,41 +197,31 @@ export default function ClientMaestro360({
 
                   <Section title={L("Appels et historique", "Calls & history")}>
                     {b.calls.length === 0 ? <Empty text={L("Aucun appel.", "No call.")} /> : (
-                      <ul className="space-y-2">
+                      <ul className="space-y-1">
                         {b.calls.slice(0, 20).map((c) => {
                           const missed = c.direction === "missed" || c.status === "missed" || c.status === "no-answer";
                           const out = c.direction === "outbound";
                           const Icon = missed ? PhoneMissed : out ? PhoneOutgoing : PhoneIncoming;
                           const secs = Number(c.duration_seconds ?? 0);
-                          const status = missed
-                            ? L("Manqué", "Missed")
-                            : c.status === "completed"
-                              ? L("Terminé", "Completed")
-                              : c.status || (out ? L("Sortant", "Outbound") : L("Entrant", "Inbound"));
                           return (
-                            <li key={c.id} className="rounded-lg px-2.5 py-2 text-[11.5px]" style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-muted)" }}>
-                              <div className="flex items-start gap-2">
-                                <Icon className="w-3.5 h-3.5 mt-0.5 shrink-0" style={{ color: missed ? "var(--pp-status-danger)" : "var(--pp-brand-accent)" }} />
-                                <div className="min-w-0 flex-1">
-                                  <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                                    <span style={{ color: "var(--pp-text-primary)", fontWeight: 600 }}>{status}</span>
-                                    <span>{out ? (c.to_number ?? "—") : (c.from_number ?? "—")}</span>
-                                    <span>{missed ? "—" : `${Math.floor(secs / 60)}m ${secs % 60}s`}</span>
-                                  </div>
-                                  <div className="mt-0.5 flex flex-wrap items-center gap-x-2">
-                                    <time dateTime={c.started_at ?? undefined}>
-                                      {c.started_at ? new Date(c.started_at).toLocaleString(en ? "en-CA" : "fr-CA", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", timeZone: "America/Toronto" }) : "—"}
-                                    </time>
-                                  </div>
-                                </div>
+                            <li key={c.id} className="text-[11.5px]" style={{ color: "var(--pp-text-muted)" }}>
+                              <span className="flex flex-wrap items-center gap-x-2">
+                                <Icon className="w-3 h-3" style={{ color: missed ? "#B91C1C" : out ? "var(--pp-brand-accent)" : "#047857" }} />
+                                <span style={{ color: "var(--pp-text-primary)", fontWeight: 600 }}>
+                                  {c.started_at ? new Date(c.started_at).toLocaleString(en ? "en-CA" : "fr-CA", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "America/Toronto" }) : "—"}
+                                </span>
+                                <span>{c.status || (out ? L("sortant", "outbound") : L("entrant", "inbound"))}</span>
+                                <span>{missed ? L("manqué", "missed") : `${Math.floor(secs / 60)}m ${secs % 60}s`}</span>
+                                <span>{out ? (c.to_number ?? "—") : (c.from_number ?? "—")}</span>
                                 {c.recording_url && (
-                                  <a href={c.recording_url} target="_blank" rel="noreferrer" aria-label={L("Ouvrir l’enregistrement", "Open recording")} className="shrink-0 inline-flex items-center gap-1 font-semibold" style={{ color: "var(--pp-brand-accent)" }}>
-                                    <ExternalLink className="w-3.5 h-3.5" /> {L("Écouter", "Listen")}
+                                  <a href={c.recording_url} target="_blank" rel="noreferrer" className="underline" style={{ color: "var(--pp-brand-accent)" }}>
+                                    {L("enregistrement", "recording")}
                                   </a>
                                 )}
-                              </div>
+                              </span>
                               {c.ai_summary && <span className="block break-words">{c.ai_summary}</span>}
                             </li>
+
                           );
                         })}
                       </ul>

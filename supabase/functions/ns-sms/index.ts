@@ -1,4 +1,5 @@
 import { authBroker, corsHeaders, jsonResponse, logAudit, nsBrokerFetch } from "../_shared/ns-broker.ts";
+import { blockTestSms, TEST_SMS_BLOCK_MESSAGE } from "../_shared/pp-test-sms.ts";
 
 const DOMAIN = "planipret.ca";
 
@@ -12,6 +13,12 @@ Deno.serve(async (req) => {
     const body = await req.json().catch(() => ({}));
     const { to, message, type = "sms" } = body ?? {};
     if (!to || !message) return jsonResponse({ success: false, error: "to et message requis", code: 400 }, 400);
+
+    // Blocage permanent : aucun texto de test ne part, pour personne.
+    if (blockTestSms(userId, message)) {
+      console.warn("[ns-sms] test SMS blocked", { userId, to });
+      return jsonResponse({ success: false, blocked: true, error: TEST_SMS_BLOCK_MESSAGE });
+    }
 
     const res = await nsBrokerFetch(
       admin, profile,

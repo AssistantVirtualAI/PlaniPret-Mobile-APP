@@ -470,6 +470,8 @@ Deno.serve(async (req) => {
           confirm: z.boolean().default(false),
         }),
         execute: async ({ thread_id, body, confirm }) => {
+          return { ok: false, blocked: true, error: "sms_globally_disabled" };
+          /* SMS disabled globally; legacy flow retained as unreachable rollback context.
           const chk = await ensureOrg("pbx_sms_threads", thread_id);
           if (!chk.ok) return { error: chk.reason };
           const { data: t } = await admin.from("pbx_sms_threads")
@@ -482,6 +484,7 @@ Deno.serve(async (req) => {
             headers: { Authorization: authHeader },
           });
           return error ? { error: error.message } : { ok: true, result: data };
+          */
         },
       }),
 

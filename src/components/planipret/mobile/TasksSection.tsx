@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { AlertCircle, CheckSquare, ChevronRight, Clock, Plus, RefreshCw, Repeat, Sparkles, Trash2, Pencil, CalendarClock, ExternalLink, ShieldCheck, Loader2, History } from "lucide-react";
 import { usePlanipretTasks } from "@/hooks/planipret/usePlanipretTasks";
-import { describeTaskDiagnostics, describeTaskSync, formatTaskDue, toTorontoLocalInput, verifyTask, maestroTaskUrl, type NormalizedTask, type TaskFilterValue, type TaskVerifyResult, taskHistory, type TaskHistoryEvent } from "@/lib/planipret/tasks";
+import { describeTaskDiagnostics, describeTaskSync, formatTaskDue, isTaskOpen, toTorontoLocalInput, verifyTask, maestroTaskUrl, type NormalizedTask, type TaskFilterValue, type TaskVerifyResult, taskHistory, type TaskHistoryEvent } from "@/lib/planipret/tasks";
 import MaestroTaskRow from "./MaestroTaskRow";
 import TaskComposerSheet, { type TaskComposerValue } from "./TaskComposerSheet";
 import { toast } from "sonner";
@@ -44,7 +44,7 @@ function Shimmer({ className = "" }: { className?: string }) {
 
 export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, brokerId, readOnly }: Props) {
   const L = (fr: string, en: string) => (lang === "en" ? en : fr);
-  const { buckets, counts, openCount, filter, setFilter, hasMore, loadMore, loadingMore, total, loading, refreshing, lastSyncAt, source, error, message, refresh, create, update, remove } = usePlanipretTasks(userId, { brokerId });
+  const { tasks, buckets, counts, openCount, filter, setFilter, hasMore, loadMore, loadingMore, total, loading, refreshing, lastSyncAt, source, error, message, refresh, create, update, remove } = usePlanipretTasks(userId, { brokerId });
   const [composer, setComposer] = useState<null | { initial?: any }>(null);
   const [busy, setBusy] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string> | null>(null);
@@ -71,8 +71,17 @@ export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, br
     else toast.warning(L("Non relue via l'API Maestro", "Not read back from the Maestro API"));
   };
 
-  const openInMaestro = (taskId: string) => {
-    window.open(maestroTaskUrl(taskId), "_blank", "noopener");
+  const openInMaestro = async (taskId: string) => {
+    const known = verif[taskId];
+    const fromState = typeof known === "object" && known ? known.maestro_task_url : null;
+    let url = maestroTaskUrl(taskId, fromState);
+    if (!fromState) {
+      const r = await verifyTask(taskId);
+      setVerif((v) => ({ ...v, [taskId]: r }));
+      url = maestroTaskUrl(taskId, r?.maestro_task_url);
+    }
+    if (url) window.open(url, "_blank", "noopener");
+    else toast.error(L("Lien Maestro indisponible", "Maestro link unavailable"));
   };
 
   const sections = useMemo(() => ([
@@ -80,6 +89,13 @@ export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, br
     { key: "today", label: L("Aujourd'hui", "Today"), items: buckets.today, accent: "var(--pp-brand-accent)" },
     { key: "upcoming", label: L("À venir", "Upcoming"), items: buckets.upcoming, accent: "var(--pp-text-muted)" },
   ]), [buckets, lang]);
+
+  // Completed tasks are excluded from the buckets: surface them in their own
+  // group so "Toutes" really shows everything.
+  const closed = useMemo(
+    () => tasks.filter((t) => !isTaskOpen(t)).sort((a, b) => (b.due_at ?? "").localeCompare(a.due_at ?? "")),
+    [tasks],
+  );
 
   // Optional group: tasks created by AVA in the last 24 h.
   const recentAva = useMemo(() => {
@@ -97,6 +113,9 @@ export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, br
           notes: v.notes,
           description: v.description,
           users_id: v.users_id,
+          status: v.status,
+          xid: v.target,
+          type: v.target_type,
           update_status: v.update_status,
           ...(v.recurrence
             ? {
@@ -197,7 +216,8 @@ export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, br
 
       <div className="flex items-center gap-1.5 mb-3 overflow-x-auto" role="tablist" aria-label={L("Filtrer les tâches", "Filter tasks")}>
         {([
-          { key: "open", label: L("Toutes", "All"), count: counts.open },
+          { key: "open", label: L("Ouvertes", "Open"), count: counts.open },
+          { key: "all", label: L("Toutes", "All"), count: counts.all },
           { key: "overdue", label: L("En retard", "Overdue"), count: counts.overdue },
           { key: "today", label: L("Aujourd'hui", "Today"), count: counts.today },
           { key: "upcoming", label: L("À venir", "Upcoming"), count: counts.upcoming },
@@ -224,21 +244,18 @@ export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, br
 
       {loading ? (
         <div className="space-y-2" aria-busy="true">{[0, 1, 2].map((i) => <Shimmer key={i} className="h-12" />)}</div>
-      ) : error === "tasks_unavailable" ? (
-        <p className="text-sm py-4 text-center" style={{ color: "var(--pp-text-muted)" }}>
-          {message ?? L("Liste des tâches indisponible côté Planiprêt.", "Task list unavailable from Planiprêt.")}
-        </p>
       ) : error ? (
-        <div className="py-4 text-center">
-          <p className="text-sm flex items-center justify-center gap-1.5" style={{ color: "var(--pp-danger)" }}>
-            <AlertCircle className="w-4 h-4" /> {message ?? L("Chargement impossible", "Could not load tasks")}
+        // Chargement en échec : ne jamais afficher « aucune tâche » (faux vide trompeur).
+        <div className="py-4 text-center space-y-2" role="alert">
+          <p className="text-sm" style={{ color: "var(--pp-text-muted)" }}>
+            {message ?? L("Chargement impossible", "Loading failed")}
           </p>
-          <button onClick={() => void refresh()} className="mt-2 min-h-[44px] px-4 rounded-xl text-sm font-medium"
-            style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border)", color: "var(--pp-text-primary)" }}>
+          <button onClick={() => void refresh()} className="min-h-[44px] px-4 rounded-xl text-[12px] font-semibold text-white"
+            style={{ background: "var(--pp-brand-accent)" }}>
             {L("Réessayer", "Retry")}
           </button>
         </div>
-      ) : openCount === 0 ? (
+      ) : openCount === 0 && closed.length === 0 ? (
         <p className="text-sm py-4 text-center" style={{ color: "var(--pp-text-muted)" }}>
           {L("Aucune tâche ouverte 🎉", "No open tasks 🎉")}
         </p>
@@ -275,7 +292,7 @@ export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, br
                           <SyncChip task={task} lang={lang} />
                         </div>
                       }
-                      actions={<span style={{ display: "contents" }} onClick={(e) => e.stopPropagation()}>
+                      actions={<span className="contents" style={{ display: "contents" }} onClick={(e) => e.stopPropagation()}>
                         <IconBtn label={L("Vérifier dans Maestro", "Verify in Maestro")} onClick={() => void checkTask(task.id)}>
                           {verif[task.id] === "loading"
                             ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -283,15 +300,47 @@ export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, br
                         </IconBtn>
                         <IconBtn label={L("Ouvrir dans Maestro", "Open in Maestro")} onClick={() => openInMaestro(task.id)}><ExternalLink className="w-3.5 h-3.5" /></IconBtn>
                         <IconBtn label={L("Historique", "History")} onClick={() => void openHistory(task)}><History className="w-3.5 h-3.5" /></IconBtn>
+                        {!readOnly && <IconBtn label={L("Modifier", "Edit")} onClick={() => openEdit(task)}><Pencil className="w-3.5 h-3.5" /></IconBtn>}
                         {!readOnly && <IconBtn label={L("Reporter", "Snooze")} onClick={() => void snooze(task)}><CalendarClock className="w-3.5 h-3.5" /></IconBtn>}
                         {!readOnly && <IconBtn label={L("Supprimer", "Delete")} danger onClick={() => setConfirmDelete(task)}><Trash2 className="w-3.5 h-3.5" /></IconBtn>}
+                      </span>}
+                    />
+                  </li>
+
+                ))}
+              </ul>
+            </div>
+          ))}
+
+          {closed.length > 0 && (
+            <div>
+              <p className="text-[10px] uppercase tracking-wider mb-1.5" style={{ color: "var(--pp-success, #16A34A)", fontWeight: 700 }}>
+                {L("Terminées", "Completed")} · {closed.length}
+              </p>
+              <ul className="space-y-1">
+                {closed.map((task) => (
+                  <li
+                    key={task.id}
+                    className="rounded-lg px-2 py-2"
+                    style={{ background: "#F7F9FC", opacity: 0.75, cursor: readOnly ? undefined : "pointer" }}
+                    onClick={readOnly ? undefined : () => openEdit(task)}
+                    role={readOnly ? undefined : "button"}
+                    aria-label={readOnly ? undefined : L("Modifier la tâche", "Edit task")}
+                  >
+                    <MaestroTaskRow
+                      task={task}
+                      lang={lang}
+                      syncedAt={(task as any)?.raw?.updated_at ?? lastSyncAt}
+                      actions={<span style={{ display: "contents" }} onClick={(e) => e.stopPropagation()}>
+                        <IconBtn label={L("Ouvrir dans Maestro", "Open in Maestro")} onClick={() => openInMaestro(task.id)}><ExternalLink className="w-3.5 h-3.5" /></IconBtn>
+                        {!readOnly && <IconBtn label={L("Modifier", "Edit")} onClick={() => openEdit(task)}><Pencil className="w-3.5 h-3.5" /></IconBtn>}
                       </span>}
                     />
                   </li>
                 ))}
               </ul>
             </div>
-          ))}
+          )}
 
           {hasMore && (
             <button

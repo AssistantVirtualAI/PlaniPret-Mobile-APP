@@ -33,3 +33,13 @@ postcss.config.mjs
 lemtel-live-fusionpbx-patch.sh
 apps/planipret-mobile/reports/
 android/app/src/main/assets/public
+
+# Android release signing secrets
+android/keystore.properties
+android/*.jks
+android/*.keystore
+android/app/*.jks
+android/app/*.keystore
+android/.gradle/
+android/build/
+android/app/build/

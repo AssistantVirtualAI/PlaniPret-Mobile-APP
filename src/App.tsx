@@ -39,6 +39,7 @@ const MTasks = lazyWithRetry(() => import('@/pages/planipret/mobile/MTasks'), 'M
 const MClients360 = lazyWithRetry(() => import('@/pages/planipret/mobile/MClients360'), 'MClients360');
 const MBroker360 = lazyWithRetry(() => import('@/pages/planipret/mobile/MBroker360'), 'MBroker360');
 const MClientDetail = lazyWithRetry(() => import('@/pages/planipret/mobile/MClientDetail'), 'MClientDetail');
+const MBrokerActivity = lazyWithRetry(() => import('@/pages/planipret/mobile/MBrokerActivity'), 'MBrokerActivity');
 const MAvaChat = lazyWithRetry(() => import('@/pages/planipret/mobile/MAvaChat'), 'MAvaChat');
 const MAvaNotifications = lazyWithRetry(() => import('@/pages/planipret/mobile/MAvaNotifications'), 'MAvaNotifications');
 const MExtensionSync = lazyWithRetry(() => import('@/pages/planipret/mobile/MExtensionSync'), 'MExtensionSync');
@@ -179,6 +180,7 @@ export default function App() {
                     <Route path="clients-360" element={<MClients360 />} />
                     <Route path="brokers-360" element={<MBroker360 />} />
                     <Route path="clients-360/:clientKey" element={<MClientDetail />} />
+                    <Route path="broker-activity" element={<MBrokerActivity />} />
                     <Route path="ava" element={<MAvaChat />} />
                     <Route path="change-password" element={<MChangePassword />} />
                     <Route path="privacy" element={<PlanipretPrivacy />} />

@@ -99,10 +99,11 @@ export default function MaestroRelinkButton({ lang = "fr", className = "" }: Pro
       }
       if (err) throw err;
       const d = data as any;
-      if (d?.success && d?.maestro_broker_id) {
-        setBrokerId(String(d.maestro_broker_id));
+      const linkedId = d?.maestro_broker_id ?? d?.maestro_telecom_user_id ?? null;
+      if (d?.success && linkedId) {
+        setBrokerId(String(linkedId));
         setMatchedBy(d.matched_by ?? null);
-        toast.success(fr ? `Maestro relié (ID ${d.maestro_broker_id})` : `Maestro linked (ID ${d.maestro_broker_id})`);
+        toast.success(fr ? `Maestro relié (ID ${linkedId})` : `Maestro linked (ID ${linkedId})`);
       } else {
         const reason = String(d?.error ?? "no_directory_match");
         const explained = explainRelinkError(reason, fr);
@@ -135,7 +136,8 @@ export default function MaestroRelinkButton({ lang = "fr", className = "" }: Pro
             setPurging(false);
             setError(null);
             toast.success(fr ? "Caches purgés — aucun redémarrage requis" : "Caches purged — no restart needed");
-            void relink();
+            // Already linked: purging caches must not trigger a directory re-match.
+            if (!brokerId) void relink();
           }}
           disabled={purging || busy}
           aria-label={fr ? "Purger les caches" : "Purge caches"}

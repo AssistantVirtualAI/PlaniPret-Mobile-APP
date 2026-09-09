@@ -133,7 +133,9 @@ Deno.serve(async (req) => {
         "name-first-name": firstName || ext,
         "name-last-name": lastName || "Courtier",
         "directory-name": String(broker.full_name ?? ext),
-        "email-address": String(broker.email ?? ""),
+        // Broker email is handled by Microsoft 365. Keeping it on the PBX
+        // makes UCStack forward unread SMS (including one-time codes) by email.
+        "email-address": "",
         "user-scope": "Basic User",
         "user-password": password,
         password,

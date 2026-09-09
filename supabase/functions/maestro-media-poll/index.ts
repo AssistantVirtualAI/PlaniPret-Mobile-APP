@@ -45,21 +45,37 @@ Deno.serve(async (req) => {
 
   let q = admin
     .from("planipret_phone_calls")
-    .select("id, user_id, maestro_call_id, recording_url, transcript, metadata")
+    .select("id, user_id, created_at, maestro_call_id, recording_url, transcript, metadata")
     .not("maestro_call_id", "is", null)
     .order("created_at", { ascending: false })
-    .limit(limit);
+    .limit(limit * 3);
   if (body?.call_id) q = q.eq("id", body.call_id);
   else q = q.gte("created_at", new Date(Date.now() - maxAgeHours * 3600_000).toISOString());
 
   const { data: calls } = await q;
   const results: any[] = [];
 
+  // Backoff: Maestro ne génère le média que dans les minutes qui suivent
+  // l'appel. Sans palier, le même appel était re-sondé toutes les 5 minutes
+  // pendant 48 h (≈ 32 000 journaux/semaine pour rien).
+  const pollDue = (call: any, meta: Record<string, any>) => {
+    if (body?.call_id) return true;
+    const last = meta.maestro_media_last_poll_at ? Date.parse(meta.maestro_media_last_poll_at) : 0;
+    if (!last) return true;
+    const ageH = (Date.now() - Date.parse(call.created_at ?? new Date().toISOString())) / 3600_000;
+    const intervalMin = ageH < 1 ? 5 : ageH < 6 ? 20 : ageH < 24 ? 120 : 360;
+    return Date.now() - last >= intervalMin * 60_000;
+  };
+
+  let handled = 0;
   for (const call of calls ?? []) {
+    if (handled >= limit) break;
     const meta = ((call as any).metadata ?? {}) as Record<string, any>;
     const needRecording = !meta.maestro_recording_url;
     const needTranscript = !call.transcript && !meta.maestro_transcript_ready;
     if (!body?.call_id && !needRecording && !needTranscript) continue;
+    if (!pollDue(call, meta)) continue;
+    handled += 1;
 
     const auth = await telecomAuth(admin, call.user_id ?? "");
     if (!auth.brokerId) { results.push({ call_id: call.id, skipped: "no_broker_id" }); continue; }

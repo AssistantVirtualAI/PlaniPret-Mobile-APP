@@ -1,0 +1,1 @@
+alter table public.planipret_profiles add column if not exists ms365_auth_paused_at timestamptz, add column if not exists ms365_auth_error text;

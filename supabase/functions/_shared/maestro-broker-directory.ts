@@ -198,7 +198,15 @@ export async function linkBrokerIdByEmail(
     hit = findByName(entries, (profile as any).full_name);
     if (hit) matchedBy = "name";
   }
-  if (!hit) return { ok: false, maestro_broker_id: null, matched_by: null, error: "no_directory_match" };
+  if (!hit) {
+    // No directory row, but the broker already signed in to Maestro (OAuth):
+    // their own /users/me id is authoritative — keep the existing link.
+    const oauthId = String(profile.maestro_broker_id ?? "").trim();
+    if (/^\d+$/.test(oauthId)) {
+      return { ok: true, maestro_broker_id: oauthId, matched_by: "oauth_session" };
+    }
+    return { ok: false, maestro_broker_id: null, matched_by: null, error: "no_directory_match" };
+  }
 
   const { error: upErr } = await admin
     .from("planipret_profiles")

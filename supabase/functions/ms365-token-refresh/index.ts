@@ -15,8 +15,9 @@ Deno.serve(async (req) => {
     if (body?.all === true) {
       const cutoff = new Date(Date.now() + 10 * 60 * 1000).toISOString();
       const { data: rows } = await admin.from("planipret_profiles")
-        .select("id, user_id, ms365_refresh_token, ms365_token_expiry")
+        .select("id, user_id, ms365_refresh_token, ms365_token_expiry, ms365_auth_paused_at")
         .not("ms365_refresh_token", "is", null)
+        .is("ms365_auth_paused_at", null)
         .or(`ms365_token_expiry.is.null,ms365_token_expiry.lt.${cutoff}`);
       let ok = 0, fail = 0;
       for (const r of rows ?? []) {
@@ -39,7 +40,7 @@ Deno.serve(async (req) => {
     if (!userId) return j({ error: "Unauthorized" }, 401);
 
     const { data: profile } = await admin.from("planipret_profiles")
-      .select("id, ms365_refresh_token").eq("user_id", userId).maybeSingle();
+      .select("id, ms365_refresh_token, ms365_auth_paused_at").eq("user_id", userId).maybeSingle();
     if (!profile?.ms365_refresh_token) return j({ error: "no_refresh_token" }, 400);
 
     const accessToken = await refreshMicrosoftAccessToken(admin, { ...profile, user_id: userId }, MS365_DELEGATED_SCOPES);

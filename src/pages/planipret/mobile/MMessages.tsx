@@ -5,8 +5,8 @@ import { flushSync, createPortal } from "react-dom";
 import { useOutletContext, useSearchParams } from "react-router-dom";
 import { retryWithBackoff } from "@/lib/planipret/retryBackoff";
 import { supabase } from "@/integrations/supabase/client";
+import { ppEdgeInvoke } from "@/lib/planipret/ppEdge";
 import { toast } from "sonner";
-import { retryWithBackoff as retryNet } from "@/lib/net/resilient";
 import {
   Plus, X, ArrowLeft, Phone, Send, Paperclip, MessageSquare, Zap,
   Users, Mail, Sparkles, Loader2, RefreshCw, Reply, Circle, CheckCircle2, AlertTriangle, RotateCw,
@@ -27,7 +27,18 @@ import EmailBodyFrame from "@/components/planipret/mobile/EmailBodyFrame";
 import { ms365Connected } from "@/lib/planipret/ms365Connected";
 import { Ms365ConnectionNotice } from "@/components/planipret/mobile/Ms365ConnectionNotice";
 import { useMs365Status } from "@/hooks/useMs365Status";
-import { dedupeSmsMessages } from "@/lib/planipret/smsDedupe";
+
+import DOMPurify from "dompurify";
+
+const sanitizeHtml = (html?: string | null) =>
+  DOMPurify.sanitize(String(html ?? ""), {
+    ALLOWED_TAGS: ["a","b","strong","i","em","u","s","p","br","hr","span","div","ul","ol","li","blockquote","pre","code","h1","h2","h3","h4","h5","h6","table","thead","tbody","tr","td","th","img"],
+    ALLOWED_ATTR: ["href","title","target","rel","src","alt","width","height","colspan","rowspan"],
+    ALLOWED_URI_REGEXP: /^(?:https?:|mailto:|tel:|cid:|data:image\/(?:png|jpeg|gif|webp);base64,)/i,
+    FORBID_TAGS: ["script","style","iframe","object","embed","form","input","link","meta"],
+    FORBID_ATTR: ["style","onerror","onload","onclick"],
+  });
+
 
 
 type SubTab = "sms" | "team" | "teams365" | "emails" | "history" | "roster";
@@ -62,37 +73,6 @@ const fmtTime = (iso: string, lang: "fr" | "en" = "fr", t?: (key: string) => str
   }
   if (d.toDateString() === yest.toDateString()) return t ? t("common.yesterday") : (lang === "en" ? "Yesterday" : "Hier");
   return d.toLocaleDateString(lang === "en" ? "en-CA" : "fr-CA", { day: "2-digit", month: "2-digit" });
-};
-
-/** Heure seule (hh:mm) — utilisée dans le fil, où la date est déjà séparée. */
-const fmtClock = (iso: string, lang: "fr" | "en" = "fr") => {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleTimeString(lang === "en" ? "en-CA" : "fr-CA", { hour: "2-digit", minute: "2-digit" });
-};
-
-/** Clé de jour, pour insérer un séparateur de date dans le fil. */
-const dayStamp = (iso: string) => {
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? "" : d.toDateString();
-};
-
-/** Libellé du séparateur : Aujourd'hui / Hier / date longue. */
-const dayLabel = (iso: string, lang: "fr" | "en" = "fr") => {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  const now = new Date();
-  const yest = new Date(); yest.setDate(now.getDate() - 1);
-  if (d.toDateString() === now.toDateString()) return lang === "en" ? "Today" : "Aujourd'hui";
-  if (d.toDateString() === yest.toDateString()) return lang === "en" ? "Yesterday" : "Hier";
-  return d.toLocaleDateString(lang === "en" ? "en-CA" : "fr-CA", { weekday: "short", day: "numeric", month: "long" });
-};
-
-/** Deux messages sont regroupés s'ils sont espacés de moins de 3 minutes. */
-const sameMinuteGroup = (a: string, b: string) => {
-  const x = new Date(a).getTime(); const y = new Date(b).getTime();
-  if (Number.isNaN(x) || Number.isNaN(y)) return false;
-  return Math.abs(y - x) < 3 * 60 * 1000;
 };
 
 export default function MMessages() {
@@ -248,11 +228,33 @@ const msgIsOut = (m: any, myExt: string) => {
   return fromStr === myExt || fromStr.startsWith(`${myExt}@`);
 };
 
+/**
+ * NetSapiens renvoie parfois deux enregistrements pour un même SMS envoyé
+ * (copie « orig » + écho « term »). On dédoublonne sur corps + fenêtre de 2 min,
+ * en gardant la copie sortante.
+ */
 /** Hash court et stable d'une chaîne (clé d'idempotence). */
 const hashText = (str: string) => {
   let h = 0;
   for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0;
   return h;
+};
+
+const dedupeMessages = (list: any[], myExt: string) => {
+  const kept: any[] = [];
+  for (const m of list) {
+    const body = String(msgBody(m) ?? "").trim();
+    const ts = +new Date(msgTime(m));
+    const idx = kept.findIndex((k) => {
+      const kb = String(msgBody(k) ?? "").trim();
+      if (!kb || kb !== body) return false;
+      return Math.abs(+new Date(msgTime(k)) - ts) < 120_000;
+    });
+    if (idx === -1) { kept.push(m); continue; }
+    // conserve la version sortante si l'une des deux l'est
+    if (!msgIsOut(kept[idx], myExt) && msgIsOut(m, myExt)) kept[idx] = m;
+  }
+  return kept;
 };
 
 type SmsRecipient = {
@@ -328,7 +330,18 @@ function SmsList({ profile, openDialer, registerRefresh, initialTo }: any) {
       if (err) throw err;
       const list: NsThread[] = (data as any)?.threads ?? [];
       list.sort((a, b) => +new Date(threadTime(b)) - +new Date(threadTime(a)));
-      setThreads(list);
+      // Le PBX renvoie parfois plusieurs sessions pour le même correspondant
+      // (15149522685 / +15149522685 / sessions distinctes) : on garde la plus récente.
+      const seen = new Set<string>();
+      const deduped: NsThread[] = [];
+      for (const th of list) {
+        const digits = String(threadPeer(th) ?? "").replace(/\D/g, "");
+        const key = digits ? digits.slice(-10) : `id:${threadId(th) || Math.random()}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        deduped.push(th);
+      }
+      setThreads(deduped);
     } catch (e: any) {
       console.error("[pp-ns-sms] threads", e);
       setError(e?.message ?? t("messages.sendFailed"));
@@ -670,12 +683,12 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
     setError(null);
     try {
       const { data, error: err } = await supabase.functions.invoke("pp-ns-sms", {
-        body: { action: "messages", thread_id: currentThreadId },
+         body: { action: "messages", thread_id: currentThreadId, phone_number: number },
       });
       if (err) throw err;
       const list: NsMessage[] = (data as any)?.messages ?? [];
       list.sort((a, b) => +new Date(msgTime(a)) - +new Date(msgTime(b)));
-      setMessages(dedupeSmsMessages(list, myExt));
+      setMessages(dedupeMessages(list, myExt));
     } catch (e: any) {
       console.error("[pp-ns-sms] messages", e);
       setError(e?.message ?? t("messages.sendFailed"));
@@ -713,7 +726,7 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
       timestamp: new Date().toISOString(),
     };
     atBottomRef.current = true;
-    setMessages((prev) => dedupeSmsMessages([...prev, optimistic], myExt));
+    setMessages((prev) => dedupeMessages([...prev, optimistic], myExt));
     setText("");
     try {
       // Clé d'idempotence stable : survit au retry, au double tap et au refresh.
@@ -722,7 +735,7 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
       console.info("[pp-ns-sms] send →", { to: number, len: body.length, thread_id: currentThreadId ?? null });
       // Retry automatique avec backoff exponentiel (2s → 6s → 18s).
       const d: any = await retryWithBackoff(async () => {
-        const { data, error: err } = await supabase.functions.invoke("pp-ns-sms", { body: payload });
+        const { data, error: err } = await ppEdgeInvoke("pp-ns-sms", payload);
         if (err) {
           console.error("[pp-ns-sms] invoke error", err);
           throw new Error(err.message || t("messages.sendFailed"));
@@ -748,12 +761,25 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
         const hint = d.from ? "" : " — aucun numéro SMS (DID) assigné à ce courtier.";
         throw new Error(`SMS refusé${status}${hint}\n${bodyDetail.slice(0, 260)}`);
       }
-      const result = d.result ?? {};
-      const newThreadId = result?.messagesession_id ?? result?.["messagesession-id"] ?? result?.session_id ?? result?.id;
+       const result = d.result ?? {};
+       const newThreadId = d.thread_id ?? result?.messagesession_id ?? result?.["messagesession-id"] ?? result?.session_id ?? result?.id;
       if (newThreadId && !currentThreadId) setCurrentThreadId(newThreadId);
+      // ---- Vérification post-envoi (historique + bon DID) ----
+      const v = d.verification;
+      if (v) {
+        console.info("[pp-ns-sms] verification", v);
+        if (!v.saved) {
+          toast.warning("Envoyé, mais non enregistré dans l'historique.", { duration: 6000 });
+        } else if (!v.did_match) {
+          toast.warning(`Envoyé avec le numéro ${v.stored_from ?? "?"} au lieu de ${v.expected_from ?? "?"}.`, { duration: 8000 });
+        } else {
+          toast.success(`Envoyé depuis ${v.stored_from} · enregistré`, { duration: 2500 });
+        }
+      }
       // Refresh from server to reconcile optimistic message
       window.dispatchEvent(new CustomEvent("ava:sms-sent", { detail: { number, body } }));
       setTimeout(() => loadMessages(), 600);
+
 
     } catch (e: any) {
       console.error("[pp-ns-sms] send failed", e);
@@ -808,7 +834,25 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
         </button>
       </header>
 
-      <div className="flex-1 overflow-y-auto px-3 py-4 space-y-1" style={{ background: "var(--pp-bg-base)", overflowX: "hidden" }}>
+      <div
+        ref={scrollBoxRef}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+          atBottomRef.current = atBottom;
+          setShowJump(!atBottom);
+          if (atBottom) setNewCount(0);
+          // Chargement progressif de l'historique plus ancien.
+          if (el.scrollTop < 60 && messages.length > visibleCount) loadOlder();
+        }}
+        className="flex-1 min-h-0 overflow-y-auto px-3 py-4 space-y-2"
+        style={{
+          background: "var(--pp-bg-base)",
+          WebkitOverflowScrolling: "touch",
+          overscrollBehavior: "contain",
+          touchAction: "pan-y",
+        }}
+      >
         {loading && messages.length === 0 ? (
           <div className="flex items-center justify-center py-12">
             <Loader2 className="w-6 h-6 animate-spin" style={{ color: "var(--pp-brand-accent)" }} />
@@ -833,35 +877,21 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
           {visibleMessages.map((m, i) => {
             const out = msgIsOut(m, myExt);
             const body = msgBody(m);
-            const prev = i > 0 ? messages[i - 1] : null;
-            const next = i < messages.length - 1 ? messages[i + 1] : null;
-            const sameAsPrev = !!prev && msgIsOut(prev, myExt) === out && sameMinuteGroup(msgTime(prev), msgTime(m));
-            const sameAsNext = !!next && msgIsOut(next, myExt) === out && sameMinuteGroup(msgTime(m), msgTime(next));
-            const showDay = !prev || dayStamp(msgTime(prev)) !== dayStamp(msgTime(m));
-            const pending = String(m.id ?? "").startsWith("tmp-");
-            const shape = sameAsPrev && sameAsNext ? "pp-bubble-mid" : sameAsPrev ? "" : sameAsNext ? "pp-bubble-first" : "";
             return (
-              <div key={msgId(m, i)}>
-                {showDay && <div className="pp-day-sep">{dayLabel(msgTime(m), lang)}</div>}
-                <div className={`flex ${out ? "justify-end" : "justify-start"}`} style={{ marginTop: sameAsPrev ? 2 : 8 }}>
-                  <div className="max-w-[80%] min-w-0">
-                    <div className={`${out ? "pp-bubble-out" : "pp-bubble-in"} ${shape}`} style={pending ? { opacity: 0.65 } : undefined}>
-                      {body && <p className="whitespace-pre-wrap">{body}</p>}
-                    </div>
-                    {!sameAsNext && (
-                      <p className={`pp-bubble-time ${out ? "text-right" : "text-left"}`}>
-                        {fmtClock(msgTime(m), lang)}
-                        {pending ? ` · ${t("common.sending")}` : ""}
-                      </p>
-                    )}
+              <div key={msgId(m, i)} className={`flex ${out ? "justify-end" : "justify-start"}`}>
+                <div className="max-w-[78%]">
+                  <div className={out ? "pp-bubble-out" : "pp-bubble-in"} style={{ padding: "8px 12px", fontSize: 14 }}>
+                    {body && <p className="whitespace-pre-wrap break-words">{body}</p>}
                   </div>
+                  <p className={`text-[10px] mt-1 ${out ? "text-right" : "text-left"}`} style={{ color: "var(--pp-text-faint)" }}>
+                    {fmtTime(msgTime(m), lang, t)}{String(m.id ?? "").startsWith("tmp-") ? ` · ${t("common.sending")}` : ""}
+                  </p>
                 </div>
               </div>
             );
           })}
           </>
         )}
-
         <div ref={bottomRef} />
       </div>
 
@@ -1012,14 +1042,14 @@ function TeamChat({ profile }: { profile: any }) {
             const name = senderNames[m.sender_id] ?? t("messages.broker");
             return (
               <div key={m.id} className={`flex ${mine ? "justify-end" : "justify-start"}`}>
-                <div className="max-w-[80%] min-w-0">
+                <div className="max-w-[78%]">
                   {!mine && (
                     <div className="text-[10px] mb-0.5 px-1" style={{ color: "var(--pp-brand-accent)" }}>{name}</div>
                   )}
-                  <div className={mine ? "pp-bubble-out" : "pp-bubble-in"}>
-                    <p className="whitespace-pre-wrap">{m.message}</p>
+                  <div className={mine ? "pp-bubble-out" : "pp-bubble-in"} style={{ padding: "8px 12px", fontSize: 14 }}>
+                    <p className="whitespace-pre-wrap break-words">{m.message}</p>
                   </div>
-                  <p className={`pp-bubble-time ${mine ? "text-right" : "text-left"}`}>
+                  <p className={`text-[10px] mt-1 ${mine ? "text-right" : "text-left"}`} style={{ color: "var(--pp-text-faint)" }}>
                     {fmtTime(m.created_at, lang, t)}
                   </p>
                 </div>
@@ -1029,7 +1059,6 @@ function TeamChat({ profile }: { profile: any }) {
         )}
         <div ref={bottomRef} />
       </div>
-
       <Composer text={text} setText={setText} onSend={send} sending={sending} placeholder={t("messages.teamPlaceholder")} />
 
       <AvaSummarizeSheet
@@ -1078,11 +1107,11 @@ export function EmailsList({ profile, initialTo, initialName }: { profile: any; 
     let data: any = null;
     let error: any = null;
     try {
-      const res: any = await retryNet(
+      const res: any = await retryWithBackoff(
         () => supabase.functions.invoke("ms365-actions", {
           body: { action: "read_emails", payload: { top: PAGE_SIZE, skip: 0 } },
         }),
-        { attempts: 3, timeoutMs: 20000, label: "ms365_read_emails" },
+        { attempts: 3, baseDelayMs: 1200 },
       );
       data = res?.data; error = res?.error;
     } catch (e) { error = e; }
@@ -2629,7 +2658,7 @@ function TeamsThreadView({ target, onClose }: {
                     <div className="text-[10px] mb-0.5 font-semibold" style={{ color: "var(--pp-brand-accent)" }}>{m.from}</div>
                   )}
                   {m.content && (
-                    <div className="text-sm break-words" dangerouslySetInnerHTML={{ __html: m.content }} />
+                    <div className="text-sm break-words" dangerouslySetInnerHTML={{ __html: sanitizeHtml(m.content) }} />
                   )}
                   {(m.attachments || []).length > 0 && (
                     <div className="mt-1.5 space-y-1">

@@ -23,7 +23,12 @@ export default function PortalHandoff() {
     if (handoffRan) return;
     handoffRan = true;
     (async () => {
-      const params = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+      // iOS may discard fragments when Capacitor opens an external origin.
+      // Accept both formats so older app bundles and the reliable query-based
+      // handoff emitted by the backend work together.
+      const fragmentParams = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+      const queryParams = new URLSearchParams(window.location.search);
+      const params = fragmentParams.has("th") ? fragmentParams : queryParams;
       const tokenHash = params.get("th") ?? "";
       const email = params.get("em") ?? "";
       const to = params.get("to") ?? "/planipret/broker/overview";

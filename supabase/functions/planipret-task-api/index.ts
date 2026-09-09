@@ -13,7 +13,9 @@
 // Body: { action: "list" | "get" | "create" | "update" | "delete", ... }
 import { authBroker, corsHeaders, jsonResponse, supaAdmin } from "../_shared/ns-broker.ts";
 import { getUserMaestroAccessToken } from "../_shared/maestro-oauth.ts";
-import { resolveMaestroIdForUser, resolveTelecomUserId } from "../_shared/maestro-broker-directory.ts";
+import { loadBrokerDirectory, resolveMaestroIdForUser, resolveTelecomUserId } from "../_shared/maestro-broker-directory.ts";
+import { fetchMaestroTeam } from "../_shared/maestro-teams.ts";
+
 import { normalizeTask } from "../_shared/planipret-tasks.ts";
 import { handleTaskRequest, newCorrelationId, type UpstreamList } from "../_shared/planipret-task-handler.ts";
 
@@ -244,11 +246,22 @@ function makeClientTargetsFetch(token: string | null) {
           headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
           signal: ctrl.signal,
         });
-        if (!res.ok) continue;
-        const j = await res.json().catch(() => null);
+        const txt = await res.text().catch(() => "");
+        let j: any = null;
+        try { j = txt ? JSON.parse(txt) : null; } catch { /* non json */ }
         const raw = Array.isArray(j) ? j : (j?.clients ?? j?.data ?? j?.items ?? j?.results ?? []);
-        if (Array.isArray(raw)) return raw;
-      } catch { /* try next */ } finally { clearTimeout(timer); }
+        console.log("[planipret-task-api] clients probe", JSON.stringify({
+          url: url.split("?")[0],
+          status: res.status,
+          keys: j && !Array.isArray(j) ? Object.keys(j).slice(0, 8) : "array",
+          count: Array.isArray(raw) ? raw.length : -1,
+          sample: txt.slice(0, 300),
+        }));
+        if (!res.ok) continue;
+        if (Array.isArray(raw) && raw.length > 0) return raw;
+      } catch (e) {
+        console.log("[planipret-task-api] clients probe error", url.split("?")[0], String(e));
+      } finally { clearTimeout(timer); }
     }
     return [];
   };
@@ -278,7 +291,54 @@ Deno.serve(async (req) => {
 
   try {
     const token = await planipretToken(admin, userId);
+
+    // Resolve, once per request, the Maestro team(s) this broker belongs to.
+    // Source of truth: `task_targets.user.eligible_broker_ids` from the Maestro
+    // Client List API (no `/teams` endpoint exists upstream).
+    const teamOnce = (() => {
+      let p: Promise<{ ids: string[]; byClient: Record<string, string[]> }> | null = null;
+      return () => {
+        if (!p) {
+          p = (async () => {
+            const resolved = (await resolveTelecomUserId(admin, userId, {}).catch(() => null))?.id;
+            const fallback = String(profile?.maestro_telecom_user_id ?? profile?.maestro_broker_id ?? "").trim();
+            const tid = resolved ?? (fallback || null);
+
+            return await fetchMaestroTeam({
+              token, telecomBase: TELECOM_BASE, apiBase: API_BASE, telecomId: tid,
+            }).catch(() => ({ ids: [], byClient: {} }));
+          })();
+        }
+        return p;
+      };
+    })();
+
+    // Read-only: the broker's real Maestro team, plus explicitly authorized assistants.
+    if (String(body?.action ?? "") === "team") {
+      const maestroTeam = await teamOnce();
+      const { data: assistants } = await admin.from("planipret_task_assistants")
+        .select("assistant_maestro_id,label")
+        .eq("owner_user_id", userId)
+        .eq("active", true);
+      const { entries: dir } = await loadBrokerDirectory(admin).catch(() => ({ entries: [] as any[] }));
+      const byId = new Map((dir ?? []).map((d: any) => [String(d.id), d]));
+      const labels = new Map((assistants ?? []).map((row: any) => [
+        String(row.assistant_maestro_id ?? "").trim(),
+        String(row.label ?? "").trim(),
+      ]));
+      const ownIds = [profile?.maestro_broker_id, profile?.maestro_telecom_user_id]
+        .map((v) => String(v ?? "").trim()).filter(Boolean);
+      const ids = [...new Set([...maestroTeam.ids, ...labels.keys()].filter(Boolean))]
+        .filter((id) => !ownIds.includes(id));
+      const members = ids.map((id) => {
+        const d: any = byId.get(id);
+        return { id, name: d?.name ?? labels.get(id) ?? null, email: d?.email ?? null, self: false };
+      }).sort((a, b) => (a.name ?? a.id).localeCompare(b.name ?? b.id));
+      return jsonResponse({ success: true, members, by_client: maestroTeam.byClient, correlation_id }, 200);
+    }
+
     const out = await handleTaskRequest({ ...body, correlation_id }, {
+
       admin,
       userId,
       profile,
@@ -292,8 +352,8 @@ Deno.serve(async (req) => {
         return r?.id ?? null;
       },
       listAllowedAssignees: async () => {
-        // Maestro rule: self only, plus assistants explicitly authorized to
-        // work under this broker's profile.
+        // Maestro rule: self, members of the broker's real Maestro team, and
+        // assistants explicitly authorized under this broker's profile.
         const ids = new Set<string>();
         const { data: full } = await admin.from("planipret_profiles")
           .select("maestro_broker_id, maestro_telecom_user_id").eq("id", profile?.id).maybeSingle();
@@ -306,6 +366,10 @@ Deno.serve(async (req) => {
           if (r?.maestro_broker_id) ids.add(String(r.maestro_broker_id));
         } catch { /* ignore */ }
         try {
+          const maestroTeam = await teamOnce();
+          for (const id of maestroTeam.ids) ids.add(id);
+        } catch { /* team unavailable */ }
+        try {
           const { data: rows } = await admin.from("planipret_task_assistants")
             .select("assistant_maestro_id").eq("owner_user_id", userId).eq("active", true);
           for (const row of rows ?? []) {
@@ -314,6 +378,7 @@ Deno.serve(async (req) => {
           }
         } catch { /* table may be empty */ }
         return [...ids];
+
       },
       resolveTaskAssigneeId: async () => {
         // Force an email-backed directory match instead of trusting the CRM id

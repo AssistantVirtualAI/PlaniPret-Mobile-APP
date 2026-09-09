@@ -18,6 +18,7 @@ import {
   requirePlanipretBroker,
   nsFetch,
 } from "../_shared/planipret-ns.ts";
+import { blockTestSms, isTestSms, TEST_SMS_ALLOWED_USER_IDS, TEST_SMS_BLOCK_MESSAGE } from "../_shared/pp-test-sms.ts";
 import {
   getMaestroTelecomConfig,
   isMaestroTelecomConfigured,
@@ -416,20 +417,32 @@ Deno.serve(async (req) => {
         return jsonResponse({ ok: false, error: "Paramètres manquants: 'to' et 'message' sont requis", missing: { to: !to, message: !message } }, 400);
       }
 
+      // Blocage permanent : aucun texto de test n'est envoyé, sans exception.
+      if (blockTestSms(ctx.userId, message)) {
+        console.warn("[pp-ns-sms] test SMS blocked", { userId: ctx.userId, to });
+        return jsonResponse({ ok: false, blocked: true, error: TEST_SMS_BLOCK_MESSAGE }, 200);
+      }
+
+      // Destination interne (poste 2–6 chiffres) → message de chat interne
+      // NetSapiens : pas de DID requis, l'expéditeur est le poste du courtier.
+      const toDigits = String(to).replace(/\D/g, "");
+      const isInternal = /^\d{2,6}$/.test(toDigits);
+
       // Auto-detect broker DID/SMS number if not provided.
-      if (!from) {
+      if (!from && !isInternal) {
         const first = (await getAssignedSmsNumbers(supabase, ctx))[0];
         from = pickSmsNumber(first) ?? undefined;
         console.info("[pp-ns-sms] auto-detected from", from);
       }
 
-      const destination = normalizeE164(to);
+      const destination = isInternal ? toDigits : normalizeE164(to);
       if (!destination) return jsonResponse({ ok: false, error: `Numéro destinataire invalide: '${to}' (format E.164 requis, ex: +15145551234)` }, 400);
 
-      const fromNumber = normalizeE164(from);
+      const fromNumber = isInternal ? String(ctx.extension) : normalizeE164(from);
       if (!fromNumber) {
         return jsonResponse({ ok: false, error: "Aucun numéro SMS (DID) assigné à ce courtier — contactez un administrateur pour attribuer un DID." }, 200);
       }
+
 
 
 
@@ -499,12 +512,15 @@ Deno.serve(async (req) => {
       // respecte `from-number` (le DID réel du courtier). Maestro
       // `POST /users/{id}/messages` envoie depuis un numéro générique Maestro
       // et sert donc uniquement de repli.
-      const nsBody: Record<string, unknown> = {
-        type: type === "chat" ? "chat" : "sms",
-        destination,
-        message,
-        "from-number": fromNumber,
-      };
+      const nsBody: Record<string, unknown> = isInternal
+        ? { type: "chat", destination, message, "from-number": String(ctx.extension) }
+        : {
+            type: type === "chat" ? "chat" : "sms",
+            destination,
+            message,
+            "from-number": fromNumber,
+          };
+
 
       // NS-API requires a 32-char random session id when creating a new thread.
       const sessionId = thread_id ?? newMessageSessionId();

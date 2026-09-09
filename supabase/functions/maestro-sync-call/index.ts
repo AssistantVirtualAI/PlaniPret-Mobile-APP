@@ -31,7 +31,64 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
 const CALL_COLUMNS =
-  "id, user_id, transcript, transcript_raw, transcript_segments, transcript_language, ai_summary, ai_summary_short, ai_coaching, ai_analysis_json, ai_topics, ai_action_items, ai_key_points, ai_client_insights, next_actions, lead_score, lead_temperature, lead_score_reason, coaching_score, maestro_synced, maestro_call_id, maestro_client_id, ns_call_id, pipeline_state, metadata";
+  "id, user_id, from_number, to_number, direction, from_name, to_name, maestro_client_name, transcript, transcript_raw, transcript_segments, transcript_language, ai_summary, ai_summary_short, ai_coaching, ai_analysis_json, ai_topics, ai_action_items, ai_key_points, ai_client_insights, next_actions, lead_score, lead_temperature, lead_score_reason, coaching_score, maestro_synced, maestro_call_id, maestro_client_id, ns_call_id, pipeline_state, metadata, duration_seconds, started_at, answered_at, ended_at, save_consent, deleted_at";
+
+/** Nettoie la transcription : remplace les URIs SIP par des noms lisibles. */
+function prettyTranscript(
+  raw: string,
+  opts: { brokerName?: string | null; brokerExt?: string | null; clientName?: string | null },
+): string {
+  const broker = (opts.brokerName || "Courtier").trim();
+  const client = (opts.clientName || "Client").trim();
+  const ext = String(opts.brokerExt ?? "").replace(/\D/g, "");
+  return String(raw)
+    .replace(/\\'/g, "'")
+    .replace(/\\"/g, '"')
+    .split(/\r?\n/)
+    .map((line) => {
+      const m = line.match(/^\s*sip:([^@\s]+)@[^\s:]+:\s*(.*)$/);
+      if (!m) return line.trim();
+      const rawUser = m[1];
+      const user = rawUser.replace(/\D/g, "");
+      // Broker side = internal extension (2-6 digits, optional M/W device suffix).
+      const isBroker = ext
+        ? user === ext || user === `1${ext}` || user.endsWith(ext)
+        : /^\d{2,6}[MWmw]?$/.test(rawUser);
+      const text = m[2].trim();
+      if (!text) return "";
+      return `${isBroker ? broker : client}: ${text}`;
+    })
+
+    .filter((l) => l.length > 0)
+    .join("\n");
+}
+
+
+/** Maestro attend un format "YYYY-MM-DD HH:MM:SS" (heure locale Québec). */
+function maestroDate(v: unknown): string | undefined {
+  if (!v) return undefined;
+  const d = new Date(String(v));
+  if (Number.isNaN(d.getTime())) return undefined;
+  const p = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Toronto",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+  }).formatToParts(d).reduce<Record<string, string>>((a, x) => (a[x.type] = x.value, a), {});
+  return `${p.year}-${p.month}-${p.day} ${p.hour === "24" ? "00" : p.hour}:${p.minute}:${p.second}`;
+}
+
+/** Libellé lisible de la date réelle de l'appel, pour l'en-tête des notes. */
+function humanCallDate(v: unknown): string | null {
+  if (!v) return null;
+  const d = new Date(String(v));
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleString("fr-CA", {
+    timeZone: "America/Toronto",
+    day: "2-digit", month: "long", year: "numeric",
+    hour: "2-digit", minute: "2-digit", hour12: false,
+  });
+}
+
 
 async function invoke(fn: string, body: unknown) {
   try {
@@ -129,6 +186,17 @@ Deno.serve(async (req) => {
       return json({ success: false, error: "call_not_found", request_id: rid, db_error: callErr?.message ?? null }, 404);
     }
     log("call_loaded", { user_id: call.user_id, maestro_synced: call.maestro_synced, maestro_call_id: call.maestro_call_id });
+
+    // ── Consentement du courtier ───────────────────────────
+    // Rien ne part vers Maestro tant que le courtier n'a pas dit oui,
+    // et jamais pour un appel supprimé.
+    if ((call as any).deleted_at) {
+      return json({ success: false, skipped: "call_deleted", request_id: rid }, 200);
+    }
+    if (String((call as any).save_consent ?? "pending") !== "approved") {
+      return json({ success: false, skipped: "consent_pending", request_id: rid }, 200);
+    }
+
 
 
     const steps: Record<string, unknown> = {};
@@ -265,34 +333,87 @@ Deno.serve(async (req) => {
         ? asArray(call.next_actions)
         : asArray(call.ai_action_items);
 
-    if (summary && mId) {
+    const recordingLink0 = mId ? await recordingPermalink(String(call_id)).catch(() => null) : null;
+    if (mId && (summary || transcript || recordingLink0)) {
       const keyPoints = asArray(call.ai_key_points).length
         ? asArray(call.ai_key_points)
         : asArray(aij?.key_points).length
           ? asArray(aij.key_points)
           : asArray(call.ai_topics);
 
-      const recordingLink = await recordingPermalink(String(call_id)).catch(() => null);
+      const recordingLink = recordingLink0;
+      let { data: prof } = await admin
+        .from("planipret_profiles")
+        .select("full_name, first_name, last_name, extension")
+        .eq("user_id", call.user_id)
+        .maybeSingle();
+      if (!prof) {
+        // planipret_phone_calls.user_id référence parfois planipret_profiles.id.
+        const alt = await admin
+          .from("planipret_profiles")
+          .select("full_name, first_name, last_name, extension")
+          .eq("id", call.user_id)
+          .maybeSingle();
+        prof = alt.data as any;
+      }
+
+      const brokerName = (prof as any)?.full_name
+        || [ (prof as any)?.first_name, (prof as any)?.last_name ].filter(Boolean).join(" ")
+        || "Courtier";
+      const clientName = (call as any).maestro_client_name || ((call as any).direction === "outbound" ? (call as any).to_name : (call as any).from_name) || "Client";
+      const prettyText = transcript
+        ? prettyTranscript(String(transcript), {
+            brokerName,
+            brokerExt: (prof as any)?.extension ?? null,
+            clientName,
+          })
+        : null;
+      const coaching = call.ai_coaching;
+      const coachingText = coaching
+        ? (typeof coaching === "string"
+            ? coaching
+            : [
+                asArray((coaching as any).strengths).length ? `Forces: ${asArray((coaching as any).strengths).map(String).join(" • ")}` : null,
+                asArray((coaching as any).improvements).length ? `À améliorer: ${asArray((coaching as any).improvements).map(String).join(" • ")}` : null,
+                asArray((coaching as any).next_steps).length ? `Prochaines étapes: ${asArray((coaching as any).next_steps).map(String).join(" • ")}` : null,
+              ].filter(Boolean).join("\n") || JSON.stringify(coaching))
+        : null;
       const res = await maestroFetch(cfg, {
         method: "PUT",
         path: `/api/v1/users/${encodeURIComponent(String(auth.brokerId ?? ""))}/calls/${encodeURIComponent(String(mId))}`,
         token: auth.token,
-        // Maestro n'accepte que `status`, `ai_summary` et `notes` sur ce PUT :
-        // tout le reste (coaching, scores, transcription) part dans `notes`.
+        // Champs natifs acceptés par Maestro (testés) : status, ai_summary,
+        // transcript, notes, duration_seconds, answered_at, ended_at et
+        // call_recording_filename (accepte une URL complète).
         body: {
           status: "ended",
-          ai_summary: summary,
+          // Maestro's Communication UI hides these panels while these flags
+          // remain 0, even when the corresponding fields are populated.
+          saving_call_recording: recordingLink ? 1 : 0,
+          saving_call_transcript: prettyText ? 1 : 0,
+          ai_summary: summary ?? undefined,
+          transcript: prettyText ? prettyText.slice(0, 20000) : undefined,
+          duration_seconds: call.duration_seconds != null ? Number(call.duration_seconds) : undefined,
+          started_at: maestroDate(call.started_at ?? call.answered_at),
+          answered_at: maestroDate(call.answered_at ?? call.started_at),
+          ended_at: maestroDate(call.ended_at ?? call.answered_at ?? call.started_at),
+          call_recording_filename: recordingLink ?? undefined,
           notes: [
-            recordingLink ? `Enregistrement: ${recordingLink}` : null,
+            humanCallDate(call.started_at ?? call.answered_at)
+              ? `Appel du ${humanCallDate(call.started_at ?? call.answered_at)} (heure réelle de l'appel)`
+              : null,
+            recordingLink ? `Enregistrement (cliquer pour écouter): ${recordingLink}` : null,
+
             summary ? `Résumé IA: ${summary}` : null,
             keyPoints.length ? `Points clés: ${keyPoints.map(String).join(" • ")}` : null,
             nextActions.length ? `Prochaines actions: ${nextActions.map(actionTitle).filter(Boolean).join(" • ")}` : null,
-            call.ai_coaching ? `Coaching IA${call.coaching_score != null ? ` (${call.coaching_score}/100)` : ""}:\n${String(call.ai_coaching).slice(0, 4000)}` : null,
+            coachingText ? `Coaching IA${call.coaching_score != null ? ` (${call.coaching_score}/100)` : ""}:\n${coachingText.slice(0, 4000)}` : null,
             call.lead_score != null ? `Score du lead: ${call.lead_score}${call.lead_temperature ? ` (${call.lead_temperature})` : ""}` : null,
-            transcript ? `Transcription:\n${String(transcript).slice(0, 8000)}` : null,
+            prettyText ? `Transcription:\n${prettyText.slice(0, 8000)}` : null,
           ].filter(Boolean).join("\n\n") || null,
         },
       });
+
       const failure = res.ok ? null : summarizeMaestroFailure(res.status, res.data);
       steps.ai = { ok: res.ok, status: res.status, reused: true, error: failure?.error ?? null, detail: failure?.detail ?? null, permanent: failure?.permanent ?? false };
       await setPipelineStep(admin, call_id, "ai", res.ok ? "done" : "error", {

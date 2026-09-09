@@ -15,6 +15,7 @@
  *   const blob = await nsApi.recordings.fetchAudio(callId);
  */
 import { supabase } from "@/integrations/supabase/client";
+import { ppNormalizeDestination } from "@/lib/planipret/ppEdge";
 
 type Json = Record<string, unknown>;
 
@@ -85,7 +86,7 @@ export const callsApi = {
       method: "POST",
       query: { action: "start" },
       body: {
-        to_number: toNumber,
+        to_number: ppNormalizeDestination(toNumber),
         caller_id_number: opts.callerIdNumber,
         caller_id_name: opts.callerIdName,
       },
@@ -131,15 +132,22 @@ export const recordingsApi = {
         Authorization: `Bearer ${token}`,
         apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string,
       },
-      body: JSON.stringify({ call_db_id: callId, ns_callid: callId }),
+      body: JSON.stringify({ call_db_id: callId, prefer_url: true }),
     });
     const ct = res.headers.get("content-type") ?? "";
     // Edge function returns 200 + JSON when NS reports the recording is missing/forbidden.
     if (ct.includes("application/json")) {
-      const err = await res.json().catch(() => ({} as any));
-      if (err?.attempts) console.warn("Recording fetch attempts:", err.attempts);
-      const msg = err?.error ?? "Enregistrement indisponible";
-      const hint = err?.hint ?? (err?.ns_status ? `NS-API HTTP ${err.ns_status}` : "");
+      const payload = await res.json().catch(() => ({} as any));
+      if ((payload?.available || payload?.success) && (payload?.url || payload?.recording_url)) {
+        const signed = await fetch(payload.url ?? payload.recording_url);
+        if (!signed.ok) throw new Error(`Recording fetch failed (HTTP ${signed.status})`);
+        const blob = await signed.blob();
+        if (blob.size < 128) throw new Error("Fichier audio vide reçu");
+        return blob;
+      }
+      if (payload?.attempts) console.warn("Recording fetch attempts:", payload.attempts);
+      const msg = payload?.message ?? payload?.error ?? payload?.reason ?? "Enregistrement en préparation";
+      const hint = payload?.hint ?? (payload?.ns_status ? `NS-API HTTP ${payload.ns_status}` : "");
       throw new Error(hint ? `${msg} — ${hint}` : msg);
     }
     if (!res.ok) throw new Error(`Recording fetch failed (HTTP ${res.status})`);
@@ -188,7 +196,7 @@ export const smsApi = {
   listMessages: (threadId: string) =>
     invokeJson<{ messages: any[] }>("pp-ns-sms", { method: "GET", query: { action: "messages", thread_id: threadId } }),
   send: (toNumber: string, text: string) =>
-    invokeJson("pp-ns-sms", { method: "POST", query: { action: "send" }, body: { to: toNumber, message: text } }),
+    invokeJson("pp-ns-sms", { method: "POST", query: { action: "send" }, body: { to: ppNormalizeDestination(toNumber), message: text } }),
 };
 
 /* Single namespaced export consumed by /mplanipret screens. */

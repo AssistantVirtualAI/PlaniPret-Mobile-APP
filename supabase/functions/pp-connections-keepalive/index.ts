@@ -20,7 +20,7 @@ type Profile = {
 };
 
 const SELECT =
-  "id, user_id, ms365_refresh_token, ms365_token_expiry, maestro_refresh_token, maestro_token_expires_at";
+  "id, user_id, ms365_refresh_token, ms365_token_expiry, ms365_auth_paused_at, maestro_refresh_token, maestro_token_expires_at";
 
 // Refresh only when the token is about to die. Each Microsoft refresh can
 // trigger a "new sign-in" alert on the broker's account, so we never refresh

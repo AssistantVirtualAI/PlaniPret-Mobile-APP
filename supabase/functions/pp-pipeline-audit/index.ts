@@ -3,6 +3,7 @@
 // la liste des appels bloqués et les 50 derniers événements corrélés.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
+import { requirePlanipretAdmin } from "../_shared/require-planipret-admin.ts";
 
 type Stage = {
   key: string;
@@ -22,6 +23,9 @@ const json = (body: unknown, status = 200) =>
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+
+  const denied = await requirePlanipretAdmin(req);
+  if (denied) return denied;
 
   try {
     const admin = createClient(

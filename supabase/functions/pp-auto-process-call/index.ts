@@ -34,11 +34,19 @@ Deno.serve(async (req) => {
   const admin = createClient(SUPABASE_URL, SERVICE_ROLE);
   const { data: row, error } = await admin
     .from("planipret_phone_calls")
-    .select("id, recording_url, transcript, transcript_raw, analyzed_at, ai_summary, ai_coaching, coaching_score, analysis_in_progress, analysis_locked_at, ns_call_id, ns_callid, ns_cdr_id, ns_orig_callid, has_recording, duration_seconds")
+    .select("id, recording_url, transcript, transcript_raw, analyzed_at, ai_summary, ai_coaching, coaching_score, analysis_in_progress, analysis_locked_at, ns_call_id, ns_callid, ns_cdr_id, ns_orig_callid, has_recording, duration_seconds, save_consent, deleted_at")
     .eq("id", callId)
     .maybeSingle();
   if (error) return json({ error: "load failed", details: error.message }, 500);
   if (!row) return json({ error: "call not found" }, 404);
+
+  // Consentement obligatoire : aucun traitement (transcription, IA, Maestro)
+  // tant que le courtier n'a pas accepté de sauvegarder l'appel.
+  if ((row as any).deleted_at) return json({ ok: true, skipped: "call_deleted" });
+  if (String((row as any).save_consent ?? "pending") !== "approved") {
+    return json({ ok: true, skipped: "consent_pending" });
+  }
+
 
   // Idempotency short-circuits — cheap and avoids any downstream cost.
   const hasCompleteAnalysis = !!row.analyzed_at && !!row.ai_summary && !!row.ai_coaching && row.coaching_score != null;

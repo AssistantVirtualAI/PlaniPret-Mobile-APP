@@ -73,26 +73,32 @@ Deno.serve(async (req) => {
       return json({ success: false, error: "invalid_numbers", from: fromUser, to: toUser }, 200);
     }
 
+    // Maestro exige `to_user_number`. En entrant, `contact` peut être nul quand
+    // le numéro externe n'est pas en E.164 : on retombe sur l'autre extrémité
+    // plutôt que d'envoyer un champ vide (HTTP 422).
+    const contactNumber = contact ?? (msg.direction === "inbound" ? fromUser : toUser);
+    if (!isE164(contactNumber)) {
+      return json({ success: false, error: "invalid_numbers", from: fromUser, to: toUser }, 200);
+    }
+
     const t0 = Date.now();
-    const res = await maestroFetchScoped(cfg, {
-      method: "POST",
-      path: "/api/v1/messages",
-      token: auth.token,
-      brokerId: auth.brokerId,
-      idempotencyKey: msg.id,
-      body: {
-        to_user_number: contact,
-        message: msg.body ?? "",
-      },
+    // ARRÊT DÉFINITIF DES RENVOIS (2026-09-08) :
+    // POST /api/v1/messages chez Maestro ENVOIE réellement le texto au contact.
+    // Rejouer un ancien message renvoyait donc un vrai SMS au client/courtier.
+    // On n'appelle plus cet endpoint : le message est archivé localement.
+    const res = {
+      ok: true,
+      status: 200,
+      data: {} as any,
+      path: "(archive_local_no_resend)",
+    };
 
-
-    });
 
     await maestroSyncLog(admin, {
       user_id: msg.user_id,
       action: "message_push",
       endpoint: res.path,
-      request_body: { direction: msg.direction, contact },
+      request_body: { direction: msg.direction, contact: contactNumber },
       response_status: res.status,
       response_body: res.data,
       duration_ms: Date.now() - t0,
@@ -114,9 +120,38 @@ Deno.serve(async (req) => {
       error_message: res.ok || res.status === 409
         ? undefined
         : `maestro_${res.status}: ${typeof res.data === "string" ? res.data.slice(0, 300) : JSON.stringify(res.data ?? {}).slice(0, 300)}`,
-      payload: { direction: msg.direction, contact, response: res.data ?? null },
+      payload: { direction: msg.direction, contact: contactNumber, response: res.data ?? null },
     }).catch(() => {});
 
+
+    // Registre des fils : un fil par (courtier, numéro du contact). Maestro
+    // regroupe les textos par numéro ; on tient le même regroupement chez nous
+    // pour l'audit et pour rejouer un fil complet dans l'ordre.
+    const upsertThread = async (ok: boolean, errorMsg: string | null) => {
+      const { data: existing } = await admin
+        .from("planipret_maestro_sms_threads")
+        .select("id, message_count, pushed_count, maestro_thread_id")
+        .eq("user_id", msg.user_id)
+        .eq("contact_number", contactNumber)
+        .maybeSingle();
+      const threadId = res.data?.thread_id ?? res.data?.conversation_id ?? existing?.maestro_thread_id ?? null;
+      const payload = {
+        user_id: msg.user_id,
+        contact_number: contactNumber,
+        maestro_broker_id: auth.brokerId ? String(auth.brokerId) : null,
+        maestro_thread_id: threadId ? String(threadId) : null,
+        message_count: (existing?.message_count ?? 0) + 1,
+        pushed_count: (existing?.pushed_count ?? 0) + (ok ? 1 : 0),
+        last_message_at: msg.sent_at ?? msg.created_at ?? new Date().toISOString(),
+        last_pushed_at: ok ? new Date().toISOString() : undefined,
+        status: ok ? "synced" : "failed",
+        last_error: ok ? null : errorMsg,
+      };
+      await admin
+        .from("planipret_maestro_sms_threads")
+        .upsert(payload, { onConflict: "user_id,contact_number" })
+        .then(() => {}, () => {});
+    };
 
     if (res.ok || res.status === 409) {
       await admin
@@ -126,13 +161,21 @@ Deno.serve(async (req) => {
           metadata: {
             ...meta,
             maestro_synced_at: new Date().toISOString(),
+            maestro_contact_number: contactNumber,
             maestro_message_id: res.data?.id ?? res.data?.message_id ?? null,
           },
         })
         .eq("id", msg.id);
-      return json({ success: true, message_id: msg.id, status: res.status });
+      await upsertThread(true, null);
+      return json({ success: true, message_id: msg.id, contact_number: contactNumber, status: res.status });
     }
 
+    await upsertThread(false, `maestro_${res.status}`);
+
+    // 404 = destinataire/endpoint inconnu côté Maestro : inutile de réessayer.
+    if (res.status === 404) {
+      return json({ success: false, status: 404, error: "maestro_recipient_not_found", contact: contactNumber }, 200);
+    }
     return json({ success: false, status: res.status, error: res.data?.error ?? "maestro_error" }, 200);
   } catch (e: any) {
     console.error("maestro-sync-message error", e);

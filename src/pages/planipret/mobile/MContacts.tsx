@@ -342,6 +342,21 @@ export default function MContacts() {
         }
       }
     }
+    // Recherche transversale : sur l'onglet Personnels (ou Favoris), un nom
+    // absent de la liste locale est aussi cherché dans le répertoire et les
+    // clients — un collègue comme « Sandra » reste ainsi joignable.
+    if (tokens.length && (tab === "personal" || tab === "favorites")) {
+      const seen = new Set(
+        out.map((c: any) => String(c.id ?? c.contact_id ?? c.extension ?? c.phone ?? c.email ?? "").toLowerCase()),
+      );
+      const extra = [...directory, ...clients].filter((c: any) => {
+        const key = String(c.id ?? c.contact_id ?? c.extension ?? c.phone ?? c.email ?? "").toLowerCase();
+        if (key && seen.has(key)) return false;
+        const hay = `${c.first_name ?? ""} ${c.last_name ?? ""} ${c.name ?? ""} ${c.display_name ?? ""} ${c.extension ?? ""} ${c.email ?? ""} ${c.phone ?? ""} ${c.company ?? ""}`;
+        return matchAllTokens(hay, tokens);
+      });
+      out = [...out, ...extra];
+    }
     return out;
   }, [tab, personal, favorites, directory, clients, q, filterDept, filterTeam, sortBy]);
 
@@ -586,7 +601,7 @@ export default function MContacts() {
                   || (c.extension ? `${t("contacts.extension") || "Ext."} ${c.extension}` : "Nom non disponible"))
               : isFav
               ? c.name
-              : (`${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || c.display_name || c.phone || c.email);
+              : (`${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || c.display_name || c.name || c.phone || c.email);
             const sub = isDir
               ? (c.extension ? `${t("contacts.extension") || "Ext."} ${c.extension}` : (c.email || "—"))
               : isFav
@@ -685,8 +700,18 @@ export default function MContacts() {
                     <Mail className="w-3.5 h-3.5" />
                   </button>
                 )}
-                {/* Appel */}
-                <button onClick={(e) => { e.stopPropagation(); phone && openDialer(phone); }}
+                {/* Appel — lance directement l'appel (aucun numéro = message clair) */}
+                <button onClick={(e) => {
+                  e.stopPropagation();
+                  const dest = String(
+                    phone || c.cell_phone || c.work_phone || c.home_phone || c.mobile || c.extension || "",
+                  ).trim();
+                  if (!dest) {
+                    toast.error(tr("contacts.noNumber", "Aucun numéro pour ce contact"));
+                    return;
+                  }
+                  openDialer(dest, true);
+                }}
                   className="flex items-center justify-center active:scale-95 transition"
                   style={{ width: 32, height: 32, borderRadius: "50%", background: "rgba(46,155,220,0.12)", border: "1px solid rgba(46,155,220,0.3)", color: "var(--pp-brand-accent)" }}
                   aria-label={t("common.call")}>
@@ -708,7 +733,7 @@ export default function MContacts() {
         <ContactDetailSheet
           contact={selected}
           onClose={() => setSelected(null)}
-          onCall={(p) => { setSelected(null); openDialer(p); }}
+          onCall={(p) => { setSelected(null); openDialer(p, true); }}
         />
       )}
 

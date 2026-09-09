@@ -154,6 +154,25 @@ async function loadProjection(admin: any, userId: string) {
   return (data ?? []).map((r: any) => normalizeTask(r.payload));
 }
 
+/** Admin only: every broker's mirrored tasks (deduped by task id). */
+async function loadProjectionAll(admin: any) {
+  const { data } = await admin
+    .from("planipret_tasks_projection")
+    .select("task_id,payload")
+    .is("deleted_at", null)
+    .order("due_at", { ascending: true })
+    .limit(2000);
+  const seen = new Set<string>();
+  const out: any[] = [];
+  for (const r of (data ?? []) as any[]) {
+    const id = String(r.task_id ?? "");
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(normalizeTask(r.payload));
+  }
+  return out;
+}
+
 /**
  * Full mirror of the upstream list into the projection. On an unfiltered sync
  * we also soft-delete rows the API no longer returns, so the projection stays
@@ -239,6 +258,26 @@ export function normalizeClientTarget(row: any): ClientTarget | null {
 }
 
 /** All task targets this broker may legitimately use, from the Client List API. */
+/**
+ * Budget de temps: les vérifications amont (annuaire Maestro, périmètre client)
+ * ne doivent jamais faire dépasser la durée d'exécution de la fonction, sinon
+ * la création échoue au niveau réseau ("Failed to send a request") et la tâche
+ * n'arrive jamais dans Maestro.
+ */
+async function withDeadline<T>(p: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let t: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      p,
+      new Promise<T>((resolve) => { t = setTimeout(() => resolve(fallback), ms); }),
+    ]);
+  } catch {
+    return fallback;
+  } finally {
+    if (t) clearTimeout(t);
+  }
+}
+
 async function loadClientTargets(deps: any, profile: any, search?: string | null): Promise<ClientTarget[]> {
   if (!deps.clientTargetsFetch) return [];
   let telecomId: string | null = null;
@@ -246,8 +285,26 @@ async function loadClientTargets(deps: any, profile: any, search?: string | null
     telecomId = await deps.resolveTelecomUserId(profile?.maestro_broker_id ? String(profile.maestro_broker_id) : null);
   } catch { /* ignore */ }
   const rows = await deps.clientTargetsFetch(telecomId, search ?? null).catch(() => []);
-  return (Array.isArray(rows) ? rows : []).map(normalizeClientTarget).filter(Boolean) as ClientTarget[];
+  // Maestro only exposes `task_targets` on part of its client list. Clients
+  // without that metadata are still legitimate targets (their own user id), so
+  // they must stay visible in the picker instead of silently disappearing.
+  const out: ClientTarget[] = [];
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const normalized = normalizeClientTarget(row);
+    if (normalized) { out.push(normalized); continue; }
+    const id = String((row as any)?.user?.id ?? (row as any)?.user_id ?? (row as any)?.id ?? "").trim();
+    if (!id) continue;
+    out.push({
+      client_id: String((row as any)?.id ?? id),
+      name: clientLabel(row),
+      email: (row as any)?.email ? String((row as any).email) : null,
+      user: { id, eligible_broker_ids: [] },
+      contracts: [],
+    });
+  }
+  return out;
 }
+
 
 /** Is `xid` a valid target of the given type according to `task_targets`? */
 export function targetAllowed(
@@ -334,32 +391,54 @@ async function validateTaskTarget(
   if (type === "user" && ownIds.includes(xid)) {
     return { ok: true, type, xid, reason: "own_broker_id", matched: null };
   }
-  const targets = await loadClientTargets(deps, profile);
+  // First pass: default client page. Second pass: targeted search on the xid,
+  // because the Client List API is paginated and the client may not be on it.
+  let targets = await loadClientTargets(deps, profile);
+  let hasScope = targets.length > 0;
+  if (!targetAllowed(targets, type, xid, ownIds) && !targets.some((t) => t.client_id === xid)) {
+    const searched = await loadClientTargets(deps, profile, xid);
+    if (searched.length) {
+      hasScope = true;
+      const seen = new Set(targets.map((t) => t.client_id));
+      targets = [...targets, ...searched.filter((t) => !seen.has(t.client_id))];
+    }
+  }
   const available = {
     users: targets.map((t) => t.user?.id).filter(Boolean) as string[],
     contracts: targets.flatMap((t) => t.contracts.map((c) => c.id)),
   };
-  const targets_source: "clients_api" | "unavailable" = deps.clientTargetsFetch ? "clients_api" : "unavailable";
+  const targets_source: "clients_api" | "unavailable" = deps.clientTargetsFetch && hasScope ? "clients_api" : "unavailable";
   if (targetAllowed(targets, type, xid, ownIds)) {
     const hit = targets.find((t) => (type === "user" ? t.user?.id === xid : t.contracts.some((c) => c.id === xid)));
     return { ok: true, type, xid, reason: `task_targets.${type}`, available, targets_source, matched: hit ? { client_id: hit.client_id, name: hit.name } : null };
   }
+  // The Maestro client id itself is a valid `user` target.
+  const byClient = targets.find((t) => t.client_id === xid);
+  if (type === "user" && byClient) {
+    return { ok: true, type, xid, reason: "client_id_match", available, targets_source, matched: { client_id: byClient.client_id, name: byClient.name } };
+  }
   if (type === "contract" && await contractIsMapped(admin, userId, xid)) {
     return { ok: true, type, xid, reason: "locally_mapped_contract", available, targets_source, matched: null };
+  }
+  // No scope information available (API down, empty page, missing telecom id):
+  // do not block task creation — let Maestro itself accept or reject the xid.
+  if (targets_source === "unavailable") {
+    return { ok: true, type, xid, reason: "scope_unavailable_passthrough", available, targets_source, matched: null };
   }
   return type === "user"
     ? {
         ...base, available, targets_source,
         error: "xid_out_of_scope",
-        reason: targets_source === "unavailable" ? "clients_api_unavailable" : "no_matching_task_targets_user",
+        reason: "no_matching_task_targets_user",
         message: "Cette cible n'appartient pas à ton périmètre (task_targets.user).",
       }
     : {
         ...base, available, targets_source,
         error: "target_mapping_required",
-        reason: targets_source === "unavailable" ? "clients_api_unavailable" : "no_matching_task_targets_contract",
+        reason: "no_matching_task_targets_contract",
         message: "Ce contrat n'est pas une cible valide (task_targets.contracts) pour ton compte.",
       };
+
 }
 
 export async function handleTaskRequest(
@@ -398,7 +477,37 @@ export async function handleTaskRequest(
     // Brokers are always locked to their own Maestro id.
     const isAdminRole = role === "admin" || role === "planipret_admin" || role === "super_admin";
     const requestedBroker = String(body?.broker_id ?? "").trim();
+    const allBrokers = isAdminRole && requestedBroker.toLowerCase() === "all";
     const overrideBroker = isAdminRole && /^\d+$/.test(requestedBroker) ? requestedBroker : null;
+
+    if (allBrokers) {
+      const all = await loadProjectionAll(admin);
+      const now = nowFn();
+      const counts = taskCounts(all, now);
+      const filtered = filterTasks(all, filter, now);
+      const pageOut = paginate(filtered, page, limit);
+      return {
+        status: 200,
+        body: {
+          success: true,
+          source: all.length ? "projection" : "unavailable",
+          maestro_user_id: null,
+          scoped_broker_id: "all",
+          telecom_user_id: null,
+          endpoint: null,
+          filter,
+          tasks: pageOut.items,
+          buckets: bucketTasks(pageOut.items, now),
+          counts,
+          overdue_count: counts.overdue,
+          page: pageOut.page,
+          limit,
+          total: pageOut.total,
+          has_more: pageOut.has_more,
+          correlation_id,
+        },
+      };
+    }
 
     let maestroId: string | null = profile?.maestro_broker_id ? String(profile.maestro_broker_id) : null;
     let telecomId: string | null = null;
@@ -432,7 +541,19 @@ export async function handleTaskRequest(
         : [maestroId, telecomId, profile?.maestro_telecom_user_id]);
       src = "api";
       // Never write another broker's tasks into the caller's local projection.
-      if (!overrideBroker) await syncProjection(admin, userId, all, { full: !from && !to });
+      // When an admin inspects a broker, mirror them under THAT broker's own
+      // local user id so the admin task board reflects the real Maestro data.
+      if (!overrideBroker) {
+        await syncProjection(admin, userId, all, { full: !from && !to });
+      } else {
+        try {
+          const { data: owner } = await admin
+            .from("planipret_profiles").select("user_id")
+            .eq("maestro_broker_id", overrideBroker).not("user_id", "is", null).limit(1);
+          const ownerId = owner?.[0]?.user_id ? String(owner[0].user_id) : null;
+          if (ownerId) await syncProjection(admin, ownerId, all, { full: !from && !to });
+        } catch { /* mirroring is best effort */ }
+      }
     } else if (overrideBroker) {
       all = [];
       src = "unavailable";
@@ -779,7 +900,11 @@ export async function handleTaskRequest(
       // its internal user directory and can be different (for example 387… vs
       // 93135). Sending the CRM id is accepted but leaves `users: []`, so the
       // task never appears in the assignee's Maestro calendar.
-      const internalAssignee = await deps.resolveTaskAssigneeId?.().catch(() => null);
+      const internalAssignee = await withDeadline(
+        Promise.resolve(deps.resolveTaskAssigneeId?.()).catch(() => null),
+        5000,
+        null,
+      );
       if (internalAssignee || ownXid) createInput.users_id = internalAssignee ?? ownXid;
     }
     const built = buildCreatePayload(createInput);
@@ -789,8 +914,13 @@ export async function handleTaskRequest(
 
     // Assignment scope: self or authorized team assistants only (Maestro rule).
     if (payload.users_id !== undefined && payload.users_id !== null) {
-      const allowedIds = await resolveAllowedAssignees(deps, profile);
-      const check = assertAssigneeAllowed(payload.users_id, allowedIds);
+      const allowedIds = await withDeadline(
+        Promise.resolve(resolveAllowedAssignees(deps, profile)).catch(() => [] as string[]),
+        5000,
+        [] as string[],
+      );
+      // Périmètre inconnu (annuaire lent/indisponible) : ne pas bloquer.
+      const check = allowedIds.length ? assertAssigneeAllowed(payload.users_id, allowedIds) : { ok: true as const };
       if (!check.ok) {
         await audit(admin, { action: "task_create_denied", user_id: userId, source, session_id: sessionId, correlation_id, result: "assignee_not_allowed" });
         return { status: 200, body: { success: false, ...check, correlation_id } };
@@ -809,7 +939,11 @@ export async function handleTaskRequest(
     ].filter(Boolean);
 
     if (payload.type === "user" || payload.type === "contract") {
-      const check = await validateTaskTarget(deps, admin, profile, userId, payload.type, payload.xid, ownIds);
+      const check = await withDeadline(
+        validateTaskTarget(deps, admin, profile, userId, payload.type, payload.xid, ownIds),
+        8000,
+        { ok: true, type: payload.type as "user" | "contract", xid: String(payload.xid ?? ""), reason: "scope_check_timeout_passthrough" } as any,
+      );
       if (!check.ok) {
         await audit(admin, {
           action: "task_create_denied", user_id: userId, source, session_id: sessionId,

@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CalendarClock, FolderKanban, Phone, PhoneIncoming, PhoneMissed, PhoneOutgoing, Wallet } from "lucide-react";
+import { AlertTriangle, CalendarClock, FolderKanban, MessageSquare, Phone, PhoneIncoming, PhoneMissed, PhoneOutgoing, User, Wallet } from "lucide-react";
 import MaestroTaskRow from "@/components/planipret/mobile/MaestroTaskRow";
 import { formatTaskDue, type NormalizedTask } from "@/lib/planipret/tasks";
 import {
   buildClientBundles, clientKey as makeKey, fetchClientCalls, fetchClientDeals, fetchClientDeposits,
-  type ClientBundle, type ClientCall, type ClientDeal, type ClientDeposit,
+  fetchClientMessages,
+  type ClientBundle, type ClientCall, type ClientDeal, type ClientDeposit, type ClientMessage,
 } from "@/lib/planipret/clientMaestro";
 import { supabase } from "@/integrations/supabase/client";
 
@@ -32,13 +33,17 @@ export default function ClientMaestroDetail({
   const [deals, setDeals] = useState<ClientDeal[]>([]);
   const [deposits, setDeposits] = useState<ClientDeposit[]>([]);
   const [calls, setCalls] = useState<ClientCall[]>([]);
+  const [messages, setMessages] = useState<ClientMessage[]>([]);
+  const [brokerNames, setBrokerNames] = useState<Record<string, string>>({});
 
   const idsKey = userIds.filter(Boolean).sort().join(",");
 
   const load = useCallback(async () => {
     const ids = idsKey ? idsKey.split(",") : [];
-    const [d, dep, cl] = await Promise.all([fetchClientDeals(ids), fetchClientDeposits(), fetchClientCalls(ids)]);
-    setDeals(d); setDeposits(dep); setCalls(cl);
+    const [d, dep, cl, ms] = await Promise.all([
+      fetchClientDeals(ids), fetchClientDeposits(), fetchClientCalls(ids), fetchClientMessages(ids),
+    ]);
+    setDeals(d); setDeposits(dep); setCalls(cl); setMessages(ms);
   }, [idsKey]);
 
   useEffect(() => { void load(); }, [load]);
@@ -51,14 +56,31 @@ export default function ClientMaestroDetail({
       .on("postgres_changes", { event: "*", schema: "public", table: "planipret_pipeline" }, bump)
       .on("postgres_changes", { event: "*", schema: "public", table: "planipret_commission_register" }, bump)
       .on("postgres_changes", { event: "*", schema: "public", table: "planipret_phone_calls" }, bump)
+      .on("postgres_changes", { event: "*", schema: "public", table: "planipret_phone_messages" }, bump)
       .subscribe();
     return () => { if (timer) clearTimeout(timer); void supabase.removeChannel(ch); };
   }, [load, idsKey]);
 
   const bundle: ClientBundle | undefined = useMemo(() => {
     const key = makeKey(decodeURIComponent(clientKey));
-    return buildClientBundles(tasks, deals, deposits, calls).find((b) => b.key === key);
-  }, [tasks, deals, deposits, calls, clientKey]);
+    return buildClientBundles(tasks, deals, deposits, calls, messages).find((b) => b.key === key);
+  }, [tasks, deals, deposits, calls, messages, clientKey]);
+
+  const brokerIdsKey = (bundle?.brokerIds ?? []).join(",");
+  useEffect(() => {
+    const ids = brokerIdsKey ? brokerIdsKey.split(",") : [];
+    if (!ids.length) return;
+    let alive = true;
+    void (async () => {
+      const { data } = await supabase
+        .from("planipret_profiles").select("user_id, full_name, email").in("user_id", ids);
+      if (!alive) return;
+      const map: Record<string, string> = {};
+      for (const p of (data ?? []) as any[]) map[String(p.user_id)] = p.full_name || p.email || String(p.user_id).slice(0, 8);
+      setBrokerNames(map);
+    })();
+    return () => { alive = false; };
+  }, [brokerIdsKey]);
 
   const surface = { background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border)", color: "var(--pp-text-primary)" };
 
@@ -81,6 +103,10 @@ export default function ClientMaestroDetail({
           {b.upcoming > 0 && <Badge tone="info" text={`${b.upcoming} ${L("à venir", "upcoming")}`} />}
           <Badge tone="muted" icon={<FolderKanban className="w-3 h-3" />} text={`${b.deals.length} ${L("dossiers", "files")}`} />
           <Badge tone="info" icon={<Phone className="w-3 h-3" />} text={`${b.calls.length} ${L("appels", "calls")}`} />
+          <Badge tone="info" icon={<MessageSquare className="w-3 h-3" />} text={`${b.messages.length} ${L("textos", "texts")}`} />
+          {b.brokerIds.map((id) => (
+            <Badge key={id} tone="muted" icon={<User className="w-3 h-3" />} text={brokerNames[id] ?? id.slice(0, 8)} />
+          ))}
           {b.depositTotal > 0 && <Badge tone="ok" icon={<Wallet className="w-3 h-3" />} text={cad(b.depositTotal)} />}
         </div>
         {b.nextDue && (
@@ -135,6 +161,26 @@ export default function ClientMaestroDetail({
                 </li>
               );
             })}
+          </ul>
+        )}
+      </Card>
+
+      <Card title={L("Textos", "Texts")} surface={surface}>
+        {b.messages.length === 0 ? <Empty text={L("Aucun texto.", "No text.")} /> : (
+          <ul className="space-y-1.5">
+            {b.messages.map((m) => (
+              <li key={m.id} className="rounded-lg px-2 py-2 text-[11.5px]" style={{ background: "#F7F9FC", color: "var(--pp-text-muted)" }}>
+                <span className="flex flex-wrap items-center gap-x-2">
+                  <MessageSquare className="w-3.5 h-3.5" style={{ color: m.direction === "outbound" ? "var(--pp-brand-accent)" : "#047857" }} />
+                  <span style={{ color: "var(--pp-text-primary)", fontWeight: 600 }}>
+                    {m.created_at ? new Date(m.created_at).toLocaleString(en ? "en-CA" : "fr-CA", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "America/Toronto" }) : "—"}
+                  </span>
+                  <span>{m.direction === "outbound" ? L("envoyé", "sent") : L("reçu", "received")}</span>
+                  <span>{m.direction === "outbound" ? (m.to_number ?? "—") : (m.from_number ?? "—")}</span>
+                </span>
+                {m.body && <span className="block break-words mt-0.5" style={{ color: "var(--pp-text-primary)" }}>{m.body}</span>}
+              </li>
+            ))}
           </ul>
         )}
       </Card>

@@ -30,6 +30,7 @@ import {
   isMaestroTelecomConfigured,
   maestroTelecomFetch,
 } from "../_shared/maestro-telecom.ts";
+import { isTestSms, TEST_SMS_BLOCK_MESSAGE } from "../_shared/pp-test-sms.ts";
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -96,12 +97,9 @@ Deno.serve(async (req) => {
         return jsonResponse({ ok: r.ok, status: r.status, data: r.data });
       }
       case "sms-send": {
-        // POST /users/{id}/messages
-        if (!body.message) return jsonResponse({ error: "message payload required" }, 400);
-        const r = await maestroTelecomFetch(cfg, `/users/${meId}/messages`, {
-          method: "POST", body: body.message,
-        });
-        return jsonResponse({ ok: r.ok, status: r.status, data: r.data });
+        // POST /users/{id}/messages envoie un vrai SMS. Arrêt global permanent.
+        console.warn("[pp-maestro-telecom] outbound SMS globally disabled");
+        return jsonResponse({ ok: false, blocked: true, error: "L’envoi de textos est désactivé." }, 200);
       }
       case "inbox": {
         // GET /users/{id}/inbox

@@ -45,6 +45,9 @@ Deno.serve(async (req) => {
       if (type === "sms" && (!payload.to || !payload.message)) {
         return json({ error: "INVALID_PAYLOAD", message: "to and message are required" }, 400);
       }
+      if (type === "sms") {
+        return json({ ok: false, blocked: true, error: "L’envoi de textos est désactivé." }, 200);
+      }
       const { data, error } = await admin
         .from("planipret_pbx_action_queue")
         .insert({
@@ -86,6 +89,12 @@ Deno.serve(async (req) => {
     }
 
     if (action === "process") {
+      // Fermer toute ancienne reprise SMS avant de traiter d'autres types.
+      await admin
+        .from("planipret_pbx_action_queue")
+        .update({ status: "cancelled", last_error: "sms_globally_disabled", updated_at: new Date().toISOString() })
+        .eq("action", "sms")
+        .in("status", ["pending", "failed"]);
       const { data: due, error } = await admin
         .from("planipret_pbx_action_queue")
         .select("id, user_id, action, payload, attempts")
@@ -99,23 +108,8 @@ Deno.serve(async (req) => {
       for (const job of due ?? []) {
         const attempts = (job.attempts ?? 0) + 1;
         try {
-          if (job.action !== "sms") throw new Error(`unsupported_action:${job.action}`);
-          const res = await fetch(`${SUPABASE_URL}/functions/v1/pp-ns-sms`, {
-            method: "POST",
-            headers: { Authorization: `Bearer ${SERVICE_KEY}`, "content-type": "application/json" },
-            body: JSON.stringify({
-              action: "send",
-              to: (job.payload as any)?.to,
-              message: (job.payload as any)?.message,
-              from: (job.payload as any)?.from ?? undefined,
-              on_behalf_of: job.user_id,
-              // pp-ns-sms (requirePlanipretBroker) resolves the acting broker
-              // from these fields when called with the service-role key.
-              _user_id: job.user_id,
-              user_id: job.user_id,
-            }),
-          });
-          if (!res.ok) throw new Error(`pp-ns-sms ${res.status}: ${(await res.text()).slice(0, 200)}`);
+          if (job.action === "sms") throw new Error("sms_globally_disabled");
+          throw new Error(`unsupported_action:${job.action}`);
           await admin.from("planipret_pbx_action_queue")
             .update({ status: "done", attempts, updated_at: new Date().toISOString(), last_error: null })
             .eq("id", job.id);

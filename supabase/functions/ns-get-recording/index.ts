@@ -232,6 +232,8 @@ async function persistRecording(callDbId: string | null, bytes: Uint8Array, cont
         recording_bytes: bytes.byteLength,
       })
       .eq("id", callDbId);
+
+
     return path;
   } catch (_) {
     return null;

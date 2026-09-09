@@ -163,12 +163,21 @@ Deno.serve(async (req) => {
       return Boolean((k1 && myKeys.has(k1)) || (k2 && myKeys.has(k2)));
     };
 
-    const scopedAll = scope === "all" && isAdmin ? allRows : allRows.filter(isMineRow);
+    const scopedBase = scope === "all" && isAdmin ? allRows : allRows.filter(isMineRow);
 
-    // Optional agent filter (admin global view)
-    const mine = agent
-      ? scopedAll.filter((r) => (r.agent_name ?? "").trim().toLowerCase() === agent.toLowerCase())
-      : scopedAll;
+    // Optional agent filter (admin per-broker view). When set, EVERY section
+    // below must be restricted to that broker — not only the KPI block.
+    const agentLower = agent ? agent.toLowerCase() : null;
+    const agentK = agent ? agentKey(agent) : null;
+    const matchesAgent = (r: any) => {
+      const n = String(r.agent_name ?? "").trim().toLowerCase();
+      const t = String(r.target_name ?? "").trim().toLowerCase();
+      if (agentLower && (n === agentLower || t === agentLower)) return true;
+      if (!agentK) return false;
+      return r.agent_key === agentK || agentKey(r.agent_name) === agentK || agentKey(r.target_name) === agentK;
+    };
+    const scopedAll = agent ? scopedBase.filter(matchesAgent) : scopedBase;
+    const mine = scopedAll;
 
     const resolved = resolveWindow(granularity, year, periodIndex);
     const cyYtd = resolved.window;

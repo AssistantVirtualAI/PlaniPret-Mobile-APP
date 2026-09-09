@@ -2,6 +2,7 @@
 // Fetches recent CDRs, tries every possible callid field against multiple
 // recording endpoint variants (v2 user-scoped, v2 domain-scoped, v1 legacy).
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
+import { requirePlanipretAdmin } from "../_shared/require-planipret-admin.ts";
 
 const NS_API_KEY = Deno.env.get("NS_API_KEY") ?? "";
 const NS_API_BASE_URL = Deno.env.get("NS_API_BASE_URL") ?? "https://voice.ava-telecom.ca/ns-api/v2";
@@ -12,6 +13,9 @@ const json = (b: unknown, s = 200) =>
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+
+  const denied = await requirePlanipretAdmin(req);
+  if (denied) return denied;
   if (!NS_API_KEY) return json({ error: "NS_API_KEY not configured" }, 500);
 
   const nsH = { Authorization: `Bearer ${NS_API_KEY}`, Accept: "application/json" };

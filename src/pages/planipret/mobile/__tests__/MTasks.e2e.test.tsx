@@ -106,9 +106,9 @@ describe("MTasks (mobile)", () => {
   it("expose les onglets de filtre et déclenche setFilter", async () => {
     render(<MTasks />);
     const tabs = await screen.findAllByRole("tab");
-    expect(tabs.length).toBe(4);
+    expect(tabs.length).toBe(5);
     fireEvent.click(tabs[1]);
-    expect(setFilter).toHaveBeenCalledWith("overdue");
+    expect(setFilter).toHaveBeenCalledWith("all");
   });
 
   it("rafraîchit la liste", async () => {

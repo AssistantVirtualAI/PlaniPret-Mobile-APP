@@ -53,7 +53,7 @@ const NYLAS_ID_KEYS = [
   "event_id", "external_event_id", "nylasEventId",
 ];
 
-/** Derive the Nylas/calendar sync state of a task from the Maestro payload. */
+/** Derive whether the task itself has been created in Maestro. */
 export function computeTaskSync(raw: any, assigneeIds: string[] = []): { sync_status: TaskSyncStatus; sync_reason: TaskSyncReason } {
   if (!raw || typeof raw !== "object") return { sync_status: "unknown", sync_reason: "unknown" };
   const has = (k: string) => {
@@ -65,10 +65,7 @@ export function computeTaskSync(raw: any, assigneeIds: string[] = []): { sync_st
   if (state === "synced" || state === "success") return { sync_status: "synced", sync_reason: "nylas_event_linked" };
   if (state === "failed" || state === "error") return { sync_status: "not_synced", sync_reason: "sync_failed" };
   if (!String(raw.id ?? raw.task_id ?? "").trim()) return { sync_status: "not_synced", sync_reason: "not_created_yet" };
-  const wantsCalendar = truthy(raw.sync_calendar ?? raw.syncCalendar ?? raw.calendar_sync);
-  if (!wantsCalendar) return { sync_status: "not_synced", sync_reason: "calendar_sync_disabled" };
-  if (!assigneeIds.length) return { sync_status: "not_synced", sync_reason: "assignment_missing" };
-  return { sync_status: "pending", sync_reason: "awaiting_nylas" };
+  return { sync_status: "synced", sync_reason: "nylas_event_linked" };
 }
 
 /** Human readable explanation of a task sync state. */
@@ -79,14 +76,14 @@ export function describeTaskSync(
 ): { label: string; detail: string } {
   const en = lang === "en";
   const label = status === "synced"
-    ? (en ? "Calendar synced" : "Calendrier synchro")
+    ? (en ? "Synced to Maestro" : "Synchronisée à Maestro")
     : status === "pending"
       ? (en ? "Sync pending" : "Synchro en attente")
       : status === "not_synced"
         ? (en ? "Not synced" : "Non synchronisée")
         : (en ? "Unknown" : "Inconnu");
   const details: Record<TaskSyncReason, [string, string]> = {
-    nylas_event_linked: ["Événement Nylas lié — visible dans le calendrier Maestro.", "Nylas event linked — visible in the Maestro calendar."],
+    nylas_event_linked: ["Tâche enregistrée et visible dans Maestro.", "Task saved and visible in Maestro."],
     awaiting_nylas: ["En attente de la synchronisation Nylas côté Maestro.", "Waiting for Maestro's Nylas synchronisation."],
     calendar_sync_disabled: ["Synchronisation calendrier non demandée — visible uniquement dans la page Tâches.", "Calendar sync not requested — only visible on the Tasks page."],
     assignment_missing: ["Maestro n'a pas enregistré l'assignation (users vide).", "Maestro did not persist the assignment (users empty)."],
@@ -241,9 +238,15 @@ export function buildCreatePayload(input: CreateInput): ValidationResult {
     payload.status = status || "pending";
   }
 
-  // Notifications and calendar sync are OFF unless explicitly enabled by the broker.
-  if (input.sync_cal === true || input.sync_calendar === true) payload.sync_cal = 1;
-  if (input.send_notification === true || input.notification === true) payload.send_notification = 1;
+  // Notifications and calendar sync are OFF unless explicitly enabled by the
+  // broker. Maestro defaults them ON server-side, which sends the "Alert! New
+  // referral" email into the client's Communications page, so the zeros must be
+  // sent explicitly instead of being omitted.
+  payload.sync_cal = input.sync_cal === true || input.sync_calendar === true ? 1 : 0;
+  payload.send_notification = input.send_notification === true || input.notification === true ? 1 : 0;
+  payload.send_notification_client = input.send_notification_client === true ? 1 : 0;
+  payload.send_notification_client_secondary = input.send_notification_client_secondary === true ? 1 : 0;
+  payload.send_notification_assistant = input.send_notification_assistant === true ? 1 : 0;
   if (input.is_hidden === true) payload.is_hidden = 1;
   if (input.update_status === true) payload.update_status = 1;
 
@@ -259,15 +262,18 @@ export function buildCreatePayload(input: CreateInput): ValidationResult {
   };
   const notifyTo = intList(input.send_notification_to);
   if (notifyTo) payload.send_notification_to = notifyTo;
-  if (input.send_notification_client === true) payload.send_notification_client = 1;
-  if (input.send_notification_client_secondary === true) payload.send_notification_client_secondary = 1;
-  if (input.send_notification_assistant === true) payload.send_notification_assistant = 1;
   const assistantId = posInt(input.assistant_users_id);
   if (assistantId) payload.assistant_users_id = assistantId;
   const notifyFrom = posInt(input.send_notification_from);
   if (notifyFrom) payload.send_notification_from = notifyFrom;
   const notifUsers = intList(input.notification_users);
-  if (notifUsers) payload.notification_users = notifUsers;
+  // Le courtier peut bloquer l'envoi au client : aucune notification client ne part alors.
+  if (payload.send_notification_client === 0) {
+    payload.send_notification_client_secondary = 0;
+    delete payload.notification_users;
+  } else if (notifUsers) {
+    payload.notification_users = notifUsers;
+  }
   if (input.scheduled === true) {
     const at = toApiDateTime(input.scheduled_at as string);
     if (!at) return { ok: false, error: "validation_failed", fields: { scheduled_at: "date_required_YYYY-MM-DD_HH:mm:ss" } };
@@ -312,7 +318,8 @@ export function buildCreatePayload(input: CreateInput): ValidationResult {
 }
 
 const UPDATABLE = new Set([
-  "date", "notes", "description", "status_option_id", "update_status",
+  "date", "notes", "description", "status", "status_option_id", "option", "update_status",
+  "xid", "type",
   "is_recurring", "recurring_value", "recurring_pattern", "next_send_date", "recurring_on", "users_id",
 ]);
 
@@ -340,6 +347,28 @@ export function buildUpdateBody(taskId: string | number, changes: Record<string,
         return { ok: false, error: "validation_failed", fields: { users_id: "users_id_required_integer" } };
       }
       body.users_id = assignee;
+      continue;
+    }
+    if (k === "xid") {
+      const target = Number(String(v).trim());
+      if (!Number.isInteger(target) || target <= 0) {
+        return { ok: false, error: "validation_failed", fields: { xid: "xid_required_integer" } };
+      }
+      body.xid = target;
+      continue;
+    }
+    if (k === "type") {
+      const t = String(v).trim().toLowerCase();
+      if (t !== "user" && t !== "contract") {
+        return { ok: false, error: "validation_failed", fields: { type: "type_must_be_user_or_contract" } };
+      }
+      body.type = t;
+      continue;
+    }
+    if (k === "status") {
+      const s = String(v).trim();
+      if (!s) continue;
+      body.status = s;
       continue;
     }
     if (k === "is_recurring" || k === "update_status") { body[k] = v === true || v === 1 || v === "1" ? 1 : 0; continue; }

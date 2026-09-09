@@ -762,22 +762,41 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
   try {
+    const cronSecret = Deno.env.get("PP_NS_SYNC_CRON_SECRET") ?? "";
+    const cronHeader = req.headers.get("x-cron-secret") ?? "";
+    const cronCall = !!cronSecret && cronHeader === cronSecret;
     const authHeader = req.headers.get("Authorization");
-    if (!authHeader?.startsWith("Bearer ")) return json({ error: "Unauthorized" }, 401);
+    if (!cronCall && !authHeader?.startsWith("Bearer ")) return json({ error: "Unauthorized" }, 401);
     if (!NS_API_KEY) return json({ error: "NS_API_KEY missing in backend secrets" }, 500);
 
     const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-    const { data: userData } = await admin.auth.getUser(authHeader.replace(/^Bearer\s+/i, ""));
-    if (!userData?.user) return json({ error: "Unauthorized" }, 401);
-    const { data: isAdmin } = await admin.rpc("is_planipret_admin", { _user_id: userData.user.id });
-    const { data: isMember } = await admin.rpc("is_planipret_member", { _user_id: userData.user.id });
-    if (isAdmin !== true && isMember !== true) return json({ error: "Forbidden" }, 403);
+    const bearer = (authHeader ?? "").replace(/^Bearer\s+/i, "");
+    // Scheduled (cron) invocation: shared cron secret or service-role bearer, no interactive user.
+    const isCron = cronCall || (!!SUPABASE_SERVICE_ROLE_KEY && bearer === SUPABASE_SERVICE_ROLE_KEY);
+    let triggeredBy: string | null = null;
+    if (!isCron) {
+      const { data: userData } = await admin.auth.getUser(bearer);
+      if (!userData?.user) return json({ error: "Unauthorized" }, 401);
+      const { data: isAdmin } = await admin.rpc("is_planipret_admin", { _user_id: userData.user.id });
+      const { data: isMember } = await admin.rpc("is_planipret_member", { _user_id: userData.user.id });
+      if (isAdmin !== true && isMember !== true) return json({ error: "Forbidden" }, 403);
+      triggeredBy = userData.user.id;
+    }
+
+    // Close out runs left hanging by a killed background task.
+    await admin
+      .from("planipret_edge_function_runs")
+      .update({ status: "error", finished_at: new Date().toISOString(), error: "timed_out" })
+      .eq("function_name", "pp-admin-ns-sync")
+      .eq("status", "running")
+      .lt("created_at", new Date(Date.now() - 15 * 60 * 1000).toISOString());
 
     let body: any = {};
     try { body = await req.json(); } catch { body = {}; }
     const domain = String(body.domain ?? NS_DEFAULT_DOMAIN).trim();
     const end = body.end ?? new Date().toISOString();
-    const start = body.start ?? new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+    const defaultWindowMs = isCron ? 3 * 60 * 60 * 1000 : 90 * 24 * 60 * 60 * 1000;
+    const start = body.start ?? new Date(Date.now() - defaultWindowMs).toISOString();
 
     if (!domain) return json({ error: "NS domain not configured" }, 412);
     const usersRes = await fetchAll(`/domains/${encodeURIComponent(domain)}/users`, 200, 30);
@@ -803,7 +822,7 @@ Deno.serve(async (req) => {
       .insert({
         function_name: "pp-admin-ns-sync",
         status: "running",
-        triggered_by: userData.user.id,
+        triggered_by: triggeredBy,
         summary: { domain, users_total: brokerUsers.length, profiles_matched: profileSync.matched, profiles_created: profileSync.created, start, end },
       })
       .select("id")

@@ -115,8 +115,40 @@ export async function requestMicrosoftToken(
   return { ...first, retriedPublic: false };
 }
 
+/** Erreurs Microsoft qui ne peuvent jamais être résolues sans reconnexion manuelle. */
+export function isUnrecoverableRefreshError(data: any): boolean {
+  const d = `${data?.error ?? ""} ${data?.suberror ?? ""} ${data?.error_description ?? ""}`;
+  return /invalid_grant|interaction_required|consent_required|login_required|token_expired|AADSTS50173|AADSTS50076|AADSTS70008|AADSTS700082|AADSTS65001|AADSTS50078|AADSTS54005/i.test(d);
+}
+
+/** Journalise chaque tentative de renouvellement Microsoft (visible dans le portail admin). */
+export async function logMs365AuthAttempt(admin: any, profile: any, entry: {
+  attempt_type?: string; status: string; error_code?: string | null; error_message?: string | null;
+  source?: string | null; paused?: boolean;
+}) {
+  try {
+    await admin.from("planipret_ms_auth_attempts").insert({
+      profile_id: profile?.id ?? null,
+      email: profile?.ms365_email ?? profile?.email ?? null,
+      attempt_type: entry.attempt_type ?? "refresh",
+      status: entry.status,
+      error_code: entry.error_code ?? null,
+      error_message: (entry.error_message ?? null)?.toString().slice(0, 500) ?? null,
+      source: entry.source ?? null,
+      paused: !!entry.paused,
+    });
+  } catch (_e) { /* le journal ne doit jamais bloquer une synchro */ }
+}
+
 export async function refreshMicrosoftAccessToken(admin: any, profile: any, scopes = MS365_DELEGATED_SCOPES): Promise<string | null> {
   if (!profile?.ms365_refresh_token) return null;
+  // Renouvellement mis en pause après un échec définitif : on n'interroge plus
+  // Microsoft (sinon le courtier reçoit des demandes d'authentification).
+  if (profile?.ms365_auth_paused_at) {
+    await logMs365AuthAttempt(admin, profile, { status: "skipped_paused", paused: true, error_message: profile?.ms365_auth_error ?? null });
+    return null;
+  }
+
   const cfg = await readMs365Config(admin);
   if (!cfg.clientId) return null;
   const token = await requestMicrosoftToken(cfg, {
@@ -126,6 +158,19 @@ export async function refreshMicrosoftAccessToken(admin: any, profile: any, scop
   }, { preferPublic: cfg.authMode === "public" });
   if (!token.ok) {
     console.error("[ms365] refresh failed", token.status, JSON.stringify(token.data));
+    const permanent = isUnrecoverableRefreshError(token.data);
+    if (permanent) {
+      await admin.from("planipret_profiles").update({
+        ms365_auth_paused_at: new Date().toISOString(),
+        ms365_auth_error: microsoftOAuthErrorMessage(token.data).slice(0, 500),
+      }).eq("id", profile.id);
+    }
+    await logMs365AuthAttempt(admin, profile, {
+      status: permanent ? "failed_permanent" : "failed",
+      error_code: token.data?.error ?? `http_${token.status}`,
+      error_message: microsoftOAuthErrorMessage(token.data),
+      paused: permanent,
+    });
     return null;
   }
   await admin.from("planipret_profiles").update({
@@ -133,6 +178,10 @@ export async function refreshMicrosoftAccessToken(admin: any, profile: any, scop
     ms365_refresh_token: token.data.refresh_token ?? profile.ms365_refresh_token,
     ms365_scopes: token.data.scope ?? scopes,
     ms365_token_expiry: new Date(Date.now() + Number(token.data.expires_in ?? 3600) * 1000).toISOString(),
+    ms365_auth_paused_at: null,
+    ms365_auth_error: null,
   }).eq("id", profile.id);
+  await logMs365AuthAttempt(admin, profile, { status: "success" });
+
   return token.data.access_token as string;
 }

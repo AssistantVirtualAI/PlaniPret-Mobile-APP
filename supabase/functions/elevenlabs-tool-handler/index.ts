@@ -41,12 +41,7 @@ Deno.serve(async (req) => {
         break;
       }
       case "send_sms": {
-        const to = parameters.to ?? parameters.to_number ?? parameters.destination ?? parameters.number;
-        const message = parameters.message ?? parameters.body ?? parameters.text ?? parameters.content;
-        const r = await callFn("pp-ns-sms", authHeader, { action: "send", to, message, type: parameters.type ?? "sms" });
-        result = (r?.ok === true || r?.success === true)
-          ? { success: true, to: r.to ?? to, from: r.from, thread_id: r.thread_id, message: "SMS envoyé" }
-          : { success: false, error: r?.error ?? r?.body ?? "Échec SMS", message: r?.message };
+        result = { success: false, blocked: true, error: "sms_globally_disabled", message: "L’envoi de textos est désactivé." };
         break;
       }
       case "send_email": {

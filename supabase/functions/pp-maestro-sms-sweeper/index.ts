@@ -4,6 +4,7 @@
 //
 // POST { limit?: number, max_age_hours?: number, user_id?: string, dry_run?: boolean }
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { isTestSms, TEST_SMS_ALLOWED_USER_IDS } from "../_shared/pp-test-sms.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -65,11 +66,31 @@ Deno.serve(async (req) => {
     .select("id");
   const stuckFixed = stuck?.length ?? 0;
 
+  // Numéro du contact = l'autre extrémité du texto (jamais l'extension interne).
+  // C'est la clé de regroupement : un fil par (courtier, numéro).
+  const norm = (v: unknown): string | null => {
+    const d = String(v ?? "").replace(/\D/g, "");
+    if (!d) return null;
+    if (d.length === 10) return `+1${d}`;
+    if (d.length === 11 && d.startsWith("1")) return `+${d}`;
+    if (d.length >= 11 && d.length <= 15) return `+${d}`;
+    return null; // extensions internes (2 à 6 chiffres) exclues
+  };
+  const contactOf = (r: any): string | null =>
+    r.direction === "inbound" ? norm(r.from_number) ?? norm(r.to_number) : norm(r.to_number) ?? norm(r.from_number);
+
   // Dédoublonnage local : une seule ligne par (user, direction, corps, numéros, minute).
   const seen = new Set<string>();
   const batch: any[] = [];
   const duplicates: string[] = [];
+  const testSkipped: string[] = [];
+  const noContact: string[] = [];
   for (const r of rows ?? []) {
+    // Textos de test : jamais rejoués, pour personne — on les ferme.
+    if (isTestSms(r.body)) {
+      testSkipped.push(r.id);
+      continue;
+    }
     const key = [
       r.user_id, r.direction, r.from_number ?? "", r.to_number ?? "",
       (r.body ?? "").trim(), String(r.sent_at ?? "").slice(0, 16),
@@ -78,54 +99,71 @@ Deno.serve(async (req) => {
     seen.add(key);
     const attempts = Number((r.metadata as any)?.maestro_push_attempts ?? 0);
     if (attempts >= MAX_PUSH_ATTEMPTS) continue; // circuit breaker: plus de maestro_500 en boucle
-    if (batch.length < limit) batch.push(r);
+    const contact = contactOf(r);
+    if (!contact) { noContact.push(r.id); continue; }
+    batch.push({ ...r, __contact: contact });
   }
 
+  // Regroupement par fil (courtier + numéro), chaque fil poussé dans l'ordre
+  // chronologique pour que Maestro affiche la conversation dans le bon sens.
+  const threads = new Map<string, any[]>();
+  for (const r of batch) {
+    const key = `${r.user_id}|${r.__contact}`;
+    if (!threads.has(key)) threads.set(key, []);
+    threads.get(key)!.push(r);
+  }
+  const ordered: any[] = [];
+  for (const [, msgs] of threads) {
+    msgs.sort((a, b) => String(a.sent_at ?? "").localeCompare(String(b.sent_at ?? "")));
+    for (const m of msgs) if (ordered.length < limit) ordered.push(m);
+  }
+  batch.length = 0;
+  batch.push(...ordered);
+
   if (dryRun) {
-    return json({ success: true, dry_run: true, candidates: rows?.length ?? 0, would_push: batch.length, duplicates: duplicates.length });
+    return json({
+      success: true, dry_run: true, candidates: rows?.length ?? 0,
+      would_push: batch.length, threads: threads.size,
+      duplicates: duplicates.length, no_contact_number: noContact.length,
+    });
+  }
+
+  // Numéros inexploitables (extension interne, numéro vide) : jamais acceptés
+  // par Maestro — on les ferme au lieu de les rejouer sans fin.
+  if (noContact.length) {
+    await admin.from("planipret_phone_messages").update({ maestro_synced: true }).in("id", noContact);
   }
 
   // Les doublons sont fermés sans push pour ne pas polluer Maestro.
   if (duplicates.length) {
     await admin.from("planipret_phone_messages").update({ maestro_synced: true }).in("id", duplicates);
   }
+  if (testSkipped.length) {
+    await admin.from("planipret_phone_messages").update({ maestro_synced: true }).in("id", testSkipped);
+  }
 
+  // ARRÊT DÉFINITIF DES RENVOIS (2026-09-08) : le rejeu vers Maestro déclenchait
+  // un véritable envoi de SMS au contact. Le backlog est désormais archivé
+  // localement, sans aucun appel réseau et sans aucun texto envoyé.
   const results: any[] = [];
-  for (const msg of batch) {
-    try {
-      const res = await fetch(`${SUPABASE_URL}/functions/v1/maestro-sync-message`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${SERVICE_ROLE}` },
-        body: JSON.stringify({ message_id: msg.id }),
-      });
-      const data = await res.json().catch(() => ({} as any));
-      const ok = res.ok && data?.success !== false;
-      // Un SMS avec des numéros invalides ne sera jamais accepté : on le ferme.
-      const terminal = !ok && (data?.error === "invalid_numbers" || data?.error === "message_not_found");
-      if (terminal) {
-        await admin.from("planipret_phone_messages").update({ maestro_synced: true }).eq("id", msg.id);
-      } else if (!ok) {
-        const attempts = Number((msg.metadata as any)?.maestro_push_attempts ?? 0) + 1;
-        await admin.from("planipret_phone_messages").update({
-          metadata: {
-            ...((msg.metadata as any) ?? {}),
-            maestro_push_attempts: attempts,
-            maestro_push_last_error: data?.error ?? `http_${res.status}`,
-            maestro_push_last_at: new Date().toISOString(),
-            maestro_push_state: attempts >= MAX_PUSH_ATTEMPTS ? "failed" : "retrying",
-          },
-        }).eq("id", msg.id);
-      }
-      results.push({ message_id: msg.id, ok, closed: terminal ? data?.error : undefined, error: ok ? null : (data?.error ?? `http_${res.status}`) });
-    } catch (e) {
-      results.push({ message_id: msg.id, ok: false, error: (e as Error).message });
+  if (batch.length) {
+    await admin
+      .from("planipret_phone_messages")
+      .update({ maestro_synced: true })
+      .in("id", batch.map((m) => m.id));
+    for (const msg of batch) {
+      results.push({ message_id: msg.id, contact_number: msg.__contact, ok: true, closed: "archived_no_resend" });
     }
   }
+
 
   return json({
     success: true,
     candidates: rows?.length ?? 0,
     duplicates_closed: duplicates.length,
+    threads: threads.size,
+    no_contact_number_closed: noContact.length,
+    test_messages_skipped: testSkipped.length,
     stuck_status_fixed: stuckFixed,
     processed: results.length,
     pushed: results.filter((r) => r.ok).length,

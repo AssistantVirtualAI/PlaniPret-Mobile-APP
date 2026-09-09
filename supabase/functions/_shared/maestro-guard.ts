@@ -105,9 +105,20 @@ export async function ensureMaestroCall(
     return { ok: false, maestroCallId: null, brokerId: auth.brokerId ?? null, reason: "maestro_auth_missing" };
   }
 
+  // Maestro does not expose GET /calls/{id} on every deployment: it answers
+  // 405/501 there. That is NOT a signal the call is missing, so we must not
+  // treat it as a failure (it used to block every downstream push forever and
+  // flood planipret_pipeline_logs with tens of thousands of `maestro_405`).
+  const VERIFY_UNSUPPORTED = new Set([405, 501, 403]);
+
   const verify = async (id: string) => {
     const path = `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/calls/${encodeURIComponent(String(id))}`;
     const r: any = await maestroFetch(cfg, { method: "GET", path, token: auth.token, machine: auth.machine });
+    if (!r.ok && VERIFY_UNSUPPORTED.has(Number(r.status))) {
+      // Verification is unavailable → assume the stored id is valid and let the
+      // real write decide (a genuine 404 there still burns a strike).
+      return { ...r, ok: true, unverified: true };
+    }
     await pipelineLog(admin, {
       call_id: call.id, user_id: call.user_id, step: `${args.step}_verify`,
       status: r.ok ? "success" : "error", correlation_id, entity_type: "call", entity_id: String(id),
@@ -115,6 +126,7 @@ export async function ensureMaestroCall(
     });
     return r;
   };
+
 
   let id: string | null = call.maestro_call_id ?? null;
 

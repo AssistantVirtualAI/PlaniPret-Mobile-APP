@@ -1,6 +1,20 @@
 apply plugin: 'com.android.application'
 apply plugin: 'com.google.gms.google-services'
 
+import java.util.Properties
+
+final def releaseKeystoreProperties = new Properties()
+final def releaseKeystorePropertiesFile = rootProject.file('keystore.properties')
+if (releaseKeystorePropertiesFile.exists()) {
+    releaseKeystorePropertiesFile.withInputStream { releaseKeystoreProperties.load(it) }
+}
+
+final def releaseStoreFile = releaseKeystoreProperties.getProperty('storeFile') ?: System.getenv('ANDROID_KEYSTORE')
+final def releaseStorePassword = releaseKeystoreProperties.getProperty('storePassword') ?: System.getenv('ANDROID_KEYSTORE_PASSWORD')
+final def releaseKeyAlias = releaseKeystoreProperties.getProperty('keyAlias') ?: System.getenv('ANDROID_KEY_ALIAS')
+final def releaseKeyPassword = releaseKeystoreProperties.getProperty('keyPassword') ?: System.getenv('ANDROID_KEY_PASSWORD')
+final def hasReleaseSigning = releaseStoreFile && releaseStorePassword && releaseKeyAlias && releaseKeyPassword
+
 android {
     namespace = "com.planipret.mobile"
     compileSdk = rootProject.ext.compileSdkVersion
@@ -8,8 +22,8 @@ android {
         applicationId = "com.planipret.mobile"
         minSdk = rootProject.ext.minSdkVersion
         targetSdk = rootProject.ext.targetSdkVersion
-        versionCode = 20
-        versionName = "1.4.1"
+        versionCode = 21
+        versionName = "1.4.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate
@@ -18,11 +32,13 @@ android {
         }
     }
     signingConfigs {
-        release {
-            storeFile = file('/Users/mohamadhassoun/planipret-upload-new.jks')
-            storePassword = 'AssistantVirtual2025$'
-            keyAlias = 'planipret'
-            keyPassword = 'AssistantVirtual2025$'
+        if (hasReleaseSigning) {
+            release {
+                storeFile = file(releaseStoreFile)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
         }
     }
     buildTypes {
@@ -30,7 +46,9 @@ android {
             minifyEnabled = true
             shrinkResources = true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-            signingConfig = signingConfigs.release
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.release
+            }
         }
         debug {
             minifyEnabled = false
@@ -65,6 +83,16 @@ dependencies {
 }
 
 apply from: 'capacitor.build.gradle'
+
+afterEvaluate {
+    tasks.matching { it.name in ['bundleRelease', 'assembleRelease'] }.configureEach {
+        doFirst {
+            if (!hasReleaseSigning) {
+                throw new GradleException('Signature release absente. Créez android/keystore.properties ou définissez ANDROID_KEYSTORE, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS et ANDROID_KEY_PASSWORD.')
+            }
+        }
+    }
+}
 
 try {
     def servicesJSON = file('google-services.json')

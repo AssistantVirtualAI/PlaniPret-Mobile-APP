@@ -1,6 +1,7 @@
 // Send SMS / MMS via Telnyx; persists to pbx_sms_threads/messages and
 // broadcasts the new message on the org's realtime channel.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { isTestSms, TEST_SMS_BLOCK_MESSAGE } from "../_shared/pp-test-sms.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -67,6 +68,13 @@ Deno.serve(async (req) => {
     }
 
     if (!from || !to || !text) return json({ error: "from, to, text required" }, 400);
+
+    // Blocage permanent des textos de test — aucun envoi vers de vrais numéros.
+    if (isTestSms(text)) {
+      console.warn("[telnyx-sms] test SMS blocked", { to });
+      return json({ error: TEST_SMS_BLOCK_MESSAGE, blocked: true }, 200);
+    }
+
 
     // Get Telnyx config from integration row (mock-mode aware)
     const { data: integ } = await admin

@@ -329,13 +329,19 @@ Deno.serve(async (req) => {
         if (targetUser) {
           const { data: prof } = await admin
             .from("planipret_profiles")
-            .select("id, maestro_broker_id, maestro_telecom_user_id, email, ms365_email, extension, phone")
+            .select("id, maestro_broker_id, maestro_telecom_user_id, email, ms365_email, extension, phone, full_name")
             .or(`user_id.eq.${targetUser},id.eq.${targetUser}`)
             .limit(1)
             .maybeSingle();
           if (!prof) return j({ success: false, error: "profile_not_found" }, 404);
           const r = await linkBrokerIdByEmail(admin, prof as any, { force: payload.force === true });
-          return j({ success: r.ok, maestro_telecom_user_id: r.maestro_broker_id, matched_by: r.matched_by, error: r.error });
+          return j({
+            success: r.ok,
+            maestro_broker_id: r.maestro_broker_id,
+            maestro_telecom_user_id: r.maestro_broker_id,
+            matched_by: r.matched_by,
+            error: r.error,
+          });
         }
         const email = String(payload.email ?? "").trim().toLowerCase();
         if (!email) return j({ success: false, error: "email_required" }, 400);

@@ -72,7 +72,11 @@ const cache = new Map<string, React.ComponentType<AnyProps>>();
 export const motion: Record<string, React.ComponentType<AnyProps>> = new Proxy(
   {},
   {
-    get(_target, prop: string) {
+    get(target, prop) {
+      // React / bundlers probe symbol keys ($$typeof, Symbol.toPrimitive…).
+      // Building a component from a symbol throws "Cannot convert a Symbol
+      // value to a string" and aborts the app boot — hand those back untouched.
+      if (typeof prop !== 'string') return Reflect.get(target, prop);
       if (!cache.has(prop)) cache.set(prop, createMotionComponent(prop));
       return cache.get(prop);
     },

@@ -38,29 +38,77 @@ Deno.serve(async (req) => {
   const limit = Math.min(Math.max(Number(body?.limit) || 20, 1), 100);
   const maxAgeHours = Number(body?.max_age_hours ?? 24 * 14);
   const force = body?.force === true;
+  // include_unsynced: rattrapage des appels jamais poussés (pas de maestro_call_id).
+  const includeUnsynced = body?.include_unsynced === true;
 
   let q = admin
     .from("planipret_phone_calls")
-    .select("id, user_id, duration_seconds, maestro_call_id, transcript, ai_summary, ai_coaching, recording_storage_path, recording_url, ns_recording_url, maestro_media_synced_at")
-    .not("maestro_call_id", "is", null)
+    .select("id, user_id, duration_seconds, maestro_call_id, transcript, ai_summary, ai_coaching, recording_storage_path, recording_url, ns_recording_url, maestro_media_synced_at, metadata")
     .order("created_at", { ascending: false })
     .limit(limit * 3);
+
+  // Consentement obligatoire : jamais d'appel refusé, en attente ou supprimé.
+  q = q.eq("save_consent", "approved").is("deleted_at", null);
+
+  if (!includeUnsynced) q = q.not("maestro_call_id", "is", null);
+  else q = q.is("maestro_call_id", null);
 
   if (body?.call_id) q = q.eq("id", body.call_id);
   else {
     q = q.gte("created_at", new Date(Date.now() - maxAgeHours * 3600_000).toISOString());
-    if (!force) q = q.is("maestro_media_synced_at", null);
+    if (!force && !includeUnsynced) q = q.is("maestro_media_synced_at", null);
+    if (includeUnsynced) {
+      // Uniquement les courtiers réellement reliés à Maestro.
+      const { data: linked } = await admin
+        .from("planipret_profiles")
+        .select("id")
+        .not("maestro_telecom_user_id", "is", null)
+        .limit(1000);
+      const ids = (linked ?? []).map((p: any) => p.id);
+      if (!ids.length) return json({ success: true, candidates: 0, processed: 0, pushed: 0, results: [] });
+      q = q.in("user_id", ids);
+    }
   }
+
 
   const { data: rows, error } = await q;
   if (error) return json({ error: error.message }, 500);
 
+  // Retry budget: without it a call that Maestro keeps rejecting is retried
+  // every 5 minutes forever (that produced ~5 800 failed pushes per day).
+  const MAX_SWEEP_ATTEMPTS = 6;
+  const backoffMs = (n: number) => Math.min(2 ** n * 15 * 60_000, 24 * 3600_000);
+  const now = Date.now();
+  const sweepState = (r: any) => {
+    const m = (r?.metadata ?? {}) as Record<string, unknown>;
+    return {
+      attempts: Number(m.maestro_sweep_attempts ?? 0),
+      lastAt: m.maestro_sweep_last_at ? Date.parse(String(m.maestro_sweep_last_at)) : 0,
+      meta: m,
+    };
+  };
+
   // On ne pousse que les appels qui ont vraiment quelque chose à pousser.
-  const eligible = (rows ?? []).filter((r: any) =>
-    body?.call_id || force ||
-    !!r.transcript || !!r.ai_summary || !!r.ai_coaching ||
-    !!r.recording_storage_path || !!r.recording_url || !!r.ns_recording_url
-  ).slice(0, limit);
+  const eligible = (rows ?? []).filter((r: any) => {
+    const hasPayload =
+      !!r.transcript || !!r.ai_summary || !!r.ai_coaching ||
+      !!r.recording_storage_path || !!r.recording_url || !!r.ns_recording_url;
+    if (body?.call_id || force) return true;
+    // En rattrapage, on pousse même sans audio : le CDR, le résumé et le
+    // coaching doivent exister côté Maestro dans tous les cas.
+    if (!hasPayload && !includeUnsynced) return false;
+    const { attempts: a0, lastAt: l0 } = sweepState(r);
+    if (includeUnsynced) {
+      if (a0 >= MAX_SWEEP_ATTEMPTS) return false;
+      if (a0 > 0 && l0 && now - l0 < backoffMs(a0)) return false;
+      return true;
+    }
+
+    const { attempts, lastAt } = sweepState(r);
+    if (attempts >= MAX_SWEEP_ATTEMPTS) return false;
+    if (attempts > 0 && lastAt && now - lastAt < backoffMs(attempts)) return false;
+    return true;
+  }).slice(0, limit);
 
   const results: any[] = [];
   for (const call of eligible) {
@@ -78,16 +126,23 @@ Deno.serve(async (req) => {
       const onlyTranscriptMissing = data?.error === "transcript_unavailable";
       const closedAsNoAudio = !ok && noAudio && onlyTranscriptMissing;
       if (closedAsNoAudio) ok = true;
+      const { attempts, meta } = sweepState(call);
       await admin
         .from("planipret_phone_calls")
         .update({
           maestro_media_synced_at: ok ? new Date().toISOString() : null,
           maestro_media_sync_error: ok ? (closedAsNoAudio ? "no_audio_no_transcript" : null) : (data?.error ?? `http_${res.status}`),
+          metadata: {
+            ...meta,
+            maestro_sweep_attempts: ok ? 0 : attempts + 1,
+            maestro_sweep_last_at: new Date().toISOString(),
+          },
         })
         .eq("id", call.id);
       results.push({
         call_id: call.id,
         ok,
+        attempts: ok ? 0 : attempts + 1,
         skipped: closedAsNoAudio ? "no_audio_no_transcript" : undefined,
         error: ok ? null : (data?.error ?? `http_${res.status}`),
         steps: data?.steps ?? null,
@@ -96,6 +151,7 @@ Deno.serve(async (req) => {
       results.push({ call_id: call.id, ok: false, error: (e as Error).message });
     }
   }
+
 
   return json({
     success: true,

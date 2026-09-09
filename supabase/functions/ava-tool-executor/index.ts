@@ -413,6 +413,8 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
   },
 
   async send_sms(ctx, p) {
+    return { success: false, blocked: true, error: "sms_globally_disabled", message: "L’envoi de textos est désactivé." };
+    /* SMS disabled globally; keep the legacy implementation unreachable for rollback context.
     let to = firstText(p?.to, p?.to_number, p?.destination, p?.number, p?.phone_number, p?.phone);
     let name = p?.contact_name;
     if (!to && name) {
@@ -457,6 +459,7 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
       thread_id: j?.thread_id,
       raw: j,
     };
+    */
   },
 
   async get_sms_conversations(ctx, p) {
@@ -1429,6 +1432,9 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
   async push_communication_log(ctx, p) {
     if (!p?.client_id) return { success: false, error: "client_id_required" };
     const channel = p.channel ?? "note";
+    if (channel === "sms" || channel === "message") {
+      return { success: false, blocked: true, error: "sms_globally_disabled", message: "L’envoi de textos est désactivé." };
+    }
     const payload: any = {
       client_id: p.client_id,
       channel,
@@ -1443,10 +1449,7 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
     try {
       const uid = await maestroUserId(ctx);
       if (!uid) return MAESTRO_NOT_LINKED;
-      // SMS → /users/{id}/messages, tout le reste → /users/{id}/calls (prod).
-      const path = channel === "sms" || channel === "message"
-        ? `/users/${uid}/messages`
-        : `/users/${uid}/calls`;
+      const path = `/users/${uid}/calls`;
       const result = await maestroFetch(ctx, path, {
         method: "POST",
         body: JSON.stringify(payload),

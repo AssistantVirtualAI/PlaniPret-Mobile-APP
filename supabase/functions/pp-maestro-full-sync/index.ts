@@ -108,11 +108,10 @@ Deno.serve(async (req) => {
       variantResults.push({ name: v.name, status: r.status, ok: r.ok, data: r.data, error: r.error ?? null });
     }
     const callProbe = { status: variantResults[0].status, ok: variantResults[0].ok, data: variantResults[0].data, error: variantResults[0].error };
-    const msgProbe = await maestroTelecomFetch(cfg, `/users/${me}/messages`, {
-      method: "POST",
-      maxAttempts: 1,
-      body: { to_user_number: "+15145550123", message: `probe ${stamp}` },
-    });
+    // ARRÊT DÉFINITIF (2026-09-08) : POST /users/{id}/messages envoie un vrai
+    // texto. Aucune sonde d'écriture SMS n'est autorisée.
+    const msgProbe = { status: 0, ok: false, data: null as any, error: "sms_write_probe_disabled" };
+
     return json({
       ok: true,
       broker: { email: profile.email, crm_id: profile.maestro_broker_id, telecom_id: telecomId },

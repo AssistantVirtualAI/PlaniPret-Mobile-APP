@@ -93,7 +93,8 @@ function nsUserPayload(fullName: string, email: string, extension: string, passw
     "name-first-name": firstName || extension,
     "name-last-name": lastName,
     "directory-name": fullName || extension,
-    "email-address": email,
+    // Email is managed through Microsoft 365, not PBX unread-message alerts.
+    "email-address": "",
     "user-scope": "Basic User",
     "time-zone": "America/Montreal",
     "language-token": "fr_CA",
@@ -101,8 +102,8 @@ function nsUserPayload(fullName: string, email: string, extension: string, passw
     "recording-configuration": "yes-with-transcription-and-sentiment",
     "dial-policy": "US and Canada",
     "voicemail-transcription-enabled": "Deepgram",
-    "email-send-alert-new-voicemail-enabled": "yes",
-    "email-send-alert-new-missed-call-enabled": "yes",
+    "email-send-alert-new-voicemail-enabled": "no",
+    "email-send-alert-new-missed-call-enabled": "no",
     "ring-no-answer-timeout-seconds": 30,
     ...(password ? { "user-password": password, password } : {}),
   };

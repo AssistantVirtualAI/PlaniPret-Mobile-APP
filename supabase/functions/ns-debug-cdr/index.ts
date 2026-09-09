@@ -1,7 +1,11 @@
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
+import { requirePlanipretAdmin } from "../_shared/require-planipret-admin.ts";
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+
+  const denied = await requirePlanipretAdmin(req);
+  if (denied) return denied;
 
   const NS_API_KEY = Deno.env.get("NS_API_KEY");
   const NS_API_BASE_URL = Deno.env.get("NS_API_BASE_URL") ?? "https://voice.ava-telecom.ca/ns-api/v2";

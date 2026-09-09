@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import {
   bucketTasks,
-  clearTaskCache,
   createTask as apiCreate,
   deleteTask as apiDelete,
   listTasks,
@@ -99,23 +98,29 @@ export function usePlanipretTasks(
     if (gen !== generation.current) return; // stale identity/response
     setRefreshing(false);
     setLoading(false);
-    setSource(res.source);
-    setError(res.success ? (res.source === "unavailable" ? res.error ?? null : null) : res.error ?? "load_failed");
-    setMessage(res.message ?? null);
-    setCounts(res.counts);
-    setPage(res.page);
-    setTotal(res.total);
-    setHasMore(res.has_more);
     if (res.success && res.source !== "unavailable") {
+      setSource(res.source);
+      setError(null);
+      setMessage(null);
+      setPage(res.page);
+      setCounts(res.counts);
+      setTotal(res.total);
+      setHasMore(res.has_more);
       setLastSyncAt(new Date().toISOString());
-      const merged = mergePending(res.tasks);
-      setTasks(merged);
-      if (!brokerId) saveTaskCache(userId, merged);
-    } else if (res.source === "unavailable") {
-      // Planiprêt exposes no upstream GET: never wipe what we already know.
-      const fallback = mergePending(loadTaskCache(userId));
-      setTasks(fallback);
-      if (!fallback.length) clearTaskCache(userId);
+      setTasks((current) => {
+        // A successful-but-incomplete response must not briefly erase known
+        // tasks while Maestro still reports that tasks exist.
+        const next = res.tasks.length === 0 && res.counts.all > 0 && current.length > 0
+          ? current
+          : res.tasks;
+        const merged = mergePending(next);
+        if (!brokerId) saveTaskCache(userId, merged);
+        return merged;
+      });
+    } else {
+      // Never hide visible tasks because a background refresh failed.
+      setError(null);
+      setMessage(null);
     }
   }, [userId, filter, brokerId, mergePending]);
 

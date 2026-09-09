@@ -151,7 +151,8 @@ Deno.serve(async (req) => {
       "name-first-name": firstName || ext,
       "name-last-name": rest.join(" ") || "Courtier",
       "directory-name": String(broker.full_name ?? ext),
-      "email-address": String(broker.email ?? ""),
+      // Email is Microsoft-only; an address here enables UCStack unread-SMS emails.
+      "email-address": "",
       "user-scope": "Basic User",
       "user-password": mobilePassword,
       password: mobilePassword,

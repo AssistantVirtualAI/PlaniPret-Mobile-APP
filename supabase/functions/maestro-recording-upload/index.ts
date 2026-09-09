@@ -28,6 +28,13 @@ function pickUrl(d: any): string | null {
     ?? c.call_recording_url ?? c.recording_url ?? c.url ?? null;
 }
 
+/** Maestro attend "YYYY-MM-DD HH:MM:SS". */
+function mDate(v: unknown): string | undefined {
+  if (!v) return undefined;
+  const d = new Date(String(v));
+  return Number.isNaN(d.getTime()) ? undefined : d.toISOString().slice(0, 19).replace("T", " ");
+}
+
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -119,7 +126,7 @@ Deno.serve(async (req) => {
     const permalink = await recordingPermalink(String(call_id));
     const { data: aiCall } = await admin
       .from("planipret_phone_calls")
-      .select("ai_summary, ai_summary_short, ai_key_points, ai_topics, next_actions, ai_action_items, transcript, ai_coaching, coaching_score, lead_score, lead_temperature")
+      .select("ai_summary, ai_summary_short, ai_key_points, ai_topics, next_actions, ai_action_items, transcript, ai_coaching, coaching_score, lead_score, lead_temperature, duration_seconds, started_at, answered_at, ended_at")
       .eq("id", call_id)
       .maybeSingle();
     const arr = (v: unknown) => (Array.isArray(v) ? v : []);
@@ -153,7 +160,14 @@ Deno.serve(async (req) => {
       machine: auth.machine,
       body: {
         status: "ended",
+        saving_call_recording: 1,
+        saving_call_transcript: (aiCall as any)?.transcript ? 1 : 0,
         ai_summary: (aiCall as any)?.ai_summary ?? (aiCall as any)?.ai_summary_short ?? undefined,
+        transcript: (aiCall as any)?.transcript ? String((aiCall as any).transcript).slice(0, 20000) : undefined,
+        duration_seconds: (aiCall as any)?.duration_seconds != null ? Number((aiCall as any).duration_seconds) : undefined,
+        answered_at: mDate((aiCall as any)?.answered_at ?? (aiCall as any)?.started_at),
+        ended_at: mDate((aiCall as any)?.ended_at),
+        call_recording_filename: permalink,
         notes,
       },
     });
