@@ -1,11 +1,14 @@
 import { useEffect, useState } from "react";
-import { Capacitor } from "@capacitor/core";
+import BrokerAuthScreen from "@/components/planipret/broker/BrokerAuthScreen";
+import { isPlanipretEmail } from "@/components/planipret/PortalDomainGate";
+import { signOutMicrosoft } from "@/lib/ms365AuthLogin";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { PrefetchNavLink } from "@/components/PrefetchLink";
 import { supabase } from "@/integrations/supabase/client";
+import PortalDomainGate from "@/components/planipret/PortalDomainGate";
 import {
   LayoutDashboard, Users, Phone, MessageSquare, Mic, Plug,
-  BarChart3, LogOut, ShieldCheck, CheckSquare, Search, ChevronRight, Sparkles, Smartphone, PlugZap, Bot, Activity, Gauge, Zap,
+  BarChart3, LogOut, Sun, Moon, ShieldCheck, ShieldAlert, CheckSquare, Search, ChevronRight, Sparkles, Smartphone, PlugZap, Bot, Activity, Gauge, Zap, Music, Rocket, UserSquare2, AlertTriangle, FileText,
 } from "lucide-react";
 import SessionTimeoutModal from "@/components/planipret/SessionTimeoutModal";
 import { useAdminRealtime } from "@/hooks/useAdminRealtime";
@@ -16,6 +19,8 @@ import { WorkspaceHeaderExtras } from "@/components/portals/WorkspaceHeaderExtra
 import { getPlanipretBrokerDirectoryCount } from "@/lib/planipret/adminDirectory";
 import { getPlanipretCallCount } from "@/lib/planipret/adminCounts";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import { useMplanipretTheme } from "@/hooks/useMplanipretTheme";
+import HighReadabilityToggle from "@/components/planipret/broker/HighReadabilityToggle";
 import { PlanipretLangSwitch } from "@/components/planipret/PlanipretLangSwitch";
 import { useMplanipretSoftphone } from "@/hooks/useMplanipretSoftphone";
 import PpActiveCallScreen from "@/components/planipret/PpActiveCallScreen";
@@ -24,9 +29,9 @@ import { toast } from "sonner";
 import { PLANIPRET_PROFILE_SAFE_COLUMNS } from "@/lib/planipret/profileColumns";
 
 type NavBadge = "brokers" | "missed" | "integrations" | "audit";
-type NavKey = "overview" | "reports" | "ava" | "avaAgent" | "avaLogs" | "avaToolsAudit" | "brokers" | "calls" | "messages" | "recordings" | "integrations" | "mobileDevices" | "sipDiagnostic" | "compliance" | "auditChecklist" | "diagnostics" | "maestroSync";
+type NavKey = "overview" | "reports" | "ava" | "avaAgent" | "avaLogs" | "avaToolsAudit" | "avaConfirmations" | "brokers" | "calls" | "messages" | "recordings" | "integrations" | "mobileDevices" | "mobileApp" | "holdMusic" | "sipDiagnostic" | "compliance" | "auditChecklist" | "accessLog" | "diagnostics" | "maestroSync" | "maestroDashboard" | "syncedCalls" | "telecomMapping" | "didReconcile" | "commissions" | "commissionsMonthly" | "commissionAudit" | "brokerCommissions" | "phoneNumbers" | "tasks" | "broker360" | "maestroTasks" | "maestroClients" | "brokerPerformance" | "brokerStats" | "taskBoard" | "brokerDaily" | "maestroHealth" | "maestroPending" | "microsoftAuth" | "contracts";
 type SectionKey = "pilotage" | "brokers" | "communications" | "system";
-type PageKey = "overview" | "users" | "calls" | "messages" | "recordings" | "integrations" | "reports" | "auditChecklist" | "compliance" | "ava" | "avaAgent" | "avaLogs" | "avaToolsAudit" | "mobileDevices" | "sipDiagnostic" | "diagnostics" | "maestroSync";
+type PageKey = "overview" | "users" | "calls" | "messages" | "recordings" | "integrations" | "reports" | "auditChecklist" | "accessLog" | "compliance" | "ava" | "avaAgent" | "avaLogs" | "avaToolsAudit" | "avaConfirmations" | "mobileDevices" | "holdMusic" | "sipDiagnostic" | "diagnostics" | "maestroSync" | "maestroDashboard" | "syncedCalls" | "telecomMapping" | "didReconcile" | "commissions" | "commissionsMonthly" | "commissionAudit" | "brokerCommissions" | "phoneNumbers" | "tasks" | "broker360" | "maestroTasks" | "maestroClients" | "brokerPerformance" | "brokerStats" | "taskBoard" | "brokerDaily" | "maestroHealth" | "maestroPending" | "microsoftAuth" | "contracts";
 
 const NAV: Array<{ sectionKey: SectionKey; items: Array<{ to: string; key: NavKey; Icon: any; badge?: NavBadge }> }> = [
   {
@@ -38,6 +43,8 @@ const NAV: Array<{ sectionKey: SectionKey; items: Array<{ to: string; key: NavKe
       { to: "/planipret/admin/ava-agent",  key: "avaAgent", Icon: Bot },
       { to: "/planipret/admin/ava-logs",   key: "avaLogs",  Icon: Activity },
       { to: "/planipret/admin/ava-tools-audit", key: "avaToolsAudit", Icon: Activity },
+      { to: "/planipret/admin/ava-confirmations", key: "avaConfirmations", Icon: CheckSquare },
+      { to: "/planipret/admin/maestro-dashboard", key: "maestroDashboard", Icon: Gauge },
     ],
   },
   {
@@ -52,6 +59,22 @@ const NAV: Array<{ sectionKey: SectionKey; items: Array<{ to: string; key: NavKe
       { to: "/planipret/admin/calls",      key: "calls",       Icon: Phone,         badge: "missed" },
       { to: "/planipret/admin/messages",   key: "messages",    Icon: MessageSquare },
       { to: "/planipret/admin/recordings", key: "recordings",  Icon: Mic },
+      { to: "/planipret/admin/synced-calls", key: "syncedCalls", Icon: BarChart3 },
+      { to: "/planipret/admin/commissions", key: "commissions", Icon: BarChart3 },
+      { to: "/planipret/admin/commissions-monthly", key: "commissionsMonthly", Icon: BarChart3 },
+      { to: "/planipret/admin/broker-commissions", key: "brokerCommissions", Icon: BarChart3 },
+      { to: "/planipret/admin/commission-audit", key: "commissionAudit", Icon: BarChart3 },
+      { to: "/planipret/admin/tasks", key: "tasks", Icon: CheckSquare },
+      { to: "/planipret/admin/broker-360", key: "broker360", Icon: UserSquare2 },
+      { to: "/planipret/admin/maestro-tasks", key: "maestroTasks", Icon: CheckSquare },
+      { to: "/planipret/admin/maestro-clients", key: "maestroClients", Icon: Users },
+      { to: "/planipret/admin/broker-performance", key: "brokerPerformance", Icon: BarChart3 },
+      { to: "/planipret/admin/broker-stats", key: "brokerStats", Icon: Users },
+      { to: "/planipret/admin/task-board", key: "taskBoard", Icon: CheckSquare },
+      { to: "/planipret/admin/broker-daily", key: "brokerDaily", Icon: CheckSquare },
+      { to: "/planipret/admin/maestro-health", key: "maestroHealth", Icon: Zap },
+      { to: "/planipret/admin/maestro-pending", key: "maestroPending", Icon: AlertTriangle },
+      { to: "/planipret/admin/contracts", key: "contracts", Icon: FileText },
     ],
   },
   {
@@ -59,11 +82,61 @@ const NAV: Array<{ sectionKey: SectionKey; items: Array<{ to: string; key: NavKe
     items: [
       { to: "/planipret/admin/integrations",    key: "integrations",    Icon: Plug,        badge: "integrations" },
       { to: "/planipret/admin/mobile-devices",  key: "mobileDevices",   Icon: Smartphone },
+      { to: "/planipret/admin/mobile-app",      key: "mobileApp",       Icon: Rocket },
+      { to: "/planipret/admin/hold-music",      key: "holdMusic",       Icon: Music },
       { to: "/planipret/admin/sip-diagnostic",  key: "sipDiagnostic",   Icon: PlugZap },
       { to: "/planipret/admin/diagnostics",     key: "diagnostics",     Icon: Gauge },
       { to: "/planipret/admin/maestro-sync",    key: "maestroSync",     Icon: Zap },
+      { to: "/planipret/admin/microsoft-auth",  key: "microsoftAuth",   Icon: ShieldAlert },
+      { to: "/planipret/admin/telecom-mapping", key: "telecomMapping",  Icon: Plug },
+      { to: "/planipret/admin/did-reconcile",   key: "didReconcile",    Icon: PlugZap },
+      { to: "/planipret/admin/phone-numbers",   key: "phoneNumbers",    Icon: Phone },
       { to: "/planipret/admin/compliance",      key: "compliance",      Icon: ShieldCheck },
       { to: "/planipret/admin/audit-checklist", key: "auditChecklist",  Icon: CheckSquare, badge: "audit" },
+      { to: "/planipret/admin/access-log",      key: "accessLog",       Icon: ShieldAlert },
+    ],
+  },
+];
+
+/** Emails with unrestricted (super admin) sidebar access. */
+const SUPER_ADMIN_EMAILS = ["mhassoun@assistantvirtualai.com"];
+
+/** Reduced navigation for regular org admins (Marc, Gilles, etc.). */
+const NAV_REGULAR: typeof NAV = [
+  {
+    sectionKey: "pilotage",
+    items: [
+      { to: "/planipret/admin/overview", key: "overview", Icon: LayoutDashboard },
+      { to: "/planipret/admin/reports",  key: "reports",  Icon: BarChart3 },
+      { to: "/planipret/admin/ava",      key: "ava",      Icon: Sparkles },
+      { to: "/planipret/admin/ava-confirmations", key: "avaConfirmations", Icon: CheckSquare },
+    ],
+  },
+  {
+    sectionKey: "communications",
+    items: [
+      { to: "/planipret/admin/users",      key: "brokers",     Icon: Users, badge: "brokers" },
+      { to: "/planipret/admin/calls",      key: "calls",       Icon: Phone, badge: "missed" },
+      { to: "/planipret/admin/messages",   key: "messages",    Icon: MessageSquare },
+      { to: "/planipret/admin/recordings", key: "recordings",  Icon: Mic },
+      { to: "/planipret/admin/commissions", key: "commissions", Icon: BarChart3 },
+      { to: "/planipret/admin/commissions-monthly", key: "commissionsMonthly", Icon: BarChart3 },
+      { to: "/planipret/admin/broker-commissions", key: "brokerCommissions", Icon: BarChart3 },
+      { to: "/planipret/admin/commission-audit", key: "commissionAudit", Icon: BarChart3 },
+      { to: "/planipret/admin/tasks",      key: "tasks",       Icon: CheckSquare },
+      { to: "/planipret/admin/broker-360", key: "broker360",  Icon: UserSquare2 },
+      { to: "/planipret/admin/maestro-tasks", key: "maestroTasks", Icon: CheckSquare },
+      { to: "/planipret/admin/maestro-clients", key: "maestroClients", Icon: Users },
+      { to: "/planipret/admin/broker-performance", key: "brokerPerformance", Icon: BarChart3 },
+      { to: "/planipret/admin/broker-stats", key: "brokerStats", Icon: Users },
+      { to: "/planipret/admin/task-board", key: "taskBoard", Icon: CheckSquare },
+      { to: "/planipret/admin/broker-daily", key: "brokerDaily", Icon: CheckSquare },
+      { to: "/planipret/admin/maestro-health", key: "maestroHealth", Icon: Zap },
+      { to: "/planipret/admin/maestro-pending", key: "maestroPending", Icon: AlertTriangle },
+      { to: "/planipret/admin/contracts", key: "contracts", Icon: FileText },
+      { to: "/planipret/admin/hold-music", key: "holdMusic",   Icon: Music },
+      { to: "/planipret/admin/access-log", key: "accessLog",  Icon: ShieldAlert },
+
     ],
   },
 ];
@@ -77,15 +150,38 @@ const PAGE_KEY_BY_PATH: Record<string, PageKey> = {
   "/planipret/admin/integrations": "integrations",
   "/planipret/admin/reports": "reports",
   "/planipret/admin/audit-checklist": "auditChecklist",
+  "/planipret/admin/access-log": "accessLog",
   "/planipret/admin/compliance": "compliance",
   "/planipret/admin/ava": "ava",
   "/planipret/admin/ava-agent": "avaAgent",
   "/planipret/admin/ava-logs": "avaLogs",
   "/planipret/admin/ava-tools-audit": "avaToolsAudit",
+  "/planipret/admin/ava-confirmations": "avaConfirmations",
   "/planipret/admin/mobile-devices": "mobileDevices",
+  "/planipret/admin/hold-music": "holdMusic",
   "/planipret/admin/sip-diagnostic": "sipDiagnostic",
   "/planipret/admin/diagnostics": "diagnostics",
   "/planipret/admin/maestro-sync": "maestroSync",
+  "/planipret/admin/microsoft-auth": "microsoftAuth",
+  "/planipret/admin/contracts": "contracts",
+  "/planipret/admin/synced-calls": "syncedCalls",
+  "/planipret/admin/commissions": "commissions",
+  "/planipret/admin/commissions-monthly": "commissionsMonthly",
+  "/planipret/admin/commission-audit": "commissionAudit",
+  "/planipret/admin/broker-commissions": "brokerCommissions",
+  "/planipret/admin/tasks": "tasks",
+  "/planipret/admin/broker-360": "broker360",
+  "/planipret/admin/maestro-tasks": "maestroTasks",
+  "/planipret/admin/maestro-clients": "maestroClients",
+  "/planipret/admin/broker-performance": "brokerPerformance",
+  "/planipret/admin/broker-stats": "brokerStats",
+  "/planipret/admin/task-board": "taskBoard",
+  "/planipret/admin/broker-daily": "brokerDaily",
+  "/planipret/admin/maestro-health": "maestroHealth",
+  "/planipret/admin/maestro-pending": "maestroPending",
+  "/planipret/admin/telecom-mapping": "telecomMapping",
+  "/planipret/admin/did-reconcile": "didReconcile",
+  "/planipret/admin/phone-numbers": "phoneNumbers",
 };
 
 const initials = (n?: string) =>
@@ -93,23 +189,28 @@ const initials = (n?: string) =>
 
 export default function PlanipretAdminLayout() {
   const { lang, setLang, t: tt } = useMplanipretLang();
+  const { theme, toggle: toggleTheme } = useMplanipretTheme();
   const navigate = useNavigate();
   const location = useLocation();
   const [profile, setProfile] = useState<any>(null);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [anon, setAnon] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+
   const [missingIntegrations, setMissingIntegrations] = useState(0);
   const [missedCalls, setMissedCalls] = useState(0);
   const [brokerCount, setBrokerCount] = useState(0);
   const [auditScore, setAuditScore] = useState<number | null>(null);
   const { status: rtStatus } = useAdminRealtime();
-  const softphone = useMplanipretSoftphone(true, {
-    primary: true,
-    clientType: Capacitor.isNativePlatform() ? "mobile" : "web",
-  });
+  const softphone = useMplanipretSoftphone(true, { primary: true, clientType: "web" });
   const realtimeOk = rtStatus === "live";
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [dialNumber, setDialNumber] = useState("");
   const [dialing, setDialing] = useState(false);
+  const [mobileNoticeDismissed, setMobileNoticeDismissed] = useState(() => {
+    try { return localStorage.getItem("pp_admin_mobile_notice") === "dismissed"; } catch { return false; }
+  });
 
   // Auto-sync NS-API in the background for every admin page. Idempotent via
   // module-level in-flight guard, safe to mount once at the layout.
@@ -150,7 +251,20 @@ export default function PlanipretAdminLayout() {
     const loadProfile = async (user: any) => {
       const { data } = await supabase.from("planipret_profiles").select(PLANIPRET_PROFILE_SAFE_COLUMNS).eq("user_id", user.id).maybeSingle();
       if (cancelled) return;
-      if (data && data.role && data.role !== "admin") { navigate("/mplanipret", { replace: true }); return; }
+      // Un profil courtier ne doit pas éjecter un admin/super admin réel :
+      // on vérifie les rôles serveur avant de renvoyer vers l'app mobile.
+      if (data && data.role && data.role !== "admin") {
+        const [superRes, ppAdminRes] = await Promise.all([
+          supabase.rpc("is_super_admin", { _user_id: user.id }),
+          supabase.rpc("is_planipret_admin", { _user_id: user.id }),
+        ]);
+        if (cancelled) return;
+        if (superRes.data !== true && ppAdminRes.data !== true) {
+          navigate("/mplanipret", { replace: true });
+          return;
+        }
+      }
+      setUserEmail((user.email ?? "").toLowerCase());
       setProfile(data ?? { full_name: user.email, role: "admin" });
       setLoading(false);
       if (data && (data.language === "fr" || data.language === "en")) {
@@ -196,14 +310,39 @@ export default function PlanipretAdminLayout() {
         });
       }
       if (cancelled) return;
-      if (!session?.user) { navigate("/login", { replace: true }); return; }
+      if (!session?.user) { setAnon(true); setLoading(false); return; }
+      // Hard gate: only Microsoft 365 @planipret accounts (or platform super
+      // admins) may reach the admin interface. Anything else is signed out.
+      const email = session.user.email ?? "";
+      if (!isPlanipretEmail(email)) {
+        const { data: isSuper } = await supabase.rpc("is_super_admin", { _user_id: session.user.id });
+        if (cancelled) return;
+        if (isSuper !== true) {
+          try { await supabase.auth.signOut(); } catch { /* ignore */ }
+          setAnon(true);
+          setAuthError(
+            "Ce compte Microsoft n'est pas un compte @planipret. Utilisez votre compte professionnel Planiprêt.",
+          );
+          setLoading(false);
+          return;
+        }
+      }
+      setAnon(false);
+      setAuthError(null);
+
       await loadProfile(session.user);
     })();
 
     return () => { cancelled = true; };
   }, [navigate]);
 
-  const logout = async () => { await supabase.auth.signOut(); navigate("/login", { replace: true }); };
+  const logout = async () => {
+    setAnon(true);
+    setLoading(false);
+    // Ends the Supabase session AND the Microsoft 365 session, then returns
+    // to the Planiprêt admin portal sign-in screen.
+    await signOutMicrosoft("/planipret/admin");
+  };
 
   const startWebCall = async () => {
     const destination = dialNumber.trim();
@@ -222,9 +361,24 @@ export default function PlanipretAdminLayout() {
     }
   };
 
-  if (loading) {
+  if (anon) {
     return (
-      <div className="planipret-scope planipret-admin-scope min-h-screen flex items-center justify-center"
+      <div className="planipret-scope planipret-admin-scope planipret-broker-scope" data-pp-theme={theme}>
+        <BrokerAuthScreen
+          msRedirect={location.pathname.startsWith("/planipret/admin") ? location.pathname : "/planipret/admin/overview"}
+          initialError={authError}
+          variant="admin"
+          title="Connexion administrateur"
+          subtitle="Accédez aux appels, commissions, utilisateurs et rapports Planiprêt."
+        />
+      </div>
+    );
+  }
+
+  if (loading) {
+
+    return (
+      <div data-pp-theme={theme} className="planipret-scope planipret-admin-scope min-h-screen flex items-center justify-center"
         style={{ color: "var(--pp-text-muted)", fontFamily: "'Epilogue', sans-serif" }}>
         Chargement…
       </div>
@@ -234,7 +388,9 @@ export default function PlanipretAdminLayout() {
   const pageKey = PAGE_KEY_BY_PATH[location.pathname];
   const title = pageKey ? tt(`adminPortal.pageTitles.${pageKey}`) : tt("adminPortal.dashboardTitle");
   const dateLabel = new Date().toLocaleDateString(lang === "en" ? "en-CA" : "fr-CA", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
-  const sectionKey = NAV.find((g) => g.items.some((i) => i.to === location.pathname))?.sectionKey;
+  const isSuperAdmin = !!userEmail && SUPER_ADMIN_EMAILS.includes(userEmail);
+  const navGroups = isSuperAdmin ? NAV : NAV_REGULAR;
+  const sectionKey = navGroups.find((g) => g.items.some((i) => i.to === location.pathname))?.sectionKey;
   const sectionLabel = sectionKey ? tt(`adminPortal.sections.${sectionKey}`) : tt("adminPortal.administration");
 
   const renderBadge = (b?: NavBadge) => {
@@ -271,23 +427,41 @@ export default function PlanipretAdminLayout() {
   };
 
   return (
-    <div className="planipret-scope planipret-admin-scope min-h-screen flex"
+    <PortalDomainGate>
+    <div data-pp-theme={theme} className="planipret-scope planipret-admin-scope min-h-screen flex"
       style={{ background: "var(--pp-bg-base)", fontFamily: "'Epilogue', sans-serif" }}>
-      {/* Mobile redirect notice */}
-      <div className="md:hidden fixed inset-0 z-50 flex items-center justify-center p-6"
-        style={{ background: "var(--pp-bg-base)" }}>
-        <div className="text-center max-w-xs pp-card" style={{ padding: 24 }}>
-          <h2 className="pp-heading" style={{ fontWeight: 700, fontSize: 18, marginBottom: 8 }}>
-            {tt("adminPortal.mobileNoticeTitle")}
-          </h2>
-          <p style={{ fontSize: 13, color: "var(--pp-text-secondary)", marginBottom: 16 }}>
-            {tt("adminPortal.mobileNoticeBody")}
-          </p>
-          <button onClick={() => navigate("/mplanipret")} className="pp-btn-primary">
-            {tt("adminPortal.openMobileApp")}
-          </button>
+      {/* Mobile redirect notice (dismissible) */}
+      {!mobileNoticeDismissed && (
+        <div className="md:hidden fixed inset-0 z-50 flex items-center justify-center p-6"
+          style={{ background: "var(--pp-bg-base)" }}>
+          <div className="text-center max-w-xs pp-card" style={{ padding: 24 }}>
+            <h2 className="pp-heading" style={{ fontWeight: 700, fontSize: 18, marginBottom: 8 }}>
+              {tt("adminPortal.mobileNoticeTitle")}
+            </h2>
+            <p style={{ fontSize: 13, color: "var(--pp-text-secondary)", marginBottom: 16 }}>
+              {tt("adminPortal.mobileNoticeBody")}
+            </p>
+            <div className="flex flex-col gap-2">
+              <button onClick={() => navigate("/mplanipret")} className="pp-btn-primary">
+                {tt("adminPortal.openMobileApp")}
+              </button>
+              <button
+                onClick={() => {
+                  try { localStorage.setItem("pp_admin_mobile_notice", "dismissed"); } catch { /* noop */ }
+                  setMobileNoticeDismissed(true);
+                }}
+                style={{
+                  fontSize: 13, padding: "8px 12px", borderRadius: 10,
+                  border: "1px solid var(--pp-bg-border)", background: "transparent",
+                  color: "var(--pp-text-secondary)",
+                }}
+              >
+                Continuer sur mobile
+              </button>
+            </div>
+          </div>
         </div>
-      </div>
+      )}
 
 
       {/* Sidebar */}
@@ -314,7 +488,7 @@ export default function PlanipretAdminLayout() {
 
         {/* Nav groups */}
         <nav className="flex-1 py-2 overflow-y-auto">
-          {NAV.map((group) => (
+          {navGroups.map((group) => (
             <div key={group.sectionKey}>
               <div className="pp-nav-section">{tt(`adminPortal.sections.${group.sectionKey}`)}</div>
               {group.items.map(({ to, key, Icon, badge }) => {
@@ -323,6 +497,15 @@ export default function PlanipretAdminLayout() {
                   ? raw
                   : (key === "diagnostics" ? (lang === "en" ? "Diagnostics" : "Diagnostic")
                     : key === "maestroSync" ? (lang === "en" ? "Maestro sync" : "Sync Maestro")
+                    : key === "contracts" ? (lang === "en" ? "Contracts" : "Contrats")
+                    : key === "commissionAudit" ? (lang === "en" ? "Commission audit" : "Audit commissions")
+                    : key === "brokerCommissions" ? (lang === "en" ? "Broker commissions" : "Commissions par courtier")
+                    : key === "microsoftAuth" ? (lang === "en" ? "Microsoft sign-ins" : "Connexions Microsoft")
+
+                    : key === "telecomMapping" ? (lang === "en" ? "Telecom mapping" : "Mapping Telecom")
+                    : key === "didReconcile" ? (lang === "en" ? "DID reconciliation" : "Réconciliation DID")
+                    : key === "phoneNumbers" ? (lang === "en" ? "Phone numbers" : "Numéros de téléphone")
+                    : key === "mobileApp" ? (lang === "en" ? "Mobile app" : "Application mobile")
                     : key === "avaToolsAudit" ? (lang === "en" ? "AVA tools audit" : "Audit outils AVA")
                     : key);
                 return (
@@ -375,24 +558,33 @@ export default function PlanipretAdminLayout() {
       </aside>
 
       {/* Main */}
-      <div className="hidden md:flex flex-1 flex-col ml-[248px]">
-        <header className="pp-app-header sticky top-0 flex items-center justify-between px-7 z-30" style={{ height: 64 }}>
+      <div className="hidden md:flex flex-1 min-w-0 flex-col ml-[248px]">
+        <header className="pp-app-header sticky top-0 flex items-center justify-between gap-4 px-5 xl:px-7 z-30 overflow-hidden" style={{ height: 64 }}>
           <div className="flex items-center gap-2 min-w-0">
             <span className="pp-eyebrow">{sectionLabel}</span>
             <ChevronRight className="w-3.5 h-3.5" style={{ color: "var(--pp-text-faint)" }} />
             <h1 className="pp-heading truncate" style={{ fontWeight: 700, fontSize: 18 }}>{title}</h1>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 min-w-0 shrink">
             <button onClick={() => setPaletteOpen(true)}
-              className="pp-search-bar flex items-center gap-2 px-3 h-9 text-xs"
-              style={{ minWidth: 280, fontFamily: "'Epilogue', sans-serif" }}>
+              className="pp-search-bar hidden 2xl:flex items-center gap-2 px-3 h-9 text-xs shrink"
+              style={{ minWidth: 200, fontFamily: "'Epilogue', sans-serif" }}>
               <Search className="w-3.5 h-3.5" />
               <span className="flex-1 text-left">Rechercher courtiers, appels, intégrations…</span>
               <kbd className="pp-kbd">⌘K</kbd>
             </button>
 
-            <div className="flex items-center gap-1.5"
+            <HighReadabilityToggle compact />
+
+            <button onClick={toggleTheme} aria-label="Theme"
+              title={theme === "dark" ? "Mode clair" : "Mode sombre"}
+              className="flex items-center justify-center rounded-lg shrink-0"
+              style={{ width: 32, height: 32, color: "var(--pp-text-muted)", border: "1px solid var(--pp-bg-border)", background: "var(--pp-bg-elevated)" }}>
+              {theme === "dark" ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+            </button>
+
+            <div className="hidden md:flex items-center gap-1.5 shrink-0"
               style={{
                 background: realtimeOk ? "rgba(13,122,95,0.10)" : "#F0F4F9",
                 border: `1px solid ${realtimeOk ? "rgba(13,122,95,0.25)" : "var(--pp-bg-border)"}`,
@@ -408,7 +600,7 @@ export default function PlanipretAdminLayout() {
 
             <form
               onSubmit={(e) => { e.preventDefault(); void startWebCall(); }}
-              className="flex items-center gap-1.5 rounded-full px-2 py-1"
+              className="hidden lg:flex items-center gap-1.5 rounded-full px-2 py-1"
               style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)" }}
             >
               <Phone className="h-3.5 w-3.5" style={{ color: "var(--pp-brand-accent-2)" }} />
@@ -438,14 +630,14 @@ export default function PlanipretAdminLayout() {
 
 
 
-            <div className="hidden lg:flex flex-col items-end" style={{ paddingLeft: 4, borderLeft: "1px solid var(--pp-bg-border)", paddingInline: "12px 0", marginLeft: 4 }}>
+            <div className="hidden 2xl:flex flex-col items-end" style={{ paddingLeft: 4, borderLeft: "1px solid var(--pp-bg-border)", paddingInline: "12px 0", marginLeft: 4 }}>
               <span className="capitalize" style={{ fontSize: 10.5, color: "var(--pp-text-muted)", fontFamily: "'Urbanist', sans-serif", fontWeight: 500, letterSpacing: "0.02em" }}>
                 {dateLabel}
               </span>
             </div>
           </div>
         </header>
-        <main className="flex-1 p-7 overflow-y-auto">
+        <main className="pa-main flex-1 min-w-0 p-5 md:p-7" style={{ overflowX: "clip", overflowY: "visible" }}>
           <Outlet context={{ profile, softphone }} />
         </main>
       </div>
@@ -454,5 +646,6 @@ export default function PlanipretAdminLayout() {
       <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} />
       <SessionTimeoutModal />
     </div>
+    </PortalDomainGate>
   );
 }

@@ -1,13 +1,14 @@
 // Planiprêt Task API gateway — the ONLY path the mobile app and AVA use to
 // read/write tasks. Never expose the Planiprêt bearer token to the client.
 //
-// Routes consumed (official docs: https://client.planipret.com/api-docs):
+// Routes consumed (official Scribe docs, 2026-09-09):
+//   GET    /api/main/tasks             (status, delegate_users_id, target_id,
+//                                       date_from/date_to, order_by, per_page)
 //   POST   /api/main/tasks
 //   PUT    /api/main/tasks/{taskId}    (task_id also in body)
 //   DELETE /api/main/tasks/{taskId}    (task_id also in body, soft delete)
-// Listing is NOT officially documented: we best-effort the internal
-// `GET /telecom/api/v1/users/{telecomUserId}/tasks` and degrade to the local
-// projection (`planipret_tasks_projection`) or `tasks_unavailable`.
+// If the list call fails we degrade to the local projection
+// (`planipret_tasks_projection`) or `tasks_unavailable`.
 //
 // All business logic lives in ../_shared/planipret-task-handler.ts (unit tested).
 // Body: { action: "list" | "get" | "create" | "update" | "delete", ... }
@@ -18,6 +19,14 @@ import { fetchMaestroTeam } from "../_shared/maestro-teams.ts";
 
 import { normalizeTask } from "../_shared/planipret-tasks.ts";
 import { handleTaskRequest, newCorrelationId, type UpstreamList } from "../_shared/planipret-task-handler.ts";
+import {
+  buildIdempotencyKey,
+  claimAction,
+  confirmationRequiredResult,
+  finishAction,
+  isAvaOriginated,
+  isConfirmed,
+} from "../_shared/ava-confirm.ts";
 
 const API_BASE = (Deno.env.get("PLANIPRET_API_BASE_URL") ?? "https://client.planipret.com").replace(/\/$/, "");
 const TELECOM_BASE = (Deno.env.get("MAESTRO_TELECOM_BASE_URL") ?? "https://client.planipret.com/telecom/api/v1").replace(/\/$/, "");
@@ -105,28 +114,47 @@ function extractTaskRows(payload: any): any[] {
   return [];
 }
 
+const LIST_STATUSES = new Set(["pending", "open", "complete", "all"]);
+
 function makeListFetch(token: string | null) {
   return async (
     maestroId: string,
     opts: { status?: string | null; from?: string | null; to?: string | null },
   ): Promise<UpstreamList> => {
-    const qs = new URLSearchParams();
-    if (opts.status) qs.set("status", opts.status);
-    if (opts.from) qs.set("from", opts.from);
-    if (opts.to) qs.set("to", opts.to);
-    qs.set("limit", "200");
-    const suffix = qs.toString() ? `?${qs.toString()}` : "";
+    // Documented list endpoint (Scribe docs 2026-09-09):
+    //   GET /api/main/tasks?status=&delegate_users_id=&date_from=&date_to=&per_page=
+    const base = new URLSearchParams();
+    base.set("status", opts.status && LIST_STATUSES.has(opts.status) ? opts.status : "all");
+    // date_from and date_to are only valid together.
+    if (opts.from && opts.to) {
+      base.set("date_from", opts.from);
+      base.set("date_to", opts.to);
+    }
+    base.set("per_page", "200");
+    base.set("order_by", "date");
+    base.set("sort", "desc");
 
-    // Measured on production (broker 393): the Task List API scopes reads with
-    // singular `user_id`. `users_id` is used by task writes but returns an empty
-    // page on GET, as does `xid=&type=user`; empty 200s must not short-circuit.
+    const withParam = (k: string, v: string) => {
+      const qs = new URLSearchParams(base);
+      qs.set(k, v);
+      return `${API_BASE}/api/main/tasks?${qs.toString()}`;
+    };
+
+    const legacy = new URLSearchParams();
+    if (opts.status) legacy.set("status", opts.status);
+    if (opts.from) legacy.set("from", opts.from);
+    if (opts.to) legacy.set("to", opts.to);
+    legacy.set("limit", "200");
+    const legacySuffix = `?${legacy.toString()}`;
+
     const candidates = [
-      `${API_BASE}/api/main/tasks${suffix}${suffix ? "&" : "?"}user_id=${maestroId}`,
-      `${API_BASE}/api/main/tasks${suffix}${suffix ? "&" : "?"}users_id=${maestroId}`,
-      `${TELECOM_BASE}/users/${maestroId}/tasks${suffix}`,
-      `${API_BASE}/telecom/api/v1/users/${maestroId}/tasks${suffix}`,
-      `${API_BASE}/api/main/tasks${suffix}${suffix ? "&" : "?"}xid=${maestroId}&type=user`,
-      `${API_BASE}/api/main/users/${maestroId}/tasks${suffix}`,
+      // Forme mesurée en production: scoping par user_id.
+      withParam("user_id", maestroId),
+      withParam("delegate_users_id", maestroId),
+      withParam("target_id", maestroId),
+      `${TELECOM_BASE}/users/${maestroId}/tasks${legacySuffix}`,
+      // Dernier recours, non filtré côté Maestro (filtré localement par assignation).
+      `${API_BASE}/api/main/tasks?${base.toString()}`,
     ];
 
 
@@ -337,6 +365,42 @@ Deno.serve(async (req) => {
       return jsonResponse({ success: true, members, by_client: maestroTeam.byClient, correlation_id }, 200);
     }
 
+    // ---- Barrière de confirmation + idempotence (mêmes règles que les textos)
+    // Toute mutation de tâche proposée par AVA (chat, voix, suivi post-appel)
+    // exige confirmed=true, et ne s'exécute qu'une seule fois.
+    const taskAction = String(body?.action ?? "");
+    const mutating = taskAction === "create" || taskAction === "update" || taskAction === "delete";
+    let taskClaimId: string | null = null;
+    if (mutating && isAvaOriginated(body)) {
+      if (!isConfirmed(body)) {
+        return jsonResponse({
+          ...confirmationRequiredResult(`${taskAction}_task`, body?.task ?? body),
+          correlation_id,
+        }, 200);
+      }
+      const destination = String(body?.task?.target_id ?? body?.task_id ?? body?.id ?? "").slice(0, 64);
+      const idempotencyKey = await buildIdempotencyKey({
+        userId,
+        action: `task:${taskAction}`,
+        destination,
+        callId: body?.call_id ?? null,
+        payload: { ...(body?.task ?? {}), task_id: body?.task_id ?? body?.id ?? null },
+        provided: body?.idempotency_key ?? null,
+      });
+      const claim = await claimAction(admin, {
+        userId,
+        brokerId: profile?.id ?? null,
+        callId: body?.call_id ?? null,
+        action: `task:${taskAction}`,
+        surface: "maestro_tasks",
+        destination,
+        provider: "maestro",
+        idempotencyKey,
+      });
+      if (claim.replay) return jsonResponse({ ...claim.result, correlation_id }, 200);
+      taskClaimId = claim.id;
+    }
+
     const out = await handleTaskRequest({ ...body, correlation_id }, {
 
       admin,
@@ -387,6 +451,11 @@ Deno.serve(async (req) => {
         return r?.maestro_broker_id ?? null;
       },
     });
+    if (taskClaimId) {
+      const ok = out.status < 400 && (out.body as any)?.success !== false;
+      await finishAction(admin, taskClaimId, ok, ok ? out.body : null,
+        ok ? null : String((out.body as any)?.error ?? "task_error")).catch(() => null);
+    }
     return jsonResponse(out.body, out.status);
   } catch (e) {
     console.error("[planipret-task-api]", correlation_id, e);

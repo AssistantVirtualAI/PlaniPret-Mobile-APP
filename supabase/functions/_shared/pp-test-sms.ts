@@ -4,14 +4,17 @@
 /** Conservé pour compatibilité d'import — volontairement vide. */
 export const TEST_SMS_ALLOWED_USER_IDS = new Set<string>();
 
+// Ciblage strict : uniquement les messages qui sont manifestement des envois
+// de test/QA automatisés. Un message légitime qui contient « test de crédit »
+// ou « période d'essai » doit partir normalement.
 const TEST_PATTERNS = [
-  /^\s*test\b/i,
-  /\btest\b/i,
-  /\btexto\s*test\b/i,
+  /^\s*test\s*(sms|texto|text|message|qa|\d+)?\s*[.!:-]*\s*$/i,
+  /\b(test|texto\s*de\s*test|message\s*de\s*test)\s*(sms|texto|text|message)\b/i,
+  /\bsms\s*de\s*test\b/i,
   /\bqa\s*(ava|test|\d)/i,
   /- ?ignorer\b/i,
   /\bignore this\b/i,
-  /\bessai\b/i,
+  /\bmessage\s*d['’]essai\b/i,
   /\bdemo\s*(sms|texto|message)\b/i,
 ];
 

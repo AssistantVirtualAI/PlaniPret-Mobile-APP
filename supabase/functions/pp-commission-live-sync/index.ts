@@ -102,12 +102,15 @@ Deno.serve(async (req) => {
       if (nk) byName.set(nk, String(id));
       if (email) byEmail.set(email, String(id));
     }
-    const resolved: { user_id: string; maestro_broker_id: string }[] = [];
+    // On corrige AUSSI les identifiants déjà stockés mais erronés : un id qui
+    // appartient en réalité à un autre courtier ferait voir à ce profil les
+    // commissions d'un collègue.
+    const resolved: { user_id: string; maestro_broker_id: string | null }[] = [];
     for (const p of list as any[]) {
-      if (p.maestro_broker_id != null) continue;
       const id = byEmail.get(String(p.email ?? "").trim().toLowerCase())
         ?? (agentKey(String(p.full_name ?? "")) ? byName.get(agentKey(String(p.full_name ?? "")) as string) : undefined);
       if (!id) continue;
+      if (String(p.maestro_broker_id ?? "") === String(id)) continue;
       p.maestro_broker_id = id;
       resolved.push({ user_id: p.user_id, maestro_broker_id: id });
     }
@@ -118,6 +121,15 @@ Deno.serve(async (req) => {
   let connectedCount = 0;
   let upserted = 0;
   const diagRows: any[] = [];
+
+  // Ownership maps: which portal account each Maestro agent id / name belongs to.
+  const profileByMaestroId = new Map<string, string>();
+  const profileByNameKey = new Map<string, string>();
+  for (const p of list as any[]) {
+    if (p.maestro_broker_id != null) profileByMaestroId.set(String(p.maestro_broker_id), p.user_id);
+    const nk = agentKey(String(p.full_name ?? ""));
+    if (nk) profileByNameKey.set(nk, p.user_id);
+  }
 
   // La commission brute = base + bonus + bonus2 + perform. Maestro ne renvoie
   // qu'un bucket par appel, donc on parcourt les quatre; le volume de prêt
@@ -193,11 +205,22 @@ Deno.serve(async (req) => {
 
     if (source === "broker_token") connectedCount += 1;
 
+    // A team-lead / admin token returns OTHER brokers' deposits too. Each row is
+    // attributed to the broker it actually belongs to (Maestro agent id, then
+    // name), never to the account that fetched it — otherwise a broker would see
+    // his colleagues' commissions in his own totals.
     const payload = rows.map((row) => {
       const date = row.date_trans ? String(row.date_trans).slice(0, 10) : null;
+      const rowMid = row.agent_name_id != null ? String(row.agent_name_id) : mid;
+      const rowName = String(row.agent_name ?? row.target_name ?? "").trim();
+      // Le nom de l'agent Maestro prime : c'est la seule donnée qui reste juste
+      // même si un profil porte un identifiant Maestro périmé ou erroné.
+      const owner = (agentKey(rowName) ? profileByNameKey.get(agentKey(rowName) as string) : null)
+        ?? (rowMid ? profileByMaestroId.get(rowMid) : null)
+        ?? (rowMid && mid && rowMid === mid ? p.user_id : null);
       return {
         dedupe_key: dedupeKey(row as any),
-        broker_user_id: p.user_id,
+        broker_user_id: owner ?? null,
         broker_label: label,
         maestro_broker_id: row.agent_name_id != null ? String(row.agent_name_id) : mid,
         agent_name: String(row.agent_name ?? row.target_name ?? label).trim() || label,

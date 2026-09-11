@@ -5,6 +5,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { generateText, Output } from "npm:ai";
 import { z } from "npm:zod";
 import { createLovableAiGatewayProvider } from "../_shared/ai-gateway.ts";
+import { buildIdempotencyKey, claimAction, finishAction } from "../_shared/ava-confirm.ts";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -277,8 +278,28 @@ Deno.serve(async (req) => {
         if (MUTATING_MS365.has(action) && body?.approved !== true) {
           return json({ reply: L("Cette action nécessite votre confirmation avant l'envoi.", "This action requires your confirmation before sending."), suggestions: [confirmAction] });
         }
+        let ms365Claim: { replay: boolean; id?: string | null; result?: any } | null = null;
+        if (MUTATING_MS365.has(action)) {
+          const key = await buildIdempotencyKey({
+            userId: u.user.id, action: `ms365_${action}`,
+            destination: String((payload as any).to ?? (payload as any).recipient ?? "").slice(0, 120),
+            callId: (payload as any).call_id ? String((payload as any).call_id) : null,
+            payload, provided: body?.idempotency_key ?? null,
+          });
+          ms365Claim = await claimAction(admin, {
+            userId: u.user.id, action: `ms365_${action}`, surface: "ava_chat",
+            destination: String((payload as any).to ?? "").slice(0, 120) || null,
+            provider: "ms365", idempotencyKey: key,
+          }) as any;
+          if (ms365Claim?.replay) {
+            return json({ reply: L("Action déjà exécutée — rien n'a été renvoyé.", "Already executed — nothing was sent twice."), result: ms365Claim.result, suggestions: [] });
+          }
+        }
         const exec = await invokeFunction("ms365-actions", authHeader, { action, payload });
         const ok = !!exec.data?.success && exec.ok;
+        if (ms365Claim && !ms365Claim.replay) {
+          await finishAction(admin, ms365Claim.id ?? null, ok, exec.data, ok ? null : (exec.data?.error ?? `HTTP ${exec.status}`));
+        }
         await logAvaAction(admin, profile, u.user.id, `ms365_${action}`, payload, ok, exec.data, ok ? null : (exec.data?.error ?? `HTTP ${exec.status}`));
         return json({
           reply: ok
@@ -379,8 +400,20 @@ Deno.serve(async (req) => {
         const to = String(payload.number ?? payload.to ?? "");
         if (!to) return json({ reply: L("Numéro d'appel manquant.", "Missing phone number."), suggestions: [] }, 400);
         if (body?.approved !== true) return json({ reply: L("Confirmez avant de lancer l'appel.", "Please confirm before starting the call."), suggestions: [confirmAction] });
+        const callKey = await buildIdempotencyKey({
+          userId: u.user.id, action: "call_start", destination: to,
+          payload: { to }, provided: body?.idempotency_key ?? null, windowMs: 60_000,
+        });
+        const callClaim = await claimAction(admin, {
+          userId: u.user.id, action: "call_start", surface: "ava_chat",
+          destination: to, provider: "netsapiens", idempotencyKey: callKey,
+        });
+        if (callClaim.replay) {
+          return json({ reply: L("Appel déjà lancé.", "Call already started."), result: callClaim.result, suggestions: [] });
+        }
         const exec = await invokeFunction("ns-make-call", authHeader, { to_number: to });
         const ok = !!exec.data?.success && exec.ok;
+        await finishAction(admin, callClaim.id, ok, exec.data, ok ? null : (exec.data?.error ?? `HTTP ${exec.status}`));
         await logAvaAction(admin, profile, u.user.id, "call_start", { to }, ok, exec.data, ok ? null : (exec.data?.error ?? `HTTP ${exec.status}`));
         return json({
           reply: ok ? L("Appel lancé.", "Call started.") : `${L("Appel non lancé", "Call not started")}: ${exec.data?.error ?? exec.status}`,

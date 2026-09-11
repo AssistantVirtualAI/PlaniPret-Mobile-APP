@@ -113,14 +113,24 @@ export default function PAAuditLog() {
   const userMap = useMemo(() => new Map(users.map((u) => [u.id, u.full_name || u.email])), [users]);
 
   const exportCsv = async () => {
-    let q = supabase.from("planipret_audit_log")
-      .select("id, created_at, action, resource_type, resource_id, ip_address, user_id, metadata")
-      .order("created_at", { ascending: false }).limit(10000);
-    if (userFilter) q = q.eq("user_id", userFilter);
-    if (actionFilter) q = q.eq("action", actionFilter);
-    if (from) q = q.gte("created_at", new Date(from).toISOString());
-    if (to) q = q.lte("created_at", new Date(to + "T23:59:59").toISOString());
-    const { data: all } = await q;
+    // Export paginé : 2 000 lignes par lot pour ne pas dépasser le délai SQL.
+    const BATCH = 2000;
+    const MAX = 10000;
+    const all: any[] = [];
+    for (let offset = 0; offset < MAX; offset += BATCH) {
+      let q = supabase.from("planipret_audit_log")
+        .select("id, created_at, action, resource_type, resource_id, ip_address, user_id, metadata")
+        .order("created_at", { ascending: false })
+        .range(offset, offset + BATCH - 1);
+      if (userFilter) q = q.eq("user_id", userFilter);
+      if (actionFilter) q = q.eq("action", actionFilter);
+      if (from) q = q.gte("created_at", new Date(from).toISOString());
+      if (to) q = q.lte("created_at", new Date(to + "T23:59:59").toISOString());
+      const { data: batch, error } = await q;
+      if (error) break;
+      all.push(...(batch ?? []));
+      if (!batch || batch.length < BATCH) break;
+    }
     const csv = [
       t.csvHeaders.join(","),
       ...(all ?? []).map((r: any) => [

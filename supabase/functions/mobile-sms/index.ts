@@ -43,11 +43,24 @@ Deno.serve(async (req) => {
         .eq("id", threadId).maybeSingle();
       if (!th || th.organization_id !== orgId) return json({ error: "forbidden" }, 403);
 
+      // Idempotence : un double tap ou un retry réseau ne doit jamais produire
+      // deux envois. Même fil + même texte dans les 60 dernières secondes → replay.
+      const since = new Date(Date.now() - 60_000).toISOString();
+      const { data: dup } = await sb.from("pbx_sms_messages")
+        .select("id, sent_at")
+        .eq("thread_id", th.id).eq("organization_id", orgId)
+        .eq("direction", "outbound").eq("body", text)
+        .gte("sent_at", since)
+        .order("sent_at", { ascending: false })
+        .limit(1).maybeSingle();
+      if (dup?.id) return json({ id: dup.id, idempotent_replay: true });
+
       const { data: msg, error } = await sb.from("pbx_sms_messages").insert({
         thread_id: th.id, organization_id: orgId, direction: "outbound",
         from_number: th.did_number, to_number: th.contact_phone, body: text, status: "queued",
       }).select("id").single();
       if (error) throw error;
+
 
       // Best-effort deliver via Telnyx
       try {

@@ -82,20 +82,65 @@ export async function fetchLiveRegisterRows(
   const failures: LiveResult["failures"] = [];
   const brokers = new Set<string>();
 
-  let q = admin
-    .from("planipret_commission_live_cache")
-    .select("broker_user_id, broker_label, maestro_broker_id, agent_name, date_trans, fiscal_year, row_data, synced_at")
-    .in("fiscal_year", years)
-    .limit(20000);
-  if (!isAdmin) q = q.eq("broker_user_id", userId);
-  if (agentFilter) q = q.ilike("agent_name", agentFilter);
+  // A team-lead token pulls colleagues' deposits into the same cache page, so a
+  // broker view is scoped on the row's own Maestro agent id / name, never on the
+  // account that happened to fetch the row.
+  let ownMaestroId: string | null = null;
+  let ownNames: string[] = [];
+  if (!isAdmin) {
+    const { data: me } = await admin
+      .from("planipret_profiles")
+      .select("full_name, first_name, last_name, maestro_broker_id")
+      .eq("user_id", userId)
+      .maybeSingle();
+    ownMaestroId = (me as any)?.maestro_broker_id != null ? String((me as any).maestro_broker_id) : null;
+    ownNames = [
+      String((me as any)?.full_name ?? "").trim(),
+      [(me as any)?.first_name, (me as any)?.last_name].filter(Boolean).join(" ").trim(),
+    ].filter(Boolean).map((s) => s.toLocaleLowerCase("fr-CA"));
+  }
 
-  const { data: cached, error } = await q;
-  if (error) failures.push({ broker: "cache", status: 500, message: error.message });
+  // PostgREST returns at most 1000 rows per response: page explicitly, otherwise
+  // the prior-year deposits are silently missing and YoY percentages explode.
+  const baseQuery = () => {
+    let q = admin
+      .from("planipret_commission_live_cache")
+      .select("broker_user_id, broker_label, maestro_broker_id, agent_name, date_trans, fiscal_year, row_data, synced_at")
+      .in("fiscal_year", years)
+      .order("id", { ascending: true });
+    if (!isAdmin) {
+      q = ownMaestroId
+        ? q.or(`broker_user_id.eq.${userId},maestro_broker_id.eq.${ownMaestroId}`)
+        : q.eq("broker_user_id", userId);
+    }
+    if (agentFilter) q = q.ilike("agent_name", agentFilter);
+    return q;
+  };
+
+  const isMineCacheRow = (c: any) => {
+    if (isAdmin) return true;
+    const mid = c.maestro_broker_id != null ? String(c.maestro_broker_id) : null;
+    if (ownMaestroId && mid) return mid === ownMaestroId;
+    const name = String(c.agent_name ?? "").trim().toLocaleLowerCase("fr-CA");
+    if (ownNames.length && name) return ownNames.includes(name);
+    return c.broker_user_id === userId;
+  };
+
+  const PAGE = 1000;
+  const cached: any[] = [];
+  for (let from = 0; from < 60000; from += PAGE) {
+    const { data, error } = await baseQuery().range(from, from + PAGE - 1);
+    if (error) { failures.push({ broker: "cache", status: 500, message: error.message }); break; }
+    const page = (data ?? []) as any[];
+    cached.push(...page);
+    if (page.length < PAGE) break;
+  }
+
 
   let seq = -1;
   let syncedAt: string | null = null;
   for (const c of (cached ?? []) as any[]) {
+    if (!isMineCacheRow(c)) continue;
     const d = c.row_data ?? {};
     const name = String(c.agent_name ?? c.broker_label ?? "").trim();
     brokers.add(name || String(c.broker_label ?? ""));

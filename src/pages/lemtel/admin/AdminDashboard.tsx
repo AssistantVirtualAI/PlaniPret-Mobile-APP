@@ -94,7 +94,7 @@ export default function AdminDashboard() {
       const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
       const last30 = new Date(); last30.setDate(last30.getDate() - 30);
       const last7 = new Date(); last7.setDate(last7.getDate() - 7);
-      const [calls, vms, sms, recsAgg, sentiments, recent30, extTotal, softTotal] = await Promise.all([
+      const [calls, vms, sms, recsAgg, transcribedRes, analyzedRes, sentiments, recent30, extTotal, softTotal] = await Promise.all([
         (supabase as any).from('pbx_call_records')
           .select('id,call_status,missed_call,start_at,duration_seconds,direction,billsec,extension,destination_number')
           .eq('organization_id', LEMTEL_ORG_ID)
@@ -106,25 +106,29 @@ export default function AdminDashboard() {
           .select('unread_count')
           .eq('organization_id', LEMTEL_ORG_ID),
         (supabase as any).from('pbx_call_recordings')
-          .select('id,transcribed,analyzed', { count: 'exact' })
-          .eq('organization_id', LEMTEL_ORG_ID).limit(2000),
+          .select('id', { count: 'exact', head: true })
+          .eq('organization_id', LEMTEL_ORG_ID),
+        (supabase as any).from('pbx_call_recordings')
+          .select('id', { count: 'exact', head: true })
+          .eq('organization_id', LEMTEL_ORG_ID).eq('transcribed', true),
+        (supabase as any).from('pbx_call_recordings')
+          .select('id', { count: 'exact', head: true })
+          .eq('organization_id', LEMTEL_ORG_ID).eq('analyzed', true),
         (supabase as any).from('pbx_call_recordings')
           .select('sentiment')
           .eq('organization_id', LEMTEL_ORG_ID)
           .not('sentiment','is',null).gte('updated_at', last7.toISOString()).limit(500),
-        (supabase as any).from('pbx_call_records')
-          .select('start_at,missed_call,billsec,direction')
-          .eq('organization_id', LEMTEL_ORG_ID)
-          .gte('start_at', last30.toISOString()).limit(20000),
+        (supabase as any).rpc('lemtel_dashboard_daily_calls', {
+          _org: LEMTEL_ORG_ID, _since: last30.toISOString(),
+        }),
         (supabase as any).from('pbx_extensions')
           .select('id', { count: 'exact', head: true }).eq('organization_id', LEMTEL_ORG_ID),
         (supabase as any).from('pbx_softphone_users')
           .select('id,app_access_enabled,desktop_access_enabled,mobile_access_enabled', { count: 'exact' })
-          .eq('organization_id', LEMTEL_ORG_ID).limit(2000),
+          .eq('organization_id', LEMTEL_ORG_ID).limit(500),
       ]);
       const callRows = (calls.data ?? []) as any[];
       const smsRows = (sms.data ?? []) as any[];
-      const recRows = (recsAgg.data ?? []) as any[];
       const sentRows = (sentiments.data ?? []) as any[];
       const r30 = (recent30.data ?? []) as any[];
       const softRows = (softTotal.data ?? []) as any[];
@@ -132,22 +136,17 @@ export default function AdminDashboard() {
       const inbound = callRows.filter(r => r.direction === 'inbound').length;
       const outbound = callRows.filter(r => r.direction === 'outbound').length;
       const minutesToday = Math.round(callRows.reduce((s, r) => s + (r.billsec || 0), 0) / 60);
-      const totalRec = (recsAgg as any).count ?? recRows.length;
-      const transcribed = recRows.filter(r => r.transcribed).length;
-      const analyzed = recRows.filter(r => r.analyzed).length;
+      const totalRec = (recsAgg as any).count ?? 0;
+      const transcribed = (transcribedRes as any).count ?? 0;
+      const analyzed = (analyzedRes as any).count ?? 0;
       const sentDist = sentRows.reduce<Record<string, number>>((acc, r) => {
         const k = String(r.sentiment || 'unknown').toLowerCase();
         acc[k] = (acc[k] || 0) + 1; return acc;
       }, {});
-      const perDay: Record<string, number> = {};
-      const missedPerDay: Record<string, number> = {};
-      r30.forEach(r => {
-        const d = (r.start_at || '').slice(0, 10);
-        if (!d) return;
-        perDay[d] = (perDay[d] || 0) + 1;
-        if (r.missed_call) missedPerDay[d] = (missedPerDay[d] || 0) + 1;
-      });
-      const days30 = Object.keys(perDay).sort().map(d => ({ t: d.slice(5), v: perDay[d], missed: missedPerDay[d] || 0 }));
+      const days30 = r30
+        .map((r: any) => ({ d: String(r.day), v: Number(r.total ?? 0), missed: Number(r.missed ?? 0) }))
+        .sort((a, b) => a.d.localeCompare(b.d))
+        .map((r) => ({ t: r.d.slice(5), v: r.v, missed: r.missed }));
       const perHourToday: Record<number, number> = {};
       callRows.forEach(r => { const h = new Date(r.start_at).getHours(); perHourToday[h] = (perHourToday[h] || 0) + 1; });
       const hoursToday = Array.from({length: 24}, (_, i) => ({ t: `${i}h`, v: perHourToday[i] || 0 }));

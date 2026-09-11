@@ -1,23 +1,28 @@
 // Écran de fin d'appel : le courtier décide s'il sauvegarde l'appel dans
-// Maestro, et propose (sans jamais envoyer automatiquement) un SMS ou un
-// courriel de suivi qu'il doit confirmer avant l'envoi.
-import { useEffect, useMemo, useRef, useState } from "react";
+// Maestro, et AVA propose (sans jamais envoyer automatiquement) un texto ou un
+// courriel de suivi qu'il doit relire et confirmer avant l'envoi.
+//
+// Règles appliquées ici (et revalidées côté serveur) :
+//  • rien n'est transcrit, analysé ni poussé vers Maestro avant un « Oui » ;
+//  • la question est liée au seul appel qui vient de se terminer ;
+//  • fermer, revenir en arrière ou perdre la connexion = annulation ;
+//  • un double tap n'envoie jamais deux fois (clé d'idempotence serveur).
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
+import {
+  canSendFollowup,
+  clientNameOf,
+  clientNumberOf,
+  followupIdempotencyKey,
+  needsClientSelection,
+  pickEndedCall,
+  type ConsentCall,
+  type EndedDetail,
+} from "@/lib/planipret/postCallConsent";
 
-type CallRow = {
-  id: string;
-  from_number: string | null;
-  to_number: string | null;
-  direction: string | null;
-  maestro_client_name: string | null;
-  from_name: string | null;
-  to_name: string | null;
-  duration_seconds: number | null;
-  save_consent: string | null;
-};
-
-type Ended = { providerCallId?: string | null; number?: string | null };
+const SELECT =
+  "id, user_id, from_number, to_number, direction, maestro_client_id, maestro_client_name, from_name, to_name, duration_seconds, save_consent";
 
 const wrap: React.CSSProperties = {
   position: "fixed", inset: 0, zIndex: 9000, background: "rgba(4,10,20,0.72)",
@@ -26,7 +31,8 @@ const wrap: React.CSSProperties = {
 const card: React.CSSProperties = {
   width: "100%", maxWidth: 520, background: "var(--pp-bg-surface, #0A1628)",
   color: "#fff", borderTopLeftRadius: 20, borderTopRightRadius: 20,
-  padding: 18, fontFamily: "Urbanist,sans-serif", maxHeight: "88vh", overflowY: "auto",
+  padding: 18, paddingBottom: "calc(18px + env(safe-area-inset-bottom, 0px))",
+  fontFamily: "Urbanist,sans-serif", maxHeight: "88vh", overflowY: "auto",
 };
 const btn = (bg: string): React.CSSProperties => ({
   flex: 1, padding: "12px 14px", borderRadius: 12, border: "none",
@@ -49,78 +55,116 @@ function speak(text: string) {
 }
 
 export default function PostCallConsentSheet() {
-  const [call, setCall] = useState<CallRow | null>(null);
+  const [call, setCall] = useState<ConsentCall | null>(null);
   const [busy, setBusy] = useState(false);
   const [step, setStep] = useState<"consent" | "followup">("consent");
   const [kind, setKind] = useState<"sms" | "email" | null>(null);
   const [draft, setDraft] = useState("");
   const [subject, setSubject] = useState("Suivi de notre appel");
   const [confirmed, setConfirmed] = useState(false);
-  const [email, setEmail] = useState("");
+  const [recipient, setRecipient] = useState("");
+  const [clientChoice, setClientChoice] = useState("");
+  const [userId, setUserId] = useState<string | null>(null);
   const spokenFor = useRef<string | null>(null);
-  const draftEmail = () => email.trim();
+  const sending = useRef(false);
+  const handled = useRef<Set<string>>(new Set());
+
+  const reset = useCallback(() => {
+    setStep("consent"); setKind(null); setDraft(""); setConfirmed(false);
+    setRecipient(""); setClientChoice(""); setSubject("Suivi de notre appel");
+    sending.current = false;
+  }, []);
 
   useEffect(() => {
     const onEnded = async (e: Event) => {
-      const detail = ((e as CustomEvent).detail ?? {}) as Ended;
+      const detail = ((e as CustomEvent).detail ?? {}) as EndedDetail;
       const { data: auth } = await supabase.auth.getUser();
-      if (!auth?.user) return;
-      const since = new Date(Date.now() - 15 * 60_000).toISOString();
-      let row: CallRow | null = null;
+      const uid = auth?.user?.id;
+      if (!uid) return;
+      setUserId(uid);
+
+      const { data: prof } = await supabase
+        .from("planipret_profiles").select("id").eq("user_id", uid).maybeSingle();
+      const owners = [uid, (prof as any)?.id].filter(Boolean).map(String);
+
+      const since = new Date(Date.now() - 10 * 60_000).toISOString();
+      let rows: ConsentCall[] = [];
       if (detail.providerCallId) {
         const pid = detail.providerCallId;
         const { data } = await supabase
-          .from("planipret_phone_calls")
-          .select("id, from_number, to_number, direction, maestro_client_name, from_name, to_name, duration_seconds, save_consent")
-          .or(`id.eq.${pid},ns_callid.eq.${pid},ns_call_id.eq.${pid}`)
-          .limit(1);
-        row = (data?.[0] as CallRow) ?? null;
+          .from("planipret_phone_calls").select(SELECT)
+          .or(`id.eq.${pid},ns_callid.eq.${pid},ns_call_id.eq.${pid}`).limit(3);
+        rows = (data as any as ConsentCall[]) ?? [];
       }
-      if (!row) {
+      if (!rows.length) {
         const { data } = await supabase
-          .from("planipret_phone_calls")
-          .select("id, from_number, to_number, direction, maestro_client_name, from_name, to_name, duration_seconds, save_consent")
+          .from("planipret_phone_calls").select(SELECT)
+          .in("user_id", owners)
           .gte("created_at", since)
-          .order("created_at", { ascending: false })
-          .limit(1);
-        row = (data?.[0] as CallRow) ?? null;
+          .order("created_at", { ascending: false }).limit(5);
+        rows = (data as any as ConsentCall[]) ?? [];
       }
-      if (!row || row.save_consent === "approved" || row.save_consent === "declined") return;
-      setCall(row);
-      setStep("consent");
-      setKind(null);
-      setDraft("");
-      setConfirmed(false);
+      const picked = pickEndedCall(rows, detail, owners);
+      // Une réponse déjà donnée ne vaut jamais pour un nouvel appel, et un même
+      // appel ne repose jamais deux fois la question.
+      if (!picked || handled.current.has(picked.id)) return;
+      handled.current.add(picked.id);
+      setCall(picked);
+      reset();
     };
     window.addEventListener("pp:call-ended", onEnded as EventListener);
     return () => window.removeEventListener("pp:call-ended", onEnded as EventListener);
-  }, []);
+  }, [reset]);
 
-  const clientNumber = useMemo(() => {
-    if (!call) return "";
-    return (call.direction === "in" ? call.from_number : call.to_number) ?? "";
-  }, [call]);
-  const clientName = call?.maestro_client_name
-    || (call?.direction === "in" ? call?.from_name : call?.to_name)
-    || clientNumber;
+  const clientNumber = useMemo(() => (call ? clientNumberOf(call) : ""), [call]);
+  const clientName = useMemo(
+    () => (call ? (clientChoice.trim() || clientNameOf(call)) : ""),
+    [call, clientChoice],
+  );
+  const mustPickClient = !!call && needsClientSelection(call) && !clientChoice.trim();
 
   useEffect(() => {
     if (!call || spokenFor.current === call.id) return;
     spokenFor.current = call.id;
-    speak(`Voulez-vous sauvegarder cet appel avec ${clientName} dans Maestro ? Voulez-vous aussi envoyer un suivi par texto ou courriel ?`);
-  }, [call, clientName]);
+    speak(`Voulez-vous sauvegarder cet appel dans Maestro et préparer le suivi ?`);
+  }, [call]);
+
+  const close = useCallback(() => {
+    setCall(null);
+    reset();
+    try { window.speechSynthesis?.cancel?.(); } catch { /* ignore */ }
+  }, [reset]);
+
+  // Retour arrière Android / geste iOS = annulation, jamais une confirmation.
+  useEffect(() => {
+    if (!call) return;
+    const onPop = () => close();
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, [call, close]);
+
+  useEffect(() => { if (kind === "sms") setRecipient(clientNumber); }, [kind, clientNumber]);
 
   if (!call) return null;
 
-  const close = () => { setCall(null); window.speechSynthesis?.cancel?.(); };
-
   const consent = async (action: "approve" | "decline" | "delete") => {
+    if (busy) return;
+    if (action === "approve" && mustPickClient) {
+      toast.error("Choisissez le client associé avant de sauvegarder.");
+      return;
+    }
     setBusy(true);
     try {
       const { data, error } = await supabase.functions.invoke("pp-call-consent", {
-        body: { call_id: call.id, action, channel: "screen" },
+        body: {
+          call_id: call.id,
+          action,
+          channel: "screen",
+          client_name: clientChoice.trim() || undefined,
+        },
       });
       if (error) throw error;
+      if ((data as any)?.error) throw new Error(String((data as any).error));
       if (action === "approve") {
         toast.success("Appel sauvegardé dans Maestro.");
         setStep("followup");
@@ -133,50 +177,41 @@ export default function PostCallConsentSheet() {
         close();
       }
     } catch (e: any) {
-      toast.error(e?.message ?? "Action impossible.");
+      toast.error(e?.message ?? "Action impossible — rien n'a été envoyé.");
     } finally {
       setBusy(false);
     }
   };
 
   const sendFollowup = async () => {
-    if (!kind || !draft.trim() || !confirmed) return;
+    if (!kind || sending.current) return;
+    if (!canSendFollowup({ kind, body: draft, recipient, confirmed, busy })) return;
+    sending.current = true;
     setBusy(true);
     try {
-      const { data: auth } = await supabase.auth.getUser();
-      const userId = auth?.user?.id;
-      const { data: fu } = await supabase.from("planipret_call_followups").insert({
-        call_id: call.id,
-        user_id: userId,
-        kind,
-        recipient: kind === "sms" ? clientNumber : draftEmail(),
-        recipient_name: clientName,
-        subject: kind === "email" ? subject : null,
-        body: draft.trim(),
-        status: "approved",
-        approved_at: new Date().toISOString(),
-      }).select("id").maybeSingle();
-
-      if (kind === "sms") {
-        const { error } = await supabase.functions.invoke("pp-ns-sms", {
-          body: { action: "send", to: clientNumber, message: draft.trim(), idempotency_key: `followup-${call.id}` },
-        });
-        if (error) throw error;
-      } else {
-        const { error } = await supabase.functions.invoke("ms365-actions", {
-          body: { action: "send_email", payload: { to: [draftEmail()], subject: subject || "Suivi", body: draft.trim() } },
-        });
-        if (error) throw error;
-      }
-      if (fu?.id) {
-        await supabase.from("planipret_call_followups")
-          .update({ status: "sent", sent_at: new Date().toISOString() })
-          .eq("id", fu.id);
-      }
-      toast.success("Suivi envoyé.");
+      const key = followupIdempotencyKey({
+        userId: userId ?? "anon", callId: call.id, kind,
+        recipient, body: draft, subject: kind === "email" ? subject : "",
+      });
+      const { data, error } = await supabase.functions.invoke("pp-call-followup", {
+        body: {
+          call_id: call.id,
+          kind,
+          recipient: recipient.trim(),
+          recipient_name: clientName,
+          subject: kind === "email" ? subject : null,
+          body: draft.trim(),
+          confirmed: true,
+          idempotency_key: key,
+        },
+      });
+      if (error) throw error;
+      if (!(data as any)?.ok) throw new Error(String((data as any)?.error ?? "Envoi refusé par le serveur."));
+      toast.success((data as any)?.idempotent_replay ? "Déjà envoyé — aucun deuxième envoi." : "Suivi envoyé.");
       close();
     } catch (e: any) {
-      toast.error(e?.message ?? "Envoi impossible.");
+      toast.error(e?.message ?? "Envoi impossible. Rien n'a été envoyé.");
+      sending.current = false;
     } finally {
       setBusy(false);
     }
@@ -184,9 +219,9 @@ export default function PostCallConsentSheet() {
 
   return (
     <div style={wrap} onClick={(e) => { if (e.target === e.currentTarget) close(); }}>
-      <div style={card}>
+      <div style={card} role="dialog" aria-label="Fin d'appel">
         <div style={{ fontSize: 12, opacity: 0.7 }}>Fin d'appel</div>
-        <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 4 }}>{clientName}</div>
+        <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 4 }}>{clientName || "Client inconnu"}</div>
         <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 14 }}>
           {clientNumber} · {call.duration_seconds ?? 0} s
         </div>
@@ -194,13 +229,32 @@ export default function PostCallConsentSheet() {
         {step === "consent" && (
           <>
             <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>
-              Sauvegarder l'enregistrement et le sommaire de cet appel dans Maestro ?
+              Voulez-vous sauvegarder cet appel dans Maestro et préparer le suivi ?
             </div>
             <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 12 }}>
               Tant que vous n'avez pas dit oui, rien n'est transcrit, analysé ni envoyé à Maestro.
             </div>
+            {needsClientSelection(call) && (
+              <>
+                <div style={{ fontSize: 12, color: "#FBBF24", marginBottom: 6 }}>
+                  Client non identifié — indiquez à quel client rattacher cet appel.
+                </div>
+                <input
+                  value={clientChoice}
+                  onChange={(e) => setClientChoice(e.target.value)}
+                  placeholder="Nom du client"
+                  style={{ ...input, minHeight: 0, marginBottom: 10 }}
+                />
+              </>
+            )}
             <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-              <button disabled={busy} style={btn("#16A34A")} onClick={() => consent("approve")}>Oui, sauvegarder</button>
+              <button
+                disabled={busy || mustPickClient}
+                style={{ ...btn("#16A34A"), opacity: busy || mustPickClient ? 0.6 : 1 }}
+                onClick={() => consent("approve")}
+              >
+                Oui, sauvegarder
+              </button>
               <button disabled={busy} style={btn("rgba(255,255,255,0.14)")} onClick={() => consent("decline")}>Non</button>
             </div>
             <button disabled={busy} style={{ ...btn("#B91C1C"), width: "100%" }} onClick={() => consent("delete")}>
@@ -213,45 +267,46 @@ export default function PostCallConsentSheet() {
           <>
             <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>Envoyer un suivi au client ?</div>
             <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-              <button style={btn(kind === "sms" ? "#2E9BDC" : "rgba(255,255,255,0.14)")} onClick={() => setKind("sms")}>Texto</button>
-              <button style={btn(kind === "email" ? "#2E9BDC" : "rgba(255,255,255,0.14)")} onClick={() => setKind("email")}>Courriel</button>
+              <button style={btn(kind === "sms" ? "#2E9BDC" : "rgba(255,255,255,0.14)")} onClick={() => { setKind("sms"); setConfirmed(false); }}>Texto</button>
+              <button style={btn(kind === "email" ? "#2E9BDC" : "rgba(255,255,255,0.14)")} onClick={() => { setKind("email"); setConfirmed(false); setRecipient(""); }}>Courriel</button>
               <button style={btn("rgba(255,255,255,0.14)")} onClick={close}>Aucun</button>
             </div>
 
             {kind && (
               <>
+                <input
+                  value={recipient}
+                  onChange={(e) => { setRecipient(e.target.value); setConfirmed(false); }}
+                  placeholder={kind === "sms" ? "Numéro du client" : "Courriel du client"}
+                  style={{ ...input, minHeight: 0, marginBottom: 8 }}
+                />
                 {kind === "email" && (
-                  <>
-                    <input
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      placeholder="Courriel du client"
-                      style={{ ...input, minHeight: 0, marginBottom: 8 }}
-                    />
-                    <input
-                      value={subject}
-                      onChange={(e) => setSubject(e.target.value)}
-                      placeholder="Objet"
-                      style={{ ...input, minHeight: 0, marginBottom: 8 }}
-                    />
-                  </>
+                  <input
+                    value={subject}
+                    onChange={(e) => { setSubject(e.target.value); setConfirmed(false); }}
+                    placeholder="Objet"
+                    style={{ ...input, minHeight: 0, marginBottom: 8 }}
+                  />
                 )}
                 <textarea
                   value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
-                  placeholder="Texte proposé — relisez-le avant l'envoi."
+                  onChange={(e) => { setDraft(e.target.value); setConfirmed(false); }}
+                  placeholder="Brouillon proposé — relisez-le et modifiez-le avant l'envoi."
                   style={input}
                 />
+                <div style={{ fontSize: 12, opacity: 0.75, marginTop: 8 }}>
+                  Canal : {kind === "sms" ? "Texto (votre numéro)" : "Courriel Microsoft 365"} · Destinataire : {recipient || "à saisir"} · Client : {clientName || "—"}
+                </div>
                 <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12, margin: "10px 0" }}>
                   <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} />
-                  Je confirme le texte et le destinataire : {kind === "sms" ? clientNumber : (email || "courriel à saisir")}
+                  Je confirme le destinataire et le texte complet.
                 </label>
                 <button
-                  disabled={busy || !confirmed || !draft.trim() || (kind === "email" && !email.trim())}
-                  style={{ ...btn("#16A34A"), width: "100%", opacity: busy || !confirmed ? 0.6 : 1 }}
+                  disabled={!canSendFollowup({ kind, body: draft, recipient, confirmed, busy })}
+                  style={{ ...btn("#16A34A"), width: "100%", opacity: canSendFollowup({ kind, body: draft, recipient, confirmed, busy }) ? 1 : 0.6 }}
                   onClick={sendFollowup}
                 >
-                  Envoyer maintenant
+                  Confirmer et envoyer
                 </button>
               </>
             )}

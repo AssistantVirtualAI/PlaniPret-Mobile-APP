@@ -19,6 +19,7 @@ import {
   nsFetch,
 } from "../_shared/planipret-ns.ts";
 import { blockTestSms, isTestSms, TEST_SMS_ALLOWED_USER_IDS, TEST_SMS_BLOCK_MESSAGE } from "../_shared/pp-test-sms.ts";
+import { isAvaOriginated, isConfirmed } from "../_shared/ava-confirm.ts";
 import {
   getMaestroTelecomConfig,
   isMaestroTelecomConfigured,
@@ -422,6 +423,25 @@ Deno.serve(async (req) => {
         console.warn("[pp-ns-sms] test SMS blocked", { userId: ctx.userId, to });
         return jsonResponse({ ok: false, blocked: true, error: TEST_SMS_BLOCK_MESSAGE }, 200);
       }
+
+      // ---- Barrière de confirmation (côté serveur) -------------------------
+      // Tout texto proposé par AVA (chatbot, agent vocal, suivi post-appel)
+      // doit porter confirmed=true : le brouillon seul n'envoie jamais.
+      const confirmScope = {
+        origin: pick("origin"), surface: pick("surface"), ava_generated: pick("ava_generated"),
+        draft: pick("draft"), proposal: pick("proposal"),
+        confirmed: pick("confirmed"), approved: pick("approved"),
+      };
+      if (isAvaOriginated(confirmScope) && !isConfirmed(confirmScope)) {
+        console.warn("[pp-ns-sms] AVA send without explicit confirmation — refused", { userId: ctx.userId });
+        return jsonResponse({
+          ok: false,
+          needs_confirmation: true,
+          error: "confirmation_required",
+          message: "Ce texto doit être confirmé explicitement par le courtier avant l'envoi.",
+        }, 200);
+      }
+
 
       // Destination interne (poste 2–6 chiffres) → message de chat interne
       // NetSapiens : pas de DID requis, l'expéditeur est le poste du courtier.

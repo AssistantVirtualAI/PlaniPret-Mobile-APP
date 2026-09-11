@@ -4,6 +4,15 @@ import { aiFetch } from "../_shared/claude-compat.ts";
 // planipret_ava_conversations.
 import { authBroker, corsHeaders, jsonResponse, nsBrokerFetch } from "../_shared/ns-broker.ts";
 import { normalizePhoneE164 } from "../_shared/phone-normalize.ts";
+import {
+  buildIdempotencyKey,
+  claimAction,
+  confirmationRequiredResult,
+  finishAction,
+  isConfirmed,
+  isSensitiveAvaTool,
+  logProposal,
+} from "../_shared/ava-confirm.ts";
 import { linkBrokerIdByEmail, resolveTelecomUserId } from "../_shared/maestro-broker-directory.ts";
 import { claudeText } from "../_shared/anthropic.ts";
 import {
@@ -1763,14 +1772,76 @@ Deno.serve(async (req) => {
   if (!fn) return jsonResponse({ success: false, error: "unknown_tool", tool_name }, 400);
 
   const ctx: Ctx = { admin: auth.admin, userId: auth.userId, profile: auth.profile };
+  const params: any = parameters ?? {};
+
+  // ── Barrière de confirmation serveur ──────────────────────────────────
+  // AVA prépare, le courtier confirme, le serveur exécute. Un tool call
+  // ElevenLabs ou une requête directe ne peuvent pas sauter cette étape.
+  if (isSensitiveAvaTool(tool_name)) {
+    const destination = String(
+      params.to ?? params.number ?? params.phone ?? params.recipient ?? params.email ?? params.client_id ?? "",
+    ).slice(0, 120) || null;
+    const callId = params.call_id ? String(params.call_id) : null;
+    const idempotencyKey = await buildIdempotencyKey({
+      userId: ctx.userId,
+      action: tool_name,
+      destination,
+      callId,
+      payload: params,
+      provided: params.idempotency_key ?? null,
+    });
+
+    if (!isConfirmed(params)) {
+      const res = confirmationRequiredResult(tool_name, params);
+      await logProposal(ctx.admin, {
+        userId: ctx.userId,
+        callId,
+        sessionId: session_id ?? null,
+        action: tool_name,
+        surface: "ava_tool",
+        destination,
+        decision: "proposed",
+        idempotencyKey,
+      });
+      await logTool(ctx, session_id ?? "no-session", tool_name, params, res);
+      return jsonResponse({ ...res, idempotency_key: idempotencyKey });
+    }
+
+    const claim = await claimAction(ctx.admin, {
+      userId: ctx.userId,
+      brokerId: ctx.profile?.maestro_broker_id ? String(ctx.profile.maestro_broker_id) : null,
+      callId,
+      sessionId: session_id ?? null,
+      action: tool_name,
+      surface: "ava_tool",
+      destination,
+      idempotencyKey,
+    });
+    if (claim.replay) return jsonResponse(claim.result);
+
+    try {
+      const result = await fn(ctx, params);
+      const ok = (result as any)?.success !== false;
+      await finishAction(ctx.admin, claim.id, ok, result, ok ? null : String((result as any)?.error ?? "error"));
+      await logTool(ctx, session_id ?? "no-session", tool_name, params, result);
+      return jsonResponse({ ...(result as any), idempotency_key: idempotencyKey });
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      await finishAction(ctx.admin, claim.id, false, null, message);
+      const err = { success: false, error: message, idempotency_key: idempotencyKey };
+      await logTool(ctx, session_id ?? "no-session", tool_name, params, err);
+      return jsonResponse(err, 200);
+    }
+  }
+
   try {
-    const result = await fn(ctx, parameters ?? {});
-    await logTool(ctx, session_id ?? "no-session", tool_name, parameters, result);
+    const result = await fn(ctx, params);
+    await logTool(ctx, session_id ?? "no-session", tool_name, params, result);
     return jsonResponse(result);
 
   } catch (e) {
     const err = { success: false, error: e instanceof Error ? e.message : String(e) };
-    await logTool(ctx, session_id ?? "no-session", tool_name, parameters, err);
+    await logTool(ctx, session_id ?? "no-session", tool_name, params, err);
     return jsonResponse(err, 200);
   }
 });

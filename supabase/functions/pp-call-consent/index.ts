@@ -104,11 +104,20 @@ Deno.serve(async (req) => {
   if (action === "status") return json({ ok: true, call });
 
   if (action === "approve") {
+    // Client ambigu ou introuvable : le courtier doit le désigner, jamais l'app.
+    const clientName = String(body?.client_name ?? "").trim().slice(0, 200);
+    if (!call.maestro_client_id && !String((call as any).maestro_client_name ?? "").trim() && !clientName) {
+      return json({ error: "client_selection_required", needs_client_selection: true }, 409);
+    }
+
     await admin.from("planipret_phone_calls").update({
       save_consent: "approved",
       save_consent_at: new Date().toISOString(),
       save_consent_by: user.id,
       save_consent_channel: channel,
+      ...(clientName && !String((call as any).maestro_client_name ?? "").trim()
+        ? { maestro_client_name: clientName }
+        : {}),
     }).eq("id", callId);
 
     // Lance la chaîne complète : transcription → IA → Maestro.

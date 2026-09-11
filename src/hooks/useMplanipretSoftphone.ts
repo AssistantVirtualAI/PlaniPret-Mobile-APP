@@ -151,6 +151,22 @@ function acquireSoftphoneOwner(instanceId: string, userId: string): boolean {
 
 /** Mounted hook instances, so ownership can be handed over instead of lost. */
 const softphoneInstances = new Set<{ id: string; notify: () => void }>();
+
+// Fin d'appel : émettre une seule fois par appel, peu importe qui raccroche.
+const emittedCallEnded = new Set<string>();
+function emitCallEnded(providerCallId: string | null) {
+  const key = providerCallId || "unknown";
+  if (emittedCallEnded.has(key)) return;
+  emittedCallEnded.add(key);
+  if (emittedCallEnded.size > 50) {
+    emittedCallEnded.delete(emittedCallEnded.values().next().value as string);
+  }
+  try {
+    window.dispatchEvent(new CustomEvent("pp:call-ended", {
+      detail: { providerCallId: providerCallId || null },
+    }));
+  } catch { /* l'écran de consentement reste accessible depuis l'historique */ }
+}
 /** Instances that actually render the call UI. They win ownership. */
 const softphonePrimaryIds = new Set<string>();
 
@@ -965,7 +981,11 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     if (softphoneOwnerId !== ownerIdRef.current) return;
     if (snap.callState !== "ended" || !snap.callId) return;
     void endSession(snap.callId, snap.errorCause || "hangup");
-  }, [snap.callState, snap.callId, snap.errorCause, ownerTick]);
+    // Le client peut raccrocher en premier : la question de consentement doit
+    // aussi s'afficher quand la fin d'appel vient du réseau, pas seulement
+    // quand le courtier appuie sur Raccrocher.
+    emitCallEnded(restCall?.id ?? snap.callId);
+  }, [snap.callState, snap.callId, snap.errorCause, restCall?.id, ownerTick]);
 
   const registered = snap.status === "registered";
 
@@ -1355,11 +1375,7 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     const callId = ppSipProvider.getSnapshot().callId;
     const restId = restCall?.id ?? null;
     // Fin d'appel : demander au courtier s'il sauvegarde l'appel dans Maestro.
-    try {
-      window.dispatchEvent(new CustomEvent("pp:call-ended", {
-        detail: { providerCallId: restId || callId || null },
-      }));
-    } catch { /* l'écran de consentement reste accessible depuis l'historique */ }
+    emitCallEnded(restId || callId || null);
     console.info("[hangup] requested", { sipCallId: callId || null, restCallId: restId, hasLiveSipSession });
     // Always signal the PBX over REST as well, with retry + backoff: the SIP BYE
     // can be lost when the WebSocket dropped or the session never reached

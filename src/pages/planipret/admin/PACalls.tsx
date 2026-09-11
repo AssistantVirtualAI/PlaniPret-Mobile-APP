@@ -11,6 +11,9 @@ import { applyPlanipretCallFilters } from "@/lib/planipret/adminCounts";
 import { usePlanipretNsAutoSync } from "@/hooks/usePlanipretNsAutoSync";
 import NsSyncBar from "@/components/planipret/admin/NsSyncBar";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import PPPageBanner from "@/components/planipret/analytics/PPPageBanner";
+import PPActivityCharts from "@/components/planipret/analytics/PPActivityCharts";
+import ppBanner from "@/assets/planipret/banner-calls.jpg";
 
 const ACCENT = "#2E9BDC";
 const SUCCESS = "#00D4AA";
@@ -131,8 +134,18 @@ export default function PACalls() {
   const paged = rows;
 
   const exportCsv = async () => {
-    const q = buildQuery().order("started_at", { ascending: false }).limit(5000);
-    const { data: all } = await q;
+    // Export paginé : 1 000 lignes par lot pour éviter les délais SQL.
+    const BATCH = 1000;
+    const MAX = 5000;
+    const all: any[] = [];
+    for (let offset = 0; offset < MAX; offset += BATCH) {
+      const { data: batch, error } = await buildQuery()
+        .order("started_at", { ascending: false })
+        .range(offset, offset + BATCH - 1);
+      if (error) break;
+      all.push(...((batch as any[]) ?? []));
+      if (!batch || batch.length < BATCH) break;
+    }
     const headers = [t("adminPortal.calls.colBroker"), t("adminPortal.calls.direction"), t("adminPortal.calls.colFrom"), t("adminPortal.calls.colTo"), t("adminPortal.calls.colDuration"), t("adminPortal.calls.colDate")];
     const lines = [headers.join(",")].concat((all ?? []).map((r: any) =>
       [brokerName(r), r.direction, r.from_number, r.to_number, r.duration_seconds, r.started_at].map((v) => `"${v ?? ""}"`).join(",")
@@ -145,6 +158,14 @@ export default function PACalls() {
 
   return (
     <div className="pa-page space-y-5">
+      <PPPageBanner
+        image={ppBanner}
+        accent="#3B82F6"
+        title={lang === "en" ? "Calls · global view" : "Appels · vue globale"}
+        subtitle={lang === "en" ? "Volume, peak hours and breakdown over 30 days" : "Volume, heures de pointe et répartition sur 30 jours"}
+      />
+      <PPActivityCharts kind="calls" lang={lang === "en" ? "en" : "fr"} />
+
       <DebugPanel entries={debug} />
 
       <NsSyncBar features={["cdrs", "recordings"]} onReload={() => load(page, pageSize)} />
@@ -181,20 +202,21 @@ export default function PACalls() {
         <table className="w-full text-sm">
           <thead style={{ background: "var(--pp-bg-elevated)" }}>
             <tr style={{ fontSize: 10, textTransform: "uppercase", letterSpacing: "0.05em", color: "var(--pp-text-faint)" }} className="text-left">
-              <th className="p-3">{t("adminPortal.calls.colBroker")}</th><th>{t("adminPortal.calls.colDir")}</th><th>{t("adminPortal.calls.colFrom")}</th><th>{t("adminPortal.calls.colTo")}</th><th>{t("adminPortal.calls.colDuration")}</th><th>{t("adminPortal.calls.colDate")}</th><th>{t("adminPortal.calls.colRec")}</th><th>{t("adminPortal.calls.colAi")}</th><th></th>
+              <th className="p-3">{t("adminPortal.calls.colBroker")}</th><th>{t("adminPortal.calls.colDir")}</th><th>{t("adminPortal.calls.colFrom")}</th><th>{t("adminPortal.calls.colTo")}</th><th>{t("adminPortal.calls.colDuration")}</th><th>{t("adminPortal.calls.colDate")}</th><th>{t("adminPortal.calls.colRec")}</th><th>{t("adminPortal.calls.colAi")}</th><th>Maestro</th><th></th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
               Array.from({ length: 6 }).map((_, i) => (
                 <tr key={i} style={{ borderTop: "1px solid rgba(255,255,255,0.04)" }}>
-                  {Array.from({ length: 9 }).map((_, j) => (
+                  {Array.from({ length: 10 }).map((_, j) => (
                     <td key={j} className="p-3"><div className="h-3 w-3/4 animate-pulse rounded" style={{ background: "var(--pp-bg-elevated)" }} /></td>
                   ))}
                 </tr>
               ))
             ) : paged.length === 0 ? (
-              <tr><td colSpan={9}>
+              <tr><td colSpan={10}>
+
                 <TableEmptyState
                   icon="📞"
                   title={t("adminPortal.calls.emptyTitle")}
@@ -228,7 +250,9 @@ export default function PACalls() {
                   <td style={{ fontSize: 11, color: "var(--pp-text-faint)" }}>{c.started_at ? new Date(c.started_at).toLocaleString(lang === "en" ? "en-CA" : "fr-CA", { dateStyle: "short", timeStyle: "short" }) : ""}</td>
                   <td>{c.recording_url && <Mic className="w-3.5 h-3.5" style={{ color: "var(--pp-text-muted)" }} />}</td>
                   <td>{c.ai_summary && <Sparkles className="w-3.5 h-3.5" style={{ color: AGENT }} />}</td>
+                  <td><MaestroBadge call={c} lang={lang} /></td>
                   <td><button className="p-1.5 rounded hover:bg-white/[0.05]"><Eye className="w-3.5 h-3.5" style={{ color: "var(--pp-text-muted)" }} /></button></td>
+
                 </tr>
               );
             })}
@@ -269,6 +293,7 @@ export default function PACalls() {
               {detail.ai_summary && (
                 <div><p style={{ fontSize: 11, color: "var(--pp-text-muted)", marginBottom: 4 }}>{t("adminPortal.calls.aiSummary")}</p><div className="p-3 rounded" style={{ fontSize: 11, background: "rgba(155,127,232,0.08)", border: `1px solid ${AGENT}33`, color: "var(--pp-text-primary)" }}>{detail.ai_summary}</div></div>
               )}
+              <MaestroSyncPanel call={detail} lang={lang} onDone={() => load(page, pageSize)} />
             </div>
           </div>
         </div>
@@ -276,6 +301,59 @@ export default function PACalls() {
     </div>
   );
 }
+
+/** Statut de synchronisation Maestro d'un appel. */
+function maestroState(c: any) {
+  if (!c?.maestro_call_id) return "none" as const;
+  return c?.metadata?.maestro_media_synced_at ? ("full" as const) : ("partial" as const);
+}
+
+function MaestroBadge({ call, lang }: { call: any; lang: string }) {
+  const s = maestroState(call);
+  const en = lang === "en";
+  const map = {
+    full: { c: SUCCESS, l: en ? "Synced" : "Synchronisé" },
+    partial: { c: "#E8A33D", l: en ? "Partial" : "Partiel" },
+    none: { c: "var(--pp-text-faint)", l: en ? "Not sent" : "Non envoyé" },
+  } as const;
+  const m = map[s];
+  return (
+    <span className="px-1.5 py-0.5 rounded" style={{ fontSize: 10, color: m.c, border: `1px solid ${m.c}55` }}>{m.l}</span>
+  );
+}
+
+function MaestroSyncPanel({ call, lang, onDone }: { call: any; lang: string; onDone: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const en = lang === "en";
+  const s = maestroState(call);
+  const retry = async () => {
+    setBusy(true);
+    const { data, error } = await supabase.functions.invoke("maestro-sync-call", { body: { call_id: call.id, force: true } });
+    setBusy(false);
+    if (error || (data as any)?.success === false) toast.error(en ? "Maestro sync failed" : "Échec de la synchro Maestro");
+    else { toast.success(en ? "Sent to Maestro" : "Renvoyé vers Maestro"); onDone(); }
+  };
+  return (
+    <div className="pt-2" style={{ borderTop: "1px solid var(--pp-bg-border-2)" }}>
+      <div className="flex items-center justify-between">
+        <span style={{ fontSize: 11, color: "var(--pp-text-muted)" }}>Maestro</span>
+        <MaestroBadge call={call} lang={lang} />
+      </div>
+      {s !== "none" && call?.metadata?.maestro_media_synced_at && (
+        <p style={{ fontSize: 10, color: "var(--pp-text-faint)", marginTop: 4 }}>
+          {new Date(call.metadata.maestro_media_synced_at).toLocaleString(en ? "en-CA" : "fr-CA")}
+        </p>
+      )}
+      <button onClick={retry} disabled={busy}
+        className="mt-2 w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-xs"
+        style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)", opacity: busy ? 0.6 : 1 }}>
+        <RefreshCw className={`w-3.5 h-3.5 ${busy ? "animate-spin" : ""}`} />
+        {en ? "Resend to Maestro" : "Renvoyer vers Maestro"}
+      </button>
+    </div>
+  );
+}
+
 
 function Input({ label, type = "text", value, onChange, placeholder }: any) {
   return (

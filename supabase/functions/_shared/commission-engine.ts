@@ -98,8 +98,15 @@ const volumeKey = (r: RegisterRow) =>
     Math.abs(n(r.loan_amt)).toFixed(2),
   ].join("|");
 
+/**
+ * A `base` row without a loan amount is never a mortgage file: Maestro uses it for
+ * referral / partner payouts (insurers, "Elle Conseille", iA referrals, ...).
+ * It must not create a deal, volume, nor gross commission.
+ */
+const isReferralPayout = (r: RegisterRow) => isBase(r) && n(r.loan_amt) === 0;
+
 /** Per-row classification memo (regex + string work done once per row, not per period). */
-interface RowFlags { base: boolean; adjustment: boolean; insurance: boolean; loan: number; vKey: string; dKey: string }
+interface RowFlags { base: boolean; adjustment: boolean; insurance: boolean; referral: boolean; loan: number; vKey: string; dKey: string }
 const flagCache = new WeakMap<RegisterRow, RowFlags>();
 function flags(r: RegisterRow): RowFlags {
   let f = flagCache.get(r);
@@ -108,6 +115,7 @@ function flags(r: RegisterRow): RowFlags {
       base: isBase(r),
       adjustment: isAdjustment(r),
       insurance: isInsurance(r),
+      referral: isReferralPayout(r),
       loan: n(r.loan_amt),
       vKey: volumeKey(r),
       dKey: normalizedKeyPart(r.number),
@@ -123,6 +131,7 @@ export type ExclusionReason =
   | "reversal_row"
   | "adjustment"
   | "insurance"
+  | "referral_no_loan"
   | "non_base"
   | "no_loan_amount";
 
@@ -161,9 +170,9 @@ function computeWindow(rows: RegisterRow[], w: Window): WindowComputation {
     windowRows.push(r);
     const f = flags(r);
     if (f.insurance) { excluded.push({ row: r, reason: "insurance" }); continue; }
+    if (f.referral) { excluded.push({ row: r, reason: "referral_no_loan" }); continue; }
     if (!f.base) { if (f.loan !== 0) excluded.push({ row: r, reason: "non_base" }); continue; }
     if (f.adjustment) { excluded.push({ row: r, reason: "adjustment" }); continue; }
-    if (f.loan === 0) { candidates.push(r); continue; } // zero-amount base row: deal only
     candidates.push(r);
   }
 
@@ -171,10 +180,8 @@ function computeWindow(rows: RegisterRow[], w: Window): WindowComputation {
   // volume of their positive twin, they simply do not add volume themselves.
   const seen = new Set<string>();
   const volume: RegisterRow[] = [];
-  const zeroLoanBase: RegisterRow[] = [];
   for (const r of candidates) {
     const f = flags(r);
-    if (f.loan === 0) { zeroLoanBase.push(r); continue; }
     if (f.loan < 0) { excluded.push({ row: r, reason: "reversal_row" }); continue; }
     if (seen.has(f.vKey)) { excluded.push({ row: r, reason: "duplicate_amount" }); continue; }
     seen.add(f.vKey);
@@ -185,7 +192,7 @@ function computeWindow(rows: RegisterRow[], w: Window): WindowComputation {
   // (calendar-year rule: a contract counts once per period, never twice).
   const seenDeal = new Set<string>();
   const deals: RegisterRow[] = [];
-  for (const r of [...volume, ...zeroLoanBase]) {
+  for (const r of volume) {
     const k = flags(r).dKey;
     if (seenDeal.has(k)) continue;
     seenDeal.add(k);
@@ -269,7 +276,11 @@ export function periodDeals(rows: RegisterRow[], w: Window, c: Criteria = {}): n
 
 export function periodCommission(rows: RegisterRow[], w: Window, c: Criteria = {}): number {
   let sum = 0;
-  for (const r of windowRows(rows, w)) if (!flags(r).insurance && matches(r, c)) sum += n(r.amount);
+  for (const r of windowRows(rows, w)) {
+    const f = flags(r);
+    if (f.insurance || f.referral) continue; // insurers + referral payouts are outside broker commissions
+    if (matches(r, c)) sum += n(r.amount);
+  }
   return sum;
 }
 

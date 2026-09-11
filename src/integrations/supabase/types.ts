@@ -8083,6 +8083,72 @@ export type Database = {
           },
         ]
       }
+      planipret_ava_action_confirmations: {
+        Row: {
+          action: string
+          broker_id: string | null
+          call_id: string | null
+          created_at: string
+          decided_at: string | null
+          decision: string
+          destination: string | null
+          error_code: string | null
+          executed_at: string | null
+          id: string
+          idempotency_key: string
+          proposed_at: string
+          provider: string | null
+          result: Json | null
+          session_id: string | null
+          status: string
+          surface: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          action: string
+          broker_id?: string | null
+          call_id?: string | null
+          created_at?: string
+          decided_at?: string | null
+          decision?: string
+          destination?: string | null
+          error_code?: string | null
+          executed_at?: string | null
+          id?: string
+          idempotency_key: string
+          proposed_at?: string
+          provider?: string | null
+          result?: Json | null
+          session_id?: string | null
+          status?: string
+          surface?: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          action?: string
+          broker_id?: string | null
+          call_id?: string | null
+          created_at?: string
+          decided_at?: string | null
+          decision?: string
+          destination?: string | null
+          error_code?: string | null
+          executed_at?: string | null
+          id?: string
+          idempotency_key?: string
+          proposed_at?: string
+          provider?: string | null
+          result?: Json | null
+          session_id?: string | null
+          status?: string
+          surface?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       planipret_ava_action_log: {
         Row: {
           action_params: Json | null
@@ -8651,6 +8717,68 @@ export type Database = {
             columns: ["user_id"]
             isOneToOne: false
             referencedRelation: "planipret_profiles"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      planipret_call_followups: {
+        Row: {
+          approved_at: string | null
+          body: string
+          call_id: string | null
+          created_at: string
+          error: string | null
+          id: string
+          kind: string
+          maestro_client_id: string | null
+          recipient: string
+          recipient_name: string | null
+          sent_at: string | null
+          status: string
+          subject: string | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          approved_at?: string | null
+          body: string
+          call_id?: string | null
+          created_at?: string
+          error?: string | null
+          id?: string
+          kind: string
+          maestro_client_id?: string | null
+          recipient: string
+          recipient_name?: string | null
+          sent_at?: string | null
+          status?: string
+          subject?: string | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          approved_at?: string | null
+          body?: string
+          call_id?: string | null
+          created_at?: string
+          error?: string | null
+          id?: string
+          kind?: string
+          maestro_client_id?: string | null
+          recipient?: string
+          recipient_name?: string | null
+          sent_at?: string | null
+          status?: string
+          subject?: string | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "planipret_call_followups_call_id_fkey"
+            columns: ["call_id"]
+            isOneToOne: false
+            referencedRelation: "planipret_phone_calls"
             referencedColumns: ["id"]
           },
         ]
@@ -9414,6 +9542,84 @@ export type Database = {
         }
         Relationships: []
       }
+      planipret_contracts: {
+        Row: {
+          broker_name: string | null
+          broker_profile_id: string
+          calls_synced: number
+          calls_total: number
+          clients: Json
+          contract_id: string
+          contract_number: string | null
+          created_at: string
+          date_closing: string | null
+          date_maturity: string | null
+          id: string
+          last_activity_at: string | null
+          loan_amt: number | null
+          maestro_status: string | null
+          rate: string | null
+          raw: Json
+          source: string | null
+          status: string | null
+          synced_at: string
+          updated_at: string
+          with_coaching: number
+          with_summary: number
+          with_transcript: number
+        }
+        Insert: {
+          broker_name?: string | null
+          broker_profile_id: string
+          calls_synced?: number
+          calls_total?: number
+          clients?: Json
+          contract_id: string
+          contract_number?: string | null
+          created_at?: string
+          date_closing?: string | null
+          date_maturity?: string | null
+          id?: string
+          last_activity_at?: string | null
+          loan_amt?: number | null
+          maestro_status?: string | null
+          rate?: string | null
+          raw?: Json
+          source?: string | null
+          status?: string | null
+          synced_at?: string
+          updated_at?: string
+          with_coaching?: number
+          with_summary?: number
+          with_transcript?: number
+        }
+        Update: {
+          broker_name?: string | null
+          broker_profile_id?: string
+          calls_synced?: number
+          calls_total?: number
+          clients?: Json
+          contract_id?: string
+          contract_number?: string | null
+          created_at?: string
+          date_closing?: string | null
+          date_maturity?: string | null
+          id?: string
+          last_activity_at?: string | null
+          loan_amt?: number | null
+          maestro_status?: string | null
+          rate?: string | null
+          raw?: Json
+          source?: string | null
+          status?: string | null
+          synced_at?: string
+          updated_at?: string
+          with_coaching?: number
+          with_summary?: number
+          with_transcript?: number
+        }
+        Relationships: []
+      }
       planipret_did_assignments: {
         Row: {
           callerid_name: string | null
@@ -9903,6 +10109,60 @@ export type Database = {
         }
         Relationships: []
       }
+      planipret_maestro_activity: {
+        Row: {
+          created_at: string
+          direction: string | null
+          duration_seconds: number
+          id: string
+          is_ai: boolean
+          kind: string
+          maestro_object_id: string | null
+          maestro_status: string
+          occurred_at: string
+          peer_number: string | null
+          source_id: string
+          source_table: string
+          status: string | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          direction?: string | null
+          duration_seconds?: number
+          id?: string
+          is_ai?: boolean
+          kind: string
+          maestro_object_id?: string | null
+          maestro_status?: string
+          occurred_at?: string
+          peer_number?: string | null
+          source_id: string
+          source_table: string
+          status?: string | null
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          direction?: string | null
+          duration_seconds?: number
+          id?: string
+          is_ai?: boolean
+          kind?: string
+          maestro_object_id?: string | null
+          maestro_status?: string
+          occurred_at?: string
+          peer_number?: string | null
+          source_id?: string
+          source_table?: string
+          status?: string | null
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       planipret_maestro_call_dedupe: {
         Row: {
           created_at: string
@@ -10080,6 +10340,54 @@ export type Database = {
         }
         Relationships: []
       }
+      planipret_maestro_sms_threads: {
+        Row: {
+          contact_number: string
+          created_at: string
+          id: string
+          last_error: string | null
+          last_message_at: string | null
+          last_pushed_at: string | null
+          maestro_broker_id: string | null
+          maestro_thread_id: string | null
+          message_count: number
+          pushed_count: number
+          status: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          contact_number: string
+          created_at?: string
+          id?: string
+          last_error?: string | null
+          last_message_at?: string | null
+          last_pushed_at?: string | null
+          maestro_broker_id?: string | null
+          maestro_thread_id?: string | null
+          message_count?: number
+          pushed_count?: number
+          status?: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          contact_number?: string
+          created_at?: string
+          id?: string
+          last_error?: string | null
+          last_message_at?: string | null
+          last_pushed_at?: string | null
+          maestro_broker_id?: string | null
+          maestro_thread_id?: string | null
+          message_count?: number
+          pushed_count?: number
+          status?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       planipret_maestro_sync_log: {
         Row: {
           action: string | null
@@ -10118,6 +10426,53 @@ export type Database = {
           user_id?: string | null
         }
         Relationships: []
+      }
+      planipret_ms_auth_attempts: {
+        Row: {
+          attempt_type: string
+          created_at: string
+          email: string | null
+          error_code: string | null
+          error_message: string | null
+          id: string
+          paused: boolean
+          profile_id: string | null
+          source: string | null
+          status: string
+        }
+        Insert: {
+          attempt_type?: string
+          created_at?: string
+          email?: string | null
+          error_code?: string | null
+          error_message?: string | null
+          id?: string
+          paused?: boolean
+          profile_id?: string | null
+          source?: string | null
+          status: string
+        }
+        Update: {
+          attempt_type?: string
+          created_at?: string
+          email?: string | null
+          error_code?: string | null
+          error_message?: string | null
+          id?: string
+          paused?: boolean
+          profile_id?: string | null
+          source?: string | null
+          status?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "planipret_ms_auth_attempts_profile_id_fkey"
+            columns: ["profile_id"]
+            isOneToOne: false
+            referencedRelation: "planipret_profiles"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       planipret_ms_contacts: {
         Row: {
@@ -10409,6 +10764,9 @@ export type Database = {
           callback_reason: string | null
           coaching_score: number | null
           created_at: string
+          delete_reason: string | null
+          deleted_at: string | null
+          deleted_by: string | null
           direction: string
           duration_seconds: number | null
           ended_at: string | null
@@ -10429,6 +10787,8 @@ export type Database = {
           maestro_media_sync_error: string | null
           maestro_media_synced_at: string | null
           maestro_mortgage_stage: string | null
+          maestro_purge_error: string | null
+          maestro_purged_at: string | null
           maestro_synced: boolean
           maestro_tasks_created: Json
           metadata: Json
@@ -10450,6 +10810,10 @@ export type Database = {
           recording_cached_at: string | null
           recording_storage_path: string | null
           recording_url: string | null
+          save_consent: string
+          save_consent_at: string | null
+          save_consent_by: string | null
+          save_consent_channel: string | null
           started_at: string | null
           status: string | null
           suggested_callback_delay: string | null
@@ -10485,6 +10849,9 @@ export type Database = {
           callback_reason?: string | null
           coaching_score?: number | null
           created_at?: string
+          delete_reason?: string | null
+          deleted_at?: string | null
+          deleted_by?: string | null
           direction: string
           duration_seconds?: number | null
           ended_at?: string | null
@@ -10505,6 +10872,8 @@ export type Database = {
           maestro_media_sync_error?: string | null
           maestro_media_synced_at?: string | null
           maestro_mortgage_stage?: string | null
+          maestro_purge_error?: string | null
+          maestro_purged_at?: string | null
           maestro_synced?: boolean
           maestro_tasks_created?: Json
           metadata?: Json
@@ -10526,6 +10895,10 @@ export type Database = {
           recording_cached_at?: string | null
           recording_storage_path?: string | null
           recording_url?: string | null
+          save_consent?: string
+          save_consent_at?: string | null
+          save_consent_by?: string | null
+          save_consent_channel?: string | null
           started_at?: string | null
           status?: string | null
           suggested_callback_delay?: string | null
@@ -10561,6 +10934,9 @@ export type Database = {
           callback_reason?: string | null
           coaching_score?: number | null
           created_at?: string
+          delete_reason?: string | null
+          deleted_at?: string | null
+          deleted_by?: string | null
           direction?: string
           duration_seconds?: number | null
           ended_at?: string | null
@@ -10581,6 +10957,8 @@ export type Database = {
           maestro_media_sync_error?: string | null
           maestro_media_synced_at?: string | null
           maestro_mortgage_stage?: string | null
+          maestro_purge_error?: string | null
+          maestro_purged_at?: string | null
           maestro_synced?: boolean
           maestro_tasks_created?: Json
           metadata?: Json
@@ -10602,6 +10980,10 @@ export type Database = {
           recording_cached_at?: string | null
           recording_storage_path?: string | null
           recording_url?: string | null
+          save_consent?: string
+          save_consent_at?: string | null
+          save_consent_by?: string | null
+          save_consent_channel?: string | null
           started_at?: string | null
           status?: string | null
           suggested_callback_delay?: string | null
@@ -10820,96 +11202,6 @@ export type Database = {
           },
         ]
       }
-      planipret_portal_2fa_backup_codes: {
-        Row: {
-          code_hash: string
-          created_at: string
-          id: string
-          used_at: string | null
-          user_id: string
-        }
-        Insert: {
-          code_hash: string
-          created_at?: string
-          id?: string
-          used_at?: string | null
-          user_id: string
-        }
-        Update: {
-          code_hash?: string
-          created_at?: string
-          id?: string
-          used_at?: string | null
-          user_id?: string
-        }
-        Relationships: []
-      }
-      planipret_portal_2fa_challenges: {
-        Row: {
-          attempts: number
-          code_hash: string
-          consumed_at: string | null
-          created_at: string
-          email: string | null
-          expires_at: string
-          id: string
-          phone_e164: string | null
-          sent_via: string | null
-          session_id: string | null
-          user_id: string
-        }
-        Insert: {
-          attempts?: number
-          code_hash: string
-          consumed_at?: string | null
-          created_at?: string
-          email?: string | null
-          expires_at: string
-          id?: string
-          phone_e164?: string | null
-          sent_via?: string | null
-          session_id?: string | null
-          user_id: string
-        }
-        Update: {
-          attempts?: number
-          code_hash?: string
-          consumed_at?: string | null
-          created_at?: string
-          email?: string | null
-          expires_at?: string
-          id?: string
-          phone_e164?: string | null
-          sent_via?: string | null
-          session_id?: string | null
-          user_id?: string
-        }
-        Relationships: []
-      }
-      planipret_portal_2fa_sessions: {
-        Row: {
-          expires_at: string
-          id: string
-          session_id: string
-          user_id: string
-          verified_at: string
-        }
-        Insert: {
-          expires_at: string
-          id?: string
-          session_id: string
-          user_id: string
-          verified_at?: string
-        }
-        Update: {
-          expires_at?: string
-          id?: string
-          session_id?: string
-          user_id?: string
-          verified_at?: string
-        }
-        Relationships: []
-      }
       planipret_portal_access_log: {
         Row: {
           created_at: string
@@ -11052,6 +11344,8 @@ export type Database = {
           metadata: Json
           mobile_app_enabled: boolean
           ms365_access_token: string | null
+          ms365_auth_error: string | null
+          ms365_auth_paused_at: string | null
           ms365_display_name: string | null
           ms365_email: string | null
           ms365_refresh_token: string | null
@@ -11159,6 +11453,8 @@ export type Database = {
           metadata?: Json
           mobile_app_enabled?: boolean
           ms365_access_token?: string | null
+          ms365_auth_error?: string | null
+          ms365_auth_paused_at?: string | null
           ms365_display_name?: string | null
           ms365_email?: string | null
           ms365_refresh_token?: string | null
@@ -11266,6 +11562,8 @@ export type Database = {
           metadata?: Json
           mobile_app_enabled?: boolean
           ms365_access_token?: string | null
+          ms365_auth_error?: string | null
+          ms365_auth_paused_at?: string | null
           ms365_display_name?: string | null
           ms365_email?: string | null
           ms365_refresh_token?: string | null
@@ -11775,6 +12073,42 @@ export type Database = {
           idempotency_key?: string
           response?: Json | null
           task_id?: string | null
+          user_id?: string
+        }
+        Relationships: []
+      }
+      planipret_task_reminders: {
+        Row: {
+          created_at: string
+          due_at: string | null
+          email: string | null
+          id: string
+          kind: string
+          sent_at: string
+          task_id: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          due_at?: string | null
+          email?: string | null
+          id?: string
+          kind: string
+          sent_at?: string
+          task_id: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          due_at?: string | null
+          email?: string | null
+          id?: string
+          kind?: string
+          sent_at?: string
+          task_id?: string
+          updated_at?: string
           user_id?: string
         }
         Relationships: []
@@ -15573,6 +15907,16 @@ export type Database = {
         }[]
       }
       get_my_extension_summary: { Args: never; Returns: Json }
+      get_my_softphone_credentials: {
+        Args: never
+        Returns: {
+          extension: string
+          id: string
+          sip_domain: string
+          sip_password: string
+          wss_url: string
+        }[]
+      }
       get_org_by_fusionpbx_domain: {
         Args: { _domain_uuid: string }
         Returns: {
@@ -15662,6 +16006,14 @@ export type Database = {
       is_planipret_only: { Args: { _user_id: string }; Returns: boolean }
       is_super_admin: { Args: { _user_id: string }; Returns: boolean }
       lemtel_can_grant_app_access: { Args: { _uid: string }; Returns: boolean }
+      lemtel_dashboard_daily_calls: {
+        Args: { _org: string; _since: string }
+        Returns: {
+          day: string
+          missed: number
+          total: number
+        }[]
+      }
       log_access_violation: {
         Args: {
           _action: string
@@ -15700,12 +16052,34 @@ export type Database = {
       }
       pin_chat_message: { Args: { _message_id: string }; Returns: undefined }
       planipret_ava_org_id: { Args: never; Returns: string }
+      planipret_broker_activity_stats: {
+        Args: { _since: string }
+        Returns: {
+          ai_calls: number
+          calls: number
+          calls_synced: number
+          last_activity: string
+          talk_seconds: number
+          texts: number
+          texts_synced: number
+          user_id: string
+        }[]
+      }
       planipret_broker_ids: { Args: { _uid: string }; Returns: string[] }
+      planipret_broker_task_stats: {
+        Args: never
+        Returns: {
+          open_tasks: number
+          overdue_tasks: number
+          user_id: string
+        }[]
+      }
       pp_audit_realtime_check: { Args: never; Returns: Json }
       pp_claim_call: {
         Args: { _answered_by: string; _call_id: string }
         Returns: boolean
       }
+      pp_norm_name: { Args: { t: string }; Returns: string }
       read_planipret_sip_secret: { Args: { _name: string }; Returns: string }
       reconcile_pbx_call_records: { Args: { _org_id: string }; Returns: Json }
       relink_my_softphone_user: { Args: never; Returns: Json }
@@ -15834,12 +16208,12 @@ export type Tables<
   DefaultSchemaTableNameOrOptions extends
     | keyof (DefaultSchema["Tables"] & DefaultSchema["Views"])
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof (DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"] &
         DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Views"])
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -15863,11 +16237,11 @@ export type TablesInsert<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -15888,11 +16262,11 @@ export type TablesUpdate<
   DefaultSchemaTableNameOrOptions extends
     | keyof DefaultSchema["Tables"]
     | { schema: keyof DatabaseWithoutInternals },
-  TableName extends DefaultSchemaTableNameOrOptions extends {
+  TableName extends (DefaultSchemaTableNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaTableNameOrOptions["schema"]]["Tables"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaTableNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -15913,11 +16287,11 @@ export type Enums<
   DefaultSchemaEnumNameOrOptions extends
     | keyof DefaultSchema["Enums"]
     | { schema: keyof DatabaseWithoutInternals },
-  EnumName extends DefaultSchemaEnumNameOrOptions extends {
+  EnumName extends (DefaultSchemaEnumNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[DefaultSchemaEnumNameOrOptions["schema"]]["Enums"]
-    : never = never,
+    : never) = never,
 > = DefaultSchemaEnumNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }
@@ -15930,11 +16304,11 @@ export type CompositeTypes<
   PublicCompositeTypeNameOrOptions extends
     | keyof DefaultSchema["CompositeTypes"]
     | { schema: keyof DatabaseWithoutInternals },
-  CompositeTypeName extends PublicCompositeTypeNameOrOptions extends {
+  CompositeTypeName extends (PublicCompositeTypeNameOrOptions extends {
     schema: keyof DatabaseWithoutInternals
   }
     ? keyof DatabaseWithoutInternals[PublicCompositeTypeNameOrOptions["schema"]]["CompositeTypes"]
-    : never = never,
+    : never) = never,
 > = PublicCompositeTypeNameOrOptions extends {
   schema: keyof DatabaseWithoutInternals
 }

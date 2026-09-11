@@ -4,6 +4,7 @@ import { ChevronLeft } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { usePlanipretTasks } from "@/hooks/planipret/usePlanipretTasks";
 import ClientMaestroDetail from "@/components/planipret/clients/ClientMaestroDetail";
+import SmsDraftSheet, { type SmsDraftTarget } from "@/components/planipret/mobile/SmsDraftSheet";
 
 /** Fiche d'un client : appels, tâches, dossiers et commissions. */
 export default function MClientDetail() {
@@ -21,6 +22,7 @@ export default function MClientDetail() {
     return () => { alive = false; };
   }, []);
 
+  const [smsTarget, setSmsTarget] = useState<SmsDraftTarget | null>(null);
   const { tasks, loading, lastSyncAt, setFilter } = usePlanipretTasks(userId);
   useEffect(() => { setFilter("all"); }, [setFilter]);
 

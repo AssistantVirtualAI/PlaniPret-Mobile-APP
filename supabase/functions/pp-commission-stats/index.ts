@@ -105,18 +105,28 @@ Deno.serve(async (req) => {
     const isAdmin = Boolean(isAdminData);
 
     // Pull the years we need: PY, CY, and the season overlap year.
+    // PostgREST caps a single response at 1000 rows, which silently truncated
+    // the register and produced impossible YoY percentages. Page explicitly.
     const years = [year - 4, year - 3, year - 2, year - 1, year, year + 1];
-    const { data: allRowsRaw, error } = await admin
-      .from("planipret_commission_register")
-      .select(
-        "number,loan_amt,institution,amount,mortgage_type,term,agent_name,target_name,date_trans,commission_type,is_adjustment,source_row,broker_user_id,first_name,last_name,maestro_broker_id,agent_key,cabinet,fiscal_year,sheet_name",
-      )
-      .in("fiscal_year", years)
-      .order("source_row", { ascending: true })
-      .limit(200000);
-    if (error) return json({ error: error.message }, 500);
+    const PAGE = 1000;
+    const allRowsRaw: any[] = [];
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await admin
+        .from("planipret_commission_register")
+        .select(
+          "number,loan_amt,institution,amount,mortgage_type,term,agent_name,target_name,date_trans,commission_type,is_adjustment,source_row,broker_user_id,first_name,last_name,maestro_broker_id,agent_key,cabinet,fiscal_year,sheet_name",
+        )
+        .in("fiscal_year", years)
+        .order("source_row", { ascending: true })
+        .range(from, from + PAGE - 1);
+      if (error) return json({ error: error.message }, 500);
+      const page = (data ?? []) as any[];
+      allRowsRaw.push(...page);
+      if (page.length < PAGE || allRowsRaw.length >= 200000) break;
+    }
 
-    const registerRows = (allRowsRaw ?? []) as RegisterRow[];
+    const registerRows = allRowsRaw as RegisterRow[];
+
 
     // ---- Live Maestro deposits merged into the same dataset ---------------
     // One single page: the register (historical import) and the live API feed
@@ -390,11 +400,12 @@ Deno.serve(async (req) => {
         .reduce((s, r) => s + Number(r.amount ?? 0), 0),
     })).sort((a, b) => b.amount - a.amount);
 
-    // Club Excellence — nominative standings across all brokers
+    // Club Excellence — nominative standings. Only admins see the whole firm;
+    // a broker only ever gets his own line (with his rank inside the standings).
     const seasonCur = seasonWindow(year - (month >= 8 ? 0 : 1));
     const seasonPrev = seasonWindow(year - (month >= 8 ? 1 : 2));
     const brokerNames = uniq(volumeTranches(allRows, seasonCur).map((r) => r.agent_name));
-    const club = brokerNames
+    const clubFull = brokerNames
       .map((name) => {
         const c = metrics(allRows, seasonCur, { broker: name });
         const p = metrics(allRows, seasonPrev, { broker: name });
@@ -418,6 +429,13 @@ Deno.serve(async (req) => {
       })
       .sort((a, b) => b.volume - a.volume)
       .map((x, i) => ({ rank: i + 1, ...x }));
+
+    const isMeClub = (x: any) =>
+      x.isMe
+      || (myMaestroId && String(x.maestroBrokerId ?? "") === String(myMaestroId))
+      || x.brokerUserId === user.id
+      || (agentKey(x.broker) && myKeys.has(agentKey(x.broker) as string));
+    const club = isAdmin && scope === "all" ? clubFull : clubFull.filter(isMeClub);
 
     const clubMonthly = Array.from({ length: 12 }, (_, i) => {
       const m = ((7 + i) % 12) + 1; // Aug..Jul
