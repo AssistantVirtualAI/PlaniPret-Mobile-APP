@@ -137,7 +137,9 @@ export const listContracts = (cfg: MaestroConfig, query: Record<string, any> = {
 export const createContract = (cfg: MaestroConfig, body: Record<string, unknown>, o: Opts = {}) =>
   scribeFetch(cfg, "/contracts", { method: "POST", body, ...o });
 export const updateContract = (cfg: MaestroConfig, contractId: string | number, body: Record<string, unknown>, o: Opts = {}) =>
-  scribeFetch(cfg, `/contracts/${id(contractId)}`, { method: "PUT", body, ...o });
+  scribeFetch(cfg, `/contracts/${id(contractId)}`, { method: "PUT", body: { contract_id: Number(contractId), ...body }, ...o });
+export const deleteContract = (cfg: MaestroConfig, contractId: string | number, o: Opts = {}) =>
+  scribeFetch(cfg, `/contracts/${id(contractId)}`, { method: "DELETE", body: { contract_id: Number(contractId) }, ...o });
 
 // ── Financial institutions ───────────────────────────────────────────────
 export const listFinancialInstitutions = (cfg: MaestroConfig, o: Opts = {}) =>

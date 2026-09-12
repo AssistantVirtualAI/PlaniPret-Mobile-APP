@@ -90,6 +90,8 @@ export default function AvaProposedActionsCard({ analysis, onDismiss }: { analys
         analysis_id: analysis.id,
         action_id: action.id,
         modified_content: drafts[action.id] !== action.draft_content ? drafts[action.id] : undefined,
+        confirmed: true,
+        idempotency_key: `${analysis.id}:${action.id}:${(drafts[action.id] ?? "").length}`,
       },
     });
     if (error || !(data as any)?.success) {

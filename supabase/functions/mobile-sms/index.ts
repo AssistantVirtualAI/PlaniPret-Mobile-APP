@@ -38,6 +38,13 @@ Deno.serve(async (req) => {
       const text = (body.body as string || "").trim();
       if (!threadId || !text) return json({ error: "missing_fields" }, 400);
 
+      // Un brouillon préparé par AVA ne part jamais sans confirmation explicite du courtier.
+      const avaOriginated = String(body.origin ?? body.surface ?? "").toLowerCase().includes("ava")
+        || body.ava_generated === true || body.draft === true;
+      if (avaOriginated && body.confirmed !== true) {
+        return json({ error: "confirmation_required", needs_confirmation: true }, 403);
+      }
+
       const { data: th } = await sb.from("pbx_sms_threads")
         .select("id, did_number, contact_phone, organization_id")
         .eq("id", threadId).maybeSingle();

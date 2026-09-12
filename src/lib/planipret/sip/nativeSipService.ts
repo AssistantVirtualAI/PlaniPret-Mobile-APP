@@ -57,6 +57,7 @@ interface PjsipPlugin {
   answerCall(opts: { callId?: string }): Promise<{ callId: string }>;
   hangupCall(opts: { callId?: string }): Promise<{ ok: boolean }>;
   setMute(opts: { muted: boolean }): Promise<{ ok: boolean }>;
+  setHold(opts: { onHold: boolean }): Promise<{ ok: boolean }>;
   setSpeaker(opts: { enabled: boolean }): Promise<{ ok: boolean }>;
   sendDTMF(opts: { digits: string }): Promise<{ ok: boolean }>;
   getState(): Promise<{
@@ -624,6 +625,7 @@ export class NativeSipService {
   }
 
   async setMute(muted: boolean) { await getPjsip()?.setMute({ muted }).catch(() => {}); }
+  async setHold(onHold: boolean) { await getPjsip()?.setHold({ onHold }).catch(() => {}); }
   async setSpeaker(enabled: boolean) { await getPjsip()?.setSpeaker({ enabled }).catch(() => {}); }
   async sendDTMF(digits: string) { await getPjsip()?.sendDTMF({ digits }).catch(() => {}); }
 

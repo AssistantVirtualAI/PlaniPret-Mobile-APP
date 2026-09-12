@@ -1,3 +1,4 @@
+import { PAPageHeader } from "@/components/planipret/admin/PAPageShell";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
@@ -123,17 +124,18 @@ export default function PATelecomMapping() {
   };
 
   return (
-    <div className="p-6 space-y-6">
-      <header className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <h1 className="text-2xl font-semibold">{t.title}</h1>
-          <p className="text-sm text-muted-foreground max-w-2xl">{t.sub}</p>
-        </div>
-        <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
-          <RefreshCw className={`w-4 h-4 mr-2 ${loading ? "animate-spin" : ""}`} />
-          {fr ? "Actualiser" : "Refresh"}
-        </Button>
-      </header>
+    <div className="pa-page">
+      <PAPageHeader
+        icon={<Search className="h-[18px] w-[18px]" />}
+        title={t.title}
+        subtitle={t.sub}
+        actions={
+          <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
+            <RefreshCw className={`w-4 h-4 mr-2 ${loading ? "animate-spin" : ""}`} />
+            {fr ? "Actualiser" : "Refresh"}
+          </Button>
+        }
+      />
 
       <Card className="p-4 space-y-4">
         <div className="relative max-w-sm">

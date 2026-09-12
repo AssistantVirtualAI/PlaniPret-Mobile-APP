@@ -1,3 +1,4 @@
+import { PAPageHeader } from "@/components/planipret/admin/PAPageShell";
 import { useEffect, useState, useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Button } from "@/components/ui/button";
@@ -207,6 +208,7 @@ export default function PAMaestroStatus() {
           platform: "web",
           origin: "https://avastatistic.ca",
           redirect_uri: REDIRECT_URI,
+          force: true,
         },
       });
       if (fnErr) throw fnErr;
@@ -230,17 +232,18 @@ export default function PAMaestroStatus() {
 
 
   return (
-    <div className="pa-page space-y-5">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">{t.title}</h1>
-          <p className="text-sm text-muted-foreground">{t.subtitle}</p>
-        </div>
-        <Button variant="outline" size="sm" onClick={load} disabled={loading}>
-          <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} />
-          {t.refresh}
-        </Button>
-      </div>
+    <div className="pa-page">
+      <PAPageHeader
+        icon={<ShieldCheck className="h-[18px] w-[18px]" />}
+        title={t.title}
+        subtitle={t.subtitle}
+        actions={
+          <Button variant="outline" size="sm" onClick={load} disabled={loading}>
+            <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} />
+            {t.refresh}
+          </Button>
+        }
+      />
 
       {/* Guided setup wizard */}
       <Card>

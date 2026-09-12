@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import {
-  Mic, MicOff, Pause, Play, PhoneForwarded, Grid3X3, Volume2, VolumeX, PhoneOff, User, CornerUpRight,
+  Mic, MicOff, Pause, Play, PhoneForwarded, Grid3X3, Volume2, VolumeX, PhoneOff, User, CornerUpRight, Users,
 } from "lucide-react";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { useMplanipretSoftphone } from "@/hooks/useMplanipretSoftphone";
@@ -38,7 +38,11 @@ export default function ActiveCallOverlay({ callId, onClosed }: { callId: string
   const [keypadOpen, setKeypadOpen] = useState(false);
   const [dtmfBuffer, setDtmfBuffer] = useState("");
   const [transferOpen, setTransferOpen] = useState(false);
-  const [transferMode, setTransferMode] = useState<"transfer" | "forward">("transfer");
+  const [transferMode, setTransferMode] = useState<"transfer" | "forward" | "attended">("transfer");
+  // Transfert supervisé : on parle d'abord au collègue, puis on relie le client.
+  const [consultId, setConsultId] = useState<string | null>(null);
+  const [attendedTo, setAttendedTo] = useState("");
+  const [attendedBusy, setAttendedBusy] = useState(false);
   const [transferTo, setTransferTo] = useState("");
   const [elapsed, setElapsed] = useState(0);
   const [dismissed, setDismissed] = useState(false);
@@ -111,7 +115,63 @@ export default function ActiveCallOverlay({ callId, onClosed }: { callId: string
       setTransferOpen(false); setTransferTo("");
     }
   };
-  const openTransfer = (mode: "transfer" | "forward") => { setTransferMode(mode); setTransferOpen(true); };
+  const openTransfer = (mode: "transfer" | "forward" | "attended") => { setTransferMode(mode); setTransferOpen(true); };
+
+  // Étape 1 : client en attente + appel au collègue. Rien n'est transféré ici.
+  const startAttended = async () => {
+    const to = transferTo.trim();
+    if (!to || attendedBusy) return;
+    setAttendedBusy(true);
+    const { data, error } = await supabase.functions.invoke("pp-ns-calls", {
+      body: { action: "attended_start", call_id: callId, destination: to, surface: "mobile" },
+    });
+    setAttendedBusy(false);
+    const res = data as any;
+    if (error || res?.success === false) {
+      toast.error(error?.message ?? res?.error ?? t("call.attendedFailed") ?? "Transfert supervisé impossible");
+      return;
+    }
+    setConsultId(res?.consult_call_id ?? null);
+    setAttendedTo(to);
+    setHeld(true);
+    setTransferOpen(false);
+    setTransferTo("");
+    toast.success(t("call.attendedTalking") ?? "Client en attente — parlez au collègue");
+  };
+
+  // Étape 2 : confirmation explicite, le serveur relie le client au collègue.
+  const completeAttended = async () => {
+    if (attendedBusy) return;
+    setAttendedBusy(true);
+    const { data, error } = await supabase.functions.invoke("pp-ns-calls", {
+      body: { action: "attended_complete", call_id: callId, destination: attendedTo, consult_call_id: consultId, confirmed: true, surface: "mobile" },
+    });
+    setAttendedBusy(false);
+    const res = data as any;
+    if (error || res?.success === false) {
+      toast.error(error?.message ?? res?.error ?? t("call.attendedFailed") ?? "Transfert impossible");
+      return;
+    }
+    setConsultId(null); setAttendedTo("");
+    toast.success(t("call.transferSent"));
+  };
+
+  // Annulation : la consultation raccroche, le client revient en ligne.
+  const cancelAttended = async () => {
+    if (attendedBusy) return;
+    setAttendedBusy(true);
+    const { data, error } = await supabase.functions.invoke("pp-ns-calls", {
+      body: { action: "attended_cancel", call_id: callId, consult_call_id: consultId, surface: "mobile" },
+    });
+    setAttendedBusy(false);
+    const res = data as any;
+    if (error || res?.success === false) {
+      toast.error(error?.message ?? res?.error ?? t("call.attendedFailed") ?? "Reprise impossible");
+      return;
+    }
+    setConsultId(null); setAttendedTo(""); setHeld(false);
+    toast.success(t("call.attendedResumed") ?? "Client repris en ligne");
+  };
   const hangup = async () => {
     // Hide the overlay immediately — nothing the backend does can bring it back
     // for this instance because `dismissed` short-circuits render.
@@ -157,6 +217,28 @@ export default function ActiveCallOverlay({ callId, onClosed }: { callId: string
           {dtmfBuffer && <div className="mt-2 text-xs text-white/50">DTMF: {dtmfBuffer}</div>}
         </div>
 
+        {attendedTo && (
+          <div className="px-6 pb-3">
+            <div className="rounded-2xl p-3" style={{ background: "rgba(46,155,220,0.15)", border: "1px solid rgba(46,155,220,0.4)" }}>
+              <div className="text-[12px] text-white/80">
+                {(t("call.attendedWith") ?? "Client en attente — en ligne avec")} {attendedTo}
+              </div>
+              <div className="flex gap-2 mt-2">
+                <button onClick={cancelAttended} disabled={attendedBusy}
+                  className="flex-1 py-2.5 rounded-xl text-xs font-medium disabled:opacity-50"
+                  style={{ background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.18)" }}>
+                  {t("call.attendedBack") ?? "Reprendre le client"}
+                </button>
+                <button onClick={completeAttended} disabled={attendedBusy}
+                  className="flex-1 py-2.5 rounded-xl text-xs font-semibold text-white disabled:opacity-50"
+                  style={{ background: "linear-gradient(135deg, #15803D, #22C55E)" }}>
+                  {t("call.attendedConfirm") ?? "Confirmer le transfert"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {keypadOpen ? (
           <div className="px-8 pb-6">
             <div className="grid grid-cols-3 gap-3 mx-auto" style={{ maxWidth: 288 }}>
@@ -190,10 +272,14 @@ export default function ActiveCallOverlay({ callId, onClosed }: { callId: string
                 style={{ background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.15)" }}>
                 {t("common.cancel")}
               </button>
-              <button onClick={doTransfer} disabled={!transferTo.trim()}
+              <button onClick={transferMode === "attended" ? startAttended : doTransfer} disabled={!transferTo.trim() || attendedBusy}
                 className="flex-1 py-3 rounded-2xl text-sm font-semibold text-white disabled:opacity-50"
                 style={{ background: "linear-gradient(135deg, #1A4A8A, #2E9BDC)" }}>
-                {transferMode === "forward" ? (t("call.forward") ?? "Renvoyer") : t("call.transfer")}
+                {transferMode === "forward"
+                  ? (t("call.forward") ?? "Renvoyer")
+                  : transferMode === "attended"
+                    ? (t("call.attendedCall") ?? "Appeler le collègue")
+                    : t("call.transfer")}
               </button>
             </div>
           </div>
@@ -203,6 +289,7 @@ export default function ActiveCallOverlay({ callId, onClosed }: { callId: string
               <CallBtn active={muted} onClick={toggleMute} icon={muted ? <MicOff /> : <Mic />} label={muted ? t("call.unmute") : t("call.mute")} />
               <CallBtn active={held} onClick={toggleHold} icon={held ? <Play /> : <Pause />} label={held ? t("call.resume") : t("call.hold")} />
               <CallBtn onClick={() => openTransfer("transfer")} icon={<PhoneForwarded />} label={t("call.transfer")} />
+              <CallBtn onClick={() => openTransfer("attended")} icon={<Users />} label={t("call.attended") ?? "Transfert supervisé"} />
               <CallBtn onClick={() => openTransfer("forward")} icon={<CornerUpRight />} label={t("call.forward") ?? "Renvoyer"} />
               <CallBtn onClick={() => setKeypadOpen(true)} icon={<Grid3X3 />} label={t("call.keypad")} />
               <CallBtn active={speaker} onClick={toggleSpeaker} icon={speaker ? <Volume2 /> : <VolumeX />} label={t("call.speaker")} />

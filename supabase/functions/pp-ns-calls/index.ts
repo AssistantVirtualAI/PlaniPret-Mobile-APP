@@ -13,6 +13,7 @@ import {
 import {
   maestroTelecomMirror,
 } from "../_shared/maestro-telecom.ts";
+import { buildIdempotencyKey, claimAction, finishAction } from "../_shared/ava-confirm.ts";
 
 
 Deno.serve(async (req) => {
@@ -229,6 +230,114 @@ Deno.serve(async (req) => {
         error: ok ? undefined : ((typeof parsed === "object" && parsed?.message) || `NS-API error ${res.status}`),
       }, 200);
     }
+
+    // ---- Transfert supervisé (attended transfer) -------------------------
+    // 1) attended_start    : met le client en attente et appelle le collègue.
+    // 2) attended_complete : relie le client au collègue (confirmation requise).
+    // 3) attended_cancel   : raccroche la consultation et reprend le client.
+    // Chaque étape est tracée dans AVA — Confirmations avec sa clé d'idempotence.
+    if (action === "attended_start" || action === "attended_complete" || action === "attended_cancel") {
+      const payload = cachedBody ?? {};
+      const callId = String(payload?.call_id ?? "");
+      if (!callId) return jsonResponse({ success: false, error: "call_id required" }, 200);
+
+      const rawTarget = String(payload?.destination ?? payload?.target ?? "");
+      const bare = rawTarget.replace(/\D/g, "");
+      const target = bare.length >= 2 && bare.length <= 6
+        ? bare
+        : bare.length ? (bare.length === 10 ? `+1${bare}` : `+${bare}`) : "";
+
+      if ((action === "attended_start" || action === "attended_complete") && !target) {
+        return jsonResponse({ success: false, error: "destination required" }, 200);
+      }
+      // L'exécution finale n'a jamais lieu sans confirmation explicite du courtier.
+      if (action === "attended_complete" && payload?.confirmed !== true) {
+        return jsonResponse({
+          success: false,
+          needs_confirmation: true,
+          error: "confirmation_required",
+          message: "Confirmez le transfert vers le collègue avant de relier le client.",
+        }, 200);
+      }
+
+      const idem = await buildIdempotencyKey({
+        userId: ctx.userId,
+        action: `attended_transfer.${action.replace("attended_", "")}`,
+        destination: target || null,
+        callId,
+        payload: { consult_call_id: payload?.consult_call_id ?? null },
+        provided: payload?.idempotency_key ?? null,
+      });
+      const claim = await claimAction(guard.supabase, {
+        userId: ctx.userId,
+        brokerId: ctx.maestroBrokerId ?? null,
+        callId,
+        action: `attended_transfer.${action.replace("attended_", "")}`,
+        surface: String(payload?.surface ?? "mobile"),
+        destination: target || null,
+        provider: "netsapiens",
+        idempotencyKey: idem,
+      });
+      if (claim.replay) return jsonResponse({ ...claim.result, idempotency_key: idem }, 200);
+
+      const patch = (id: string, op: string, body?: unknown) =>
+        nsFetch(`${base}/${encodeURIComponent(id)}/${op}`, {
+          method: "PATCH",
+          ...(body ? { body: JSON.stringify(body) } : {}),
+        });
+
+      try {
+        if (action === "attended_start") {
+          const hold = await patch(callId, "hold");
+          if (!hold.ok) throw new Error(`hold failed (${hold.status})`);
+          const consultId = crypto.randomUUID();
+          const res = await nsFetch(base, {
+            method: "POST",
+            body: JSON.stringify({
+              "call-id": consultId,
+              "call-orig-user": `${ctx.extension}@${ctx.nsDomain}`,
+              "call-term-user": target,
+              "auto-answer-enabled": "no",
+              "synchronous": "yes",
+            }),
+          });
+          const txt = await res.text();
+          if (!(res.ok || res.status === 202)) throw new Error(`consult call failed (${res.status}) ${txt.slice(0, 160)}`);
+          let parsed: any = null;
+          try { parsed = txt ? JSON.parse(txt) : null; } catch { /* texte brut */ }
+          const nsConsultId = parsed?.["call-id"] ?? parsed?.call_id ?? consultId;
+          const result = { success: true, stage: "consulting", consult_call_id: nsConsultId, destination: target };
+          await finishAction(guard.supabase, claim.id, true, result);
+          return jsonResponse({ ...result, idempotency_key: idem }, 200);
+        }
+
+        if (action === "attended_complete") {
+          let res = await patch(callId, "transfer", { destination: target });
+          if (!res.ok) res = await patch(callId, "transfer", { transfer_to: target });
+          if (!res.ok) throw new Error(`transfer failed (${res.status})`);
+          const result = { success: true, stage: "transferred", destination: target };
+          await finishAction(guard.supabase, claim.id, true, result);
+          return jsonResponse({ ...result, idempotency_key: idem }, 200);
+        }
+
+        // attended_cancel : on raccroche la consultation, on reprend le client.
+        const consultId = String(payload?.consult_call_id ?? "");
+        if (consultId) {
+          const end = await patch(consultId, "disconnect");
+          if (!end.ok) await nsFetch(`${base}/${encodeURIComponent(consultId)}`, { method: "DELETE" });
+        }
+        const back = await patch(callId, "unhold");
+        if (!back.ok) throw new Error(`unhold failed (${back.status})`);
+        const result = { success: true, stage: "resumed" };
+        await finishAction(guard.supabase, claim.id, true, result);
+        return jsonResponse({ ...result, idempotency_key: idem }, 200);
+      } catch (e) {
+        const msg = (e as Error)?.message ?? "attended transfer failed";
+        await finishAction(guard.supabase, claim.id, false, null, msg);
+        return jsonResponse({ success: false, error: msg, idempotency_key: idem }, 200);
+      }
+    }
+
 
     // Call-control actions: accept either PATCH or POST-with-action-in-body
     // (supabase.functions.invoke only issues POST).

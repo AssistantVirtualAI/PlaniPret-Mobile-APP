@@ -87,6 +87,10 @@ Deno.serve(async (req) => {
   const callId = String(body?.call_id ?? "");
   const action = String(body?.action ?? "status");
   const channel = body?.channel === "voice" ? "voice" : "screen";
+  // Heure exacte de fin d'appel telle que mesurée par le téléphone.
+  const endedAtRaw = String(body?.ended_at ?? "");
+  const endedAt = endedAtRaw && !Number.isNaN(Date.parse(endedAtRaw)) ? new Date(endedAtRaw).toISOString() : null;
+  const endedPatch = endedAt ? { ended_at: endedAt } : {};
   if (!callId) return json({ error: "call_id_required" }, 400);
 
   const { data: call } = await admin
@@ -112,6 +116,7 @@ Deno.serve(async (req) => {
 
     await admin.from("planipret_phone_calls").update({
       save_consent: "approved",
+      ...endedPatch,
       save_consent_at: new Date().toISOString(),
       save_consent_by: user.id,
       save_consent_channel: channel,
@@ -133,6 +138,7 @@ Deno.serve(async (req) => {
   if (action === "decline") {
     await admin.from("planipret_phone_calls").update({
       save_consent: "declined",
+      ...endedPatch,
       save_consent_at: new Date().toISOString(),
       save_consent_by: user.id,
       save_consent_channel: channel,

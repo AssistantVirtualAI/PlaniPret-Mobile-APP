@@ -154,6 +154,7 @@ final class PjsipEngine {
 
     private var muted = false
     private var speakerOn = false
+    private var onHold = false
     private var audioSessionReady = false
 
     var currentCallIdString: String { activeCall >= 0 ? String(activeCall) : "" }
@@ -178,6 +179,10 @@ final class PjsipEngine {
         }
         nc.addObserver(forName: Notification.Name("PpPjsipDtmfRequested"), object: nil, queue: nil) { [weak self] note in
             self?.sendDTMF((note.userInfo?["digits"] as? String) ?? "")
+        }
+        // Mise en attente demandée par CallKit, y compris sur l’écran verrouillé.
+        nc.addObserver(forName: Notification.Name("PpPjsipHoldRequested"), object: nil, queue: nil) { [weak self] note in
+            self?.setHold((note.userInfo?["onHold"] as? Bool) ?? false)
         }
         // CallKit est seul maître de l'AVAudioSession : PJSIP n'ouvre son
         // périphérique audio qu'une fois la session activée par le système.
@@ -500,6 +505,27 @@ final class PjsipEngine {
         }
     }
 
+    /// Attente SIP réelle : re-INVITE sendonly, puis reprise du média.
+    /// CallKit reste l’unique propriétaire de la session AVAudioSession.
+    func setHold(_ on: Bool) {
+        onHold = on
+        guard activeCall >= 0 else { return }
+        thread.run { [weak self] in
+            guard let self = self else { return }
+            self.scheduleOnPjsipThread {
+                guard self.activeCall >= 0 else { return }
+                if on {
+                    pjsua_call_set_hold(self.activeCall, nil)
+                } else {
+                    var opt = pjsua_call_setting()
+                    pjsua_call_setting_default(&opt)
+                    opt.flag = UInt32(PJSUA_CALL_UNHOLD.rawValue)
+                    pjsua_call_reinvite2(self.activeCall, &opt, nil)
+                }
+            }
+        }
+    }
+
     func setSpeaker(_ enabled: Bool) {
         speakerOn = enabled
         // PpSipKeepAlive est l’unique propriétaire de la session audio iOS.
@@ -541,6 +567,7 @@ final class PjsipEngine {
             "username": username,
             "callId": currentCallIdString,
             "muted": muted,
+            "onHold": onHold,
             "speaker": speakerOn
         ]
     }

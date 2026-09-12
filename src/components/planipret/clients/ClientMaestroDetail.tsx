@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
-import { AlertTriangle, CalendarClock, ExternalLink, FolderKanban, MessageSquare, Phone, PhoneIncoming, PhoneMissed, PhoneOutgoing, User, Wallet } from "lucide-react";
+import { AlertTriangle, CalendarClock, FolderKanban, MessageSquare, Phone, PhoneIncoming, PhoneMissed, PhoneOutgoing, User, Wallet } from "lucide-react";
 import MaestroTaskRow from "@/components/planipret/mobile/MaestroTaskRow";
 import { formatTaskDue, type NormalizedTask } from "@/lib/planipret/tasks";
 import {
@@ -9,21 +8,6 @@ import {
   type ClientBundle, type ClientCall, type ClientDeal, type ClientDeposit, type ClientMessage,
 } from "@/lib/planipret/clientMaestro";
 import { supabase } from "@/integrations/supabase/client";
-import { maestroContractUrl } from "@/lib/planipret/maestroLinks";
-
-type MaestroContract = {
-  contract_id: string;
-  contract_number: string | null;
-  status: string | null;
-  maestro_status: string | null;
-  loan_amt: number | null;
-  rate: string | null;
-  date_closing: string | null;
-  date_maturity: string | null;
-  clients: { id?: string; name?: string; email?: string | null }[] | null;
-  broker_name: string | null;
-  last_activity_at: string | null;
-};
 
 const cad = (n: number) =>
   new Intl.NumberFormat("fr-CA", { style: "currency", currency: "CAD", maximumFractionDigits: 0 }).format(n || 0);
@@ -34,18 +18,15 @@ const cad = (n: number) =>
  * par client, mais dépliées sur une page dédiée.
  */
 export default function ClientMaestroDetail({
-  clientKey, tasks, userIds, lang, lastSyncAt, loading, variant = "admin", onDraftSms,
+  clientKey, tasks, userIds, lang, lastSyncAt, loading, onDraftSms,
 }: {
   clientKey: string;
+  onDraftSms?: (target: { name: string; number: string; clientKey: string }) => void;
   tasks: NormalizedTask[];
   userIds: string[];
   lang: "fr" | "en";
   lastSyncAt?: string | null;
   loading?: boolean;
-  /** Détermine vers quelles pages pointent les liens « voir la conversation ». */
-  variant?: "admin" | "mobile";
-  /** Ouvre un brouillon de texto (mobile) : rien n'est envoyé sans confirmation. */
-  onDraftSms?: (target: { name: string; number: string; clientKey: string }) => void;
 }) {
   const en = lang === "en";
   const L = (fr: string, e: string) => (en ? e : fr);
@@ -55,7 +36,6 @@ export default function ClientMaestroDetail({
   const [calls, setCalls] = useState<ClientCall[]>([]);
   const [messages, setMessages] = useState<ClientMessage[]>([]);
   const [brokerNames, setBrokerNames] = useState<Record<string, string>>({});
-  const [contracts, setContracts] = useState<MaestroContract[]>([]);
 
   const idsKey = userIds.filter(Boolean).sort().join(",");
 
@@ -65,12 +45,6 @@ export default function ClientMaestroDetail({
       fetchClientDeals(ids), fetchClientDeposits(), fetchClientCalls(ids), fetchClientMessages(ids),
     ]);
     setDeals(d); setDeposits(dep); setCalls(cl); setMessages(ms);
-    const { data: ct } = await supabase
-      .from("planipret_contracts")
-      .select("contract_id, contract_number, status, maestro_status, loan_amt, rate, date_closing, date_maturity, clients, broker_name, last_activity_at")
-      .order("last_activity_at", { ascending: false, nullsFirst: false })
-      .limit(1000);
-    setContracts((ct ?? []) as unknown as MaestroContract[]);
   }, [idsKey]);
 
   useEffect(() => { void load(); }, [load]);
@@ -92,15 +66,6 @@ export default function ClientMaestroDetail({
     const key = makeKey(decodeURIComponent(clientKey));
     return buildClientBundles(tasks, deals, deposits, calls, messages).find((b) => b.key === key);
   }, [tasks, deals, deposits, calls, messages, clientKey]);
-
-  // Dossiers Maestro rattachés à ce client (correspondance par nom normalisé).
-  const clientContracts = useMemo(() => {
-    const key = makeKey(decodeURIComponent(clientKey));
-    if (!key) return [] as MaestroContract[];
-    return contracts.filter((c) =>
-      (c.clients ?? []).some((cl) => makeKey(cl?.name) === key),
-    );
-  }, [contracts, clientKey]);
 
   const brokerIdsKey = (bundle?.brokerIds ?? []).join(",");
   useEffect(() => {
@@ -128,23 +93,6 @@ export default function ClientMaestroDetail({
   }
 
   const b = bundle;
-
-  // Liens « voir la conversation » : page Appels / Textos de l'admin, ou
-  // l'écran correspondant dans l'app mobile.
-  const peerOf = (x: { direction: string | null; from_number: string | null; to_number: string | null }) =>
-    String((x.direction === "outbound" ? x.to_number : x.from_number) ?? "").trim();
-  const callLink = (c: ClientCall) => {
-    const peer = peerOf(c);
-    return variant === "mobile"
-      ? `/mplanipret/calls?tab=recents${peer ? `&peer=${encodeURIComponent(peer)}` : ""}`
-      : `/planipret/admin/calls${peer ? `?search=${encodeURIComponent(peer)}` : ""}`;
-  };
-  const messageLink = (m: ClientMessage) => {
-    const peer = peerOf(m);
-    return variant === "mobile"
-      ? `/mplanipret/messages?tab=sms${peer ? `&to=${encodeURIComponent(peer)}&name=${encodeURIComponent(b.name)}` : ""}`
-      : `/planipret/admin/messages${peer ? `?peer=${encodeURIComponent(peer)}` : ""}`;
-  };
 
   return (
     <div className="space-y-3">
@@ -178,7 +126,9 @@ export default function ClientMaestroDetail({
             style={{ background: "var(--pp-brand, #2E9BDC)", color: "#fff" }}
             onClick={() => onDraftSms({
               name: b.name,
-              number: [...b.messages, ...b.calls].map(peerOf).find((n) => n.replace(/\D/g, "").length >= 10) ?? "",
+              number: [...b.messages, ...b.calls]
+                .map((x) => String((x.direction === "outbound" ? x.to_number : x.from_number) ?? "").trim())
+                .find((n) => n.replace(/\D/g, "").length >= 10) ?? "",
               clientKey: b.key,
             })}
           >
@@ -219,24 +169,12 @@ export default function ClientMaestroDetail({
                     <span>{missed ? "" : `${Math.floor(secs / 60)}m ${secs % 60}s`}</span>
                     <span>{out ? (c.to_number ?? "—") : (c.from_number ?? "—")}</span>
                   </span>
-                  {c.ai_summary && (
-                    <span className="block break-words mt-1 rounded-md px-2 py-1.5" style={{ background: "rgba(37,99,235,0.06)", color: "var(--pp-text-primary)" }}>
-                      <span className="block text-[10px] uppercase tracking-wide mb-0.5" style={{ color: "var(--pp-brand-accent)" }}>
-                        {L("Résumé IA", "AI summary")}
-                      </span>
-                      {c.ai_summary}
-                    </span>
+                  {c.ai_summary && <span className="block break-words mt-0.5">{c.ai_summary}</span>}
+                  {c.recording_url && (
+                    <a href={c.recording_url} target="_blank" rel="noreferrer" className="underline" style={{ color: "var(--pp-brand-accent)" }}>
+                      {L("Écouter l'enregistrement", "Play recording")}
+                    </a>
                   )}
-                  <span className="flex flex-wrap items-center gap-x-3 mt-1">
-                    <Link to={callLink(c)} className="underline" style={{ color: "var(--pp-brand-accent)" }}>
-                      {L("Voir la conversation", "Open conversation")}
-                    </Link>
-                    {c.recording_url && (
-                      <a href={c.recording_url} target="_blank" rel="noreferrer" className="underline" style={{ color: "var(--pp-brand-accent)" }}>
-                        {L("Écouter l'enregistrement", "Play recording")}
-                      </a>
-                    )}
-                  </span>
                 </li>
               );
             })}
@@ -258,46 +196,13 @@ export default function ClientMaestroDetail({
                   <span>{m.direction === "outbound" ? (m.to_number ?? "—") : (m.from_number ?? "—")}</span>
                 </span>
                 {m.body && <span className="block break-words mt-0.5" style={{ color: "var(--pp-text-primary)" }}>{m.body}</span>}
-                <Link to={messageLink(m)} className="underline mt-1 inline-block" style={{ color: "var(--pp-brand-accent)" }}>
-                  {L("Voir la conversation", "Open conversation")}
-                </Link>
               </li>
             ))}
           </ul>
         )}
       </Card>
 
-      <Card title={L("Dossiers Maestro", "Maestro files")} surface={surface}>
-        {clientContracts.length === 0 ? <Empty text={L("Aucun dossier Maestro rattaché.", "No linked Maestro file.")} /> : (
-          <ul className="space-y-1.5">
-            {clientContracts.map((c) => (
-              <li key={`${c.contract_id}-${c.contract_number ?? ""}`} className="rounded-lg px-2 py-2" style={{ background: "#F7F9FC" }}>
-                <div className="flex flex-wrap items-center gap-x-2 text-[11.5px]" style={{ color: "var(--pp-text-muted)" }}>
-                  <span style={{ color: "var(--pp-text-primary)", fontWeight: 600 }}>
-                    {c.contract_number ? `${L("Dossier", "File")} ${c.contract_number}` : `${L("Contrat", "Contract")} ${c.contract_id}`}
-                  </span>
-                  <span>{c.maestro_status || c.status || "—"}</span>
-                  {c.loan_amt ? <span>{cad(Number(c.loan_amt))}</span> : null}
-                  {c.rate ? <span>{c.rate}%</span> : null}
-                  {c.date_closing ? <span>{L("clôture", "closing")} {c.date_closing}</span> : null}
-                </div>
-                <a
-                  href={maestroContractUrl(c.contract_id)}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="mt-1.5 inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-[12px] font-semibold min-h-[36px]"
-                  style={{ background: "var(--pp-brand, #2E9BDC)", color: "#fff" }}
-                >
-                  <ExternalLink className="w-3.5 h-3.5" />
-                  {L("Ouvrir dans Maestro", "Open in Maestro")}
-                </a>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Card>
-
-      <Card title={L("Dossiers locaux", "Local files")} surface={surface}>
+      <Card title={L("Dossiers", "Files")} surface={surface}>
         {b.deals.length === 0 ? <Empty text={L("Aucun dossier.", "No file.")} /> : (
           <ul className="space-y-1">
             {b.deals.map((d) => (

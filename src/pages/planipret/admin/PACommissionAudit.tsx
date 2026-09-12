@@ -6,7 +6,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { RefreshCw, Download, AlertTriangle } from "lucide-react";
+import { RefreshCw, Download, AlertTriangle, ScrollText } from "lucide-react";
+import { PAPageHeader } from "@/components/planipret/admin/PAPageShell";
 
 type Row = {
   id: string;
@@ -106,32 +107,31 @@ export default function PACommissionAudit() {
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <h1 className="text-2xl font-semibold">Audit des commissions</h1>
-          <p className="text-sm text-muted-foreground">
-            Chaque ligne de la base, sa provenance (registre importé ou API Maestro) et la règle qui explique l'écart.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <select
-            className="h-9 rounded-md border bg-background px-3 text-sm"
-            value={year}
-            onChange={(e) => setYear(Number(e.target.value))}
-          >
-            {[thisYear, thisYear - 1, thisYear - 2, thisYear - 3].map((y) => (
-              <option key={y} value={y}>{y}</option>
-            ))}
-          </select>
-          <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
-            <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} /> Rafraîchir
-          </Button>
-          <Button variant="outline" size="sm" onClick={exportCsv} disabled={!rows.length}>
-            <Download className="h-4 w-4 mr-2" /> CSV
-          </Button>
-        </div>
-      </div>
+    <div className="pa-page">
+      <PAPageHeader
+        icon={<ScrollText className="h-[18px] w-[18px]" />}
+        title="Audit des commissions"
+        subtitle="Chaque ligne de la base, sa provenance (registre importé ou API Maestro) et la règle qui explique l'écart."
+        actions={
+          <>
+            <select
+              className="h-9 rounded-md border bg-background px-3 text-sm"
+              value={year}
+              onChange={(e) => setYear(Number(e.target.value))}
+            >
+              {[thisYear, thisYear - 1, thisYear - 2, thisYear - 3].map((y) => (
+                <option key={y} value={y}>{y}</option>
+              ))}
+            </select>
+            <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading}>
+              <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} /> Rafraîchir
+            </Button>
+            <Button variant="outline" size="sm" onClick={exportCsv} disabled={!rows.length}>
+              <Download className="h-4 w-4 mr-2" /> CSV
+            </Button>
+          </>
+        }
+      />
 
       {error && (
         <Card><CardContent className="pt-6 text-sm text-destructive flex items-center gap-2">

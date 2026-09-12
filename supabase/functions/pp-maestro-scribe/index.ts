@@ -5,13 +5,15 @@ import { adminClient, corsHeaders, getMaestroConfig, json } from "../_shared/mae
 import { guardPlanipret } from "../_shared/planipret-guard.ts";
 import * as api from "../_shared/maestro-scribe.ts";
 import { apiRoot } from "../_shared/maestro-scribe.ts";
+import { getUserMaestroAccessToken } from "../_shared/maestro-oauth.ts";
+import { getMaestroAdminAccessToken } from "../_shared/maestro-admin-token.ts";
 
 type Action =
   | "diag"
   | "clients.get" | "clients.create" | "clients.update"
   | "addresses.create" | "addresses.update" | "addresses.delete"
   | "telephones.create" | "telephones.update" | "telephones.delete"
-  | "contracts.list" | "contracts.create" | "contracts.update"
+  | "contracts.list" | "contracts.create" | "contracts.update" | "contracts.delete"
   | "institutions.list"
   | "commissions.deposits" | "commissions.agents"
   | "tasks.list" | "tasks.create" | "tasks.update" | "tasks.delete";
@@ -32,9 +34,22 @@ Deno.serve(async (req) => {
 
   const admin = adminClient();
   const cfg = await getMaestroConfig(admin);
-  if (!cfg.key) return json({ ok: false, error: "maestro_not_configured" }, 200);
 
-  const o = { prefix };
+  // L'API publique `/api/main` est authentifiée par OAuth Planiprêt (jeton du
+  // courtier connecté, sinon jeton cabinet). La clé machine Telecom n'y est PAS
+  // valide — elle ne sert que de dernier recours.
+  const ownToken = await getUserMaestroAccessToken(admin, guard.user.id).catch(() => null);
+  const firm = ownToken ? { token: null, source: "none" as const } : await getMaestroAdminAccessToken();
+  const token =
+    ownToken ??
+    firm.token ??
+    Deno.env.get("PLANIPRET_ACCESS_TOKEN") ??
+    cfg.key ??
+    null;
+  const tokenSource = ownToken ? "broker_oauth" : firm.token ? firm.source : Deno.env.get("PLANIPRET_ACCESS_TOKEN") ? "static_env" : cfg.key ? "telecom_machine_key" : "none";
+  if (!token) return json({ ok: false, error: "maestro_not_configured", token_source: tokenSource }, 200);
+
+  const o = { prefix, token };
   const needId = () => id === undefined || id === null || id === "";
   const needSub = () => subId === undefined || subId === null || subId === "";
   const missing = (what: string) => json({ ok: false, error: `${what}_required` }, 400);
@@ -44,7 +59,7 @@ Deno.serve(async (req) => {
       case "diag": {
         const root = apiRoot(cfg, prefix);
         const probe = await api.listFinancialInstitutions(cfg, o);
-        return json({ ok: true, root, reachable: probe.ok, status: probe.status, endpoint: probe.endpoint, error: probe.error });
+        return json({ ok: true, root, token_source: tokenSource, reachable: probe.ok, status: probe.status, endpoint: probe.endpoint, error: probe.error });
       }
 
       case "clients.get": return needId() ? missing("id") : json(await api.getClient(cfg, id, o));
@@ -62,6 +77,7 @@ Deno.serve(async (req) => {
       case "contracts.list": return json(await api.listContracts(cfg, query, o));
       case "contracts.create": return json(await api.createContract(cfg, payload, o));
       case "contracts.update": return needId() ? missing("id") : json(await api.updateContract(cfg, id, payload, o));
+      case "contracts.delete": return needId() ? missing("id") : json(await api.deleteContract(cfg, id, o));
 
       case "institutions.list": return json(await api.listFinancialInstitutions(cfg, o));
 

@@ -15,7 +15,17 @@ export type ConsentCall = {
   save_consent: string | null;
 };
 
-export type EndedDetail = { providerCallId?: string | null; number?: string | null };
+export type EndedDetail = {
+  providerCallId?: string | null;
+  number?: string | null;
+  /**
+   * D'où viennent les lignes fournies :
+   *  • "provider" : requête ciblée sur l'identifiant fournisseur (id / ns_callid
+   *    / ns_call_id) — la correspondance est déjà faite par la base ;
+   *  • "recent"  : appels très récents du courtier (repli).
+   */
+  source?: "provider" | "recent";
+};
 
 /** Un appel déjà tranché (oui/non) ne redemande jamais le consentement. */
 export function alreadyDecided(call: Pick<ConsentCall, "save_consent">): boolean {
@@ -39,10 +49,17 @@ export function pickEndedCall(
   if (detail.providerCallId) {
     const match = usable.find((r) => r.id === detail.providerCallId);
     if (match) return match;
+    // La ligne a été trouvée par ns_callid / ns_call_id : son `id` interne
+    // diffère de l'identifiant fournisseur, mais c'est bien le même appel.
+    if (detail.source === "provider") return usable[0];
   }
   const wanted = digits(detail.number);
-  if (!wanted) return null;
-  return usable.find((r) => digits(r.from_number) === wanted || digits(r.to_number) === wanted) ?? null;
+  if (wanted) {
+    return usable.find((r) => digits(r.from_number) === wanted || digits(r.to_number) === wanted) ?? null;
+  }
+  // Repli : appel très récent du courtier, sans identifiant ni numéro.
+  if (!detail.providerCallId && detail.source === "recent") return usable[0];
+  return null;
 }
 
 export function clientNumberOf(call: ConsentCall): string {

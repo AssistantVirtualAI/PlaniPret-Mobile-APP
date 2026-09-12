@@ -37,6 +37,7 @@ public class PpPjsip: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "answerCall", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "hangupCall", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setMute", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "setHold", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setSpeaker", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "sendDTMF", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "getState", returnType: CAPPluginReturnPromise),
@@ -212,6 +213,15 @@ public class PpPjsip: CAPPlugin, CAPBridgedPlugin {
     @objc func setMute(_ call: CAPPluginCall) {
         #if canImport(pjsua)
         PjsipEngine.shared.setMute(call.getBool("muted") ?? false)
+        call.resolve(["ok": true])
+        #else
+        rejectMissingBinary(call)
+        #endif
+    }
+
+    @objc func setHold(_ call: CAPPluginCall) {
+        #if canImport(pjsua)
+        PjsipEngine.shared.setHold(call.getBool("onHold") ?? false)
         call.resolve(["ok": true])
         #else
         rejectMissingBinary(call)

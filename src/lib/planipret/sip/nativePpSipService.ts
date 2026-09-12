@@ -48,6 +48,7 @@ type PpVoipCallPlugin = {
   refreshVoipPushToken?: () => Promise<{ ok: boolean; token?: string }>;
   reportCallEnded?: (opts: { callId?: string; reason?: string }) => Promise<{ ok: boolean }>;
   completeAnswer?: (opts: { callId?: string; ok: boolean }) => Promise<{ ok: boolean; reason?: string }>;
+  setHeld?: (opts: { onHold: boolean }) => Promise<{ ok: boolean }>;
   addListener?: (
     event:
       | "voipPushToken"
@@ -55,6 +56,7 @@ type PpVoipCallPlugin = {
       | "incomingCallAnswered"
       | "incomingCallRejected"
       | "callKitReady"
+      | "callHeld"
       | "audioSessionActivated"
       | "audioSessionDeactivated",
     cb: (data: any) => void,
@@ -187,6 +189,27 @@ export async function onPlanipretVoipIncomingCall(
 export async function reportPlanipretCallEnded(callId?: string, reason?: string): Promise<void> {
   if (platform() !== "ios") return;
   try { await NativePpVoipCall.reportCallEnded?.({ callId, reason }); }
+  catch { /* noop */ }
+}
+
+/**
+ * Mise en attente demandée depuis l'écran d'appel du système (y compris
+ * l'écran verrouillé). CallKit est la source de vérité : le JS applique
+ * l'état à la session SIP et à l'interface.
+ */
+export async function onPlanipretCallKitHold(
+  cb: (data: { onHold: boolean; callId?: string; source?: "pjsip" | "jssip" }) => void,
+): Promise<() => void> {
+  if (platform() !== "ios") return () => undefined;
+  return addDedupedCapListener("PpVoipCall", NativePpVoipCall, "callHeld", (data: any) => {
+    cb({ onHold: !!data?.onHold, callId: data?.callId, source: data?.source });
+  });
+}
+
+/** Reflète une mise en attente faite dans l'app vers l'écran d'appel système. */
+export async function setPlanipretCallKitHeld(onHold: boolean): Promise<void> {
+  if (platform() !== "ios") return;
+  try { await NativePpVoipCall.setHeld?.({ onHold }); }
   catch { /* noop */ }
 }
 

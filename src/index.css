@@ -407,17 +407,19 @@ All colors MUST be HSL.
   max-width: 100% !important;
   max-height: 100% !important;
   min-width: 0 !important;
-  overflow: hidden;
-  contain: size layout;
 }
 .recharts-wrapper {
   width: 100% !important;
 }
-.recharts-surface {
+/* recharts v3 renders the chart inside a 0-width helper div; restore it
+   so the surface (styled width:100%) can actually paint. */
+.recharts-responsive-container > div {
+  width: 100% !important;
+  height: 100% !important;
+}
+.recharts-wrapper > .recharts-surface {
   max-width: 100%;
   max-height: 100%;
-  width: 100%;
-  height: 100%;
   display: block;
 }
 
@@ -864,3 +866,629 @@ All colors MUST be HSL.
 .pp-email-body p, .pp-email-body div, .pp-email-body span { max-width: 100% !important; }
 .pp-email-body blockquote { margin: 6px 0 6px 8px; padding-left: 8px; border-left: 2px solid var(--pp-bg-border-2); }
 
+
+/* ============================================================
+   Planiprêt — Overview "3D" design system (cards, tables, badges)
+   GPU-cheap: shadows/gradients are declared once per class instead
+   of inline per row, transforms are hover-only and disabled while
+   the user sorts/filters (.ov3d-quiet) or prefers reduced motion.
+   ============================================================ */
+.ov3d-card {
+  position: relative;
+  border-radius: 14px;
+  border: 1px solid var(--pp-bg-border);
+  background:
+    radial-gradient(600px 180px at 8% -30%, rgba(46,155,220,.10), transparent 70%),
+    linear-gradient(180deg, rgba(255,255,255,.045), rgba(0,0,0,.06)),
+    var(--pp-bg-card, var(--pp-bg-elevated));
+  box-shadow: 0 20px 44px -34px rgba(0,0,0,.9), 0 1px 0 rgba(255,255,255,.05) inset;
+  contain: paint;
+}
+
+.ov3d-table { width: 100%; font-size: 12px; border-collapse: separate; border-spacing: 0 6px; }
+.ov3d-table th {
+  padding: 6px 10px;
+  text-align: left;
+  font-size: 10.5px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+  color: var(--pp-text-muted);
+  background: linear-gradient(180deg, rgba(255,255,255,.06), rgba(255,255,255,0));
+  border-bottom: 1px solid var(--pp-bg-border);
+}
+.ov3d-table td { padding: 9px 10px; }
+
+.ov3d-row {
+  --ov3d-accent: #2E9BDC;
+  color: var(--pp-text-secondary);
+  background: linear-gradient(180deg, rgba(255,255,255,.045), rgba(0,0,0,.10)), var(--pp-bg-card, var(--pp-bg-elevated));
+  box-shadow: 0 8px 18px -16px rgba(0,0,0,.95), 0 1px 0 rgba(255,255,255,.05) inset;
+  transition: transform .18s ease;
+}
+.ov3d-row td:first-child {
+  border-top-left-radius: 10px; border-bottom-left-radius: 10px;
+  box-shadow: inset 3px 0 0 var(--ov3d-accent);
+}
+.ov3d-row td:last-child { border-top-right-radius: 10px; border-bottom-right-radius: 10px; }
+@media (hover: hover) and (pointer: fine) {
+  .ov3d-row:hover, .ov3d-tile:hover { transform: translateY(-2px); }
+}
+
+.ov3d-tile {
+  border-radius: 10px; padding: 8px 10px;
+  --ov3d-accent: #4AC9E3;
+  background: linear-gradient(180deg, rgba(255,255,255,.05), rgba(0,0,0,.10)), var(--pp-bg-card, var(--pp-bg-elevated));
+  box-shadow: 0 10px 20px -18px rgba(0,0,0,.95), 0 1px 0 rgba(255,255,255,.05) inset, inset 3px 0 0 var(--ov3d-accent);
+  transition: transform .18s ease;
+}
+
+.ov3d-badge {
+  display: inline-flex; align-items: center; gap: 3px;
+  border-radius: 999px; padding: 2px 8px;
+  font-size: 10px; font-weight: 700; line-height: 1.4;
+  color: var(--ov3d-c, var(--pp-text-secondary));
+  border: 1px solid color-mix(in srgb, var(--ov3d-c, #888) 30%, transparent);
+  background: linear-gradient(180deg,
+    color-mix(in srgb, var(--ov3d-c, #888) 18%, transparent),
+    color-mix(in srgb, var(--ov3d-c, #888) 6%, transparent));
+  box-shadow: 0 1px 0 rgba(255,255,255,.08) inset;
+}
+
+.ov3d-track { height: 4px; border-radius: 999px; background: rgba(255,255,255,.07); box-shadow: inset 0 1px 2px rgba(0,0,0,.45); overflow: hidden; }
+.ov3d-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--ov3d-c, #2E9BDC), color-mix(in srgb, var(--ov3d-c, #2E9BDC) 40%, #00D4AA)); }
+
+/* Perf: while sorting / filtering / on small screens, drop the expensive
+   layered shadows and motion. */
+.ov3d-quiet .ov3d-row,
+.ov3d-quiet .ov3d-tile { transition: none; box-shadow: 0 1px 0 rgba(255,255,255,.04) inset; }
+@media (max-width: 767px) {
+  .ov3d-card { background: linear-gradient(180deg, rgba(255,255,255,.04), rgba(0,0,0,.05)), var(--pp-bg-card, var(--pp-bg-elevated)); box-shadow: 0 8px 18px -18px rgba(0,0,0,.9); }
+  .ov3d-row, .ov3d-tile { box-shadow: 0 1px 0 rgba(255,255,255,.04) inset; }
+  .ov3d-row td:first-child { box-shadow: inset 3px 0 0 var(--ov3d-accent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ov3d-row, .ov3d-tile { transition: none; }
+  .ov3d-row:hover, .ov3d-tile:hover { transform: none; }
+}
+
+/* ============================================================
+   Planiprêt — Overview: real depth (perspective, bevels, gloss)
+   ============================================================ */
+.ov3d-stage { perspective: 1400px; perspective-origin: 50% -10%; }
+.ov3d-deck { transform-style: preserve-3d; transform: rotateX(4deg); }
+
+.ov3d-card {
+  border-top-color: rgba(255,255,255,.16);
+  box-shadow:
+    0 30px 60px -32px rgba(0,0,0,.95),
+    0 10px 22px -18px rgba(0,0,0,.8),
+    0 1px 0 rgba(255,255,255,.10) inset,
+    0 -1px 0 rgba(0,0,0,.35) inset;
+}
+.ov3d-card::after {
+  content: "";
+  position: absolute; inset: 0; pointer-events: none; border-radius: inherit;
+  background: linear-gradient(160deg, rgba(255,255,255,.10), rgba(255,255,255,0) 38%);
+}
+
+.ov3d-table th {
+  background: linear-gradient(180deg, rgba(255,255,255,.14), rgba(255,255,255,.02));
+  box-shadow: 0 1px 0 rgba(255,255,255,.10) inset, 0 6px 10px -10px rgba(0,0,0,.9);
+  border-radius: 8px;
+}
+.ov3d-row {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.10), rgba(255,255,255,.02) 42%, rgba(0,0,0,.16)),
+    var(--pp-bg-card, var(--pp-bg-elevated));
+  box-shadow:
+    0 14px 22px -18px rgba(0,0,0,1),
+    0 2px 0 rgba(0,0,0,.45),
+    0 1px 0 rgba(255,255,255,.12) inset,
+    0 -1px 0 rgba(0,0,0,.45) inset;
+  transition: transform .18s ease, box-shadow .18s ease;
+}
+@media (hover: hover) and (pointer: fine) {
+  .ov3d-row:hover, .ov3d-tile:hover {
+    transform: translateY(-3px) scale(1.006);
+    box-shadow:
+      0 22px 32px -18px rgba(0,0,0,1),
+      0 3px 0 rgba(0,0,0,.5),
+      0 1px 0 rgba(255,255,255,.18) inset,
+      0 0 0 1px color-mix(in srgb, var(--ov3d-accent) 35%, transparent);
+  }
+}
+.ov3d-row td:first-child {
+  box-shadow: inset 4px 0 0 var(--ov3d-accent), inset 6px 0 10px -6px color-mix(in srgb, var(--ov3d-accent) 60%, transparent);
+}
+.ov3d-tile {
+  background:
+    linear-gradient(180deg, rgba(255,255,255,.11), rgba(255,255,255,.02) 45%, rgba(0,0,0,.16)),
+    var(--pp-bg-card, var(--pp-bg-elevated));
+  box-shadow:
+    0 16px 24px -18px rgba(0,0,0,1),
+    0 2px 0 rgba(0,0,0,.45),
+    0 1px 0 rgba(255,255,255,.12) inset,
+    inset 4px 0 0 var(--ov3d-accent);
+}
+
+/* Charts: soft extruded look (elegant, not crude) */
+.ov3d-chart { position: relative; padding-top: 4px; }
+.ov3d-chart .recharts-surface { overflow: visible; }
+.ov3d-chart .recharts-bar-rectangle path,
+.ov3d-chart .recharts-rectangle path { filter: url(#ov3dExtrude); }
+.ov3d-chart .recharts-area-area { filter: none; }
+.ov3d-chart .recharts-line-curve,
+.ov3d-chart .recharts-area-curve { filter: drop-shadow(0 5px 8px rgba(0,0,0,.38)); stroke-linecap: round; }
+.ov3d-chart .recharts-pie-sector path { filter: url(#ov3dSoft); }
+/* Softer grid + axes so the relief reads instead of the lines */
+.ov3d-chart .recharts-cartesian-grid line { stroke: color-mix(in srgb, var(--pp-bg-border) 60%, transparent); }
+.ov3d-chart .recharts-cartesian-axis-line,
+.ov3d-chart .recharts-cartesian-axis-tick-line { stroke: transparent; }
+.ov3d-chart .recharts-text { letter-spacing: .2px; }
+/* Ambient floor glow under the plot */
+.ov3d-chart::before {
+  content: "";
+  position: absolute; left: 4%; right: 4%; bottom: 22px; height: 22px;
+  border-radius: 50%;
+  background: radial-gradient(ellipse at center, rgba(0,0,0,calc(.32 * var(--ov3d-d, 1))), transparent 72%);
+  pointer-events: none;
+}
+
+@media (max-width: 767px) {
+  .ov3d-deck { transform: none; }
+  .ov3d-chart .recharts-bar-rectangle path,
+  .ov3d-chart .recharts-rectangle path { filter: none; }
+  .ov3d-chart .recharts-pie-sector path { filter: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ov3d-deck { transform: none; }
+}
+
+/* ============================================================
+   Planiprêt — Overview 3D: intensity control + legibility
+   --ov3d-d : depth multiplier (0 = flat, 1 = default, 1.4 = max)
+   ============================================================ */
+:root { --ov3d-d: 1; }
+
+.ov3d-card {
+  box-shadow:
+    0 calc(30px * var(--ov3d-d)) calc(60px * var(--ov3d-d)) -32px rgba(0,0,0,calc(.95 * var(--ov3d-d))),
+    0 calc(10px * var(--ov3d-d)) calc(22px * var(--ov3d-d)) -18px rgba(0,0,0,calc(.8 * var(--ov3d-d))),
+    0 1px 0 rgba(255,255,255,calc(.10 * var(--ov3d-d))) inset,
+    0 -1px 0 rgba(0,0,0,calc(.35 * var(--ov3d-d))) inset;
+}
+.ov3d-card::after { opacity: var(--ov3d-d); }
+.ov3d-deck, .ov3d-stage .ov3d-tilt { transform: rotateX(calc(4deg * var(--ov3d-d))); }
+
+.ov3d-row {
+  box-shadow:
+    0 calc(14px * var(--ov3d-d)) calc(22px * var(--ov3d-d)) -18px rgba(0,0,0,var(--ov3d-d)),
+    0 calc(2px * var(--ov3d-d)) 0 rgba(0,0,0,calc(.45 * var(--ov3d-d))),
+    0 1px 0 rgba(255,255,255,calc(.12 * var(--ov3d-d))) inset,
+    0 -1px 0 rgba(0,0,0,calc(.45 * var(--ov3d-d))) inset;
+  content-visibility: auto;
+  contain-intrinsic-size: auto 42px;
+}
+.ov3d-tile {
+  box-shadow:
+    0 calc(16px * var(--ov3d-d)) calc(24px * var(--ov3d-d)) -18px rgba(0,0,0,var(--ov3d-d)),
+    0 calc(2px * var(--ov3d-d)) 0 rgba(0,0,0,calc(.45 * var(--ov3d-d))),
+    0 1px 0 rgba(255,255,255,calc(.12 * var(--ov3d-d))) inset,
+    inset calc(4px * max(var(--ov3d-d), .5)) 0 0 var(--ov3d-accent);
+}
+@media (hover: hover) and (pointer: fine) {
+  .ov3d-row:hover, .ov3d-tile:hover { transform: translateY(calc(-3px * var(--ov3d-d))) scale(1.006); }
+}
+
+/* --- Flicker-free sort / filter -------------------------------------- */
+.ov3d-quiet { will-change: contents; }
+.ov3d-quiet .ov3d-row,
+.ov3d-quiet .ov3d-tile {
+  transition: none !important;
+  animation: none !important;
+  box-shadow: 0 1px 0 rgba(255,255,255,.05) inset !important;
+  transform: none !important;
+  content-visibility: visible; /* avoid re-measure flashes while reordering */
+}
+.ov3d-quiet .ov3d-chart .recharts-bar-rectangle path,
+.ov3d-quiet .ov3d-chart .recharts-rectangle path { filter: none !important; }
+.ov3d-table tbody { backface-visibility: hidden; }
+
+/* --- Tooltips & legends stay perfectly legible over 3D ---------------- */
+.ov3d-chart .recharts-tooltip-wrapper { z-index: 40; pointer-events: none; filter: none !important; }
+.ov3d-chart .recharts-default-tooltip,
+.ov3d-tooltip {
+  filter: none !important;
+  backdrop-filter: blur(10px);
+  background: color-mix(in srgb, var(--pp-bg-elevated, #14161c) 92%, transparent) !important;
+  border: 1px solid var(--pp-bg-border) !important;
+  border-radius: 10px !important;
+  box-shadow: 0 18px 40px -18px rgba(0,0,0,.95), 0 0 0 1px rgba(255,255,255,.06) inset !important;
+  color: var(--pp-text-primary) !important;
+  padding: 8px 10px !important;
+  font-size: 12px;
+  text-shadow: none !important;
+}
+.ov3d-chart .recharts-tooltip-label { color: var(--pp-text-primary) !important; font-weight: 700; margin-bottom: 4px !important; }
+.ov3d-chart .recharts-tooltip-item { color: var(--pp-text-secondary) !important; padding: 1px 0 !important; }
+.ov3d-chart .recharts-tooltip-item-value { color: var(--pp-text-primary) !important; font-weight: 700; }
+.ov3d-chart .recharts-legend-wrapper { filter: none !important; z-index: 5; }
+.ov3d-chart .recharts-legend-item-text {
+  color: var(--pp-text-secondary) !important;
+  font-weight: 600;
+}
+.ov3d-chart .recharts-tooltip-cursor { fill: rgba(255,255,255,.06) !important; }
+/* Hovered bars/sectors keep full contrast (no shadow wash) */
+.ov3d-chart .recharts-bar-rectangle:hover path { filter: url(#ov3dExtrude) brightness(1.15); }
+.ov3d-chart .recharts-pie-sector:hover path { filter: drop-shadow(0 12px 12px rgba(0,0,0,.5)) brightness(1.12); }
+/* Cell hover keeps text readable above the relief */
+.ov3d-row:hover td { color: var(--pp-text-primary); position: relative; z-index: 2; }
+
+/* Mobile default: lighter relief unless the user picked one. */
+@media (max-width: 767px) {
+  :root { --ov3d-d: .45; }
+}
+@media (prefers-reduced-motion: reduce) {
+  :root { --ov3d-d: .5; }
+}
+
+/* Planiprêt portals (admin + broker): always use natural document scrolling.
+   Any `overflow-x: hidden` on the main column would turn it into a scroll
+   container and break wheel/touch scrolling on 3D pages (commissions, overview). */
+.planipret-admin-scope .pa-main,
+.planipret-broker-scope .pa-main {
+  overflow-y: visible !important;
+  overflow-x: clip;
+  min-height: 0;
+}
+.planipret-admin-scope,
+.planipret-broker-scope {
+  overflow: visible !important;
+  touch-action: pan-y;
+}
+
+/* ============================================================
+   Planiprêt — accessible 2D fallback + lazy chart placeholder
+   Applied when the device can't render the 3D relief smoothly.
+   ============================================================ */
+.ov3d-chart.ov3d-2d { --ov3d-d: 0; }
+.ov3d-chart.ov3d-2d .recharts-bar-rectangle path,
+.ov3d-chart.ov3d-2d .recharts-rectangle path,
+.ov3d-chart.ov3d-2d .recharts-pie-sector path,
+.ov3d-chart.ov3d-2d .recharts-line-curve,
+.ov3d-chart.ov3d-2d .recharts-area-curve { filter: none !important; }
+.ov3d-chart.ov3d-2d::before { display: none; }
+.ov3d-chart.ov3d-2d .recharts-cartesian-axis-line,
+.ov3d-chart.ov3d-2d .recharts-cartesian-axis-tick-line { stroke: color-mix(in srgb, var(--pp-bg-border) 90%, transparent); }
+.ov3d-chart.ov3d-2d .recharts-cartesian-grid line { stroke: color-mix(in srgb, var(--pp-bg-border) 85%, transparent); }
+
+.ov3d-chart-skeleton {
+  width: 100%;
+  border-radius: 12px;
+  background:
+    linear-gradient(90deg, rgba(255,255,255,.03) 25%, rgba(255,255,255,.07) 37%, rgba(255,255,255,.03) 63%);
+  background-size: 400% 100%;
+  animation: ov3dShimmer 1.4s ease-in-out infinite;
+}
+@keyframes ov3dShimmer { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
+@media (prefers-reduced-motion: reduce) { .ov3d-chart-skeleton { animation: none; } }
+
+/* ============================================================
+   Planiprêt — "Haute lisibilité" accessibility mode
+   Enabled via <html data-pp-hr="1"> (see usePpHighReadability).
+   Flattens the 3D relief, raises contrast, enlarges chart type.
+   ============================================================ */
+[data-pp-hr="1"] { --ov3d-d: 0; }
+[data-pp-hr="1"] .ov3d-chart::before,
+[data-pp-hr="1"] .ov3d-card::before { display: none !important; }
+[data-pp-hr="1"] .ov3d-chart .recharts-bar-rectangle path,
+[data-pp-hr="1"] .ov3d-chart .recharts-rectangle path,
+[data-pp-hr="1"] .ov3d-chart .recharts-pie-sector path,
+[data-pp-hr="1"] .ov3d-chart .recharts-line-curve,
+[data-pp-hr="1"] .ov3d-chart .recharts-area-curve,
+[data-pp-hr="1"] .recharts-surface path { filter: none !important; }
+[data-pp-hr="1"] .recharts-bar-rectangle path,
+[data-pp-hr="1"] .recharts-pie-sector path { fill-opacity: 1 !important; stroke: rgba(0,0,0,.35); stroke-width: 1; }
+[data-pp-hr="1"] .recharts-line-curve,
+[data-pp-hr="1"] .recharts-area-curve { stroke-width: 3 !important; }
+[data-pp-hr="1"] .recharts-cartesian-grid line { stroke: color-mix(in srgb, var(--pp-text-muted) 55%, transparent) !important; stroke-dasharray: none !important; }
+[data-pp-hr="1"] .recharts-cartesian-axis-tick text,
+[data-pp-hr="1"] .recharts-legend-item-text,
+[data-pp-hr="1"] .recharts-label { font-size: 13px !important; font-weight: 700 !important; fill: var(--pp-text-primary) !important; color: var(--pp-text-primary) !important; }
+[data-pp-hr="1"] .recharts-tooltip-wrapper * { font-size: 13.5px !important; }
+[data-pp-hr="1"] .ov3d-card,
+[data-pp-hr="1"] .pp-card { box-shadow: none !important; border-color: color-mix(in srgb, var(--pp-text-muted) 55%, transparent) !important; }
+[data-pp-hr="1"] .ov3d-row { box-shadow: none !important; }
+[data-pp-hr="1"] .ov3d-row td,
+[data-pp-hr="1"] .ov3d-table td { color: var(--pp-text-primary) !important; font-size: 13px !important; }
+[data-pp-hr="1"] .ov3d-table th { color: var(--pp-text-primary) !important; font-size: 12px !important; }
+[data-pp-hr="1"] * { text-shadow: none !important; }
+[data-pp-hr="1"] :focus-visible { outline: 3px solid var(--pp-brand-accent-2, #2E9BDC) !important; outline-offset: 2px; }
+[data-pp-hr="1"] .ov3d-chart-skeleton { animation: none !important; }
+
+/* Responsive chart readability: on narrow screens shrink padding and keep
+   axis labels legible instead of overlapping. */
+@media (max-width: 640px) {
+  .ov3d-chart .recharts-cartesian-axis-tick text { font-size: 10px; }
+  .ov3d-chart .recharts-legend-wrapper { font-size: 10.5px; }
+  .ov3d-chart { overflow-x: auto; }
+}
+
+/* Clickable stat affordance (drill-down) */
+.pp-drillable { cursor: pointer; transition: transform .12s ease, box-shadow .12s ease; }
+.pp-drillable:hover { transform: translateY(-2px); }
+[data-pp-hr="1"] .pp-drillable:hover { transform: none; outline: 2px solid var(--pp-brand-accent-2, #2E9BDC); }
+
+/* ---- Commissions pages: shared presentation helpers ---- */
+.pp-skel {
+  background: linear-gradient(90deg, rgba(127,127,127,.10) 25%, rgba(127,127,127,.20) 37%, rgba(127,127,127,.10) 63%);
+  background-size: 400% 100%;
+  animation: pp-skel-shimmer 1.4s ease infinite;
+}
+@keyframes pp-skel-shimmer { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
+
+.pp-tabs-scroll { scrollbar-width: thin; -webkit-overflow-scrolling: touch; }
+.pp-tabs-scroll::-webkit-scrollbar { height: 5px; }
+.pp-tabs-scroll::-webkit-scrollbar-thumb { background: var(--pp-bg-border); border-radius: 999px; }
+.pp-tab-pill[aria-selected="false"]:hover { background: var(--pp-bg-card) !important; color: var(--pp-text-primary) !important; }
+.pp-tab-pill[aria-selected="true"]:hover { filter: brightness(1.06); }
+
+
+.pp-filters-sticky {
+  position: sticky; top: 0; z-index: 20;
+  padding: 8px 10px; border-radius: 14px; margin-bottom: 10px;
+  background: color-mix(in srgb, var(--pp-bg-elevated) 88%, transparent);
+  border: 1px solid var(--pp-bg-border);
+  backdrop-filter: blur(10px);
+  box-shadow: 0 16px 34px -30px rgba(0,0,0,.9);
+}
+
+.pp-table-modern tbody tr { transition: background .14s ease; }
+.pp-table-modern tbody tr:hover { background: color-mix(in srgb, var(--pp-brand-accent-2, #2E9BDC) 10%, transparent) !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  .pp-skel { animation: none; }
+}
+[data-pp-hr="1"] .pp-hero-aurora { opacity: .2 !important; filter: none !important; }
+[data-pp-hr="1"] .pp-chart-frame { box-shadow: none !important; }
+[data-pp-hr="1"] .pp-tab-pill { transform: none !important; }
+
+/* ============================================================
+   Planiprêt portails — thème sombre (admin + broker)
+   Activé par data-pp-theme="dark" sur la racine du scope.
+   Contrastes vérifiés AA sur texte principal et secondaire.
+   ============================================================ */
+.planipret-admin-scope[data-pp-theme="dark"] {
+  --pp-bg-base: #060D1A;
+  --pp-bg-surface: #0A1628;
+  --pp-bg-elevated: #0D1F35;
+  --pp-bg-card: #0B1A2D;
+  --pp-bg-deep: #040B16;
+  --pp-bg-border: #16304C;
+  --pp-bg-border-2: #1D3D5E;
+  --pp-brand-accent: #4FA8E8;
+  --pp-brand-accent-2: #2E9BDC;
+  --pp-success: #22D3A5;
+  --pp-warning: #F0B429;
+  --pp-danger: #FF6B6B;
+  --pp-text-primary: #EAF1FA;
+  --pp-text-secondary: #B4C6DC;
+  --pp-text-muted: #8AA3BE;
+  --pp-text-faint: #66809C;
+  --pp-shadow-sm: 0 1px 2px rgba(0,0,0,.5);
+  --pp-shadow-md: 0 10px 26px -14px rgba(0,0,0,.75);
+  --pp-shadow-lg: 0 26px 56px -22px rgba(0,0,0,.85);
+  background: var(--pp-bg-base);
+  color: var(--pp-text-primary);
+}
+.planipret-admin-scope[data-pp-theme="dark"] .pp-card,
+.planipret-admin-scope[data-pp-theme="dark"] .pp-card-elevated,
+.planipret-admin-scope[data-pp-theme="dark"] .pp-app-header,
+.planipret-admin-scope[data-pp-theme="dark"] .pp-sidebar {
+  background: var(--pp-bg-surface) !important;
+  border-color: var(--pp-bg-border) !important;
+  color: var(--pp-text-primary);
+}
+.planipret-admin-scope[data-pp-theme="dark"] input,
+.planipret-admin-scope[data-pp-theme="dark"] select,
+.planipret-admin-scope[data-pp-theme="dark"] textarea {
+  background: var(--pp-bg-deep) !important;
+  color: var(--pp-text-primary) !important;
+  border-color: var(--pp-bg-border) !important;
+}
+.planipret-admin-scope[data-pp-theme="dark"] table thead th { color: var(--pp-text-secondary); }
+.planipret-admin-scope[data-pp-theme="light"] { --pp-bg-card: #FFFFFF; }
+
+/* ============================================================
+   Commissions — harmonisation typo / espacements / mobile
+   ============================================================ */
+.pp-commissions-root { font-feature-settings: "tnum" 1, "kern" 1; }
+.pp-commissions-root .pp-filters-sticky { margin-bottom: 12px; }
+.pp-toolbar-btn { min-height: 34px; }
+.pp-frame-action:focus-visible,
+.pp-toolbar-btn:focus-visible,
+.pp-tab-pill:focus-visible {
+  outline: 2px solid var(--pp-brand-accent, #2E9BDC);
+  outline-offset: 2px;
+}
+@media (max-width: 767px) {
+  .pp-commissions-root .pp-toolbar-btn,
+  .pp-commissions-root .pp-frame-action { min-height: 44px; min-width: 44px; }
+  .pp-commissions-root .pp-chart-frame,
+  .pp-commissions-root .ov3d-card { padding: 12px !important; border-radius: 14px !important; }
+  .pp-commissions-root table { font-size: 12px; }
+  .pp-commissions-root .pp-table-scroll,
+  .pp-commissions-root .overflow-x-auto { -webkit-overflow-scrolling: touch; }
+}
+
+/* Haute lisibilité — conformité WCAG AA renforcée */
+[data-pp-hr="1"] .pp-commissions-root { --pp-text-muted: var(--pp-text-secondary); }
+[data-pp-hr="1"] .pp-commissions-root .pp-toolbar-btn,
+[data-pp-hr="1"] .pp-commissions-root .pp-frame-action {
+  min-height: 44px; min-width: 44px;
+  border-color: var(--pp-text-muted) !important;
+  color: var(--pp-text-primary) !important;
+}
+[data-pp-hr="1"] .pp-commissions-root .pp-hero-aurora { opacity: .12 !important; }
+[data-pp-hr="1"] .pp-commissions-root * { text-shadow: none !important; }
+[data-pp-hr="1"] .pp-commissions-root .pp-tab-pill[aria-selected="true"] { outline: 2px solid var(--pp-text-primary); outline-offset: 1px; }
+
+/* ============================================================
+   Planiprêt admin — système visuel unifié (pa-*)
+   Toutes les pages du portail admin partagent ces primitives.
+   ============================================================ */
+.planipret-admin-scope .pa-main { max-width: 1680px; margin-inline: auto; width: 100%; }
+
+.planipret-admin-scope .pa-page { display: flex; flex-direction: column; gap: 20px; }
+
+.planipret-admin-scope .pa-header {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  padding: 16px 18px;
+  border: 1px solid var(--pp-bg-border);
+  border-radius: 16px;
+  background:
+    radial-gradient(120% 180% at 0% 0%, color-mix(in srgb, var(--pp-brand-accent-2, #2E9BDC) 12%, transparent), transparent 62%),
+    var(--pp-bg-surface, #fff);
+  box-shadow: var(--pp-shadow-md, 0 10px 26px -18px rgba(8,20,38,.35));
+}
+.planipret-admin-scope .pa-header-title {
+  display: flex; align-items: center; gap: 10px;
+  margin: 0; font-size: 20px; line-height: 1.25; font-weight: 800; letter-spacing: -0.01em;
+  color: var(--pp-text-primary);
+}
+.planipret-admin-scope .pa-header-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px; flex: 0 0 34px; border-radius: 11px;
+  color: var(--pp-brand-accent-2, #2E9BDC);
+  background: color-mix(in srgb, var(--pp-brand-accent-2, #2E9BDC) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--pp-brand-accent-2, #2E9BDC) 28%, transparent);
+}
+.planipret-admin-scope .pa-header-sub { margin: 6px 0 0; font-size: 13px; line-height: 1.45; color: var(--pp-text-muted); }
+.planipret-admin-scope .pa-header-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+.planipret-admin-scope .pa-card {
+  border: 1px solid var(--pp-bg-border);
+  border-radius: 16px;
+  background: var(--pp-bg-card, var(--pp-bg-surface, #fff));
+  color: var(--pp-text-primary);
+  box-shadow: var(--pp-shadow-sm, 0 1px 2px rgba(8,20,38,.08));
+  overflow: hidden;
+}
+.planipret-admin-scope .pa-card-pad { padding: 16px 18px; }
+.planipret-admin-scope .pa-card-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+  padding: 12px 18px; border-bottom: 1px solid var(--pp-bg-border);
+  background: color-mix(in srgb, var(--pp-bg-elevated, var(--pp-bg-surface, #fff)) 60%, transparent);
+}
+.planipret-admin-scope .pa-card-title { font-size: 14px; font-weight: 700; color: var(--pp-text-primary); display: flex; align-items: center; gap: 8px; margin: 0; }
+.planipret-admin-scope .pa-card-sub { font-size: 12px; color: var(--pp-text-muted); margin: 2px 0 0; }
+
+.planipret-admin-scope .pa-toolbar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 12px 14px; border: 1px solid var(--pp-bg-border); border-radius: 14px;
+  background: var(--pp-bg-surface, #fff);
+}
+.planipret-admin-scope .pa-toolbar input,
+.planipret-admin-scope .pa-toolbar select {
+  min-height: 34px; border-radius: 10px; padding: 0 10px; font-size: 13px;
+  border: 1px solid var(--pp-bg-border); background: var(--pp-bg-deep, #fff); color: var(--pp-text-primary);
+}
+
+.planipret-admin-scope .pa-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; border-radius: 14px; }
+.planipret-admin-scope .pa-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; }
+.planipret-admin-scope .pa-table thead th {
+  position: sticky; top: 0; z-index: 1;
+  text-align: left; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--pp-text-muted); padding: 10px 12px; white-space: nowrap;
+  background: color-mix(in srgb, var(--pp-bg-elevated, var(--pp-bg-surface, #fff)) 92%, transparent);
+  border-bottom: 1px solid var(--pp-bg-border);
+}
+.planipret-admin-scope .pa-table tbody td { padding: 11px 12px; border-bottom: 1px solid color-mix(in srgb, var(--pp-bg-border) 70%, transparent); color: var(--pp-text-primary); vertical-align: middle; }
+.planipret-admin-scope .pa-table tbody tr:last-child td { border-bottom: 0; }
+.planipret-admin-scope .pa-table tbody tr:hover td { background: color-mix(in srgb, var(--pp-brand-accent-2, #2E9BDC) 8%, transparent); }
+.planipret-admin-scope .pa-table .pa-num { text-align: right; font-variant-numeric: tabular-nums; }
+
+.planipret-admin-scope .pa-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 700; line-height: 1.5;
+  border: 1px solid color-mix(in srgb, var(--pa-badge-c, var(--pp-text-muted)) 34%, transparent);
+  color: var(--pa-badge-c, var(--pp-text-secondary));
+  background: color-mix(in srgb, var(--pa-badge-c, var(--pp-text-muted)) 13%, transparent);
+  white-space: nowrap;
+}
+.planipret-admin-scope .pa-badge-success { --pa-badge-c: var(--pp-success, #16a34a); }
+.planipret-admin-scope .pa-badge-warning { --pa-badge-c: var(--pp-warning, #F0B429); }
+.planipret-admin-scope .pa-badge-danger  { --pa-badge-c: var(--pp-danger, #E84C4C); }
+.planipret-admin-scope .pa-badge-info    { --pa-badge-c: var(--pp-brand-accent-2, #2E9BDC); }
+
+.planipret-admin-scope .pa-stats { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); }
+.planipret-admin-scope .pa-stat {
+  padding: 14px 16px; border: 1px solid var(--pp-bg-border); border-radius: 14px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--pp-brand-accent-2, #2E9BDC) 7%, transparent), transparent 70%),
+    var(--pp-bg-card, var(--pp-bg-surface, #fff));
+  box-shadow: var(--pp-shadow-sm, 0 1px 2px rgba(8,20,38,.08));
+}
+.planipret-admin-scope .pa-stat-label { font-size: 11.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--pp-text-muted); display: flex; align-items: center; gap: 6px; }
+.planipret-admin-scope .pa-stat-value { margin-top: 6px; font-size: 24px; font-weight: 800; letter-spacing: -0.02em; color: var(--pp-text-primary); font-variant-numeric: tabular-nums; }
+.planipret-admin-scope .pa-stat-hint { margin-top: 3px; font-size: 12px; color: var(--pp-text-muted); }
+
+.planipret-admin-scope .pa-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 34px; padding: 0 12px; border-radius: 10px; font-size: 13px; font-weight: 600;
+  border: 1px solid var(--pp-bg-border); background: var(--pp-bg-surface, #fff); color: var(--pp-text-primary);
+  cursor: pointer; transition: background .15s ease, border-color .15s ease, transform .1s ease;
+}
+.planipret-admin-scope .pa-btn:hover { background: color-mix(in srgb, var(--pp-brand-accent-2, #2E9BDC) 10%, var(--pp-bg-surface, #fff)); border-color: color-mix(in srgb, var(--pp-brand-accent-2, #2E9BDC) 40%, var(--pp-bg-border)); }
+.planipret-admin-scope .pa-btn:active { transform: translateY(1px); }
+.planipret-admin-scope .pa-btn-primary { background: var(--pp-brand-accent-2, #2E9BDC); border-color: var(--pp-brand-accent-2, #2E9BDC); color: #fff; }
+.planipret-admin-scope .pa-btn-primary:hover { background: var(--pp-brand-accent, #4FA8E8); border-color: var(--pp-brand-accent, #4FA8E8); }
+.planipret-admin-scope .pa-btn:disabled { opacity: .55; cursor: not-allowed; }
+.planipret-admin-scope .pa-btn:focus-visible,
+.planipret-admin-scope .pa-header-actions :focus-visible { outline: 2px solid var(--pp-brand-accent-2, #2E9BDC); outline-offset: 2px; }
+
+.planipret-admin-scope .pa-empty { padding: 34px 18px; text-align: center; color: var(--pp-text-muted); font-size: 13px; }
+.planipret-admin-scope .pa-skel { border-radius: 10px; background: linear-gradient(90deg, color-mix(in srgb, var(--pp-text-muted) 12%, transparent), color-mix(in srgb, var(--pp-text-muted) 22%, transparent), color-mix(in srgb, var(--pp-text-muted) 12%, transparent)); background-size: 200% 100%; animation: pa-shimmer 1.3s linear infinite; }
+@keyframes pa-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+@media (max-width: 767px) {
+  .planipret-admin-scope .pa-page { gap: 14px; }
+  .planipret-admin-scope .pa-header { padding: 14px; border-radius: 14px; }
+  .planipret-admin-scope .pa-header-title { font-size: 17px; }
+  .planipret-admin-scope .pa-card-pad { padding: 13px; }
+  .planipret-admin-scope .pa-btn { min-height: 40px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .planipret-admin-scope .pa-skel { animation: none; }
+}
+
+/* --- Normalisation globale des pages admin (pages pas encore migrées au shell) --- */
+.planipret-admin-scope .pa-main > div > h1,
+.planipret-admin-scope .pa-main h1.pa-title,
+.planipret-admin-scope .pa-main h1.pp-heading {
+  font-size: 20px !important;
+  font-weight: 800 !important;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  color: var(--pp-text-primary) !important;
+}
+.planipret-admin-scope .pa-main h2 { letter-spacing: -0.005em; }
+.planipret-admin-scope .pa-main table { font-size: 13px; }
+.planipret-admin-scope .pa-main table thead th {
+  font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--pp-text-muted);
+}
+.planipret-admin-scope .pa-main .pp-card,
+.planipret-admin-scope .pa-main .pp-card-elevated {
+  border-radius: 16px;
+  border: 1px solid var(--pp-bg-border);
+  box-shadow: var(--pp-shadow-sm, 0 1px 2px rgba(8,20,38,.08));
+}
+.planipret-admin-scope .pa-main .rounded-lg,
+.planipret-admin-scope .pa-main .rounded-xl { border-radius: 14px; }
+.planipret-admin-scope .pa-main input:focus-visible,
+.planipret-admin-scope .pa-main select:focus-visible,
+.planipret-admin-scope .pa-main textarea:focus-visible,
+.planipret-admin-scope .pa-main button:focus-visible {
+  outline: 2px solid var(--pp-brand-accent-2, #2E9BDC);
+  outline-offset: 2px;
+}

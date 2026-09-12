@@ -1,3 +1,4 @@
+import { PAPageHeader } from "@/components/planipret/admin/PAPageShell";
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -91,19 +92,18 @@ export default function PADebug() {
   useEffect(() => { run(); }, []);
 
   return (
-    <div className="pa-page space-y-5">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold">{t.title}</h1>
-          <p className="text-sm text-muted-foreground">
-            {t.subtitle}
-          </p>
-        </div>
-        <Button onClick={run} disabled={loading} variant="outline">
-          {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
-          {t.rerun}
-        </Button>
-      </div>
+    <div className="pa-page">
+      <PAPageHeader
+        icon={<RefreshCw className="h-[18px] w-[18px]" />}
+        title={t.title}
+        subtitle={t.subtitle}
+        actions={
+          <Button onClick={run} disabled={loading} variant="outline">
+            {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <RefreshCw className="mr-2 h-4 w-4" />}
+            {t.rerun}
+          </Button>
+        }
+      />
 
       {error && (
         <Card className="border-destructive/40 bg-destructive/5">

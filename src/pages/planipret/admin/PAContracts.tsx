@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { RefreshCw, FileText, Phone, Sparkles, GraduationCap, CloudUpload, ChevronRight } from "lucide-react";
+import { PAPageHeader } from "@/components/planipret/admin/PAPageShell";
 
 type TimelineItem = {
   at: string | null;
@@ -132,26 +133,25 @@ export default function PAContracts() {
   }, [contracts, statusFilter, fromDate, search]);
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">Contrats Maestro</h1>
-          <p className="text-sm text-muted-foreground">
-            Dossiers par agent, avec l'historique complet : demande Maestro, appels remontés, résumé et coaching IA.
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          {lastSync && (
-            <span className="text-xs text-muted-foreground">Synchro {fmt(lastSync)}</span>
-          )}
-          <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading || syncing}>
-            <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} /> Rafraîchir
-          </Button>
-          <Button size="sm" onClick={() => void resync()} disabled={syncing}>
-            <CloudUpload className={`h-4 w-4 mr-2 ${syncing ? "animate-pulse" : ""}`} /> Recharger depuis Maestro
-          </Button>
-        </div>
-      </div>
+    <div className="pa-page">
+      <PAPageHeader
+        icon={<FileText className="h-[18px] w-[18px]" />}
+        title="Contrats Maestro"
+        subtitle="Dossiers par agent, avec l'historique complet : demande Maestro, appels remontés, résumé et coaching IA."
+        actions={
+          <>
+            {lastSync && (
+              <span className="text-xs text-muted-foreground">Synchro {fmt(lastSync)}</span>
+            )}
+            <Button variant="outline" size="sm" onClick={() => void load()} disabled={loading || syncing}>
+              <RefreshCw className={`h-4 w-4 mr-2 ${loading ? "animate-spin" : ""}`} /> Rafraîchir
+            </Button>
+            <Button size="sm" onClick={() => void resync()} disabled={syncing}>
+              <CloudUpload className={`h-4 w-4 mr-2 ${syncing ? "animate-pulse" : ""}`} /> Recharger depuis Maestro
+            </Button>
+          </>
+        }
+      />
 
       <Card>
         <CardContent className="pt-6 grid gap-3 md:grid-cols-4">

@@ -4,6 +4,14 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { MS365_DELEGATED_SCOPES, refreshMicrosoftAccessToken } from "../_shared/ms365.ts";
+import {
+  buildIdempotencyKey,
+  claimAction,
+  confirmationRequiredResult,
+  finishAction,
+  isConfirmed,
+  logProposal,
+} from "../_shared/ava-confirm.ts";
 
 const GRAPH = "https://graph.microsoft.com/v1.0";
 
@@ -35,8 +43,23 @@ Deno.serve(async (req) => {
     const userId = claims?.claims?.sub as string | undefined;
     if (!userId) return j({ success: false, error: "Unauthorized" }, 401);
 
-    const { analysis_id, action_id, modified_content, modified_params } = await req.json();
+    const body = await req.json();
+    const { analysis_id, action_id, modified_content, modified_params } = body ?? {};
     if (!analysis_id || !action_id) return j({ success: false, error: "analysis_id + action_id required" }, 400);
+
+    // Barrière serveur : AVA propose, le courtier confirme, le serveur exécute.
+    if (!isConfirmed(body)) {
+      await logProposal(admin, {
+        userId,
+        action: `ava_action:${action_id}`,
+        surface: "ava_email_actions",
+        decision: "proposed",
+        idempotencyKey: await buildIdempotencyKey({
+          userId, action: `ava_action:${action_id}`, payload: { analysis_id, action_id },
+        }),
+      });
+      return j(confirmationRequiredResult(`ava_action:${action_id}`, { analysis_id, action_id }), 403);
+    }
 
     const { data: analysis, error: aErr } = await admin
       .from("planipret_ava_email_analyses")
@@ -64,6 +87,25 @@ Deno.serve(async (req) => {
     let success = false;
     let result: any = null;
     let errorMsg: string | null = null;
+
+    // Idempotence : double tap, retry réseau ou rejeu → une seule exécution.
+    const idempotencyKey = await buildIdempotencyKey({
+      userId,
+      action: `ava_action:${action.type}`,
+      destination: String(params.to ?? params.chat_id ?? params.channel_id ?? ""),
+      payload: { analysis_id, action_id, content },
+      provided: body?.idempotency_key ?? null,
+    });
+    const claim = await claimAction(admin, {
+      userId,
+      brokerId: profile?.id ?? null,
+      action: `ava_action:${action.type}`,
+      surface: "ava_email_actions",
+      destination: String(params.to ?? params.chat_id ?? params.channel_id ?? "").slice(0, 120),
+      provider: action.type.startsWith("maestro") ? "maestro" : "ms365",
+      idempotencyKey,
+    });
+    if (claim.replay) return j({ success: true, execution_mode: "live", ...claim.result });
 
     try {
       switch (action.type) {
@@ -161,7 +203,9 @@ Deno.serve(async (req) => {
       modified_by_broker: modifiedByBroker,
     });
 
-    return j({ success, execution_mode: executionMode, result, error: errorMsg }, success ? 200 : 500);
+    await finishAction(admin, claim.id, success, { execution_mode: executionMode, result }, errorMsg);
+
+    return j({ success, execution_mode: executionMode, result, error: errorMsg, idempotency_key: idempotencyKey }, success ? 200 : 500);
   } catch (e: any) {
     console.error("[ava-action-executor]", e);
     return j({ success: false, error: e?.message ?? "Erreur serveur" }, 500);

@@ -66,6 +66,8 @@ export default function PostCallConsentSheet() {
   const [clientChoice, setClientChoice] = useState("");
   const [userId, setUserId] = useState<string | null>(null);
   const spokenFor = useRef<string | null>(null);
+  // Heure exacte où l'appel s'est terminé (moment de l'événement, pas de la réponse).
+  const endedAt = useRef<string | null>(null);
   const sending = useRef(false);
   const handled = useRef<Set<string>>(new Set());
 
@@ -78,6 +80,7 @@ export default function PostCallConsentSheet() {
   useEffect(() => {
     const onEnded = async (e: Event) => {
       const detail = ((e as CustomEvent).detail ?? {}) as EndedDetail;
+      const endedIso = new Date().toISOString();
       const { data: auth } = await supabase.auth.getUser();
       const uid = auth?.user?.id;
       if (!uid) return;
@@ -89,12 +92,14 @@ export default function PostCallConsentSheet() {
 
       const since = new Date(Date.now() - 10 * 60_000).toISOString();
       let rows: ConsentCall[] = [];
+      let source: "provider" | "recent" = "recent";
       if (detail.providerCallId) {
         const pid = detail.providerCallId;
         const { data } = await supabase
           .from("planipret_phone_calls").select(SELECT)
           .or(`id.eq.${pid},ns_callid.eq.${pid},ns_call_id.eq.${pid}`).limit(3);
         rows = (data as any as ConsentCall[]) ?? [];
+        if (rows.length) source = "provider";
       }
       if (!rows.length) {
         const { data } = await supabase
@@ -104,11 +109,12 @@ export default function PostCallConsentSheet() {
           .order("created_at", { ascending: false }).limit(5);
         rows = (data as any as ConsentCall[]) ?? [];
       }
-      const picked = pickEndedCall(rows, detail, owners);
+      const picked = pickEndedCall(rows, { ...detail, source }, owners);
       // Une réponse déjà donnée ne vaut jamais pour un nouvel appel, et un même
       // appel ne repose jamais deux fois la question.
       if (!picked || handled.current.has(picked.id)) return;
       handled.current.add(picked.id);
+      endedAt.current = endedIso;
       setCall(picked);
       reset();
     };
@@ -160,6 +166,7 @@ export default function PostCallConsentSheet() {
           call_id: call.id,
           action,
           channel: "screen",
+          ended_at: endedAt.current,
           client_name: clientChoice.trim() || undefined,
         },
       });

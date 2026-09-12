@@ -194,3 +194,47 @@ describe("barrière Microsoft 365 et textos AVA", () => {
     expect((second as any).result).toMatchObject({ id: "msg-1", idempotent_replay: true });
   });
 });
+
+describe("actions courriel proposées par AVA (ava-action-executor)", () => {
+  it("refuse l'exécution d'une action proposée sans confirmation", () => {
+    const req = { analysis_id: "a1", action_id: "act1" };
+    expect(isConfirmed(req)).toBe(false);
+    const res = confirmationRequiredResult("ava_action:act1", req);
+    expect(res.needs_confirmation).toBe(true);
+    expect(res.success).toBe(false);
+  });
+
+  it("un double tap sur « Confirmer et envoyer » n'exécute qu'une fois", async () => {
+    const admin = fakeAdmin();
+    const key = await buildIdempotencyKey({
+      userId: "broker-9", action: "ava_action:email_reply",
+      destination: "client@example.test", payload: { analysis_id: "a1", action_id: "act1", content: "Bonjour" },
+    });
+    const first = await claimAction(admin as any, {
+      userId: "broker-9", action: "ava_action:email_reply", surface: "ava_email_actions",
+      destination: "client@example.test", provider: "ms365", idempotencyKey: key,
+    });
+    expect(first.replay).toBe(false);
+    await finishAction(admin as any, (first as any).id, true, { execution_mode: "live", result: { sent_to: ["client@example.test"] } });
+    const second = await claimAction(admin as any, {
+      userId: "broker-9", action: "ava_action:email_reply", surface: "ava_email_actions",
+      destination: "client@example.test", provider: "ms365", idempotencyKey: key,
+    });
+    expect(second.replay).toBe(true);
+    expect(admin.rows).toHaveLength(1);
+  });
+
+  it("une modification du brouillon change la clé d'idempotence", async () => {
+    const base = { userId: "broker-9", action: "ava_action:email_reply", destination: "client@example.test" };
+    const k1 = await buildIdempotencyKey({ ...base, payload: { content: "Bonjour" } });
+    const k2 = await buildIdempotencyKey({ ...base, payload: { content: "Bonjour, merci" } });
+    expect(k1).not.toBe(k2);
+  });
+
+  it("un texto préparé par AVA via mobile-sms exige une confirmation", () => {
+    const draft = { threadId: "t1", body: "Suivi", origin: "ava_post_call" };
+    expect(isAvaOriginated(draft)).toBe(true);
+    expect(isConfirmed(draft)).toBe(false);
+    expect(isConfirmed({ ...draft, confirmed: true })).toBe(true);
+  });
+});

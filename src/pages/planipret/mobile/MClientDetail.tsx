@@ -46,7 +46,10 @@ export default function MClientDetail() {
         lang={lang}
         lastSyncAt={lastSyncAt}
         loading={loading}
+        onDraftSms={(t) => setSmsTarget({ name: t.name, number: t.number, clientKey: t.clientKey, body: t.body })}
       />
+
+      <SmsDraftSheet target={smsTarget} onClose={() => setSmsTarget(null)} />
     </div>
   );
 }
