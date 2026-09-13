@@ -204,6 +204,49 @@ function queueRingRuleResync(brokerId: string, reason: string, force = false) {
   }
 }
 
+/**
+ * Device/registration refresh on every mobile sign-in (fire-and-forget).
+ *
+ * Observed: a broker whose NS devices drifted (expired registration, stale
+ * core-server) stayed uncallable until an admin pressed "resync". The mobile
+ * app resolves credentials at each login, so we rebuild the broker devices
+ * right there, throttled per broker, and always on an explicit login.
+ * Read-only for PJSIP/CallKit/audio: only the NS device record is refreshed.
+ */
+const DEVICE_REFRESH_TTL_MS = 30 * 60 * 1000; // 30 min per broker
+const lastDeviceRefresh = new Map<string, number>();
+
+function queueDeviceRefresh(
+  brokerId: string,
+  transport: SipTransport,
+  reason: string,
+  force = false,
+) {
+  if (!brokerId) return;
+  const now = Date.now();
+  const last = lastDeviceRefresh.get(brokerId) ?? 0;
+  if (!force && now - last < DEVICE_REFRESH_TTL_MS) return;
+  lastDeviceRefresh.set(brokerId, now);
+  try {
+    const svc = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+    if (!svc) return;
+    const p = fetch(`${SUPABASE_URL}/functions/v1/ns-provision-broker-devices`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-internal-call": "1",
+        Authorization: `Bearer ${svc}`,
+      },
+      body: JSON.stringify({ broker_id: brokerId, force: true, transport }),
+    })
+      .then((r) => console.log(`[ns-resolve] device refresh (${reason}) status=${r.status}`))
+      .catch((e) => console.error(`[ns-resolve] device refresh (${reason}) failed`, e));
+    try { (globalThis as any).EdgeRuntime?.waitUntil?.(p); } catch { /* ignore */ }
+  } catch (e) {
+    console.error("[ns-resolve] device refresh error", e);
+  }
+}
+
 
 /**
  * Transport arbitration.
@@ -264,10 +307,14 @@ Deno.serve(async (req) => {
   let body: any = {};
   try { body = await req.json(); } catch { /* empty ok */ }
   const clientType = normalizeClientType(body?.client_type);
-  // Invariant AOR/transport : `<ext>M` = app native PJSIP/TLS uniquement,
-  // `<ext>W` = navigateur JsSIP/WSS. Jamais l'inverse, sinon le dernier
-  // REGISTER reçu vole le Contact et les appels partent au mauvais client.
-  const sipTransport: SipTransport = clientType === "mobile" ? "tls" : "wss";
+  // The installed mobile app currently registers `<ext>M` through the
+  // foreground/background WSS stack on the NetSapiens core (:9002). Provision
+  // the Device with the same transport; declaring it TLS while the client sends
+  // WSS REGISTERs leaves the AOR permanently unregistered.
+  const requestedTransport = String(body?.transport ?? (clientType === "mobile" ? "tls" : "wss")).toLowerCase();
+  const sipTransport: SipTransport = requestedTransport === "tcp" ? "tcp"
+    : requestedTransport === "tls" ? "tls"
+    : "wss";
 
 
   const authHeader = req.headers.get("Authorization") ?? "";
@@ -302,6 +349,18 @@ Deno.serve(async (req) => {
   const brokerDisplayName = String((profile as any).full_name || (profile as any).email || ext).trim();
 
   console.log(`[ns-resolve] client_type=${clientType} ext=${ext} device=${deviceName}`);
+
+  // Auto-renew the broker's NS devices at every mobile sign-in (forced on an
+  // explicit login, throttled otherwise) so no broker stays unregistered while
+  // waiting for an admin resync.
+  if (clientType === "mobile") {
+    queueDeviceRefresh(
+      String(profile.user_id ?? user.id),
+      sipTransport,
+      body?.on_login ? "mobile_login" : "mobile_resolve",
+      !!body?.on_login,
+    );
+  }
 
 
   // Try the specific device first.

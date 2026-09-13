@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Loader2, RefreshCw, PlayCircle, AlertTriangle, CheckCircle2, Mail } from "lucide-react";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import paBanner from "@/assets/planipret/banner-did.jpg";
 
 interface Row {
   email: string | null;
@@ -146,6 +147,8 @@ export default function PADidReconcile() {
   return (
     <div className="pa-page">
       <PAPageHeader
+        image={paBanner}
+        accent="#6366F1"
         icon={<CheckCircle2 className="h-[18px] w-[18px]" />}
         title={t.title}
         subtitle={t.sub}

@@ -6,6 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { RefreshCw, FileText, Phone, Sparkles, GraduationCap, CloudUpload, ChevronRight } from "lucide-react";
 import { PAPageHeader } from "@/components/planipret/admin/PAPageShell";
+import paBanner from "@/assets/planipret/banner-contracts.jpg";
 
 type TimelineItem = {
   at: string | null;
@@ -135,6 +136,8 @@ export default function PAContracts() {
   return (
     <div className="pa-page">
       <PAPageHeader
+        image={paBanner}
+        accent="#3B82F6"
         icon={<FileText className="h-[18px] w-[18px]" />}
         title="Contrats Maestro"
         subtitle="Dossiers par agent, avec l'historique complet : demande Maestro, appels remontés, résumé et coaching IA."

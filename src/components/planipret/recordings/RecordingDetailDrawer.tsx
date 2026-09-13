@@ -1,0 +1,810 @@
+import { useEffect, useState } from "react";
+import { supabase } from "@/integrations/supabase/client";
+import { toast } from "sonner";
+import { RefreshCw, X, Download } from "lucide-react";
+import { getAiCorrectedTranscript, getAiTranscriptSegments, getDisplayTranscript } from "@/lib/planipretTranscript";
+import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import { downloadRecording } from "@/lib/planipret/downloadRecording";
+
+
+const ACCENT = "#2E9BDC";
+const AGENT = "#9B7FE8";
+
+
+const DICT = {
+  fr: {
+    tabPbx: "Enregistrements PBX",
+    tabAva: "Agent AVA (IA)",
+    processAll: "⚡ Traiter tous les enregistrements",
+    queuingAll: "Mise en file de tous les enregistrements…",
+    noneQueued: "Aucun appel en attente de traitement",
+    queued: (n: number) => `${n} appels en cours de traitement en arrière-plan. La liste se met à jour au fur et à mesure.`,
+    backfillFailed: (e: string) => `Backfill échoué: ${e}`,
+    backfillLabel: "Backfill enregistrements",
+    searchPlaceholder: "Rechercher numéro ou extension…",
+    allBrokers: "Tous courtiers",
+    transcriptAll: "Transcription : tous",
+    transcriptYes: "Avec transcription",
+    transcriptNo: "Sans transcription",
+    reset: (n: number) => `✕ Réinitialiser (${n})`,
+    thBroker: "Courtier",
+    thExt: "Ext.",
+    thFrom: "De",
+    thTo: "Vers",
+    thDuration: "Durée",
+    thDate: "Date",
+    thTranscript: "Transcription",
+    thSummary: "Résumé & thèmes",
+    available: "● Disponible",
+    pending: "⏳ En attente",
+    action: (n: number) => `✓ ${n} action${n > 1 ? "s" : ""}`,
+    emptyTitle: "Aucun enregistrement trouvé",
+    emptyHintFiltered: "Essayez d'élargir vos critères de recherche.",
+    emptyHintDefault: "Aucun enregistrement n'est encore synchronisé. La synchronisation NS-API est automatique · vérifiez que les enregistrements sont activés dans la config NetSapiens.",
+    resetFilters: "Réinitialiser les filtres",
+    goToIntegrations: "Aller aux intégrations →",
+    pageUnit: "enregistrements",
+    detailTitle: "Enregistrement",
+    broker: "Courtier",
+    extDirStatus: (ext: string, dir: string, status: string) => `Ext: ${ext} · Direction: ${dir} · Statut: ${status}`,
+    fromTo: (from: string, to: string) => `De: ${from} → Vers: ${to}`,
+    dateDuration: (date: string, dur: string) => `Date: ${date} · Durée: ${dur}`,
+    nsCallid: (id: string) => `NS callid: ${id}`,
+    statusSynced: "Synchronisé",
+    statusAnalyzed: "Analysé",
+    statusTranscribed: "Transcrit",
+    statusPending: "En attente",
+    analyzedAt: (ts: string) => `analyzed_at: ${ts}`,
+    src: (s: string) => `src: ${s}`,
+    audioStreamed: "● Audio streamé depuis NS-API",
+    audioMeta: "Audio meta:",
+    loadingAudio: "Chargement de l'audio depuis NS-API…",
+    voicemailNotice: "📵 Appel non enregistré (VMail ou appel manqué)",
+    audioLabel: "Audio",
+    download: "Télécharger",
+    recordingNotFound: "Enregistrement introuvable sur NS-API.",
+    retry: "Réessayer",
+    aiCorrectedTranscript: "Transcription corrigée par l'IA",
+    analyzedBadge: "● Analysé",
+    speaker: "Speaker",
+    rawNsVersion: "Version brute NetSapiens",
+    coachingAnalysis: "Analyse coaching AVA",
+    coachQueued: "En attente",
+    coachRunning: "En cours",
+    coachError: "Erreur",
+    coachDone: "Terminé",
+    coachQueuedMsg: "En file — préparation du contexte…",
+    coachRunningMsg: (s: number) => `AVA analyse et corrige la transcription… (${s}s)`,
+    coachErrorMsg: "Analyse échouée — vous pouvez réessayer.",
+    retryAnalysis: "Réessayer l'analyse",
+    transcription: "Transcription",
+    transcriptPendingMsg: (n: number) => `Transcription pas encore prête côté système téléphonique — tentative auto en cours (essai ${n})…`,
+    transcriptLoading: "Chargement de la transcription depuis NS-API…",
+    transcriptLoadError: "❌ Impossible de charger la transcription",
+    transcriptUnavailable: "⚠️ Transcription non trouvée — Diagnostic",
+    aiCoaching: "Coaching IA",
+    score: "Score :",
+    strengths: "Points forts :",
+    improvements: "À améliorer :",
+    nextSteps: "Prochaines étapes :",
+    aiSummary: "Résumé IA",
+    topics: "Thèmes abordés",
+    actionsToDo: "Actions à faire",
+    brokerLabel: "Courtier",
+    clientLabel: "Client",
+    syncLaunched: (n: number) => `Synchro lancée: ${n} ext · appels/enregistrements en arrière-plan`,
+    syncFailed: (e: string) => `Synchro échouée: ${e}`,
+    recordingLoaded: "Enregistrement chargé",
+    fetchFailed: (e: string) => `Récupération échouée: ${e}`,
+    coachingFailed: (e: string) => `Coaching échoué: ${e}`,
+    coachingGenerated: (s: string) => `Coaching généré (score ${s}/100)`,
+    missingCallId: "Identifiant d'appel manquant — resynchroniser le CDR",
+    processingRecording: (s: string, kb: string) => `Enregistrement en traitement (status: ${s}, taille: ${kb} kB)`,
+    noRecordingAvailable: "Aucun enregistrement disponible pour cet appel.",
+    idsTested: (ids: string) => `IDs testés: ${ids}`,
+    noRecordingNsApi: "Aucun enregistrement disponible côté NS-API",
+  },
+  en: {
+    tabPbx: "PBX recordings",
+    tabAva: "AVA Agent (AI)",
+    processAll: "⚡ Process all recordings",
+    queuingAll: "Queuing all recordings…",
+    noneQueued: "No calls awaiting processing",
+    queued: (n: number) => `${n} calls being processed in the background. The list will update as they complete.`,
+    backfillFailed: (e: string) => `Backfill failed: ${e}`,
+    backfillLabel: "Recording backfill",
+    searchPlaceholder: "Search number or extension…",
+    allBrokers: "All brokers",
+    transcriptAll: "Transcript: all",
+    transcriptYes: "With transcript",
+    transcriptNo: "Without transcript",
+    reset: (n: number) => `✕ Reset (${n})`,
+    thBroker: "Broker",
+    thExt: "Ext.",
+    thFrom: "From",
+    thTo: "To",
+    thDuration: "Duration",
+    thDate: "Date",
+    thTranscript: "Transcript",
+    thSummary: "Summary & topics",
+    available: "● Available",
+    pending: "⏳ Pending",
+    action: (n: number) => `✓ ${n} action${n > 1 ? "s" : ""}`,
+    emptyTitle: "No recording found",
+    emptyHintFiltered: "Try widening your search criteria.",
+    emptyHintDefault: "No recording has been synced yet. NS-API sync is automatic · check that recordings are enabled in the NetSapiens config.",
+    resetFilters: "Reset filters",
+    goToIntegrations: "Go to integrations →",
+    pageUnit: "recordings",
+    detailTitle: "Recording",
+    broker: "Broker",
+    extDirStatus: (ext: string, dir: string, status: string) => `Ext: ${ext} · Direction: ${dir} · Status: ${status}`,
+    fromTo: (from: string, to: string) => `From: ${from} → To: ${to}`,
+    dateDuration: (date: string, dur: string) => `Date: ${date} · Duration: ${dur}`,
+    nsCallid: (id: string) => `NS callid: ${id}`,
+    statusSynced: "Synced",
+    statusAnalyzed: "Analyzed",
+    statusTranscribed: "Transcribed",
+    statusPending: "Pending",
+    analyzedAt: (ts: string) => `analyzed_at: ${ts}`,
+    src: (s: string) => `src: ${s}`,
+    audioStreamed: "● Audio streamed from NS-API",
+    audioMeta: "Audio meta:",
+    loadingAudio: "Loading audio from NS-API…",
+    voicemailNotice: "📵 Call not recorded (VMail or missed call)",
+    audioLabel: "Audio",
+    download: "Download",
+    recordingNotFound: "Recording not found on NS-API.",
+    retry: "Retry",
+    aiCorrectedTranscript: "AI-corrected transcript",
+    analyzedBadge: "● Analyzed",
+    speaker: "Speaker",
+    rawNsVersion: "Raw NetSapiens version",
+    coachingAnalysis: "AVA coaching analysis",
+    coachQueued: "Queued",
+    coachRunning: "Running",
+    coachError: "Error",
+    coachDone: "Done",
+    coachQueuedMsg: "Queued — preparing context…",
+    coachRunningMsg: (s: number) => `AVA is analyzing and correcting the transcript… (${s}s)`,
+    coachErrorMsg: "Analysis failed — you can try again.",
+    retryAnalysis: "Retry analysis",
+    transcription: "Transcript",
+    transcriptPendingMsg: (n: number) => `Transcript not ready yet on the phone system — automatic retry in progress (attempt ${n})…`,
+    transcriptLoading: "Loading transcript from NS-API…",
+    transcriptLoadError: "❌ Unable to load transcript",
+    transcriptUnavailable: "⚠️ Transcript not found — Diagnostic",
+    aiCoaching: "AI coaching",
+    score: "Score:",
+    strengths: "Strengths:",
+    improvements: "To improve:",
+    nextSteps: "Next steps:",
+    aiSummary: "AI summary",
+    topics: "Topics discussed",
+    actionsToDo: "Action items",
+    brokerLabel: "Broker",
+    clientLabel: "Client",
+    syncLaunched: (n: number) => `Sync started: ${n} ext · calls/recordings in background`,
+    syncFailed: (e: string) => `Sync failed: ${e}`,
+    recordingLoaded: "Recording loaded",
+    fetchFailed: (e: string) => `Fetch failed: ${e}`,
+    coachingFailed: (e: string) => `Coaching failed: ${e}`,
+    coachingGenerated: (s: string) => `Coaching generated (score ${s}/100)`,
+    missingCallId: "Missing call ID — resync the CDR",
+    processingRecording: (s: string, kb: string) => `Recording processing (status: ${s}, size: ${kb} kB)`,
+    noRecordingAvailable: "No recording available for this call.",
+    idsTested: (ids: string) => `IDs tested: ${ids}`,
+    noRecordingNsApi: "No recording available from NS-API",
+  },
+};
+export interface RecordingDetailDrawerProps {
+  call: any;
+  onClose: () => void;
+  onUpdated?: () => void;
+  showBroker?: boolean;
+}
+
+const defaultBrokerName = (r: any) =>
+  r?.planipret_profiles?.full_name ?? r?.metadata?.ns_user?.name ?? r?.metadata?.user_name ?? r?.metadata?.extension_name ?? (r?.extension ? `Ext. ${r.extension}` : "—");
+
+export default function RecordingDetailDrawer({ call, onClose, onUpdated, showBroker = true }: RecordingDetailDrawerProps) {
+  const { lang } = useMplanipretLang();
+  const t = DICT[lang];
+  const localeStr = lang === "en" ? "en-CA" : "fr-CA";
+  const brokerName = defaultBrokerName;
+
+  const [detail, setDetail] = useState<any | null>(call);
+  const [transcribing, setTranscribing] = useState<string | null>(null);
+  const [recordingError, setRecordingError] = useState<string | null>(null);
+  const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
+  const [transcriptionUnavailable, setTranscriptionUnavailable] = useState<boolean>(false);
+  const [transcriptionDebug, setTranscriptionDebug] = useState<any | null>(null);
+
+  useEffect(() => {
+    setDetail(call);
+    setRecordingError(null);
+    setTranscriptionError(null);
+    setTranscriptionUnavailable(false);
+    setTranscriptionDebug(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [call?.id]);
+
+  const transcribe = async (callId: string) => {
+    setTranscribing(callId);
+    setTranscriptionError(null);
+    setTranscriptionUnavailable(false);
+    setTranscriptionDebug(null);
+    try {
+      // Full pipeline: NS transcript → Whisper (STT) fallback → Claude coaching chain.
+      const { data, error } = await supabase.functions.invoke("pp-admin-transcribe", { body: { call_id: callId } });
+      if (error) throw error;
+      const d = data as any;
+      if (d?.ok && d?.transcript) {
+        const segments = Array.isArray(d.segments) ? d.segments : null;
+        setDetail((cur: any) => cur && cur.id === callId ? { ...cur, transcript: d.transcript, transcript_segments: segments, transcript_source: d.source ?? cur.transcript_source, has_transcript: true } : cur);
+        onUpdated?.();
+      } else if (d?.pending) {
+        // Transcript pas encore prêt côté téléphone — polling automatique
+        setDetail((cur: any) => cur && cur.id === callId ? { ...cur, transcript_pending: true, transcript_attempts: d.attempts } : cur);
+        setTranscriptionError(null);
+        setTranscriptionUnavailable(false);
+      } else {
+        setTranscriptionUnavailable(true);
+        setTranscriptionDebug(d);
+        if (d?.hint) setTranscriptionError(d.hint);
+      }
+    } catch (e: any) {
+      setTranscriptionError(e?.message ?? String(e));
+    } finally {
+      setTranscribing(null);
+    }
+  };
+
+  const [resolving, setResolving] = useState<string | null>(null);
+  const resolveRecording = async (row: any, _force = false) => {
+    setResolving(row.id);
+    setRecordingError(null);
+    try {
+      // Phase 4: stream audio bytes from ns-get-recording
+      const projectId = (import.meta as any).env?.VITE_SUPABASE_PROJECT_ID ?? "gejxisrqtvxavbrfcoxz";
+      const anonKey = (import.meta as any).env?.VITE_SUPABASE_PUBLISHABLE_KEY ?? (import.meta as any).env?.VITE_SUPABASE_ANON_KEY;
+      const { data: { session } } = await supabase.auth.getSession();
+      const resp = await fetch(`https://${projectId}.supabase.co/functions/v1/ns-get-recording`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: anonKey ?? "",
+          Authorization: `Bearer ${session?.access_token ?? anonKey ?? ""}`,
+        },
+        body: JSON.stringify({ call_db_id: row.id }),
+      });
+      const ct = resp.headers.get("Content-Type") ?? "";
+      if (resp.ok && ct.includes("audio")) {
+        const blob = await resp.blob();
+        const objUrl = URL.createObjectURL(blob);
+        const recordingMeta = {
+          duration_sec: resp.headers.get("X-NS-Duration-Seconds"),
+          file_size_kb: resp.headers.get("X-NS-File-Size-KB"),
+          status: resp.headers.get("X-NS-Recording-Status"),
+          callid: resp.headers.get("X-NS-CallID"),
+          source_path: resp.headers.get("X-NS-Source-Path"),
+        };
+        setDetail((cur: any) => ({ ...(cur && cur.id === row.id ? cur : row), recording_url: objUrl, __recording_meta: recordingMeta }));
+        toast.success(t.recordingLoaded);
+      } else {
+        const j = await resp.json().catch(() => ({}));
+        let msg: string;
+        switch (j?.error) {
+          case "MISSING_CALLID":
+            msg = t.missingCallId;
+            break;
+          case "NO_FILE_ACCESS_URL":
+            msg = t.processingRecording(j.recording_status ?? "?", String(j.file_size_kb ?? 0));
+            break;
+          case "RECORDING_NOT_FOUND":
+            msg = [
+              j?.message ?? t.noRecordingAvailable,
+              Array.isArray(j?.attempted_ids) && j.attempted_ids.length ? t.idsTested(j.attempted_ids.slice(0, 3).join(", ")) : null,
+            ].filter(Boolean).join(" ");
+            break;
+          default:
+            msg = [j?.message ?? j?.error ?? t.noRecordingNsApi,
+              Array.isArray(j?.possible_causes) ? j.possible_causes[0] : null].filter(Boolean).join(" — ");
+        }
+        setRecordingError(msg);
+        toast.error(msg);
+        console.warn("[ns-get-recording] failure", j);
+      }
+    } catch (e: any) {
+      toast.error(t.fetchFailed(e.message ?? e));
+    } finally {
+      setResolving(null);
+    }
+  };
+
+  const [coaching, setCoaching] = useState<string | null>(null);
+  // Coaching status per call: 'queued' | 'running' | 'done' | 'error'
+  const [coachStatus, setCoachStatus] = useState<Record<string, "queued" | "running" | "done" | "error">>({});
+  const [coachStartedAt, setCoachStartedAt] = useState<Record<string, number>>({});
+  const [coachElapsed, setCoachElapsed] = useState<number>(0);
+
+  // Tick elapsed while any coaching is running
+  useEffect(() => {
+    const running = Object.values(coachStatus).some((s) => s === "queued" || s === "running");
+    if (!running) return;
+    const id = setInterval(() => setCoachElapsed((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, [coachStatus]);
+
+  const runCoaching = async (callId: string) => {
+    // Guard: never call coaching without a transcript in local state
+    const cur = detail;
+    const hasT = cur && cur.id === callId && (Boolean(cur.transcript) || (Array.isArray(cur.transcript_segments) && cur.transcript_segments.length > 0));
+    if (!hasT) return;
+    // Cache: si déjà analysé, ne relance pas
+    if (cur.ai_coaching) {
+      setCoachStatus((s) => ({ ...s, [callId]: "done" }));
+      return;
+    }
+    setCoaching(callId);
+    setCoachStatus((s) => ({ ...s, [callId]: "queued" }));
+    setCoachStartedAt((s) => ({ ...s, [callId]: Date.now() }));
+    setCoachElapsed(0);
+    // Bascule "en cours" après un court délai pour matérialiser la queue → running
+    setTimeout(() => setCoachStatus((s) => (s[callId] === "queued" ? { ...s, [callId]: "running" } : s)), 400);
+    try {
+      // Fallback transcript: envoyer le texte local si la DB n'est pas encore synchro
+      const localTranscript = cur.transcript || (Array.isArray(cur.transcript_segments) ? cur.transcript_segments.map((s: any) => s?.text).filter(Boolean).join("\n") : "");
+      const { data, error } = await supabase.functions.invoke("pp-coach-call", { body: { call_id: callId, transcript: localTranscript } });
+      const d = (data as any) ?? {};
+      if (d?.error === "TRANSCRIPT_MISSING") {
+        // Transcript pas encore prêt côté serveur — reste en "queued", retry dans 3s
+        setCoachStatus((s) => ({ ...s, [callId]: "queued" }));
+        setTimeout(() => runCoaching(callId), 3000);
+        return;
+      }
+      if (error) {
+        setCoachStatus((s) => ({ ...s, [callId]: "error" }));
+        toast.error(t.coachingFailed(error.message ?? error));
+        return;
+      }
+      if (d?.success) {
+        toast.success(t.coachingGenerated(d.score ?? "—"));
+        setDetail((c: any) => c && c.id === callId ? {
+          ...c,
+          ai_summary: d.summary,
+          ai_coaching: d.coaching,
+          ai_analysis_json: d.corrected_transcript ? { ...(c.ai_analysis_json ?? {}), corrected_transcript: d.corrected_transcript } : c.ai_analysis_json,
+          lead_score: d.score,
+          coaching_score: d.coaching_score ?? c.coaching_score,
+        } : c);
+        setCoachStatus((s) => ({ ...s, [callId]: "done" }));
+      }
+    } catch (e: any) {
+      const msg = String(e?.message ?? e);
+      if (!msg.includes("TRANSCRIPT_MISSING")) toast.error(t.coachingFailed(msg));
+      setCoachStatus((s) => ({ ...s, [callId]: "error" }));
+    } finally {
+      setCoaching(null);
+    }
+  };
+
+  // Realtime: auto-refresh detail when ai_coaching lands (from any source)
+  useEffect(() => {
+    if (!detail?.id) return;
+    const callId = detail.id;
+    const ch = supabase
+      .channel(`pa-call-${callId}`)
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "planipret_phone_calls", filter: `id=eq.${callId}` }, (payload: any) => {
+        const n = payload?.new;
+        if (!n) return;
+        setDetail((c: any) => (c && c.id === callId ? { ...c, ...n } : c));
+        if (n.ai_coaching) setCoachStatus((s) => ({ ...s, [callId]: "done" }));
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [detail?.id]);
+
+  // Auto-fetch transcription via ns-get-transcription when a recording detail opens
+  useEffect(() => {
+    if (!detail?.id) return;
+    if (detail.transcript || (Array.isArray(detail.transcript_segments) && detail.transcript_segments.length)) return;
+    if (transcribing === detail.id) return;
+    transcribe(detail.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detail?.id]);
+
+  // Polling automatique quand la transcription est en attente côté système téléphonique
+  useEffect(() => {
+    if (!detail?.id) return;
+    const isPending = detail.transcript_pending && !detail.transcript;
+    if (!isPending) return;
+    const attempts = Number(detail.transcript_attempts ?? 0);
+    // Backoff: 15s, 30s, 60s, 120s (max 4 min entre tentatives)
+    const delay = Math.min(15_000 * Math.pow(2, Math.min(attempts, 3)), 240_000);
+    const t2 = setTimeout(() => {
+      if (transcribing !== detail.id) transcribe(detail.id);
+    }, delay);
+    return () => clearTimeout(t2);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detail?.id, detail?.transcript_pending, detail?.transcript_attempts, transcribing]);
+
+  // Auto-run Claude coaching once transcript is available and no analysis yet
+  useEffect(() => {
+    if (!detail?.id) return;
+    const hasTranscript = Boolean(detail.transcript) || (Array.isArray(detail.transcript_segments) && detail.transcript_segments.length > 0);
+    if (!hasTranscript) return;
+    if (detail.ai_coaching || detail.ai_summary) return;
+    if (coaching === detail.id) return;
+    runCoaching(detail.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detail?.id, detail?.transcript, detail?.transcript_segments]);
+
+  // Auto-fetch audio via ns-get-recording when a recording detail opens (skip voicemails).
+  // If NS-API returns "recording not ready / callid désynchronisé" on the first try,
+  // we automatically retry a few times with an increasing backoff so the operator
+  // sees a proper loading state instead of a stale error.
+  useEffect(() => {
+    if (!detail?.id) return;
+    const to2 = String(detail.to_number ?? "").toLowerCase();
+    const isVoicemail = to2.includes("vmail") || to2.includes("voicemail") || to2.includes("vm@");
+    if (isVoicemail) return;
+    if (detail.recording_url && String(detail.recording_url).startsWith("blob:")) return;
+    if (detail.recording_url && String(detail.recording_url).startsWith("http")) return;
+
+    let cancelled = false;
+    let attempt = 0;
+    // Reset the error banner every time a new call is opened so the loader
+    // (resolving === detail.id) can render instead of the stale "not found".
+    setRecordingError(null);
+
+    const kick = async () => {
+      if (cancelled) return;
+      await resolveRecording(detail);
+      if (cancelled) return;
+      // If nothing landed and we still don't have audio, retry with backoff.
+      // NetSapiens finalizes recordings a few seconds after the call ends.
+      const stillMissing = !(detail.recording_url && String(detail.recording_url).startsWith("blob:"));
+      if (stillMissing && attempt < 3) {
+        attempt += 1;
+        const delay = 4000 * attempt; // 4s, 8s, 12s
+        setTimeout(() => { if (!cancelled) kick(); }, delay);
+      }
+    };
+    kick();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detail?.id]);
+
+
+
+  const detailSegments = getAiTranscriptSegments(detail).filter((s: any) => s?.text);
+  const detailTranscript = getDisplayTranscript(detail);
+  const hasDetailTranscript = Boolean(detailTranscript) || detailSegments.length > 0;
+
+  if (!detail) return null;
+
+  return (
+        <div className="fixed inset-0 z-50 bg-black/60 flex justify-end" onClick={() => onClose()}>
+          <div className="h-full w-full max-w-md overflow-y-auto p-5"
+            style={{ background: "var(--pp-bg-surface)", borderLeft: "1px solid var(--pp-bg-border-2)" }}
+            onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <h3 style={{ fontWeight: 600, color: "var(--pp-text-primary)" }}>{t.detailTitle}</h3>
+              <button onClick={() => { setRecordingError(null); setTranscriptionError(null); setTranscriptionUnavailable(false); onClose(); }}><X className="w-4 h-4" style={{ color: "var(--pp-text-muted)" }} /></button>
+            </div>
+            <div className="space-y-3 text-sm" style={{ color: "var(--pp-text-secondary)" }}>
+              {showBroker && <div>{t.broker}: <span style={{ color: "var(--pp-text-primary)" }}>{brokerName(detail)}</span></div>}
+              <div>{t.extDirStatus(detail.extension ?? "—", detail.direction ?? "—", detail.status ?? "—")}</div>
+              <div>{t.fromTo(detail.from_number ?? "—", detail.to_number ?? "—")}</div>
+              <div>{t.dateDuration(detail.started_at ? new Date(detail.started_at).toLocaleString(localeStr) : "—", detail.duration_seconds ? `${Math.floor(detail.duration_seconds / 60)}m${detail.duration_seconds % 60}s` : "—")}</div>
+              <div style={{ fontSize: 10, color: "var(--pp-text-faint)", fontFamily: "monospace" }}>{t.nsCallid(detail.ns_callid ?? detail.ns_orig_callid ?? "—")}</div>
+              {(() => {
+                const status = detail.maestro_synced ? "synced" : detail.analyzed_at ? "analyzed" : detail.transcript ? "transcribed" : "pending";
+                const label = status === "synced" ? t.statusSynced : status === "analyzed" ? t.statusAnalyzed : status === "transcribed" ? t.statusTranscribed : t.statusPending;
+                const color = status === "synced" ? "#10b981" : status === "analyzed" ? "#2E9BDC" : status === "transcribed" ? "#9B7FE8" : "#f59e0b";
+                const ts = detail.analyzed_at ? new Date(detail.analyzed_at).toLocaleString(localeStr) : null;
+                return (
+                  <div className="flex flex-wrap items-center gap-2" style={{ fontSize: 10 }}>
+                    <span style={{ padding: "2px 8px", borderRadius: 999, background: `${color}22`, color, border: `1px solid ${color}55`, fontWeight: 700, letterSpacing: 0.4, textTransform: "uppercase" }}>● {label}</span>
+                    {ts && <span style={{ color: "var(--pp-text-muted)" }}>{t.analyzedAt(ts)}</span>}
+                    <span style={{ color: "var(--pp-text-faint)", fontFamily: "monospace" }}>{t.src(detail.transcript_source ?? (detail.transcript ? "ns-api" : "—"))}</span>
+                  </div>
+                );
+              })()}
+              {String(detail.recording_url ?? "").startsWith("blob:") && resolving !== detail.id && (
+                <div style={{ fontSize: 10, color: "var(--pp-success)" }}>{t.audioStreamed}</div>
+              )}
+              {detail.__recording_meta && String(detail.recording_url ?? "").startsWith("blob:") && (
+                <div style={{ fontSize: 10, color: "var(--pp-text-faint)", fontFamily: "monospace" }}>
+                  {t.audioMeta} {detail.__recording_meta.duration_sec ? `${detail.__recording_meta.duration_sec}s` : `${detail.duration_seconds ?? "?"}s`}
+                  {detail.__recording_meta.file_size_kb ? ` · ${detail.__recording_meta.file_size_kb} kB` : ""}
+                  {detail.__recording_meta.callid ? ` · ${detail.__recording_meta.callid}` : ""}
+                </div>
+              )}
+              {resolving === detail.id && (
+                <div style={{ fontSize: 11, color: "var(--pp-text-muted)" }}>{t.loadingAudio}</div>
+              )}
+              {(() => {
+                const toLc = String(detail.to_number ?? "").toLowerCase();
+                const isVoicemail = toLc.includes("vmail") || toLc.includes("voicemail") || toLc.includes("vm@");
+                if (isVoicemail) {
+                  return (
+                    <div className="p-3 rounded-lg text-xs" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}>
+                      {t.voicemailNotice}
+                    </div>
+                  );
+                }
+                if (resolving === detail.id) {
+                  return (
+                    <div>
+                      <p style={{ fontSize: 11, color: "var(--pp-text-muted)", marginBottom: 4 }}>{t.audioLabel}</p>
+                      <div className="h-10 w-full animate-pulse rounded" style={{ background: "var(--pp-bg-elevated)" }} />
+                    </div>
+                  );
+                }
+                if (detail.recording_url && String(detail.recording_url).startsWith("blob:")) {
+                  return (
+                    <div>
+                      <p style={{ fontSize: 11, color: "var(--pp-text-muted)", marginBottom: 4 }}>{t.audioLabel}</p>
+                      <audio key={detail.recording_url} src={detail.recording_url} controls className="w-full" />
+                      <button type="button" onClick={async () => {
+                        const r = await downloadRecording(detail);
+                        if (!r.ok) toast.error(r.error ?? "Téléchargement échoué");
+                      }} className="inline-flex items-center gap-1 text-xs mt-2" style={{ color: ACCENT }}>
+                        <Download className="w-3 h-3" /> {t.download}
+                      </button>
+                    </div>
+                  );
+                }
+                if (detail.recording_url && String(detail.recording_url).startsWith("http")) {
+                  return (
+                    <div>
+                      <p style={{ fontSize: 11, color: "var(--pp-text-muted)", marginBottom: 4 }}>{t.audioLabel}</p>
+                      <audio
+                        key={detail.recording_url}
+                        src={detail.recording_url}
+                        controls
+                        className="w-full"
+                        onError={() => {
+                          if (resolving !== detail.id && !(detail as any).__autoRefreshed) {
+                            (detail as any).__autoRefreshed = true;
+                            resolveRecording(detail, true);
+                          }
+                        }}
+                      />
+                      <button type="button" onClick={async () => {
+                        const r = await downloadRecording(detail);
+                        if (!r.ok) toast.error(r.error ?? "Téléchargement échoué");
+                      }} className="inline-flex items-center gap-1 text-xs mt-2" style={{ color: ACCENT }}>
+                        <Download className="w-3 h-3" /> {t.download}
+                      </button>
+                    </div>
+                  );
+                }
+
+                // Fallback state (no audio yet, no error yet): still loading or awaiting first resolve
+
+                return (
+                  <div className="p-3 rounded-lg text-xs space-y-2" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}>
+                    <div>{recordingError ?? t.recordingNotFound}</div>
+                    <button
+                      type="button"
+                      onClick={() => resolveRecording(detail, true)}
+                      className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium"
+                      style={{ background: ACCENT, color: "white" }}
+                    >
+                      <RefreshCw className="w-3 h-3" /> {t.retry}
+                    </button>
+                  </div>
+                );
+              })()}
+
+              {hasDetailTranscript ? (
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <p style={{ fontSize: 11, color: "var(--pp-text-muted)" }}>{t.aiCorrectedTranscript}</p>
+                    {detail.ai_coaching && (
+                      <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 999, background: "rgba(16,185,129,0.14)", color: "#10b981", border: "1px solid #10b98155", fontWeight: 700, letterSpacing: 0.4, textTransform: "uppercase" }}>{t.analyzedBadge}</span>
+                    )}
+                  </div>
+                  {detailSegments.length > 0 ? (
+                    <div className="space-y-2">
+                      {detailSegments.map((s: any, i: number) => {
+                        const isClient = String(s.speaker ?? "").toLowerCase().includes("client");
+                        const bg = isClient ? "rgba(46,155,220,0.10)" : "rgba(155,127,232,0.10)";
+                        const border = isClient ? "#2E9BDC55" : "#9B7FE855";
+                        const nameColor = isClient ? "#2E9BDC" : "#9B7FE8";
+                        return (
+                          <div key={i} className="p-2.5 rounded-lg" style={{ background: bg, border: `1px solid ${border}`, fontSize: 12 }}>
+                            <div className="flex items-center justify-between mb-1">
+                              <span style={{ fontWeight: 700, color: nameColor, fontSize: 11 }}>{s.speaker ?? t.speaker}</span>
+                              {s.timestamp && <span style={{ fontSize: 10, color: "var(--pp-text-faint)", fontFamily: "monospace" }}>{s.timestamp}</span>}
+                            </div>
+                            <div style={{ color: "var(--pp-text-primary)" }} className="whitespace-pre-wrap">{s.text}</div>
+                            {s.summary && (
+                              <div style={{ marginTop: 6, fontSize: 10, color: "var(--pp-text-muted)", fontStyle: "italic" }}>↳ {s.summary}</div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="p-3 rounded-lg" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", fontSize: 12 }}>
+                      <div className="whitespace-pre-wrap">{detailTranscript}</div>
+                    </div>
+                  )}
+                  {getAiCorrectedTranscript(detail) && detail.transcript && getAiCorrectedTranscript(detail) !== detail.transcript && (
+                    <details className="mt-2">
+                      <summary style={{ fontSize: 11, color: "var(--pp-text-muted)", cursor: "pointer", padding: "6px 0" }}>{t.rawNsVersion}</summary>
+                      <div className="p-3 rounded-lg mt-1" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", fontSize: 12 }}>
+                        <div className="whitespace-pre-wrap">{detail.transcript}</div>
+                      </div>
+                    </details>
+                  )}
+                </div>
+              ) : (hasDetailTranscript && !detail.ai_coaching) || coaching === detail.id ? (
+
+                (() => {
+                  const st = coachStatus[detail.id] ?? "queued";
+                  const label = st === "queued" ? t.coachQueued : st === "running" ? t.coachRunning : st === "error" ? t.coachError : t.coachDone;
+                  const color = st === "queued" ? "#f59e0b" : st === "running" ? "#2E9BDC" : st === "error" ? "#ef4444" : "#10b981";
+                  const started = coachStartedAt[detail.id];
+                  const elapsed = started ? Math.max(0, Math.floor((Date.now() - started) / 1000)) + Math.min(coachElapsed, 0) : 0;
+                  // Estimation ~15s, barre progressive plafonnée à 92% tant que pas fini
+                  const pct = st === "error" ? 100 : Math.min(92, Math.round((elapsed / 15) * 100));
+                  return (
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <p style={{ fontSize: 11, color: "var(--pp-text-muted)" }}>{t.coachingAnalysis}</p>
+                        <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 999, background: `${color}22`, color, border: `1px solid ${color}55`, fontWeight: 700, letterSpacing: 0.4, textTransform: "uppercase" }}>● {label}</span>
+                      </div>
+                      <div className="p-3 rounded-lg space-y-2" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)" }}>
+                        <div className="flex items-center gap-2 text-xs" style={{ color: "var(--pp-text-secondary)" }}>
+                          {st !== "error" && <div className="w-3 h-3 rounded-full border-2 animate-spin" style={{ borderColor: color, borderTopColor: "transparent" }} />}
+                          <span>
+                            {st === "queued" && t.coachQueuedMsg}
+                            {st === "running" && t.coachRunningMsg(elapsed)}
+                            {st === "error" && t.coachErrorMsg}
+                          </span>
+                        </div>
+                        <div style={{ height: 4, borderRadius: 999, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}>
+                          <div style={{ height: "100%", width: `${pct}%`, background: color, transition: "width 0.6s linear" }} />
+                        </div>
+                        {st === "error" && (
+                          <button onClick={() => runCoaching(detail.id)} className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-white text-xs" style={{ background: ACCENT }}>
+                            <RefreshCw className="w-3 h-3" /> {t.retryAnalysis}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()
+              ) : detail.transcript_status === "no_audio" && transcribing !== detail.id ? (
+                <div>
+                  <p style={{ fontSize: 11, color: "var(--pp-text-muted)", marginBottom: 4 }}>{t.transcription}</p>
+                  <div className="p-3 rounded-lg text-xs" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}>
+                    Aucun enregistrement disponible pour cet appel côté système téléphonique.
+                  </div>
+                </div>
+              ) : transcribing === detail.id || detail.transcript_pending ? (
+                <div>
+                  <p style={{ fontSize: 11, color: "var(--pp-text-muted)", marginBottom: 4 }}>{t.transcription}</p>
+                  <div className="flex items-center gap-2 p-3 rounded-lg text-xs" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}>
+                    <div className="w-3 h-3 rounded-full border-2 animate-spin" style={{ borderColor: "var(--pp-text-muted)", borderTopColor: "transparent" }} />
+                    {detail.transcript_pending
+                      ? t.transcriptPendingMsg(detail.transcript_attempts ?? 1)
+                      : t.transcriptLoading}
+                  </div>
+                </div>
+              ) : transcriptionError ? (
+                <div className="space-y-2">
+                  <div className="p-3 rounded-lg text-xs" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-danger, #E84C4C)" }}>
+                    {t.transcriptLoadError}
+                  </div>
+                  <button
+                    onClick={() => transcribe(detail.id)}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-white text-sm"
+                    style={{ background: ACCENT }}
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" /> {t.retry}
+                  </button>
+                </div>
+              ) : transcriptionUnavailable ? (
+                <div>
+                  <div className="p-3 rounded-lg text-xs text-center mb-2" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}>
+                    {t.transcriptUnavailable}
+                  </div>
+                  <div style={{ background: "#040B16", border: "1px solid #0E2A45", borderRadius: 10, padding: 10, fontSize: 10, fontFamily: "monospace", color: "#8FA8C0", maxHeight: 320, overflowY: "auto" }}>
+                    <div style={{ color: "#2E9BDC" }}>NS callid: {transcriptionDebug?.ns_callid ?? "null"}</div>
+                    <div style={{ color: "#2E9BDC", marginBottom: 6 }}>Extension: {transcriptionDebug?.ns_extension ?? "null"}</div>
+                    {(transcriptionDebug?.attempts ?? []).map((a: any, i: number) => (
+                      <div key={i} style={{ marginBottom: 6, paddingBottom: 6, borderBottom: "1px solid #0E2A45" }}>
+                        <div style={{ color: a.status === 200 ? "#00D4AA" : "#E84C4C", wordBreak: "break-all" }}>
+                          HTTP {a.status ?? "ERR"} — {String(a.url ?? "").slice(0, 120)}
+                        </div>
+                        {a.fields_found?.length > 0 && (
+                          <div style={{ color: "#9B7FE8" }}>Fields: {a.fields_found.join(", ")}</div>
+                        )}
+                        {a.items_count > 0 && (
+                          <div style={{ color: "#F5A623" }}>Items: {a.items_count}</div>
+                        )}
+                        {a.transcript_found && (
+                          <div style={{ color: "#00D4AA" }}>✅ Transcript field found</div>
+                        )}
+                        {a.body_preview && (
+                          <div style={{ color: "#6B8CAE", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>{a.body_preview}</div>
+                        )}
+                        {a.error && <div style={{ color: "#E84C4C" }}>Error: {a.error}</div>}
+                      </div>
+                    ))}
+                    {transcriptionDebug?.action_required && (
+                      <div style={{ color: "#4A7FA5", marginTop: 6 }}>Note: {transcriptionDebug.action_required}</div>
+                    )}
+                  </div>
+                </div>
+              ) : null}
+              {detail.ai_coaching && (
+                <div>
+                  <p style={{ fontSize: 11, color: "var(--pp-text-muted)", marginBottom: 4 }}>{t.aiCoaching}</p>
+                  <div className="p-3 rounded-lg space-y-2" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", fontSize: 12 }}>
+                    {typeof detail.ai_coaching === "object" && (
+                      <>
+                        {detail.lead_score != null && <div>{t.score} <b>{detail.lead_score}/100</b></div>}
+                        {(detail.ai_coaching as any).strengths?.length ? (
+                          <div><b>{t.strengths}</b><ul className="list-disc pl-4">{(detail.ai_coaching as any).strengths.map((s: string, i: number) => <li key={i}>{s}</li>)}</ul></div>
+                        ) : null}
+                        {(detail.ai_coaching as any).improvements?.length ? (
+                          <div><b>{t.improvements}</b><ul className="list-disc pl-4">{(detail.ai_coaching as any).improvements.map((s: string, i: number) => <li key={i}>{s}</li>)}</ul></div>
+                        ) : null}
+                        {(detail.ai_coaching as any).next_steps?.length ? (
+                          <div><b>{t.nextSteps}</b><ul className="list-disc pl-4">{(detail.ai_coaching as any).next_steps.map((s: string, i: number) => <li key={i}>{s}</li>)}</ul></div>
+                        ) : null}
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+              {detail.ai_summary && (
+                <div>
+                  <p style={{ fontSize: 11, color: "var(--pp-text-muted)", marginBottom: 4 }}>{t.aiSummary}</p>
+                  <div className="p-3 rounded-lg" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", fontSize: 12 }}>
+                    {detail.ai_summary}
+                  </div>
+                </div>
+              )}
+              {Array.isArray(detail.ai_topics) && detail.ai_topics.length > 0 && (
+                <div>
+                  <p style={{ fontSize: 11, color: "var(--pp-text-muted)", marginBottom: 4 }}>{t.topics}</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {detail.ai_topics.map((tp: string, i: number) => (
+                      <span key={i} className="px-2 py-1 rounded-full text-[11px]" style={{ background: "rgba(155,127,232,0.14)", color: AGENT, border: `1px solid ${AGENT}55` }}>{tp}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {Array.isArray(detail.ai_action_items) && detail.ai_action_items.length > 0 && (
+                <div>
+                  <p style={{ fontSize: 11, color: "var(--pp-text-muted)", marginBottom: 4 }}>{t.actionsToDo}</p>
+                  <div className="p-3 rounded-lg space-y-2" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", fontSize: 12 }}>
+                    {detail.ai_action_items.map((a: any, i: number) => {
+                      const isBroker = String(a.owner ?? "").toLowerCase() === "courtier";
+                      const color = isBroker ? ACCENT : AGENT;
+                      return (
+                        <div key={i} className="flex items-start gap-2">
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-bold uppercase" style={{ background: `${color}22`, color, border: `1px solid ${color}55` }}>{isBroker ? t.brokerLabel : t.clientLabel}</span>
+                          <div className="flex-1">
+                            <div style={{ color: "var(--pp-text-primary)" }}>{a.description}</div>
+                            {a.due && <div style={{ fontSize: 10, color: "var(--pp-text-faint)" }}>⏱ {a.due}</div>}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+  );
+}

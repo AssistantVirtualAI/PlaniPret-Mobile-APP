@@ -3,6 +3,8 @@ import { supabase } from "@/integrations/supabase/client";
 import { Download, Filter, Search } from "lucide-react";
 import { toast } from "sonner";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import { PAPageHeader } from "@/components/planipret/admin/PAPageShell";
+import paBanner from "@/assets/planipret/banner-logs.jpg";
 
 const ACTION_COLORS: Record<string, string> = {
   LOGIN: "#94A3B8", LOGOUT: "#94A3B8",
@@ -167,6 +169,13 @@ export default function PAAuditLog() {
 
   return (
     <div className="pa-page space-y-5">
+      <PAPageHeader
+        image={paBanner}
+        accent="#64748B"
+        icon={<Search className="w-5 h-5" />}
+        title={lang === "en" ? "Audit log" : "Journaux d'audit"}
+        subtitle={lang === "en" ? "Every sensitive action, filterable and exportable" : "Toutes les actions sensibles, filtrables et exportables"}
+      />
       <div className="flex flex-wrap items-end gap-3 pp-card" style={{ padding: 16 }}>
         <div>
           <label className="text-[11px] block mb-1" style={{ color: "var(--pp-text-muted)" }}>{t.user}</label>

@@ -150,11 +150,15 @@ export default function InboundCallOverlay({ call, onClose, onAnswer, onReject }
             className="w-[68px] h-[68px] rounded-full bg-red-500 hover:bg-red-600 active:scale-95 transition flex items-center justify-center shadow-xl disabled:opacity-50">
             <PhoneOff className="w-7 h-7 text-white" />
           </button>
-          <button onClick={() => act("answer")} disabled={busy}
-            className="w-[68px] h-[68px] rounded-full active:scale-95 transition flex items-center justify-center shadow-xl disabled:opacity-50"
-            style={{ background: "linear-gradient(135deg,#0D5C2A,#00D4AA)", boxShadow: "0 4px 24px rgba(0,212,170,0.5)" }}>
-            <Phone className="w-7 h-7 text-white" />
-          </button>
+          {/* Aucun bouton Répondre s'il n'y a pas de ligne capable de décrocher :
+              l'écran restait figé et sans audio. */}
+          {onAnswer && (
+            <button onClick={() => act("answer")} disabled={busy}
+              className="w-[68px] h-[68px] rounded-full active:scale-95 transition flex items-center justify-center shadow-xl disabled:opacity-50"
+              style={{ background: "linear-gradient(135deg,#0D5C2A,#00D4AA)", boxShadow: "0 4px 24px rgba(0,212,170,0.5)" }}>
+              <Phone className="w-7 h-7 text-white" />
+            </button>
+          )}
         </div>
       </div>
     </div>

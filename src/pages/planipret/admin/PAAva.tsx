@@ -9,6 +9,7 @@ import {
   PieChart, Pie, Cell, Legend, LineChart, Line,
 } from "recharts";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import { PAPage, PAPageHeader } from "@/components/planipret/admin/PAPageShell";
 
 const ACCENT = "#2E9BDC";
 const SUCCESS = "#00D4AA";
@@ -263,16 +264,12 @@ export default function PAAva() {
   const showGuidedEmpty = !loading && totals.analyses === 0 && (microsoft?.connected_brokers ?? 0) === 0 && (dataHealth?.ms_graph_mode ?? "none") === "none";
 
   return (
-    <div className="pa-page space-y-5">
-      {/* Header */}
-      <div className="flex items-start justify-between gap-3 flex-wrap">
-        <div>
-          <h1 style={{ fontFamily: "Inter,sans-serif", fontWeight: 700, fontSize: 22, color: "var(--pp-text-primary)" }}>{t("adminPortal.ava.title")}</h1>
-          <p style={{ fontSize: 12, color: "var(--pp-text-faint)" }} className="mt-0.5">
-            {t("adminPortal.ava.subtitle")}
-          </p>
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
+    <PAPage>
+      <PAPageHeader
+        icon={<Bot className="w-5 h-5" />}
+        title={t("adminPortal.ava.title")}
+        subtitle={t("adminPortal.ava.subtitle")}
+        actions={<div className="flex items-center gap-2 flex-wrap">
           <span style={{ fontSize: 10, color: "var(--pp-text-faint)" }}>
             {t("adminPortal.ava.lastSync")}: {lastSyncAt ? new Date(lastSyncAt).toLocaleString(lang === "en" ? "en-CA" : "fr-CA") : t("adminPortal.ava.neverSynced")}
           </span>
@@ -288,8 +285,8 @@ export default function PAAva() {
             {tuning ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Sparkles className="w-3.5 h-3.5 mr-1.5" />}
             {t("adminPortal.ava.retune")}
           </Button>
-        </div>
-      </div>
+        </div>}
+      />
 
       {testResult && (
         <div className="pp-card flex items-start gap-3" style={{ padding: 12, borderColor: `${testResult.ok ? SUCCESS : DANGER}55` }}>
@@ -674,6 +671,6 @@ export default function PAAva() {
           </div>
         )}
       </div>
-    </div>
+    </PAPage>
   );
 }

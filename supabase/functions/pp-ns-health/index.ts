@@ -85,16 +85,41 @@ Deno.serve(async (req) => {
     subs = (arr ?? []).map((s: any) => {
       const url = String(s["post-url"] ?? s.post_url ?? s.url ?? "");
       return {
+        id: s.id ?? s["subscription-id"] ?? null,
         model: s.model ?? s.event ?? null,
         domain: s.domain ?? null,
+        host: url.replace(/\?.*$/, ""),
+        expires: s["subscription-expires-datetime"] ?? s.expires ?? s["expires-datetime"] ?? null,
         targets_receiver: url.includes("ns-webhook-receiver"),
         has_secret: /[?&]secret=/.test(url),
       };
+
     });
+  } catch { /* ignore */ }
+
+  // Device / registration summary for the requested extension (read-only, no secrets).
+  let devices: any[] = [];
+  try {
+    const r = await fetch(`${NS_API_BASE_URL}/domains/${D}/users/${U}/devices`, {
+      headers: { Accept: "application/json", Authorization: `Bearer ${NS_API_KEY}` },
+      signal: AbortSignal.timeout(20000),
+    });
+    const d = await r.json().catch(() => null);
+    const arr = Array.isArray(d) ? d : (d?.devices ?? d?.data ?? []);
+    devices = (arr ?? []).map((x: any) => ({
+      aor: String(x?.device ?? x?.aor ?? x?.name ?? "").replace(/^sip:/, ""),
+      transport: x?.["device-sip-transport-type"] ?? x?.transport ?? null,
+      registration_state: x?.["device-sip-registration-state"] ?? null,
+      registration_expires: x?.["device-sip-registration-expires-datetime"] ?? null,
+      contact_host: String(x?.["device-sip-registration-contact"] ?? "").replace(/^sip:[^@]*@/, "").split(";")[0] || null,
+      core_server: x?.["core-server"] ?? null,
+    }));
   } catch { /* ignore */ }
 
   return json({
     subscriptions: subs,
+    extension: ext,
+    devices,
     base: NS_API_BASE_URL,
     domain: NS_DEFAULT_DOMAIN,
     api_key_present: !!NS_API_KEY,

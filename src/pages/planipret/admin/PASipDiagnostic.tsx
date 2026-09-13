@@ -5,7 +5,13 @@ import { Loader2, PlugZap, Wifi, WifiOff, AlertTriangle, CheckCircle2, Zap, Refr
 import { toast } from "sonner";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { PP_SIP_CORE_PRIMARY } from "@/lib/planipret/sip/sipEdgePolicy";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import CallDoctorCard from "@/components/planipret/admin/CallDoctorCard";
+import DidAnnouncementCard from "@/components/planipret/admin/DidAnnouncementCard";
+import { BrokerDeviceResyncCard, BrokerSipRouteCard, ExtensionDidCard, ExtensionStatsCard } from "@/components/planipret/admin/SipBrokerTools";
+import { PAPage, PAPageHeader } from "@/components/planipret/admin/PAPageShell";
 
 const DICT = {
   fr: {
@@ -82,11 +88,6 @@ const DICT = {
   },
 };
 
-const ACCENT = "#2E9BDC";
-const SUCCESS = "#00D4AA";
-const DANGER = "#E84C4C";
-const WARNING = "#F6B44B";
-
 type ResolveResult = {
   ok: boolean;
   error?: string;
@@ -103,6 +104,37 @@ type ResolveResult = {
   device_registered?: boolean;
   available_devices?: string[];
   action?: string;
+};
+
+const statusMeta = (status: PpSipSnapshot["status"]) => {
+  switch (status) {
+    case "registered":
+      return {
+        icon: Wifi,
+        color: "text-emerald-500",
+        badge: "bg-emerald-500/10 text-emerald-500 border-emerald-500/20",
+      };
+    case "error":
+    case "disconnected":
+      return {
+        icon: WifiOff,
+        color: "text-destructive",
+        badge: "bg-destructive/10 text-destructive border-destructive/20",
+      };
+    case "connecting":
+    case "connected":
+      return {
+        icon: Loader2,
+        color: "text-amber-500",
+        badge: "bg-amber-500/10 text-amber-500 border-amber-500/20",
+      };
+    default:
+      return {
+        icon: WifiOff,
+        color: "text-muted-foreground",
+        badge: "bg-muted text-muted-foreground border-border",
+      };
+  }
 };
 
 export default function PASipDiagnostic() {
@@ -189,159 +221,145 @@ export default function PASipDiagnostic() {
     await ppSipProvider.stop();
   }, []);
 
-  const statusColor =
-    snap.status === "registered" ? SUCCESS :
-    snap.status === "error" || snap.status === "disconnected" ? DANGER :
-    snap.status === "connecting" || snap.status === "connected" ? WARNING :
-    "var(--pp-text-muted)";
+  const runRecordingDiag = useCallback(async () => {
+    try {
+      toast.message(t.diagInProgress);
+      const { data, error } = await supabase.functions.invoke("ns-debug-real-cdr", { body: {} });
+      if (error) throw error;
+      console.log("[NS RECORDING DIAG]", data);
+      const successes = (data as any)?.successes ?? [];
+      if (successes.length) toast.success(t.diagSuccess(successes.length));
+      else toast.error(t.diagFailNone);
+    } catch (e: any) {
+      toast.error(t.diagFailed(e?.message ?? e));
+    }
+  }, [t]);
 
-  const StatusIcon =
-    snap.status === "registered" ? Wifi :
-    snap.status === "error" || snap.status === "disconnected" ? WifiOff :
-    Loader2;
-
+  const meta = statusMeta(snap.status);
+  const StatusIcon = meta.icon;
   const showProvisionCta = resolved && !resolved.ok && (resolved.error === "device_not_found" || resolved.error === "no_extension");
 
   return (
-    <div className="pa-page space-y-5">
+    <PAPage>
       <audio ref={audioRef} autoPlay hidden />
-
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <div>
-          <h1 className="pa-title" style={{ fontSize: 18, fontWeight: 600, color: "var(--pp-text-primary)" }}>{t.title}</h1>
-          <p className="mt-1" style={{ fontSize: 12, color: "var(--pp-text-muted)" }}>
-            {t.subtitle}
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <button onClick={resolveOnly} disabled={resolving}
-            className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium"
-            style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)", opacity: resolving ? 0.65 : 1 }}>
-            {resolving ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />} {t.resolveCreds}
-          </button>
-          <button onClick={runTest} disabled={testing}
-            className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium"
-            style={{ background: ACCENT, color: "#fff", opacity: testing ? 0.65 : 1 }}>
-            {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlugZap className="h-4 w-4" />} {t.testSip}
-          </button>
-          <button onClick={stopTest}
-            className="rounded-lg px-3 py-2 text-sm font-medium"
-            style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}>
+      <PAPageHeader icon={<PlugZap className="h-5 w-5" />} title={t.title} subtitle={t.subtitle} actions={
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" size="sm" onClick={resolveOnly} disabled={resolving}>
+            {resolving ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+            {t.resolveCreds}
+          </Button>
+          <Button size="sm" onClick={runTest} disabled={testing}>
+            {testing ? <Loader2 className="h-4 w-4 animate-spin" /> : <PlugZap className="h-4 w-4" />}
+            {t.testSip}
+          </Button>
+          <Button variant="outline" size="sm" onClick={stopTest}>
             {t.stop}
-          </button>
-          <button
-            type="button"
-            onClick={async () => {
-              try {
-                toast.message(t.diagInProgress);
-                const { data, error } = await supabase.functions.invoke("ns-debug-real-cdr", { body: {} });
-                if (error) throw error;
-                console.log("[NS RECORDING DIAG]", data);
-                const successes = (data as any)?.successes ?? [];
-                if (successes.length) toast.success(t.diagSuccess(successes.length));
-                else toast.error(t.diagFailNone);
-              } catch (e: any) {
-                toast.error(t.diagFailed(e?.message ?? e));
-              }
-            }}
-            className="rounded-lg px-3 py-2 text-sm font-medium"
-            style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}>
+          </Button>
+          <Button variant="outline" size="sm" onClick={runRecordingDiag}>
             {t.diagRecordings}
-          </button>
-        </div>
-      </div>
+          </Button>
+        </div>}
+      />
+
+      <BrokerSipRouteCard defaultExtension="1136" />
+      <BrokerDeviceResyncCard />
+      <ExtensionDidCard defaultExtension="1136" />
+      <ExtensionStatsCard />
 
       <CallDoctorCard />
-
+      <DidAnnouncementCard />
 
       {/* Status card */}
-      <div className="pp-card p-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <StatusIcon className={`h-5 w-5 ${snap.status === "connecting" ? "animate-spin" : ""}`} style={{ color: statusColor }} />
-            <div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: statusColor, textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                {snap.status}
-              </div>
-              <div style={{ fontSize: 11, color: "var(--pp-text-muted)" }}>
-                {snap.lastRegistrationAt ? t.lastRegister(new Date(snap.lastRegistrationAt).toLocaleTimeString("fr-CA")) : t.noRegisterYet}
-                {snap.errorCause && ` · ${snap.errorCause}`}
+      <Card>
+        <CardContent className="p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <StatusIcon className={`h-5 w-5 ${snap.status === "connecting" ? "animate-spin" : ""} ${meta.color}`} />
+              <div>
+                <div className={`text-xs font-semibold uppercase tracking-wider ${meta.color}`}>{snap.status}</div>
+                <div className="text-xs text-muted-foreground">
+                  {snap.lastRegistrationAt ? t.lastRegister(new Date(snap.lastRegistrationAt).toLocaleTimeString("fr-CA")) : t.noRegisterYet}
+                  {snap.errorCause && ` · ${snap.errorCause}`}
+                </div>
               </div>
             </div>
+            <Badge variant="outline" className={meta.badge}>
+              {snap.status === "registered" ? t.registered : t.unregistered}
+            </Badge>
           </div>
-          <span className="rounded-full px-3 py-1 text-xs font-medium"
-            style={{ background: `${statusColor}18`, color: statusColor, border: `1px solid ${statusColor}33` }}>
-            {snap.status === "registered" ? t.registered : t.unregistered}
-          </span>
-        </div>
-      </div>
+        </CardContent>
+      </Card>
 
       {/* Resolved details */}
       {resolved && (
-        <div className="pp-card p-4">
-          <div className="mb-3 flex items-center gap-2">
-            {resolved.ok
-              ? <CheckCircle2 className="h-4 w-4" style={{ color: SUCCESS }} />
-              : <AlertTriangle className="h-4 w-4" style={{ color: DANGER }} />}
-            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--pp-text-primary)" }}>
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-sm font-medium">
+              {resolved.ok ? (
+                <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+              ) : (
+                <AlertTriangle className="h-4 w-4 text-destructive" />
+              )}
               {resolved.ok ? t.credsResolved : t.failure(resolved.error)}
-            </span>
-          </div>
-          <dl className="grid grid-cols-1 gap-y-2 gap-x-4 md:grid-cols-2" style={{ fontSize: 12 }}>
-            <Row k={t.wssUrl} v={resolved.sip_ws_url} mono />
-            <Row k={t.device} v={resolved.device_id ?? resolved.device_name} mono />
-            <Row k={t.extension} v={resolved.sip_extension} />
-            <Row k={t.domain} v={resolved.sip_domain} />
-            <Row k={t.authUser} v={resolved.sip_auth_user} mono />
-            <Row k={t.proxy} v={resolved.sip_proxy} mono />
-            <Row k={t.nsState} v={resolved.sip_state ?? "—"} />
-            <Row k={t.password} v={resolved.sip_password ? `••••${resolved.sip_password.slice(-4)}` : "—"} mono />
-          </dl>
-          {resolved.available_devices && resolved.available_devices.length > 0 && (
-            <div className="mt-3 rounded border p-2" style={{ borderColor: "var(--pp-bg-border-2)", background: "var(--pp-bg-elevated)" }}>
-              <div style={{ fontSize: 11, color: "var(--pp-text-muted)" }}>{t.existingDevices}</div>
-              <div className="mt-1 flex flex-wrap gap-1">
-                {resolved.available_devices.map((d) => (
-                  <span key={d} className="rounded px-2 py-0.5 font-mono" style={{ fontSize: 11, background: "var(--pp-bg-base)", color: "var(--pp-text-secondary)" }}>{d}</span>
-                ))}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <dl className="grid grid-cols-1 gap-y-2 gap-x-4 text-xs md:grid-cols-2">
+              <Row k={t.wssUrl} v={resolved.sip_ws_url} mono />
+              <Row k={t.device} v={resolved.device_id ?? resolved.device_name} mono />
+              <Row k={t.extension} v={resolved.sip_extension} />
+              <Row k={t.domain} v={resolved.sip_domain} />
+              <Row k={t.authUser} v={resolved.sip_auth_user} mono />
+              <Row k={t.proxy} v={resolved.sip_proxy} mono />
+              <Row k={t.nsState} v={resolved.sip_state ?? "—"} />
+              <Row k={t.password} v={resolved.sip_password ? `••••${resolved.sip_password.slice(-4)}` : "—"} mono />
+            </dl>
+            {resolved.available_devices && resolved.available_devices.length > 0 && (
+              <div className="mt-4 rounded-lg border bg-muted/50 p-3">
+                <div className="text-xs text-muted-foreground">{t.existingDevices}</div>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {resolved.available_devices.map((d) => (
+                    <Badge key={d} variant="secondary" className="font-mono text-xs">
+                      {d}
+                    </Badge>
+                  ))}
+                </div>
               </div>
-            </div>
-          )}
-          {resolved.action && (
-            <div className="mt-3" style={{ fontSize: 12, color: "var(--pp-text-secondary)" }}>{resolved.action}</div>
-          )}
-        </div>
+            )}
+            {resolved.action && <p className="mt-3 text-xs text-muted-foreground">{resolved.action}</p>}
+          </CardContent>
+        </Card>
       )}
 
       {/* Auto-provision CTA */}
       {showProvisionCta && (
-        <div className="pp-card p-4" style={{ borderColor: `${WARNING}55` }}>
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <div className="flex items-center gap-2" style={{ fontSize: 13, fontWeight: 600, color: WARNING }}>
-                <AlertTriangle className="h-4 w-4" /> {t.deviceMissing}
+        <Card className="border-amber-500/30 bg-amber-500/5">
+          <CardContent className="p-4">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+              <div className="flex items-start gap-3">
+                <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-500" />
+                <div>
+                  <CardTitle className="text-sm font-medium text-amber-600 dark:text-amber-400">{t.deviceMissing}</CardTitle>
+                  <CardDescription className="mt-1 text-xs">{t.provisionDesc}</CardDescription>
+                </div>
               </div>
-              <p className="mt-1" style={{ fontSize: 12, color: "var(--pp-text-muted)" }}>
-                {t.provisionDesc}
-              </p>
+              <Button size="sm" onClick={provisionSelf} disabled={provisioning} className="shrink-0">
+                {provisioning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />}
+                {t.provisionButton}
+              </Button>
             </div>
-            <button onClick={provisionSelf} disabled={provisioning}
-              className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium"
-              style={{ background: WARNING, color: "#111", opacity: provisioning ? 0.65 : 1 }}>
-              {provisioning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Zap className="h-4 w-4" />} {t.provisionButton}
-            </button>
-          </div>
-        </div>
+          </CardContent>
+        </Card>
       )}
-    </div>
+    </PAPage>
   );
 }
 
 function Row({ k, v, mono }: { k: string; v?: string | null; mono?: boolean }) {
   return (
-    <div className="flex items-baseline justify-between gap-3 border-b pb-1" style={{ borderColor: "var(--pp-bg-border-2)" }}>
-      <dt style={{ color: "var(--pp-text-muted)" }}>{k}</dt>
-      <dd className={mono ? "font-mono" : ""} style={{ color: "var(--pp-text-primary)", textAlign: "right", wordBreak: "break-all" }}>{v ?? "—"}</dd>
+    <div className="flex items-baseline justify-between gap-3 border-b border-border pb-1 last:border-b-0">
+      <dt className="text-muted-foreground">{k}</dt>
+      <dd className={`text-right break-all text-foreground ${mono ? "font-mono" : ""}`}>{v ?? "—"}</dd>
     </div>
   );
 }

@@ -215,7 +215,7 @@ export class NativeSipService {
     const { data, error } = await withNativeTimeout(supabase.functions.invoke("ns-resolve-sip-credentials", {
       // Align the NS Device object with the native PJSIP TLS contact — ONE
       // transport per AOR. `<ext>W` remains the separate WSS browser AOR.
-      body: { client_type: "mobile", transport: "tls" },
+      body: { client_type: "mobile", transport: "tls", on_login: true },
     }), "sip_credentials");
 
     const creds = (data ?? {}) as Record<string, string>;

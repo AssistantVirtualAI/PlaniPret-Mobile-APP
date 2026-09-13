@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { Plus, Trash2, Edit3, Save, X, Zap } from "lucide-react";
+import { Plus, Trash2, Edit3, Save, X, Zap, MessageSquare } from "lucide-react";
 import { toast } from "sonner";
 import { PPEmptyState, PPSkeleton } from "@/components/planipret/admin/PPPrimitives";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import { PAPage, PAPageHeader } from "@/components/planipret/admin/PAPageShell";
 
 type Tpl = { id: string; user_id: string | null; title: string; body: string; is_shared: boolean; use_count: number; created_at: string };
 
@@ -98,21 +99,17 @@ export default function PATemplates() {
   };
 
   return (
-    <div className="pa-page space-y-5">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="pa-title" style={{ fontFamily: "Inter,sans-serif", fontWeight: 700, fontSize: 18, color: "var(--pp-text-primary)" }}>
-            {t.title}
-          </h1>
-          <p style={{ fontSize: 12, color: "var(--pp-text-muted)" }}>{t.subtitle}</p>
-        </div>
-        {!creating && (
-          <button onClick={() => setCreating({ title: "", body: "" })}
-            className="pp-btn-primary flex items-center gap-2 text-sm">
+    <PAPage>
+      <PAPageHeader
+        icon={<MessageSquare className="w-5 h-5" />}
+        title={t.title}
+        subtitle={t.subtitle}
+        actions={!creating ? (
+          <button onClick={() => setCreating({ title: "", body: "" })} className="pp-btn-primary flex items-center gap-2 text-sm">
             <Plus className="w-4 h-4" /> {t.newTemplate}
           </button>
-        )}
-      </div>
+        ) : undefined}
+      />
 
       {creating && (
         <div className="pp-card space-y-3" style={{ padding: 16 }}>
@@ -209,6 +206,6 @@ export default function PATemplates() {
           </div>
         )}
       </div>
-    </div>
+    </PAPage>
   );
 }

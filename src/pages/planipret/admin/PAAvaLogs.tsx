@@ -3,6 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { Activity, CheckCircle2, XCircle, RefreshCw, Filter, Search } from "lucide-react";
 import Pagination from "@/components/planipret/admin/Pagination";
+import { PAPage, PAPageHeader } from "@/components/planipret/admin/PAPageShell";
 
 type Log = {
   id: string;
@@ -161,23 +162,15 @@ export default function PAAvaLogs() {
   };
 
   return (
-    <div className="pa-page space-y-5">
-      <div className="flex items-start justify-between gap-3 flex-wrap">
-        <div>
-          <h1 style={{ fontFamily: "Inter,sans-serif", fontWeight: 700, fontSize: 22, color: "var(--pp-text-primary)" }} className="flex items-center gap-2">
-            <Activity className="w-5 h-5" style={{ color: "#6C3CE1" }} />
-            {t.title}
-          </h1>
-          <p style={{ fontSize: 12, color: "var(--pp-text-faint)" }} className="mt-0.5">
-            {t.subtitle}
-          </p>
-        </div>
-        <button onClick={load} disabled={loading}
-          className="px-3 py-1.5 rounded-md border text-xs flex items-center gap-1.5"
-          style={{ borderColor: "var(--pp-border)", color: "var(--pp-text-primary)" }}>
+    <PAPage>
+      <PAPageHeader
+        icon={<Activity className="w-5 h-5" />}
+        title={t.title}
+        subtitle={t.subtitle}
+        actions={<button onClick={load} disabled={loading} className="pa-btn">
           <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} /> {t.refresh}
-        </button>
-      </div>
+        </button>}
+      />
 
       {stats && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -292,7 +285,7 @@ export default function PAAvaLogs() {
           unit={t.unit}
         />
       </div>
-    </div>
+    </PAPage>
   );
 }
 

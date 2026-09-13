@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { RefreshCw, Download, AlertTriangle, ScrollText } from "lucide-react";
 import { PAPageHeader } from "@/components/planipret/admin/PAPageShell";
+import paBanner from "@/assets/planipret/banner-audit.jpg";
 
 type Row = {
   id: string;
@@ -109,6 +110,8 @@ export default function PACommissionAudit() {
   return (
     <div className="pa-page">
       <PAPageHeader
+        image={paBanner}
+        accent="#8B5CF6"
         icon={<ScrollText className="h-[18px] w-[18px]" />}
         title="Audit des commissions"
         subtitle="Chaque ligne de la base, sa provenance (registre importé ou API Maestro) et la règle qui explique l'écart."

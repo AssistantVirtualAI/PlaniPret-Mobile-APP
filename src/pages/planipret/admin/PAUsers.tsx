@@ -2,16 +2,19 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
-import { Search, Plus, Edit3, Trash2, ExternalLink, X, AlertTriangle, Eye, EyeOff, RefreshCw, ChevronDown, ChevronUp, MoreHorizontal, KeyRound, Copy, Smartphone, Bot, Phone, Sparkles, Upload } from "lucide-react";
+import { Search, Plus, Edit3, Trash2, ExternalLink, X, AlertTriangle, Eye, EyeOff, RefreshCw, ChevronDown, ChevronUp, MoreHorizontal, KeyRound, ShieldCheck, Copy, Smartphone, Bot, Phone, Sparkles, Upload, Users } from "lucide-react";
 import Pagination from "@/components/planipret/admin/Pagination";
 import DebugPanel, { type DebugEntry } from "@/components/planipret/admin/DebugPanel";
 import { TableErrorState, TableEmptyState } from "@/components/planipret/admin/TableStates";
+import NsPurgeCard from "@/components/planipret/admin/NsPurgeCard";
+
 import { getPlanipretBrokerDirectory, type PlanipretBrokerRow } from "@/lib/planipret/adminDirectory";
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
   DropdownMenuLabel, DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import { PAPage, PAPageHeader } from "@/components/planipret/admin/PAPageShell";
 
 
 const ACCENT = "#2E9BDC";
@@ -857,7 +860,7 @@ export default function PAUsers() {
 
   const adminCount = rows.length;
   return (
-    <div className="pa-page space-y-5">
+    <PAPage>
       {!loading && adminCount <= 1 && (
         <div className="rounded-xl p-4 flex items-start gap-3" style={{ background: `${ACCENT}10`, border: `1px solid ${ACCENT}33` }}>
           <div style={{ color: ACCENT, fontSize: 20, lineHeight: 1 }}>ℹ️</div>
@@ -873,35 +876,11 @@ export default function PAUsers() {
         </div>
       )}
 
-      {/* Header */}
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <h1 className="pa-title" style={{ fontSize: 18, fontWeight: 600, color: "var(--pp-text-primary)" }}>{t.brokers}</h1>
-          <span className="px-2 py-1 rounded-full" style={{ fontSize: 11, background: "var(--pp-bg-elevated)", color: "var(--pp-text-secondary)", border: "1px solid var(--pp-bg-border-2)" }}>
-            {t.brokerCount(rows.length)}
-          </span>
-          {nsDomain && (
-            <span className="px-2 py-1 rounded-full" style={{ fontSize: 11, background: `${SUCCESS}15`, color: SUCCESS, border: `1px solid ${SUCCESS}33` }}>
-              ● NS {nsDomain}
-            </span>
-          )}
-          {nsError && (
-            <span title={nsError} className="px-2 py-1 rounded-full" style={{ fontSize: 11, background: `${DANGER}15`, color: DANGER, border: `1px solid ${DANGER}33` }}>
-              {t.nsOffline}
-            </span>
-          )}
-          {!numbersError && allNumbers.length > 0 && (
-            <span className="px-2 py-1 rounded-full" style={{ fontSize: 11, background: "var(--pp-bg-elevated)", color: "var(--pp-text-secondary)", border: "1px solid var(--pp-bg-border-2)" }}>
-              {t.didStatus(allNumbers.length, assignedNumbersCount, unassignedNumbers.length)}
-            </span>
-          )}
-          {numbersError && (
-            <span title={numbersError} className="px-2 py-1 rounded-full" style={{ fontSize: 11, background: `${DANGER}15`, color: DANGER, border: `1px solid ${DANGER}33` }}>
-              {t.didOffline}
-            </span>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
+      <PAPageHeader
+        icon={<Users className="w-5 h-5" />}
+        title={t.brokers}
+        subtitle={t.brokerCount(rows.length)}
+        actions={        <div className="flex items-center gap-2">
 
           <div className="relative">
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2" style={{ color: "var(--pp-text-muted)" }} />
@@ -937,7 +916,8 @@ export default function PAUsers() {
             <Plus className="w-4 h-4" /> {t.addBroker}
           </button>
         </div>
-      </div>
+}
+      />
 
       {/* App Review card */}
       {appReviewExists === false && (
@@ -957,6 +937,10 @@ export default function PAUsers() {
           <span style={{ fontSize: 11, color: "var(--pp-text-muted)" }}>{t.appReviewCreds}</span>
         </div>
       )}
+
+      <NsPurgeCard />
+
+
 
       {/* Filters */}
       <div className="flex items-center gap-2">
@@ -1132,8 +1116,9 @@ export default function PAUsers() {
                           >
                             <KeyRound className="w-3.5 h-3.5 mr-2 opacity-60" /> {t.sendResetEmail}
                           </DropdownMenuItem>
-                        )}
-                        {!u.ns_only && <DropdownMenuSeparator />}
+                         )}
+                         {!u.ns_only && <DropdownMenuSeparator />}
+
                         {!u.ns_only && (
                           <DropdownMenuItem onClick={() => toggleField(u, "mobile_app_enabled")}>
                             <Smartphone className="w-3.5 h-3.5 mr-2" />
@@ -1230,7 +1215,7 @@ export default function PAUsers() {
       {editUser && <UserModal mode="edit" user={editUser} allNumbers={allNumbers} onClose={() => setEditUser(null)} onSaved={async () => { setEditUser(null); await load(); }} />}
       {delUser && <DeleteModal user={delUser} onClose={() => setDelUser(null)} onDeleted={async () => { setDelUser(null); await load(); }} />}
       {addAdminOpen && <AdminModal onClose={() => setAddAdminOpen(false)} onSaved={async () => { setAddAdminOpen(false); await load(); }} />}
-    </div>
+    </PAPage>
   );
 }
 

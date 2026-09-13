@@ -17,6 +17,16 @@ export const useAuth = () => {
         setSession(session);
         setUser(session?.user ?? null);
         setLoading(false);
+        // Renouvellement automatique de l'inscription SIP dès la connexion,
+        // sans attendre l'ouverture de l'écran téléphone. Aucun impact PJSIP :
+        // seul l'objet Device NetSapiens est rafraîchi côté serveur.
+        if (event === 'SIGNED_IN' && session?.user) {
+          void supabase.functions
+            .invoke('ns-resolve-sip-credentials', {
+              body: { client_type: 'mobile', transport: 'tls', on_login: true },
+            })
+            .catch(() => { /* silencieux : la connexion ne doit jamais échouer pour ça */ });
+        }
       }
     );
 

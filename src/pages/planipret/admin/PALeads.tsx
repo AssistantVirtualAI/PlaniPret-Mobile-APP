@@ -4,6 +4,7 @@ import { Download, Flame } from "lucide-react";
 import { TEMP_COLORS, TEMP_EMOJI, TEMP_LABEL, type LeadTemp } from "@/components/planipret/leadHelpers";
 import { PPEmptyState, PPSkeleton } from "@/components/planipret/admin/PPPrimitives";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import { PAPage, PAPageHeader } from "@/components/planipret/admin/PAPageShell";
 
 type Row = {
   id: string;
@@ -103,18 +104,15 @@ export default function PALeads() {
 
 
   return (
-    <div className="pa-page space-y-5">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="pa-title" style={{ fontFamily: "Inter,sans-serif", fontWeight: 700, fontSize: 18, color: "var(--pp-text-primary)" }}>
-            {t("adminPortal.leads.title")}
-          </h1>
-          <p style={{ fontSize: 12, color: "var(--pp-text-muted)" }}>{t("adminPortal.leads.subtitle")}</p>
-        </div>
-        <button onClick={exportCsv} className="pp-btn-primary flex items-center gap-2 text-sm">
+    <PAPage>
+      <PAPageHeader
+        icon={<Flame className="w-5 h-5" />}
+        title={t("adminPortal.leads.title")}
+        subtitle={t("adminPortal.leads.subtitle")}
+        actions={<button onClick={exportCsv} className="pp-btn-primary flex items-center gap-2 text-sm">
           <Download className="w-4 h-4" /> {t("adminPortal.leads.exportCsv")}
-        </button>
-      </div>
+        </button>}
+      />
 
       <div className="flex flex-wrap gap-2">
         {([
@@ -202,6 +200,6 @@ export default function PALeads() {
         </div>
       </div>
 
-    </div>
+    </PAPage>
   );
 }

@@ -14,6 +14,7 @@ import { usePlanipretNsAutoSync } from "@/hooks/usePlanipretNsAutoSync";
 import NsSyncBar from "@/components/planipret/admin/NsSyncBar";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import AvaElevenLabsOverviewCard from "@/components/planipret/admin/ava/AvaElevenLabsOverviewCard";
+import { PAPage, PAPageHeader } from "@/components/planipret/admin/PAPageShell";
 
 const ACCENT = "#2E9BDC";
 const SUCCESS = "#00D4AA";
@@ -415,15 +416,9 @@ export default function PAOverview() {
   const mobileAdoptionPct = stats.brokersTotal > 0 ? Math.round((serviceCounts.mobile / stats.brokersTotal) * 100) : 0;
 
   return (
-    <div className="pa-page space-y-5">
+    <PAPage>
       <NsSyncBar features={["cdrs", "messages", "recordings"]} onReload={load} />
-
-      {/* Header with period selector */}
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div>
-          <h1 style={{ fontFamily: "Inter,sans-serif", fontWeight: 700, fontSize: 22, color: "var(--pp-text-primary)" }}>{t("overview.title")}</h1>
-          <p style={{ fontSize: 12, color: "var(--pp-text-faint)" }} className="mt-0.5">{t("overview.cockpit")} · {totals.users} {t("overview.subtitleBillable")} · {fmtMoney(totals.profit)} {t("overview.subtitleProfit")}</p>
-        </div>
+      <PAPageHeader icon={<TrendingUp className="w-5 h-5" />} title={t("overview.title")} subtitle={`${t("overview.cockpit")} · ${totals.users} ${t("overview.subtitleBillable")} · ${fmtMoney(totals.profit)} ${t("overview.subtitleProfit")}`} actions={
         <div className="flex items-center gap-2">
           <div className="flex items-center rounded-lg overflow-hidden" style={{ background: "var(--pp-bg-deep)", border: "1px solid var(--pp-bg-border-2)" }}>
             {[1, 7, 30, 90].map((p) => (
@@ -450,8 +445,8 @@ export default function PAOverview() {
             <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? "animate-spin" : ""}`} />
             {t("overview.refresh")}
           </button>
-        </div>
-      </div>
+        </div>}
+      />
 
       {/* KPI Hero Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -719,7 +714,7 @@ export default function PAOverview() {
           </ul>
         </div>
       )}
-    </div>
+    </PAPage>
   );
 }
 

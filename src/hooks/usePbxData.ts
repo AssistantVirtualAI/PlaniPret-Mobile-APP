@@ -121,7 +121,7 @@ export const usePbxPhoneNumberAssignments = () => usePbxTable('pbx_phone_number_
 export const usePbxAgents = () => useQuery({
   queryKey: ['pbx', 'agents'],
   queryFn: async () => {
-    const { data, error } = await supabase.from('agents').select('*').eq('organization_id', LEMTEL_ORG).order('name');
+    const { data, error } = await supabase.from('agents_safe').select('*').eq('organization_id', LEMTEL_ORG).order('name');
     if (error) throw error;
     return data || [];
   },

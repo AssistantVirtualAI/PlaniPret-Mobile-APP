@@ -11,6 +11,7 @@ import { PAPageHeader } from "@/components/planipret/admin/PAPageShell";
 import { toast } from "sonner";
 import DidReclaimPanel from "@/components/planipret/admin/DidReclaimPanel";
 import DidDuplicateAlert from "@/components/planipret/admin/DidDuplicateAlert";
+import paBanner from "@/assets/planipret/banner-numbers.jpg";
 
 
 type Did = {
@@ -113,6 +114,8 @@ export default function PAPhoneNumbers() {
   return (
     <div className="pa-page">
       <PAPageHeader
+        image={paBanner}
+        accent="#06B6D4"
         icon={<Phone className="h-[18px] w-[18px]" />}
         title="Numéros de téléphone"
         subtitle="Inventaire des DID Planiprêt. Les numéros sans courtier réel sont marqués disponibles et peuvent être assignés ici."

@@ -56,7 +56,7 @@ export function useCustomKPIs() {
 
       // Try to get custom KPIs from organization settings
       const { data: org } = await supabase
-        .from('organizations')
+        .from('organizations_safe')
         .select('*')
         .eq('id', selectedOrg.id)
         .single();

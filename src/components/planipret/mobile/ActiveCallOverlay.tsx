@@ -30,7 +30,7 @@ function formatDuration(sec: number) {
 
 export default function ActiveCallOverlay({ callId, onClosed }: { callId: string | null; onClosed: () => void }) {
   const { t } = useMplanipretLang();
-  const { net, quality } = useMplanipretSoftphone();
+  const { net, quality, snap, hold, unhold } = useMplanipretSoftphone();
   const [call, setCall] = useState<Call | null>(null);
   const [muted, setMuted] = useState(false);
   const [held, setHeld] = useState(false);
@@ -77,6 +77,12 @@ export default function ActiveCallOverlay({ callId, onClosed }: { callId: string
     void audioRouter.startCallAudio();
   }, [callId]);
 
+  // Miroir de l'état système : CallKit (écran verrouillé) fait foi.
+  useEffect(() => {
+    const sysHeld = (snap as { onHold?: boolean } | undefined)?.onHold;
+    if (typeof sysHeld === "boolean") setHeld(sysHeld);
+  }, [snap?.onHold]);
+
   useEffect(() => {
     if (!call) return;
     const start = call.answered_at ? new Date(call.answered_at).getTime() : (call.started_at ? new Date(call.started_at).getTime() : Date.now());
@@ -100,7 +106,9 @@ export default function ActiveCallOverlay({ callId, onClosed }: { callId: string
   };
 
   const toggleMute = async () => { const next = !muted; if (await invoke("mute", { muted: next })) setMuted(next); };
-  const toggleHold = async () => { const next = !held; if (await invoke(next ? "hold" : "resume")) setHeld(next); };
+  // L'attente suit l'état réel de l'appel (y compris depuis l'écran d'appel
+  // du téléphone) : un seul appui suffit toujours pour reprendre le client.
+  const toggleHold = async () => { const next = !held; setHeld(next); if (next) hold(); else unhold(); };
   const toggleSpeaker = async () => {
     const next = !speaker;
     setSpeaker(next);

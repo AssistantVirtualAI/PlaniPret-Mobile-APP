@@ -10,6 +10,7 @@ import { Loader2, RefreshCw, PhoneCall, CheckCircle2, AlertTriangle, XCircle, Za
 import Pagination from "@/components/planipret/admin/Pagination";
 import DeviceExpiryGuardCard from "@/components/planipret/admin/DeviceExpiryGuardCard";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import { PAPage, PAPageHeader } from "@/components/planipret/admin/PAPageShell";
 
 const ACCENT = "#2E9BDC";
 const SUCCESS = "#00D4AA";
@@ -408,7 +409,7 @@ export default function PAMobileDevices() {
 
     for (let page = 0; page < 20; page += 1) {
       const { data, error } = await supabase.functions.invoke("pp-sync-answering-rules", {
-        body: { bulk: true, offset, limit: 50, batch_size: 10, include_results: false, dry_run: dryRun, repair_dids: false },
+        body: { bulk: true, offset, limit: 50, batch_size: 10, include_results: false, dry_run: dryRun, repair_dids: false, ring_timeout: 30 },
       });
       if (error) { lastError = error.message; break; }
       const d = data as any;
@@ -529,17 +530,8 @@ export default function PAMobileDevices() {
 
 
   return (
-    <div className="pa-page space-y-5">
-      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <div className="flex items-center gap-3">
-          <h1 className="pa-title" style={{ fontSize: 18, fontWeight: 600, color: "var(--pp-text-primary)" }}>{t.pageTitle}</h1>
-          <span className="rounded-full px-2 py-1" style={{ fontSize: 11, background: "var(--pp-bg-elevated)", color: "var(--pp-text-secondary)", border: "1px solid var(--pp-bg-border-2)" }}>
-            {t.brokerCount(stats.total)}
-          </span>
-          <span className="hidden rounded-full px-2 py-1 sm:inline-flex" style={{ fontSize: 11, background: `${ACCENT}12`, color: ACCENT, border: `1px solid ${ACCENT}33` }}>
-            {t.badgeSip}
-          </span>
-        </div>
+    <PAPage>
+      <PAPageHeader icon={<MonitorSmartphone className="w-5 h-5" />} title={t.pageTitle} subtitle={`${t.brokerCount(stats.total)} · ${t.badgeSip}`} actions={
         <div className="flex flex-wrap items-center gap-2">
           <button onClick={() => refresh(true)} disabled={loading} className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)", opacity: loading ? 0.65 : 1 }}>
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />} {t.refresh}
@@ -559,8 +551,8 @@ export default function PAMobileDevices() {
           <button onClick={provisionAppReview} className="rounded-lg px-3 py-2 text-sm font-medium" style={{ background: ACCENT, color: "#fff" }}>
             {t.appReviewUser}
           </button>
-        </div>
-      </div>
+        </div>}
+      />
 
       <DeviceExpiryGuardCard />
 
@@ -847,6 +839,6 @@ export default function PAMobileDevices() {
         </DialogContent>
       </Dialog>
 
-    </div>
+    </PAPage>
   );
 }

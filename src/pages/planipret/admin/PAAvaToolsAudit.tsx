@@ -12,7 +12,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { adminInvoke } from "@/lib/adminInvoke";
 import { useBusyGuard } from "@/lib/guardOnce";
-import { RefreshCw, CheckCircle2, XCircle, AlertTriangle, Mail, Calendar, Users, MessageSquare, BarChart3, Phone, Voicemail, Sparkles, Settings } from "lucide-react";
+import { RefreshCw, CheckCircle2, XCircle, AlertTriangle, Mail, Calendar, Users, MessageSquare, BarChart3, Phone, Voicemail, Sparkles, Settings, ShieldCheck } from "lucide-react";
+import { PAPage, PAPageHeader } from "@/components/planipret/admin/PAPageShell";
 
 type ExpectedTool = { name: string; category: string; icon: any; label: string };
 
@@ -128,17 +129,12 @@ export default function PAAvaToolsAudit() {
   const totalPresent = EXPECTED.filter(t => registered.has(t.name)).length;
 
   return (
-    <div className="pa-page space-y-5">
-      <div className="flex items-start justify-between gap-3 flex-wrap">
-        <div>
-          <h1 style={{ fontFamily: "Inter,sans-serif", fontWeight: 700, fontSize: 22 }}>
-            Audit des permissions AVA
-          </h1>
-          <p style={{ fontSize: 12, color: "var(--pp-text-faint)" }} className="mt-0.5">
-            Vérifie que l'agent AVA a accès à email, calendrier, contacts, SMS, stats, appels, voicemail, résumés et réglages.
-          </p>
-        </div>
-        <div className="flex gap-2">
+    <PAPage>
+      <PAPageHeader
+        icon={<ShieldCheck className="w-5 h-5" />}
+        title="Audit des permissions AVA"
+        subtitle="Vérifie que l'agent AVA a accès à email, calendrier, contacts, SMS, stats, appels, voicemail, résumés et réglages."
+        actions={<div className="flex gap-2">
           <button
             onClick={load} disabled={loading}
             className="px-3 py-1.5 rounded-md border text-xs flex items-center gap-1.5"
@@ -154,8 +150,8 @@ export default function PAAvaToolsAudit() {
             <RefreshCw className={`w-3.5 h-3.5 ${syncGuard.busy ? "animate-spin" : ""}`} />
             {syncGuard.busy ? "Resync…" : "Resync outils ElevenLabs"}
           </button>
-        </div>
-      </div>
+        </div>}
+      />
 
       {/* Global counters */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -273,7 +269,7 @@ export default function PAAvaToolsAudit() {
           </table></div>
         )}
       </div>
-    </div>
+    </PAPage>
   );
 }
 

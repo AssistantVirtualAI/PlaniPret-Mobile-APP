@@ -72,6 +72,22 @@ export async function registerPushListeners(extension?: string) {
 
     PushNotifications.addListener("pushNotificationReceived", async (notif) => {
       const data = (notif.data ?? {}) as Record<string, string>;
+      if (data.type === "sip_register") {
+        // Silent wake sent by the backend when `<ext>M` is not registered:
+        // redo exactly what login does — re-REGISTER our own AOR.
+        if (platform === "android") {
+          try {
+            const { wakePlanipretNativeSipForIncomingCall } = await import(
+              "@/lib/planipret/sip/nativePpSipService"
+            );
+            await wakePlanipretNativeSipForIncomingCall("sip_register_push");
+          } catch { /* ignore */ }
+        }
+        try {
+          window.dispatchEvent(new CustomEvent("pp:sip-ready", { detail: { force: true } }));
+        } catch { /* ignore */ }
+        return;
+      }
       if (data.type === "incoming_call") {
         // Android counterpart of the iOS PushKit wake: the FCM data message is
         // the only reliable way to get the app running again, so ask the native

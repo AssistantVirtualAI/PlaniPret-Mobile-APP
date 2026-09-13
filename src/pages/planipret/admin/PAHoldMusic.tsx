@@ -15,6 +15,7 @@ import {
   Music, Sparkles, Wand2, Loader2, Play, Trash2, UploadCloud, RefreshCw, Star,
 } from "lucide-react";
 import { toast } from "sonner";
+import { PAPage, PAPageHeader } from "@/components/planipret/admin/PAPageShell";
 
 type Row = {
   id: string;
@@ -172,17 +173,12 @@ export default function PAHoldMusic() {
   };
 
   return (
-    <div className="pa-page space-y-5">
-      <div>
-        <h1 className="flex items-center gap-2" style={{ fontFamily: "Inter,sans-serif", fontWeight: 700, fontSize: 22, color: "var(--pp-text-primary)" }}>
-          <Music className="w-5 h-5" style={{ color: "#6C3CE1" }} />
-          {t("adminPortal.pageTitles.holdMusic") || "Musique d'attente"}
-        </h1>
-        <p className="mt-0.5" style={{ fontSize: 12, color: "var(--pp-text-faint)" }}>
-          {t("adminPortal.holdMusic.subtitle")
-            || "Générez une annonce d'attente (voix IA + musique) et poussez-la vers le système téléphonique."}
-        </p>
-      </div>
+    <PAPage>
+      <PAPageHeader
+        icon={<Music className="w-5 h-5" />}
+        title={t("adminPortal.pageTitles.holdMusic") || "Musique d'attente"}
+        subtitle={t("adminPortal.holdMusic.subtitle") || "Générez une annonce d'attente (voix IA + musique) et poussez-la vers le système téléphonique."}
+      />
 
       {/* Composer */}
       <Card className="p-5 space-y-4">
@@ -328,6 +324,6 @@ export default function PAHoldMusic() {
           </div>
         )}
       </Card>
-    </div>
+    </PAPage>
   );
 }

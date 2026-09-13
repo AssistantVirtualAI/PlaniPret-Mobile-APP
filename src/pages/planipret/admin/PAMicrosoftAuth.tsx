@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { RefreshCw, AlertTriangle, CheckCircle2, PauseCircle } from "lucide-react";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import paBanner from "@/assets/planipret/banner-microsoft.jpg";
 
 type Attempt = {
   id: string;
@@ -171,6 +172,8 @@ export default function PAMicrosoftAuth() {
   return (
     <div className="pa-page">
       <PAPageHeader
+        image={paBanner}
+        accent="#0EA5E9"
         icon={<CheckCircle2 className="h-[18px] w-[18px]" />}
         title={t.title}
         subtitle={t.subtitle}

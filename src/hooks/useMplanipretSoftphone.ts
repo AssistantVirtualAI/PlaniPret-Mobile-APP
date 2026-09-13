@@ -50,6 +50,7 @@ import {
 } from "@/lib/planipret/sip/nativePpSipService";
 import { addDedupedCapListener } from "@/lib/planipret/sip/capListeners";
 import { checkSipBackendRegistration } from "@/lib/planipret/sip/sipBackendCheck";
+import { nativeSip } from "@/lib/planipret/sip/nativeSipService";
 
 import {
   upsertRingingSession,
@@ -413,7 +414,16 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
         if (opts?.force) {
           try { ppSipProvider.stop(); } catch {}
         }
-        const { data, error } = await supabase.functions.invoke("ns-resolve-sip-credentials", { body: { client_type: clientType } });
+        const nativeClient = clientType === "mobile" && Capacitor.isNativePlatform() && nativeSip.isAvailable();
+        if (nativeClient) {
+          const ready = await nativeSip.initialize();
+          if (cancelled) return;
+          if (!ready) console.warn("[softphone] native SIP initialization did not register");
+          return;
+        }
+        const { data, error } = await supabase.functions.invoke("ns-resolve-sip-credentials", {
+          body: { client_type: clientType, transport: "wss" },
+        });
         if (cancelled) return;
         if (error || !data || (data as any)?.error) return;
         const d = data as any;
@@ -1014,6 +1024,7 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
   useEffect(() => {
     if (!enabled) return;
     let alive = true;
+    let lastHealAt = 0;
     const suffix = clientType === "mobile" ? "m" : "w";
     const run = async () => {
       const check = await checkSipBackendRegistration();
@@ -1022,6 +1033,17 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       const own = aors.some((a) => a.endsWith(suffix)) ||
         (clientType === "mobile" && !!check.registration?.mobile_registered);
       setPbxRegistration(own ? "own" : aors.length > 0 ? "other" : "none");
+      // Self-heal: a logged-in broker must always keep `<ext>M` registered on
+      // the PBX. If NetSapiens says otherwise, force a re-REGISTER (max 1/min).
+      if (!own && Date.now() - lastHealAt > 60_000) {
+        lastHealAt = Date.now();
+        if (clientType === "mobile" && Capacitor.isNativePlatform() && nativeSip.isAvailable()) {
+          void nativeSip.repairRegistration();
+        } else {
+          try { ppSipProvider.forceReregister(); } catch { /* ignore */ }
+          try { window.dispatchEvent(new CustomEvent("pp:sip-ready", { detail: { force: true } })); } catch { /* ignore */ }
+        }
+      }
     };
     void run();
     const id = setInterval(run, 30_000);
@@ -1161,6 +1183,8 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       return { via: "none", ok: false, error: msg };
     }
     const callId = String((data as any)?.call_id ?? "");
+    // L'appel part toujours de la ligne de l'app : le numéro composé sonne
+    // directement, jamais le cellulaire du courtier.
     if (callId) {
       setRestCall({
         id: callId,
@@ -1179,20 +1203,37 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
 
   const placeCall = useCallback(async (destination: string): Promise<OutboundResult> => {
     if (!destination) return { via: "none", ok: false, error: "empty destination" };
-    const mic = await ensureMicPermission();
-    if (mic.state !== "granted") {
-      try { mic.stream?.getTracks().forEach((tr) => tr.stop()); } catch {}
-      return { via: "none", ok: false, error: mic.error ?? "microphone unavailable", micState: mic.state };
+    // PJSIP owns the native iOS audio session. Do not gate it behind the
+    // WebView getUserMedia permission: on some installed builds WebKit reports
+    // the microphone as unavailable even though the native engine can call.
+    if (clientType === "mobile" && Capacitor.isNativePlatform() && nativeSip.isAvailable()) {
+      const ready = nativeSip.isRegistered() || await nativeSip.repairRegistration();
+      if (ready && await nativeSip.makeCall(ppNormalizeDestination(destination))) {
+        return { via: "webrtc", ok: true };
+      }
+      console.warn("[softphone] native call failed, falling back to PBX");
     }
-    try { mic.stream?.getTracks().forEach((tr) => tr.stop()); } catch {}
     let canUseSip = registered;
     if (!canUseSip) {
+      // Réveil borné (~2 s max) : dès que la ligne revient on part tout de
+      // suite, au lieu d'attendre un délai fixe puis de basculer sur le
+      // repli cellulaire (lent + audio hors de l'app).
       try { ppSipProvider.forceReregister(); } catch {}
-      await new Promise((resolve) => window.setTimeout(resolve, 1200));
-      const st = ppSipProvider.getSnapshot().status;
-      canUseSip = st === "registered" || st === "connected";
+      const deadline = Date.now() + 2000;
+      while (Date.now() < deadline) {
+        const st = ppSipProvider.getSnapshot().status;
+        if (st === "registered" || st === "connected") { canUseSip = true; break; }
+        await new Promise((resolve) => window.setTimeout(resolve, 150));
+      }
     }
     if (canUseSip) {
+      const mic = await ensureMicPermission();
+      if (mic.state !== "granted") {
+        try { mic.stream?.getTracks().forEach((tr) => tr.stop()); } catch {}
+        console.warn("[softphone] WebRTC microphone unavailable, falling back to PBX", mic.error ?? mic.state);
+        return await callViaPBX(destination);
+      }
+      try { mic.stream?.getTracks().forEach((tr) => tr.stop()); } catch {}
       try {
         await ppSipProvider.call(destination);
         return { via: "webrtc", ok: true };
@@ -1201,7 +1242,7 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       }
     }
     return await callViaPBX(destination);
-  }, [registered, callViaPBX]);
+  }, [registered, callViaPBX, clientType]);
 
   // Last-resort pickup: ask NetSapiens to answer the live ringing leg over
   // NS-API. Used when the SIP INVITE never reaches the WebView after a VoIP
@@ -1260,6 +1301,9 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
   // Every branch is logged so the exact route to answer() is visible in Xcode /
   // Logcat when debugging a VoIP-push answer.
   const answerOnce = useCallback(async () => {
+    if (clientType === "mobile" && Capacitor.isNativePlatform() && nativeSip.isAvailable() && nativeSip.getCallId()) {
+      return nativeSip.answer();
+    }
     const sipSnap = ppSipProvider.getSnapshot();
     console.info("[answer] tapped", {
       hasLiveSipSession,
@@ -1362,7 +1406,7 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     // Clear the REST/DB attachment so the in-call UI follows the live session.
     if (ok && restCall?.id) setRestCall(null);
     return ok;
-  }, [restCall?.id, restCall?.number, restControl, hasLiveSipSession, pushRing, callbackAnswer]);
+  }, [restCall?.id, restCall?.number, restControl, hasLiveSipSession, pushRing, callbackAnswer, clientType]);
 
   const answer = useCallback((): Promise<boolean> => {
     const pending = answerAttemptRef.current;
@@ -1405,6 +1449,9 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     // Fin d'appel : demander au courtier s'il sauvegarde l'appel dans Maestro.
     emitCallEnded(restId || callId || null);
     console.info("[hangup] requested", { sipCallId: callId || null, restCallId: restId, hasLiveSipSession });
+    if (clientType === "mobile" && Capacitor.isNativePlatform() && nativeSip.getCallId()) {
+      void nativeSip.hangup();
+    }
     // Always signal the PBX over REST as well, with retry + backoff: the SIP BYE
     // can be lost when the WebSocket dropped or the session never reached
     // "active", which would leave the call up on NetSapiens.
@@ -1423,7 +1470,7 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       void endSession(callId, "hangup");
       void updateCallIfPosted(callId, { status: "ended", ended_reason: "completed" });
     }
-  }, [restCall?.id, restDisconnectWithRetry, hasLiveSipSession]);
+  }, [restCall?.id, restDisconnectWithRetry, hasLiveSipSession, clientType]);
 
 
 
@@ -1463,12 +1510,12 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     answer,
     hangup,
     reregister: () => { try { ppSipProvider.forceReregister(); } catch {} },
-    mute: () => (restCall?.id && !hasLiveSipSession) ? void restControl("mute", { muted: true }) : ppSipProvider.mute(),
-    unmute: () => (restCall?.id && !hasLiveSipSession) ? void restControl("mute", { muted: false }) : ppSipProvider.unmute(),
+    mute: () => nativeSip.getCallId() ? void nativeSip.setMute(true) : (restCall?.id && !hasLiveSipSession) ? void restControl("mute", { muted: true }) : ppSipProvider.mute(),
+    unmute: () => nativeSip.getCallId() ? void nativeSip.setMute(false) : (restCall?.id && !hasLiveSipSession) ? void restControl("mute", { muted: false }) : ppSipProvider.unmute(),
     // L'attente faite dans l'app est aussi reflétée sur l'écran d'appel système.
     hold: () => { applyHold(true); void setPlanipretCallKitHeld(true); },
     unhold: () => { applyHold(false); void setPlanipretCallKitHeld(false); },
-    sendDTMF: (k: string) => (restCall?.id && !hasLiveSipSession) ? void restControl("dtmf", { digit: k }) : ppSipProvider.sendDTMF(k),
+    sendDTMF: (k: string) => nativeSip.getCallId() ? void nativeSip.sendDTMF(k) : (restCall?.id && !hasLiveSipSession) ? void restControl("dtmf", { digit: k }) : ppSipProvider.sendDTMF(k),
     transfer: (t: string) => (restCall?.id && !hasLiveSipSession) ? void restControl("transfer", { destination: t, target: t }) : ppSipProvider.transfer(t),
     // The provider owns a persistent hidden <audio> sink; screens must not
     // detach it on unmount (that killed remote audio mid-call).

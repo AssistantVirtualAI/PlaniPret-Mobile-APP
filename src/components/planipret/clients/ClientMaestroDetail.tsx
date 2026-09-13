@@ -21,7 +21,10 @@ export default function ClientMaestroDetail({
   clientKey, tasks, userIds, lang, lastSyncAt, loading, onDraftSms,
 }: {
   clientKey: string;
-  onDraftSms?: (target: { name: string; number: string; clientKey: string }) => void;
+  onDraftSms?: (target: {
+    name: string; number: string; clientKey: string;
+    contractId?: string; contractNumber?: string | null; body?: string;
+  }) => void;
   tasks: NormalizedTask[];
   userIds: string[];
   lang: "fr" | "en";
@@ -130,6 +133,7 @@ export default function ClientMaestroDetail({
                 .map((x) => String((x.direction === "outbound" ? x.to_number : x.from_number) ?? "").trim())
                 .find((n) => n.replace(/\D/g, "").length >= 10) ?? "",
               clientKey: b.key,
+              body: L(`Bonjour ${b.name}, `, `Hello ${b.name}, `),
             })}
           >
             <MessageSquare className="w-4 h-4" />
@@ -206,11 +210,37 @@ export default function ClientMaestroDetail({
         {b.deals.length === 0 ? <Empty text={L("Aucun dossier.", "No file.")} /> : (
           <ul className="space-y-1">
             {b.deals.map((d) => (
-              <li key={d.id} className="text-[11.5px] flex flex-wrap gap-x-2" style={{ color: "var(--pp-text-muted)" }}>
-                <span style={{ color: "var(--pp-text-primary)", fontWeight: 600 }}>{d.stage || "—"}</span>
-                <span>{d.contact_number || "—"}</span>
-                <span>{cad(Number(d.value_estimate ?? 0))}</span>
-                <span>{d.updated_at ? new Date(d.updated_at).toLocaleDateString(en ? "en-CA" : "fr-CA") : "—"}</span>
+              <li key={d.id} className="text-[11.5px]" style={{ color: "var(--pp-text-muted)" }}>
+                <div className="flex flex-wrap gap-x-2">
+                  <span style={{ color: "var(--pp-text-primary)", fontWeight: 600 }}>{d.stage || "—"}</span>
+                  <span>{d.contact_number || "—"}</span>
+                  <span>{cad(Number(d.value_estimate ?? 0))}</span>
+                  <span>{d.updated_at ? new Date(d.updated_at).toLocaleDateString(en ? "en-CA" : "fr-CA") : "—"}</span>
+                </div>
+                {onDraftSms && (
+                  <button
+                    className="mt-1.5 inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-[12px] font-semibold min-h-[36px]"
+                    style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border)", color: "var(--pp-text-primary)" }}
+                    onClick={() => onDraftSms({
+                      name: b.name,
+                      number: String(d.contact_number ?? "").replace(/\D/g, "").length >= 10
+                        ? String(d.contact_number)
+                        : ([...b.messages, ...b.calls]
+                            .map((x) => String((x.direction === "outbound" ? x.to_number : x.from_number) ?? "").trim())
+                            .find((n) => n.replace(/\D/g, "").length >= 10) ?? ""),
+                      clientKey: b.key,
+                      contractId: String(d.id),
+                      contractNumber: d.stage ?? null,
+                      body: L(
+                        `Bonjour ${b.name}, au sujet de votre dossier ${d.stage ?? ""} : `,
+                        `Hello ${b.name}, regarding your file ${d.stage ?? ""}: `,
+                      ),
+                    })}
+                  >
+                    <MessageSquare className="w-3.5 h-3.5" />
+                    {L("Préparer un texto", "Draft a text")}
+                  </button>
+                )}
               </li>
             ))}
           </ul>

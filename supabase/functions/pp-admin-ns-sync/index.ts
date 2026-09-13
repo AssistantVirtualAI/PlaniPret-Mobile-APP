@@ -411,10 +411,14 @@ async function fetchTranscription(path: string | null) {
   }
 }
 
-async function enrichTranscriptions(rows: any[]) {
-  const candidates = rows.filter((r) => r.metadata?.["prefilled-transcription-api"] || r.metadata?.transcription_path);
+async function enrichTranscriptions(rows: any[], budgetMs = 20000, maxRows = 120) {
+  const deadline = Date.now() + budgetMs;
+  const candidates = rows
+    .filter((r) => r.metadata?.["prefilled-transcription-api"] || r.metadata?.transcription_path)
+    .slice(0, maxRows);
   let enriched = 0;
   for (let i = 0; i < candidates.length; i += 8) {
+    if (Date.now() > deadline) break;
     const chunk = candidates.slice(i, i + 8);
     await Promise.all(chunk.map(async (row) => {
       const path = row.metadata?.transcription_path ?? transcriptionPath(row.metadata);
@@ -431,6 +435,7 @@ async function enrichTranscriptions(rows: any[]) {
   }
   return enriched;
 }
+
 
 async function syncCalls(admin: ReturnType<typeof createClient>, domain: string, users: any[], start: string, end: string) {
   const { data: profiles } = await admin
@@ -498,16 +503,33 @@ async function syncCalls(admin: ReturnType<typeof createClient>, domain: string,
     });
   }
 
-  const transcriptions = await enrichTranscriptions(rows);
-
+  // Persist the CDRs FIRST. Transcription enrichment is slow and used to run
+  // before the upsert, so a CPU-time kill lost every call of the run.
+  // Duplicate ns_call_id values inside one batch make Postgres reject the whole
+  // chunk ("ON CONFLICT DO UPDATE command cannot affect row a second time").
+  const byId = new Map<string, any>();
+  for (const r of rows) byId.set(String(r.ns_call_id), r);
+  const uniqueRows = Array.from(byId.values());
   let upserted = 0;
   let errors: string[] = [];
-  for (let i = 0; i < rows.length; i += 200) {
-    const chunk = rows.slice(i, i + 200);
+  for (let i = 0; i < uniqueRows.length; i += 200) {
+    const chunk = uniqueRows.slice(i, i + 200);
     const { error } = await admin.from("planipret_phone_calls").upsert(chunk, { onConflict: "ns_call_id" });
     if (error) errors.push(error.message);
     else upserted += chunk.length;
   }
+
+
+  const transcriptions = await enrichTranscriptions(rows);
+  if (transcriptions > 0) {
+    const enrichedRows = rows.filter((r) => r.transcript || r.ai_summary || r.transcript_segments);
+    for (let i = 0; i < enrichedRows.length; i += 100) {
+      const chunk = enrichedRows.slice(i, i + 100);
+      const { error } = await admin.from("planipret_phone_calls").upsert(chunk, { onConflict: "ns_call_id" });
+      if (error) errors.push(error.message);
+    }
+  }
+
   return { fetched: rawItems.length, mapped: rows.length, upserted, recordings: rows.filter((r) => r.recording_url).length, transcriptions, warnings: domainCdrs.warning ? [domainCdrs.warning] : [], errors };
 }
 

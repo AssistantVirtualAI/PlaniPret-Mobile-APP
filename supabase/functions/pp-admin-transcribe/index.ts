@@ -64,13 +64,25 @@ Deno.serve(async (req) => {
       return json({ ok: true, transcript: row.transcript, cached: true });
     }
 
+    const MAX_ATTEMPTS = 6;
     const markPending = async (hint: string) => {
+      const attempts = (row.transcript_attempts ?? 0) + 1;
+      const exhausted = attempts >= MAX_ATTEMPTS;
       await admin.from("planipret_phone_calls").update({
-        transcript_pending: true,
+        transcript_pending: !exhausted,
+        transcript_status: exhausted ? "no_audio" : "pending",
         transcript_last_attempt_at: new Date().toISOString(),
-        transcript_attempts: (row.transcript_attempts ?? 0) + 1,
+        transcript_attempts: attempts,
       }).eq("id", callId);
-      return json({ ok: false, pending: true, fallback: true, error: "TRANSCRIPT_PENDING", hint, attempts: (row.transcript_attempts ?? 0) + 1 }, 200);
+      return json({
+        ok: false,
+        pending: !exhausted,
+        unavailable: exhausted,
+        fallback: true,
+        error: exhausted ? "TRANSCRIPT_UNAVAILABLE" : "TRANSCRIPT_PENDING",
+        hint: exhausted ? "Aucun enregistrement disponible côté système téléphonique pour cet appel." : hint,
+        attempts,
+      }, 200);
     };
 
     // Preferred source: the phone system transcription endpoint. AI is only a fallback
@@ -91,6 +103,7 @@ Deno.serve(async (req) => {
             transcript_language: nsTx.language ?? null,
             transcript_source: "netsapiens",
             transcript_pending: false,
+            transcript_status: "done",
             transcript_fetched_at: new Date().toISOString(),
           })
           .eq("id", callId);
@@ -167,6 +180,7 @@ Deno.serve(async (req) => {
         transcript,
         transcript_source: "whisper-fallback",
         transcript_pending: false,
+        transcript_status: "done",
         recording_url: recUrl ?? row.recording_url,
         transcript_fetched_at: new Date().toISOString(),
       })

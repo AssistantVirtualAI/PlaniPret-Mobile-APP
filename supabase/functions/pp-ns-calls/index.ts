@@ -104,32 +104,98 @@ Deno.serve(async (req) => {
         }
       } catch { /* fallback to constructed */ }
 
+      // Si l'appareil visé n'est pas inscrit, utiliser n'importe quel appareil
+      // inscrit du poste (web/mobile). Erreur explicite seulement si aucun.
+      const origFallback: "device" = "device";
       if (!deviceRegistered) {
-        callOrigUser = `${ctx.extension}@${ctx.nsDomain}`;
+        try {
+          const regRes = await nsFetch(`/domains/${encodeURIComponent(ctx.nsDomain)}/users/${encodeURIComponent(ctx.extension)}/registrations`, { method: "GET" });
+          if (regRes.ok) {
+            const rd = await regRes.json().catch(() => null);
+            const regs = Array.isArray(rd) ? rd : (rd ? [rd] : []);
+            const alt = regs.find((r: any) => typeof (r?.["aor"] ?? r?.["registration-uri"] ?? r?.["contact-uri"]) === "string");
+            const aor = alt?.["aor"] ?? alt?.["registration-uri"] ?? alt?.["contact-uri"];
+            if (typeof aor === "string" && aor.length) {
+              callOrigUser = String(aor).replace(/^sip:/i, "").split(";")[0];
+              deviceRegistered = true;
+              deviceState = "registered_alt";
+              console.log(`[pp-ns-calls] fallback to registered device aor=${callOrigUser}`);
+            }
+          }
+        } catch { /* ignore */ }
+      }
+      if (!deviceRegistered) {
+        return jsonResponse({
+          success: false,
+          error: "sip_not_registered",
+          device_registered: false,
+          device_state: deviceState,
+          device_name: deviceName,
+          message: "Votre ligne n'est pas connectée — rouvrez l'application puis réessayez",
+        }, 200);
       }
 
+
       const clientCallId = crypto.randomUUID();
-      const nsBody = {
+      // NS dial rules ne connaissent pas le format E.164 avec « + » :
+      // POST .../calls répond 404 "Resource not found." Composer en chiffres.
+      const nsDest = dest.replace(/^\+/, "");
+
+      // Numéro affiché : configuration « Appels sortants » du courtier, sinon
+      // le DID attribué à son poste chez le fournisseur.
+      let callerId = String(payload.caller_id_number ?? "").replace(/[^\d]/g, "");
+      let callerName = String(payload.caller_id_name ?? "").trim();
+      if (!callerId) {
+        try {
+          const { data: outbound } = await guard.supabase
+            .from("planipret_outbound_settings")
+            .select("caller_id_number, caller_id_name")
+            .eq("user_id", ctx.userId)
+            .maybeSingle();
+          callerId = String(outbound?.caller_id_number ?? "").replace(/[^\d]/g, "");
+          if (!callerName) callerName = String(outbound?.caller_id_name ?? "").trim();
+        } catch { /* ignore */ }
+      }
+      if (!callerId) {
+        try {
+          const uRes = await nsFetch(`/domains/${encodeURIComponent(ctx.nsDomain)}/users/${encodeURIComponent(ctx.extension)}`, { method: "GET" });
+          if (uRes.ok) {
+            const ud = await uRes.json().catch(() => null);
+            const u = Array.isArray(ud) ? ud[0] : ud;
+            callerId = String(u?.["caller-id-number"] ?? u?.["caller-id-number-emergency"] ?? "").replace(/[^\d]/g, "");
+          }
+        } catch { /* ignore */ }
+      }
+
+      const buildBody = (term: string) => ({
+        // Champs documentés uniquement (docs/netsapiens/calls.md).
         "call-id": clientCallId,
-        "destination": dest,
-        "origination": callOrigUser,
+        "dial-rule-application": "call",
         "call-orig-user": callOrigUser,
-        "call-term-user": dest,
+        "call-term-user": term,
         "auto-answer-enabled": "no",
-        // Force NS to fully ring the originator (broker's phone) and wait for
-        // pickup BEFORE dialing the destination. Without this NS may dial the
-        // destination first, so the customer hears ringing before the broker.
-        "synchronous": "yes",
-      };
+        ...(callerId ? { "caller-id-number": callerId } : {}),
+        ...(callerName ? { "caller-id-name": callerName } : {}),
+        "synchronous": "no",
+      });
 
-      console.log(`[pp-ns-calls] REST start requested_client=${requestedClientType} forced_client=${clientType} device=${deviceName} orig=${callOrigUser} term=${dest} ext=${ctx.extension}`);
+      console.log(`[pp-ns-calls] REST start requested_client=${requestedClientType} forced_client=${clientType} device=${deviceName} orig=${callOrigUser} term=${nsDest} ext=${ctx.extension}`);
 
-      const res = await nsFetch(base, { method: "POST", body: JSON.stringify(nsBody) });
-      const text = await res.text();
+      const t0 = Date.now();
+      let res = await nsFetch(base, { method: "POST", body: JSON.stringify(buildBody(nsDest)) });
+      let text = await res.text();
       let parsed: any = null;
       try { parsed = text ? JSON.parse(text) : null; } catch { parsed = text; }
 
-      console.log(`[pp-ns-calls] NS status=${res.status} body=${typeof parsed === "string" ? parsed.slice(0,200) : JSON.stringify(parsed).slice(0,200)}`);
+      // Repli : certains dial plans acceptent uniquement le format E.164.
+      if (res.status === 404 && nsDest !== dest) {
+        console.log("[pp-ns-calls] retry originate with E.164 destination");
+        res = await nsFetch(base, { method: "POST", body: JSON.stringify(buildBody(dest)) });
+        text = await res.text();
+        try { parsed = text ? JSON.parse(text) : null; } catch { parsed = text; }
+      }
+
+      console.log(`[pp-ns-calls] NS status=${res.status} latency_ms=${Date.now() - t0} orig_fallback_pending body=${typeof parsed === "string" ? parsed.slice(0,200) : JSON.stringify(parsed).slice(0,200)}`);
 
       const ok = res.ok || res.status === 202;
       if (ok) {
@@ -168,9 +234,9 @@ Deno.serve(async (req) => {
           device_registered: deviceRegistered,
           device_was_unregistered: !deviceRegistered,
           device_state: deviceState,
-          message: deviceRegistered
-            ? "Votre téléphone va sonner — décrochez pour parler au client"
-            : "Votre téléphone sonnera dans quelques secondes — assurez-vous que l'app est ouverte",
+          orig_fallback: origFallback,
+          caller_id_number: callerId || null,
+          message: "Appel en cours — le numéro composé sonne",
         }, 200);
       }
 
@@ -209,22 +275,29 @@ Deno.serve(async (req) => {
         if (profileDevice?.ns_mobile_device_id) deviceName = String(profileDevice.ns_mobile_device_id);
       } catch { /* keep default */ }
 
-      const nsBody = {
-        "call-id": crypto.randomUUID(),
+      const cbCallId = crypto.randomUUID();
+      const nsDest = dest.replace(/^\+/, "");
+      const cbBody = (term: string) => ({
+        "call-id": cbCallId,
         "call-orig-user": `${deviceName}@${ctx.nsDomain}`,
-        "call-term-user": dest,
+        "call-term-user": term,
         "auto-answer-enabled": "yes",
-        "synchronous": "yes",
-      };
-      console.log(`[pp-ns-calls] callback orig=${nsBody["call-orig-user"]} term=${dest}`);
-      const res = await nsFetch(base, { method: "POST", body: JSON.stringify(nsBody) });
-      const text = await res.text();
+        "synchronous": "no",
+      });
+      console.log(`[pp-ns-calls] callback orig=${deviceName}@${ctx.nsDomain} term=${nsDest}`);
+      let res = await nsFetch(base, { method: "POST", body: JSON.stringify(cbBody(nsDest)) });
+      let text = await res.text();
       let parsed: any = null;
       try { parsed = text ? JSON.parse(text) : null; } catch { parsed = text; }
+      if (res.status === 404 && nsDest !== dest) {
+        res = await nsFetch(base, { method: "POST", body: JSON.stringify(cbBody(dest)) });
+        text = await res.text();
+        try { parsed = text ? JSON.parse(text) : null; } catch { parsed = text; }
+      }
       const ok = res.ok || res.status === 202;
       return jsonResponse({
         success: ok,
-        call_id: parsed?.["call-id"] ?? parsed?.call_id ?? nsBody["call-id"],
+        call_id: parsed?.["call-id"] ?? parsed?.call_id ?? cbCallId,
         destination: dest,
         ns_status: res.status,
         error: ok ? undefined : ((typeof parsed === "object" && parsed?.message) || `NS-API error ${res.status}`),
@@ -298,7 +371,7 @@ Deno.serve(async (req) => {
               "call-orig-user": `${ctx.extension}@${ctx.nsDomain}`,
               "call-term-user": target,
               "auto-answer-enabled": "no",
-              "synchronous": "yes",
+              "synchronous": "no",
             }),
           });
           const txt = await res.text();

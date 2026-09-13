@@ -3,6 +3,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { RefreshCw, CheckCircle2, XCircle, AlertTriangle, Activity, Server, Radio, Cable } from "lucide-react";
 import PAMaestroStatus from "./PAMaestroStatus";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import { PAPage, PAPageHeader } from "@/components/planipret/admin/PAPageShell";
 
 const ACCENT = "#2E9BDC";
 const SUCCESS = "#00D4AA";
@@ -329,24 +330,12 @@ export default function PAMaestroSync() {
   const rateColor = successRate == null ? AGENT : successRate >= 95 ? SUCCESS : successRate >= 80 ? WARNING : DANGER;
 
   return (
-    <div className="planipret-scope planipret-admin-scope pa-page space-y-5">
-      {/* Header */}
-      <div className="flex items-start justify-between gap-4 flex-wrap mb-5">
-        <div className="flex items-center gap-3">
-          <div className="w-11 h-11 rounded-xl flex items-center justify-center"
-            style={{ background: `${ACCENT}1A`, color: ACCENT, border: `1px solid ${ACCENT}33` }}>
-            <Cable className="w-5 h-5" />
-          </div>
-          <div>
-            <h1 style={{ fontSize: 22, fontWeight: 700, color: "var(--pp-text-primary)", letterSpacing: "-0.01em" }}>
-              {t.pageTitle}
-            </h1>
-            <p style={{ fontSize: 13, color: "var(--pp-text-secondary)", marginTop: 2 }}>
-              {t.pageSubtitle}
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
+    <PAPage className="planipret-scope planipret-admin-scope">
+      <PAPageHeader
+        icon={<Cable className="w-5 h-5" />}
+        title={t.pageTitle}
+        subtitle={t.pageSubtitle}
+        actions={<div className="flex items-center gap-2">
           <label className="flex items-center gap-2 pp-card px-3 py-1.5 cursor-pointer" style={{ fontSize: 12 }}>
             <input
               type="checkbox"
@@ -392,8 +381,8 @@ export default function PAMaestroSync() {
           >
             <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} /> {t.refresh}
           </button>
-        </div>
-      </div>
+        </div>}
+      />
 
       {/* Embedded OAuth broker connection flow (was /planipret/admin/maestro-status) */}
       <div className="pp-card mb-5" style={{ padding: 0, overflow: "hidden" }}>
@@ -691,6 +680,6 @@ export default function PAMaestroSync() {
           </table>
         </div>
       </div>
-    </div>
+    </PAPage>
   );
 }

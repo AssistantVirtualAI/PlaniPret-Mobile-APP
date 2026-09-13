@@ -14,22 +14,45 @@ export function PAPageHeader({
   title,
   subtitle,
   actions,
+  image,
+  accent = "#3B82F6",
 }: {
   icon?: ReactNode;
   title: ReactNode;
   subtitle?: ReactNode;
   actions?: ReactNode;
+  /** Optional decorative banner image (same look as the visual screens). */
+  image?: string;
+  accent?: string;
 }) {
   return (
-    <div className="pa-header">
-      <div className="min-w-0">
+    <div className={`pa-header${image ? " pa-header-visual" : ""}`}>
+      {image ? (
+        <>
+          <img
+            src={image}
+            alt=""
+            aria-hidden="true"
+            loading="lazy"
+            width={1600}
+            height={512}
+            className="pa-header-img"
+          />
+          <div
+            className="pa-header-veil"
+            style={{ background: `linear-gradient(100deg, rgba(6,13,26,.96) 0%, rgba(6,13,26,.78) 45%, ${accent}22 100%)` }}
+          />
+          <div className="pa-header-rule" style={{ background: `linear-gradient(90deg, ${accent}, transparent)` }} />
+        </>
+      ) : null}
+      <div className="min-w-0 relative">
         <h1 className="pa-header-title">
           {icon ? <span className="pa-header-icon">{icon}</span> : null}
           <span className="truncate">{title}</span>
         </h1>
         {subtitle ? <p className="pa-header-sub">{subtitle}</p> : null}
       </div>
-      {actions ? <div className="pa-header-actions">{actions}</div> : null}
+      {actions ? <div className="pa-header-actions relative">{actions}</div> : null}
     </div>
   );
 }

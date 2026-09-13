@@ -8,6 +8,7 @@ import AvaVoiceSessionsLog from "@/components/planipret/admin/ava/AvaVoiceSessio
 import AvaVoiceSettingsCard from "@/components/planipret/admin/ava/AvaVoiceSettingsCard";
 import AvaVoiceSimulatorPanel from "@/components/planipret/admin/ava/AvaVoiceSimulatorPanel";
 import { Bot } from "lucide-react";
+import { PAPage, PAPageHeader } from "@/components/planipret/admin/PAPageShell";
 
 export default function PAAvaAgent() {
   const { t } = useMplanipretLang();
@@ -19,18 +20,12 @@ export default function PAAvaAgent() {
   }, []);
 
   return (
-    <div className="pa-page space-y-5">
-      <div className="flex items-start justify-between gap-3 flex-wrap">
-        <div>
-          <h1 style={{ fontFamily: "Inter,sans-serif", fontWeight: 700, fontSize: 22, color: "var(--pp-text-primary)" }} className="flex items-center gap-2">
-            <Bot className="w-5 h-5" style={{ color: "#6C3CE1" }} />
-            {t("adminPortal.pageTitles.avaAgent") || "Agent AVA — Vue complète"}
-          </h1>
-          <p style={{ fontSize: 12, color: "var(--pp-text-faint)" }} className="mt-0.5">
-            {t("adminPortal.avaAgent.subtitle")}
-          </p>
-        </div>
-      </div>
+    <PAPage>
+      <PAPageHeader
+        icon={<Bot className="w-5 h-5" />}
+        title={t("adminPortal.pageTitles.avaAgent") || "Agent AVA — Vue complète"}
+        subtitle={t("adminPortal.avaAgent.subtitle")}
+      />
 
       <div className="flex gap-1 border-b border-slate-200">
         {([
@@ -58,6 +53,6 @@ export default function PAAvaAgent() {
       {tab === "simulator" && <AvaVoiceSimulatorPanel />}
       {tab === "voice" && <AvaVoiceSettingsCard />}
       {tab === "config" && <ElevenLabsManagementCard userId={userId} />}
-    </div>
+    </PAPage>
   );
 }

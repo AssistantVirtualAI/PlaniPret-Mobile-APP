@@ -133,7 +133,7 @@ export const OrganizationProvider: React.FC<{ children: React.ReactNode }> = ({ 
 
       const [{ data: orgs, error: oErr }, { data: roles, error: rErr }] = await Promise.all([
         supabase
-        .from('organizations')
+        .from('organizations_safe')
         .select('*')
         .in('id', orgIds)
         .eq('is_active', true)

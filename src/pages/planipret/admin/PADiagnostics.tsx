@@ -9,6 +9,8 @@ import {
 } from "@/lib/perfMetrics";
 import { Activity, RefreshCw, Trash2, Zap, Timer, Layers } from "lucide-react";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import { PAPage, PAPageHeader } from "@/components/planipret/admin/PAPageShell";
+import paBanner from "@/assets/planipret/banner-diagnostics.jpg";
 
 const DICT = {
   fr: {
@@ -146,28 +148,22 @@ export default function PADiagnostics() {
     r === "good" ? t.ratingGood : r === "needs-improvement" ? t.ratingImprove : t.ratingPoor;
 
   return (
-    <div className="planipret-scope planipret-admin-scope pa-page space-y-5" key={tick}>
-      <div className="flex items-center justify-between mb-5">
-        <div>
-          <div className="pp-eyebrow flex items-center gap-2">
-            <Activity className="w-3.5 h-3.5" /> {t.eyebrow}
-          </div>
-          <h1 className="pp-heading" style={{ fontWeight: 700, fontSize: 22 }}>
-            {t.title}
-          </h1>
-          <p style={{ fontSize: 12.5, color: "var(--pp-text-secondary)", marginTop: 4 }}>
-            {t.subtitle}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
+    <PAPage className="planipret-scope planipret-admin-scope" key={tick}>
+      <PAPageHeader
+        image={paBanner}
+        accent="#F59E0B"
+        icon={<Activity className="w-5 h-5" />}
+        title={t.title}
+        subtitle={t.subtitle}
+        actions={<div className="flex items-center gap-2">
           <button className="pp-btn-secondary flex items-center gap-2" onClick={() => setRows(getAllMetrics())}>
             <RefreshCw className="w-3.5 h-3.5" /> {t.refresh}
           </button>
           <button className="pp-btn-secondary flex items-center gap-2" onClick={() => { clearMetrics(); setRows(getAllMetrics()); }}>
             <Trash2 className="w-3.5 h-3.5" /> {t.reset}
           </button>
-        </div>
-      </div>
+        </div>}
+      />
 
       {/* Current route summary */}
       {current && (
@@ -288,7 +284,7 @@ export default function PADiagnostics() {
           </table>
         </div>
       </div>
-    </div>
+    </PAPage>
   );
 }
 
