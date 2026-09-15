@@ -71,6 +71,30 @@ async function purgeFromMaestro(admin: any, call: any): Promise<{ ok: boolean; d
   }
 }
 
+/** Start the approved post-call pipeline and report whether the hand-off reached it.
+ * The downstream workflow remains idempotent, so a later approve retry is safe. */
+async function startApprovedPipeline(callId: string): Promise<{ started: boolean; stage?: string; error?: string }> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12_000);
+  try {
+    const response = await fetch(`${SUPABASE_URL}/functions/v1/pp-auto-process-call`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${SERVICE_ROLE}` },
+      body: JSON.stringify({ call_id: callId }),
+      signal: controller.signal,
+    });
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok || body?.ok === false) {
+      return { started: false, error: String(body?.error ?? `pipeline_http_${response.status}`).slice(0, 160) };
+    }
+    return { started: true, stage: String(body?.stage ?? body?.skipped ?? "started") };
+  } catch (error) {
+    return { started: false, error: error instanceof Error ? error.name : "pipeline_start_failed" };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
@@ -109,7 +133,14 @@ Deno.serve(async (req) => {
 
   if (action === "approve") {
     if (String(call.save_consent ?? "") === "approved") {
-      return json({ ok: true, save_consent: "approved", already_approved: true });
+      const pipeline = await startApprovedPipeline(callId);
+      return json({
+        ok: pipeline.started,
+        save_consent: "approved",
+        already_approved: true,
+        processing: pipeline.started ? pipeline.stage : "retryable",
+        processing_error: pipeline.error ?? null,
+      }, pipeline.started ? 200 : 202);
     }
     // Client ambigu ou introuvable : le courtier doit le désigner, jamais l'app.
     const clientName = String(body?.client_name ?? "").trim().slice(0, 200);
@@ -133,14 +164,15 @@ Deno.serve(async (req) => {
     if (approveError) return json({ error: "consent_update_failed" }, 500);
     if (!approved) return json({ ok: true, save_consent: "approved", already_approved: true });
 
-    // Lance la chaîne complète : transcription → IA → Maestro.
-    fetch(`${SUPABASE_URL}/functions/v1/pp-auto-process-call`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${SERVICE_ROLE}` },
-      body: JSON.stringify({ call_id: callId }),
-    }).catch(() => {});
-
-    return json({ ok: true, save_consent: "approved", processing: "started" });
+    // Lance la chaîne complète : transcription → IA → Maestro. Report the
+    // hand-off result so the mobile client can safely retry an interrupted one.
+    const pipeline = await startApprovedPipeline(callId);
+    return json({
+      ok: pipeline.started,
+      save_consent: "approved",
+      processing: pipeline.started ? pipeline.stage : "retryable",
+      processing_error: pipeline.error ?? null,
+    }, pipeline.started ? 200 : 202);
   }
 
   if (action === "decline") {

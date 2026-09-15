@@ -32,21 +32,13 @@ Deno.serve(async (req) => {
   const token = await getUserMaestroAccessToken(admin, profile.id).catch((e) => { throw e; });
   if (!token) return jsonResponse({ success: false, error: "no_maestro_token" }, 409);
 
-  // Probe mode: discover the official GET listing route for a user.
+  // Probe mode: validate only the published Task API listing route. This
+  // harness must never probe legacy or undocumented Maestro/Telecom paths.
   if (body?.mode === "probe_list") {
     const xid = String(profile.maestro_broker_id ?? "");
     const tid = String(profile.maestro_telecom_user_id ?? xid);
     const paths = [
-      `/api/main/tasks?xid=${xid}&type=user`,
-      `/api/main/tasks/user/${xid}`,
-      `/api/main/tasks/list?xid=${xid}&type=user`,
-      `/api/main/users/${xid}/tasks`,
-      `/api/main/tasks/index?xid=${xid}&type=user`,
-      `/api/main/task?xid=${xid}&type=user`,
-      `/api/main/tasks?user_id=${xid}`,
-      `/telecom/api/v1/users/${tid}/tasks`,
-      `/telecom/api/v1/tasks?user_id=${tid}`,
-      `/api/v1/tasks?xid=${xid}&type=user`,
+      `/api/main/tasks?status=pending&type=user&target_id=${encodeURIComponent(xid)}&page=1&per_page=50`,
     ];
     const results: unknown[] = [];
     for (const path of paths) {

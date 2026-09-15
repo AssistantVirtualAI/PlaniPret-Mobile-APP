@@ -13,6 +13,7 @@ import {
   isSensitiveAvaTool,
   logProposal,
 } from "../_shared/ava-confirm.ts";
+import { hasValidAiConsent } from "../_shared/ai-consent.ts";
 import { linkBrokerIdByEmail, resolveTelecomUserId } from "../_shared/maestro-broker-directory.ts";
 import { claudeText } from "../_shared/anthropic.ts";
 import {
@@ -1811,6 +1812,13 @@ Deno.serve(async (req) => {
 
   const auth = await authBroker(req);
   if ("error" in auth) return auth.error;
+
+  // authBroker reloads the profile for every request. Re-checking the persisted
+  // consent here immediately invalidates an already-issued AVA voice session
+  // when the broker revokes consent in the mobile application.
+  if (!hasValidAiConsent(auth.profile)) {
+    return jsonResponse({ success: false, error: "ai_consent_required" }, 403);
+  }
 
   // GATING: AVA est activée uniquement pour les courtiers sélectionnés par un admin
   // via le toggle "Agent IA" dans Gestion Utilisateurs (planipret_profiles.voice_agent_enabled).

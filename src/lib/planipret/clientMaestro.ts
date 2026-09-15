@@ -33,7 +33,11 @@ export interface ClientCall {
   direction: string | null;
   status: string | null;
   started_at: string | null;
+  ended_at?: string | null;
   duration_seconds: number | null;
+  save_consent?: string | null;
+  save_consent_at?: string | null;
+  save_consent_channel?: string | null;
   from_number: string | null;
   to_number: string | null;
   from_name: string | null;
@@ -226,7 +230,7 @@ export async function fetchClientCalls(userIds: string[], limit = 500): Promise<
   if (!ids.length) return [];
   const { data } = await supabase
     .from("planipret_phone_calls")
-    .select("id, user_id, direction, status, started_at, duration_seconds, from_number, to_number, from_name, to_name, ai_summary, recording_url")
+    .select("id, user_id, direction, status, started_at, ended_at, duration_seconds, save_consent, save_consent_at, save_consent_channel, from_number, to_number, from_name, to_name, ai_summary, recording_url")
     .in("user_id", ids)
     .order("started_at", { ascending: false })
     .limit(limit);
