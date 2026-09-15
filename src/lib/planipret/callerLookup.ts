@@ -53,13 +53,11 @@ export async function lookupCaller(phone: string | null | undefined): Promise<st
 
 /**
  * Hook: returns a { [phone]: name } map that fills in progressively.
- * Retries unresolved numbers in the background every `retryMs` (default 30s).
+ * Each newly displayed number is resolved once; there is no background polling.
  */
 export function useCallerNames(
   phones: (string | null | undefined)[],
-  opts?: { retryMs?: number },
 ): Record<string, string> {
-  const retryMs = opts?.retryMs ?? 30_000;
   const key = phones.filter(Boolean).join("|");
   const [names, setNames] = useState<Record<string, string>>(() => {
     const seed: Record<string, string> = {};
@@ -86,16 +84,9 @@ export function useCallerNames(
 
     uniq.forEach(tryLookup);
 
-    // Periodic background retry for still-unresolved numbers. Negatives expire
-    // after 60s, so the retry can actually pick up new Maestro/Microsoft data.
-    const interval = window.setInterval(() => {
-      if (!aliveRef.current) return;
-      uniq.forEach((p) => { if (!cache.has(p)) tryLookup(p); });
-    }, retryMs);
-
-    return () => { aliveRef.current = false; window.clearInterval(interval); };
+    return () => { aliveRef.current = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, retryMs]);
+  }, [key]);
 
   return names;
 }

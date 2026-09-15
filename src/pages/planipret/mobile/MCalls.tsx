@@ -351,33 +351,24 @@ export default function MCalls() {
     void loadRecordings(true);
   }, [userId, loadRecordings]);
 
-  // While the Recordings tab is open, refresh in the background with adaptive
-  // backoff: poll fast (5s → 10s → 20s → 40s, cap 60s) as long as some items
-  // are still missing audio or transcript, then relax to 60s once everything
-  // is settled.
+  // Recording/transcript updates arrive through Realtime. Avoid periodic API
+  // polling, which previously added traffic while SIP was trying to register.
   useEffect(() => {
-    // Only poll when recordings tab is open AND some items are still pending.
-    // Start at 30s (not 5s) to avoid constant refreshes.
-    if (tab !== "recordings" || !userId) return;
-    const allSettled = recordings.length > 0 && recordings.every((r: any) =>
-      (r.recording_url || r.has_recording) && (r.transcript || r.ai_summary)
-    );
-    if (allSettled) return; // nothing pending — no polling needed
-    let cancelled = false;
-    let timer: number | null = null;
-    let delay = 30_000; // start at 30s
-    const tick = async () => {
-      await loadRecordings(true);
-      if (cancelled) return;
-      const pending = recordings.some((r: any) =>
-        !r.recording_url || !r.has_recording || (!r.transcript && !r.ai_summary)
-      );
-      delay = pending ? Math.min(delay * 2, 120_000) : 120_000; // max 2min
-      timer = window.setTimeout(tick, delay);
-    };
-    timer = window.setTimeout(tick, delay);
-    return () => { cancelled = true; if (timer) window.clearTimeout(timer); };
-  }, [tab, userId, loadRecordings, recordings]);
+    if (!userId) return;
+    const ids = [...new Set([userId, profileAuthId].filter(Boolean))];
+    const channels = ids.map((id) => supabase
+      .channel(`mcalls-recordings:${id}`)
+      .on("postgres_changes", {
+        event: "UPDATE",
+        schema: "public",
+        table: "planipret_phone_calls",
+        filter: `user_id=eq.${id}`,
+      }, () => {
+        if (tab === "recordings") void loadRecordingsFromCache(true);
+      })
+      .subscribe());
+    return () => { channels.forEach((channel) => { void supabase.removeChannel(channel); }); };
+  }, [tab, userId, profileAuthId, loadRecordingsFromCache]);
 
 
   // Reset pagination when tab or search changes
@@ -1652,7 +1643,6 @@ function ActiveCallsTab({ userId, openDialer }: { userId: string; openDialer: (n
   const [incoming, setIncoming] = useState<ActiveCall | null>(null);
   const [incomingMaestro, setIncomingMaestro] = useState<any>(null);
   const [maestroLoading, setMaestroLoading] = useState(false);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Maestro lookup on incoming
   useEffect(() => {
@@ -1683,9 +1673,15 @@ function ActiveCallsTab({ userId, openDialer }: { userId: string; openDialer: (n
   };
 
   useEffect(() => {
-    fetchActive();
-    pollRef.current = setInterval(fetchActive, 5000);
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+    void fetchActive();
+    const onVisible = () => { if (document.visibilityState === "visible") void fetchActive(); };
+    const onOnline = () => { void fetchActive(); };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("online", onOnline);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("online", onOnline);
+    };
   }, []);
 
   useEffect(() => {

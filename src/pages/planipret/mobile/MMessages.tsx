@@ -1149,16 +1149,22 @@ export function EmailsList({ profile, initialTo, initialName }: { profile: any; 
   };
 
   useEffect(() => {
-    // Guard: skip auto-sync when there is no active session to avoid 401.
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    let cancelled = false;
+    const onVis = () => { if (document.visibilityState === "visible") void load(); };
+    // Load on entry and foreground resume only. Continuous Graph polling added
+    // network pressure while the SIP stack was registering.
+    void supabase.auth.getSession().then(({ data: { session } }) => {
+      if (cancelled) return;
       if (!session) return;
-      load();
-      if (!ms365Connected(profile)) return;
-      const id = window.setInterval(() => { load(); }, 60_000);
-      const onVis = () => { if (document.visibilityState === "visible") load(); };
+      void load();
+      if (!ms365Connected(profile) || cancelled) return;
       document.addEventListener("visibilitychange", onVis);
-      // Note: cleanup not possible here due to async; intervals are short-lived anyway.
-    }); /* eslint-disable-next-line */
+    });
+    return () => {
+      cancelled = true;
+      document.removeEventListener("visibilitychange", onVis);
+    };
+    /* eslint-disable-next-line */
   }, [profile?.ms365_email, profile?.ms365_token_expiry]);
 
   // Auto-prefetch next page when the sentinel scrolls into view (200px margin).
@@ -2733,4 +2739,3 @@ function TeamsThreadView({ target, onClose }: {
     </div>
   );
 }
-

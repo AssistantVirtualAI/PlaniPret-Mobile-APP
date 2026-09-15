@@ -54,9 +54,10 @@ export default function MConnections() {
   }, []);
 
   useEffect(() => {
-    load();
-    const id = setInterval(() => load(), 120_000);
-    return () => clearInterval(id);
+    void load();
+    const onVisible = () => { if (document.visibilityState === "visible") void load(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
   }, [load]);
 
   async function reconnect(service: ConnectionService) {

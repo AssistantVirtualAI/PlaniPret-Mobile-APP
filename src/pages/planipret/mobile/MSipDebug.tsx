@@ -66,8 +66,7 @@ export default function MSipDebug() {
     return () => window.removeEventListener("sip-registration-state", onNativeState);
   }, []);
 
-  // Live PBX-side truth: the local stack can be idle while the extension is
-  // really registered (native engine / other client). Poll the server.
+  // Live PBX-side truth on page entry and foreground resume only.
   useEffect(() => {
     let alive = true;
     const run = async (force = false) => {
@@ -75,10 +74,9 @@ export default function MSipDebug() {
       if (alive && res) setPbx(res);
     };
     run(true);
-    const id = setInterval(() => run(false), 30_000);
     const onVis = () => { if (document.visibilityState === "visible") run(true); };
     document.addEventListener("visibilitychange", onVis);
-    return () => { alive = false; clearInterval(id); document.removeEventListener("visibilitychange", onVis); };
+    return () => { alive = false; document.removeEventListener("visibilitychange", onVis); };
   }, []);
 
   const cfg = ppSipProvider.getConfig();

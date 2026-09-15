@@ -16,7 +16,6 @@ import { Capacitor } from "@capacitor/core";
 import { supabase } from "@/integrations/supabase/client";
 import { ppEdgeInvoke, ppNormalizeDestination } from "@/lib/planipret/ppEdge";
 import { useAuth } from "@/hooks/useAuth";
-import { getPpSipReconnectConfig } from "@/lib/planipret/sip/ppSipReconnectConfig";
 import { PP_PENDING_ANSWER_TIMEOUT_MS, ppSipProvider, type PpSipConfig, type PpSipSnapshot } from "@/lib/planipret/sip/ppSipProvider";
 import { startSipStabilityMonitor } from "@/lib/planipret/sip/sipStabilityMonitor";
 import { networkMonitor, type NetSample } from "@/lib/planipret/network/networkMonitor";
@@ -678,7 +677,6 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     verifyVoipToken();
     const onVisibleVoip = () => { if (document.visibilityState === "visible") verifyVoipToken(); };
     document.addEventListener("visibilitychange", onVisibleVoip);
-    const voipRecheck = window.setInterval(verifyVoipToken, getPpSipReconnectConfig().voipTokenCheckMs);
 
     // PushKit is the only reliable iOS background wake: as soon as the VoIP push
     // creates the CallKit call, force the native keep-alive to re-REGISTER (the
@@ -758,7 +756,6 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       cleanupReregister?.();
       cleanupInvite?.();
       document.removeEventListener("visibilitychange", onVisibleVoip);
-      window.clearInterval(voipRecheck);
       cleanupVoipToken?.();
       cleanupVoipInvalid?.();
       cleanupVoipIncoming?.();
@@ -1042,17 +1039,11 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     // Foreground-only watchdog. Background ownership is transferred exactly
     // once by the real lifecycle events above; a periodic handoff restarted the
     // native service every 15s and caused competing NetSapiens AOR bindings.
-    let ownershipTick = 0;
     const heartbeat = window.setInterval(() => {
       if (typeof document !== "undefined" && document.visibilityState === "hidden") {
         return;
       }
       evaluate();
-      // Toutes les 2 min : le serveur a-t-il toujours l'app comme propriétaire
-      // de la ligne ? Sinon, reprise automatique (backoff interne au module).
-      if (++ownershipTick % 8 === 0) {
-        void ensureForegroundOwnership().catch(() => undefined);
-      }
     }, 15_000);
     // Initial evaluation — don't wait for the first SIP event.
     evaluate();
@@ -1166,8 +1157,8 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     return (nativeStatus as any)?.ok !== false && (st === "registered" || st === "protected");
   }, [nativeStatus, snap.status]);
 
-  // Live PBX truth: poll the read-only backend check so the status pill reflects
-  // the real NetSapiens registration instead of the local stack's idle state.
+  // Live PBX truth on demand: initial load, foreground resume, network recovery
+  // or explicit diagnostic request. Never poll the PBX continuously.
   useEffect(() => {
     if (!enabled) return;
     let alive = true;
@@ -1182,8 +1173,7 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
         (iosNative && !!check.registration?.mobile_registered);
       const own = ownAor && (!iosNative || check.registration?.media_capable !== false);
       setPbxRegistration(own ? "own" : aors.length > 0 ? "other" : "none");
-      // Self-heal: a logged-in broker must always keep `<ext>M` registered on
-      // the PBX. If NetSapiens says otherwise, force a re-REGISTER (max 1/min).
+      // Self-heal only after an explicit check says this platform lost its AOR.
       if (!own && Date.now() - lastHealAt > 60_000) {
         lastHealAt = Date.now();
         if (iosNative) {
@@ -1195,13 +1185,17 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       }
     };
     void run();
-    const id = setInterval(run, 30_000);
     const onVis = () => { if (document.visibilityState === "visible") void run(); };
+    const onOnline = () => { void run(); };
+    const onDemand = () => { void run(); };
     document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("online", onOnline);
+    window.addEventListener("pp:sip-check", onDemand);
     return () => {
       alive = false;
-      clearInterval(id);
       document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("pp:sip-check", onDemand);
     };
   }, [enabled, clientType]);
 

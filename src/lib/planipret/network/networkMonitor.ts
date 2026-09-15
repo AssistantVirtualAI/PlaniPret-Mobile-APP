@@ -94,11 +94,10 @@ class NetworkMonitorImpl {
     }
   }
 
-  /** Start the 5 s sampler (call only while an active call is on-screen). */
+  /** Sample once when a call starts; connectivity changes come from Capacitor. */
   startSampling() {
     if (this.timer) return;
-    this.timer = setInterval(() => this.checkSignalQuality(), 5000);
-    this.checkSignalQuality();
+    void this.checkSignalQuality();
   }
   stopSampling() {
     if (this.timer) { clearInterval(this.timer); this.timer = null; }

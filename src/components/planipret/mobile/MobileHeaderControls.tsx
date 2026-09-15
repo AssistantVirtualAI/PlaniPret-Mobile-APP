@@ -27,23 +27,37 @@ export default function MobileHeaderControls({ profile, reloadProfile }: { profi
   }, [theme]);
 
   useEffect(() => {
+    const userId = profile?.user_id;
+    if (!userId) return;
     let cancelled = false;
     const load = async () => {
       try {
-        const { data: u } = await supabase.auth.getUser();
-        if (!u?.user) return;
         const { count } = await supabase
           .from("planipret_ava_notifications" as any)
           .select("id", { count: "exact", head: true })
-          .eq("user_id", u.user.id)
+          .eq("user_id", userId)
           .is("read_at", null);
         if (!cancelled) setUnread(count ?? 0);
       } catch { /* noop */ }
     };
-    load();
-    const timer = setInterval(load, 30000);
-    return () => { cancelled = true; clearInterval(timer); };
-  }, []);
+    void load();
+    const channel = supabase
+      .channel(`mobile-header-notifications:${userId}`)
+      .on("postgres_changes", {
+        event: "*",
+        schema: "public",
+        table: "planipret_ava_notifications",
+        filter: `user_id=eq.${userId}`,
+      }, () => { void load(); })
+      .subscribe();
+    const onVisible = () => { if (document.visibilityState === "visible") void load(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      cancelled = true;
+      document.removeEventListener("visibilitychange", onVisible);
+      void supabase.removeChannel(channel);
+    };
+  }, [profile?.user_id]);
 
   const initials = (profile?.full_name || profile?.email || "?")
     .split(/\s+/).map((s: string) => s[0]).filter(Boolean).slice(0, 2).join("").toUpperCase();

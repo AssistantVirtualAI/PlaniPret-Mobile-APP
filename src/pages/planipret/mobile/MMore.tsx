@@ -110,10 +110,15 @@ export default function MMore() {
       if (!stop && res) setPbx(res);
     };
     run(true);
-    const id = setInterval(() => run(true), 30000);
     const onVis = () => { if (document.visibilityState === "visible") run(true); };
+    const onOnline = () => { void run(true); };
     document.addEventListener("visibilitychange", onVis);
-    return () => { stop = true; clearInterval(id); document.removeEventListener("visibilitychange", onVis); };
+    window.addEventListener("online", onOnline);
+    return () => {
+      stop = true;
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("online", onOnline);
+    };
   }, []);
   const pbxRegistered = Boolean(pbx?.registration?.mobile_registered || (pbx?.registration?.count ?? 0) > 0);
   const sipSnap = pbxRegistered && rawSipSnap.status !== "registered"
