@@ -15,7 +15,6 @@ import {
   addresses,
   clients,
   commissions,
-  commissionReports,
   contracts,
   financialInstitutions,
   tasks,
@@ -25,13 +24,12 @@ import {
 describe("Maestro official API mobile contract", () => {
   beforeEach(() => invokeMock.mockClear());
 
-  it("expose exactement les 25 opérations documentées", () => {
-    expect(MAESTRO_OFFICIAL_ACTIONS).toHaveLength(25);
-    expect(new Set(MAESTRO_OFFICIAL_ACTIONS).size).toBe(25);
+  it("expose exactement les 20 opérations documentées", () => {
+    expect(MAESTRO_OFFICIAL_ACTIONS).toHaveLength(20);
+    expect(new Set(MAESTRO_OFFICIAL_ACTIONS).size).toBe(20);
   });
 
   it("route chaque opération via pp-maestro-scribe sans préfixe client", async () => {
-    await clients.list();
     await clients.get(1);
     await clients.create({ first_name: "Test" });
     await clients.update(1, { first_name: "Test" });
@@ -42,22 +40,18 @@ describe("Maestro official API mobile contract", () => {
     await telephones.update(1, 2, {});
     await telephones.remove(1, 2);
     await contracts.list();
-    await contracts.get(1);
     await contracts.create({});
     await contracts.update(1, {});
     await contracts.remove(1);
     await financialInstitutions.list();
-    await financialInstitutions.get(1);
     await commissions.deposits();
     await commissions.agents();
-    await commissionReports.list();
-    await commissionReports.get(1);
     await tasks.list();
     await tasks.create({});
     await tasks.update(1, {});
     await tasks.remove(1);
 
-    expect(invokeMock).toHaveBeenCalledTimes(25);
+    expect(invokeMock).toHaveBeenCalledTimes(20);
     const actions = invokeMock.mock.calls.map(([, req]) => req.body.action);
     expect(actions).toEqual([...MAESTRO_OFFICIAL_ACTIONS]);
     for (const [, req] of invokeMock.mock.calls) {

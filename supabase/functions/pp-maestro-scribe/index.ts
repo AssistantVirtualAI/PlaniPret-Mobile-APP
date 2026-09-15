@@ -1,5 +1,5 @@
 // Passerelle vers l'API publique Planiprêt (`/api/main`) : clients, adresses,
-// téléphones, contrats, institutions financières, rapports de commissions et
+// téléphones, contrats, institutions financières, commissions et
 // tâches. Aucun envoi de SMS n'est possible ici.
 import { adminClient, corsHeaders, getMaestroConfig, json } from "../_shared/maestro.ts";
 import { guardPlanipret } from "../_shared/planipret-guard.ts";
@@ -9,12 +9,12 @@ import { getUserMaestroAccessToken } from "../_shared/maestro-oauth.ts";
 
 type Action =
   | "diag"
-  | "clients.list" | "clients.get" | "clients.create" | "clients.update"
+  | "clients.get" | "clients.create" | "clients.update"
   | "addresses.create" | "addresses.update" | "addresses.delete"
   | "telephones.create" | "telephones.update" | "telephones.delete"
-  | "contracts.list" | "contracts.get" | "contracts.create" | "contracts.update" | "contracts.delete"
-  | "institutions.list" | "institutions.get"
-  | "commissions.deposits" | "commissions.agents" | "commission-reports.list" | "commission-reports.get"
+  | "contracts.list" | "contracts.create" | "contracts.update" | "contracts.delete"
+  | "institutions.list"
+  | "commissions.deposits" | "commissions.agents"
   | "tasks.list" | "tasks.create" | "tasks.update" | "tasks.delete";
 
 Deno.serve(async (req) => {
@@ -54,7 +54,6 @@ Deno.serve(async (req) => {
         return json({ ok: true, root, token_source: tokenSource, reachable: probe.ok, status: probe.status, endpoint: probe.endpoint, error: probe.error });
       }
 
-      case "clients.list": return json(await api.listClients(cfg, query, o));
       case "clients.get": return needId() ? missing("id") : json(await api.getClient(cfg, id, o));
       case "clients.create": return json(await api.createClient_(cfg, payload, o));
       case "clients.update": return needId() ? missing("id") : json(await api.updateClient(cfg, id, payload, o));
@@ -68,18 +67,14 @@ Deno.serve(async (req) => {
       case "telephones.delete": return needId() || needSub() ? missing("id") : json(await api.deleteTelephone(cfg, id, subId, o));
 
       case "contracts.list": return json(await api.listContracts(cfg, query, o));
-      case "contracts.get": return needId() ? missing("id") : json(await api.getContract(cfg, id, o));
       case "contracts.create": return json(await api.createContract(cfg, payload, o));
       case "contracts.update": return needId() ? missing("id") : json(await api.updateContract(cfg, id, payload, o));
       case "contracts.delete": return needId() ? missing("id") : json(await api.deleteContract(cfg, id, o));
 
       case "institutions.list": return json(await api.listFinancialInstitutions(cfg, o));
-      case "institutions.get": return needId() ? missing("id") : json(await api.getFinancialInstitution(cfg, id, o));
 
       case "commissions.deposits": return json(await api.commissionDeposits(cfg, query, o));
       case "commissions.agents": return json(await api.commissionAgents(cfg, o));
-      case "commission-reports.list": return json(await api.listCommissionReports(cfg, query, o));
-      case "commission-reports.get": return needId() ? missing("id") : json(await api.getCommissionReport(cfg, id, o));
 
       case "tasks.list": return json(await api.listTasks(cfg, query, o));
       case "tasks.create": return json(await api.createTask(cfg, payload, o));

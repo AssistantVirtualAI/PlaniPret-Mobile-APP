@@ -9,12 +9,12 @@ const fail = (message) => {
 };
 
 const actions = [
-  "clients.list", "clients.get", "clients.create", "clients.update",
+  "clients.get", "clients.create", "clients.update",
   "addresses.create", "addresses.update", "addresses.delete",
   "telephones.create", "telephones.update", "telephones.delete",
-  "contracts.list", "contracts.get", "contracts.create", "contracts.update", "contracts.delete",
-  "institutions.list", "institutions.get",
-  "commissions.deposits", "commissions.agents", "commission-reports.list", "commission-reports.get",
+  "contracts.list", "contracts.create", "contracts.update", "contracts.delete",
+  "institutions.list",
+  "commissions.deposits", "commissions.agents",
   "tasks.list", "tasks.create", "tasks.update", "tasks.delete",
 ];
 
@@ -41,7 +41,6 @@ const routeFragments = [
   '"/contracts"', '`/contracts/${id(contractId)}`',
   '"/financial-institutions"',
   '"/commissions/reports/deposits"', '"/commissions/reports/agents"',
-  '"/commission-reports"', '`/commission-reports/${id(reportId)}`',
   '"/tasks"', '`/tasks/${id(taskId)}`',
 ];
 for (const fragment of routeFragments) {
@@ -62,4 +61,8 @@ if (!read("supabase/functions/maestro-client-create/index.ts").includes("createC
   fail("la création client ne passe pas par POST /api/main/clients");
 }
 
-if (!process.exitCode) console.log(`✅ Maestro API: ${actions.length}/25 opérations mobiles et Edge vérifiées, hôte, préfixe et OAuth courtier verrouillés`);
+if (/clients\.list|contracts\.get|institutions\.get|commission-reports\.(list|get)/.test(mobile + edge)) {
+  fail("une opération non documentée /api/main est encore exposée");
+}
+
+if (!process.exitCode) console.log(`✅ Maestro API: ${actions.length}/20 opérations documentées vérifiées, hôte, préfixe et OAuth courtier verrouillés`);

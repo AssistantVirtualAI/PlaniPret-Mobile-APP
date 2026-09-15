@@ -652,22 +652,12 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
 
   // ===== MAESTRO — endpoints mobiles (/users/{id}/clients|brokers) =====
   async list_my_clients(ctx, p) {
-    const main = await callPlanipretFunction(ctx, "pp-maestro-scribe", {
-      action: "clients.list",
-      query: { search: p?.search, per_page: p?.limit ?? 25 },
-    });
-    const md: any = main.data ?? {};
-    const rows = Array.isArray(md?.data) ? md.data : (Array.isArray(md?.result?.data) ? md.result.data : null);
-    if (main.httpOk && md?.ok === true && rows) {
-      return { success: true, source: "api_main", clients: rows, count: rows.length };
-    }
-
-    // Compatibilité lecture seule avec l'annuaire Telecom quand le déploiement
-    // /api/main ne publie pas encore la collection clients.
+    // GET /api/main/clients is not documented and returns 405. Client listing
+    // therefore uses the live read-only broker directory endpoint.
     const r = await maestroActions(ctx, "list_clients", { search: p?.search, limit: p?.limit ?? 25 });
     return r?.success
-      ? { success: true, source: "telecom_readonly_fallback", clients: r.clients ?? [], count: (r.clients ?? []).length }
-      : { success: false, error: r?.error ?? md?.error ?? "maestro_list_clients_failed" };
+      ? { success: true, source: "broker_directory", clients: r.clients ?? [], count: (r.clients ?? []).length }
+      : { success: false, error: r?.error ?? "maestro_list_clients_failed" };
   },
 
   async get_maestro_client_profile(ctx, p) {
