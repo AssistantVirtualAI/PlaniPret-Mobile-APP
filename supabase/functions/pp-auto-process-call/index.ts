@@ -13,6 +13,7 @@
 
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { authorizeCallAccess, requireApprovedCallConsent } from "../_shared/planipret-call-access.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -34,18 +35,18 @@ Deno.serve(async (req) => {
   const admin = createClient(SUPABASE_URL, SERVICE_ROLE);
   const { data: row, error } = await admin
     .from("planipret_phone_calls")
-    .select("id, recording_url, transcript, transcript_raw, analyzed_at, ai_summary, ai_coaching, coaching_score, analysis_in_progress, analysis_locked_at, ns_call_id, ns_callid, ns_cdr_id, ns_orig_callid, has_recording, duration_seconds, save_consent, deleted_at")
+    .select("id, user_id, recording_url, transcript, transcript_raw, analyzed_at, ai_summary, ai_coaching, coaching_score, analysis_in_progress, analysis_locked_at, ns_call_id, ns_callid, ns_cdr_id, ns_orig_callid, has_recording, duration_seconds, save_consent, deleted_at")
     .eq("id", callId)
     .maybeSingle();
   if (error) return json({ error: "load failed", details: error.message }, 500);
   if (!row) return json({ error: "call not found" }, 404);
+  const access = await authorizeCallAccess(req, admin, row);
+  if (!access.ok) return json({ error: access.error }, access.status);
 
   // Consentement obligatoire : aucun traitement (transcription, IA, Maestro)
   // tant que le courtier n'a pas accepté de sauvegarder l'appel.
-  if ((row as any).deleted_at) return json({ ok: true, skipped: "call_deleted" });
-  if (String((row as any).save_consent ?? "pending") !== "approved") {
-    return json({ ok: true, skipped: "consent_pending" });
-  }
+  const consent = requireApprovedCallConsent(row);
+  if (!consent.ok) return json({ ok: true, skipped: consent.error });
 
 
   // Idempotency short-circuits — cheap and avoids any downstream cost.

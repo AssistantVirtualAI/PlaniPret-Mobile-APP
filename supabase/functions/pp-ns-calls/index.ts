@@ -446,13 +446,16 @@ Deno.serve(async (req) => {
           try {
             const { data: row } = await guard.supabase
               .from("planipret_phone_calls")
-              .select("id, maestro_call_id")
+              .select("id, maestro_call_id, save_consent, deleted_at")
               .or(`id.eq.${callId},ns_callid.eq.${callId},ns_call_id.eq.${callId}`)
               .maybeSingle();
             const maestroId = (row as any)?.maestro_call_id;
             const localId = (row as any)?.id;
             const endedReason = nsAction === "reject" ? "rejected" : "completed";
-            if (maestroId) {
+            const canSync = (row as any)?.save_consent === "approved" && !(row as any)?.deleted_at;
+            if (!canSync) {
+              console.info(`[pp-ns-calls] Maestro end deferred pending consent call=${localId ?? callId}`);
+            } else if (maestroId) {
               maestroTelecomMirror(
                 guard.supabase,
                 `/users/${encodeURIComponent(ctx.maestroBrokerId)}/calls/${encodeURIComponent(maestroId)}`,

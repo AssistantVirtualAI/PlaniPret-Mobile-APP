@@ -99,6 +99,16 @@ const ANDROID_SERVICE = `
             android:name=".PpSipKeepAliveService"
             android:foregroundServiceType="phoneCall|microphone"
             android:exported="false" />
+        <service
+            android:name=".PpFirebaseMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+        <service
+            android:name="com.capacitorjs.plugins.pushnotifications.MessagingService"
+            tools:node="remove" />
         <receiver
             android:name=".PpIncomingActionReceiver"
             android:exported="false" />
@@ -184,6 +194,31 @@ public class PpSipKeepAlivePlugin extends Plugin {
   @PluginMethod public void getSipServiceStatus(PluginCall call) { call.resolve(readStatus().put("ok", true)); }
   @PluginMethod public void triggerReregister(PluginCall call) { PpSipKeepAliveService.requestReregister(getContext(), "manual"); call.resolve(readStatus().put("ok", true)); }
   @PluginMethod public void acknowledgeIncoming(PluginCall call) { PpSipKeepAliveService.clearIncomingNotification(getContext()); call.resolve(new JSObject().put("ok", true)); }
+  @PluginMethod public void wakeForIncomingCall(PluginCall call) {
+    PpSipKeepAliveService.start(getContext());
+    PpSipKeepAliveService.requestReregister(getContext(), call.getString("reason", "incoming_call"));
+    call.resolve(readStatus().put("ok", true));
+  }
+  @PluginMethod public void setCallActive(PluginCall call) {
+    boolean active = Boolean.TRUE.equals(call.getBoolean("active", false));
+    getContext().getSharedPreferences(PpSipKeepAliveService.PREFS_NAME, Context.MODE_PRIVATE)
+      .edit().putBoolean("call_active", active).apply();
+    if (active) PpSipKeepAliveService.stop(getContext());
+    call.resolve(readStatus().put("ok", true));
+  }
+  @PluginMethod public void declareJsOwnsAor(PluginCall call) {
+    boolean owns = Boolean.TRUE.equals(call.getBoolean("owns", false));
+    getContext().getSharedPreferences(PpSipKeepAliveService.PREFS_NAME, Context.MODE_PRIVATE)
+      .edit().putBoolean("js_owns_aor", owns).apply();
+    if (owns) PpSipKeepAliveService.stop(getContext());
+    else PpSipKeepAliveService.start(getContext());
+    call.resolve(readStatus().put("ok", true));
+  }
+  @PluginMethod public void declareNativeEngineOwnsAor(PluginCall call) {
+    getContext().getSharedPreferences(PpSipKeepAliveService.PREFS_NAME, Context.MODE_PRIVATE)
+      .edit().putBoolean("native_engine_owns_aor", Boolean.TRUE.equals(call.getBoolean("owns", false))).apply();
+    call.resolve(readStatus().put("ok", true));
+  }
   /** In-call audio routing. A call must start on the earpiece; the speaker is opt-in. */
   @PluginMethod public void setAudioRoute(PluginCall call) {
     String route = call.getString("route", "earpiece");
@@ -314,6 +349,52 @@ public class PpIncomingActionReceiver extends BroadcastReceiver {
 }
 `;
 
+const ANDROID_FCM_SERVICE_JAVA = (pkg) => `package ${pkg};
+
+import androidx.annotation.NonNull;
+import com.capacitorjs.plugins.pushnotifications.PushNotificationsPlugin;
+import com.google.firebase.messaging.FirebaseMessagingService;
+import com.google.firebase.messaging.RemoteMessage;
+
+/** Relays FCM to Capacitor and wakes SIP only for incoming calls. */
+public class PpFirebaseMessagingService extends FirebaseMessagingService {
+  @Override public void onMessageReceived(@NonNull RemoteMessage message) {
+    PushNotificationsPlugin.sendRemoteMessage(message);
+    String type = message.getData().get("type");
+    if ("incoming_call".equals(type) || "call_incoming".equals(type)) {
+      PpSipKeepAliveService.start(getApplicationContext());
+      PpSipKeepAliveService.requestReregister(getApplicationContext(), "fcm_incoming_call");
+    }
+  }
+
+  @Override public void onNewToken(@NonNull String token) {
+    PushNotificationsPlugin.onNewToken(token);
+  }
+}
+`;
+
+const ANDROID_BOOT_RECEIVER_JAVA = (pkg) => `package ${pkg};
+
+import android.content.BroadcastReceiver;
+import android.content.Context;
+import android.content.Intent;
+
+public class PpBootReceiver extends BroadcastReceiver {
+  @Override public void onReceive(Context context, Intent intent) {
+    String action = intent.getAction();
+    if (Intent.ACTION_BOOT_COMPLETED.equals(action) || "android.intent.action.QUICKBOOT_POWERON".equals(action)) {
+      android.content.SharedPreferences p = context.getSharedPreferences(PpSipKeepAliveService.PREFS_NAME, Context.MODE_PRIVATE);
+      String host = p.getString("host", "");
+      String login = p.getString("login", "");
+      String password = p.getString("password", "");
+      if (host != null && !host.isEmpty() && login != null && !login.isEmpty() && password != null && !password.isEmpty()) {
+        PpSipKeepAliveService.start(context);
+      }
+    }
+  }
+}
+`;
+
 const ANDROID_SERVICE_JAVA = (pkg) => `package ${pkg};
 
 // Planiprêt-only background SIP keep-alive over WSS (NetSapiens).
@@ -336,6 +417,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.*;
 import java.util.*;
 import java.util.concurrent.*;
+import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 
 public class PpSipKeepAliveService extends Service {
@@ -424,6 +506,10 @@ public class PpSipKeepAliveService extends Service {
       executor.execute(() -> { try { sendDecline(requestedCallId); } catch (Exception ignored) {} });
       return START_STICKY;
     }
+    if (wsSocket != null && wsSocket.isConnected() && !wsSocket.isClosed()
+        && ("registered".equals(lastStatus) || "connecting".equals(lastStatus))) {
+      return START_STICKY;
+    }
     emitStatus("connecting", "native_register_start");
     executor.execute(this::connectAndRegister);
     if (heartbeat != null) heartbeat.cancel(false);
@@ -437,7 +523,7 @@ public class PpSipKeepAliveService extends Service {
   @Override public void onDestroy() { if (heartbeat != null) heartbeat.cancel(true); unregisterNetworkWatchdog(); closeWs(); try { if (wakeLock != null && wakeLock.isHeld()) wakeLock.release(); } catch (Exception ignored) {} try { if (wifiLock != null && wifiLock.isHeld()) wifiLock.release(); } catch (Exception ignored) {} executor.shutdownNow(); emitStatus("disconnected", "service_destroyed"); super.onDestroy(); }
   @Override public IBinder onBind(Intent intent) { return null; }
 
-  private void registerNetworkWatchdog() { try { cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE); NetworkRequest req = new NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(); networkCallback = new ConnectivityManager.NetworkCallback() { @Override public void onAvailable(Network n) { emitStatus("registered", "network_available"); scheduleReconnect("network_available"); } @Override public void onLost(Network n) { emitStatus("reconnecting", "network_lost"); } }; cm.registerNetworkCallback(req, networkCallback); } catch(Exception ignored) {} }
+  private void registerNetworkWatchdog() { try { cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE); NetworkRequest req = new NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(); networkCallback = new ConnectivityManager.NetworkCallback() { @Override public void onAvailable(Network n) { emitStatus("reconnecting", "network_available"); scheduleReconnect("network_available"); } @Override public void onLost(Network n) { emitStatus("reconnecting", "network_lost"); } }; cm.registerNetworkCallback(req, networkCallback); } catch(Exception ignored) {} }
   private void unregisterNetworkWatchdog() { try { if (cm != null && networkCallback != null) cm.unregisterNetworkCallback(networkCallback); } catch(Exception ignored) {} networkCallback = null; }
 
   private void connectAndRegister() { synchronized (this) { try {
@@ -445,7 +531,12 @@ public class PpSipKeepAliveService extends Service {
     SharedPreferences p = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
     String host = p.getString("host", ""); int port = p.getInt("port", 443); String path = p.getString("path", "/");
     if (host == null || host.length() == 0) { emitStatus("error", "missing_host"); return; }
-    Socket raw = port == 443 ? SSLSocketFactory.getDefault().createSocket(host, port) : new Socket(host, port);
+    // WSS is TLS regardless of the TCP port. NetSapiens commonly exposes WSS
+    // on 9002; opening a plain Socket there makes the HTTP Upgrade fail before
+    // SIP REGISTER can ever be sent.
+    SSLSocket raw = (SSLSocket) SSLSocketFactory.getDefault().createSocket(host, port);
+    raw.setUseClientMode(true);
+    raw.startHandshake();
     raw.setKeepAlive(true);
     raw.setSoTimeout(90000);
     wsSocket = raw; wsIn = raw.getInputStream(); wsOut = raw.getOutputStream();
@@ -2522,12 +2613,33 @@ function patchIosAppDelegate(iosApp) {
   if (/supportedInterfaceOrientationsFor/.test(swift)) {
     swift = swift.replace(
       /(func application\(\s*_ application: UIApplication,\s*supportedInterfaceOrientationsFor[^)]*\)\s*->\s*UIInterfaceOrientationMask\s*\{)[\s\S]*?\n\s*\}/,
-      "$1\n        return .portrait\n    }",
+      "$1\n        return UIDevice.current.userInterfaceIdiom == .pad ? .all : .portrait\n    }",
     );
   } else {
-    const insert = `\n    func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {\n        return .portrait\n    }\n`;
+    const insert = `\n    func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {\n        return UIDevice.current.userInterfaceIdiom == .pad ? .all : .portrait\n    }\n`;
     const lastBrace = swift.lastIndexOf("}");
     if (lastBrace > -1) swift = `${swift.slice(0, lastBrace)}${insert}${swift.slice(lastBrace)}`;
+  }
+  if (!swift.includes("capacitorDidRegisterForRemoteNotifications")) {
+    const callbacks = `
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        NotificationCenter.default.post(name: .capacitorDidRegisterForRemoteNotifications, object: deviceToken)
+        NotificationCenter.default.post(
+            name: Notification.Name("PpApnsDeviceToken"), object: nil,
+            userInfo: ["token": deviceToken.map { String(format: "%02x", $0) }.joined()]
+        )
+    }
+
+    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        NotificationCenter.default.post(name: .capacitorDidFailToRegisterForRemoteNotifications, object: error)
+        NotificationCenter.default.post(
+            name: Notification.Name("PpApnsRegistrationFailed"), object: nil,
+            userInfo: ["error": error.localizedDescription]
+        )
+    }
+`;
+    const lastBrace = swift.lastIndexOf("}");
+    if (lastBrace > -1) swift = `${swift.slice(0, lastBrace)}${callbacks}${swift.slice(lastBrace)}`;
   }
   if (swift !== before) {
     writeIfChanged(file, swift);
@@ -2572,7 +2684,9 @@ class AppBridgeViewController: CAPBridgeViewController {
         bridge?.registerPluginInstance(Self.authPlugin)
     }
 
-    override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .portrait }
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        UIDevice.current.userInterfaceIdiom == .pad ? .all : .portrait
+    }
 }`;
   writeIfChanged(file, source);
   ensureXcodeSourceFiles(path.join(appDir, "ios", "App"), ["App/AppBridgeViewController.swift"]);
@@ -2599,6 +2713,7 @@ class AppBridgeViewController: CAPBridgeViewController {
 function ensureIosSceneDelegate(iosApp) {
   const file = path.join(iosApp, "SceneDelegate.swift");
   const source = `import UIKit
+import Capacitor
 
 class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
@@ -2611,6 +2726,38 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         window.rootViewController = rootViewController
         self.window = window
         window.makeKeyAndVisible()
+
+        if let context = connectionOptions.urlContexts.first {
+            _ = ApplicationDelegateProxy.shared.application(
+                UIApplication.shared,
+                open: context.url,
+                options: [.sourceApplication: context.options.sourceApplication as Any]
+            )
+        }
+        for activity in connectionOptions.userActivities {
+            _ = ApplicationDelegateProxy.shared.application(
+                UIApplication.shared,
+                continue: activity,
+                restorationHandler: { _ in }
+            )
+        }
+    }
+
+    func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
+        guard let context = URLContexts.first else { return }
+        _ = ApplicationDelegateProxy.shared.application(
+            UIApplication.shared,
+            open: context.url,
+            options: [.sourceApplication: context.options.sourceApplication as Any]
+        )
+    }
+
+    func scene(_ scene: UIScene, continue userActivity: NSUserActivity) {
+        _ = ApplicationDelegateProxy.shared.application(
+            UIApplication.shared,
+            continue: userActivity,
+            restorationHandler: { _ in }
+        )
     }
 }
 `;
@@ -2720,10 +2867,19 @@ function patchAndroidManifest() {
   }
 
   let xml = fs.readFileSync(file, "utf8");
+  if (!xml.includes('xmlns:tools="http://schemas.android.com/tools"')) {
+    xml = xml.replace(/<manifest([^>]*)>/, '<manifest$1 xmlns:tools="http://schemas.android.com/tools">');
+  }
   for (const permission of ANDROID_PERMISSIONS) {
     if (!xml.includes(permission)) {
       xml = xml.replace(/<manifest([^>]*)>/, `<manifest$1>\n    <uses-permission android:name="${permission}" />`);
     }
+  }
+  for (const permission of [
+    "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
+    "android.permission.SCHEDULE_EXACT_ALARM",
+  ]) {
+    xml = xml.replace(new RegExp(`\\s*<uses-permission android:name="${permission.replace(/\./g, "\\.")}" \\/>`, "g"), "");
   }
 
   const hasPlanipret = xml.includes('android:scheme="planipret"');
@@ -2742,12 +2898,30 @@ function patchAndroidManifest() {
   } else if (!xml.includes(".PpIncomingActionReceiver")) {
     xml = xml.replace(/\n\s*<\/application>/, `        <receiver\n            android:name=".PpIncomingActionReceiver"\n            android:exported="false" />\n    </application>`);
   }
+  if (!xml.includes(".PpFirebaseMessagingService")) {
+    xml = xml.replace(/\n\s*<\/application>/, `        <service\n            android:name=".PpFirebaseMessagingService"\n            android:exported="false">\n            <intent-filter>\n                <action android:name="com.google.firebase.MESSAGING_EVENT" />\n            </intent-filter>\n        </service>\n        <service\n            android:name="com.capacitorjs.plugins.pushnotifications.MessagingService"\n            tools:node="remove" />\n    </application>`);
+  } else if (!xml.includes('android:name="com.capacitorjs.plugins.pushnotifications.MessagingService"')) {
+    xml = xml.replace(/\n\s*<\/application>/, `        <service\n            android:name="com.capacitorjs.plugins.pushnotifications.MessagingService"\n            tools:node="remove" />\n    </application>`);
+  }
   // Ensure MainActivity can be shown over the lockscreen for full-screen intents.
   if (!xml.includes('android:showWhenLocked')) {
     xml = xml.replace(/<activity([^>]*android:name="\.MainActivity"[^>]*)>/, `<activity$1\n            android:showWhenLocked="true"\n            android:turnScreenOn="true">`);
   }
   writeIfChanged(file, xml);
   console.log("[native-config] Android deep links + SIP keep-alive service applied.");
+}
+
+function patchAndroidAppGradle() {
+  const file = path.join(appDir, "android", "app", "build.gradle");
+  if (!fs.existsSync(file)) return;
+  let gradle = fs.readFileSync(file, "utf8");
+  if (!gradle.includes("com.google.firebase:firebase-messaging")) {
+    gradle = gradle.replace(
+      /dependencies\s*\{\s*\n/,
+      (match) => `${match}    implementation "com.google.firebase:firebase-messaging:23.3.1"\n`,
+    );
+    writeIfChanged(file, gradle);
+  }
 }
 
 /**
@@ -2866,6 +3040,8 @@ function patchAndroidNativeFiles() {
   writeIfChanged(path.join(pkgDir, "PpSipKeepAlivePlugin.java"), ANDROID_PLUGIN_JAVA(pkg));
   writeIfChanged(path.join(pkgDir, "PpSipKeepAliveService.java"), ANDROID_SERVICE_JAVA(pkg));
   writeIfChanged(path.join(pkgDir, "PpIncomingActionReceiver.java"), ANDROID_RECEIVER_JAVA(pkg));
+  writeIfChanged(path.join(pkgDir, "PpFirebaseMessagingService.java"), ANDROID_FCM_SERVICE_JAVA(pkg));
+  writeIfChanged(path.join(pkgDir, "PpBootReceiver.java"), ANDROID_BOOT_RECEIVER_JAVA(pkg));
   for (const stale of ["PpSipKeepAlivePlugin.kt", "PpSipKeepAliveService.kt"]) {
     const staleFile = path.join(pkgDir, stale);
     if (fs.existsSync(staleFile)) fs.rmSync(staleFile);
@@ -2969,6 +3145,7 @@ patchCopiedWebBundles();
 patchIosInfoPlist();
 patchIosEntitlements();
 patchAndroidManifest();
+patchAndroidAppGradle();
 patchAndroidNativeFiles();
 patchAndroidSplashTheme();
 patchIosNativeFiles();

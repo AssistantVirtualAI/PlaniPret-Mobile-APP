@@ -78,6 +78,31 @@ public class PpSipKeepAlivePlugin extends Plugin {
   @PluginMethod public void getSipServiceStatus(PluginCall call) { call.resolve(readStatus().put("ok", true)); }
   @PluginMethod public void triggerReregister(PluginCall call) { PpSipKeepAliveService.requestReregister(getContext(), "manual"); call.resolve(readStatus().put("ok", true)); }
   @PluginMethod public void acknowledgeIncoming(PluginCall call) { PpSipKeepAliveService.clearIncomingNotification(getContext()); call.resolve(new JSObject().put("ok", true)); }
+  @PluginMethod public void wakeForIncomingCall(PluginCall call) {
+    PpSipKeepAliveService.start(getContext());
+    PpSipKeepAliveService.requestReregister(getContext(), call.getString("reason", "incoming_call"));
+    call.resolve(readStatus().put("ok", true));
+  }
+  @PluginMethod public void setCallActive(PluginCall call) {
+    boolean active = Boolean.TRUE.equals(call.getBoolean("active", false));
+    getContext().getSharedPreferences(PpSipKeepAliveService.PREFS_NAME, Context.MODE_PRIVATE)
+      .edit().putBoolean("call_active", active).apply();
+    if (active) PpSipKeepAliveService.stop(getContext());
+    call.resolve(readStatus().put("ok", true));
+  }
+  @PluginMethod public void declareJsOwnsAor(PluginCall call) {
+    boolean owns = Boolean.TRUE.equals(call.getBoolean("owns", false));
+    getContext().getSharedPreferences(PpSipKeepAliveService.PREFS_NAME, Context.MODE_PRIVATE)
+      .edit().putBoolean("js_owns_aor", owns).apply();
+    if (owns) PpSipKeepAliveService.stop(getContext());
+    else PpSipKeepAliveService.start(getContext());
+    call.resolve(readStatus().put("ok", true));
+  }
+  @PluginMethod public void declareNativeEngineOwnsAor(PluginCall call) {
+    getContext().getSharedPreferences(PpSipKeepAliveService.PREFS_NAME, Context.MODE_PRIVATE)
+      .edit().putBoolean("native_engine_owns_aor", Boolean.TRUE.equals(call.getBoolean("owns", false))).apply();
+    call.resolve(readStatus().put("ok", true));
+  }
   /** In-call audio routing. A call must start on the earpiece; the speaker is opt-in. */
   @PluginMethod public void setAudioRoute(PluginCall call) {
     String route = call.getString("route", "earpiece");

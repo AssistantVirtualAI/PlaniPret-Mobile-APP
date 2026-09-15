@@ -108,13 +108,16 @@ Deno.serve(async (req) => {
   if (action === "status") return json({ ok: true, call });
 
   if (action === "approve") {
+    if (String(call.save_consent ?? "") === "approved") {
+      return json({ ok: true, save_consent: "approved", already_approved: true });
+    }
     // Client ambigu ou introuvable : le courtier doit le désigner, jamais l'app.
     const clientName = String(body?.client_name ?? "").trim().slice(0, 200);
     if (!call.maestro_client_id && !String((call as any).maestro_client_name ?? "").trim() && !clientName) {
       return json({ error: "client_selection_required", needs_client_selection: true }, 409);
     }
 
-    await admin.from("planipret_phone_calls").update({
+    const { data: approved, error: approveError } = await admin.from("planipret_phone_calls").update({
       save_consent: "approved",
       ...endedPatch,
       save_consent_at: new Date().toISOString(),
@@ -123,7 +126,12 @@ Deno.serve(async (req) => {
       ...(clientName && !String((call as any).maestro_client_name ?? "").trim()
         ? { maestro_client_name: clientName }
         : {}),
-    }).eq("id", callId);
+    }).eq("id", callId)
+      .or("save_consent.is.null,save_consent.neq.approved")
+      .select("id")
+      .maybeSingle();
+    if (approveError) return json({ error: "consent_update_failed" }, 500);
+    if (!approved) return json({ ok: true, save_consent: "approved", already_approved: true });
 
     // Lance la chaîne complète : transcription → IA → Maestro.
     fetch(`${SUPABASE_URL}/functions/v1/pp-auto-process-call`, {
@@ -136,13 +144,21 @@ Deno.serve(async (req) => {
   }
 
   if (action === "decline") {
-    await admin.from("planipret_phone_calls").update({
+    if (String(call.save_consent ?? "") === "declined") {
+      return json({ ok: true, save_consent: "declined", already_declined: true, pushed_to_maestro: false });
+    }
+    const { data: declined, error: declineError } = await admin.from("planipret_phone_calls").update({
       save_consent: "declined",
       ...endedPatch,
       save_consent_at: new Date().toISOString(),
       save_consent_by: user.id,
       save_consent_channel: channel,
-    }).eq("id", callId);
+    }).eq("id", callId)
+      .or("save_consent.is.null,save_consent.neq.declined")
+      .select("id")
+      .maybeSingle();
+    if (declineError) return json({ error: "consent_update_failed" }, 500);
+    if (!declined) return json({ ok: true, save_consent: "declined", already_declined: true, pushed_to_maestro: false });
     return json({ ok: true, save_consent: "declined", pushed_to_maestro: false });
   }
 

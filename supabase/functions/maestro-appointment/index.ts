@@ -9,6 +9,7 @@ import {
   maestroAudit,
   maestroFetch,
 } from "../_shared/maestro.ts";
+import { authorizeCallAccess } from "../_shared/planipret-call-access.ts";
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -19,20 +20,34 @@ Deno.serve(async (req) => {
     if (!maestro_client_id || !title || !start_at) {
       return json({ success: false, error: "missing_fields" }, 400);
     }
-    const userIdHeader = req.headers.get("x-user-id");
-
     const admin = adminClient();
+    const authHeader = req.headers.get("Authorization") ?? "";
+    const token = authHeader.replace(/^Bearer\s+/i, "");
+    const serviceRole = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+    const isServiceRole = !!serviceRole && token === serviceRole;
+    let authenticatedUserId: string | null = null;
+    if (isServiceRole) {
+      authenticatedUserId = body?._user_id ? String(body._user_id) : null;
+    } else if (token) {
+      const { data: authData } = await admin.auth.getUser(token);
+      authenticatedUserId = authData?.user?.id ?? null;
+    }
+    if (!authenticatedUserId) return json({ success: false, error: "unauthorized" }, 401);
+
     const cfg = await getMaestroConfig(admin);
     if (!cfg.url || !cfg.key) return json({ success: false, error: "maestro_not_configured" }, 200);
 
-    let userId = userIdHeader;
-    if (!userId && call_id) {
+    let userId: string | null = authenticatedUserId;
+    if (call_id) {
       const { data } = await admin
         .from("planipret_phone_calls")
         .select("user_id")
         .eq("id", call_id)
         .maybeSingle();
-      userId = data?.user_id ?? null;
+      if (!data) return json({ success: false, error: "call_not_found" }, 404);
+      const access = await authorizeCallAccess(req, admin, data);
+      if (!access.ok) return json({ success: false, error: access.error }, access.status);
+      if (isServiceRole) userId = data.user_id ?? authenticatedUserId;
     }
     const auth = await getBrokerAuth(admin, userId);
 

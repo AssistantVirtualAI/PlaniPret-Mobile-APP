@@ -268,9 +268,6 @@ export async function startPlanipretSipKeepAlive(cfg: PpSipConfig): Promise<PpNa
       heartbeatSec: getPpSipReconnectConfig().nativeHeartbeatSec,
       registerExpiresSec: getPpSipReconnectConfig().nativeRegisterExpiresSec,
     });
-    if (platform() === "android") {
-      void NativePpSip.requestBatteryOptimizationExemption?.().catch(() => undefined);
-    }
     return result ?? null;
   } catch (e) {
     if (!markUnavailable("sip", e, "pp-sip-native")) console.warn("[pp-sip-native] start failed", e);

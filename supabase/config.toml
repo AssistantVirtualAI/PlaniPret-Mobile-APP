@@ -230,3 +230,45 @@ verify_jwt = true
 
 [functions.pp-maestro-commissions]
 verify_jwt = true
+
+[functions.ns-webhook-receiver]
+verify_jwt = false
+
+[functions.ns-get-recording]
+verify_jwt = true
+
+[functions.ns-get-transcription]
+verify_jwt = true
+
+[functions.pp-admin-transcribe]
+verify_jwt = true
+
+[functions.pp-coach-call]
+verify_jwt = true
+
+[functions.pp-auto-process-call]
+verify_jwt = true
+
+[functions.maestro-cdr]
+verify_jwt = true
+
+[functions.ai-analyze-call]
+verify_jwt = true
+
+[functions.pp-call-consent]
+verify_jwt = true
+
+[functions.maestro-actions]
+verify_jwt = true
+
+[functions.maestro-appointment]
+verify_jwt = true
+
+[functions.pp-sip-registration-check]
+verify_jwt = true
+
+[functions.mobile-register-push]
+verify_jwt = true
+
+[functions.pp-push-notify]
+verify_jwt = true

@@ -12,15 +12,23 @@ export type PermissionsResult = {
 };
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+let permissionFlowPromise: Promise<PermissionsResult> | null = null;
 
 export async function runPermissionFlow(extension?: string): Promise<PermissionsResult> {
-  const notifications = await ensureNotifications(extension);
-  await wait(400);
-  const microphone = await ensureMic();
-  await wait(400);
-  const contacts = await ensureContacts();
-  await setPref("permissions_primer_seen_v1", "true");
-  return { notifications, microphone, contacts };
+  if (permissionFlowPromise) return permissionFlowPromise;
+  permissionFlowPromise = (async () => {
+    const notifications = await ensureNotifications(extension);
+    await wait(400);
+    const microphone = await ensureMic();
+    await wait(400);
+    const contacts = await ensureContacts();
+    await setPref("permissions_primer_seen_v1", "true");
+    return { notifications, microphone, contacts };
+  })().catch((error) => {
+    permissionFlowPromise = null;
+    throw error;
+  });
+  return permissionFlowPromise;
 }
 
 /**

@@ -34,6 +34,8 @@ Deno.serve(async (req) => {
   const auth = await requirePlanipretBroker(req);
   if (auth instanceof Response) return auth;
   const { ctx, supabase } = auth;
+  const body = await req.json().catch(() => ({} as any));
+  const platform = String(body?.platform ?? "ios").toLowerCase() === "android" ? "android" : "ios";
 
   const d = encodeURIComponent(ctx.nsDomain);
   const e = encodeURIComponent(ctx.extension);
@@ -59,7 +61,7 @@ Deno.serve(async (req) => {
     regExpiresOk(x);
 
   const aors = Array.from(new Set(devices.filter(isRegistered).map(devId).filter(Boolean)));
-  const mobileAor = `${ctx.extension}M`;
+  const mobileAor = `${ctx.extension}${platform === "ios" ? "M" : "W"}`;
   let mobileRegistered = aors.some((a) => a.toLowerCase() === mobileAor.toLowerCase());
 
   // The LIST endpoint sometimes omits registration fields — confirm via DETAIL
@@ -108,13 +110,21 @@ Deno.serve(async (req) => {
 
 
   // 3) VoIP push token freshness (Supabase side).
-  const { data: tokenRow } = await supabase
-    .from("planipret_voip_push_tokens")
-    .select("device_token, environment, updated_at")
-    .eq("user_id", ctx.userId)
+  const tokenQuery = platform === "ios"
+    ? supabase
+      .from("planipret_voip_push_tokens")
+      .select("device_token, environment, updated_at")
+      .eq("user_id", ctx.userId)
+    : supabase
+      .from("mobile_push_tokens")
+      .select("token, platform, updated_at")
+      .eq("user_id", ctx.userId)
+      .eq("platform", "android");
+  const { data: tokenRow } = await tokenQuery
     .order("updated_at", { ascending: false })
     .limit(1)
     .maybeSingle();
+  const pushToken = platform === "ios" ? tokenRow?.device_token : tokenRow?.token;
   const tokenAgeH = tokenRow?.updated_at
     ? Math.round((Date.now() - new Date(tokenRow.updated_at).getTime()) / 3_600_000)
     : null;
@@ -129,10 +139,10 @@ Deno.serve(async (req) => {
   const actions: string[] = [];
   const blockers: string[] = [];
   if (!mobileRegistered) actions.push("reregister");
-  if (!tokenRow?.device_token || (tokenAgeH != null && tokenAgeH > 24)) actions.push("refresh_push_token");
+  if (!pushToken || (tokenAgeH != null && tokenAgeH > 24)) actions.push("refresh_push_token");
   // device-push-enabled=no => NS never fires the APNs VoIP push, no webhook can
   // compensate for that. Surface it as a hard blocker so it gets repaired.
-  if (devicePushEnabled === false) {
+  if (platform === "ios" && devicePushEnabled === false) {
     blockers.push("MOBILE_PUSH_DISABLED");
     actions.push("repair_device_push");
   }
@@ -169,13 +179,14 @@ Deno.serve(async (req) => {
   const registeredAtMs = registeredAtRaw ? Date.parse(registeredAtRaw.replace(" ", "T")) : NaN;
   const registeredAt = Number.isFinite(registeredAtMs) ? new Date(registeredAtMs).toISOString() : null;
 
-  const healthy = mediaCapable && !!tokenRow?.device_token && callSubscription &&
-    devicePushEnabled !== false && coreServerOk;
+  const healthy = mediaCapable && !!pushToken && callSubscription &&
+    (platform !== "ios" || devicePushEnabled !== false) && coreServerOk;
 
 
   return jsonResponse({
     ok: true,
     healthy,
+    platform,
     extension: ctx.extension,
     domain: ctx.nsDomain,
     registration: {
@@ -193,8 +204,8 @@ Deno.serve(async (req) => {
     },
     push: {
       device_push_enabled: devicePushEnabled,
-      token_present: !!tokenRow?.device_token,
-      token_environment: tokenRow?.environment ?? null,
+      token_present: !!pushToken,
+      token_environment: platform === "ios" ? tokenRow?.environment ?? null : "fcm",
       token_age_hours: tokenAgeH,
     },
     call_subscription: callSubscription,

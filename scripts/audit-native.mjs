@@ -8,6 +8,7 @@ const appDir = path.resolve(path.dirname(__filename), "..");
 const repoRoot = path.resolve(appDir, "../..");
 const appSrc = path.join(appDir, "src");
 const rootSrc = path.join(repoRoot, "src");
+const importReportPath = path.join(appDir, "reports", "imports.json");
 
 const failures = [];
 
@@ -37,7 +38,12 @@ function sameFile(a, b) {
 }
 
 function scanImports() {
-  const files = walk(appSrc).filter((file) => [".ts", ".tsx", ".js", ".jsx"].includes(path.extname(file)));
+  const report = fs.existsSync(importReportPath) ? JSON.parse(read(importReportPath)) : { orphanFiles: [] };
+  const orphanFiles = new Set((report.orphanFiles ?? []).map((file) => path.normalize(String(file))));
+  const files = walk(appSrc).filter((file) => {
+    const rel = path.normalize(path.relative(appDir, file));
+    return [".ts", ".tsx", ".js", ".jsx"].includes(path.extname(file)) && !orphanFiles.has(rel);
+  });
   const importRe = /(?:import|export)\s+(?:[^"']*?\s+from\s+)?["']([^"']+)["']|import\(["']([^"']+)["']\)/g;
 
   for (const file of files) {
@@ -54,16 +60,34 @@ function scanImports() {
 
 function scanAliasConfig() {
   const vite = read(path.join(appDir, "vite.config.ts"));
-  const tsconfig = read(path.join(appDir, "tsconfig.json"));
+  const tsconfig = JSON.parse(read(path.join(appDir, "tsconfig.json")));
   assert(vite.includes("path.resolve(__dirname, './src')"), "vite.config.ts alias @ must point to ./src");
-  assert(tsconfig.includes('"@/*": ["./src/*"]'), "tsconfig.json alias @ must point to ./src only");
+  const aliases = tsconfig?.compilerOptions?.paths?.["@/*"];
+  assert(Array.isArray(aliases) && aliases.length === 1 && aliases[0] === "./src/*", "tsconfig.json alias @ must point to ./src only");
 }
 
 function scanNativeAssets() {
-  const assetFiles = walk(path.join(appSrc, "assets")).filter((file) => file.endsWith(".asset.json"));
-  for (const file of assetFiles) {
+  const report = fs.existsSync(importReportPath) ? JSON.parse(read(importReportPath)) : { orphanFiles: [] };
+  const orphanFiles = new Set((report.orphanFiles ?? []).map((file) => path.normalize(String(file))));
+  const codeFiles = walk(appSrc).filter((file) => {
+    const rel = path.normalize(path.relative(appDir, file));
+    return [".ts", ".tsx", ".js", ".jsx"].includes(path.extname(file)) && !orphanFiles.has(rel);
+  });
+  const importedSidecars = new Set();
+  for (const file of codeFiles) {
+    for (const match of read(file).matchAll(/["']([^"']+\.asset\.json)["']/g)) {
+      const spec = match[1];
+      const resolved = spec.startsWith("@/")
+        ? path.join(appSrc, spec.slice(2))
+        : path.resolve(path.dirname(file), spec);
+      importedSidecars.add(resolved);
+    }
+  }
+  for (const file of importedSidecars) {
+    assert(fs.existsSync(file), `${path.relative(appDir, file)} is imported but missing`);
+    if (!fs.existsSync(file)) continue;
     const json = JSON.parse(read(file));
-    assert(typeof json.url === "string" && json.url.startsWith("https://"), `${path.relative(appDir, file)} must use an absolute https URL for Capacitor WebView assets`);
+    assert(typeof json.url === "string" && json.url.startsWith("https://"), `${path.relative(appDir, file)} must use an absolute https URL`);
   }
 }
 
@@ -81,6 +105,10 @@ function scanDistIfPresent() {
 }
 
 function scanParity() {
+  if (!fs.existsSync(rootSrc)) {
+    console.log("  [standalone] aucun arbre portail parent à comparer; le bundle mobile local reste la source de vérité");
+    return;
+  }
   const pairs = [
     ["pages/planipret/mobile", "pages/planipret/mobile"],
     ["components/planipret/mobile", "components/planipret/mobile"],

@@ -433,36 +433,15 @@ Deno.serve(async (req) => {
         payload: { status: res.status, broker_id: auth.brokerId, client_id: call.maestro_client_id, lead_score: call.lead_score, response: res.data ?? null },
       });
 
-      // ── 5. High-priority tasks ───────────────────────────
-      if (call.maestro_client_id) {
-        const meta = (call.metadata ?? {}) as Record<string, unknown>;
-        if (!meta.maestro_tasks_pushed_at || force) {
-          let created = 0;
-          for (const a of nextActions) {
-            const title = actionTitle(a);
-            if (!title) continue;
-            const priority = typeof a === "object" ? (a.priority ?? "medium") : "medium";
-            if (priority !== "high") continue;
-            const dueDays = (typeof a === "object" && a.due_days) || 3;
-            await invoke("maestro-task", {
-              maestro_client_id: call.maestro_client_id,
-              title,
-              due_date: new Date(Date.now() + dueDays * 86400_000).toISOString(),
-              priority: "high",
-              call_id,
-              source: "ai_summary",
-            });
-            created++;
-          }
-          steps.tasks = { ok: true, created };
-          await admin
-            .from("planipret_phone_calls")
-            .update({ metadata: { ...meta, maestro_tasks_pushed_at: new Date().toISOString() } })
-            .eq("id", call_id);
-        } else {
-          steps.tasks = { ok: true, skipped: "already_pushed" };
-        }
-      }
+      // ── 5. Suggested tasks ───────────────────────────────
+      // AVA may prepare next actions, but it must never create them silently.
+      // They remain in the call notes/UI until the broker explicitly confirms;
+      // the confirmed mobile path uses planipret-task-api (/api/main/tasks).
+      steps.tasks = {
+        ok: true,
+        suggested: nextActions.map(actionTitle).filter(Boolean).length,
+        skipped: "requires_broker_confirmation",
+      };
     } else {
       steps.ai = summary
         ? { ok: false, skipped: "maestro_call_id_missing", error: "maestro_call_id_missing" }
@@ -484,6 +463,34 @@ Deno.serve(async (req) => {
       completed: allOk,
       error: allOk ? null : firstError,
     });
+    if (allOk) {
+      let notificationUserId = String(call.user_id ?? "");
+      const { data: ownerProfile } = await admin
+        .from("planipret_profiles")
+        .select("user_id")
+        .eq("id", notificationUserId)
+        .maybeSingle();
+      if (ownerProfile?.user_id) notificationUserId = String(ownerProfile.user_id);
+      if (notificationUserId) {
+        const hasRecording = (steps.recording as any)?.ok === true && !(steps.recording as any)?.skipped;
+        const pushRes = await fetch(`${SUPABASE_URL}/functions/v1/pp-push-notify`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${SERVICE_ROLE}` },
+          body: JSON.stringify({
+            user_id: notificationUserId,
+            title: "Suivi d’appel prêt",
+            body: hasRecording
+              ? "L’enregistrement, le résumé AVA et le dossier Maestro sont prêts."
+              : "Le résumé AVA et le dossier Maestro sont prêts.",
+            category: "call",
+            deep_link: `/mplanipret/calls?call_id=${encodeURIComponent(String(call_id))}`,
+            data: { type: "call", call_id, maestro_synced: true, recording_available: hasRecording },
+            idempotency_key: `post_call_ready:${call_id}`,
+          }),
+        }).catch(() => null);
+        steps.notification = { ok: !!pushRes?.ok };
+      }
+    }
     await maestroAudit(admin, "call_synced", { call_id, steps, all_ok: allOk });
     await broadcastPipeline(admin, call.user_id, "pipeline_step", {
       call_id,

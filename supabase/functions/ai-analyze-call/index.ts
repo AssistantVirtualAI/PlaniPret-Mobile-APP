@@ -3,6 +3,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { mirrorCallAnalysisToMaestro } from "../_shared/maestro-telecom.ts";
 import { callAnthropic } from "../_shared/anthropic.ts";
+import { authorizeCallAccess, requireApprovedCallConsent } from "../_shared/planipret-call-access.ts";
 
 
 const SYSTEM_PROMPT = `Tu es un analyste IA spécialisé en appels téléphoniques et coaching d'agents.
@@ -200,11 +201,20 @@ Deno.serve(async (req) => {
 
     // Load call context from planipret_phone_calls to enrich the prompt.
     const { data: ppCall } = await admin.from("planipret_phone_calls")
-      .select("id, user_id, organization_id, metadata, direction, duration_seconds, from_number, to_number, started_at, transcript, transcript_segments, transcript_language, ai_analysis_json, maestro_call_id, maestro_client_id")
+      .select("id, user_id, organization_id, metadata, direction, duration_seconds, from_number, to_number, started_at, transcript, transcript_segments, transcript_language, ai_analysis_json, maestro_call_id, maestro_client_id, save_consent, deleted_at")
       .eq("id", call_id).maybeSingle();
 
     if (!ppCall) {
       return new Response(JSON.stringify({ success: false, error: "Appel introuvable" }), { status: 404, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+
+    const access = await authorizeCallAccess(req, admin, ppCall);
+    if (!access.ok) {
+      return new Response(JSON.stringify({ success: false, error: access.error }), { status: access.status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+    }
+    const consent = requireApprovedCallConsent(ppCall);
+    if (!consent.ok) {
+      return new Response(JSON.stringify({ success: false, error: consent.error }), { status: consent.status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
 
     if (!transcript || !String(transcript).trim()) {

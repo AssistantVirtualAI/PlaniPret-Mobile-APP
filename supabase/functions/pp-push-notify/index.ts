@@ -17,7 +17,7 @@ Deno.serve(async (req) => {
     if (vapidReady) webpush.setVapidDetails(SUBJECT, VAPID_PUBLIC!, VAPID_PRIVATE!);
 
     const body = await req.json().catch(() => ({}));
-    const { user_id, title, body: text, data, icon, category, deep_link } = body ?? {};
+    const { user_id, title, body: text, data, icon, category, deep_link, idempotency_key } = body ?? {};
     if (!user_id || !title) return json({ error: "missing_fields" }, 400);
 
     // ---- Authorization -------------------------------------------------
@@ -71,11 +71,21 @@ Deno.serve(async (req) => {
     const finalDeepLink = safeDeepLink ?? rawFallbackLink;
 
     // Always log in-app notification (even if push disabled)
-    const { data: notifRow } = await admin.from("planipret_ava_notifications").insert({
+    const safeIdempotencyKey = idempotency_key == null ? null : String(idempotency_key).slice(0, 200);
+    const notificationData = {
+      ...(data ?? {}),
+      deep_link: finalDeepLink,
+      ...(safeIdempotencyKey ? { idempotency_key: safeIdempotencyKey } : {}),
+    };
+    const { data: notifRow, error: notifError } = await admin.from("planipret_ava_notifications").insert({
       user_id, category: cat, title: safeTitle, body: safeText || null,
-      data: { ...(data ?? {}), deep_link: finalDeepLink }, deep_link: finalDeepLink,
+      data: notificationData, deep_link: finalDeepLink,
       delivered: false,
     }).select("id").maybeSingle();
+    if (notifError?.code === "23505" && safeIdempotencyKey) {
+      return json({ delivered: 0, duplicate: true, logged: true });
+    }
+    if (notifError) return json({ error: "notification_log_failed" }, 500);
 
     if (!allowed) return json({ delivered: 0, blocked_by_preference: true, logged: true });
 

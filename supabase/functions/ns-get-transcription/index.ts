@@ -4,6 +4,7 @@
 
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { authorizeCallAccess, requireApprovedCallConsent } from "../_shared/planipret-call-access.ts";
 
 const FALLBACK_NS_API_BASE_URL = (Deno.env.get("NS_API_BASE_URL") ?? "https://voice.ava-telecom.ca/ns-api/v2").replace(/\/$/, "");
 const FALLBACK_NS_DOMAIN = Deno.env.get("NS_DEFAULT_DOMAIN") ?? Deno.env.get("NS_API_DOMAIN") ?? "planipret.ca";
@@ -179,18 +180,28 @@ Deno.serve(async (req) => {
   let ns_extension: string | null = body.ns_extension ?? url.searchParams.get("ns_extension");
   let row: any = null;
   let domain = String(body.domain ?? url.searchParams.get("domain") ?? cfg.domain);
+  const admin = createClient(SUPABASE_URL, SERVICE_ROLE);
 
   if (call_db_id) {
-    const admin = createClient(SUPABASE_URL, SERVICE_ROLE);
     const { data } = await admin
       .from("planipret_phone_calls")
-        .select("id, ns_call_id, ns_callid, ns_orig_callid, ns_term_callid, ns_domain, extension, metadata, started_at, duration_seconds, from_number, to_number")
+        .select("id, user_id, ns_call_id, ns_callid, ns_orig_callid, ns_term_callid, ns_domain, extension, metadata, started_at, duration_seconds, from_number, to_number, save_consent, deleted_at")
       .eq("id", call_db_id)
       .maybeSingle();
     row = data;
+    if (!row) return json({ success: false, error: "call_not_found" }, 404);
+    const access = await authorizeCallAccess(req, admin, row);
+    if (!access.ok) return json({ success: false, error: access.error }, access.status);
+    const consent = requireApprovedCallConsent(row);
+    if (!consent.ok) return json({ success: false, error: consent.error }, consent.status);
     domain = row?.ns_domain || row?.metadata?.domain || domain;
     ns_callid = ns_callid || row?.ns_callid || row?.ns_orig_callid || row?.ns_term_callid || row?.metadata?.["call-parent-cdr-id"] || null;
     ns_extension = ns_extension || row?.extension || null;
+  } else {
+    const access = await authorizeCallAccess(req, admin, {});
+    if (!access.ok || !access.serviceRole) {
+      return json({ success: false, error: "call_db_id_required" }, 400);
+    }
   }
 
   const attempts: any[] = [];

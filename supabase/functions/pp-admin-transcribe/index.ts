@@ -2,6 +2,7 @@ import { aiFetch } from "../_shared/claude-compat.ts";
 // pp-admin-transcribe — Transcribe a planipret_phone_calls row via Lovable AI.
 // Resolves a fresh recording URL, fetches the audio, and stores the transcript.
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { authorizeCallAccess, requireApprovedCallConsent } from "../_shared/planipret-call-access.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -43,10 +44,14 @@ Deno.serve(async (req) => {
 
     const { data: row } = await admin
       .from("planipret_phone_calls")
-      .select("id, recording_url, transcript, ai_summary, transcript_attempts")
+      .select("id, user_id, recording_url, transcript, ai_summary, transcript_attempts, save_consent, deleted_at")
       .eq("id", callId)
       .maybeSingle();
     if (!row) return json({ error: "call not found" }, 404);
+    const access = await authorizeCallAccess(req, admin, row);
+    if (!access.ok) return json({ error: access.error }, access.status);
+    const consent = requireApprovedCallConsent(row);
+    if (!consent.ok) return json({ error: consent.error }, consent.status);
     if (row.transcript) {
       if (!row.ai_summary) {
         try {

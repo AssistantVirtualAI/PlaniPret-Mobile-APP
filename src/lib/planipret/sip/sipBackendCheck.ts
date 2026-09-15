@@ -9,6 +9,7 @@
  * READ-ONLY on NetSapiens — never touches routing, answering rules or DIDs.
  */
 import { invokeEdge } from "@/lib/planipret/edgeAuth";
+import { Capacitor } from "@capacitor/core";
 
 export type SipBackendCheck = {
   ok: boolean;
@@ -64,7 +65,7 @@ export async function checkSipBackendRegistration(
     try {
       // Background poll: stay silent so it never bounces the user to login.
       const { data, error, unauthorized } = await invokeEdge<SipBackendCheck & { ok?: boolean }>(
-        "pp-sip-registration-check", {}, { silent: true },
+        "pp-sip-registration-check", { platform: Capacitor.getPlatform() }, { silent: true },
       );
       if (unauthorized || error || !data?.ok) return null;
       lastResult = data as SipBackendCheck;

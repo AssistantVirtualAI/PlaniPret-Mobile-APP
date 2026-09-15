@@ -54,11 +54,8 @@ export default function MPipeline() {
     const { error } = await supabase.from("planipret_pipeline").update({ stage }).eq("id", id);
     if (error) { setCards(prev); toast.error(t("pipeline.error")); return; }
     toast.success(t("pipeline.stageUpdated"));
-    // Best-effort Maestro sync
-    const card = cards.find((c) => c.id === id);
-    if (card?.maestro_contact_id) {
-      supabase.functions.invoke("maestro-actions", { body: { action: "update_contact_stage", payload: { contact_id: card.maestro_contact_id, stage } } }).catch(() => {});
-    }
+    // Pipeline stages are local Planiprêt workflow metadata. The documented
+    // Maestro /api/main client contract has no compatible stage field.
   };
 
   return (
@@ -184,8 +181,15 @@ function DetailSheet({ card, profile, openDialer, openAva, onClose, onMove, onCh
           </button>
           {!card.maestro_contact_id && (
             <button onClick={async () => {
-              const { data } = await supabase.functions.invoke("maestro-actions", { body: { action: "create_contact", payload: { name: card.contact_name, phone: card.contact_number } } });
-              const mid = (data as any)?.contact_id ?? (data as any)?.id;
+              const parts = card.contact_name.trim().split(/\s+/);
+              const { data } = await supabase.functions.invoke("maestro-client-create", {
+                body: {
+                  first_name: parts.shift() || "Client",
+                  last_name: parts.join(" ") || undefined,
+                  phone: card.contact_number,
+                },
+              });
+              const mid = (data as any)?.client?.id ?? (data as any)?.client_id ?? (data as any)?.id;
               if (mid) {
                 await supabase.from("planipret_pipeline").update({ maestro_contact_id: mid }).eq("id", card.id);
                 toast.success(t("pipeline.createdInMaestro"));

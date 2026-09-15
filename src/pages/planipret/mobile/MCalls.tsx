@@ -18,6 +18,7 @@ import GreetingStudio from "@/components/planipret/mobile/voicemail/GreetingStud
 
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { useCallerNames } from "@/lib/planipret/callerLookup";
+import { createClientFollowUpTask } from "@/lib/planipret/tasks";
 
 
 const PRIMARY = "var(--pp-brand-accent-2)";
@@ -1235,11 +1236,39 @@ function CallDetailSheet({
     const key = String(idx);
     if (type === "task") setTaskState((s) => ({ ...s, [key]: { creating: true } }));
     else setEventState((s) => ({ ...s, [key]: { creating: true } }));
-    const { data, error } = await supabase.functions.invoke("maestro-actions", {
-      body: { action: type === "task" ? "create_task" : "create_event", call_id: call.id, payload: item },
-    });
-    const createdId = (data as any)?.id ?? (data as any)?.maestro_task_id ?? (data as any)?.maestro_event_id ?? "ok";
-    if (error || (data as any)?.success === false) {
+    let data: any = null;
+    let error: any = null;
+    if (type === "task") {
+      data = await createClientFollowUpTask({
+        maestro_client_id: String(call.maestro_client_id ?? ""),
+        client_name: call.direction === "outbound" ? (call.to_name ?? undefined) : (call.from_name ?? undefined),
+        notes: String(item?.title ?? item?.notes ?? item?.description ?? "Suivi après appel"),
+        description: String(item?.description ?? item?.notes ?? item?.title ?? "Suivi après appel"),
+        due_at: item?.due_at ?? item?.date ?? item?.start ?? undefined,
+        call_id: call.id,
+      });
+    } else {
+      const start = new Date(item?.start ?? item?.start_at ?? item?.date ?? Date.now());
+      const end = new Date(item?.end ?? item?.end_at ?? start.getTime() + 30 * 60_000);
+      const response = await supabase.functions.invoke("ms365-actions", {
+        body: {
+          action: "create_calendar_event",
+          payload: {
+            subject: item?.title ?? "Suivi après appel",
+            start: { dateTime: start.toISOString(), timeZone: "America/Toronto" },
+            end: { dateTime: end.toISOString(), timeZone: "America/Toronto" },
+            body: item?.description ?? item?.notes ?? "",
+            confirmed: true,
+            call_id: call.id,
+            idempotency_key: `post_call_event:${call.id}:${idx}`,
+          },
+        },
+      });
+      data = response.data;
+      error = response.error;
+    }
+    const createdId = data?.task?.id ?? data?.task_id ?? data?.event_id ?? data?.event?.id ?? "ok";
+    if (error || data?.success === false) {
       toast.error(`Échec création ${type === "task" ? "tâche" : "événement"}`);
       if (type === "task") setTaskState((s) => ({ ...s, [key]: {} }));
       else setEventState((s) => ({ ...s, [key]: {} }));
@@ -1528,9 +1557,17 @@ function CallbackSuggestion({ call, onScheduled }: { call: Call; onScheduled: ()
     });
     setBusy(false);
     if (error) { toast.error("Erreur création rappel"); return; }
-    // Best-effort Maestro event
-    supabase.functions.invoke("maestro-actions", {
-      body: { action: "create_event", call_id: call.id, payload: { title: `Rappel: ${call.from_name ?? call.from_number ?? ""}`, start: at.toISOString(), end: new Date(at.getTime() + 30*60000).toISOString(), description: call.callback_reason ?? "" } },
+    // Explicit user click = confirmation to mirror this reminder in Outlook.
+    supabase.functions.invoke("ms365-actions", {
+      body: { action: "create_calendar_event", payload: {
+        subject: `Rappel: ${call.from_name ?? call.from_number ?? ""}`,
+        start: { dateTime: at.toISOString(), timeZone: "America/Toronto" },
+        end: { dateTime: new Date(at.getTime() + 30 * 60000).toISOString(), timeZone: "America/Toronto" },
+        body: call.callback_reason ?? "",
+        confirmed: true,
+        call_id: call.id,
+        idempotency_key: `callback_event:${call.id}:${at.toISOString()}`,
+      } },
     }).catch(() => {});
     onScheduled();
   };

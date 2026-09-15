@@ -6,6 +6,7 @@ import { aiFetch } from "../_shared/claude-compat.ts";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { callAnthropic } from "../_shared/anthropic.ts";
+import { authorizeCallAccess, requireApprovedCallConsent } from "../_shared/planipret-call-access.ts";
 
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -67,6 +68,10 @@ Deno.serve(async (req) => {
     .eq("id", call_id)
     .maybeSingle();
   if (error || !row) return json({ error: "call not found", details: error?.message }, 404);
+  const access = await authorizeCallAccess(req, admin, row);
+  if (!access.ok) return json({ error: access.error }, access.status);
+  const consent = requireApprovedCallConsent(row);
+  if (!consent.ok) return json({ error: consent.error }, consent.status);
 
   // ── A: cache déjà analysé ────────────────────────────────
   if (row.analyzed_at && !reprocess) {

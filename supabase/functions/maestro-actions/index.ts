@@ -159,7 +159,25 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   try {
     const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
-    const { action, payload = {} } = await req.json();
+    const requestBody = await req.json();
+    const { action, payload = {} } = requestBody;
+    const authHeader = req.headers.get("Authorization") ?? "";
+    const token = authHeader.replace(/^Bearer\s+/i, "");
+    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+    const isServiceRole = !!serviceKey && token === serviceKey;
+    let authenticatedUserId: string | null = null;
+    if (isServiceRole) {
+      authenticatedUserId = requestBody?._user_id ? String(requestBody._user_id) : null;
+    } else if (token) {
+      const { data: authData } = await admin.auth.getUser(token);
+      authenticatedUserId = authData?.user?.id ?? null;
+    }
+    if (!isServiceRole && !authenticatedUserId) {
+      return new Response(JSON.stringify({ success: false, error: "unauthorized" }), {
+        status: 401,
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
     const cfg = await getMaestroConfig(admin);
     // Only the CRM actions below talk to the `maestro` (CRM) base URL/key.
     // Everything else (clients, brokers, contacts, communications) runs on the
@@ -564,4 +582,3 @@ Deno.serve(async (req) => {
     return new Response(JSON.stringify({ success: false, error: e?.message ?? "Erreur serveur", code: 0 }), { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } });
   }
 });
-

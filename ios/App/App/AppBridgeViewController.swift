@@ -15,5 +15,7 @@ class AppBridgeViewController: CAPBridgeViewController {
         bridge?.registerPluginInstance(Self.authPlugin)
     }
 
-    override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .portrait }
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        UIDevice.current.userInterfaceIdiom == .pad ? .all : .portrait
+    }
 }

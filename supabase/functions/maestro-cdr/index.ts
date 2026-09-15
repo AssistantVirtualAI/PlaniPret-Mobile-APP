@@ -22,6 +22,7 @@ import {
 } from "../_shared/maestro.ts";
 import { markCdrRetrySucceeded, scheduleCdrRetry } from "../_shared/maestro-cdr-retry.ts";
 import { callDedupeKey, claimCallPost, releaseClaim, saveClaimResult } from "../_shared/maestro-call-dedupe.ts";
+import { authorizeCallAccess, requireApprovedCallConsent } from "../_shared/planipret-call-access.ts";
 
 function metaString(meta: unknown, key: string): string | null {
   const value = (meta as Record<string, unknown> | null)?.[key];
@@ -80,12 +81,16 @@ Deno.serve(async (req) => {
     const { data: call } = await admin
       .from("planipret_phone_calls")
       .select(
-        "id, user_id, direction, from_number, to_number, started_at, ended_at, duration_seconds, recording_url, maestro_synced, maestro_call_id, maestro_client_id, ns_call_id, metadata",
+        "id, user_id, direction, from_number, to_number, started_at, ended_at, duration_seconds, recording_url, maestro_synced, maestro_call_id, maestro_client_id, ns_call_id, metadata, save_consent, deleted_at",
       )
       .eq("id", call_id)
       .maybeSingle();
 
     if (!call) return json({ success: false, error: "call_not_found" }, 404);
+    const access = await authorizeCallAccess(req, admin, call);
+    if (!access.ok) return json({ success: false, error: access.error }, access.status);
+    const consent = requireApprovedCallConsent(call);
+    if (!consent.ok) return json({ success: true, skipped: consent.error }, 200);
     if (!force && call.maestro_synced && (call as any).maestro_call_id) {
       return json({ success: true, already_synced: true });
     }

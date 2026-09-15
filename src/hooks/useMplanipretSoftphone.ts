@@ -716,6 +716,13 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       // until the pending CXAnswerCallAction is fulfilled — that only happens
       // when we report the real outcome back through completeAnswer().
       try { window.dispatchEvent(new CustomEvent("pp:sip-callkit-answered", { detail: data })); } catch {}
+      // PpVoipCall already posted PpPjsipAnswerRequested for native calls. Calling
+      // answerRef here would submit a second pjsua_call_answer while the first
+      // CXAnswerCallAction is still pending. PpPjsipAnswerResult completes CallKit.
+      if (isIosNativePlatform() && data?.source === "pjsip") {
+        setPushRing(null);
+        return;
+      }
       void (async () => {
         let ok = false;
         try { ok = !!(await answerRef.current?.()); }
@@ -730,8 +737,11 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
 
 
     onPlanipretIncomingCallRejected((data) => {
-      if (isIosNativePlatform()) void nativeSip.hangup();
-      else { try { ppSipProvider.hangup(); } catch {} }
+      // Native PpVoipCall posts PpPjsipEndRequested itself. Only the JS/WSS
+      // branch must issue a second-layer hangup command here.
+      if (!(isIosNativePlatform() && data?.source === "pjsip")) {
+        try { ppSipProvider.hangup(); } catch {}
+      }
       setPushRing(null);
       void acknowledgePlanipretIncoming();
       try { window.dispatchEvent(new CustomEvent("pp:sip-callkit-rejected", { detail: data })); } catch {}
@@ -741,7 +751,6 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       getPlanipretSipKeepAliveStatus().then((s) => { if (s && !cancelled) setNativeStatus(s); }).catch(() => undefined);
     }, 15_000);
     void getPlanipretSipKeepAliveStatus().then((s) => { if (s && !cancelled) setNativeStatus(s); });
-    void requestPlanipretBatteryOptimizationExemption();
     return () => {
       cancelled = true;
       window.clearInterval(poll);

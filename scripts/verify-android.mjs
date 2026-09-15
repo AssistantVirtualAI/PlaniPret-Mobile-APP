@@ -35,6 +35,9 @@ check(
 );
 check(applyCfg.includes("PpSipKeepAliveService"), "Android SIP keep-alive service source is missing");
 check(applyCfg.includes("PpIncomingActionReceiver"), "Android incoming-call action receiver is missing");
+check(applyCfg.includes("PpFirebaseMessagingService"), "Android FCM wake-up service source is missing");
+check(applyCfg.includes("SSLSocketFactory.getDefault().createSocket(host, port)"), "WSS must use TLS on every configured port, including NetSapiens 9002");
+check(!applyCfg.includes("port == 443 ? SSLSocketFactory"), "WSS must never fall back to a plain Socket on non-443 ports");
 check(applyCfg.includes('android:scheme="planipret"'), "Android deep-link scheme planipret:// is missing");
 
 // ---- 2. Capacitor config ----
@@ -59,6 +62,10 @@ const androidDir = path.join(appDir, "android");
 const androidGenerated = fs.existsSync(path.join(androidDir, "app/src/main"));
 if (androidGenerated) {
   const manifestPath = path.join(androidDir, "app/src/main/AndroidManifest.xml");
+  const appGradlePath = path.join(androidDir, "app/build.gradle");
+  if (fs.existsSync(appGradlePath)) {
+    check(read(appGradlePath).includes("com.google.firebase:firebase-messaging"), "App module must expose Firebase Messaging to PpFirebaseMessagingService");
+  }
   if (fs.existsSync(manifestPath)) {
     const manifest = read(manifestPath);
     for (const perm of [
@@ -71,6 +78,10 @@ if (androidGenerated) {
       check(manifest.includes(perm), `AndroidManifest.xml missing ${perm} — run node scripts/apply-native-config.mjs`);
     }
     check(manifest.includes("PpSipKeepAliveService"), "AndroidManifest.xml missing PpSipKeepAliveService");
+    check(manifest.includes("PpFirebaseMessagingService"), "AndroidManifest.xml missing PpFirebaseMessagingService");
+    check(manifest.includes('com.capacitorjs.plugins.pushnotifications.MessagingService') && manifest.includes('tools:node="remove"'), "Capacitor MessagingService must be replaced so only one FCM service consumes each push");
+    check(!manifest.includes("android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"), "Do not request blanket battery-optimization exemption");
+    check(!manifest.includes("android.permission.SCHEDULE_EXACT_ALARM"), "Do not request exact-alarm permission without an alarm feature");
     check(
       /android:foregroundServiceType="[^"]*phoneCall[^"]*\|[^"]*microphone|android:foregroundServiceType="[^"]*microphone[^"]*\|[^"]*phoneCall/.test(manifest),
       'PpSipKeepAliveService must declare foregroundServiceType="phoneCall|microphone" (Android 14 mic requirement) — run node scripts/apply-native-config.mjs',
@@ -85,6 +96,12 @@ if (androidGenerated) {
       java.includes("FOREGROUND_SERVICE_TYPE_MICROPHONE"),
       "PpSipKeepAliveService.java startForeground() is missing FOREGROUND_SERVICE_TYPE_MICROPHONE — run node scripts/apply-native-config.mjs",
     );
+    check(java.includes("SSLSocket raw") && java.includes("raw.startHandshake()"), "Android native WSS service must perform a TLS handshake");
+  }
+  const boot = path.join(androidDir, "app/src/main/java/com/planipret/mobile/PpBootReceiver.java");
+  if (fs.existsSync(boot)) {
+    const java = read(boot);
+    check(java.includes('p.getString("host", "")') && java.includes('p.getString("password", "")'), "Boot receiver must not start SIP before authenticated configuration exists");
   }
   const gs = path.join(androidDir, "app/google-services.json");
   if (!fs.existsSync(gs)) {

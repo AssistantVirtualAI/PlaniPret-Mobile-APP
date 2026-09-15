@@ -297,20 +297,13 @@ async function processEvent(event: any) {
       }, { onConflict: "ns_call_id" });
 
       const authH = `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`;
-      fetch(`${SUPABASE_URL}/functions/v1/ns-transcription?call_id=${encodeURIComponent(callId)}`, {
-        method: "GET", headers: { Authorization: authH },
-      }).catch(() => {});
-      fetch(`${SUPABASE_URL}/functions/v1/ai-analyze-call`, {
-        method: "POST", headers: { Authorization: authH, "Content-Type": "application/json" },
-        body: JSON.stringify({ call_id: callId }),
-      }).catch(() => {});
-
-      // Maestro pipeline: resolve uuid by ns_call_id, then push CDR + recording
-      // + transcript + AI analytics in one idempotent orchestrator call.
+      // Resolve the local UUID and enter the single consent-aware orchestrator.
+      // It returns `consent_pending` without fetching audio, invoking AI or
+      // writing Maestro until pp-call-consent records an explicit approval.
       void admin.from("planipret_phone_calls").select("id").eq("ns_call_id", String(callId)).maybeSingle()
         .then(({ data: row }) => {
           if (row?.id) {
-            void fetch(`${SUPABASE_URL}/functions/v1/maestro-sync-call`, {
+            void fetch(`${SUPABASE_URL}/functions/v1/pp-auto-process-call`, {
               method: "POST", headers: { Authorization: authH, "Content-Type": "application/json" },
               body: JSON.stringify({ call_id: row.id }),
             }).catch(() => {});
@@ -319,14 +312,26 @@ async function processEvent(event: any) {
     }
   } else if (type === "call.inbound") {
     const callId = data.call_id ?? data.id;
+    if (!callId) {
+      console.warn("[ns-webhook] inbound call without call id ignored");
+      return;
+    }
     const dndActive = isDndActive(brokerProfile);
-    await admin.from("planipret_phone_calls").insert({
+    const { data: insertedCall, error: insertCallError } = await admin.from("planipret_phone_calls").upsert({
       user_id: userId, ns_call_id: callId ? String(callId) : null, direction: "inbound",
       from_number: extractCaller(data) || null,
       to_number: data.to_number ?? data.to ?? null,
       status: dndActive ? "voicemail" : "inbound_ringing",
       metadata: dndActive ? { dnd_auto_voicemail: true, dnd_message: brokerProfile?.dnd_message_fr } : null,
-    });
+    }, { onConflict: "ns_call_id", ignoreDuplicates: true }).select("id").maybeSingle();
+    if (insertCallError) {
+      console.error("[ns-webhook] inbound call persist failed", insertCallError.message);
+      return;
+    }
+    if (!insertedCall) {
+      console.info("[ns-webhook] inbound call already persisted; duplicate push suppressed", { call_id: callId });
+      return;
+    }
     if (userId && !dndActive) {
       await admin.channel(`call-events:${userId}`).send({
         type: "broadcast", event: "inbound_call",

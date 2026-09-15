@@ -4,6 +4,9 @@ import { ensureIncomingCallActionType, showIncomingCallNotification } from "./lo
 
 let listenersRegistered = false;
 let apnsTokenUploaded = false;
+let listenersPromise: Promise<void> | null = null;
+let registerPromise: Promise<void> | null = null;
+let currentExtension = "";
 const PENDING_INCOMING_KEY = "pp.pending-incoming-action.v1";
 
 /** True once the OS push token has been accepted by the backend. Used by the
@@ -32,6 +35,32 @@ function publishIncomingAction(callId: string, action: IncomingNotificationActio
   } catch { /* ignore */ }
 }
 
+function notificationRoute(data: Record<string, string>): string {
+  const byType: Record<string, string> = {
+    sms: "/mplanipret/messages",
+    message: "/mplanipret/messages",
+    voicemail: "/mplanipret/voicemail",
+    missed_call: "/mplanipret/calls",
+    call: "/mplanipret/calls",
+    task: "/mplanipret/tasks",
+  };
+  const raw = String(data.deep_link ?? data.route ?? data.path ?? data.url ?? "").trim();
+  if (raw) {
+    try {
+      const path = raw.startsWith("/") ? raw : new URL(raw).pathname;
+      if (/^\/mplanipret(?:\/|$)/.test(path)) return path;
+    } catch { /* malformed/external route ignored */ }
+  }
+  return byType[String(data.type ?? data.category ?? "").toLowerCase()] ?? "/mplanipret/notifications";
+}
+
+function openInternalRoute(data: Record<string, string>) {
+  const route = notificationRoute(data);
+  if (window.location.pathname === route) return;
+  window.history.pushState(window.history.state, "", route);
+  window.dispatchEvent(new PopStateEvent("popstate"));
+}
+
 export async function ensureNotifications(extension?: string): Promise<PermStatus> {
   let status: PermStatus = "unavailable";
   try {
@@ -46,7 +75,12 @@ export async function ensureNotifications(extension?: string): Promise<PermStatu
       }
       if (status === "granted") {
         await registerPushListeners(extension);
-        await PushNotifications.register();
+        if (!registerPromise) {
+          registerPromise = PushNotifications.register()
+            .then(() => undefined)
+            .finally(() => { registerPromise = null; });
+        }
+        await registerPromise;
       }
     } catch {
       status = "denied";
@@ -58,9 +92,11 @@ export async function ensureNotifications(extension?: string): Promise<PermStatu
 }
 
 export async function registerPushListeners(extension?: string) {
+  currentExtension = extension || currentExtension;
   if (listenersRegistered) return;
+  if (listenersPromise) return listenersPromise;
   if (!(await isNative())) return;
-  try {
+  listenersPromise = (async () => {
     const { PushNotifications } = await import("@capacitor/push-notifications");
     const platform = await getPlatform();
 
@@ -68,7 +104,7 @@ export async function registerPushListeners(extension?: string) {
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           const { error } = await supabase.functions.invoke("mobile-register-push", {
-            body: { token: token.value, platform, extension: extension ?? "" },
+            body: { token: token.value, platform, extension: currentExtension },
           });
           if (!error) { apnsTokenUploaded = true; return; }
           console.warn("[push] register rejected", error);
@@ -146,6 +182,8 @@ export async function registerPushListeners(extension?: string) {
           ? "decline"
           : action.actionId === "answer" ? "answer" : "open";
         publishIncomingAction(callId, act, data.from ?? action.notification?.body);
+      } else {
+        openInternalRoute(data);
       }
     });
 
@@ -162,12 +200,16 @@ export async function registerPushListeners(extension?: string) {
             ? "decline"
             : event.actionId === "answer" ? "answer" : "open";
           publishIncomingAction(callId, act, event.notification?.body);
+        } else {
+          openInternalRoute(data);
         }
       });
     } catch { /* ignore */ }
 
     listenersRegistered = true;
-  } catch (e) {
+  })().catch((e) => {
+    listenersPromise = null;
     console.warn("[push] listener setup failed", e);
-  }
+  });
+  return listenersPromise;
 }

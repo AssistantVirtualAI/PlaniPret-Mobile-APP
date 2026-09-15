@@ -43,6 +43,9 @@ export function verifyIosScene({ soft = false } = {}) {
     if (!scene.includes("willConnectTo session")) {
       problems.push("SceneDelegate.swift ne contient pas `scene(_:willConnectTo:options:)` — la fenêtre racine ne sera pas créée.");
     }
+    if (!scene.includes("openURLContexts") || !scene.includes("ApplicationDelegateProxy.shared.application")) {
+      problems.push("SceneDelegate.swift ne transmet pas les deep links actifs/froids à Capacitor.");
+    }
   }
 
   // 2. Xcode project references SceneDelegate.swift
@@ -74,6 +77,16 @@ export function verifyIosScene({ soft = false } = {}) {
   const appDelegate = read(path.join(iosApp, "AppDelegate.swift"));
   if (appDelegate && !/UIScene\.(didActivate|willEnterForeground|didEnterBackground)Notification/.test(appDelegate)) {
     problems.push("AppDelegate.swift n'observe aucune notification `UIScene.*` — les transitions foreground/background SIP ne seront pas captées.");
+  }
+  if (appDelegate && !appDelegate.includes("capacitorDidRegisterForRemoteNotifications")) {
+    problems.push("AppDelegate.swift ne transmet pas le token APNs au plugin Capacitor PushNotifications.");
+  }
+  if (appDelegate && !appDelegate.includes("userInterfaceIdiom == .pad ? .all : .portrait")) {
+    problems.push("AppDelegate.swift doit autoriser toutes les orientations iPad et conserver portrait sur iPhone.");
+  }
+  const bridge = read(path.join(iosApp, "AppBridgeViewController.swift"));
+  if (bridge && !bridge.includes("userInterfaceIdiom == .pad ? .all : .portrait")) {
+    problems.push("AppBridgeViewController.swift doit respecter les orientations iPad requises par App Store.");
   }
 
   if (problems.length === 0) {

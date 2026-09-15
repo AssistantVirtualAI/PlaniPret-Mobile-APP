@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.SHOW_WHEN_LOCKED" />
     <uses-permission android:name="android.permission.TURN_SCREEN_ON" />
@@ -93,6 +94,17 @@
             android:exported="false"
             android:stopWithTask="false" />
 
+        <service
+            android:name=".PpFirebaseMessagingService"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.google.firebase.MESSAGING_EVENT" />
+            </intent-filter>
+        </service>
+        <service
+            android:name="com.capacitorjs.plugins.pushnotifications.MessagingService"
+            tools:node="remove" />
+
         <!-- BOOT RECEIVER — redémarre le service SIP après un reboot du téléphone -->
         <receiver
             android:name=".PpBootReceiver"
@@ -145,8 +157,6 @@
     <!-- ─── Service en arrière-plan (appels entrants) ───────────────────── -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
-    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
-    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
 
     <!-- ─── Caméra / Contacts (optionnel) ──────────────────────────────── -->
     <uses-permission android:name="android.permission.CAMERA" />

@@ -20,6 +20,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.*;
 import java.util.*;
 import java.util.concurrent.*;
+import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 
 public class PpSipKeepAliveService extends Service {
@@ -108,6 +109,10 @@ public class PpSipKeepAliveService extends Service {
       executor.execute(() -> { try { sendDecline(requestedCallId); } catch (Exception ignored) {} });
       return START_STICKY;
     }
+    if (wsSocket != null && wsSocket.isConnected() && !wsSocket.isClosed()
+        && ("registered".equals(lastStatus) || "connecting".equals(lastStatus))) {
+      return START_STICKY;
+    }
     emitStatus("connecting", "native_register_start");
     executor.execute(this::connectAndRegister);
     if (heartbeat != null) heartbeat.cancel(false);
@@ -121,7 +126,7 @@ public class PpSipKeepAliveService extends Service {
   @Override public void onDestroy() { if (heartbeat != null) heartbeat.cancel(true); unregisterNetworkWatchdog(); closeWs(); try { if (wakeLock != null && wakeLock.isHeld()) wakeLock.release(); } catch (Exception ignored) {} try { if (wifiLock != null && wifiLock.isHeld()) wifiLock.release(); } catch (Exception ignored) {} executor.shutdownNow(); emitStatus("disconnected", "service_destroyed"); super.onDestroy(); }
   @Override public IBinder onBind(Intent intent) { return null; }
 
-  private void registerNetworkWatchdog() { try { cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE); NetworkRequest req = new NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(); networkCallback = new ConnectivityManager.NetworkCallback() { @Override public void onAvailable(Network n) { emitStatus("registered", "network_available"); scheduleReconnect("network_available"); } @Override public void onLost(Network n) { emitStatus("reconnecting", "network_lost"); } }; cm.registerNetworkCallback(req, networkCallback); } catch(Exception ignored) {} }
+  private void registerNetworkWatchdog() { try { cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE); NetworkRequest req = new NetworkRequest.Builder().addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(); networkCallback = new ConnectivityManager.NetworkCallback() { @Override public void onAvailable(Network n) { emitStatus("reconnecting", "network_available"); scheduleReconnect("network_available"); } @Override public void onLost(Network n) { emitStatus("reconnecting", "network_lost"); } }; cm.registerNetworkCallback(req, networkCallback); } catch(Exception ignored) {} }
   private void unregisterNetworkWatchdog() { try { if (cm != null && networkCallback != null) cm.unregisterNetworkCallback(networkCallback); } catch(Exception ignored) {} networkCallback = null; }
 
   private void connectAndRegister() { synchronized (this) { try {
@@ -129,7 +134,12 @@ public class PpSipKeepAliveService extends Service {
     SharedPreferences p = getSharedPreferences(PREFS_NAME, MODE_PRIVATE);
     String host = p.getString("host", ""); int port = p.getInt("port", 443); String path = p.getString("path", "/");
     if (host == null || host.length() == 0) { emitStatus("error", "missing_host"); return; }
-    Socket raw = port == 443 ? SSLSocketFactory.getDefault().createSocket(host, port) : new Socket(host, port);
+    // WSS is TLS regardless of the TCP port. NetSapiens commonly exposes WSS
+    // on 9002; opening a plain Socket there makes the HTTP Upgrade fail before
+    // SIP REGISTER can ever be sent.
+    SSLSocket raw = (SSLSocket) SSLSocketFactory.getDefault().createSocket(host, port);
+    raw.setUseClientMode(true);
+    raw.startHandshake();
     raw.setKeepAlive(true);
     raw.setSoTimeout(90000);
     wsSocket = raw; wsIn = raw.getInputStream(); wsOut = raw.getOutputStream();
