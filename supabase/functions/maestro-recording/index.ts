@@ -8,6 +8,7 @@ import {
   json,
   maestroFetch,
 } from "../_shared/maestro.ts";
+import { authorizeCallAccess, requireApprovedCallConsent } from "../_shared/planipret-call-access.ts";
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -29,12 +30,16 @@ Deno.serve(async (req) => {
     const admin = adminClient();
     const { data: call } = await admin
       .from("planipret_phone_calls")
-      .select("id, user_id, ns_call_id, maestro_call_id, recording_url, metadata")
+      .select("id, user_id, ns_call_id, maestro_call_id, recording_url, metadata, save_consent, deleted_at")
       .eq("id", callId)
       .maybeSingle();
     if (!call) {
       return json({ available: false, reason: "call_not_found", url: null, recording_url: null });
     }
+    const access = await authorizeCallAccess(req, admin, call);
+    if (!access.ok) return json({ available: false, reason: access.error, url: null, recording_url: null }, access.status);
+    const consent = requireApprovedCallConsent(call);
+    if (!consent.ok) return json({ available: false, reason: consent.error, url: null, recording_url: null }, consent.status);
 
     // Cached URL check
     const cached = (call.metadata ?? {}) as Record<string, any>;

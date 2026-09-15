@@ -2,7 +2,18 @@ import fs from "node:fs";
 import path from "node:path";
 
 const root = process.cwd();
-const read = (p) => fs.readFileSync(path.join(root, p), "utf8");
+const mobileRoot = fs.existsSync(path.join(root, "android"))
+  ? root
+  : path.join(root, "apps", "planipret-mobile");
+const resolvePath = (p) => {
+  const direct = path.join(root, p);
+  return fs.existsSync(direct) ? direct : path.join(mobileRoot, p);
+};
+const read = (p) => fs.readFileSync(resolvePath(p), "utf8");
+const readOptional = (p) => {
+  const target = resolvePath(p);
+  return fs.existsSync(target) ? fs.readFileSync(target, "utf8") : null;
+};
 const failures = [];
 const check = (ok, message) => { if (!ok) failures.push(message); };
 
@@ -17,10 +28,14 @@ const backendHealth = read("supabase/functions/pp-sip-registration-check/index.t
 check(backendHealth.includes('platform === "ios" ? "M" : "W"'), "SIP health must validate M/PJSIP on iOS and W/JsSIP on Android");
 check(backendHealth.includes('from("mobile_push_tokens")') && backendHealth.includes('from("planipret_voip_push_tokens")'), "SIP health must validate FCM on Android and PushKit on iOS");
 
-const androidService = read("android/app/src/main/java/com/planipret/mobile/PpSipKeepAliveService.java");
-check(androidService.includes("SSLSocket raw") && androidService.includes("raw.startHandshake()"), "Android WSS must negotiate TLS on port 9002");
-const androidPlugin = read("android/app/src/main/java/com/planipret/mobile/PpSipKeepAlivePlugin.java");
-check(androidPlugin.includes("if (owns) PpSipKeepAliveService.stop"), "Android JsSIP ownership must stop the competing native WSS registration");
+const androidService = readOptional("android/app/src/main/java/com/planipret/mobile/PpSipKeepAliveService.java");
+const androidPlugin = readOptional("android/app/src/main/java/com/planipret/mobile/PpSipKeepAlivePlugin.java");
+if (androidService && androidPlugin) {
+  check(androidService.includes("SSLSocket raw") && androidService.includes("raw.startHandshake()"), "Android WSS must negotiate TLS on port 9002");
+  check(androidPlugin.includes("if (owns) PpSipKeepAliveService.stop"), "Android JsSIP ownership must stop the competing native WSS registration");
+} else {
+  console.warn("Mobile critical-flow: native Android sources absent from this monorepo checkout; validated in standalone release repository.");
+}
 
 const notifications = read("src/lib/native/permissions/notifications.ts");
 check(notifications.includes("listenersPromise") && notifications.includes("registerPromise"), "Push setup must be single-flight");
@@ -32,6 +47,10 @@ check(webhook.includes('functions/v1/pp-auto-process-call'), "CDR webhook must e
 check(!webhook.includes('functions/v1/ai-analyze-call'), "CDR webhook must not invoke AI before consent");
 check(!webhook.includes('functions/v1/maestro-sync-call'), "CDR webhook must not push Maestro before consent");
 check(webhook.includes('ignoreDuplicates: true'), "Incoming call persistence must suppress duplicate pushes across Edge instances");
+check(webhook.includes('stableWebhookId("sms"') && webhook.includes('duplicate SMS ignored') && webhook.includes('stableWebhookId("voicemail"') && webhook.includes('duplicate voicemail ignored'), "SMS and voicemail webhooks must be idempotent before broadcast/push");
+
+const nsCalls = read("supabase/functions/pp-ns-calls/index.ts");
+check(nsCalls.includes("callback_disabled_use_sip_dialog") && !nsCalls.includes('"call-orig-user": `${deviceName}'), "Inbound answer fallback must never create a callback/double call");
 
 const consent = read("supabase/functions/pp-call-consent/index.ts");
 check(consent.includes('already_approved') && consent.includes('functions/v1/pp-auto-process-call'), "Consent approval must be idempotent and trigger one orchestrator");
@@ -41,6 +60,7 @@ check(!maestroSync.includes('invoke("maestro-task"'), "Post-call analysis must n
 check(maestroSync.includes('requires_broker_confirmation'), "Suggested post-call tasks must remain pending broker confirmation");
 const push = read("supabase/functions/pp-push-notify/index.ts");
 check(push.includes('notifError?.code === "23505"') && push.includes("idempotency_key"), "Push notification logging must suppress retry duplicates");
+check(push.includes("delivery_attempts") && push.includes("retryable: true") && push.includes("existing?.delivered"), "Undelivered idempotent pushes must remain retryable without duplicate in-app rows");
 
 for (const file of [
   "supabase/functions/ns-get-recording/index.ts",
@@ -49,12 +69,17 @@ for (const file of [
   "supabase/functions/pp-coach-call/index.ts",
   "supabase/functions/pp-auto-process-call/index.ts",
   "supabase/functions/maestro-cdr/index.ts",
+  "supabase/functions/maestro-transcript/index.ts",
+  "supabase/functions/maestro-ai-analysis/index.ts",
+  "supabase/functions/maestro-recording/index.ts",
   "supabase/functions/ai-analyze-call/index.ts",
 ]) {
   const source = read(file);
   check(source.includes("authorizeCallAccess"), `${file} must enforce call ownership/service identity`);
   check(source.includes("requireApprovedCallConsent"), `${file} must enforce approved post-call consent`);
 }
+const recordingsList = read("supabase/functions/pp-ns-recordings/index.ts");
+check(recordingsList.includes('eq("save_consent", "approved")') && recordingsList.includes("user_id.eq.${ctx.userId}") && recordingsList.includes("ownerScope") && recordingsList.includes("call_consent_required"), "pp-ns-recordings must return only owned, approved calls");
 
 const mobileShell = read("src/pages/planipret/PlanipretMobile.tsx");
 check(mobileShell.includes("<PostCallConsentSheet"), "The shipped mobile shell must mount PostCallConsentSheet");

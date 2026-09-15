@@ -127,7 +127,11 @@ Deno.serve(async (req) => {
           fd.append("index", String(greetingIndex));
           fd.append("convert", "yes");
           fd.append("synchronous", "yes");
-          fd.append("File", new Blob([audioBytes], { type: mime }), fileName);
+          const audioBuffer = audioBytes.buffer.slice(
+            audioBytes.byteOffset,
+            audioBytes.byteOffset + audioBytes.byteLength,
+          ) as ArrayBuffer;
+          fd.append("File", new Blob([audioBuffer], { type: mime }), fileName);
 
           let r = await fetch(url, {
             method: "POST",
@@ -184,19 +188,23 @@ Deno.serve(async (req) => {
         await admin.from("planipret_profiles").update({ voicemail_greeting_active: true }).eq("id", profile.id);
       }
 
-      await admin.from("planipret_audit_log").insert({
-        user_id: userId,
-        action: "voicemail_greeting_record",
-        metadata: {
-          pushed_to_ns: pushedToNs,
-          push_error: pushError,
-          push_detail: pushDetail,
-          bytes: audioBytes.length,
-          mime,
-          greeting_index: greetingIndex,
-          duration_seconds: body.duration_seconds ?? null,
-        },
-      }).then(() => null).catch(() => null);
+      try {
+        await admin.from("planipret_audit_log").insert({
+          user_id: userId,
+          action: "voicemail_greeting_record",
+          metadata: {
+            pushed_to_ns: pushedToNs,
+            push_error: pushError,
+            push_detail: pushDetail,
+            bytes: audioBytes.length,
+            mime,
+            greeting_index: greetingIndex,
+            duration_seconds: body.duration_seconds ?? null,
+          },
+        });
+      } catch {
+        // Audit logging is non-fatal for the greeting upload itself.
+      }
     }
 
     return jsonResponse({

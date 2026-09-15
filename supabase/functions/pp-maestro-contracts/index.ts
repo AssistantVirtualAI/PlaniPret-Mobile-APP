@@ -73,12 +73,9 @@ Deno.serve(async (req) => {
   if (!brokerProfileId && !canReadMultiple) brokerProfileId = callerProfile.id;
 
   const ownToken = await getUserMaestroAccessToken(admin, guard.user.id).catch(() => null);
-  const firm = await getMaestroAdminAccessToken();
-  const staticToken = Deno.env.get("PLANIPRET_ACCESS_TOKEN") ?? null;
   const needsFirmScope = canReadMultiple && (!brokerProfileId || brokerProfileId !== callerProfile.id);
-  const token = needsFirmScope
-    ? (firm.token ?? staticToken ?? ownToken)
-    : (ownToken ?? firm.token ?? staticToken);
+  const firm = needsFirmScope ? await getMaestroAdminAccessToken() : { token: null };
+  const token = needsFirmScope ? firm.token : ownToken;
   if (!token) return json({ ok: false, error: "maestro_not_connected" }, 200);
 
   let q = admin

@@ -17,6 +17,7 @@ import {
 import { callAnthropic } from "../_shared/anthropic.ts";
 import { callCorrelationId, ensureMaestroCall } from "../_shared/maestro-guard.ts";
 import { recordingPermalink } from "../_shared/recording-link.ts";
+import { authorizeCallAccess, requireApprovedCallConsent } from "../_shared/planipret-call-access.ts";
 
 
 
@@ -85,10 +86,14 @@ Deno.serve(async (req) => {
     const admin = adminClient();
     const { data: call } = await admin
       .from("planipret_phone_calls")
-      .select("id, user_id, transcript, ai_summary, maestro_client_id, maestro_call_id, ns_call_id")
+      .select("id, user_id, transcript, ai_summary, maestro_client_id, maestro_call_id, ns_call_id, save_consent, deleted_at")
       .eq("id", call_id)
       .maybeSingle();
     if (!call) return json({ success: false, error: "call_not_found" }, 404);
+    const access = await authorizeCallAccess(req, admin, call);
+    if (!access.ok) return json({ success: false, error: access.error }, access.status);
+    const consent = requireApprovedCallConsent(call);
+    if (!consent.ok) return json({ success: false, error: consent.error }, consent.status);
     if (!call.transcript) return json({ success: false, error: "no_transcript" }, 200);
     if (call.ai_summary && !force) return json({ success: true, cached: true });
 
@@ -175,28 +180,8 @@ Deno.serve(async (req) => {
       console.warn("push ai_summary to maestro failed", e);
     }
 
-    // Auto-create high-priority tasks
-    try {
-      const supaUrl = Deno.env.get("SUPABASE_URL")!;
-      const anon = Deno.env.get("SUPABASE_ANON_KEY")!;
-      const highs = (analysis.next_actions ?? []).filter((a: any) => a.priority === "high");
-      for (const a of highs) {
-        if (!call.maestro_client_id) break;
-        const due = new Date(Date.now() + (a.due_days ?? 3) * 86400_000).toISOString();
-        fetch(`${supaUrl}/functions/v1/maestro-task`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${anon}` },
-          body: JSON.stringify({
-            maestro_client_id: call.maestro_client_id,
-            title: a.title,
-            due_date: due,
-            priority: "high",
-            call_id,
-            source: "ai_summary",
-          }),
-        }).catch(() => {});
-      }
-    } catch {}
+    // `next_actions` are suggestions only. AVA must present them to the broker;
+    // no task is created until the broker explicitly confirms the action.
 
     await setPipelineStep(admin, call_id, "ai", "done", {
       lead_score: analysis.lead_score,
@@ -234,4 +219,3 @@ Deno.serve(async (req) => {
     return json({ success: false, error: e?.message ?? "server_error" }, 500);
   }
 });
-

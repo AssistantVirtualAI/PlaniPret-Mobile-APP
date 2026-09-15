@@ -140,7 +140,7 @@ export async function onPlanipretIncomingCallAnswered(cb: (data: { callUUID: str
   return addDedupedCapListener("PpVoipCall", NativePpVoipCall, "incomingCallAnswered", (data: any) => cb(data ?? {}));
 }
 
-export async function onPlanipretIncomingCallRejected(cb: (data: { callUUID: string; callId?: string }) => void): Promise<() => void> {
+export async function onPlanipretIncomingCallRejected(cb: (data: { callUUID: string; callId?: string; source?: "pjsip" | "jssip" }) => void): Promise<() => void> {
   if (platform() !== "ios") return () => undefined;
   return addDedupedCapListener("PpVoipCall", NativePpVoipCall, "incomingCallRejected", (data: any) => cb(data ?? {}));
 }

@@ -11,8 +11,12 @@ Deno.serve(async (req) => {
   try {
     const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
     const body = await req.json().catch(() => ({} as any));
+    const bearer = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
 
     if (body?.all === true) {
+      if (!bearer || bearer !== Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")) {
+        return j({ error: "service_role_required" }, 403);
+      }
       const cutoff = new Date(Date.now() + 10 * 60 * 1000).toISOString();
       const { data: rows } = await admin.from("planipret_profiles")
         .select("id, user_id, ms365_refresh_token, ms365_token_expiry, ms365_auth_paused_at")

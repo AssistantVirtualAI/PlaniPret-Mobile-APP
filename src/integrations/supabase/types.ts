@@ -8852,7 +8852,11 @@ export type Database = {
           data: Json
           deep_link: string | null
           delivered: boolean
+          delivery_attempts: number
           id: string
+          idempotency_key: string | null
+          last_delivery_at: string | null
+          last_delivery_error: string | null
           read_at: string | null
           title: string
           user_id: string
@@ -8864,7 +8868,11 @@ export type Database = {
           data?: Json
           deep_link?: string | null
           delivered?: boolean
+          delivery_attempts?: number
           id?: string
+          idempotency_key?: string | null
+          last_delivery_at?: string | null
+          last_delivery_error?: string | null
           read_at?: string | null
           title: string
           user_id: string
@@ -8876,7 +8884,11 @@ export type Database = {
           data?: Json
           deep_link?: string | null
           delivered?: boolean
+          delivery_attempts?: number
           id?: string
+          idempotency_key?: string | null
+          last_delivery_at?: string | null
+          last_delivery_error?: string | null
           read_at?: string | null
           title?: string
           user_id?: string
@@ -11718,6 +11730,9 @@ export type Database = {
       }
       planipret_profiles: {
         Row: {
+          ai_consent_at: string | null
+          ai_consent_revoked_at: string | null
+          ai_consent_version: string | null
           auth_method: string | null
           ava_autonomy_mode: string
           ava_chat_mode: string
@@ -11827,6 +11842,9 @@ export type Database = {
           widget_enabled: boolean
         }
         Insert: {
+          ai_consent_at?: string | null
+          ai_consent_revoked_at?: string | null
+          ai_consent_version?: string | null
           auth_method?: string | null
           ava_autonomy_mode?: string
           ava_chat_mode?: string
@@ -11936,6 +11954,9 @@ export type Database = {
           widget_enabled?: boolean
         }
         Update: {
+          ai_consent_at?: string | null
+          ai_consent_revoked_at?: string | null
+          ai_consent_version?: string | null
           auth_method?: string | null
           ava_autonomy_mode?: string
           ava_chat_mode?: string

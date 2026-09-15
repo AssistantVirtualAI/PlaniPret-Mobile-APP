@@ -236,60 +236,15 @@ Deno.serve(async (req) => {
       }, 200);
     }
 
-    // Click-to-call pickup for inbound calls when the SIP WebSocket is not
-    // usable (wss://core*.cluster1.ucstack.io:9002 is not publicly reachable).
-    // NS-API: POST /domains/{d}/users/{ext}/calls with the mobile AOR as
-    // origination and the caller as termination, auto-answered on our leg.
+    // A callback cannot answer the original SIP dialog and creates a second
+    // outbound call with different media. Keep this legacy action explicitly
+    // disabled so no client can reintroduce the false-answer/double-call path.
     if (action === "callback") {
-      const payload = cachedBody ?? (await req.json().catch(() => ({})));
-      const raw = String(payload?.number ?? payload?.from_number ?? "");
-      const digits = raw.replace(/[^\d+]/g, "");
-      if (!digits) return jsonResponse({ success: false, error: "number required" }, 200);
-      let dest = digits;
-      const bare = digits.replace(/\D/g, "");
-      if (bare.length >= 2 && bare.length <= 6) {
-        dest = bare;
-      } else if (!dest.startsWith("+")) {
-        dest = "+" + (bare.length === 10 ? "1" + bare : bare);
-      }
-
-      let deviceName = mobileDeviceId(ctx.extension);
-      try {
-        const { data: profileDevice } = await guard.supabase
-          .from("planipret_profiles")
-          .select("ns_mobile_device_id")
-          .eq("user_id", ctx.userId)
-          .maybeSingle();
-        if (profileDevice?.ns_mobile_device_id) deviceName = String(profileDevice.ns_mobile_device_id);
-      } catch { /* keep default */ }
-
-      const cbCallId = crypto.randomUUID();
-      const nsDest = dest.replace(/^\+/, "");
-      const cbBody = (term: string) => ({
-        "call-id": cbCallId,
-        "call-orig-user": `${deviceName}@${ctx.nsDomain}`,
-        "call-term-user": term,
-        "auto-answer-enabled": "yes",
-        "synchronous": "no",
-      });
-      console.log(`[pp-ns-calls] callback orig=${deviceName}@${ctx.nsDomain} term=${nsDest}`);
-      let res = await nsFetch(base, { method: "POST", body: JSON.stringify(cbBody(nsDest)) });
-      let text = await res.text();
-      let parsed: any = null;
-      try { parsed = text ? JSON.parse(text) : null; } catch { parsed = text; }
-      if (res.status === 404 && nsDest !== dest) {
-        res = await nsFetch(base, { method: "POST", body: JSON.stringify(cbBody(dest)) });
-        text = await res.text();
-        try { parsed = text ? JSON.parse(text) : null; } catch { parsed = text; }
-      }
-      const ok = res.ok || res.status === 202;
       return jsonResponse({
-        success: ok,
-        call_id: parsed?.["call-id"] ?? parsed?.call_id ?? cbCallId,
-        destination: dest,
-        ns_status: res.status,
-        error: ok ? undefined : ((typeof parsed === "object" && parsed?.message) || `NS-API error ${res.status}`),
-      }, 200);
+        success: false,
+        error: "callback_disabled_use_sip_dialog",
+        message: "Répondez uniquement au dialogue SIP entrant; aucun nouvel appel serveur n'est créé.",
+      }, 409);
     }
 
     // ---- Transfert supervisé (attended transfer) -------------------------

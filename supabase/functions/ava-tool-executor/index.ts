@@ -297,6 +297,21 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
     }
     if (!to_number) return { success: false, error: "to_number_required" };
     to_number = normalizePhoneE164(to_number) ?? to_number;
+    // Chemin unique sur l'app mobile : iOS passe par PJSIP/CallKit et Android
+    // par JsSIP/WSS. Un click-to-call serveur créerait une seconde jambe.
+    const platform = String(p?.platform ?? p?.client_platform ?? "").toLowerCase();
+    const clientType = String(p?.client_type ?? "mobile").toLowerCase();
+    const isMobileClient = platform === "ios" || platform === "android" ||
+      clientType === "mobile" || clientType === "native";
+    if (isMobileClient) {
+      await broadcastNav(ctx, "/mplanipret/calls", { open_dialer: { number: to_number, autoDial: true } });
+      return {
+        success: true,
+        execution: "client_softphone",
+        destination: to_number,
+        message: `J'ai préparé l'appel vers ${contact_name ?? to_number} sur ton softphone.`,
+      };
+    }
     const r = await callPlanipretFunction(ctx, "pp-ns-calls", {
       action: "start",
       to_number,
@@ -637,10 +652,22 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
 
   // ===== MAESTRO — endpoints mobiles (/users/{id}/clients|brokers) =====
   async list_my_clients(ctx, p) {
+    const main = await callPlanipretFunction(ctx, "pp-maestro-scribe", {
+      action: "clients.list",
+      query: { search: p?.search, per_page: p?.limit ?? 25 },
+    });
+    const md: any = main.data ?? {};
+    const rows = Array.isArray(md?.data) ? md.data : (Array.isArray(md?.result?.data) ? md.result.data : null);
+    if (main.httpOk && md?.ok === true && rows) {
+      return { success: true, source: "api_main", clients: rows, count: rows.length };
+    }
+
+    // Compatibilité lecture seule avec l'annuaire Telecom quand le déploiement
+    // /api/main ne publie pas encore la collection clients.
     const r = await maestroActions(ctx, "list_clients", { search: p?.search, limit: p?.limit ?? 25 });
     return r?.success
-      ? { success: true, clients: r.clients ?? [], count: (r.clients ?? []).length }
-      : { success: false, error: r?.error ?? "maestro_list_clients_failed" };
+      ? { success: true, source: "telecom_readonly_fallback", clients: r.clients ?? [], count: (r.clients ?? []).length }
+      : { success: false, error: r?.error ?? md?.error ?? "maestro_list_clients_failed" };
   },
 
   async get_maestro_client_profile(ctx, p) {

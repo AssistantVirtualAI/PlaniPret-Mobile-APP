@@ -31,6 +31,15 @@ async function getAuthedUser(req: Request) {
     { auth: { autoRefreshToken: false, persistSession: false } },
   );
   const token = authHeader.replace(/^Bearer\s+/i, "");
+  const serviceRole = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+  if (serviceRole && token === serviceRole) {
+    const body = await req.clone().json().catch(() => ({} as any));
+    const userId = String(body?._user_id ?? body?.broker_user_id ?? "").trim();
+    if (!userId) return { error: json(401, { error: "broker_user_required" }) };
+    const { data } = await admin.auth.admin.getUserById(userId);
+    if (!data?.user) return { error: json(401, { error: "broker_user_invalid" }) };
+    return { user: data.user, admin, authHeader } as GuardSuccess;
+  }
   const { data, error } = await admin.auth.getUser(token);
   if (error || !data?.user) return { error: json(401, { error: "unauthorized" }) };
   return { user: data.user, admin, authHeader } as GuardSuccess;

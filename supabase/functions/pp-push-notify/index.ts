@@ -77,17 +77,35 @@ Deno.serve(async (req) => {
       deep_link: finalDeepLink,
       ...(safeIdempotencyKey ? { idempotency_key: safeIdempotencyKey } : {}),
     };
-    const { data: notifRow, error: notifError } = await admin.from("planipret_ava_notifications").insert({
+    let { data: notifRow, error: notifError } = await admin.from("planipret_ava_notifications").insert({
       user_id, category: cat, title: safeTitle, body: safeText || null,
       data: notificationData, deep_link: finalDeepLink,
       delivered: false,
-    }).select("id").maybeSingle();
+      delivery_attempts: 0,
+      ...(safeIdempotencyKey ? { idempotency_key: safeIdempotencyKey } : {}),
+    }).select("id, delivered, delivery_attempts").maybeSingle();
     if (notifError?.code === "23505" && safeIdempotencyKey) {
-      return json({ delivered: 0, duplicate: true, logged: true });
+      const { data: existing } = await admin.from("planipret_ava_notifications")
+        .select("id, delivered, delivery_attempts")
+        .eq("idempotency_key", safeIdempotencyKey)
+        .maybeSingle();
+      if (existing?.delivered) return json({ delivered: 0, duplicate: true, logged: true });
+      if (!existing?.id) return json({ error: "notification_retry_lookup_failed" }, 500);
+      notifRow = existing;
+      notifError = null;
     }
     if (notifError) return json({ error: "notification_log_failed" }, 500);
 
-    if (!allowed) return json({ delivered: 0, blocked_by_preference: true, logged: true });
+    if (!allowed) {
+      if (notifRow?.id) await admin.from("planipret_ava_notifications")
+        .update({ last_delivery_error: "blocked_by_preference" }).eq("id", notifRow.id);
+      return json({ delivered: 0, blocked_by_preference: true, logged: true });
+    }
+
+    const attempt = Number(notifRow?.delivery_attempts ?? 0) + 1;
+    if (notifRow?.id) await admin.from("planipret_ava_notifications")
+      .update({ delivery_attempts: attempt, last_delivery_at: new Date().toISOString(), last_delivery_error: null })
+      .eq("id", notifRow.id);
 
     // 1) Native devices (iOS APNs / Android FCM) — the installed mobile apps.
     const native = await sendNativeAlertPush(admin, user_id, {
@@ -115,11 +133,14 @@ Deno.serve(async (req) => {
     }
     if (delivered > 0 && notifRow?.id) {
       await admin.from("planipret_ava_notifications")
-        .update({ delivered: true }).eq("id", notifRow.id);
+        .update({ delivered: true, last_delivery_error: null }).eq("id", notifRow.id);
     }
     if (expired.length) await admin.from("planipret_push_subscriptions").delete().in("id", expired);
     if (delivered === 0) {
-      return json({ delivered: 0, logged: true, reason: native.reason ?? (vapidReady ? "no_subscription" : "vapid_not_configured"), native });
+      const reason = native.reason ?? (vapidReady ? "no_subscription" : "vapid_not_configured");
+      if (notifRow?.id) await admin.from("planipret_ava_notifications")
+        .update({ last_delivery_error: String(reason).slice(0, 300) }).eq("id", notifRow.id);
+      return json({ delivered: 0, logged: true, retryable: true, reason, native });
     }
     return json({ delivered, native, expired: expired.length });
 

@@ -35,10 +35,7 @@ const TIMEOUT_MS = 15_000;
 type Admin = ReturnType<typeof supaAdmin>;
 
 async function planipretToken(admin: Admin, userId: string): Promise<string | null> {
-  const oauth = await getUserMaestroAccessToken(admin, userId).catch(() => null);
-  if (oauth) return oauth;
-  const env = Deno.env.get("PLANIPRET_ACCESS_TOKEN") ?? "";
-  return env || null;
+  return await getUserMaestroAccessToken(admin, userId).catch(() => null);
 }
 
 function makeApiFetch(token: string | null) {
@@ -293,6 +290,9 @@ Deno.serve(async (req) => {
 
   try {
     const token = await planipretToken(admin, userId);
+    if (!token) {
+      return jsonResponse({ success: false, error: "maestro_not_connected", correlation_id }, 200);
+    }
 
     // Resolve, once per request, the Maestro team(s) this broker belongs to.
     // Source of truth: `task_targets.user.eligible_broker_ids` from the Maestro

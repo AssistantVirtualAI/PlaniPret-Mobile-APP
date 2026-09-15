@@ -65,6 +65,24 @@ Deno.serve(async (req) => {
   try {
     // ── GET enregistrement d'un appel spécifique ─────────────────────────────
     if (action === "get" && callId) {
+      const callSelect = "id, user_id, extension, save_consent, deleted_at";
+      const ownerScope = `user_id.eq.${ctx.userId},user_id.eq.${ctx.profileId},extension.eq.${ctx.extension}`;
+      let approvedCall: any = null;
+      for (const column of ["id", "ns_call_id", "ns_callid", "ns_orig_callid", "ns_term_callid"]) {
+        const { data: row } = await supabase
+          .from("planipret_phone_calls")
+          .select(callSelect)
+          .eq(column, String(callId))
+          .or(ownerScope)
+          .limit(1)
+          .maybeSingle();
+        if (row) { approvedCall = row; break; }
+      }
+      if (!approvedCall) return jsonResponse({ error: "call_not_found" }, 404);
+      if (approvedCall.deleted_at) return jsonResponse({ error: "call_deleted" }, 410);
+      if (String(approvedCall.save_consent ?? "pending") !== "approved") {
+        return jsonResponse({ error: "call_consent_required" }, 409);
+      }
       // NS-API v2: GET /domains/{domain}/users/{user}/recordings/{call_id}
       const res = await nsFetch(
         `/domains/${encodeURIComponent(ctx.nsDomain)}/users/${encodeURIComponent(ctx.extension)}/recordings/${encodeURIComponent(callId)}`,
@@ -133,8 +151,10 @@ Deno.serve(async (req) => {
       // the broker's extension, even if user_id wasn't tagged at sync time.
       const { data: local } = await supabase
         .from("planipret_phone_calls")
-        .select("id, user_id, ns_call_id, ns_callid, ns_orig_callid, ns_term_callid, extension, direction, status, from_number, from_name, to_number, to_name, started_at, duration_seconds, recording_url, has_recording, ai_summary, transcript, transcript_segments, transcript_language, ai_coaching, ai_key_points, ai_client_insights, maestro_synced, maestro_client_id, pipeline_state")
-        .or(`user_id.eq.${ctx.profileId},extension.eq.${ctx.extension}`)
+        .select("id, user_id, ns_call_id, ns_callid, ns_orig_callid, ns_term_callid, extension, direction, status, from_number, from_name, to_number, to_name, started_at, duration_seconds, recording_url, has_recording, ai_summary, transcript, transcript_segments, transcript_language, ai_coaching, ai_key_points, ai_client_insights, maestro_synced, maestro_client_id, pipeline_state, save_consent, deleted_at")
+        .or(`user_id.eq.${ctx.userId},user_id.eq.${ctx.profileId},extension.eq.${ctx.extension}`)
+        .eq("save_consent", "approved")
+        .is("deleted_at", null)
         .gte("started_at", start)
         .lte("started_at", end)
         .order("started_at", { ascending: false })
@@ -142,6 +162,18 @@ Deno.serve(async (req) => {
       const byNsId = new Map<string, any>();
       (local ?? []).forEach((r: any) => {
         [r.ns_call_id, r.ns_callid, r.ns_orig_callid, r.ns_term_callid].filter(Boolean).forEach((id: string) => byNsId.set(id, r));
+      });
+
+      // Never expose a raw NS recording unless it maps to a locally owned call
+      // whose post-call consent has been explicitly approved.
+      nsItems = nsItems.filter((it: any) => {
+        const ids = [
+          val(it, ["call-parent-cdr-id", "cdr-id", "cdr_id", "id", "uuid", "call_id", "call-id"]),
+          val(it, ["call-id", "call_id", "callid", "call-parent-call-id", "orig_callid", "term_callid"]),
+          val(it, ["call-orig-call-id", "orig_callid", "orig-callid", "orig-call-id"]),
+          val(it, ["call-term-call-id", "term_callid", "term-callid", "term-call-id"]),
+        ].filter(Boolean);
+        return ids.some((id) => byNsId.has(String(id)));
       });
 
       const items = nsItems.map((it: any, i: number) => {

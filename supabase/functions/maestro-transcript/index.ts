@@ -16,6 +16,7 @@ import {
   telecomAuth,
   updateCallPipeline,
 } from "../_shared/maestro.ts";
+import { authorizeCallAccess, requireApprovedCallConsent } from "../_shared/planipret-call-access.ts";
 
 // Un WAV « en-tête seulement » (~1,3 Ko) ne contient aucun son : le fournisseur STT
 // le refuse systématiquement en HTTP 400. On n'envoie rien en dessous de ce seuil.
@@ -90,14 +91,18 @@ Deno.serve(async (req) => {
     const admin = adminClient();
     const { data: call } = await admin
       .from("planipret_phone_calls")
-      .select("id, user_id, ns_call_id, ns_callid, ns_orig_callid, ns_term_callid, extension, maestro_call_id, recording_url, transcript, transcript_segments, transcript_language, metadata")
+      .select("id, user_id, ns_call_id, ns_callid, ns_orig_callid, ns_term_callid, extension, maestro_call_id, recording_url, transcript, transcript_segments, transcript_language, metadata, save_consent, deleted_at")
       .eq("id", call_id)
       .maybeSingle();
     if (!call) return json({ success: false, error: "call_not_found" }, 404);
+    const access = await authorizeCallAccess(req, admin, call);
+    if (!access.ok) return json({ success: false, error: access.error }, access.status);
+    const consent = requireApprovedCallConsent(call);
+    if (!consent.ok) return json({ success: false, error: consent.error }, consent.status);
 
     if (call.transcript && !force) {
       // Still trigger AI in case it wasn't done
-      triggerAi(call_id);
+      triggerAi(call_id, call.user_id);
       return json({
         success: true,
         transcript: call.transcript,
@@ -289,7 +294,7 @@ Deno.serve(async (req) => {
     });
 
     // 5. Trigger AI analysis (fire and forget)
-    triggerAi(call_id);
+    triggerAi(call_id, call.user_id);
 
     return json({
       success: true,
@@ -305,14 +310,14 @@ Deno.serve(async (req) => {
   }
 });
 
-function triggerAi(call_id: string) {
+function triggerAi(call_id: string, userId: string | null) {
   try {
     const url = Deno.env.get("SUPABASE_URL")!;
-    const anon = Deno.env.get("SUPABASE_ANON_KEY")!;
+    const serviceRole = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
     fetch(`${url}/functions/v1/maestro-ai-analysis`, {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${anon}` },
-      body: JSON.stringify({ call_id }),
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${serviceRole}` },
+      body: JSON.stringify({ call_id, _user_id: userId }),
     }).catch(() => {});
   } catch {}
 }

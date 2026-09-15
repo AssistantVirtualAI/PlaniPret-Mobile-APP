@@ -20,6 +20,20 @@ function extractCaller(data: any): string {
   return /^\+?[0-9*#]{2,}$/.test(user) ? user : user;
 }
 
+async function stableWebhookId(prefix: string, data: any, explicit: unknown): Promise<string> {
+  const value = String(explicit ?? "").trim();
+  if (value) return value.slice(0, 240);
+  const canonical = JSON.stringify({
+    from: data?.from_number ?? data?.from ?? null,
+    to: data?.to_number ?? data?.to ?? null,
+    body: data?.body ?? data?.message ?? null,
+    duration: data?.duration ?? data?.duration_seconds ?? null,
+    created: data?.created_at ?? data?.timestamp ?? data?.time ?? null,
+  });
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(canonical));
+  return `${prefix}:${Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join("")}`;
+}
+
 const ok = () => new Response(JSON.stringify({ received: true }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
 function b64url(input: ArrayBuffer | string) {
@@ -367,13 +381,20 @@ async function processEvent(event: any) {
       });
     }
   } else if (type === "message.inbound") {
-    const { data: inboundMsg } = await admin.from("planipret_phone_messages").insert({
+    if (!userId) return;
+    const messageId = await stableWebhookId("sms", data, data.id ?? data.message_id ?? data["message-id"]);
+    const { data: inboundMsg, error: messageError } = await admin.from("planipret_phone_messages").insert({
       user_id: userId, direction: "inbound",
-      from_number: data.from_number ?? data.from ?? null, ns_message_id: data.id ?? data.message_id ?? data["message-id"] ?? null, thread_id: data.messagesession_id ?? data["messagesession-id"] ?? null,
+      from_number: data.from_number ?? data.from ?? null, ns_message_id: messageId, thread_id: data.messagesession_id ?? data["messagesession-id"] ?? null,
       to_number: data.to_number ?? data.to ?? null,
       body: data.body ?? data.message ?? "",
       type: "sms",
     }).select("id").maybeSingle();
+    if (messageError?.code === "23505") {
+      console.log("[ns-webhook] duplicate SMS ignored", { ns_message_id: messageId });
+      return;
+    }
+    if (messageError || !inboundMsg?.id) throw messageError ?? new Error("message_insert_failed");
     if (inboundMsg?.id) {
       fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/maestro-sync-message`, {
         method: "POST",
@@ -394,17 +415,24 @@ async function processEvent(event: any) {
           title: `💬 ${data.from_number ?? data.from ?? "SMS"}`,
           body: String(data.body ?? data.message ?? "").slice(0, 140),
           data: { url: "/mplanipret/messages" },
+          idempotency_key: `inbound_sms:${messageId}`,
         });
       }
     }
   } else if (type === "voicemail.new") {
-    const vmId = data.vm_id ?? data.id;
-    await admin.from("planipret_voicemails").insert({
-      user_id: userId, vm_id: vmId,
+    if (!userId) return;
+    const vmId = await stableWebhookId("voicemail", data, data.vm_id ?? data.id ?? data.message_id ?? data["message-id"]);
+    const { data: voicemail, error: voicemailError } = await admin.from("planipret_voicemails").insert({
+      user_id: userId, ns_vm_id: vmId,
       from_number: data.from_number ?? data.from ?? null, ns_message_id: data.id ?? data.message_id ?? data["message-id"] ?? null, thread_id: data.messagesession_id ?? data["messagesession-id"] ?? null,
       duration_seconds: data.duration ?? data.duration_seconds ?? null,
       is_read: false,
-    });
+    }).select("id").maybeSingle();
+    if (voicemailError?.code === "23505") {
+      console.log("[ns-webhook] duplicate voicemail ignored", { ns_vm_id: vmId });
+      return;
+    }
+    if (voicemailError || !voicemail?.id) throw voicemailError ?? new Error("voicemail_insert_failed");
     if (userId) {
       await admin.channel(`voicemails:${userId}`).send({
         type: "broadcast", event: "new_voicemail",
@@ -416,6 +444,7 @@ async function processEvent(event: any) {
           body: `De ${data.from_number ?? data.from ?? "inconnu"}`,
           data: { url: "/mplanipret/voicemail" },
           actions: [{ action: "listen", title: "Écouter" }],
+          idempotency_key: `inbound_voicemail:${vmId}`,
         });
       }
     }

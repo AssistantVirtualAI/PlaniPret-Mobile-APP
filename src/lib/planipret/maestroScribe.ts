@@ -47,6 +47,7 @@ async function call<T = any>(
 export const scribeDiag = () => call("diag");
 
 export const clients = {
+  list: (query: Record<string, any> = {}) => call("clients.list", { query }),
   get: (id: string | number) => call("clients.get", { id }),
   create: (payload: Record<string, unknown>) => call("clients.create", { payload }),
   update: (id: string | number, payload: Record<string, unknown>) => call("clients.update", { id, payload }),
@@ -90,24 +91,26 @@ export interface ContractFilters {
 export const contracts = {
   /** Sans filtre, les admins reçoivent le mois précédent. */
   list: (filters: ContractFilters = {}) => call("contracts.list", { query: filters }),
+  get: (id: string | number) => call("contracts.get", { id }),
   create: (payload: Record<string, unknown>) => call("contracts.create", { payload }),
   update: (id: string | number, payload: Record<string, unknown>) => call("contracts.update", { id, payload }),
   remove: (id: string | number) => call("contracts.delete", { id }),
 };
 
-/** Les 20 opérations documentées, utilisées par les tests de couverture mobile. */
+/** Les opérations documentées, utilisées par les tests de couverture mobile. */
 export const MAESTRO_OFFICIAL_ACTIONS = [
-  "clients.get", "clients.create", "clients.update",
+  "clients.list", "clients.get", "clients.create", "clients.update",
   "addresses.create", "addresses.update", "addresses.delete",
   "telephones.create", "telephones.update", "telephones.delete",
-  "contracts.list", "contracts.create", "contracts.update", "contracts.delete",
-  "institutions.list",
-  "commissions.deposits", "commissions.agents",
+  "contracts.list", "contracts.get", "contracts.create", "contracts.update", "contracts.delete",
+  "institutions.list", "institutions.get",
+  "commissions.deposits", "commissions.agents", "commission-reports.list", "commission-reports.get",
   "tasks.list", "tasks.create", "tasks.update", "tasks.delete",
 ] as const;
 
 export const financialInstitutions = {
   list: () => call("institutions.list"),
+  get: (id: string | number) => call("institutions.get", { id }),
 };
 
 export interface CommissionFilters {
@@ -127,6 +130,11 @@ export interface CommissionFilters {
 export const commissions = {
   deposits: (filters: CommissionFilters = {}) => call("commissions.deposits", { query: filters }),
   agents: () => call("commissions.agents"),
+};
+
+export const commissionReports = {
+  list: (query: Record<string, any> = {}) => call("commission-reports.list", { query }),
+  get: (id: string | number) => call("commission-reports.get", { id }),
 };
 
 export interface TaskFilters {
@@ -163,5 +171,6 @@ export const maestroScribe = {
   contracts,
   financialInstitutions,
   commissions,
+  commissionReports,
   tasks,
 };

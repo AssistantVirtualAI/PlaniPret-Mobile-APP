@@ -421,9 +421,22 @@ async function validateTaskTarget(
     return { ok: true, type, xid, reason: "locally_mapped_contract", available, targets_source, matched: null };
   }
   // No scope information available (API down, empty page, missing telecom id):
-  // do not block task creation — let Maestro itself accept or reject the xid.
+  // fail closed for an explicit client/contract target. Personal tasks already
+  // passed above through `ownIds`; an arbitrary xid must never cross tenants.
   if (targets_source === "unavailable") {
-    return { ok: true, type, xid, reason: "scope_unavailable_passthrough", available, targets_source, matched: null };
+    return type === "user"
+      ? {
+          ...base, available, targets_source,
+          error: "xid_out_of_scope",
+          reason: "scope_unavailable_fail_closed",
+          message: "Le périmètre client n'a pas pu être vérifié. Réessayez avant de créer la tâche.",
+        }
+      : {
+          ...base, available, targets_source,
+          error: "target_mapping_required",
+          reason: "scope_unavailable_fail_closed",
+          message: "Le contrat n'a pas pu être vérifié. Réessayez avant de créer la tâche.",
+        };
   }
   return type === "user"
     ? {

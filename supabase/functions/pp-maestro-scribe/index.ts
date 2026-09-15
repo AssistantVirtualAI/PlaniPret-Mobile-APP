@@ -6,16 +6,15 @@ import { guardPlanipret } from "../_shared/planipret-guard.ts";
 import * as api from "../_shared/maestro-scribe.ts";
 import { apiRoot } from "../_shared/maestro-scribe.ts";
 import { getUserMaestroAccessToken } from "../_shared/maestro-oauth.ts";
-import { getMaestroAdminAccessToken } from "../_shared/maestro-admin-token.ts";
 
 type Action =
   | "diag"
-  | "clients.get" | "clients.create" | "clients.update"
+  | "clients.list" | "clients.get" | "clients.create" | "clients.update"
   | "addresses.create" | "addresses.update" | "addresses.delete"
   | "telephones.create" | "telephones.update" | "telephones.delete"
-  | "contracts.list" | "contracts.create" | "contracts.update" | "contracts.delete"
-  | "institutions.list"
-  | "commissions.deposits" | "commissions.agents"
+  | "contracts.list" | "contracts.get" | "contracts.create" | "contracts.update" | "contracts.delete"
+  | "institutions.list" | "institutions.get"
+  | "commissions.deposits" | "commissions.agents" | "commission-reports.list" | "commission-reports.get"
   | "tasks.list" | "tasks.create" | "tasks.update" | "tasks.delete";
 
 Deno.serve(async (req) => {
@@ -33,17 +32,13 @@ Deno.serve(async (req) => {
   const admin = adminClient();
   const cfg = await getMaestroConfig(admin);
 
-  // L'API publique `/api/main` est authentifiée par OAuth Planiprêt (jeton du
-  // courtier connecté, sinon jeton cabinet). La clé machine Telecom n'y est
-  // jamais valide et n'est donc jamais sélectionnée ici.
+  // Chaque opération utilisateur est portée par le jeton OAuth du courtier.
+  // Les appels AVA internes arrivent avec service-role + `_user_id`, puis le
+  // garde ci-dessus résout ce même courtier; aucun jeton cabinet/global ne peut
+  // agir en son nom.
   const ownToken = await getUserMaestroAccessToken(admin, guard.user.id).catch(() => null);
-  const firm = ownToken ? { token: null, source: "none" as const } : await getMaestroAdminAccessToken();
-  const token =
-    ownToken ??
-    firm.token ??
-    Deno.env.get("PLANIPRET_ACCESS_TOKEN") ??
-    null;
-  const tokenSource = ownToken ? "broker_oauth" : firm.token ? firm.source : Deno.env.get("PLANIPRET_ACCESS_TOKEN") ? "static_env" : "none";
+  const token = ownToken;
+  const tokenSource = ownToken ? "broker_oauth" : "none";
   if (!token) return json({ ok: false, error: "maestro_not_configured", token_source: tokenSource }, 200);
 
   const o = { token };
@@ -59,6 +54,7 @@ Deno.serve(async (req) => {
         return json({ ok: true, root, token_source: tokenSource, reachable: probe.ok, status: probe.status, endpoint: probe.endpoint, error: probe.error });
       }
 
+      case "clients.list": return json(await api.listClients(cfg, query, o));
       case "clients.get": return needId() ? missing("id") : json(await api.getClient(cfg, id, o));
       case "clients.create": return json(await api.createClient_(cfg, payload, o));
       case "clients.update": return needId() ? missing("id") : json(await api.updateClient(cfg, id, payload, o));
@@ -72,14 +68,18 @@ Deno.serve(async (req) => {
       case "telephones.delete": return needId() || needSub() ? missing("id") : json(await api.deleteTelephone(cfg, id, subId, o));
 
       case "contracts.list": return json(await api.listContracts(cfg, query, o));
+      case "contracts.get": return needId() ? missing("id") : json(await api.getContract(cfg, id, o));
       case "contracts.create": return json(await api.createContract(cfg, payload, o));
       case "contracts.update": return needId() ? missing("id") : json(await api.updateContract(cfg, id, payload, o));
       case "contracts.delete": return needId() ? missing("id") : json(await api.deleteContract(cfg, id, o));
 
       case "institutions.list": return json(await api.listFinancialInstitutions(cfg, o));
+      case "institutions.get": return needId() ? missing("id") : json(await api.getFinancialInstitution(cfg, id, o));
 
       case "commissions.deposits": return json(await api.commissionDeposits(cfg, query, o));
       case "commissions.agents": return json(await api.commissionAgents(cfg, o));
+      case "commission-reports.list": return json(await api.listCommissionReports(cfg, query, o));
+      case "commission-reports.get": return needId() ? missing("id") : json(await api.getCommissionReport(cfg, id, o));
 
       case "tasks.list": return json(await api.listTasks(cfg, query, o));
       case "tasks.create": return json(await api.createTask(cfg, payload, o));
