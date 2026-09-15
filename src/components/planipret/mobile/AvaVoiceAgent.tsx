@@ -16,9 +16,13 @@ import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { getAvaToolLabel } from "@/lib/i18n/avaToolLabels";
 
 type AgentState = "idle" | "connecting" | "listening" | "speaking" | "processing" | "tool_running" | "error";
-type AutonomyMode = "confirm" | "semi_auto" | "full_auto";
-
-interface Props { onClose: () => void; userId: string; onFallbackToChat?: () => void; }
+interface Props {
+  onClose: () => void;
+  userId: string;
+  onFallbackToChat?: () => void;
+  onPlaceCall?: (number: string) => void | Promise<void>;
+  onHangupCall?: () => void | Promise<void>;
+}
 
 interface TranscriptEntry { id: string; role: "user" | "agent" | "tool" | "nav"; text: string; toolIcon?: string; }
 interface PendingTool { tool: string; params: any; resolve: (v: any) => void; reject: (e: any) => void; }
@@ -78,13 +82,16 @@ const TOOL_ICONS: Record<string, any> = {
 };
 
 const CONFIRM_REQUIRED = new Set([
-  "make_call", "send_sms", "send_email",
-  "create_task", "create_appointment", "generate_voicemail_greeting",
-  "update_client",
-  "create_calendar_event", "move_calendar_event", "cancel_calendar_event",
+  "make_call", "hangup_call", "send_sms", "send_email",
+  "create_task", "update_task", "delete_task", "create_appointment",
+  "create_client", "update_client", "generate_voicemail_greeting",
+  "create_calendar_event", "move_calendar_event", "update_calendar_event",
+  "cancel_calendar_event", "delete_calendar_event",
+  "create_teams_chat", "send_teams_message",
+  "push_call_summary", "push_client_note", "push_communication_log",
 ]);
 
-export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Props) {
+export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat, onPlaceCall, onHangupCall }: Props) {
   const navigate = useNavigate();
   const { lang } = useMplanipretLang();
   const L = useCallback((fr: string, en: string) => (lang === "en" ? en : fr), [lang]);
@@ -98,7 +105,6 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
   const [textInput, setTextInput] = useState("");
   const [micError, setMicError] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [autonomy, setAutonomy] = useState<AutonomyMode>("confirm");
   const [currentTool, setCurrentTool] = useState<string | null>(null);
   const convRef = useRef<any>(null);
   const sessionIdRef = useRef<string>(`s_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`);
@@ -191,13 +197,18 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
       return CLIENT_ONLY[toolName](params ?? {});
     }
     // Confirmation gate for mutating server tools.
-    if (autonomy === "confirm" && CONFIRM_REQUIRED.has(toolName)) {
+    if (CONFIRM_REQUIRED.has(toolName)) {
       return new Promise((resolve, reject) => {
-        setPending({ tool: toolName, params, resolve, reject });
+        setPending({
+          tool: toolName,
+          params: params ?? {},
+          resolve,
+          reject,
+        });
       }).then((r: any) => r ?? { success: false, error: "user_cancelled" });
     }
     return callServerTool(toolName, params);
-  }, [autonomy, callServerTool, CLIENT_ONLY, toolLabel]);
+  }, [callServerTool, CLIENT_ONLY, toolLabel]);
 
   // Build clientTools map dynamically (server + client-side tools)
   const clientTools = useMemo(() => {
@@ -207,15 +218,24 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
       "get_voicemails", "generate_voicemail_greeting",
       "analyze_call", "get_hot_leads", "get_coaching_summary",
       "search_client", "get_client_profile", "get_client_history",
-      "create_task", "create_appointment", "get_pending_tasks",
+      "list_tasks", "get_task", "list_task_targets", "create_task", "update_task", "delete_task",
+      "create_appointment", "get_pending_tasks",
       "get_upcoming_appointments", "update_client", "create_client",
-      "read_emails", "summarize_email", "send_email",
+      "list_my_clients", "get_maestro_client_profile", "list_my_brokers", "get_maestro_broker_profile",
+      "get_commission_summary", "get_commission_by_lender", "compare_commission_periods",
+      "list_commission_deposits", "list_financial_institutions", "get_commission_deposits",
+      "get_commission_agents", "get_financial_institutions", "open_commission_report",
+      "read_emails", "get_unread_emails", "get_recent_emails", "summarize_email", "send_email",
+      "search_contact", "propose_email_reply", "summarize_inbox",
       "get_calendar_today", "get_calendar_week",
-      "create_calendar_event", "move_calendar_event", "cancel_calendar_event",
+      "get_upcoming_meetings", "search_ms365_contacts", "find_contact", "search_directory", "list_company_directory",
+      "create_calendar_event", "move_calendar_event", "update_calendar_event", "cancel_calendar_event", "delete_calendar_event",
+      "open_email_composer", "list_teams_chats", "create_teams_chat", "send_teams_message",
       "navigate_to", "show_client_in_app", "open_call_detail",
       "show_toast", "open_dialer", "open_sms_composer", "close_ava",
-      "get_daily_briefing", "get_my_stats",
+      "get_daily_briefing", "get_my_stats", "get_performance_report",
       "explain_feature", "get_integration_status",
+      "push_call_summary", "push_client_note", "push_communication_log",
     ];
     const map: Record<string, (p: any) => Promise<any>> = {};
     for (const t of TOOL_NAMES) map[t] = (p: any) => Promise.resolve(handleTool(t, p));
@@ -316,8 +336,6 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
         if (cancelled) return;
 
         const c = cfg;
-        setAutonomy(c.autonomy_mode ?? "confirm");
-
         if (!c.agent_id) {
           fallback(L("Agent vocal non provisionné", "Voice agent not provisioned"), "no_agent");
           return;
@@ -576,12 +594,13 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
     const msg = textInput.trim();
     setTextInput("");
     appendTranscript({ role: "user", text: msg });
-    // Fallback: send to ava-assistant (Claude) if no voice session active
+    // Fallback texte : réutilise le chatbot Planiprêt canonique.
     try {
       await convRef.current?.sendUserMessage?.(msg);
     } catch (_) {
-      // No voice: text fallback via ava-assistant
-      const { data } = await supabase.functions.invoke("ava-assistant", { body: { message: msg, session_id: sessionId } });
+      const { data } = await supabase.functions.invoke("pp-ava-chat", {
+        body: { user_message: msg, session_id: sessionId, language: lang },
+      });
       if ((data as any)?.reply) appendTranscript({ role: "agent", text: (data as any).reply });
     }
   };
@@ -595,7 +614,28 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
     }
     const { tool, params, resolve } = pending;
     setPending(null);
-    callServerTool(tool, params).then(resolve);
+    if (tool === "make_call") {
+      const number = String(params?.to_number ?? params?.to ?? params?.destination ?? params?.number ?? params?.phone ?? "").trim();
+      if (!number || !onPlaceCall) {
+        resolve({ success: false, error: "mobile_softphone_unavailable" });
+        return;
+      }
+      Promise.resolve(onPlaceCall(number))
+        .then(() => resolve({ success: true, destination: number, owner: "mobile_softphone" }))
+        .catch((error) => resolve({ success: false, error: String(error) }));
+      return;
+    }
+    if (tool === "hangup_call") {
+      if (!onHangupCall) {
+        resolve({ success: false, error: "mobile_softphone_unavailable" });
+        return;
+      }
+      Promise.resolve(onHangupCall())
+        .then(() => resolve({ success: true, owner: "mobile_softphone" }))
+        .catch((error) => resolve({ success: false, error: String(error) }));
+      return;
+    }
+    callServerTool(tool, { ...params, confirmed: true }).then(resolve);
   };
 
   // ─── render ────────────────────────────────────────────────────
@@ -760,22 +800,16 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat }: Pro
         <div className="absolute inset-0 z-20 flex items-end bg-black/40" onClick={() => setSettingsOpen(false)}>
           <div className="w-full rounded-t-2xl p-5" style={{ background: "#0A1628", border: "1px solid #0E2A45" }} onClick={(e) => e.stopPropagation()}>
             <div className="text-[13px] font-semibold mb-3 text-white">{L("Mode d'autonomie", "Autonomy mode")}</div>
-            {(["confirm", "semi_auto", "full_auto"] as const).map((m) => (
-              <button key={m} onClick={async () => {
-                setAutonomy(m);
-                await supabase.from("planipret_profiles").update({ ava_autonomy_mode: m }).eq("user_id", userId);
-              }}
-                className="w-full text-left p-3 rounded-xl mb-2 flex items-center justify-between"
-                style={{ background: autonomy === m ? "rgba(46,155,220,0.15)" : "rgba(255,255,255,0.03)", border: `1px solid ${autonomy === m ? "#2E9BDC" : "#0E2A45"}` }}>
-                <div>
-                  <div className="text-[13px] text-white font-medium">{m === "confirm" ? L("Confirmation requise", "Confirmation required") : m === "semi_auto" ? L("Semi-automatique", "Semi-automatic") : L("Pleinement autonome", "Fully autonomous")}</div>
-                  <div className="text-[11px]" style={{ color: "#4A7FA5" }}>
-                    {m === "confirm" ? L("AVA confirme avant chaque action", "AVA confirms before every action") : m === "semi_auto" ? L("Auto pour lectures, confirme les envois", "Auto for reads, confirms sends") : L("AVA agit sans demander ⚡", "AVA acts without asking ⚡")}
-                  </div>
+            <div className="w-full text-left p-3 rounded-xl mb-2 flex items-center justify-between"
+              style={{ background: "rgba(46,155,220,0.15)", border: "1px solid #2E9BDC" }}>
+              <div>
+                <div className="text-[13px] text-white font-medium">{L("Confirmation requise", "Confirmation required")}</div>
+                <div className="text-[11px]" style={{ color: "#4A7FA5" }}>
+                  {L("AVA prépare l’action; vous confirmez toujours avant son exécution.", "AVA prepares the action; you always confirm before execution.")}
                 </div>
-                {autonomy === m && <span className="text-[#2E9BDC]">●</span>}
-              </button>
-            ))}
+              </div>
+              <span className="text-[#2E9BDC]">●</span>
+            </div>
             <button
               onClick={() => { setSettingsOpen(false); setVoiceSheetOpen(true); }}
               className="w-full text-left p-3 rounded-xl mb-2 flex items-center justify-between"
@@ -950,5 +984,3 @@ export function CalendarAwareConfirm({
     </div>
   );
 }
-
-

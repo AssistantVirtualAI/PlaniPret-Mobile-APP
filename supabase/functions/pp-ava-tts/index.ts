@@ -1,13 +1,17 @@
 // pp-ava-tts — Text to speech for AVA replies using ElevenLabs.
-import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
+import { authBroker, corsHeaders, jsonResponse } from "../_shared/ns-broker.ts";
+import { hasValidAiConsent } from "../_shared/ai-consent.ts";
 import { encode as base64Encode } from "https://deno.land/std@0.168.0/encoding/base64.ts";
 
-const j = (b: unknown, s = 200) =>
-  new Response(JSON.stringify(b), { status: s, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+const j = jsonResponse;
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   try {
+    const auth = await authBroker(req);
+    if ("error" in auth) return auth.error;
+    if (auth.authMode !== "jwt") return j({ error: "user_session_required" }, 403);
+    if (!hasValidAiConsent(auth.profile)) return j({ error: "ai_consent_required" }, 403);
     const { text, voiceId = "EXAVITQu4vr4xnSDxMaL", language = "fr" } = await req.json();
     if (!text || typeof text !== "string") return j({ error: "text_required" }, 400);
     if (text.length > 4000) return j({ error: "text_too_long" }, 400);

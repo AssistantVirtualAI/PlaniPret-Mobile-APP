@@ -26,6 +26,7 @@ export const ROUTES = {
   MPLANIPRET_PIPELINE: "/mplanipret/pipeline",
   MPLANIPRET_SEARCH: "/mplanipret/search",
   MPLANIPRET_STATS: "/mplanipret/stats",
+  MPLANIPRET_AVA: "/mplanipret/ava",
 
   // Planiprêt ADMIN portal (back-office desktop)
   PLANIPRET_ADMIN: "/planipret/admin",

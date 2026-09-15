@@ -84,6 +84,16 @@ Deno.serve(async (req) => {
     const { data: u } = await sb.auth.getUser();
     if (!u?.user) return json({ error: "unauthorized" }, 401);
 
+    // Planiprêt users must have a current, non-revoked server-side AI consent.
+    const { data: ppProfile } = await admin.from("planipret_profiles")
+      .select("ai_consent_at, ai_consent_revoked_at")
+      .eq("user_id", u.user.id).maybeSingle();
+    if (ppProfile) {
+      const granted = !!ppProfile.ai_consent_at &&
+        (!ppProfile.ai_consent_revoked_at || ppProfile.ai_consent_revoked_at < ppProfile.ai_consent_at);
+      if (!granted) return json({ error: "ai_consent_required" }, 403);
+    }
+
     const apiKey = Deno.env.get("ANTHROPIC_API_KEY");
     if (!apiKey) return json({ answer: "AVA is not configured yet (missing AI key)." });
 
@@ -470,8 +480,6 @@ Deno.serve(async (req) => {
           confirm: z.boolean().default(false),
         }),
         execute: async ({ thread_id, body, confirm }) => {
-          return { ok: false, blocked: true, error: "sms_globally_disabled" };
-          /* SMS disabled globally; legacy flow retained as unreachable rollback context.
           const chk = await ensureOrg("pbx_sms_threads", thread_id);
           if (!chk.ok) return { error: chk.reason };
           const { data: t } = await admin.from("pbx_sms_threads")
@@ -479,12 +487,7 @@ Deno.serve(async (req) => {
           if (!confirm) {
             return { requires_confirmation: true, preview: { action: "send_sms", to: t?.contact_number, contact: t?.contact_name, body } };
           }
-          const { data, error } = await admin.functions.invoke("mobile-sms", {
-            body: { threadId: thread_id, body },
-            headers: { Authorization: authHeader },
-          });
-          return error ? { error: error.message } : { ok: true, result: data };
-          */
+          return { error: "client_confirmation_required", requires_confirmation: true, preview: { action: "send_sms", to: t?.contact_number, contact: t?.contact_name, body } };
         },
       }),
 
@@ -500,11 +503,7 @@ Deno.serve(async (req) => {
         execute: async ({ to, mode, confirm }) => {
           const target = e164(to);
           if (!confirm) return { requires_confirmation: true, preview: { action: "click_to_call", from_extension: myExt, to: target, mode } };
-          const { data, error } = await admin.functions.invoke("mobile-calls-start", {
-            body: { to: target, mode },
-            headers: { Authorization: authHeader },
-          });
-          return error ? { error: error.message } : { ok: true, result: data };
+          return { error: "client_confirmation_required", requires_confirmation: true, preview: { action: "click_to_call", from_extension: myExt, to: target, mode } };
         },
       }),
 
@@ -526,12 +525,15 @@ Deno.serve(async (req) => {
       mark_voicemail_read: auditTool({
         name: "mark_voicemail_read",
         description: "Mark a voicemail as read.",
-        inputSchema: z.object({ voicemail_id: z.string().uuid() }),
-        execute: async ({ voicemail_id }) => {
+        inputSchema: z.object({ voicemail_id: z.string().uuid(), confirm: z.boolean().default(false) }),
+        execute: async ({ voicemail_id, confirm }) => {
           const chk = await ensureOrg("pbx_voicemails", voicemail_id);
           if (!chk.ok) return { error: chk.reason };
-          const { error } = await admin.rpc("mark_voicemail_read", { _id: voicemail_id });
-          return error ? { error: error.message } : { ok: true };
+          return {
+            error: "client_confirmation_required",
+            requires_confirmation: true,
+            preview: { action: "mark_voicemail_read", voicemail_id, confirmed_by_model: confirm },
+          };
         },
       }),
     };

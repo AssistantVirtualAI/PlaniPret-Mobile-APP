@@ -1,220 +1,48 @@
-import { authBroker, corsHeaders, jsonResponse, supaAdmin } from "../_shared/ns-broker.ts";
+// Legacy compatibility adapter. All tool execution is centralized in
+// ava-tool-executor so confirmation, ownership and idempotence cannot drift.
+import { corsHeaders, jsonResponse } from "../_shared/ns-broker.ts";
 
-const BASE = `${Deno.env.get("SUPABASE_URL")}/functions/v1`;
-
-async function callFn(name: string, authHeader: string, body: any) {
-  const res = await fetch(`${BASE}/${name}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: authHeader },
-    body: JSON.stringify(body ?? {}),
-  });
-  const text = await res.text();
-  try { return { ...JSON.parse(text), _http_ok: res.ok, _status: res.status }; } catch { return { success: res.ok, _http_ok: res.ok, _status: res.status, raw: text }; }
-}
+const ALIASES: Record<string, string> = {
+  cancel_task: "delete_task",
+  read_voicemails: "get_voicemails",
+  list_clients: "list_my_clients",
+  list_my_clients: "list_my_clients",
+  client_profile: "get_maestro_client_profile",
+  get_client_profile: "get_client_profile",
+  list_brokers: "list_my_brokers",
+  list_my_brokers: "list_my_brokers",
+  broker_profile: "get_maestro_broker_profile",
+  get_broker_profile: "get_maestro_broker_profile",
+};
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+  if (req.method !== "POST") return jsonResponse({ success: false, error: "method_not_allowed" }, 405);
+
   const authHeader = req.headers.get("Authorization") ?? "";
-  try {
-    const auth = await authBroker(req);
-    if ("error" in auth) return auth.error;
-    const { admin, userId, profile } = auth;
+  if (!authHeader.startsWith("Bearer ")) return jsonResponse({ success: false, error: "unauthorized" }, 401);
 
-    const { tool_name, parameters = {} } = await req.json().catch(() => ({}));
-    if (!tool_name) return jsonResponse({ success: false, error: "tool_name requis" }, 200);
+  const body = await req.json().catch(() => ({}));
+  const requested = String(body?.tool_name ?? "");
+  const toolName = ALIASES[requested] ?? requested;
+  if (!toolName) return jsonResponse({ success: false, error: "tool_name_required" }, 400);
 
-    let result: any = { success: false, error: "Outil inconnu" };
-
-    switch (tool_name) {
-      case "make_call": {
-        const to = parameters.to_number ?? parameters.to ?? parameters.destination ?? parameters.number;
-        const r = await callFn("pp-ns-calls", authHeader, {
-          action: "start",
-          to_number: to,
-          destination: to,
-          caller_id_name: profile.full_name,
-          client_type: parameters.client_type ?? "mobile",
-        });
-        result = r?.success === true
-          ? { success: true, call_id: r.call_id, message: r?.message ?? `Appel lancé vers ${parameters.contact_name ?? to}` }
-          : { success: false, error: r?.error ?? r?.message ?? "Échec de l'appel", message: r?.message };
-        break;
-      }
-      case "send_sms": {
-        result = { success: false, blocked: true, error: "sms_globally_disabled", message: "L’envoi de textos est désactivé." };
-        break;
-      }
-      case "send_email": {
-        const r = await callFn("ms365-actions", authHeader, {
-          action: "send_email",
-          payload: { to: parameters.to, subject: parameters.subject, body: parameters.body },
-        });
-        result = r?.success ? { success: true, message: "Courriel envoyé" } : { success: false, error: r?.error ?? "Échec de l'envoi" };
-        break;
-      }
-      case "create_task": {
-        // Same secure gateway as the AVA chatbot (Planiprêt Task API).
-        const r = await callFn("planipret-task-api", authHeader, {
-          action: "create",
-          source: "ava_voice",
-          target: parameters.target ?? parameters.xid ?? parameters.client_id,
-          target_type: String(parameters.target_type ?? parameters.type ?? "user").toLowerCase(),
-          notes: parameters.notes ?? parameters.title ?? parameters.description,
-          description: parameters.description,
-          due_at: parameters.due_at ?? parameters.date ?? parameters.due_date,
-          // Auto-assigned to the connected broker when no assignee is given.
-          assignee_id: parameters.assignee_id ?? parameters.users_id,
-          status: parameters.status,
-          sync_calendar: parameters.sync_calendar === true,
-          notification: parameters.notification === true,
-          recurrence: parameters.recurrence ?? null,
-        });
-        result = r?.success
-          ? { success: true, task_id: r.task_id ?? r.task?.id ?? null, message: "Tâche créée" }
-          : { success: false, error: r?.error ?? "Échec création tâche", fields: r?.fields ?? null, message: r?.message };
-        break;
-      }
-      case "update_task": {
-        const taskId = parameters.task_id ?? parameters.id;
-        if (!taskId) { result = { success: false, error: "task_id_required" }; break; }
-        const changes = parameters.changes ?? {
-          date: parameters.due_at ?? parameters.date,
-          notes: parameters.notes,
-          description: parameters.description,
-          users_id: parameters.assignee_id ?? parameters.users_id,
-          status_option_id: parameters.status_option_id,
-        };
-        const r = await callFn("planipret-task-api", authHeader, {
-          action: "update", source: "ava_voice", task_id: String(taskId), changes,
-        });
-        result = r?.success
-          ? { success: true, task_id: String(taskId), message: "Tâche modifiée" }
-          : { success: false, error: r?.error ?? "Échec modification tâche", fields: r?.fields ?? null };
-        break;
-      }
-      case "delete_task":
-      case "cancel_task": {
-        const taskId = parameters.task_id ?? parameters.id;
-        if (!taskId) { result = { success: false, error: "task_id_required" }; break; }
-        if (parameters.confirmed !== true) {
-          result = {
-            success: false,
-            needs_confirmation: true,
-            message: `Je vais annuler la tâche ${taskId}. Confirmes-tu ?`,
-          };
-          break;
-        }
-        const r = await callFn("planipret-task-api", authHeader, {
-          action: "delete", source: "ava_voice", task_id: String(taskId),
-        });
-        result = r?.success
-          ? { success: true, task_id: String(taskId), message: "Tâche annulée" }
-          : { success: false, error: r?.error ?? "Échec annulation tâche" };
-        break;
-      }
-      case "list_tasks": {
-        const r = await callFn("planipret-task-api", authHeader, {
-          action: "list", source: "ava_voice",
-          status: parameters.status ?? "pending",
-          filter: parameters.filter ?? "open",
-          limit: parameters.limit ?? 10,
-        });
-        result = r?.success
-          ? { success: true, tasks: r.tasks ?? [], counts: r.counts ?? null }
-          : { success: false, error: r?.error ?? "Échec liste tâches" };
-        break;
-      }
-
-      case "create_calendar_event": {
-        const [m, ms] = await Promise.all([
-          callFn("maestro-actions", authHeader, { action: "create_event", payload: parameters }),
-          callFn("ms365-actions", authHeader, { action: "create_calendar_event", payload: parameters }),
-        ]);
-        const ok = !!(m?.success || ms?.success);
-        result = ok
-          ? { success: true, message: "RDV créé dans Maestro et Microsoft 365" }
-          : { success: false, error: m?.error ?? ms?.error ?? "Échec création RDV" };
-        break;
-      }
-      case "get_daily_briefing": {
-        const r = await callFn("ai-daily-brief", authHeader, {});
-        result = r?.success ? { success: true, briefing: r.briefing_text ?? r.briefing ?? "" } : { success: false, error: r?.error ?? "Échec brief" };
-        break;
-      }
-      case "search_contact": {
-        const r = await callFn("maestro-actions", authHeader, { action: "list_contacts", payload: { query: parameters.query } });
-        result = r?.success ? { success: true, contacts: r.contacts ?? r.data ?? [] } : { success: false, error: r?.error ?? "Échec recherche" };
-        break;
-      }
-      case "read_emails": {
-        const r = await callFn("ms365-actions", authHeader, { action: "read_emails", payload: { limit: parameters.limit ?? 10 } });
-        result = r?.success ? { success: true, emails: r.emails ?? r.data ?? [] } : { success: false, error: r?.error ?? "Échec lecture courriels" };
-        break;
-      }
-      case "get_call_history": {
-        const { data } = await admin.from("planipret_phone_calls")
-          .select("id, direction, from_number, from_name, to_number, to_name, started_at, duration_seconds, status")
-          .eq("user_id", userId).order("started_at", { ascending: false }).limit(parameters.limit ?? 10);
-        result = { success: true, calls: data ?? [] };
-        break;
-      }
-      case "read_voicemails": {
-        const { data } = await admin.from("planipret_voicemails")
-          .select("id, from_number, from_name, duration_seconds, transcript, received_at")
-          .eq("user_id", userId).eq("is_read", false).order("created_at", { ascending: false });
-        result = { success: true, voicemails: data ?? [], count: data?.length ?? 0 };
-        break;
-      }
-      case "list_clients":
-      case "list_my_clients": {
-        const r = await callFn("maestro-actions", authHeader, {
-          action: "list_clients",
-          payload: { search: parameters.search ?? parameters.query, limit: parameters.limit ?? 25 },
-        });
-        result = r?.success ? { success: true, clients: r.clients ?? [], count: (r.clients ?? []).length } : { success: false, error: r?.error ?? "Échec liste clients" };
-        break;
-      }
-      case "client_profile":
-      case "get_client_profile": {
-        const r = await callFn("maestro-actions", authHeader, {
-          action: "client_profile",
-          payload: { client_id: parameters.client_id ?? parameters.id },
-        });
-        result = r?.success ? { success: true, profile: r.profile ?? r.data ?? null } : { success: false, error: r?.error ?? "Échec profil client" };
-        break;
-      }
-      case "list_brokers":
-      case "list_my_brokers": {
-        const r = await callFn("maestro-actions", authHeader, {
-          action: "list_brokers",
-          payload: { search: parameters.search ?? parameters.query, limit: parameters.limit ?? 25 },
-        });
-        result = r?.success ? { success: true, brokers: r.brokers ?? [], count: (r.brokers ?? []).length } : { success: false, error: r?.error ?? "Échec liste courtiers" };
-        break;
-      }
-      case "broker_profile":
-      case "get_broker_profile": {
-        const r = await callFn("maestro-actions", authHeader, {
-          action: "broker_profile",
-          payload: { broker_id: parameters.broker_id ?? parameters.id },
-        });
-        result = r?.success ? { success: true, profile: r.profile ?? r.data ?? null } : { success: false, error: r?.error ?? "Échec profil courtier" };
-        break;
-      }
-    }
-
-    // Audit log
-    try {
-      await supaAdmin().from("ai_request_audit_log").insert({
-        user_id: userId,
-        action: `elevenlabs_tool:${tool_name}`,
-        metadata: { parameters, result },
-      });
-    } catch (_) { /* table may not accept; ignore */ }
-
-    return jsonResponse(result);
-  } catch (e) {
-    console.error("elevenlabs-tool-handler", e);
-    return jsonResponse({ success: false, error: "Erreur serveur: " + String(e) }, 200);
-  }
+  const response = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/ava-tool-executor`, {
+    method: "POST",
+    headers: {
+      Authorization: authHeader,
+      apikey: Deno.env.get("SUPABASE_ANON_KEY") ?? "",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      tool_name: toolName,
+      parameters: body?.parameters ?? {},
+      session_id: body?.session_id ?? null,
+    }),
+  });
+  const text = await response.text();
+  return new Response(text, {
+    status: response.status,
+    headers: { ...corsHeaders, "Content-Type": response.headers.get("Content-Type") ?? "application/json" },
+  });
 });

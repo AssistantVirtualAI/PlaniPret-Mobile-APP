@@ -2,36 +2,12 @@
 // Builds the system prompt with the broker's actual context (NS extension,
 // Maestro/M365 status, autonomy mode) and returns the tool catalog.
 import { authBroker, corsHeaders, jsonResponse } from "../_shared/ns-broker.ts";
+import { EXPECTED_TOOL_NAMES } from "../_shared/ava-tools.ts";
 
 const DEFAULT_AGENT_ID = Deno.env.get("ELEVENLABS_DEFAULT_AGENT_ID") ?? "";
 const DEFAULT_VOICE_ID = "RCSF5YgDtAhZXpNZfGek"; // Andréa — voix québécoise multilingual v2
 
-const TOOL_NAMES = [
-  // telephony
-  "make_call", "get_active_calls", "hangup_call", "get_call_history",
-  "get_recording", "get_transcript", "send_sms", "get_sms_conversations",
-  "get_voicemails", "generate_voicemail_greeting",
-  // AI
-  "analyze_call", "get_hot_leads", "get_coaching_summary",
-  // Maestro
-  "search_client", "get_client_profile", "get_client_history",
-  "create_task", "create_appointment", "get_pending_tasks",
-  "get_upcoming_appointments", "update_client", "create_client",
-  "list_my_clients", "get_maestro_client_profile", "list_my_brokers", "get_maestro_broker_profile",
-  // M365 Mail + Calendar
-  "read_emails", "get_unread_emails", "get_recent_emails",
-  "send_email", "summarize_email",
-  "get_calendar_today", "get_calendar_week", "get_upcoming_meetings",
-  "create_calendar_event", "move_calendar_event", "cancel_calendar_event",
-  // M365 Contacts & Teams
-  "find_contact", "search_ms365_contacts", "list_teams_chats", "create_teams_chat", "send_teams_message",
-  // navigation
-  "navigate_to", "show_client_in_app", "open_call_detail",
-  // stats
-  "get_daily_briefing", "get_my_stats", "get_performance_report",
-  // help
-  "explain_feature", "get_integration_status",
-];
+const TOOL_NAMES = EXPECTED_TOOL_NAMES;
 
 function buildPrompt(p: any, lang: "fr" | "en" = "fr"): string {
   const firstName = (p.full_name ?? "courtier").split(" ")[0];
@@ -65,7 +41,7 @@ IDENTITÉ
 - Tutoie naturellement
 - Langue active: ${lang === "en" ? "anglais" : "français québécois"} (voir RÈGLE ABSOLUE ci-dessus)
 - Directe et efficace — phrases courtes (2-3 max par réponse)
-- Confirme avant chaque action irréversible (selon mode autonomie)
+- Prépare les actions, mais exige toujours une confirmation explicite du courtier avant toute mutation
 
 ═══════════════════════════════════
 CONTEXTE COURTIER
@@ -75,7 +51,7 @@ Extension: ${p.extension ?? "—"}
 Domaine NS: planipret.ca
 Maestro CRM: ${p.maestro_connected ? `Connecté (ID: ${p.maestro_broker_id ?? "?"})` : "Non connecté"}
 Microsoft 365: ${p.ms365_access_token ? "Connecté" : "Non connecté"}
-Mode autonomie: ${p.ava_autonomy_mode ?? "confirm"}
+Mode autonomie: confirmation obligatoire
 Date/heure: ${new Date().toLocaleString("fr-CA", { timeZone: "America/Toronto" })}
 
 ═══════════════════════════════════
@@ -142,11 +118,11 @@ STATS: get_daily_briefing, get_my_stats, get_performance_report (rapport IA dét
 AIDE: explain_feature, get_integration_status
 
 ═══════════════════════════════════
-MODE AUTONOMIE: ${p.ava_autonomy_mode ?? "confirm"}
+MODE AUTONOMIE: confirmation obligatoire
 ═══════════════════════════════════
-- confirm: confirmation pour TOUTE action (appel, SMS, courriel, création Maestro, voicemail)
-- semi_auto: confirme appels/envois, auto pour lectures
-- full_auto: exécute directement (sauf suppression)
+- Les lectures peuvent s'exécuter directement.
+- Toute action qui appelle, raccroche, envoie, crée, modifie, supprime ou pousse vers Maestro doit être confirmée dans l'interface mobile.
+- Ne prétends jamais qu'une action a réussi avant d'avoir reçu result.success === true.
 
 ═══════════════════════════════════
 EXEMPLES
@@ -226,34 +202,10 @@ Deno.serve(async (req) => {
         overrides_allowed.language = !!ov?.agent?.language;
         overrides_allowed.voice = !!ov?.tts?.voice_id;
 
-        // Auto-enable per-user overrides so each broker gets a personalized greeting/prompt/voice.
+        // Shared-agent settings are admin-owned. A regular broker may inspect
+        // the supported overrides but must never PATCH the shared agent.
         if (!overrides_allowed.first_message || !overrides_allowed.prompt || !overrides_allowed.language || !overrides_allowed.voice) {
-          try {
-            const patch = await fetch(`https://api.elevenlabs.io/v1/convai/agents/${encodeURIComponent(agentId)}`, {
-              method: "PATCH",
-              headers: { "xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json" },
-              body: JSON.stringify({
-                platform_settings: {
-                  overrides: {
-                    conversation_config_override: {
-                      agent: { prompt: { prompt: true }, first_message: true, language: true },
-                      tts: { voice_id: true },
-                    },
-                  },
-                },
-              }),
-            });
-            if (patch.ok) {
-              overrides_allowed.prompt = true;
-              overrides_allowed.first_message = true;
-              overrides_allowed.language = true;
-              overrides_allowed.voice = true;
-            } else {
-              console.warn("ava-agent-config auto-enable overrides failed", patch.status, await patch.text());
-            }
-          } catch (e) {
-            console.warn("ava-agent-config auto-enable overrides threw", e);
-          }
+          agent_status = "overrides_incomplete_admin_sync_required";
         }
       } else {
         agent_status = `error_${r.status}`;
@@ -281,7 +233,7 @@ Deno.serve(async (req) => {
     },
     voice_name: null,
     language: lang,
-    autonomy_mode: p.ava_autonomy_mode ?? "confirm",
+    autonomy_mode: "confirm",
     overrides_allowed,
     agent_status,
     tools: TOOL_NAMES,

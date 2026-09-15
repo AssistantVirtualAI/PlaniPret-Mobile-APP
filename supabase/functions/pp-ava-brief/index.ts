@@ -3,6 +3,7 @@
 // and asks Lovable AI Gateway for a French, actionable summary.
 // Cached 30 min per (user, period) in `planipret_ai_insights`.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { hasValidAiConsent } from "../_shared/ai-consent.ts";
 import { generateText } from "npm:ai";
 import { z } from "npm:zod";
 import { createLovableAiGatewayProvider } from "../_shared/ai-gateway.ts";
@@ -348,9 +349,11 @@ Deno.serve(async (req) => {
     const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
     // Mode service (cron scheduler) : accepte broker_user_id via header/body si appelé avec service_role.
-    const serviceHeader = req.headers.get("x-ava-service");
+    const bearer = authHeader.replace(/^Bearer\s+/i, "");
+    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+    const isService = !!serviceKey && bearer === serviceKey;
     let effectiveUserId: string | null = null;
-    if (serviceHeader) {
+    if (isService) {
       effectiveUserId = req.headers.get("x-broker-user-id") ?? body?.broker_user_id ?? null;
     } else {
       const token = authHeader.replace(/^Bearer\s+/i, "");
@@ -366,9 +369,10 @@ Deno.serve(async (req) => {
     if (!effectiveUserId) return json(degradedBrief(requestedLang ?? "fr", "no_user"));
 
     const { data: profile } = await admin.from("planipret_profiles")
-      .select("id, user_id, full_name, extension, ns_extension, organization_id, language, ms365_access_token, ms365_refresh_token, ms365_email")
+      .select("id, user_id, full_name, extension, ns_extension, organization_id, language, ms365_access_token, ms365_refresh_token, ms365_email, ai_consent_at, ai_consent_revoked_at")
       .eq("user_id", effectiveUserId).maybeSingle();
     if (!profile) return json(degradedBrief(requestedLang ?? "fr", "no_profile"));
+    if (!hasValidAiConsent(profile)) return json({ error: "ai_consent_required" }, 403);
 
     // Language: explicit request wins (mobile app sends the active UI language),
     // otherwise fall back to the broker profile (used by the 08:30 / 17:30 schedulers).
@@ -425,7 +429,7 @@ Deno.serve(async (req) => {
         .order("scheduled_at", { ascending: true }).limit(10)),
     ]);
 
-    const allCalls = callRows.data || [];
+    const allCalls: any[] = callRows.data || [];
 
     const isMissed = (c: any) =>
       c.status === "missed" || c.status === "no-answer" || c.status === "cancelled" ||
@@ -435,10 +439,10 @@ Deno.serve(async (req) => {
     const inbound = allCalls.filter((c) => c.direction === "inbound");
     const outbound = allCalls.filter((c) => c.direction === "outbound");
     const talkSeconds = allCalls.reduce((a, c) => a + (c.duration_seconds || 0), 0);
-    const msgs = smsRows.data || [];
+    const msgs: any[] = smsRows.data || [];
     const smsIn = msgs.filter((m) => m.direction === "inbound");
     const smsOut = msgs.filter((m) => m.direction === "outbound");
-    const vms = voicemails.data || [];
+    const vms: any[] = voicemails.data || [];
 
     // Contacts les plus actifs (appels + textos)
     const tally = new Map<string, { number: string; name?: string; calls: number; sms: number }>();
@@ -470,7 +474,7 @@ Deno.serve(async (req) => {
         ai_summary: (c.ai_summary || "").slice(0, 300),
       }));
 
-    const coachingScores = allCalls
+    const coachingScores: number[] = allCalls
       .map((c: any) => Number(c.ai_coaching?.score ?? c.ai_coaching?.coaching_score))
       .filter((n) => Number.isFinite(n));
 

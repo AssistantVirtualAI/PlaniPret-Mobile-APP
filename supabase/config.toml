@@ -258,6 +258,63 @@ verify_jwt = true
 [functions.pp-call-consent]
 verify_jwt = true
 
+[functions.pp-ai-consent]
+verify_jwt = true
+
+[functions.pp-ava-stt]
+verify_jwt = true
+
+[functions.pp-ava-tts]
+verify_jwt = true
+
+[functions.pp-ava-brief]
+verify_jwt = true
+
+[functions.pp-ava-report]
+verify_jwt = true
+
+[functions.ava-email-analyzer]
+verify_jwt = true
+
+[functions.ava-action-executor]
+verify_jwt = true
+
+[functions.ava-assistant]
+verify_jwt = true
+
+[functions.ava-feedback-record]
+verify_jwt = true
+
+[functions.elevenlabs-manage-agent]
+verify_jwt = true
+
+[functions.pp-ava-maestro-status]
+verify_jwt = true
+
+[functions.pp-ava-voice-settings]
+verify_jwt = true
+
+[functions.pp-ava-e2e-check]
+verify_jwt = true
+
+[functions.pp-ava-chat]
+verify_jwt = true
+
+[functions.pp-ava-webrtc-token]
+verify_jwt = true
+
+[functions.ava-agent-config]
+verify_jwt = true
+
+[functions.ava-tool-executor]
+verify_jwt = true
+
+[functions.elevenlabs-tool-handler]
+verify_jwt = true
+
+[functions.pp-data-retention]
+verify_jwt = true
+
 [functions.maestro-actions]
 verify_jwt = true
 

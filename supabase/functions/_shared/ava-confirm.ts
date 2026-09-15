@@ -12,6 +12,7 @@ export const AVA_SENSITIVE_TOOLS = new Set<string>([
   "propose_email_reply_send",
   "make_call",
   "start_call",
+  "hangup_call",
   "send_teams_message",
   "create_teams_chat",
   "reply_teams_message",

@@ -5,7 +5,6 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { generateText, Output } from "npm:ai";
 import { z } from "npm:zod";
 import { createLovableAiGatewayProvider } from "../_shared/ai-gateway.ts";
-import { buildIdempotencyKey, claimAction, finishAction } from "../_shared/ava-confirm.ts";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -30,8 +29,8 @@ const OutputSchema = z.object({
 
 const COMMISSION_ACTIONS = new Set(["summary", "deposits", "agents", "institutions"]);
 
-const MUTATING_MS365 = new Set(["send_email", "create_calendar_event", "update_calendar_event", "delete_calendar_event", "send_teams_message", "reply_teams_message"]);
-const MS365_ACTIONS = new Set(["connection_status", "read_emails", "read_email_detail", "list_calendar_events", "send_email", "create_calendar_event", "update_calendar_event", "delete_calendar_event", "send_teams_message", "reply_teams_message", "search_contact"]);
+const MUTATING_MS365 = new Set(["send_email", "create_calendar_event", "update_calendar_event", "delete_calendar_event", "create_teams_chat", "send_teams_message", "reply_teams_message"]);
+const MS365_ACTIONS = new Set(["connection_status", "read_emails", "read_email_detail", "list_calendar_events", "send_email", "create_calendar_event", "update_calendar_event", "delete_calendar_event", "list_teams_chats", "create_teams_chat", "send_teams_message", "reply_teams_message", "search_contact"]);
 const MAESTRO_READ_ACTIONS = new Set(["list_clients", "client_profile", "list_brokers", "broker_profile", "list_contacts"]);
 const MAESTRO_ACTIONS = new Set([...MAESTRO_READ_ACTIONS, "create_task", "create_event"]);
 
@@ -126,7 +125,7 @@ function extractNameTokens(text: string): { emails: string[]; names: string[] } 
  * company directory (extensions + shared), Maestro clients and Outlook/M365.
  */
 async function searchDirectory(
-  _admin: ReturnType<typeof createClient>,
+  _admin: any,
   userId: string,
   tokens: { emails: string[]; names: string[] },
 ) {
@@ -169,7 +168,7 @@ async function searchDirectory(
 
 
 
-async function logAvaAction(admin: ReturnType<typeof createClient>, profile: any, userId: string, actionType: string, params: Record<string, unknown>, success: boolean, result: unknown, error?: string | null) {
+async function logAvaAction(admin: any, profile: any, userId: string, actionType: string, params: Record<string, unknown>, success: boolean, result: unknown, error?: string | null) {
   try {
     await admin.from("planipret_ava_action_log").insert({
       broker_id: profile?.id ?? null,
@@ -222,8 +221,11 @@ Deno.serve(async (req) => {
     // Light Planipret context
     const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
     const { data: profile } = await admin.from("planipret_profiles")
-      .select("id, user_id, full_name, role, extension, ms365_access_token, ms365_scopes, ms365_email, language")
+      .select("id, user_id, full_name, role, extension, ms365_access_token, ms365_scopes, ms365_email, language, ai_consent_at, ai_consent_revoked_at")
       .eq("user_id", u.user.id).maybeSingle();
+    const aiConsentGranted = !!(profile as any)?.ai_consent_at &&
+      (!(profile as any)?.ai_consent_revoked_at || (profile as any).ai_consent_revoked_at < (profile as any).ai_consent_at);
+    if (!aiConsentGranted) return json({ error: "ai_consent_required" }, 403);
 
     // Active UI language wins; fall back to the broker profile preference.
     const lang: "fr" | "en" = requestedLang ?? ((profile as any)?.language === "en" ? "en" : "fr");
@@ -278,28 +280,15 @@ Deno.serve(async (req) => {
         if (MUTATING_MS365.has(action) && body?.approved !== true) {
           return json({ reply: L("Cette action nécessite votre confirmation avant l'envoi.", "This action requires your confirmation before sending."), suggestions: [confirmAction] });
         }
-        let ms365Claim: { replay: boolean; id?: string | null; result?: any } | null = null;
-        if (MUTATING_MS365.has(action)) {
-          const key = await buildIdempotencyKey({
-            userId: u.user.id, action: `ms365_${action}`,
-            destination: String((payload as any).to ?? (payload as any).recipient ?? "").slice(0, 120),
-            callId: (payload as any).call_id ? String((payload as any).call_id) : null,
-            payload, provided: body?.idempotency_key ?? null,
-          });
-          ms365Claim = await claimAction(admin, {
-            userId: u.user.id, action: `ms365_${action}`, surface: "ava_chat",
-            destination: String((payload as any).to ?? "").slice(0, 120) || null,
-            provider: "ms365", idempotencyKey: key,
-          }) as any;
-          if (ms365Claim?.replay) {
-            return json({ reply: L("Action déjà exécutée — rien n'a été renvoyé.", "Already executed — nothing was sent twice."), result: ms365Claim.result, suggestions: [] });
-          }
-        }
-        const exec = await invokeFunction("ms365-actions", authHeader, { action, payload });
+        const toolName = action === "reply_teams_message" ? "send_teams_message" : action;
+        const exec = MUTATING_MS365.has(action)
+          ? await invokeFunction("ava-tool-executor", authHeader, {
+              tool_name: toolName,
+              parameters: { ...payload, confirmed: true, idempotency_key: body?.idempotency_key },
+              session_id: sessionId,
+            })
+          : await invokeFunction("ms365-actions", authHeader, { action, payload });
         const ok = !!exec.data?.success && exec.ok;
-        if (ms365Claim && !ms365Claim.replay) {
-          await finishAction(admin, ms365Claim.id ?? null, ok, exec.data, ok ? null : (exec.data?.error ?? `HTTP ${exec.status}`));
-        }
         await logAvaAction(admin, profile, u.user.id, `ms365_${action}`, payload, ok, exec.data, ok ? null : (exec.data?.error ?? `HTTP ${exec.status}`));
         return json({
           reply: ok
@@ -320,7 +309,14 @@ Deno.serve(async (req) => {
         const offset = Math.max(0, Number(payload.offset ?? 0) || 0);
         const pageSize = Math.max(1, Math.min(50, Number(payload.page_size ?? MAESTRO_PAGE_SIZE)));
         const execPayload = isList ? { ...payload, offset, page_size: pageSize } : payload;
-        const exec = await invokeFunction("maestro-actions", authHeader, { action, payload: execPayload });
+        const canonicalTool = action === "create_event" ? "create_appointment" : action;
+        const exec = MAESTRO_READ_ACTIONS.has(action)
+          ? await invokeFunction("maestro-actions", authHeader, { action, payload: execPayload })
+          : await invokeFunction("ava-tool-executor", authHeader, {
+              tool_name: canonicalTool,
+              parameters: { ...execPayload, confirmed: true, idempotency_key: body?.idempotency_key },
+              session_id: sessionId,
+            });
         const d: any = exec.data ?? {};
         const ok = !!d.success && exec.ok;
         await logAvaAction(admin, profile, u.user.id, `maestro_${action}`, execPayload, ok, d, ok ? null : (d.error ?? `HTTP ${exec.status}`));
@@ -394,30 +390,17 @@ Deno.serve(async (req) => {
       }
 
       if (kind === "sms") {
-        return json({ reply: L("L’envoi de textos est désactivé.", "Text messaging is disabled."), result: { blocked: true }, suggestions: [] });
+        return json({
+          reply: L("Confirme l'envoi dans l'application mobile.", "Confirm sending in the mobile app."),
+          result: { success: false, error: "client_confirmation_required" }, suggestions: [],
+        });
       }
       if (kind === "call") {
         const to = String(payload.number ?? payload.to ?? "");
         if (!to) return json({ reply: L("Numéro d'appel manquant.", "Missing phone number."), suggestions: [] }, 400);
-        if (body?.approved !== true) return json({ reply: L("Confirmez avant de lancer l'appel.", "Please confirm before starting the call."), suggestions: [confirmAction] });
-        const callKey = await buildIdempotencyKey({
-          userId: u.user.id, action: "call_start", destination: to,
-          payload: { to }, provided: body?.idempotency_key ?? null, windowMs: 60_000,
-        });
-        const callClaim = await claimAction(admin, {
-          userId: u.user.id, action: "call_start", surface: "ava_chat",
-          destination: to, provider: "netsapiens", idempotencyKey: callKey,
-        });
-        if (callClaim.replay) {
-          return json({ reply: L("Appel déjà lancé.", "Call already started."), result: callClaim.result, suggestions: [] });
-        }
-        const exec = await invokeFunction("ns-make-call", authHeader, { to_number: to });
-        const ok = !!exec.data?.success && exec.ok;
-        await finishAction(admin, callClaim.id, ok, exec.data, ok ? null : (exec.data?.error ?? `HTTP ${exec.status}`));
-        await logAvaAction(admin, profile, u.user.id, "call_start", { to }, ok, exec.data, ok ? null : (exec.data?.error ?? `HTTP ${exec.status}`));
         return json({
-          reply: ok ? L("Appel lancé.", "Call started.") : `${L("Appel non lancé", "Call not started")}: ${exec.data?.error ?? exec.status}`,
-          result: exec.data, suggestions: [],
+          reply: L("Confirme l'appel dans l'application mobile.", "Confirm the call in the mobile app."),
+          result: { success: false, error: "client_confirmation_required" }, suggestions: [],
         });
       }
     }
@@ -653,9 +636,9 @@ Mets openVoice=true seulement si l'utilisateur demande explicitement de parler. 
         model: gateway("google/gemini-3-flash-preview"),
         system,
         prompt,
-        experimental_output: Output.object({ schema: OutputSchema }),
+        output: Output.object({ schema: OutputSchema }),
       });
-      const out = (r as any).experimental_output ?? (r as any).output;
+      const out = (r as any).output;
       result = coerceOutput(out) ?? coerceOutput((r as any).text);
       if (!result) console.error("pp-ava-chat structured output unusable", JSON.stringify(out).slice(0, 500));
     } catch (e) {

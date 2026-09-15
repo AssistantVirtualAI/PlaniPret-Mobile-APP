@@ -78,23 +78,32 @@ export async function applyAvaSuggestion(s: AvaSuggestion, ctx: AvaActionContext
       }
       case "reminder": {
         if (!ctx.userId) return { ok: false, message: "Session manquante" };
-        const { error } = await supabase.from("planipret_reminders").insert({
-          user_id: ctx.userId,
-          title: String(s.payload?.title ?? s.label ?? "Rappel"),
-          due_at: s.payload?.due_at ?? new Date(Date.now() + 3600_000).toISOString(),
-          status: "pending",
-        } as any);
-        if (error) return { ok: false, message: error.message };
-        return { ok: true, message: "Rappel créé" };
+        const { data, error } = await supabase.functions.invoke("ava-tool-executor", {
+          body: {
+            tool_name: "create_task",
+            parameters: {
+              notes: String(s.payload?.title ?? s.label ?? "Rappel"),
+              due_at: s.payload?.due_at ?? new Date(Date.now() + 3600_000).toISOString(),
+              description: s.payload?.contact_name || s.payload?.contact_phone
+                ? [s.payload?.contact_name, s.payload?.contact_phone].filter(Boolean).join(" · ")
+                : undefined,
+              confirmed: true,
+            },
+          },
+        });
+        if (error || (data as any)?.success !== true) return { ok: false, message: (data as any)?.error ?? error?.message ?? "Échec du rappel" };
+        return { ok: true, message: (data as any)?.message ?? "Rappel créé" };
       }
       case "maestro_action": {
         const action = String(s.payload?.action ?? "");
         const isDirectory = ["list_clients", "client_profile", "list_brokers", "broker_profile"].includes(action);
-        const { data, error } = await supabase.functions.invoke(
-          isDirectory ? "maestro-actions" : "maestro-pipeline-orchestrator",
-          { body: isDirectory ? { action, payload: s.payload ?? {} } : (s.payload ?? {}) },
-        );
+        const { data, error } = isDirectory
+          ? await supabase.functions.invoke("maestro-actions", { body: { action, payload: s.payload ?? {} } })
+          : await supabase.functions.invoke("ava-tool-executor", {
+              body: { tool_name: action, parameters: { ...(s.payload ?? {}), confirmed: true } },
+            });
         if (error) return { ok: false, message: error.message };
+        if ((data as any)?.success === false) return { ok: false, message: (data as any)?.error ?? "Échec Maestro" };
         return { ok: true, message: (data as any)?.message ?? "Action Maestro exécutée" };
       }
       case "ms365_action": {

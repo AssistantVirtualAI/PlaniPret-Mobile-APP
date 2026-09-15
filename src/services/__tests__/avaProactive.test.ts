@@ -70,9 +70,15 @@ describe("applyAvaSuggestion", () => {
     expect(ctx.navigateSms).toHaveBeenCalledWith("+1", "hi");
   });
 
-  it("creates reminder via supabase insert", async () => {
+  it("creates reminder as a confirmed Planiprêt task", async () => {
+    invoke.mockResolvedValue({ data: { success: true, message: "ok" }, error: null });
     const r = await applyAvaSuggestion({ id: "1", label: "R", kind: "reminder", payload: { title: "Rappeler client" } }, ctx);
-    expect(insert).toHaveBeenCalled();
+    expect(invoke).toHaveBeenCalledWith("ava-tool-executor", expect.objectContaining({
+      body: expect.objectContaining({
+        tool_name: "create_task",
+        parameters: expect.objectContaining({ notes: "Rappeler client", confirmed: true }),
+      }),
+    }));
     expect(r.ok).toBe(true);
   });
 
@@ -84,7 +90,9 @@ describe("applyAvaSuggestion", () => {
   it("routes maestro_action via invoke", async () => {
     invoke.mockResolvedValue({ data: { message: "ok" }, error: null });
     const r = await applyAvaSuggestion({ id: "1", label: "M", kind: "maestro_action", payload: { action: "x" } }, ctx);
-    expect(invoke).toHaveBeenCalledWith("maestro-pipeline-orchestrator", expect.any(Object));
+    expect(invoke).toHaveBeenCalledWith("ava-tool-executor", expect.objectContaining({
+      body: { tool_name: "x", parameters: { action: "x", confirmed: true } },
+    }));
     expect(r.ok).toBe(true);
   });
 });

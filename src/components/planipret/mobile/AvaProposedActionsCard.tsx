@@ -51,7 +51,7 @@ const URGENCY_COLOR: Record<string, string> = {
   low: "var(--pp-text-muted)",
 };
 
-type ExecState = { status: "idle" | "running" | "done" | "error"; error?: string; mocked?: boolean; result?: any };
+type ExecState = { status: "idle" | "running" | "done" | "error"; error?: string; result?: any };
 
 export default function AvaProposedActionsCard({ analysis, onDismiss }: { analysis: AvaAnalysis; onDismiss?: () => void }) {
   const [drafts, setDrafts] = useState<Record<string, string>>(() =>
@@ -102,9 +102,9 @@ export default function AvaProposedActionsCard({ analysis, onDismiss }: { analys
     }
     setExec((s) => ({
       ...s,
-      [action.id]: { status: "done", mocked: (data as any).execution_mode === "mock", result: (data as any).result },
+      [action.id]: { status: "done", result: (data as any).result },
     }));
-    toast.success((data as any).execution_mode === "mock" ? "Action journalisée (Maestro pas encore branché)" : "Action effectuée");
+    toast.success("Action effectuée");
   };
 
   const runAll = async () => {
@@ -231,11 +231,6 @@ export default function AvaProposedActionsCard({ analysis, onDismiss }: { analys
                   {isErr && (
                     <p className="text-[10px] mt-1" style={{ color: "#f87171" }}>{st?.error}</p>
                   )}
-                  {isDone && st?.mocked && (
-                    <p className="text-[10px] mt-1" style={{ color: "rgba(255,255,255,0.6)" }}>
-                      ⏳ Sera synchronisé quand Maestro sera branché
-                    </p>
-                  )}
                 </div>
               </div>
               <div className="flex gap-1.5 mt-2">
@@ -267,7 +262,7 @@ export default function AvaProposedActionsCard({ analysis, onDismiss }: { analys
                 )}
                 {!isDone && (
                   <button
-                    onClick={() => { sendFeedback(a, "skipped"); setExec((s) => ({ ...s, [a.id]: { status: "done", mocked: false, result: { skipped: true } } })); }}
+                    onClick={() => { sendFeedback(a, "skipped"); setExec((s) => ({ ...s, [a.id]: { status: "done", result: { skipped: true } } })); }}
                     className="px-2.5 py-1.5 rounded-full text-[11px]"
                     style={{ background: "rgba(255,255,255,0.05)", color: "rgba(255,255,255,0.6)" }}
                   >

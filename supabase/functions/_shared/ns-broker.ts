@@ -58,7 +58,7 @@ export function supaAdmin() {
 }
 
 type AuthBrokerResult =
-  | { admin: ReturnType<typeof supaAdmin>; userId: string; profile: any }
+  | { admin: ReturnType<typeof supaAdmin>; userId: string; profile: any; authMode: "jwt" | "ava_session" | "service_role" }
   | { error: Response };
 
 export async function authBroker(req: Request): Promise<AuthBrokerResult> {
@@ -71,6 +71,7 @@ export async function authBroker(req: Request): Promise<AuthBrokerResult> {
   ].filter((v): v is string => !!v && !!v.trim());
   const admin = supaAdmin();
   let userId: string | null = null;
+  let authMode: "jwt" | "ava_session" | "service_role" = "jwt";
 
   const isConcreteAvaSession = (value: string) => {
     const v = value.trim();
@@ -83,7 +84,7 @@ export async function authBroker(req: Request): Promise<AuthBrokerResult> {
     try {
       const { verifyAvaSession } = await import("./ava-session.ts");
       const v = await verifyAvaSession(header.trim());
-      if (v?.uid) { userId = v.uid; break; }
+      if (v?.uid) { userId = v.uid; authMode = "ava_session"; break; }
     } catch (_) { /* try next header / fall through to JWT */ }
   }
 
@@ -96,7 +97,7 @@ export async function authBroker(req: Request): Promise<AuthBrokerResult> {
     if (bearer === Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")) {
       const body = await req.clone().json().catch(() => ({}));
       const bodyUserId = body?._user_id ?? body?.user_id ?? body?.broker_user_id;
-      if (bodyUserId) userId = String(bodyUserId);
+      if (bodyUserId) { userId = String(bodyUserId); authMode = "service_role"; }
     }
   }
 
@@ -123,14 +124,14 @@ export async function authBroker(req: Request): Promise<AuthBrokerResult> {
   }
   const { data: profile } = await admin
     .from("planipret_profiles")
-    .select("id, user_id, full_name, email, ms365_email, phone, extension, ns_extension, ns_domain, role, ns_jwt, ns_refresh_token, ns_jwt_expires_at, organization_id, maestro_broker_id, maestro_telecom_user_id")
+    .select("id, user_id, full_name, email, ms365_email, phone, extension, ns_extension, ns_domain, role, ns_jwt, ns_refresh_token, ns_jwt_expires_at, organization_id, maestro_broker_id, maestro_telecom_user_id, ai_consent_at, ai_consent_version, ai_consent_revoked_at")
     .eq("user_id", userId)
     .maybeSingle();
   if (!profile || profile.organization_id !== AVA_ORG_ID) {
     return { error: jsonResponse({ success: false, error: "Profil introuvable", code: 404 }, 404) };
   }
   profile.extension = profile.extension || profile.ns_extension;
-  return { admin, userId, profile };
+  return { admin, userId, profile, authMode };
 }
 
 export async function requirePlanipretAdmin(req: Request) {

@@ -12,6 +12,7 @@ import {
   isConfirmed,
   logProposal,
 } from "../_shared/ava-confirm.ts";
+import { hasValidAiConsent } from "../_shared/ai-consent.ts";
 
 const GRAPH = "https://graph.microsoft.com/v1.0";
 
@@ -79,9 +80,11 @@ Deno.serve(async (req) => {
 
     const { data: profile } = await admin
       .from("planipret_profiles")
-      .select("id, user_id, ms365_access_token, ms365_refresh_token, full_name")
+      .select("id, user_id, ms365_access_token, ms365_refresh_token, full_name, ai_consent_at, ai_consent_revoked_at")
       .eq("user_id", userId)
       .maybeSingle();
+    if (!profile) return j({ success: false, error: "profile_not_found" }, 404);
+    if (!hasValidAiConsent(profile)) return j({ success: false, error: "ai_consent_required" }, 403);
 
     let executionMode: "live" | "mock" = "live";
     let success = false;
@@ -170,15 +173,34 @@ Deno.serve(async (req) => {
         case "maestro_note":
         case "maestro_client_create":
         case "maestro_status_update": {
-          // Maestro CRM pas encore branché — journalisation en mode mock
-          executionMode = "mock";
-          success = true;
-          result = {
-            mocked: true,
-            note: "Maestro CRM non branché — l'action sera synchronisée quand l'intégration sera activée.",
-            content_preview: content.slice(0, 500),
-            params,
+          const toolName = action.type === "maestro_task"
+            ? "create_task"
+            : action.type === "maestro_note"
+              ? "push_client_note"
+              : action.type === "maestro_client_create"
+                ? "create_client"
+                : "update_client";
+          const toolParams = {
+            ...params,
+            ...(action.type === "maestro_task" && content ? { description: content } : {}),
+            ...(action.type === "maestro_note" && content ? { note: content } : {}),
+            ...(action.type === "maestro_status_update" && !params.updates
+              ? { updates: { status: params.status ?? content } }
+              : {}),
+            confirmed: true,
+            idempotency_key: `${idempotencyKey}:${toolName}`,
           };
+          const r = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/ava-tool-executor`, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ tool_name: toolName, parameters: toolParams, _user_id: userId }),
+          });
+          result = await r.json().catch(() => ({ success: false, error: `ava_tool_http_${r.status}` }));
+          if (!r.ok || result?.success !== true) throw new Error(result?.error ?? `ava_tool_http_${r.status}`);
+          success = true;
           break;
         }
         default:

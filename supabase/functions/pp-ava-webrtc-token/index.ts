@@ -61,12 +61,15 @@ Deno.serve(async (req) => {
     const admin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
     const { data: prof } = await admin
       .from("planipret_profiles")
-      .select("elevenlabs_agent_id, voice_agent_enabled, full_name, extension, email")
+      .select("elevenlabs_agent_id, voice_agent_enabled, full_name, extension, email, ai_consent_at, ai_consent_revoked_at")
       .eq("user_id", userRes.user.id)
       .maybeSingle();
 
     if (!prof) return json({ error: "profile_not_found" }, 404);
     if (!prof.voice_agent_enabled) return json({ error: "voice_agent_disabled" }, 403);
+    const aiConsentGranted = !!prof.ai_consent_at &&
+      (!prof.ai_consent_revoked_at || prof.ai_consent_revoked_at < prof.ai_consent_at);
+    if (!aiConsentGranted) return json({ error: "ai_consent_required" }, 403);
 
     // Agent partagé : tous les courtiers se connectent au même agent ConvAI.
     const agentId = ELEVENLABS_DEFAULT_AGENT_ID || prof.elevenlabs_agent_id;

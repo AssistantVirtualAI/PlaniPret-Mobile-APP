@@ -19,7 +19,6 @@ import { prefetchRoute, scheduleIdlePrefetch, prefetchAllMplanipret } from "@/li
 
 import { useAvaNavigation } from "@/hooks/useAvaNavigation";
 const AvaVoiceAgent = lazy(() => import("@/components/planipret/mobile/AvaVoiceAgent"));
-import AvaChatSheet from "@/components/planipret/mobile/AvaChatSheet";
 import planipretLogoAsset from "@/assets/planipret-logo.png.asset.json";
 import MobileAuthScreen from "@/components/planipret/mobile/MobileAuthScreen";
 import MobileHeaderControls from "@/components/planipret/mobile/MobileHeaderControls";
@@ -532,7 +531,14 @@ export default function PlanipretMobile() {
     if (detail.autoSend) qs.set("autosend", "1");
     navigate(`/mplanipret/messages${qs.toString() ? `?${qs.toString()}` : ""}`);
   }, [navigate]);
-  const openAva = () => { setAvaMode(profile?.voice_agent_enabled ? "voice" : "chat"); setAvaOpen(true); };
+  const openAva = () => {
+    if (!profile?.voice_agent_enabled) {
+      navigate(ROUTES.MPLANIPRET_AVA);
+      return;
+    }
+    setAvaMode("voice");
+    setAvaOpen(true);
+  };
   const refreshFn = useRef<(() => Promise<void> | void) | null>(null);
   const registerRefresh = (fn: (() => Promise<void> | void) | null) => { refreshFn.current = fn; };
   const handlePull = async () => { if (refreshFn.current) await refreshFn.current(); };
@@ -1272,11 +1278,19 @@ export default function PlanipretMobile() {
                 <AvaVoiceAgent
                   userId={profile.user_id}
                   onClose={() => setAvaOpen(false)}
-                  onFallbackToChat={() => setAvaMode("chat")}
+                  onFallbackToChat={() => {
+                    setAvaOpen(false);
+                    navigate(ROUTES.MPLANIPRET_AVA);
+                  }}
+                  onPlaceCall={(number) => {
+                    setAvaOpen(false);
+                    openDialer(number, true);
+                  }}
+                  onHangupCall={() => softphone.hangup()}
                 />
               </Suspense>
             )
-            : <AvaChatSheet userId={profile.user_id} onClose={() => setAvaOpen(false)} />
+            : null
         )}
         <OfflineBanner />
       </div>
@@ -1335,5 +1349,3 @@ function Frame({ children, forceDark = false }: { children: React.ReactNode; for
     </div>
   );
 }
-
-

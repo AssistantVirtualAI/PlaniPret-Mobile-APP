@@ -262,6 +262,18 @@ Deno.serve(async (req) => {
           const existingTool = byName.get(name);
           let toolId: string | undefined = existingTool?.id ?? existingTool?.tool_id;
           let upRes;
+          const existingType = existingTool?.tool_config?.type ?? existingTool?.type;
+          const desiredType = cfg.tool_config.type;
+          if (toolId && existingType && existingType !== desiredType) {
+            const deleteRes = await elFetch(apiKey, `/convai/tools/${toolId}`, { method: "DELETE" });
+            if (!deleteRes.ok) {
+              const msg = `Impossible de convertir ${existingType} → ${desiredType}: ${deleteRes.error}`;
+              errors.push(`${name}: ${msg}`);
+              errors_detailed.push({ tool: name, status: deleteRes.status, message: msg, data: deleteRes.data });
+              continue;
+            }
+            toolId = undefined;
+          }
           if (toolId) {
             upRes = await elFetch(apiKey, `/convai/tools/${toolId}`, { method: "PATCH", body: JSON.stringify(cfg) });
           } else {
@@ -282,6 +294,17 @@ Deno.serve(async (req) => {
         }
 
         const uniqIds = Array.from(new Set(ids));
+
+        if (errors.length) {
+          return json({
+            success: false,
+            error: `Synchronisation incomplète: ${errors.length} outil(s) en erreur. L'agent n'a pas été rattaché à une configuration partielle.`,
+            tools_synced: uniqIds.length,
+            total_expected: desired.length,
+            errors,
+            errors_detailed,
+          });
+        }
 
         if (uniqIds.length === 0) {
           return json({

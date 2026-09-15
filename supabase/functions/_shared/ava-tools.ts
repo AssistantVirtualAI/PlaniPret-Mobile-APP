@@ -1,12 +1,17 @@
-// Shared definition of the 29 AVA tools pushed to the ElevenLabs agent.
+// Shared definition of the AVA tools pushed to the ElevenLabs agent.
 // Used by elevenlabs-manage-agent (sync_all_tools) and the admin UI status table.
 //
 // Two output shapes are exposed:
-//  - buildAvaToolsArray(): legacy inline webhook tools (kept for back-compat
+//  - buildAvaToolsArray(): legacy inline tools (kept for back-compat
 //    with older agent payloads that accepted `prompt.tools`).
 //  - buildAvaToolConfigs(): registry-shaped `tool_config` payloads compatible
 //    with the current ElevenLabs Convai Tools API
 //    (POST/PATCH /v1/convai/tools → reference by `tool_ids` on the agent).
+//
+// Sensitive tools are deliberately registered as ElevenLabs CLIENT tools. The
+// mobile app presents the full proposal and obtains an explicit tap before it
+// calls the authenticated server executor. Read-only tools remain webhooks.
+import { isSensitiveAvaTool } from "./ava-confirm.ts";
 
 type ToolSpec = {
   name: string;
@@ -32,24 +37,35 @@ export function buildAvaToolsArray(supabaseUrl: string, anonKey: string) {
     { key: "X-Ava-Session-Fallback", value: "{{ava_session_token}}" },
   ];
 
-  const mk = (name: string, description: string, properties: Record<string, any> = {}, required: string[] = []) => ({
-    type: "webhook",
-    name,
-    description,
-    api: {
-      url: SUPABASE_TOOL_URL,
-      method: "POST",
-      headers: TOOL_HEADERS,
-      request_body_schema: {
-        type: "object",
-        properties: {
-          tool_name: { type: "string", value: name, description: "Tool identifier" },
-          parameters: { type: "object", properties, ...(required.length ? { required } : {}) },
+  const mk = (name: string, description: string, properties: Record<string, any> = {}, required: string[] = []) => {
+    if (isSensitiveAvaTool(name)) {
+      return {
+        type: "client",
+        name,
+        description,
+        expects_response: true,
+        parameters: { type: "object", properties, ...(required.length ? { required } : {}) },
+      };
+    }
+    return {
+      type: "webhook",
+      name,
+      description,
+      api: {
+        url: SUPABASE_TOOL_URL,
+        method: "POST",
+        headers: TOOL_HEADERS,
+        request_body_schema: {
+          type: "object",
+          properties: {
+            tool_name: { type: "string", value: name, description: "Tool identifier" },
+            parameters: { type: "object", properties, ...(required.length ? { required } : {}) },
+          },
+          required: ["tool_name", "parameters"],
         },
-        required: ["tool_name", "parameters"],
       },
-    },
-  });
+    };
+  };
 
   const arr: any[] = [];
   buildSpecs((name, description, properties = {}, required = []) => arr.push(mk(name, description, properties, required)));
@@ -64,6 +80,21 @@ export function buildAvaToolConfigs(supabaseUrl: string, anonKey: string) {
   const avaSessionHeader = { variable_name: "secret__ava_session_token" };
   const avaSessionFallbackHeader = { variable_name: "ava_session_token" };
   return specs().map((s) => {
+    if (isSensitiveAvaTool(s.name)) {
+      return {
+        tool_config: {
+          type: "client",
+          name: s.name,
+          description: s.description,
+          expects_response: true,
+          parameters: {
+            type: "object",
+            properties: s.properties ?? {},
+            ...(s.required?.length ? { required: s.required } : {}),
+          },
+        },
+      };
+    }
     const request_body_schema: Record<string, any> = {
       type: "object",
       properties: s.properties ?? {},
@@ -104,7 +135,7 @@ function buildSpecs(mk: (name: string, description: string, properties?: Record<
     }, ["to_number"]),
 
     mk("get_active_calls", "Récupère la liste des appels en cours actifs."),
-    mk("hangup_call", "Raccroche et termine un appel actif.", { call_id: { type: "string", description: "ID de l'appel" } }, ["call_id"]),
+    mk("hangup_call", "Raccroche et termine l'appel actif après confirmation.", { call_id: { type: "string", description: "ID de l'appel (optionnel sur mobile)" } }),
     mk("get_call_history", "Récupère l'historique des appels avec scores IA et températures de leads.", {
       limit: { type: "number", description: "Nombre d'appels (défaut: 10)" },
       days: { type: "number", description: "Jours dans le passé (défaut: 7)" },
@@ -184,10 +215,12 @@ function buildSpecs(mk: (name: string, description: string, properties?: Record<
     mk("get_upcoming_appointments", "Prochains rendez-vous.", { days: { type: "number", description: "Jours en avant (défaut: 7)" } }),
     mk("create_client", "Crée un prospect dans Maestro. Demande confirmation.", {
       phone: { type: "string", description: "Numéro E.164" },
-      first_name: { type: "string", description: "Prénom (optionnel)" },
+      first_name: { type: "string", description: "Prénom" },
       last_name: { type: "string", description: "Nom (optionnel)" },
+      email: { type: "string", description: "Courriel (optionnel)" },
+      company: { type: "string", description: "Entreprise (optionnel)" },
       notes: { type: "string", description: "Notes (optionnel)" },
-    }, ["phone"]),
+    }, ["phone", "first_name"]),
 
     // Maestro — endpoints production par courtier (/users/{id}/...)
     mk("list_my_clients", "Liste les clients Maestro du courtier connecté (endpoint production /users/{id}/clients).", {
@@ -408,9 +441,9 @@ function buildSpecs(mk: (name: string, description: string, properties?: Record<
       note: { type: "string", description: "Contenu de la note" },
       type: { type: "string", description: "Type de note (défaut: general)" },
     }, ["client_id", "note"]),
-    mk("push_communication_log", "Enregistre une entrée de communication (appel/SMS/courriel) dans Maestro.", {
+    mk("push_communication_log", "Journalise une communication dans Maestro sans envoyer de SMS ni de courriel. Demande confirmation.", {
       client_id: { type: "string", description: "ID du client Maestro" },
-      channel: { type: "string", description: "call, sms, email ou note" },
+      channel: { type: "string", enum: ["call", "sms", "email", "note"], description: "call, sms, email ou note; sms/email sont journalisés comme note, jamais renvoyés" },
       direction: { type: "string", description: "inbound ou outbound" },
       summary: { type: "string", description: "Résumé (optionnel)" },
       coaching: { type: "string", description: "Coaching (optionnel)" },
@@ -422,14 +455,13 @@ function buildSpecs(mk: (name: string, description: string, properties?: Record<
 }
 
 export const EXPECTED_TOOL_NAMES = [
-  "make_call","get_active_calls","hangup_call","get_call_history","get_recording","get_transcript","send_sms","get_sms_conversations","get_voicemails",
-  "analyze_call","get_hot_leads","get_coaching_summary",
-  "search_client","get_client_profile","get_client_history","update_client","list_tasks","get_task","list_task_targets","create_task","update_task","delete_task","create_appointment","get_pending_tasks","get_upcoming_appointments","create_client",
-  "read_emails","get_unread_emails","get_recent_emails","summarize_email","send_email","search_contact","propose_email_reply","summarize_inbox",
-  "update_calendar_event","delete_calendar_event","get_calendar_today","get_calendar_week","get_upcoming_meetings",
-  "search_ms365_contacts","find_contact","search_directory","list_company_directory",
-  "list_teams_chats","create_teams_chat","send_teams_message",
-  "navigate_to","show_client_in_app","open_call_detail",
-  "get_daily_briefing","get_my_stats","get_performance_report","generate_voicemail_greeting","explain_feature","get_integration_status",
-  "push_call_summary","push_client_note","push_communication_log",
+  "make_call", "get_active_calls", "hangup_call", "get_call_history", "get_recording", "get_transcript", "send_sms", "get_voicemails",
+  "analyze_call", "get_hot_leads", "get_coaching_summary",
+  "search_client", "get_client_profile", "get_client_history", "list_tasks", "get_task", "list_task_targets", "create_task", "update_task", "delete_task", "create_appointment", "get_pending_tasks", "get_upcoming_appointments", "create_client",
+  "list_my_clients", "get_maestro_client_profile", "list_my_brokers", "get_maestro_broker_profile",
+  "get_commission_summary", "get_commission_by_lender", "compare_commission_periods", "list_commission_deposits", "list_financial_institutions", "get_commission_deposits", "get_commission_agents", "get_financial_institutions", "open_commission_report",
+  "read_emails", "send_email", "search_contact", "propose_email_reply", "summarize_inbox", "update_calendar_event", "delete_calendar_event", "get_calendar_today", "get_calendar_week", "get_upcoming_meetings", "search_ms365_contacts", "find_contact", "search_directory", "list_company_directory",
+  "navigate_to", "show_client_in_app", "open_call_detail", "open_dialer", "open_sms_composer", "open_email_composer",
+  "create_calendar_event", "move_calendar_event", "cancel_calendar_event", "get_sms_conversations", "get_unread_emails", "get_recent_emails", "summarize_email", "update_client", "list_teams_chats", "create_teams_chat", "send_teams_message",
+  "get_daily_briefing", "get_my_stats", "get_performance_report", "generate_voicemail_greeting", "explain_feature", "get_integration_status", "push_call_summary", "push_client_note", "push_communication_log",
 ];

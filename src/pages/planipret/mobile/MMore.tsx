@@ -469,7 +469,11 @@ export default function MMore() {
         <Row icon={<Bot className="w-4 h-4" />} label={aiOk ? "Consentement IA (AVA) : accordé" : "Consentement IA (AVA) : non accordé"}
           sub="AVA envoie vos messages et transcriptions à OpenAI, Google (Gemini) et ElevenLabs. Touchez pour accorder ou retirer votre consentement."
           onClick={async () => {
-            if (aiOk) { revokeAiConsent(); setAiOk(false); toast.success("Consentement IA retiré"); }
+            if (aiOk) {
+              const revoked = await revokeAiConsent();
+              if (revoked) { setAiOk(false); toast.success("Consentement IA retiré"); }
+              else toast.error("Impossible de retirer le consentement. Réessayez.");
+            }
             else { const ok = await ensureAiConsent(); setAiOk(ok); }
           }} chevron />
         <Row icon={<Shield className="w-4 h-4" />} label={t("more.privacy")} onClick={() => navigate("/mplanipret/privacy")} chevron />

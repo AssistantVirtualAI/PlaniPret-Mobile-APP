@@ -4,6 +4,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { generateText } from "npm:ai";
 import { createLovableAiGatewayProvider } from "../_shared/ai-gateway.ts";
+import { hasValidAiConsent } from "../_shared/ai-consent.ts";
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -35,9 +36,11 @@ Deno.serve(async (req) => {
     const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
 
     // Mode service (voice agent / scheduler) : accepte broker_user_id via header/body si appelé avec service_role.
-    const serviceHeader = req.headers.get("x-ava-service");
+    const bearer = authHeader.replace(/^Bearer\s+/i, "");
+    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+    const isService = !!serviceKey && bearer === serviceKey;
     let effectiveUserId: string | null = null;
-    if (serviceHeader) {
+    if (isService) {
       effectiveUserId = req.headers.get("x-broker-user-id") ?? body?.broker_user_id ?? body?._user_id ?? null;
     } else {
       const sb = createClient(
@@ -52,8 +55,10 @@ Deno.serve(async (req) => {
     if (!effectiveUserId) return json({ error: "no_user" }, 400);
 
     const { data: profile } = await admin.from("planipret_profiles")
-      .select("id, user_id, full_name, extension")
+      .select("id, user_id, full_name, extension, ai_consent_at, ai_consent_revoked_at")
       .eq("user_id", effectiveUserId).maybeSingle();
+    if (!profile) return json({ error: "profile_not_found" }, 404);
+    if (!hasValidAiConsent(profile)) return json({ error: "ai_consent_required" }, 403);
 
     const daysBack = period === "day" ? 1 : period === "week" ? 7 : 30;
     const since = new Date(Date.now() - daysBack * 86400000).toISOString();

@@ -109,10 +109,11 @@ async function maestroActions(ctx: Ctx, action: string, payload: Record<string, 
 
     method: "POST",
     headers: {
+      Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
       "Content-Type": "application/json",
       apikey: Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "",
     },
-    body: JSON.stringify({ action, payload: { ...payload, user_id: userId } }),
+    body: JSON.stringify({ action, payload: { ...payload, user_id: userId }, _user_id: ctx.userId }),
   });
   return await r.json().catch(() => ({ success: false, error: "invalid_response" }));
 }
@@ -408,22 +409,32 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
   },
 
   async get_recording(ctx, p) {
+    if (!p?.call_id) return { success: false, error: "call_id_required" };
     const { data } = await ctx.admin.from("planipret_phone_calls")
-      .select("recording_url, duration_seconds").eq("id", p.call_id).maybeSingle();
+      .select("recording_url, duration_seconds, save_consent").eq("id", p.call_id)
+      .in("user_id", ownerIds(ctx)).maybeSingle();
+    if (!data) return { success: false, error: "call_not_found_or_forbidden" };
+    if (String(data.save_consent ?? "pending") !== "approved") {
+      return { success: false, error: "call_consent_required" };
+    }
     return { success: !!data?.recording_url, audio_url: data?.recording_url, duration: data?.duration_seconds };
   },
 
   async get_transcript(ctx, p) {
+    if (!p?.call_id) return { success: false, error: "call_id_required" };
     const { data } = await ctx.admin.from("planipret_phone_calls")
-      .select("transcript_segments").eq("id", p.call_id).maybeSingle();
+      .select("transcript_segments, save_consent").eq("id", p.call_id)
+      .in("user_id", ownerIds(ctx)).maybeSingle();
+    if (!data) return { success: false, error: "call_not_found_or_forbidden" };
+    if (String(data.save_consent ?? "pending") !== "approved") {
+      return { success: false, error: "call_consent_required" };
+    }
     const seg = data?.transcript_segments;
     const transcript = Array.isArray(seg) ? seg.map((s: any) => s.text).join("\n") : "";
     return { success: !!transcript, transcript, language: "fr" };
   },
 
   async send_sms(ctx, p) {
-    return { success: false, blocked: true, error: "sms_globally_disabled", message: "L’envoi de textos est désactivé." };
-    /* SMS disabled globally; keep the legacy implementation unreachable for rollback context.
     let to = firstText(p?.to, p?.to_number, p?.destination, p?.number, p?.phone_number, p?.phone);
     let name = p?.contact_name;
     if (!to && name) {
@@ -441,6 +452,9 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
       type: p?.type ?? "sms",
       thread_id: p?.thread_id,
       from: p?.from,
+      origin: "ava_tool",
+      confirmed: true,
+      idempotency_key: p?.idempotency_key,
     });
     const j = r.data;
     const ok = r.httpOk && (j?.ok === true || j?.success === true);
@@ -468,7 +482,6 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
       thread_id: j?.thread_id,
       raw: j,
     };
-    */
   },
 
   async get_sms_conversations(ctx, p) {
@@ -501,13 +514,20 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
 
   // ===== AI =====
   async analyze_call(ctx, p) {
+    if (!p?.call_id) return { success: false, error: "call_id_required" };
+    const { data: ownedCall } = await ctx.admin.from("planipret_phone_calls")
+      .select("id, save_consent").eq("id", p.call_id).in("user_id", ownerIds(ctx)).maybeSingle();
+    if (!ownedCall) return { success: false, error: "call_not_found_or_forbidden" };
+    if (String(ownedCall.save_consent ?? "pending") !== "approved") {
+      return { success: false, error: "call_consent_required" };
+    }
     const r = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/maestro-ai-analysis`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ call_id: p.call_id }),
+      body: JSON.stringify({ call_id: p.call_id, _user_id: ctx.userId }),
     });
     return await r.json().catch(() => ({ success: false }));
   },
@@ -601,6 +621,7 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
         const { data: calls } = await ctx.admin.from("planipret_phone_calls")
           .select("id, direction, created_at, duration_seconds, ai_summary, from_number, to_number")
           .eq("maestro_client_id", String(p.client_id))
+          .in("user_id", ownerIds(ctx))
           .order("created_at", { ascending: false })
           .limit(limit);
         return {
@@ -796,30 +817,35 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
   },
 
   async update_client(ctx, p) {
-    try {
-      if (!p?.client_id) return { success: false, error: "client_id_required" };
-      const uid = await maestroUserId(ctx);
-      if (!uid) return MAESTRO_NOT_LINKED;
-      const result = await maestroFetch(ctx, `/users/${uid}/clients/${encodeURIComponent(p.client_id)}`, {
-        method: "PATCH", body: JSON.stringify(p.updates ?? {}),
-      });
-      return { success: true, message: "Profil mis à jour", result };
-    } catch (e) { return { success: false, error: String(e) }; }
+    if (!p?.client_id || !p?.updates) return { success: false, error: "client_id_and_updates_required" };
+    const r = await callPlanipretFunction(ctx, "pp-maestro-scribe", {
+      action: "clients.update",
+      id: String(p.client_id),
+      payload: p.updates,
+    });
+    const ok = r.httpOk && r.data?.ok === true;
+    return ok
+      ? { success: true, message: "Profil mis à jour", client: r.data?.data ?? null, endpoint: r.data?.endpoint ?? null }
+      : { success: false, error: r.data?.error ?? `maestro_update_failed_${r.status}` };
   },
 
   async create_client(ctx, p) {
-    try {
-      const uid = await maestroUserId(ctx);
-      if (!uid) return MAESTRO_NOT_LINKED;
-      const result = await maestroFetch(ctx, `/users/${uid}/clients`, {
-        method: "POST",
-        body: JSON.stringify({
-          phone: p.phone, first_name: p.first_name, last_name: p.last_name,
-          notes: p.notes,
-        }),
-      });
-      return { success: true, client_id: result?.id ?? result?.client?.id, message: "Nouveau prospect créé" };
-    } catch (e) { return { success: false, error: String(e) }; }
+    const phone = normalizePhoneE164(p?.phone);
+    const firstName = firstText(p?.first_name, p?.name)?.trim() ?? "";
+    if (!phone) return { success: false, error: "phone_required" };
+    if (!firstName) return { success: false, error: "first_name_required" };
+    const r = await callPlanipretFunction(ctx, "maestro-client-create", {
+      phone,
+      first_name: firstName,
+      last_name: p?.last_name ?? "",
+      email: p?.email,
+      company: p?.company,
+      notes: p?.notes,
+    });
+    const ok = r.httpOk && r.data?.success === true;
+    return ok
+      ? { success: true, client_id: r.data?.client_id ?? null, client: r.data?.client ?? null, message: "Nouveau prospect créé" }
+      : { success: false, error: r.data?.error ?? `maestro_create_failed_${r.status}`, web_url: r.data?.web_url ?? null };
   },
 
   // ===== M365 =====
@@ -1346,7 +1372,7 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
       maestro: { explanation: "Maestro est ton CRM hypothécaire intégré pour gérer clients, tâches et RDV.", tips: ["Active la sync dans Plus → Intégrations"] },
       ms365: { explanation: "Microsoft 365 te permet de lire/envoyer courriels et gérer ton calendrier depuis l'app.", tips: ["Connecte ton compte dans Plus → Microsoft 365"] },
       voicemail_greeting: { explanation: "Génère un message de boîte vocale professionnel avec une voix IA.", tips: ["Choisis la voix, écris le texte, génère, puis active."] },
-      voice_agent: { explanation: "AVA est ton assistante vocale qui peut exécuter toutes les actions de l'app.", tips: ["Parle naturellement", "Mode 'full_auto' pour zéro confirmation"] },
+      voice_agent: { explanation: "AVA est ton assistante vocale qui prépare les actions de l'app.", tips: ["Parle naturellement", "Confirme chaque action avant son exécution"] },
     };
     const info = KB[p.feature] ?? { explanation: "Fonctionnalité non documentée.", tips: [] };
     return { success: true, ...info };
@@ -1379,13 +1405,20 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
     return { success: !j?.error, count: results.length, contacts: results, message: results.length ? `${results.length} contact(s) M365` : "Aucun contact M365 trouvé", ...(j?.error ? { error: j.error } : {}) };
   },
 
+  async search_contact(ctx, p) {
+    return await TOOLS.search_ms365_contacts(ctx, p);
+  },
+
   // ===== PUSH TO MAESTRO =====
   async push_call_summary(ctx, p) {
     if (!p?.call_id) return { success: false, error: "call_id_required" };
     // Récupère l'appel + client Maestro associé
     const { data: call } = await ctx.admin.from("planipret_phone_calls")
-      .select("*").eq("id", p.call_id).maybeSingle();
-    if (!call) return { success: false, error: "call_not_found" };
+      .select("*").eq("id", p.call_id).in("user_id", ownerIds(ctx)).maybeSingle();
+    if (!call) return { success: false, error: "call_not_found_or_forbidden" };
+    if (String(call.save_consent ?? "pending") !== "approved") {
+      return { success: false, error: "call_consent_required" };
+    }
     const clientId = call.maestro_client_id ?? p.client_id;
     if (!clientId) return { success: false, error: "no_maestro_client_linked", message: "Aucun client Maestro lié à cet appel." };
     const noteBody = [
@@ -1427,22 +1460,42 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
 
   async push_client_note(ctx, p) {
     if (!p?.client_id || !p?.note) return { success: false, error: "client_id_and_note_required" };
-    try {
-      const uid = await maestroUserId(ctx);
-      if (!uid) return MAESTRO_NOT_LINKED;
-      const result = await maestroFetch(ctx, `/users/${uid}/clients/${encodeURIComponent(p.client_id)}/notes`, {
-        method: "POST",
-        body: JSON.stringify({ content: p.note, type: p.type ?? "general" }),
-      });
-      return { success: true, note_id: result?.id, message: "Note ajoutée dans Maestro." };
-    } catch (e) { return { success: false, error: String(e), message: `Push note Maestro échoué : ${e}` }; }
+    const getRes = await callPlanipretFunction(ctx, "pp-maestro-scribe", {
+      action: "clients.get",
+      id: String(p.client_id),
+    });
+    if (!getRes.httpOk || getRes.data?.ok !== true) {
+      return { success: false, error: getRes.data?.error ?? `maestro_client_get_failed_${getRes.status}` };
+    }
+    const client = getRes.data?.data ?? {};
+    const previous = String(client?.notes ?? client?.note ?? "").trim();
+    const stamped = `[${new Date().toISOString()}] ${String(p.note).trim()}`;
+    const notes = previous ? `${previous}\n\n${stamped}` : stamped;
+    const updateRes = await callPlanipretFunction(ctx, "pp-maestro-scribe", {
+      action: "clients.update",
+      id: String(p.client_id),
+      payload: { notes },
+    });
+    const ok = updateRes.httpOk && updateRes.data?.ok === true;
+    return ok
+      ? { success: true, message: "Note ajoutée au client Maestro.", client: updateRes.data?.data ?? null }
+      : { success: false, error: updateRes.data?.error ?? `maestro_note_update_failed_${updateRes.status}` };
   },
 
   async push_communication_log(ctx, p) {
     if (!p?.client_id) return { success: false, error: "client_id_required" };
     const channel = p.channel ?? "note";
-    if (channel === "sms" || channel === "message") {
-      return { success: false, blocked: true, error: "sms_globally_disabled", message: "L’envoi de textos est désactivé." };
+    if (channel !== "call") {
+      const detail = [
+        `[${String(channel).toUpperCase()} ${String(p.direction ?? "outbound")}]`,
+        p.summary,
+        p.notes ?? p.coaching,
+      ].filter(Boolean).join(" — ");
+      return await TOOLS.push_client_note(ctx, {
+        client_id: p.client_id,
+        note: detail || `Communication ${channel}`,
+        type: channel,
+      });
     }
     const payload: any = {
       client_id: p.client_id,
@@ -1774,6 +1827,18 @@ Deno.serve(async (req) => {
   const ctx: Ctx = { admin: auth.admin, userId: auth.userId, profile: auth.profile };
   const params: any = parameters ?? {};
 
+  // Sensitive tools are registered as ElevenLabs client tools. A stale remote
+  // webhook may still call this endpoint with the HMAC session token, but it
+  // cannot prove that the broker tapped the in-app confirmation dialog.
+  if (auth.authMode === "ava_session" && isSensitiveAvaTool(tool_name)) {
+    return jsonResponse({
+      success: false,
+      needs_confirmation: true,
+      error: "client_confirmation_required",
+      message: "Cette action doit être confirmée dans l'application Planiprêt.",
+    }, 409);
+  }
+
   // ── Barrière de confirmation serveur ──────────────────────────────────
   // AVA prépare, le courtier confirme, le serveur exécute. Un tool call
   // ElevenLabs ou une requête directe ne peuvent pas sauter cette étape.
@@ -1820,7 +1885,7 @@ Deno.serve(async (req) => {
     if (claim.replay) return jsonResponse(claim.result);
 
     try {
-      const result = await fn(ctx, params);
+      const result = await fn(ctx, { ...params, confirmed: true, idempotency_key: idempotencyKey });
       const ok = (result as any)?.success !== false;
       await finishAction(ctx.admin, claim.id, ok, result, ok ? null : String((result as any)?.error ?? "error"));
       await logTool(ctx, session_id ?? "no-session", tool_name, params, result);

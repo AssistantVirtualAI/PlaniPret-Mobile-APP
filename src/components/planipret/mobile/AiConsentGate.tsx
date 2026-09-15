@@ -4,30 +4,49 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Bot, ShieldCheck } from "lucide-react";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import { supabase } from "@/integrations/supabase/client";
 
-const KEY = "pp_ai_consent_v1";
+const KEY = "pp_ai_consent_v3";
 
 export function hasAiConsent(): boolean {
   try { return localStorage.getItem(KEY) === "1"; } catch { return false; }
 }
 
-export function setAiConsent(): void {
+export async function setAiConsent(): Promise<boolean> {
+  const { data, error } = await supabase.functions.invoke("pp-ai-consent", { body: { action: "grant" } });
+  if (error || (data as any)?.success !== true) return false;
   try {
     localStorage.setItem(KEY, "1");
     localStorage.setItem("pp_ai_consent_at", new Date().toISOString());
   } catch {}
+  return true;
 }
 
-export function revokeAiConsent(): void {
-  try { localStorage.removeItem(KEY); } catch {}
+export async function revokeAiConsent(): Promise<boolean> {
+  const { data, error } = await supabase.functions.invoke("pp-ai-consent", { body: { action: "revoke" } });
+  if (error || (data as any)?.success !== true) return false;
+  try {
+    localStorage.removeItem(KEY);
+    localStorage.removeItem("pp_ai_consent_at");
+  } catch {}
+  return true;
 }
 
 export default function AiConsentGate({ onAccept, onDecline }: { onAccept: () => void; onDecline?: () => void }) {
   const { lang } = useMplanipretLang();
   const fr = lang !== "en";
   const [checked, setChecked] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  const accept = () => { setAiConsent(); onAccept(); };
+  const accept = async () => {
+    setSaving(true);
+    setError(null);
+    const ok = await setAiConsent();
+    setSaving(false);
+    if (ok) onAccept();
+    else setError(fr ? "Impossible d’enregistrer le consentement. Réessayez." : "Unable to save consent. Please retry.");
+  };
 
   return (
     <div className="absolute inset-0 z-[80] flex items-center justify-center px-5"
@@ -63,11 +82,12 @@ export default function AiConsentGate({ onAccept, onDecline }: { onAccept: () =>
           </span>
         </label>
 
-        <button onClick={accept} disabled={!checked}
+        {error && <div className="text-[12px] mb-3" style={{ color: "#F87171" }}>{error}</div>}
+        <button onClick={accept} disabled={!checked || saving}
           className="w-full h-11 rounded-xl text-[14px] font-semibold flex items-center justify-center gap-2"
           style={{ background: "var(--pp-brand-accent, #9B7FE8)", color: "#0A1628", opacity: checked ? 1 : 0.5 }}>
           <ShieldCheck className="w-4 h-4" />
-          {fr ? "Accepter et continuer" : "Accept and continue"}
+          {saving ? (fr ? "Enregistrement…" : "Saving…") : (fr ? "Accepter et continuer" : "Accept and continue")}
         </button>
         {onDecline && (
           <button onClick={onDecline} className="w-full h-10 mt-2 rounded-xl text-[13px]"
