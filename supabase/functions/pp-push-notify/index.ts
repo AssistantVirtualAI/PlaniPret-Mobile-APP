@@ -18,12 +18,11 @@ Deno.serve(async (req) => {
 
     const body = await req.json().catch(() => ({}));
     const { user_id, title, body: text, data, icon, category, deep_link, idempotency_key } = body ?? {};
-    if (!user_id || !title) return json({ error: "missing_fields" }, 400);
 
-    // ---- Authorization -------------------------------------------------
+    // ---- Authorization (before any validation or read) -------------------
     // Trusted internal services call with the service-role key; end users may
     // only send notifications to themselves (e.g. the "test notification"
-    // button). Anonymous callers are rejected.
+    // button). Anonymous callers are rejected first.
     const token = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
     if (!token) return json({ error: "unauthorized" }, 401);
     const isService = token === Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
@@ -31,11 +30,12 @@ Deno.serve(async (req) => {
       const { data: userData } = await admin.auth.getUser(token);
       const caller = userData?.user;
       if (!caller) return json({ error: "unauthorized" }, 401);
-      if (String(user_id) !== caller.id) {
+      if (user_id && String(user_id) !== caller.id) {
         const { data: isAdmin } = await admin.rpc("is_planipret_admin", { _user_id: caller.id });
         if (isAdmin !== true) return json({ error: "forbidden" }, 403);
       }
     }
+    if (!user_id || !title) return json({ error: "missing_fields" }, 400);
 
     // Basic input validation on attacker-controllable display fields
     const safeTitle = String(title).slice(0, 120);
