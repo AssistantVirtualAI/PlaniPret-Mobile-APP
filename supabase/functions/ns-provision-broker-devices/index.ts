@@ -89,10 +89,15 @@ Deno.serve(async (req) => {
 
     // Verify caller is admin
     const authHeader = req.headers.get("Authorization") ?? "";
+    // Internal server-to-server call (ns-resolve-sip-credentials on login):
+    // authenticated by the service-role bearer, which carries no user, so
+    // auth.getUser() returns null and the refresh used to 401.
+    const internalCall = req.headers.get("x-internal-call") === "1"
+      && authHeader.replace(/^Bearer\s+/i, "").trim() === SERVICE_ROLE;
     const userClient = createClient(SUPABASE_URL, ANON_KEY ?? SERVICE_ROLE, { global: { headers: { Authorization: authHeader } } });
-    const { data: userData } = await userClient.auth.getUser();
+    const { data: userData } = internalCall ? { data: null as any } : await userClient.auth.getUser();
     const caller = userData?.user;
-    if (!caller) return json({ error: "not_authenticated" }, 401);
+    if (!caller && !internalCall) return json({ error: "not_authenticated" }, 401);
 
     const admin = createClient(SUPABASE_URL, SERVICE_ROLE);
     const readSipSecret = async (name: string) => {
@@ -100,18 +105,21 @@ Deno.serve(async (req) => {
       const value = String(data ?? "").trim();
       return value && !/^\*+$/.test(value) ? value : null;
     };
-    const { data: callerProfile } = await admin
-      .from("planipret_profiles").select("role,user_id,id").or(`user_id.eq.${caller.id},id.eq.${caller.id}`).maybeSingle();
-    let isAdmin = ["admin", "super_admin", "owner", "planipret_admin"].includes(String(callerProfile?.role ?? "").toLowerCase());
-    if (!isAdmin) { try { const { data } = await admin.rpc("is_planipret_admin", { _user_id: caller.id }); if (data) isAdmin = true; } catch { /* ignore */ } }
-    if (!isAdmin) { try { const { data } = await admin.rpc("is_super_admin", { _user_id: caller.id }); if (data) isAdmin = true; } catch { /* ignore */ } }
+    const { data: callerProfile } = caller
+      ? await admin
+        .from("planipret_profiles").select("role,user_id,id").or(`user_id.eq.${caller.id},id.eq.${caller.id}`).maybeSingle()
+      : { data: null as any };
+    let isAdmin = internalCall
+      || ["admin", "super_admin", "owner", "planipret_admin"].includes(String(callerProfile?.role ?? "").toLowerCase());
+    if (!isAdmin && caller) { try { const { data } = await admin.rpc("is_planipret_admin", { _user_id: caller.id }); if (data) isAdmin = true; } catch { /* ignore */ } }
+    if (!isAdmin && caller) { try { const { data } = await admin.rpc("is_super_admin", { _user_id: caller.id }); if (data) isAdmin = true; } catch { /* ignore */ } }
     // Self-provisioning: le client mobile appelle sans broker_id juste après le
     // 200 OK du REGISTER PJSIP pour forcer le transport TLS sur SON device.
     if (!bulk && !broker_id && (callerProfile?.id || callerProfile?.user_id)) {
       broker_id = String(callerProfile?.id ?? callerProfile?.user_id);
     }
     // Allow self-provisioning: caller may provision their OWN broker record without admin role
-    const selfOnly = !isAdmin && !bulk && !!broker_id
+    const selfOnly = !isAdmin && !bulk && !!broker_id && !!caller
       && callerProfile?.user_id === caller.id
       && (broker_id === callerProfile.id || broker_id === callerProfile.user_id);
     if (!isAdmin && !selfOnly) return json({ error: "forbidden", detail: "admin role required for this operation" }, 403);

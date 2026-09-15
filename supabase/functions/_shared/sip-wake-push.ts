@@ -41,12 +41,24 @@ export type SipWakeResult = { sent: number; ios: number; android: number; reason
 export async function sendSipWakePush(admin: any, userId: string): Promise<SipWakeResult> {
   const out: SipWakeResult = { sent: 0, ios: 0, android: 0 };
   try {
-    const { data: tokens } = await admin
-      .from("mobile_push_tokens")
-      .select("id,token,platform")
-      .eq("user_id", userId)
-      .in("platform", ["ios", "android"]);
-    if (!tokens?.length) { out.reason = "no_native_token"; return out; }
+    const [{ data: tokens }, { data: voip }] = await Promise.all([
+      admin
+        .from("mobile_push_tokens")
+        .select("id,token,platform")
+        .eq("user_id", userId)
+        .in("platform", ["ios", "android"]),
+      admin
+        .from("planipret_voip_push_tokens")
+        .select("id")
+        .eq("user_id", userId)
+        .limit(1),
+    ]);
+    if (!tokens?.length) {
+      // A VoIP (PushKit) token means the app IS installed, but PushKit cannot be
+      // used for a silent wake: iOS requires every PushKit push to report a call.
+      out.reason = voip?.length ? "ios_voip_only_no_silent_wake" : "no_native_token";
+      return out;
+    }
 
     const [{ data: cfg }, { data: secrets }] = await Promise.all([
       admin.from("planipret_integration_config").select("config_data").eq("integration_key", "mobile_app").maybeSingle(),

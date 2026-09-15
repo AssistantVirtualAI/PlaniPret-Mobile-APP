@@ -190,7 +190,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             : CXHandle(type: .phoneNumber, value: callerNumber)
         update.localizedCallerName = callerName
         update.hasVideo = false
-        update.supportsHolding = false
+        update.supportsHolding = true
         update.supportsDTMF = true
 
         provider?.reportNewIncomingCall(with: uuid, update: update) { [weak self] error in

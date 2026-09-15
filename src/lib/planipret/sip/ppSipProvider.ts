@@ -14,7 +14,6 @@ import { checkSipBackendRegistration } from "./sipBackendCheck";
 import {
   PP_AOR_CLAIM_EVENT,
   nativeOwnsAor,
-  normalizeMobileAor,
   preclaimNativeAor,
 } from "./aorArbitration";
 
@@ -459,12 +458,15 @@ class PpSipProvider {
 
   async init(cfg: PpSipConfig) {
     if (ppSipInitInFlight) return;
-    // Native builds are PJSIP-only. Never create a WebView JsSIP UA on iOS or
-    // Android, even when the native engine is unavailable or not registered.
-    // Falling back here registers `<ext>M` as WSS (`pp-ua=web-*`) and steals
-    // inbound calls from the native TCP/TLS account.
-    if (Capacitor.isNativePlatform()) {
-      this.log("error", "JsSIP init blocked on native platform — native SIP is mandatory");
+    // Sur plateforme native, l'AOR mobile `<ext>M` appartient EXCLUSIVEMENT au
+    // moteur natif : un UA JsSIP sur cette AOR la lui volerait (WSS 1001,
+    // INVITE entrants détournés). En revanche l'AOR navigateur `<ext>W` est un
+    // device distinct : quand le moteur natif est absent du binaire installé,
+    // c'est le seul moyen de porter de l'audio sans nouvelle soumission.
+    const jsUsername = String(cfg.sipUsername || cfg.extension || "").trim();
+    const isMobileAor = /M$/i.test(jsUsername);
+    if (Capacitor.isNativePlatform() && isMobileAor) {
+      this.log("error", "JsSIP init blocked on native platform — `<ext>M` belongs to the native engine");
       this.pushHistory("blocked", "native_platform_jssip_forbidden");
       this.emitMetrics();
       if (this.ua) this.yieldAorToNative();
@@ -474,7 +476,7 @@ class PpSipProvider {
     // Arbitrage d'AOR : le moteur natif PJSIP est le seul REGISTER autorisé sur
     // `<ext>M`. Créer un UA JsSIP ici (register:true) rouvrirait la course qui
     // provoque les WSS 1001.
-    if (nativeOwnsAor()) {
+    if (nativeOwnsAor() && isMobileAor) {
       this.log("warn", "JsSIP init blocked: native PJSIP owns the AOR");
       this.pushHistory("blocked", "native_owns_aor_init");
       this.emitMetrics();
@@ -495,12 +497,11 @@ class PpSipProvider {
       this.log("warn", `portal WSS target rejected (${rawWssUrl}) -> using core ${edgeUrls[0]}`);
     }
     const wssUrl = edgeUrls[0];
-    // Invariant d'AOR : la WebView ne peut REGISTER que `<ext>M`.
-    const mobileAor = normalizeMobileAor(cfg.sipUsername || cfg.extension);
-    if (mobileAor && mobileAor !== cfg.sipUsername) {
-      this.log("warn", `AOR normalisé ${cfg.sipUsername} -> ${mobileAor}`);
-    }
-    const cleanCfg = { ...cfg, sipUsername: mobileAor || cfg.sipUsername, wssUrl, wssUrls: edgeUrls };
+    // Le resolver est l'autorité sur l'identité du device. Une configuration W
+    // doit rester W de bout en bout (URI, auth user, Contact et mot de passe).
+    // Transformer W en M mélangeait l'identité M avec le secret du device W et
+    // empêchait le REGISTER, ou volait l'AOR TLS réservé à PJSIP sur iOS.
+    const cleanCfg = { ...cfg, sipUsername: jsUsername, wssUrl, wssUrls: edgeUrls };
 
     const sig = `${cleanCfg.extension}|${cleanCfg.sipDomain}|${cleanCfg.wssUrl}|${cleanCfg.password}`;
     if (this.ua && sig === this.lastSig && this.snap.status === "registered") {

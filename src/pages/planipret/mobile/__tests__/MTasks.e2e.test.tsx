@@ -132,6 +132,8 @@ describe("MTasks (mobile)", () => {
 
   it("ouvre la tâche dans Maestro", async () => {
     render(<MTasks />);
+    const rows = await screen.findAllByRole("button", { name: /Voir les détails/ });
+    fireEvent.click(rows[0]);
     const btns = await screen.findAllByLabelText("Ouvrir dans Maestro");
     fireEvent.click(btns[0]);
     await waitFor(() => expect(openWindow).toHaveBeenCalled());

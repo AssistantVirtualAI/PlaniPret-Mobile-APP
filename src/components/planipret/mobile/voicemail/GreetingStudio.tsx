@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { createAudioGuard } from "@/lib/planipret/audio/audioGuard";
+import { blobToWavMono8k, wavPeak, bytesToBase64 } from "@/lib/planipret/audio/wavEncode";
+import { ensureMicPermission } from "@/lib/planipret/audio/micPermission";
 import { Play, Pause, Sparkles, Mic, RotateCw, Check, Settings2, ChevronDown, ChevronUp, Download } from "lucide-react";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 
@@ -80,6 +82,174 @@ export default function GreetingStudio({ profile, onProfileChange }: { profile: 
   const [audioBusy, setAudioBusy] = useState(false);
   useEffect(() => guard.current.subscribe(setAudioBusy), []);
   useEffect(() => () => guard.current.cancel(), []);
+
+  // --- Enregistrer ma propre voix -----------------------------------------
+  const [mode, setMode] = useState<"record" | "tts">("record");
+  const [recording, setRecording] = useState(false);
+  const [recSeconds, setRecSeconds] = useState(0);
+  const [recUrl, setRecUrl] = useState<string | null>(null);
+  const [recWav, setRecWav] = useState<Uint8Array | null>(null);
+  const [preparing, setPreparing] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const chunksRef = useRef<BlobPart[]>([]);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const recUrlRef = useRef<string | null>(null);
+
+  const releaseMic = () => {
+    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+    try { streamRef.current?.getTracks().forEach((tr) => tr.stop()); } catch { /* noop */ }
+    streamRef.current = null;
+  };
+
+  useEffect(() => () => {
+    releaseMic();
+    try { recorderRef.current?.state === "recording" && recorderRef.current.stop(); } catch { /* noop */ }
+    if (recUrlRef.current) URL.revokeObjectURL(recUrlRef.current);
+  }, []);
+
+  const setTake = (url: string | null) => {
+    if (recUrlRef.current) URL.revokeObjectURL(recUrlRef.current);
+    recUrlRef.current = url;
+    setRecUrl(url);
+  };
+
+  const pickMime = () => {
+    const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/aac", "audio/ogg"];
+    const MR: any = (window as any).MediaRecorder;
+    return candidates.find((m) => MR?.isTypeSupported?.(m)) ?? "";
+  };
+
+  const stopRecording = () => {
+    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+    try {
+      if (recorderRef.current?.state === "recording") recorderRef.current.stop();
+      else releaseMic();
+    } catch { releaseMic(); }
+    setRecording(false);
+  };
+
+  const startRecording = async () => {
+    if (recording || preparing || publishing) return;
+    if (typeof MediaRecorder === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      toast.error(lang === "en" ? "Recording is not available on this device." : "L'enregistrement n'est pas disponible sur cet appareil.");
+      return;
+    }
+    // Le moteur d'appel possède la session audio : jamais d'enregistrement pendant un appel.
+    if ((window as any).__ppCallActive) {
+      toast.error(lang === "en" ? "End your call before recording." : "Terminez votre appel avant d'enregistrer.");
+      return;
+    }
+    guard.current.cancel(); // coupe toute écoute en cours
+
+    const perm = await ensureMicPermission();
+    perm.stream?.getTracks().forEach((tr) => tr.stop());
+    if (perm.state === "denied") {
+      toast.error(lang === "en"
+        ? "Microphone access denied — allow it in your phone settings."
+        : "Accès au micro refusé — autorisez-le dans les réglages du téléphone.");
+      return;
+    }
+    if (perm.state === "unavailable") {
+      toast.error(lang === "en" ? "No microphone detected." : "Aucun micro détecté.");
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      });
+      streamRef.current = stream;
+      const mimeType = pickMime();
+      const rec = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+      chunksRef.current = [];
+      rec.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
+      rec.onerror = () => {
+        releaseMic();
+        setRecording(false);
+        toast.error(lang === "en" ? "Recording failed." : "L'enregistrement a échoué.");
+      };
+      rec.onstop = async () => {
+        releaseMic();
+        const blob = new Blob(chunksRef.current, { type: rec.mimeType || "audio/webm" });
+        chunksRef.current = [];
+        if (blob.size < 1024) {
+          toast.error(lang === "en" ? "Recording too short." : "Enregistrement trop court.");
+          return;
+        }
+        setPreparing(true);
+        try {
+          const wav = await blobToWavMono8k(blob);
+          if (wavPeak(wav) < 0.02) {
+            toast.error(lang === "en" ? "No sound captured — check your microphone." : "Aucun son capté — vérifiez votre micro.");
+            setRecWav(null);
+            setTake(null);
+            return;
+          }
+          setRecWav(wav);
+          setTake(URL.createObjectURL(new Blob([wav.slice()], { type: "audio/wav" })));
+        } catch {
+          toast.error(lang === "en" ? "Could not process the recording." : "Impossible de traiter l'enregistrement.");
+          setRecWav(null);
+          setTake(null);
+        } finally {
+          setPreparing(false);
+        }
+      };
+      rec.start(250); // timeslice : évite les blobs vides sur iOS
+      recorderRef.current = rec;
+      setRecWav(null);
+      setTake(null);
+      setRecSeconds(0);
+      setRecording(true);
+      timerRef.current = setInterval(() => {
+        setRecSeconds((s) => {
+          if (s >= 119) { stopRecording(); return 120; }
+          return s + 1;
+        });
+      }, 1000);
+    } catch {
+      releaseMic();
+      toast.error(lang === "en" ? "Microphone access denied." : "Accès au micro refusé.");
+    }
+  };
+
+  const publishRecording = async () => {
+    if (!recWav || publishing) return;
+    setPublishing(true);
+    try {
+      const { data, error } = await supabase.functions.invoke("pp-greeting-record", {
+        body: {
+          audio_base64: bytesToBase64(recWav),
+          mime_type: "audio/wav",
+          duration_seconds: recSeconds,
+          label: lang === "en" ? "Greeting recorded by the broker" : "Message enregistré par le courtier",
+          push_to_ns: true,
+        },
+      });
+      const d = data as any;
+      if (error || !d?.success) {
+        const ctx = (error as any)?.context;
+        const detail = ctx?.text ? await ctx.text().catch(() => "") : "";
+        toast.error([d?.error, d?.detail, detail, error?.message].filter(Boolean)[0]
+          ?? (lang === "en" ? "Publishing failed." : "La publication a échoué."));
+        return;
+      }
+      if (d.pushed_to_ns) {
+        toast.success(lang === "en" ? "Your greeting is now live." : "Votre message est maintenant actif.");
+        setRecWav(null);
+        setTake(null);
+      } else {
+        toast.error(`${lang === "en" ? "Saved, but not activated" : "Sauvegardé, mais non activé"}: ${d.push_error ?? ""}`);
+      }
+      onProfileChange?.();
+    } finally {
+      setPublishing(false);
+    }
+  };
+
+  const mmss = (s: number) => `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 
   const fullName = profile.full_name ?? t("greeting.defaultBroker");
   const charCount = text.length;
@@ -245,6 +415,61 @@ export default function GreetingStudio({ profile, onProfileChange }: { profile: 
         )}
       </div>
 
+      {/* Mode : enregistrer ma voix ou synthétiser */}
+      <div className="grid grid-cols-2 gap-2">
+        {([
+          ["record", lang === "en" ? "🎙 Record my voice" : "🎙 Enregistrer ma voix"],
+          ["tts", lang === "en" ? "✨ Synthetic voice" : "✨ Voix de synthèse"],
+        ] as const).map(([k, label]) => (
+          <button key={k} onClick={() => { if (!recording) setMode(k as any); }}
+            className="h-11 rounded-xl text-[13px] font-semibold transition disabled:opacity-50"
+            disabled={recording || preparing || publishing}
+            style={mode === k
+              ? { background: TOKENS.borderActive, color: "white" }
+              : { background: TOKENS.card, color: TOKENS.text, border: `1px solid ${TOKENS.border}` }}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {mode === "record" && (
+        <div className="pp-card p-4 space-y-3">
+          <div className="text-[10px] uppercase tracking-widest font-semibold" style={{ color: TOKENS.muted }}>
+            {lang === "en" ? "Record your greeting" : "Enregistrez votre message"}
+          </div>
+          <p className="text-[12px]" style={{ color: TOKENS.muted }}>
+            {lang === "en"
+              ? "Speak close to the microphone, up to 2 minutes. Publishing replaces your current greeting."
+              : "Parlez près du micro, jusqu'à 2 minutes. La publication remplace votre message actuel."}
+          </p>
+
+          <button onClick={recording ? stopRecording : startRecording}
+            disabled={preparing || publishing}
+            className="h-12 w-full rounded-xl text-[14px] font-semibold text-white flex items-center justify-center gap-2 disabled:opacity-50"
+            style={{ background: recording ? "linear-gradient(135deg,#EF4444,#B91C1C)" : "linear-gradient(135deg,#1A4A8A,#2E9BDC)" }}>
+            {recording
+              ? <><Pause className="w-4 h-4" /> {lang === "en" ? "Stop" : "Arrêter"} · {mmss(recSeconds)}</>
+              : preparing
+                ? <><RotateCw className="w-4 h-4 animate-spin" /> {lang === "en" ? "Processing…" : "Traitement…"}</>
+                : <><Mic className="w-4 h-4" /> {recWav ? (lang === "en" ? "Record again" : "Réenregistrer") : (lang === "en" ? "Start recording" : "Démarrer l'enregistrement")}</>}
+          </button>
+
+          {recUrl && !recording && !preparing && (
+            <>
+              <audio controls src={recUrl} className="w-full h-9" style={{ filter: "invert(0.9)" }} />
+              <button onClick={publishRecording} disabled={publishing}
+                className="w-full h-12 rounded-xl text-[14px] font-semibold text-white flex items-center justify-center gap-2 disabled:opacity-50"
+                style={{ background: "linear-gradient(135deg,#10B981,#00A88A)" }}>
+                {publishing
+                  ? <><RotateCw className="w-4 h-4 animate-spin" /> {lang === "en" ? "Publishing…" : "Publication…"}</>
+                  : <><Check className="w-4 h-4" /> {lang === "en" ? "Replace my greeting" : "Remplacer mon message"}</>}
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {mode === "tts" && (<>
       {/* Step 1 - Voice */}
       <div>
         <div className="text-[10px] uppercase tracking-widest mb-2 font-semibold" style={{ color: TOKENS.muted }}>{t("greeting.chooseVoice")}</div>
@@ -419,7 +644,9 @@ export default function GreetingStudio({ profile, onProfileChange }: { profile: 
           </div>
         )}
       </div>
+      </>)}
 
+      {mode === "tts" && (<>
       {/* Advanced settings */}
       <button onClick={() => setShowSettings((s) => !s)}
         className="w-full flex items-center justify-between text-[12px] px-3 py-2 rounded-xl"
@@ -447,6 +674,7 @@ export default function GreetingStudio({ profile, onProfileChange }: { profile: 
             className="text-[11px]" style={{ color: TOKENS.muted }}>{t("greeting.reset")}</button>
         </div>
       )}
+      </>)}
     </div>
   );
 }

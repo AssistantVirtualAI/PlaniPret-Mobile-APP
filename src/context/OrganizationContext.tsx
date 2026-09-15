@@ -132,11 +132,13 @@ export const OrganizationProvider: React.FC<{ children: React.ReactNode }> = ({ 
       }
 
       const [{ data: orgs, error: oErr }, { data: roles, error: rErr }] = await Promise.all([
-        supabase
-        .from('organizations_safe')
-        .select('*')
-        .in('id', orgIds)
-        .eq('is_active', true)
+        // `organizations_safe` n'est pas dans les types générés de l'app
+        // mobile : on passe par un client non typé pour cette vue seulement.
+        (supabase as any)
+          .from('organizations_safe')
+          .select('*')
+          .in('id', orgIds)
+          .eq('is_active', true)
           .order('name'),
         supabase
           .from('user_roles')

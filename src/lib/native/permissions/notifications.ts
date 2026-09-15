@@ -3,7 +3,15 @@ import { supabase } from "@/integrations/supabase/client";
 import { ensureIncomingCallActionType, showIncomingCallNotification } from "./localCallNotifications";
 
 let listenersRegistered = false;
+let apnsTokenUploaded = false;
 const PENDING_INCOMING_KEY = "pp.pending-incoming-action.v1";
+
+/** True once the OS push token has been accepted by the backend. Used by the
+ *  bootstrap to retry: without this token the backend cannot wake the app to
+ *  re-REGISTER its `<ext>M` line. */
+export function hasUploadedPushToken() {
+  return apnsTokenUploaded;
+}
 
 type IncomingNotificationAction = "open" | "answer" | "decline";
 
@@ -57,12 +65,17 @@ export async function registerPushListeners(extension?: string) {
     const platform = await getPlatform();
 
     PushNotifications.addListener("registration", async (token) => {
-      try {
-        await supabase.functions.invoke("mobile-register-push", {
-          body: { token: token.value, platform, extension: extension ?? "" },
-        });
-      } catch (e) {
-        console.warn("[push] register failed", e);
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const { error } = await supabase.functions.invoke("mobile-register-push", {
+            body: { token: token.value, platform, extension: extension ?? "" },
+          });
+          if (!error) { apnsTokenUploaded = true; return; }
+          console.warn("[push] register rejected", error);
+        } catch (e) {
+          console.warn("[push] register failed", e);
+        }
+        await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
       }
     });
 

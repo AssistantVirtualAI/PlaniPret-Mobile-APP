@@ -35,6 +35,17 @@ export async function bootstrapPushIfNative(extension?: string) {
       const { PushNotifications } = await import("@capacitor/push-notifications");
       const check = await PushNotifications.checkPermissions();
       if (check.receive === "granted") await PushNotifications.register();
+      // Without an OS push token the backend cannot wake the app to re-REGISTER
+      // its SIP line. Retry (and prompt once) when nothing came back.
+      setTimeout(async () => {
+        try {
+          const { hasUploadedPushToken, ensureNotifications } = await import("./permissions/notifications");
+          if (hasUploadedPushToken()) return;
+          const again = await PushNotifications.checkPermissions();
+          if (again.receive === "granted") await PushNotifications.register();
+          else await ensureNotifications(extension);
+        } catch { /* ignore */ }
+      }, 8000);
     } catch { /* ignore */ }
   } catch (e) {
     console.warn("[push] bootstrap failed", e);

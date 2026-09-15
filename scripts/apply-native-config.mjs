@@ -1723,7 +1723,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             : CXHandle(type: .phoneNumber, value: callerNumber)
         update.localizedCallerName = callerName
         update.hasVideo = false
-        update.supportsHolding = false
+        update.supportsHolding = true
         update.supportsDTMF = true
 
         provider?.reportNewIncomingCall(with: uuid, update: update) { [weak self] error in
@@ -2392,12 +2392,19 @@ function ensurePjsipXcframework(iosRoot) {
     present &&
     fs.readdirSync(abs).some((slice) => fs.existsSync(path.join(abs, slice, "Headers")));
 
-  // Le script ne doit JAMAIS échouer si le binaire manque : le repli JsSIP
-  // prend le relais. On avertit clairement en fin d'exécution.
+  // Une app iOS sans ce binaire ne peut ni s'inscrire ni porter le média.
+  // Les builds web/Linux restent permis; les builds iOS de livraison définissent
+  // PP_REQUIRE_PJSIP=1 et doivent échouer avant de produire une archive invalide.
   if (!present) {
-    pjsipWarnings.push(`⚠ libpjsip.xcframework absent → lancer scripts/build-pjsip-ios.sh (${rel})`);
+    if (process.env.PP_REQUIRE_PJSIP === "1") {
+      throw new Error(`[native-config] libpjsip.xcframework absent — build iOS refusé (${rel}). Lance npm run ios:oneclick.`);
+    }
+    pjsipWarnings.push(`⚠ libpjsip.xcframework absent — livraison iOS interdite (${rel})`);
   } else if (!hasHeaders) {
-    pjsipWarnings.push("⚠ libpjsip.xcframework sans dossier Headers → canImport(pjsua) sera faux; relancer scripts/build-pjsip-ios.sh");
+    if (process.env.PP_REQUIRE_PJSIP === "1") {
+      throw new Error("[native-config] libpjsip.xcframework sans Headers — build iOS refusé; relance scripts/build-pjsip-ios.sh");
+    }
+    pjsipWarnings.push("⚠ libpjsip.xcframework sans Headers — livraison iOS interdite");
   }
 
   // Sans binaire sur disque, on n'injecte pas de référence (Xcode refuserait

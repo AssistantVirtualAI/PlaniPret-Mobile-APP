@@ -102,6 +102,13 @@ const ANDROID_REQUIRED = [
 ];
 
 if (wantIos) {
+  step("Moteur téléphonique PJSIP iOS", () => {
+    const framework = path.join(appDir, "ios/App/App/Plugins/PpPjsip/Frameworks/libpjsip.xcframework");
+    if (!fs.existsSync(framework)) {
+      throw new Error("libpjsip.xcframework absent — soumission iOS interdite; lancer npm run ios:oneclick");
+    }
+    run("bash scripts/verify-pjsip-tls.sh");
+  });
   step("Permissions iOS", () => {
     const plist = path.join(appDir, "ios/App/App/Info.plist");
     const generated = fs.existsSync(plist);

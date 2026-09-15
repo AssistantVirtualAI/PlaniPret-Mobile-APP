@@ -10,7 +10,13 @@
  *  - the Microsoft claims decide which portal the user belongs to.
  */
 import { supabase } from "@/integrations/supabase/client";
-import { isPlanipretEmail } from "@/components/planipret/PortalDomainGate";
+// L'app mobile n'embarque pas la barrière de domaine du portail : la règle de
+// domaine est dupliquée ici à l'identique.
+export function isPlanipretEmail(email?: string | null) {
+  const e = String(email ?? "").trim().toLowerCase();
+  const domain = e.split("@")[1] ?? "";
+  return domain === "planipret.com" || domain === "planipret.ca" || domain.endsWith(".planipret.com") || domain.endsWith(".planipret.ca");
+}
 
 export type PortalKind = "admin" | "broker";
 

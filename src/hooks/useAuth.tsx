@@ -26,7 +26,19 @@ export const useAuth = () => {
               body: { client_type: 'mobile', transport: 'tls', on_login: true },
             })
             .catch(() => { /* silencieux : la connexion ne doit jamais échouer pour ça */ });
+          // Démarre/répare l'inscription SIP du poste `<ext>M` dès la connexion,
+          // sans attendre l'ouverture de l'écran téléphone. Natif uniquement.
+          void (async () => {
+            try {
+              const { Capacitor } = await import('@capacitor/core');
+              if (!Capacitor.isNativePlatform()) return;
+              const { nativeSip } = await import('@/lib/planipret/sip/nativeSipService');
+              const ok = await nativeSip.repairRegistration();
+              if (!ok) setTimeout(() => { void nativeSip.repairRegistration().catch(() => {}); }, 8000);
+            } catch { /* jamais bloquant pour la connexion */ }
+          })();
         }
+
       }
     );
 

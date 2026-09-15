@@ -55,6 +55,7 @@ export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, br
   const [verif, setVerif] = useState<Record<string, TaskVerifyResult | "loading">>({});
   /** Per-task Maestro history (audit trail) shown in a modal. */
   const [history, setHistory] = useState<null | { task: NormalizedTask; events: TaskHistoryEvent[] | null }>(null);
+  const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
 
   const openHistory = async (task: NormalizedTask) => {
     setHistory({ task, events: null });
@@ -276,15 +277,14 @@ export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, br
                 {s.items.map((task) => (
                   <li
                     key={task.id}
-                    className="rounded-lg px-2 py-2"
-                    style={{ background: "#F7F9FC", cursor: readOnly ? undefined : "pointer" }}
-                    onClick={readOnly ? undefined : () => openEdit(task)}
-                    role={readOnly ? undefined : "button"}
-                    aria-label={readOnly ? undefined : L("Modifier la tâche", "Edit task")}
+                    className="pp-task-card"
+                    style={{ "--pp-task-accent": s.accent } as React.CSSProperties}
                   >
                     <MaestroTaskRow
                       task={task}
                       lang={lang}
+                      expanded={expandedTaskId === task.id}
+                      onToggle={() => setExpandedTaskId((id) => id === task.id ? null : task.id)}
                       syncedAt={(task as any)?.raw?.updated_at ?? (task as any)?.raw?.modified_at ?? lastSyncAt}
                       extra={
                         <div className="flex items-center gap-1.5 flex-wrap">
@@ -321,15 +321,14 @@ export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, br
                 {closed.map((task) => (
                   <li
                     key={task.id}
-                    className="rounded-lg px-2 py-2"
-                    style={{ background: "#F7F9FC", opacity: 0.75, cursor: readOnly ? undefined : "pointer" }}
-                    onClick={readOnly ? undefined : () => openEdit(task)}
-                    role={readOnly ? undefined : "button"}
-                    aria-label={readOnly ? undefined : L("Modifier la tâche", "Edit task")}
+                    className="pp-task-card pp-task-card-completed"
+                    style={{ "--pp-task-accent": "var(--pp-success)" } as React.CSSProperties}
                   >
                     <MaestroTaskRow
                       task={task}
                       lang={lang}
+                      expanded={expandedTaskId === task.id}
+                      onToggle={() => setExpandedTaskId((id) => id === task.id ? null : task.id)}
                       syncedAt={(task as any)?.raw?.updated_at ?? lastSyncAt}
                       actions={<span style={{ display: "contents" }} onClick={(e) => e.stopPropagation()}>
                         <IconBtn label={L("Ouvrir dans Maestro", "Open in Maestro")} onClick={() => openInMaestro(task.id)}><ExternalLink className="w-3.5 h-3.5" /></IconBtn>

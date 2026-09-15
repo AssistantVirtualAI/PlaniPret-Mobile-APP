@@ -996,6 +996,21 @@
   color: var(--pp-brand-accent-2);
   box-shadow: var(--pp-shadow-sm);
 }
+.planipret-mobile-scope .pp-task-card {
+  position: relative; overflow: hidden; background: var(--pp-bg-surface);
+  border: 1px solid var(--pp-bg-border); border-radius: 8px; box-shadow: var(--pp-shadow-sm);
+}
+.planipret-mobile-scope .pp-task-card::before {
+  content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--pp-task-accent, var(--pp-warning));
+}
+.planipret-mobile-scope .pp-task-card-completed { opacity: .78; }
+.planipret-mobile-scope .pp-task-status { font-size: 10px; font-weight: 700; color: var(--pp-brand-accent-2); }
+.planipret-mobile-scope .pp-task-ava { display: inline-flex; align-items: center; gap: 2px; font-size: 9px; font-weight: 700; color: var(--pp-agent); }
+.planipret-mobile-scope .pp-task-client { color: var(--pp-text-primary); font-family: 'Urbanist', sans-serif; font-size: 14px; font-weight: 700; }
+.planipret-mobile-scope .pp-task-preview { color: var(--pp-text-secondary); font-size: 11px; line-height: 1.35; }
+.planipret-mobile-scope .pp-task-due { display: flex; align-items: center; gap: 4px; margin-top: 3px; color: var(--pp-text-muted); font-size: 10.5px; }
+.planipret-mobile-scope .pp-task-details { border-top: 1px solid var(--pp-bg-border); background: var(--pp-bg-elevated); }
+.planipret-mobile-scope .pp-task-actions button { min-width: 38px; min-height: 38px; }
 
 /* ============================================================
    Planiprêt mobile — DARK theme overrides

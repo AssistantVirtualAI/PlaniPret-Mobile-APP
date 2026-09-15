@@ -12,8 +12,12 @@ import {
 } from "../_shared/planipret-ns.ts";
 import {
   maestroTelecomMirror,
+  getMaestroTelecomConfig,
+  isMaestroTelecomConfigured,
+  maestroTelecomFetch,
 } from "../_shared/maestro-telecom.ts";
 import { buildIdempotencyKey, claimAction, finishAction } from "../_shared/ava-confirm.ts";
+import { mobileDeviceId, webDeviceId } from "../_shared/pp-device-ids.ts";
 
 
 Deno.serve(async (req) => {
@@ -73,10 +77,10 @@ Deno.serve(async (req) => {
       }
 
       const requestedClientType = String(payload.client_type ?? "mobile").toLowerCase();
-      // "web"/"widget" → {ext}_web device (SIP.js in the browser).
-      // Anything else (default) → {ext}_mobile device (Capacitor app).
+      // "web"/"widget" → {ext}W (JsSIP/WSS).
+      // Anything else (default) → {ext}M (PJSIP/TLS on iOS).
       const clientType: "web" | "mobile" = (requestedClientType === "web" || requestedClientType === "widget") ? "web" : "mobile";
-      let deviceName = `${ctx.extension}_${clientType}`;
+      let deviceName = clientType === "web" ? webDeviceId(ctx.extension) : mobileDeviceId(ctx.extension);
       if (clientType === "mobile") {
         const { data: profileDevice } = await guard.supabase
           .from("planipret_profiles")
@@ -104,26 +108,10 @@ Deno.serve(async (req) => {
         }
       } catch { /* fallback to constructed */ }
 
-      // Si l'appareil visé n'est pas inscrit, utiliser n'importe quel appareil
-      // inscrit du poste (web/mobile). Erreur explicite seulement si aucun.
-      const origFallback: "device" = "device";
-      if (!deviceRegistered) {
-        try {
-          const regRes = await nsFetch(`/domains/${encodeURIComponent(ctx.nsDomain)}/users/${encodeURIComponent(ctx.extension)}/registrations`, { method: "GET" });
-          if (regRes.ok) {
-            const rd = await regRes.json().catch(() => null);
-            const regs = Array.isArray(rd) ? rd : (rd ? [rd] : []);
-            const alt = regs.find((r: any) => typeof (r?.["aor"] ?? r?.["registration-uri"] ?? r?.["contact-uri"]) === "string");
-            const aor = alt?.["aor"] ?? alt?.["registration-uri"] ?? alt?.["contact-uri"];
-            if (typeof aor === "string" && aor.length) {
-              callOrigUser = String(aor).replace(/^sip:/i, "").split(";")[0];
-              deviceRegistered = true;
-              deviceState = "registered_alt";
-              console.log(`[pp-ns-calls] fallback to registered device aor=${callOrigUser}`);
-            }
-          }
-        } catch { /* ignore */ }
-      }
+      // NS-API v2 n'expose pas de ressource /registrations. Le statut documenté
+      // est porté par le device lui-même; ne jamais substituer un autre AOR car
+      // cela pourrait router le média WSS vers M ou inversement.
+      const origFallback = "none";
       if (!deviceRegistered) {
         return jsonResponse({
           success: false,
@@ -265,7 +253,7 @@ Deno.serve(async (req) => {
         dest = "+" + (bare.length === 10 ? "1" + bare : bare);
       }
 
-      let deviceName = `${ctx.extension}_mobile`;
+      let deviceName = mobileDeviceId(ctx.extension);
       try {
         const { data: profileDevice } = await guard.supabase
           .from("planipret_profiles")
@@ -448,16 +436,21 @@ Deno.serve(async (req) => {
         } catch (e) {
           console.warn("[pp-ns-calls] failed to mark row ended", (e as Error).message);
         }
-        // Mirror end to Maestro Telecom — fire-and-forget by maestro_call_id
-        // if we captured one, otherwise by the NS provider_call_id.
+        // Mirror end to Maestro Telecom. Only a real Maestro call id can be
+        // PUT on /calls/{id}: Maestro keys that route on its own TelecomCall
+        // model, so sending the NetSapiens/local id always answered
+        // 404 "No query results for model [TelecomCall]". When the call has
+        // not been published yet we hand it to maestro-cdr, which creates the
+        // record and then marks it ended with the id Maestro returned.
         if (ctx.maestroBrokerId) {
           try {
             const { data: row } = await guard.supabase
               .from("planipret_phone_calls")
-              .select("maestro_call_id")
-              .or(`ns_callid.eq.${callId},ns_call_id.eq.${callId}`)
+              .select("id, maestro_call_id")
+              .or(`id.eq.${callId},ns_callid.eq.${callId},ns_call_id.eq.${callId}`)
               .maybeSingle();
             const maestroId = (row as any)?.maestro_call_id;
+            const localId = (row as any)?.id;
             const endedReason = nsAction === "reject" ? "rejected" : "completed";
             if (maestroId) {
               maestroTelecomMirror(
@@ -465,14 +458,12 @@ Deno.serve(async (req) => {
                 `/users/${encodeURIComponent(ctx.maestroBrokerId)}/calls/${encodeURIComponent(maestroId)}`,
                 { method: "PUT", body: { status: "ended", ended_reason: endedReason }, action: "call.end", userId: ctx.userId },
               );
+            } else if (localId) {
+              void guard.supabase.functions
+                .invoke("maestro-cdr", { body: { call_id: localId } })
+                .catch((e: unknown) => console.warn("[pp-ns-calls] maestro-cdr invoke failed:", (e as Error)?.message));
             } else {
-              // No maestro id — try updating by provider_call_id path (some
-              // Maestro deployments accept it interchangeably).
-              maestroTelecomMirror(
-                guard.supabase,
-                `/users/${encodeURIComponent(ctx.maestroBrokerId)}/calls/${encodeURIComponent(String(callId))}`,
-                { method: "PUT", body: { status: "ended", ended_reason: endedReason }, action: "call.end", userId: ctx.userId },
-              );
+              console.warn(`[pp-ns-calls] no local call row for ${callId}; Maestro end skipped`);
             }
           } catch (e) {
             console.warn("[pp-ns-calls] maestro mirror (end) failed:", (e as Error)?.message);

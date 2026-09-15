@@ -16777,6 +16777,7 @@ export type Database = {
       }
       current_user_internal_org_ids: { Args: never; Returns: string[] }
       current_user_org_ids: { Args: never; Returns: string[] }
+      current_user_realtime_org_ids: { Args: never; Returns: string[] }
       current_user_softphone_domain_uuids: {
         Args: never
         Returns: {

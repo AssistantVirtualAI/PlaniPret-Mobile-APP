@@ -4,6 +4,7 @@ import { ChevronDown, ChevronLeft, Plus, Search, X } from "lucide-react";
 import { toApiDateTime, listClientTargets, type ClientTaskTarget } from "@/lib/planipret/tasks";
 import { MILESTONES, QUICK_TASKS, catalogLabel, type TaskCatalogItem } from "@/lib/planipret/taskMilestones";
 import { getPpContacts, peekPpContacts } from "@/lib/ppContactsCache";
+import { supabase } from "@/integrations/supabase/client";
 import { matchAllTokens, normalizeText, tokenize } from "@/lib/textNormalize";
 
 export interface TaskComposerValue {

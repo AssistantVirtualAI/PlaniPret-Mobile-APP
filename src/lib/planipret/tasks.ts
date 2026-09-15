@@ -224,7 +224,12 @@ export interface TaskVerifyResult {
 export const verifyTask = (task_id: string): Promise<TaskVerifyResult> =>
   invoke({ action: "verify", task_id });
 
-/** Deep link to the task inside Maestro. */
-export function maestroTaskUrl(taskId: string | number): string {
-  return `https://client.planipret.com/main/tasks?task_id=${encodeURIComponent(String(taskId))}`;
+/**
+ * Lien profond vers la tâche dans Maestro. L'URL de base appartient à la
+ * passerelle (`maestro_task_url` de la réponse `verify`) : le client ne code
+ * jamais un hôte Planiprêt en dur. `fallbackUrl` est cette valeur serveur.
+ */
+export function maestroTaskUrl(taskId: string | number, fallbackUrl?: string | null): string | null {
+  if (fallbackUrl) return fallbackUrl;
+  return taskId ? `/mplanipret/tasks/${encodeURIComponent(String(taskId))}` : null;
 }

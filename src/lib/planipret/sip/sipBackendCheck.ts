@@ -19,6 +19,15 @@ export type SipBackendCheck = {
     mobile_registered: boolean;
     registered_aors: string[];
     count: number;
+    core_server?: string | null;
+    core_server_ok?: boolean;
+    contact?: string | null;
+    user_agent?: string | null;
+    /** L'inscription possède un moteur média, pas seulement un keep-alive. */
+    media_capable?: boolean;
+    /** Qui tient la ligne côté serveur : l'app, le service d'arrière-plan, personne. */
+    holder?: "app" | "background" | "none";
+    registered_at?: string | null;
   };
   push?: {
     device_push_enabled: boolean | null;

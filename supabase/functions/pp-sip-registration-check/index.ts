@@ -142,8 +142,34 @@ Deno.serve(async (req) => {
     blockers.push("REGISTERED_ON_WRONG_CORE");
     actions.push("reregister");
   }
+  // Le service de maintien (`Planipret iOS KeepAlive`) peut inscrire `<ext>M`
+  // sans que le moteur d'appel PJSIP soit présent dans le binaire installé :
+  // la ligne paraît inscrite mais aucun appel ne peut porter d'audio.
+  const uaLower = String(regUserAgent ?? "").toLowerCase();
+  // Depuis la mise à jour à distance, la WebView (JsSIP) reprend l'AOR et porte
+  // l'audio quand le moteur natif est absent : ce n'est plus un blocage dur,
+  // seulement un avertissement (l'app doit être ouverte au moment de l'appel).
+  const engineMissing = mobileRegistered && uaLower.includes("keepalive") &&
+    !uaLower.includes("pj");
+  const warnings: string[] = [];
+  if (engineMissing) {
+    warnings.push("CALL_ENGINE_BACKGROUND_ONLY");
+    actions.push("open_app");
+    // L'app au premier plan doit reprendre l'AOR au service de maintien :
+    // un seul propriétaire par AOR (docs/netsapiens/registrations.md).
+    actions.push("takeover_foreground");
+  }
 
-  const healthy = mobileRegistered && !!tokenRow?.device_token && callSubscription &&
+  // Qui tient réellement la ligne, et depuis quand.
+  const holder: "app" | "background" | "none" = !mobileRegistered
+    ? "none"
+    : (uaLower.includes("keepalive") && !uaLower.includes("pj") ? "background" : "app");
+  const mediaCapable = mobileRegistered && !engineMissing;
+  const registeredAtRaw = String(mobileRow?.["device-sip-registration-datetime"] ?? "");
+  const registeredAtMs = registeredAtRaw ? Date.parse(registeredAtRaw.replace(" ", "T")) : NaN;
+  const registeredAt = Number.isFinite(registeredAtMs) ? new Date(registeredAtMs).toISOString() : null;
+
+  const healthy = mediaCapable && !!tokenRow?.device_token && callSubscription &&
     devicePushEnabled !== false && coreServerOk;
 
 
@@ -161,6 +187,9 @@ Deno.serve(async (req) => {
       core_server_ok: coreServerOk,
       contact: regContact || null,
       user_agent: regUserAgent || null,
+      media_capable: mediaCapable,
+      holder,
+      registered_at: registeredAt,
     },
     push: {
       device_push_enabled: devicePushEnabled,
@@ -170,6 +199,7 @@ Deno.serve(async (req) => {
     },
     call_subscription: callSubscription,
     blockers,
+    warnings,
     actions,
 
   });

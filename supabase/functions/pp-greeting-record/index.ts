@@ -120,24 +120,43 @@ Deno.serve(async (req) => {
           const token = await ensureBrokerJwt(admin, profile);
           const url = `${env.base}/ns-api/v2/domains/${encodeURIComponent(domain)}/users/${encodeURIComponent(extension)}/greetings`;
 
-          // JSON base64 upload — the multipart variant rejects webm on some nodes.
-          const r = await fetch(url, {
+          // 1st: multipart/form-data — the exact shape that works for TTS
+          // greetings (pp-greeting-generate). 2nd: JSON base64 fallback.
+          const fd = new FormData();
+          fd.append("script", label.slice(0, 200));
+          fd.append("index", String(greetingIndex));
+          fd.append("convert", "yes");
+          fd.append("synchronous", "yes");
+          fd.append("File", new Blob([audioBytes], { type: mime }), fileName);
+
+          let r = await fetch(url, {
             method: "POST",
-            headers: {
-              Accept: "application/json",
-              "Content-Type": "application/json",
-              Authorization: `Bearer ${token}`,
-            },
-            body: JSON.stringify({
-              synchronous: "yes",
-              convert: "yes",
-              index: greetingIndex,
-              script: label.slice(0, 200),
-              encoding: mime,
-              base64_file: toBase64(audioBytes),
-            }),
+            headers: { Accept: "application/json", Authorization: `Bearer ${token}` },
+            body: fd,
           });
-          const detailText = await r.text().catch(() => "");
+          let detailText = await r.text().catch(() => "");
+
+          if (!r.ok) {
+            r = await fetch(url, {
+              method: "POST",
+              headers: {
+                Accept: "application/json",
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${token}`,
+              },
+              body: JSON.stringify({
+                synchronous: "yes",
+                convert: "yes",
+                index: greetingIndex,
+                script: label.slice(0, 200),
+                encoding: mime,
+                base64_file: toBase64(audioBytes),
+              }),
+            });
+            const fallbackText = await r.text().catch(() => "");
+            detailText = r.ok ? fallbackText : `${detailText} | ${fallbackText}`;
+          }
+
           if (r.ok) {
             pushedToNs = true;
             try {

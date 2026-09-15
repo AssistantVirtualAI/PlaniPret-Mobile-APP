@@ -8,7 +8,7 @@ import {
   nativeOwnsAor,
   normalizeMobileAor,
   preclaimNativeAor,
-  releaseAorFromNative,
+  releaseAorFromNative as releaseAorFromNativeRaw,
 } from "./aorArbitration";
 import { pinnedCoreHost } from "./sipEdgePolicy";
 import { trackRegisterAttempt, logRegisterMetricsSummary, type RegisterTracker } from "./registerMetrics";
@@ -87,6 +87,29 @@ const getPjsip = (): PjsipPlugin | null => {
   return Pjsip;
 };
 
+/**
+ * Dernière cause d'indisponibilité du moteur natif. Exposée telle quelle à
+ * l'écran de diagnostic : « REGISTERED » côté serveur ne dit rien de l'état
+ * réel du moteur, il faut pouvoir distinguer « binaire sans moteur » de
+ * « moteur présent mais REGISTER refusé ».
+ */
+let lastNativeFailure: string | null = null;
+
+const releaseAorFromNative = (reason: string) => {
+  lastNativeFailure = reason;
+  releaseAorFromNativeRaw(reason);
+};
+
+export type NativeSipDiagnostics = {
+  nativePlatform: boolean;
+  pluginPresent: boolean;
+  registered: boolean;
+  state: string;
+  extension: string | null;
+  username: string | null;
+  failure: string | null;
+};
+
 const emit = (name: string, detail: any) => {
   try { window.dispatchEvent(new CustomEvent(name, { detail })); } catch { /* noop */ }
 };
@@ -116,6 +139,21 @@ export class NativeSipService {
   }
 
   isAvailable() { return getPjsip() !== null; }
+  /** Diagnostic honnête affiché dans l'écran « État SIP ». */
+  getDiagnostics(): NativeSipDiagnostics {
+    let nativePlatform = false;
+    try { nativePlatform = Capacitor.isNativePlatform(); } catch { /* noop */ }
+    const pluginPresent = getPjsip() !== null;
+    return {
+      nativePlatform,
+      pluginPresent,
+      registered: this.registered,
+      state: this.lastState,
+      extension: this.extension,
+      username: this.username,
+      failure: this.registered ? null : (lastNativeFailure ?? (pluginPresent ? null : "plugin_absent")),
+    };
+  }
   isRegistered() { return this.registered; }
   getUsername() { return this.username; }
   getExtension() { return this.extension; }
@@ -410,6 +448,7 @@ export class NativeSipService {
   private setState(state: SipRegistrationState) {
     this.lastState = state;
     this.registered = state === "registered";
+    if (this.registered) lastNativeFailure = null;
     emit("sip-registration-state", {
       registered: this.registered,
       state,
