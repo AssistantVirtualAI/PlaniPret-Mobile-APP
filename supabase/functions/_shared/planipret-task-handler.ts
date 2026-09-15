@@ -750,7 +750,7 @@ export async function handleTaskRequest(
     const guard = assertAssigneeAllowed(requested, allowedIds);
     if (guard.ok === false) {
       steps.push({ step: "assignee_guard", ok: false, detail: guard.message });
-      return { status: 200, body: { success: false, ok: false, steps, ...guard, correlation_id } };
+      return { status: 200, body: { success: false, steps, ...guard, correlation_id } };
     }
     steps.push({ step: "assignee_guard", ok: true, detail: requested ? `users_id ${requested} autorisé` : "auto-assignation (moi)" });
 
@@ -774,7 +774,7 @@ export async function handleTaskRequest(
     if (!res.ok) {
       steps.push({ step: "create", ok: false, detail: `HTTP ${res.status}` });
       await audit(admin, { action: "task_selftest", user_id: userId, source, session_id: sessionId, status: res.status, correlation_id, result: "create_failed" });
-      return { status: 200, body: { success: false, ok: false, steps, ...mapTaskApiError(res.status, res.data), correlation_id } };
+      return { status: 200, body: { ok: false, steps, ...mapTaskApiError(res.status, res.data), correlation_id } };
     }
     const raw = res.data?.data ?? res.data?.task ?? res.data ?? {};
     const created = normalizeTask({ ...built.payload, ...raw });

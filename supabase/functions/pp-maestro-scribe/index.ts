@@ -30,26 +30,23 @@ Deno.serve(async (req) => {
   const subId = body?.sub_id;                // address / telephone id
   const payload = (body?.payload ?? {}) as Record<string, unknown>;
   const query = (body?.query ?? {}) as Record<string, any>;
-  const prefix: string | null = body?.prefix ?? null;
-
   const admin = adminClient();
   const cfg = await getMaestroConfig(admin);
 
   // L'API publique `/api/main` est authentifiée par OAuth Planiprêt (jeton du
-  // courtier connecté, sinon jeton cabinet). La clé machine Telecom n'y est PAS
-  // valide — elle ne sert que de dernier recours.
+  // courtier connecté, sinon jeton cabinet). La clé machine Telecom n'y est
+  // jamais valide et n'est donc jamais sélectionnée ici.
   const ownToken = await getUserMaestroAccessToken(admin, guard.user.id).catch(() => null);
   const firm = ownToken ? { token: null, source: "none" as const } : await getMaestroAdminAccessToken();
   const token =
     ownToken ??
     firm.token ??
     Deno.env.get("PLANIPRET_ACCESS_TOKEN") ??
-    cfg.key ??
     null;
-  const tokenSource = ownToken ? "broker_oauth" : firm.token ? firm.source : Deno.env.get("PLANIPRET_ACCESS_TOKEN") ? "static_env" : cfg.key ? "telecom_machine_key" : "none";
+  const tokenSource = ownToken ? "broker_oauth" : firm.token ? firm.source : Deno.env.get("PLANIPRET_ACCESS_TOKEN") ? "static_env" : "none";
   if (!token) return json({ ok: false, error: "maestro_not_configured", token_source: tokenSource }, 200);
 
-  const o = { prefix, token };
+  const o = { token };
   const needId = () => id === undefined || id === null || id === "";
   const needSub = () => subId === undefined || subId === null || subId === "";
   const missing = (what: string) => json({ ok: false, error: `${what}_required` }, 400);
@@ -57,7 +54,7 @@ Deno.serve(async (req) => {
   try {
     switch (action) {
       case "diag": {
-        const root = apiRoot(cfg, prefix);
+        const root = apiRoot(cfg);
         const probe = await api.listFinancialInstitutions(cfg, o);
         return json({ ok: true, root, token_source: tokenSource, reachable: probe.ok, status: probe.status, endpoint: probe.endpoint, error: probe.error });
       }

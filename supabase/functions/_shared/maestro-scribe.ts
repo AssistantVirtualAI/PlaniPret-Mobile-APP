@@ -13,26 +13,12 @@
 //   Tasks        POST /tasks, GET /tasks, PUT /tasks/{id}, DELETE /tasks/{id}
 import { MaestroConfig } from "./maestro.ts";
 
-const HOST_RE = /^(https?:\/\/[^/]+)/i;
-
-/** Documented route prefix. Override only via MAESTRO_API_PREFIX. */
-export const API_PREFIX = (Deno.env.get("MAESTRO_API_PREFIX") ?? "/api/main").replace(/\/$/, "");
+/** Public CRM API root documented by Planiprêt. Never accept a client override. */
+export const API_PREFIX = "/api/main";
 export const DEFAULT_HOST = "https://client.planipret.com";
 
-function host(cfg: MaestroConfig): string {
-  const raw = (cfg.url || DEFAULT_HOST).trim();
-  return (raw.match(HOST_RE)?.[1] ?? DEFAULT_HOST).replace(/\/$/, "");
-}
-
-export function apiRoot(cfg: MaestroConfig, prefix?: string | null): { base: string; prefix: string } {
-  const pinned = (prefix ?? "").trim();
-  if (pinned) {
-    const m = pinned.match(HOST_RE);
-    return m
-      ? { base: m[1], prefix: pinned.slice(m[1].length).replace(/\/$/, "") }
-      : { base: host(cfg), prefix: pinned.replace(/\/$/, "") };
-  }
-  return { base: host(cfg), prefix: API_PREFIX };
+export function apiRoot(_cfg?: MaestroConfig): { base: string; prefix: string } {
+  return { base: DEFAULT_HOST, prefix: API_PREFIX };
 }
 
 export interface ScribeResult<T = any> {
@@ -40,6 +26,8 @@ export interface ScribeResult<T = any> {
   status: number;
   data: T | null;
   meta?: any;
+  links?: any;
+  success?: boolean;
   error: string | null;
   errors?: Record<string, string[]> | null;
   endpoint: string;
@@ -52,15 +40,16 @@ export async function scribeFetch<T = any>(
     method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
     body?: unknown;
     query?: Record<string, string | number | boolean | undefined | null>;
-    prefix?: string | null;
     token?: string | null;
   } = {},
 ): Promise<ScribeResult<T>> {
-  const token = opts.token ?? cfg.key;
+  // `/api/main` accepts OAuth/static Planiprêt access tokens. The Telecom
+  // machine key in cfg.key is intentionally never used for this API.
+  const token = opts.token ?? null;
   if (!token) {
     return { ok: false, status: 0, data: null, error: "maestro_not_configured", endpoint: path };
   }
-  const root = apiRoot(cfg, opts.prefix ?? null);
+  const root = apiRoot(cfg);
   const qs = new URLSearchParams();
   for (const [k, v] of Object.entries(opts.query ?? {})) {
     if (v !== undefined && v !== null && v !== "") qs.set(k, String(v));
@@ -85,6 +74,8 @@ export async function scribeFetch<T = any>(
       // The documented envelope is { data, meta?, links?, success }.
       data: payload && Object.prototype.hasOwnProperty.call(payload, "data") ? payload.data : payload,
       meta: payload?.meta ?? null,
+      links: payload?.links ?? null,
+      success: payload?.success !== false,
       error: res.ok ? null : (payload?.message || payload?.error || `HTTP ${res.status}`),
       errors: payload?.errors ?? null,
       endpoint,
@@ -94,7 +85,7 @@ export async function scribeFetch<T = any>(
   }
 }
 
-type Opts = { prefix?: string | null; token?: string | null };
+type Opts = { token?: string | null };
 const id = (v: string | number) => encodeURIComponent(String(v));
 
 // ── Clients ──────────────────────────────────────────────────────────────
@@ -137,9 +128,9 @@ export const listContracts = (cfg: MaestroConfig, query: Record<string, any> = {
 export const createContract = (cfg: MaestroConfig, body: Record<string, unknown>, o: Opts = {}) =>
   scribeFetch(cfg, "/contracts", { method: "POST", body, ...o });
 export const updateContract = (cfg: MaestroConfig, contractId: string | number, body: Record<string, unknown>, o: Opts = {}) =>
-  scribeFetch(cfg, `/contracts/${id(contractId)}`, { method: "PUT", body: { contract_id: Number(contractId), ...body }, ...o });
+  scribeFetch(cfg, `/contracts/${id(contractId)}`, { method: "PUT", body, ...o });
 export const deleteContract = (cfg: MaestroConfig, contractId: string | number, o: Opts = {}) =>
-  scribeFetch(cfg, `/contracts/${id(contractId)}`, { method: "DELETE", body: { contract_id: Number(contractId) }, ...o });
+  scribeFetch(cfg, `/contracts/${id(contractId)}`, { method: "DELETE", ...o });
 
 // ── Financial institutions ───────────────────────────────────────────────
 export const listFinancialInstitutions = (cfg: MaestroConfig, o: Opts = {}) =>

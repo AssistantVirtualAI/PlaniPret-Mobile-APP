@@ -167,6 +167,57 @@ export async function validateTaskTarget(
 export const createTask = (input: Record<string, unknown>) =>
   invoke({ action: "create", ...input });
 
+/**
+ * Crée un suivi pour un client à partir des `task_targets` officiels. L'id du
+ * client n'est jamais envoyé comme `xid` à l'aveugle : Maestro exige une cible
+ * de type `user` ou `contract` fournie par sa Client List API.
+ */
+export async function createClientFollowUpTask(input: {
+  maestro_client_id: string | number;
+  client_name?: string;
+  notes: string;
+  description?: string;
+  due_at?: string;
+  call_id?: string;
+}) {
+  const clientId = String(input.maestro_client_id ?? "").trim();
+  if (!clientId) return { success: false, error: "maestro_client_id_required" };
+
+  const targets = await listClientTargets(input.client_name);
+  const target = targets.find((row) => String(row.client_id) === clientId);
+  if (!target) {
+    return {
+      success: false,
+      error: "task_target_not_found",
+      message: "Ce client n'expose aucune cible de tâche Maestro autorisée.",
+    };
+  }
+
+  const userXid = String(target.user?.id ?? "").trim();
+  const contractXid = String(target.contracts?.[0]?.id ?? "").trim();
+  const xid = userXid || contractXid;
+  const type = userXid ? "user" : "contract";
+  if (!xid) {
+    return {
+      success: false,
+      error: "task_target_mapping_required",
+      message: "Aucune cible user/contract n'est disponible pour ce client.",
+    };
+  }
+
+  const dueAt = input.due_at ?? new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  return await createTask({
+    xid,
+    type,
+    date: dueAt,
+    notes: input.notes,
+    description: input.description ?? input.notes,
+    status: "pending",
+    source: "mobile_manual",
+    ...(input.call_id ? { call_id: input.call_id } : {}),
+  });
+}
+
 export const updateTask = (task_id: string, changes: Record<string, unknown>, idempotency_key?: string) =>
   invoke({ action: "update", task_id, changes, idempotency_key });
 

@@ -1748,9 +1748,21 @@ function ActiveCallsTab({ userId, openDialer }: { userId: string; openDialer: (n
                   <button
                     onClick={async () => {
                       try {
-                        await supabase.functions.invoke("maestro-client-create", {
-                          body: { phone: incoming.number, source: "inbound_call" },
+                        const parts = String(incoming.name ?? "").trim().split(/\s+/).filter(Boolean);
+                        if (!parts.length) {
+                          toast.error("Nom requis", { description: "Ajoutez le contact depuis la page Contacts pour créer sa fiche Maestro." });
+                          return;
+                        }
+                        const { data, error } = await supabase.functions.invoke("maestro-client-create", {
+                          body: {
+                            phone: incoming.number,
+                            first_name: parts[0],
+                            last_name: parts.slice(1).join(" "),
+                            source: "inbound_call",
+                          },
                         });
+                        if (error) throw error;
+                        if (!(data as any)?.success) throw new Error((data as any)?.error ?? "create_failed");
                         toast.success("Créé dans Maestro");
                       } catch (e: any) {
                         toast.error("Échec création", { description: e?.message });
@@ -2150,4 +2162,3 @@ function VmAudio({ vm }: { vm: VM }) {
     </div>
   );
 }
-

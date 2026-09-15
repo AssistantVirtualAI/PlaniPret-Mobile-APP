@@ -212,3 +212,21 @@ verify_jwt = false
 
 [functions.maestro-oauth-state-info]
 verify_jwt = false
+
+[functions.pp-maestro-scribe]
+verify_jwt = true
+
+[functions.maestro-client-create]
+verify_jwt = true
+
+[functions.maestro-task]
+verify_jwt = true
+
+[functions.planipret-task-api]
+verify_jwt = true
+
+[functions.pp-maestro-contracts]
+verify_jwt = true
+
+[functions.pp-maestro-commissions]
+verify_jwt = true

@@ -13,6 +13,7 @@ import { openAppSettings, type PermStatus } from "@/lib/native/permissions/platf
 import { tokenize, matchAllTokens } from "@/lib/textNormalize";
 import { peekPpContacts, prefetchPpContacts } from "@/lib/ppContactsCache";
 import { callEdge, toE164 } from "@/lib/callEdge";
+import { createClientFollowUpTask } from "@/lib/planipret/tasks";
 
 // One-shot cache of the broker's assigned SMS numbers.
 let __ppSmsNumbersCache: { ts: number; numbers: any[] } | null = null;
@@ -766,12 +767,18 @@ function CreateContactSheet({ onClose, onCreated }: { onClose: () => void; onCre
       if ((data as any)?.error) throw new Error((data as any).error);
       toast.success(t("contacts.created") || "Contact créé");
 
-      // Maestro's API is read-only for client creation: try it, and if it is
-      // refused, open the prefilled Maestro web form so the broker can finish.
-      if (form.phone) {
+      // Création via l'API officielle POST /api/main/clients. Le contact local
+      // reste créé même si Maestro n'est pas connecté.
+      if (form.first_name) {
         try {
           const { data: mc } = await supabase.functions.invoke("maestro-client-create", {
-            body: { phone: form.phone, first_name: form.first_name, last_name: form.last_name, email: form.email },
+            body: {
+              phone: form.phone,
+              first_name: form.first_name,
+              last_name: form.last_name,
+              email: form.email,
+              company: form.company,
+            },
           });
           if ((mc as any)?.success) {
             toast.success("Client créé dans Maestro");
@@ -911,15 +918,11 @@ function ContactDetailSheet({
     if (!maestroId) { toast.error("Client Maestro requis pour créer une tâche"); return; }
     setCreatingTask(true);
     try {
-      const { data, error } = await supabase.functions.invoke("maestro-task", {
-        body: {
-          maestro_client_id: maestroId,
-          title: `${t("contacts.followUp") || "Suivi"} — ${name}`,
-          priority: "medium",
-          source: "mobile_contact",
-        },
+      const data = await createClientFollowUpTask({
+        maestro_client_id: maestroId,
+        client_name: name,
+        notes: `${t("contacts.followUp") || "Suivi"} — ${name}`,
       });
-      if (error) throw error;
       if ((data as any)?.success === false) throw new Error((data as any)?.error || "task_failed");
       toast.success(t("contacts.taskCreated") || "Tâche créée");
     } catch (e: any) {
@@ -982,7 +985,7 @@ function ContactDetailSheet({
 
         {/* Quick actions — endpoints:
               call → openDialer (softphone) · SMS → pp-ns-sms(send) ·
-              Email → ms365-actions(send_email) · Tâche → maestro-task ·
+              Email → ms365-actions(send_email) · Tâche → planipret-task-api ·
               RDV → maestro-appointment */}
         <div className="grid grid-cols-5 gap-2 mb-4">
           <QuickAction icon={<Phone className="w-4 h-4" />} label={t("common.call")} onClick={() => phone && onCall(phone)} disabled={!phone} />

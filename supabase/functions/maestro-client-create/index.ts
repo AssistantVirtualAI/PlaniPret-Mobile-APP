@@ -1,114 +1,101 @@
 // POST /functions/v1/maestro-client-create
-// Body: { phone, first_name?, last_name?, notes?, call_id? }
+// Body: { phone?, first_name, last_name?, email?, company?, language?, call_id? }
+// Routes exclusively through the documented POST /api/main/clients endpoint.
 import {
   adminClient,
   corsHeaders,
-  getBrokerAuth,
   getMaestroConfig,
   json,
   maestroAudit,
-  maestroFetch,
   normalizePhone,
 } from "../_shared/maestro.ts";
+import { guardPlanipret } from "../_shared/planipret-guard.ts";
+import { createClient_ } from "../_shared/maestro-scribe.ts";
+import { getUserMaestroAccessToken } from "../_shared/maestro-oauth.ts";
+import { getMaestroAdminAccessToken } from "../_shared/maestro-admin-token.ts";
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+
+  const guard = await guardPlanipret(req);
+  if ("error" in guard) return guard.error;
+
   try {
-    const body = await req.json().catch(() => ({}));
-    const phone = normalizePhone(body.phone);
-    if (!phone) return json({ success: false, error: "phone_required" }, 400);
-    const admin = adminClient();
-    let userIdHeader = req.headers.get("x-user-id");
-    if (!userIdHeader) {
-      const authHeader = req.headers.get("Authorization") ?? "";
-      if (authHeader) {
-        const { data: u } = await admin.auth.getUser(authHeader.replace(/^Bearer\s+/i, ""));
-        userIdHeader = u?.user?.id ?? null;
-      }
+    const body = await req.json().catch(() => ({} as any));
+    const firstName = String(body?.first_name ?? "").trim();
+    const lastName = String(body?.last_name ?? "").trim();
+    const phone = normalizePhone(body?.phone ?? body?.mobile_number ?? body?.telephone_number);
+    if (!firstName) {
+      return json({ success: false, error: "validation_failed", errors: { first_name: ["first_name_required"] } }, 422);
     }
 
+    const admin = adminClient();
     const cfg = await getMaestroConfig(admin);
-    if (!cfg.url || !cfg.key) return json({ success: false, error: "maestro_not_configured" }, 200);
+    const ownToken = await getUserMaestroAccessToken(admin, guard.user.id).catch(() => null);
+    const firm = ownToken ? { token: null, source: "none" as const } : await getMaestroAdminAccessToken();
+    const staticToken = Deno.env.get("PLANIPRET_ACCESS_TOKEN") ?? null;
+    const token = ownToken ?? firm.token ?? staticToken;
+    const tokenSource = ownToken ? "broker_oauth" : firm.token ? firm.source : staticToken ? "static_env" : "none";
+    if (!token) {
+      return json({ success: false, error: "maestro_not_connected", token_source: tokenSource }, 200);
+    }
 
-
-    const auth = await getBrokerAuth(admin, userIdHeader);
-    const payload = {
-      phone,
-      first_name: body.first_name ?? null,
-      last_name: body.last_name ?? null,
-      notes: body.notes ?? null,
-      created_by: auth.brokerId,
+    const payload: Record<string, unknown> = {
+      first_name: firstName,
+      ...(lastName ? { last_name: lastName } : {}),
+      ...(body?.email ? { email: String(body.email).trim() } : {}),
+      ...(body?.company ? { company: String(body.company).trim() } : {}),
+      ...(body?.language ? { language: String(body.language).trim() } : {}),
+      ...(phone ? { mobile_number: phone } : {}),
     };
 
-    const res = await maestroFetch(cfg, {
-      method: "POST",
-      path: `/api/v1/users/${encodeURIComponent(String(auth.brokerId ?? ""))}/clients`,
-      token: auth.token,
-      body: payload,
-    });
-
+    const res = await createClient_(cfg, payload, { token });
     if (!res.ok) {
-      await maestroAudit(admin, "client_create_failed", { phone, status: res.status, data: res.data });
-      // The Maestro API is read-only for client creation (405/403/404). Fall back
-      // to a prefilled web form URL the broker can open to finish the creation,
-      // and mirror the contact into their Outlook address book right away.
-      const readOnly = [403, 404, 405, 501].includes(Number(res.status));
-      if (readOnly) {
+      await maestroAudit(admin, "client_create_failed", {
+        status: res.status,
+        error: res.error,
+        token_source: tokenSource,
+        fields: Object.keys(payload),
+      });
+
+      if ([404, 405, 501].includes(Number(res.status))) {
         const portal = (Deno.env.get("MAESTRO_PORTAL_URL") ?? "https://courtier.planipret.com").replace(/\/$/, "");
         const q = new URLSearchParams({
-          phone,
-          ...(body.first_name ? { first_name: String(body.first_name) } : {}),
-          ...(body.last_name ? { last_name: String(body.last_name) } : {}),
-          ...(body.email ? { email: String(body.email) } : {}),
+          first_name: firstName,
+          ...(lastName ? { last_name: lastName } : {}),
+          ...(phone ? { phone } : {}),
+          ...(body?.email ? { email: String(body.email) } : {}),
         });
-        let m365: any = null;
-        if (userIdHeader) {
-          try {
-            const r = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/ms365-actions`, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                apikey: Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
-                Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`,
-              },
-              body: JSON.stringify({
-                action: "upsert_contact",
-                _user_id: userIdHeader,
-                payload: {
-                  first_name: body.first_name ?? null,
-                  last_name: body.last_name ?? null,
-                  email: body.email ?? null,
-                  mobile_phone: phone,
-                },
-              }),
-            });
-            m365 = await r.json().catch(() => null);
-          } catch (_) { /* non blocking */ }
-        }
         return json({
           success: false,
-          error: "maestro_read_only",
-          message: "L'API Maestro ne permet pas la création de client. Ouvrez le formulaire prérempli pour terminer.",
+          error: "maestro_endpoint_unavailable",
+          message: "Ouvrez le formulaire Maestro prérempli pour terminer la création.",
           web_url: `${portal}/fr/clients/new?${q.toString()}`,
-          m365_contact: m365?.success ? { id: m365.contact_id, updated: m365.updated } : null,
           status: res.status,
         }, 200);
       }
-      return json({ success: false, error: "create_failed", status: res.status, details: res.data }, 200);
+
+      return json({
+        success: false,
+        error: res.error ?? "create_failed",
+        errors: res.errors ?? null,
+        status: res.status,
+      }, res.status >= 400 && res.status < 500 ? res.status : 200);
     }
 
-
-    const clientId = res.data?.id ?? res.data?.client_id;
-    if (body.call_id && clientId) {
+    const client = res.data as any;
+    const clientId = client?.id ?? client?.client_id ?? null;
+    if (body?.call_id && clientId) {
       await admin
         .from("planipret_phone_calls")
         .update({ maestro_client_id: String(clientId) })
-        .eq("id", body.call_id);
+        .eq("id", body.call_id)
+        .eq("user_id", guard.user.id);
     }
-    await maestroAudit(admin, "client_created", { phone, client_id: clientId });
 
-    return json({ success: true, client_id: clientId, client: res.data });
+    await maestroAudit(admin, "client_created", { client_id: clientId, token_source: tokenSource });
+    return json({ success: true, client_id: clientId, client, endpoint: res.endpoint }, 201);
   } catch (e: any) {
     console.error("maestro-client-create error", e);
     return json({ success: false, error: e?.message ?? "server_error" }, 500);

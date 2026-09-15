@@ -57,7 +57,11 @@ export function supaAdmin() {
   );
 }
 
-export async function authBroker(req: Request) {
+type AuthBrokerResult =
+  | { admin: ReturnType<typeof supaAdmin>; userId: string; profile: any }
+  | { error: Response };
+
+export async function authBroker(req: Request): Promise<AuthBrokerResult> {
   const authHeader = req.headers.get("Authorization");
   const avaSessionHeaders = [
     req.headers.get("x-ava-session"),
@@ -97,12 +101,16 @@ export async function authBroker(req: Request) {
   }
 
   if (!userId) {
+    if (!authHeader?.startsWith("Bearer ")) {
+      return { error: jsonResponse({ success: false, error: "Unauthorized", code: 401 }, 401) };
+    }
+    const bearerHeader = authHeader;
     const userClient = createClient(
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_ANON_KEY")!,
-      { global: { headers: { Authorization: authHeader } } },
+      { global: { headers: { Authorization: bearerHeader } } },
     );
-    const { data: claims } = await userClient.auth.getClaims(authHeader.replace("Bearer ", ""));
+    const { data: claims } = await userClient.auth.getClaims(bearerHeader.replace("Bearer ", ""));
     if (!claims?.claims?.sub) {
       return { error: jsonResponse({ success: false, error: "Unauthorized", code: 401 }, 401) };
     }

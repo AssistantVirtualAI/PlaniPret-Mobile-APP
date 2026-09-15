@@ -3,14 +3,11 @@
 //
 // Source officielle (Scribe docs 2026-09-09) :
 //   GET https://client.planipret.com/api/main/contracts?agent_id=&status=&date_from=&date_to=
-// Repli historique : GET /api/v1/users/{telecomUserId}/clients (contrats
-// imbriqués dans `task_targets.contracts`).
-import { adminClient, corsHeaders, getMaestroConfig, json, maestroFetch } from "../_shared/maestro.ts";
+import { adminClient, corsHeaders, getMaestroConfig, json } from "../_shared/maestro.ts";
 import { guardPlanipret } from "../_shared/planipret-guard.ts";
 import { listContracts } from "../_shared/maestro-scribe.ts";
-
-const CLIENTS_PATH = (telecomId: string, limit: number) =>
-  `/api/v1/users/${encodeURIComponent(telecomId)}/clients?limit=${limit}`;
+import { getUserMaestroAccessToken } from "../_shared/maestro-oauth.ts";
+import { getMaestroAdminAccessToken } from "../_shared/maestro-admin-token.ts";
 
 type TimelineItem = {
   at: string | null;
@@ -33,7 +30,7 @@ type ContractRow = {
   rate?: string | null;
   date_closing?: string | null;
   date_maturity?: string | null;
-  source: "api" | "clients_fallback";
+  source: "api";
   last_activity_at: string | null;
   calls_total: number;
   calls_synced: number;
@@ -49,7 +46,7 @@ Deno.serve(async (req) => {
   if ("error" in guard) return guard.error;
 
   const body = await req.json().catch(() => ({} as any));
-  const brokerProfileId: string | null = body?.broker_profile_id ?? null;
+  let brokerProfileId: string | null = body?.broker_profile_id ?? null;
   const status: string | null = body?.status ?? null;
   const dateFrom: string | null = body?.date_from ?? null;
   const dateTo: string | null = body?.date_to ?? null;
@@ -57,11 +54,36 @@ Deno.serve(async (req) => {
 
   const admin = adminClient();
   const cfg = await getMaestroConfig(admin);
-  if (!cfg.url || !cfg.key) return json({ ok: false, error: "maestro_not_configured" }, 200);
+  const { data: callerProfile } = await admin
+    .from("planipret_profiles")
+    .select("id,user_id")
+    .or(`user_id.eq.${guard.user.id},id.eq.${guard.user.id}`)
+    .limit(1)
+    .maybeSingle();
+  if (!callerProfile) return json({ ok: false, error: "profile_not_found" }, 403);
+
+  const [{ data: isPlanipretAdmin }, { data: isSuperAdmin }] = await Promise.all([
+    admin.rpc("is_planipret_admin", { _user_id: guard.user.id }),
+    admin.rpc("is_super_admin", { _user_id: guard.user.id }),
+  ]);
+  const canReadMultiple = isPlanipretAdmin === true || isSuperAdmin === true;
+  if (brokerProfileId && brokerProfileId !== callerProfile.id && !canReadMultiple) {
+    return json({ ok: false, error: "forbidden_broker_scope" }, 403);
+  }
+  if (!brokerProfileId && !canReadMultiple) brokerProfileId = callerProfile.id;
+
+  const ownToken = await getUserMaestroAccessToken(admin, guard.user.id).catch(() => null);
+  const firm = await getMaestroAdminAccessToken();
+  const staticToken = Deno.env.get("PLANIPRET_ACCESS_TOKEN") ?? null;
+  const needsFirmScope = canReadMultiple && (!brokerProfileId || brokerProfileId !== callerProfile.id);
+  const token = needsFirmScope
+    ? (firm.token ?? staticToken ?? ownToken)
+    : (ownToken ?? firm.token ?? staticToken);
+  if (!token) return json({ ok: false, error: "maestro_not_connected" }, 200);
 
   let q = admin
     .from("planipret_profiles")
-    .select("id, full_name, maestro_telecom_user_id, maestro_broker_id")
+    .select("id, user_id, full_name, maestro_telecom_user_id, maestro_broker_id")
     .not("maestro_telecom_user_id", "is", null);
   if (brokerProfileId) q = q.eq("id", brokerProfileId);
   const { data: profiles } = await q.limit(100);
@@ -100,9 +122,9 @@ Deno.serve(async (req) => {
       per_page: Math.min(limit, 200),
       order_by: "date_maturity",
       sort: "desc",
-    });
+    }, { token });
 
-    if (api.ok && Array.isArray(api.data) && api.data.length > 0) {
+    if (api.ok && Array.isArray(api.data)) {
       for (const c of api.data as any[]) {
         const key = String(c?.contract_id ?? c?.id ?? "");
         if (!key) continue;
@@ -126,66 +148,8 @@ Deno.serve(async (req) => {
         byContract.set(key, row);
       }
     } else {
-      // 2) Repli : contrats imbriqués dans la liste des clients.
       errors.push({ broker: p.full_name, stage: "contracts_api", status: api.status, error: api.error, endpoint: api.endpoint });
-      const res = await maestroFetch(cfg, { path: CLIENTS_PATH(telecomId, limit), token: cfg.key });
-      if (!res.ok || !Array.isArray(res.data)) {
-        errors.push({ broker: p.full_name, stage: "clients_fallback", status: res.status, endpoint: res.endpoint });
-        continue;
-      }
-      for (const c of res.data as any[]) {
-        const cid = String(c?.id ?? "");
-        if (cid) clientIds.push(cid);
-        const list = c?.task_targets?.contracts ?? [];
-        for (const k of Array.isArray(list) ? list : []) {
-          const key = String(k?.id ?? "");
-          if (!key) continue;
-          if (!byContract.has(key)) byContract.set(key, emptyRow(p, telecomId, key, k?.number ?? null, "clients_fallback"));
-          byContract.get(key)!.clients.push({
-            id: cid,
-            name: `${c?.first_name ?? ""} ${c?.last_name ?? ""}`.trim(),
-            email: c?.email ?? null,
-            created: c?.created ?? null,
-            modified: c?.modified ?? null,
-          });
-        }
-      }
-    }
-
-    // Réparation des lignes sans client : l'endpoint officiel renvoie parfois un
-    // contrat sans bloc `clients`. On complète via la liste des clients du
-    // courtier (contrats imbriqués dans task_targets.contracts).
-    const orphans = Array.from(byContract.values()).filter((r) => r.clients.length === 0);
-    if (orphans.length) {
-      const res = await maestroFetch(cfg, { path: CLIENTS_PATH(telecomId, limit), token: cfg.key });
-      if (res.ok && Array.isArray(res.data)) {
-        const byContractClients = new Map<string, ContractRow["clients"]>();
-        for (const c of res.data as any[]) {
-          const cid = String(c?.id ?? "");
-          const list = c?.task_targets?.contracts ?? [];
-          for (const k of Array.isArray(list) ? list : []) {
-            const key = String(k?.id ?? "");
-            if (!key) continue;
-            if (!byContractClients.has(key)) byContractClients.set(key, []);
-            byContractClients.get(key)!.push({
-              id: cid,
-              name: `${c?.first_name ?? ""} ${c?.last_name ?? ""}`.trim(),
-              email: c?.email ?? null,
-              created: c?.created ?? null,
-              modified: c?.modified ?? null,
-            });
-          }
-        }
-        for (const row of orphans) {
-          const found = byContractClients.get(row.contract_id) ?? [];
-          for (const cl of found) {
-            if (cl.id) clientIds.push(cl.id);
-            row.clients.push(cl);
-          }
-        }
-      } else {
-        errors.push({ broker: p.full_name, stage: "orphan_repair", status: res.status, endpoint: res.endpoint });
-      }
+      continue;
     }
 
     // Appels locaux rattachés aux clients Maestro de ce courtier.
@@ -301,7 +265,7 @@ Deno.serve(async (req) => {
 
   return json({
     ok: true,
-    endpoint: `${cfg.url}/api/main/contracts?agent_id={agentId}`,
+    endpoint: "https://client.planipret.com/api/main/contracts?agent_id={agentId}",
     brokers: brokers.map((b: any) => ({ id: b.id, name: b.full_name, telecom_id: b.maestro_telecom_user_id })),
     contracts,
     persisted,

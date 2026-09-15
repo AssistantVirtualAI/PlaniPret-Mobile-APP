@@ -44,7 +44,10 @@ export async function verifyAvaSession(token: string): Promise<{ uid: string } |
     const [p, s] = token.split(".");
     if (!p || !s) return null;
     const key = await hmacKey();
-    const ok = await crypto.subtle.verify("HMAC", key, b64uDecode(s), enc.encode(p));
+    // Uint8Array.from garantit un ArrayBuffer normal (pas SharedArrayBuffer),
+    // conforme à BufferSource dans les types WebCrypto de Deno 2.
+    const signature = Uint8Array.from(b64uDecode(s));
+    const ok = await crypto.subtle.verify("HMAC", key, signature, enc.encode(p));
     if (!ok) return null;
     const payload = JSON.parse(new TextDecoder().decode(b64uDecode(p))) as { uid: string; exp: number };
     if (!payload?.uid || !payload?.exp) return null;

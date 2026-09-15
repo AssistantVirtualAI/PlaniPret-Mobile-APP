@@ -69,11 +69,7 @@ function makeApiFetch(token: string | null) {
   };
 }
 
-/**
- * Listing by maestro id. Planiprêt documents no public GET, so we walk the
- * known internal read paths in order and keep the first one that answers.
- */
-let noUpstreamListUntil = 0; // negative cache: upstream exposes no GET (404/405)
+/** Listing par identifiant Maestro via le GET de collection documenté. */
 
 /** Maestro may return a plain array or a Laravel-style paginated envelope. */
 function extractTaskRows(payload: any): any[] {
@@ -140,30 +136,14 @@ function makeListFetch(token: string | null) {
       return `${API_BASE}/api/main/tasks?${qs.toString()}`;
     };
 
-    const legacy = new URLSearchParams();
-    if (opts.status) legacy.set("status", opts.status);
-    if (opts.from) legacy.set("from", opts.from);
-    if (opts.to) legacy.set("to", opts.to);
-    legacy.set("limit", "200");
-    const legacySuffix = `?${legacy.toString()}`;
-
     const candidates = [
-      // Forme mesurée en production: scoping par user_id.
-      withParam("user_id", maestroId),
       withParam("delegate_users_id", maestroId),
       withParam("target_id", maestroId),
-      `${TELECOM_BASE}/users/${maestroId}/tasks${legacySuffix}`,
       // Dernier recours, non filtré côté Maestro (filtré localement par assignation).
       `${API_BASE}/api/main/tasks?${base.toString()}`,
     ];
 
-
-    if (Date.now() < noUpstreamListUntil) {
-      return { ok: false, tasks: [], endpoint: null, status: 405 };
-    }
-
     let lastStatus = 0;
-    let allMissing = true;
     let emptyOk: UpstreamList | null = null;
     for (const url of candidates) {
       const ctrl = new AbortController();
@@ -175,10 +155,8 @@ function makeListFetch(token: string | null) {
         });
         lastStatus = res.status;
         if (!res.ok) {
-          if (res.status !== 404 && res.status !== 405 && res.status !== 501) allMissing = false;
           continue;
         }
-        allMissing = false;
         const j = await res.json().catch(() => null);
         const tasks = extractTaskRows(j).map(normalizeTask).filter((t: any) => t.id);
         console.info("[planipret-task-api] list probe", {
@@ -194,15 +172,11 @@ function makeListFetch(token: string | null) {
         emptyOk = emptyOk ?? out;
       } catch {
         lastStatus = 599;
-        allMissing = false;
       } finally {
         clearTimeout(timer);
       }
     }
     if (emptyOk) return emptyOk;
-    // Every documented/known read route answered 404/405 → stop hammering
-    // Planiprêt for 10 minutes and serve the local mirror instead.
-    if (allMissing) noUpstreamListUntil = Date.now() + 10 * 60 * 1000;
     return { ok: false, tasks: [], endpoint: null, status: lastStatus };
 
   };

@@ -39,10 +39,11 @@
     "ios:build-pjsip": "bash scripts/build-pjsip-ios.sh",
     "verify:ios:scene": "node scripts/verify-ios-scene.mjs",
     "verify:sip:bundle": "node scripts/verify-sip-bundle.mjs",
-    "prebuild": "node scripts/check-imports.mjs",
+    "prebuild": "node scripts/check-imports.mjs && node scripts/verify-maestro-api.mjs",
     "ios:oneclick": "bash scripts/ios-oneclick.sh",
     "ios:oneclick:rebuild": "bash scripts/ios-oneclick.sh --rebuild-pjsip",
     "verify:aor:mobile": "node scripts/verify-aor-mobile.mjs",
+    "verify:maestro-api": "node scripts/verify-maestro-api.mjs",
     "ota:bundle": "PP_SKIP_AUTOSYNC=1 npm run build && node scripts/build-ota-bundle.mjs",
     "security:gate": "node scripts/security-gate.mjs"
   },

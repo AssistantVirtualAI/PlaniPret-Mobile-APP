@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { retryWithBackoff } from "@/lib/planipret/retryBackoff";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
+import { createClientFollowUpTask } from "@/lib/planipret/tasks";
 import {
   Play, Pause, Download, RotateCcw, RotateCw, Sparkles, FileText, Bot,
   Loader2, Search, Copy, Check, ChevronDown, Link2, User, Flame, Snowflake, Thermometer, ListChecks,
@@ -1206,17 +1207,15 @@ function TasksBlock({ call, tasks }: { call: RecordingCall; tasks: any[] }) {
   const createOne = async (idx: number, t: any) => {
     setBusy(idx);
     try {
-      const { error } = await supabase.functions.invoke("maestro-task", {
-        body: {
-          call_id: call.id,
-          client_id: call.maestro_client_id,
-          title: t.title || t.label,
-          description: t.description,
-          priority: t.priority || "medium",
-          due_date: t.due_date,
-        },
+      const result = await createClientFollowUpTask({
+        call_id: call.id,
+        maestro_client_id: call.maestro_client_id ?? "",
+        client_name: otherLabel(call),
+        notes: t.title || t.label || "Suivi après appel",
+        description: t.description,
+        due_at: t.due_date,
       });
-      if (error) throw error;
+      if (!result?.success) throw new Error(result?.message ?? result?.error ?? "task_failed");
       toast.success("Tâche créée dans Maestro");
     } catch (e: any) {
       toast.error("Échec création tâche", { description: e?.message });

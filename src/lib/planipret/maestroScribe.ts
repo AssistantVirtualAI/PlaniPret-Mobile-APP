@@ -9,6 +9,7 @@ export interface ScribeResponse<T = any> {
   status: number;
   data: T | null;
   meta?: any;
+  links?: any;
   error: string | null;
   errors?: Record<string, string[]> | null;
   endpoint?: string;
@@ -21,7 +22,6 @@ async function call<T = any>(
     sub_id?: string | number;
     payload?: Record<string, unknown>;
     query?: Record<string, any>;
-    prefix?: string;
   } = {},
 ): Promise<ScribeResponse<T>> {
   const res = await safeEdgeFunction<any>("pp-maestro-scribe", {
@@ -37,6 +37,7 @@ async function call<T = any>(
     status: d.status ?? res.status ?? 0,
     data: d.data ?? null,
     meta: d.meta ?? null,
+    links: d.links ?? null,
     error: d.error ?? null,
     errors: d.errors ?? null,
     endpoint: d.endpoint,
@@ -91,7 +92,19 @@ export const contracts = {
   list: (filters: ContractFilters = {}) => call("contracts.list", { query: filters }),
   create: (payload: Record<string, unknown>) => call("contracts.create", { payload }),
   update: (id: string | number, payload: Record<string, unknown>) => call("contracts.update", { id, payload }),
+  remove: (id: string | number) => call("contracts.delete", { id }),
 };
+
+/** Les 20 opérations documentées, utilisées par les tests de couverture mobile. */
+export const MAESTRO_OFFICIAL_ACTIONS = [
+  "clients.get", "clients.create", "clients.update",
+  "addresses.create", "addresses.update", "addresses.delete",
+  "telephones.create", "telephones.update", "telephones.delete",
+  "contracts.list", "contracts.create", "contracts.update", "contracts.delete",
+  "institutions.list",
+  "commissions.deposits", "commissions.agents",
+  "tasks.list", "tasks.create", "tasks.update", "tasks.delete",
+] as const;
 
 export const financialInstitutions = {
   list: () => call("institutions.list"),
