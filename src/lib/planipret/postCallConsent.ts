@@ -63,13 +63,15 @@ export function pickEndedCall(
 }
 
 export function clientNumberOf(call: ConsentCall): string {
-  return (call.direction === "in" ? call.from_number : call.to_number) ?? "";
+  const inbound = call.direction === "in" || call.direction === "inbound" || call.direction === "missed";
+  return (inbound ? call.from_number : call.to_number) ?? "";
 }
 
 export function clientNameOf(call: ConsentCall): string {
+  const inbound = call.direction === "in" || call.direction === "inbound" || call.direction === "missed";
   return (
     call.maestro_client_name ||
-    (call.direction === "in" ? call.from_name : call.to_name) ||
+    (inbound ? call.from_name : call.to_name) ||
     clientNumberOf(call)
   );
 }

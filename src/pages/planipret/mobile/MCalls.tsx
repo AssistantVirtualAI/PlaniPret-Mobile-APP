@@ -344,6 +344,44 @@ export default function MCalls() {
 
   useEffect(() => { load(); }, [load]);
 
+  // A completed post-call notification carries the local call id. Select that
+  // exact row after the normal CDR/cache merge so the notification never opens
+  // a generic call list or starts the incoming-call handling path.
+  useEffect(() => {
+    const requested = params.get("call_id");
+    if (!requested || !calls.length) return;
+    const target = calls.find((call: any) =>
+      String(call.id ?? "") === requested ||
+      String(call.ns_call_id ?? "") === requested ||
+      String(call.ns_callid ?? "") === requested ||
+      String(call.ns_orig_callid ?? "") === requested ||
+      String(call.ns_term_callid ?? "") === requested,
+    );
+    if (target) setSelected(target);
+  }, [calls, params]);
+
+  useEffect(() => {
+    const requested = params.get("call_id");
+    if (!requested || !userId || !/^[A-Za-z0-9._:-]{1,200}$/.test(requested)) return;
+    const visible = calls.some((call: any) =>
+      [call.id, call.ns_call_id, call.ns_callid, call.ns_orig_callid, call.ns_term_callid]
+        .some((id) => String(id ?? "") === requested),
+    );
+    if (visible) return;
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requested);
+    const filters = [
+      uuid ? `id.eq.${requested}` : null,
+      `ns_call_id.eq.${requested}`,
+      `ns_callid.eq.${requested}`,
+      `ns_orig_callid.eq.${requested}`,
+      `ns_term_callid.eq.${requested}`,
+    ].filter(Boolean).join(",");
+    let cancelled = false;
+    void supabase.from("planipret_phone_calls").select("*").or(filters).limit(1).maybeSingle()
+      .then(({ data }) => { if (!cancelled && data) setSelected(data as Call); });
+    return () => { cancelled = true; };
+  }, [calls, params, userId]);
+
   // Preload recordings on mount so the Recordings tab is already populated
   // when the user taps it — no visible loader unless the cache is truly empty.
   useEffect(() => {

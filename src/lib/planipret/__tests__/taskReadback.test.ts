@@ -123,4 +123,21 @@ describe("authoritative Maestro task confirmation", () => {
       task: { id: "781150" },
     });
   });
+
+  it("uses the resolved internal Maestro user id for task read-back", async () => {
+    const deps = depsWithList([]);
+    deps.profile = {
+      id: "profile-1",
+      maestro_broker_id: "67",
+      maestro_telecom_user_id: "387460525",
+      role: "broker",
+    };
+    deps.resolveTelecomUserId.mockResolvedValue("387460525");
+    const result = await handleTaskRequest(createBody, deps);
+
+    expect(result.body).toMatchObject({ success: false, error: "maestro_readback_unconfirmed" });
+    expect(deps.listFetch).toHaveBeenCalledWith("387460525", expect.objectContaining({
+      findTaskId: "781150",
+    }));
+  });
 });

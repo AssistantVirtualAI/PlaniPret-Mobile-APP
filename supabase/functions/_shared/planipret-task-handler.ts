@@ -540,10 +540,12 @@ export async function handleTaskRequest(
       } catch { /* keep null */ }
     }
 
-    // The official Task List endpoint scopes `user_id` with the Maestro CRM
-    // broker id. `maestro_telecom_user_id` is only a legacy fallback for
-    // accounts that have no broker id yet (the two values often differ).
-    const listOwnerId = maestroId ?? telecomId;
+    // The documented Task List filters (`delegate_users_id` / `target_id`)
+    // expect the internal Maestro user id.  `maestro_broker_id` is the CRM
+    // OAuth identity and can be a different numeric namespace: using it first
+    // makes the list appear empty even though the task was accepted and is
+    // visible in Maestro.  Prefer the directory-resolved internal id.
+    const listOwnerId = telecomId ?? maestroId;
     const upstream = listOwnerId && token
       ? await deps.listFetch(listOwnerId, { status, from, to })
       : { ok: false as const, tasks: [] as any[], endpoint: null, status: 0 };
@@ -1013,7 +1015,10 @@ export async function handleTaskRequest(
       let listOwnerId: string | null = profile?.maestro_broker_id ? String(profile.maestro_broker_id) : null;
       try {
         const telecomId = await deps.resolveTelecomUserId(listOwnerId);
-        listOwnerId = listOwnerId ?? telecomId;
+        // `users_id` and the documented task-list filters use the internal
+        // Maestro directory id, not the CRM/OAuth broker id.  This exact
+        // choice is required for a read-back to prove the task is visible.
+        listOwnerId = telecomId ?? listOwnerId;
         if (task.id && listOwnerId) {
           const upstream = await deps.listFetch(listOwnerId, { status: null, from: null, to: null, findTaskId: String(task.id) });
           listStatus = upstream.status;

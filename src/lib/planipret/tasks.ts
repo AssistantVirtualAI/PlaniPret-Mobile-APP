@@ -195,8 +195,13 @@ export async function createClientFollowUpTask(input: {
 
   const userXid = String(target.user?.id ?? "").trim();
   const contractXid = String(target.contracts?.[0]?.id ?? "").trim();
-  const xid = userXid || contractXid;
-  const type = userXid ? "user" : "contract";
+  // A broker-created follow-up for a client belongs on the loan contract
+  // whenever Maestro exposes one. Using the person target first can create a
+  // valid user task which is absent from the contract view, misleading the
+  // broker into believing no reminder was created. Fall back to the user only
+  // for a client that has no eligible contract target.
+  const xid = contractXid || userXid;
+  const type = contractXid ? "contract" : "user";
   if (!xid) {
     return {
       success: false,

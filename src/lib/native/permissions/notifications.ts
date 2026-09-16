@@ -177,7 +177,8 @@ export async function registerPushListeners(extension?: string) {
     PushNotifications.addListener("pushNotificationActionPerformed", (action) => {
       const data = (action.notification?.data ?? {}) as Record<string, string>;
       const callId = data.call_id ?? data.ns_callid ?? "";
-      if (callId) {
+      const incoming = data.type === "incoming_call" || action.actionId === "answer" || action.actionId === "decline";
+      if (callId && incoming) {
         const act: IncomingNotificationAction = action.actionId === "decline"
           ? "decline"
           : action.actionId === "answer" ? "answer" : "open";
@@ -195,7 +196,8 @@ export async function registerPushListeners(extension?: string) {
         // Native PpSipKeepAlive uses pp_call_id; JS-scheduled notifications use
         // callId. Accept both so a banner tap always restores the ringing UI.
         const callId = data.callId ?? data.pp_call_id ?? "";
-        if (callId) {
+        const incoming = data.type === "incoming_call" || event.actionId === "answer" || event.actionId === "decline";
+        if (callId && incoming) {
           const act: IncomingNotificationAction = event.actionId === "decline"
             ? "decline"
             : event.actionId === "answer" ? "answer" : "open";

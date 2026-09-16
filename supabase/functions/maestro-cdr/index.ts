@@ -421,10 +421,10 @@ Deno.serve(async (req) => {
       // Trigger transcript (fire and forget)
       try {
         const supaUrl = Deno.env.get("SUPABASE_URL")!;
-        const anon = Deno.env.get("SUPABASE_ANON_KEY")!;
+        const service = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
         fetch(`${supaUrl}/functions/v1/maestro-transcript`, {
           method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${anon}` },
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${service}` },
           body: JSON.stringify({ call_id }),
         }).catch(() => {});
       } catch {}

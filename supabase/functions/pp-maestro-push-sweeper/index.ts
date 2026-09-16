@@ -41,6 +41,24 @@ Deno.serve(async (req) => {
   // include_unsynced: rattrapage des appels jamais poussés (pas de maestro_call_id).
   const includeUnsynced = body?.include_unsynced === true;
 
+  // The sweeper is already invoked securely every five minutes. Drain the CDR
+  // retry queue from here too, so calls that temporarily miss a CDR/identity
+  // do not depend on a separate cron registration. The worker enforces its own
+  // authorization; this invocation uses the service credential only in memory.
+  let cdrRetry: Record<string, unknown> | null = null;
+  if (body?.skip_cdr_retry !== true) {
+    try {
+      const cdrResponse = await fetch(`${SUPABASE_URL}/functions/v1/maestro-cdr-retry-job`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${SERVICE_ROLE}` },
+        body: JSON.stringify({ limit: Math.min(limit, 25), sweep: true }),
+      });
+      cdrRetry = await cdrResponse.json().catch(() => ({ ok: false, error: `http_${cdrResponse.status}` }));
+    } catch (error) {
+      cdrRetry = { ok: false, error: error instanceof Error ? error.message : "cdr_retry_unavailable" };
+    }
+  }
+
   let q = admin
     .from("planipret_phone_calls")
     .select("id, user_id, duration_seconds, maestro_call_id, transcript, ai_summary, ai_coaching, recording_storage_path, recording_url, ns_recording_url, maestro_media_synced_at, metadata")
@@ -155,6 +173,7 @@ Deno.serve(async (req) => {
 
   return json({
     success: true,
+    cdr_retry: cdrRetry,
     candidates: rows?.length ?? 0,
     processed: results.length,
     pushed: results.filter((r) => r.ok).length,

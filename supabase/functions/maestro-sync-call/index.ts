@@ -273,9 +273,11 @@ Deno.serve(async (req) => {
 
     // ── 2. Recording upload ────────────────────────────────
     const rec = await invoke("maestro-recording-upload", { call_id, force });
-    steps.recording = rec.data?.skipped
-      ? { ok: true, skipped: rec.data.skipped }
-      : { ok: !!rec.data?.success, status: rec.data?.status ?? rec.status, error: rec.data?.error ?? null, detail: rec.data?.detail ?? null, permanent: rec.data?.permanent ?? false };
+    steps.recording = rec.data?.retry_pending
+      ? { ok: false, skipped: rec.data?.skipped ?? "media_not_ready", error: "media_not_ready", retry_pending: true }
+      : rec.data?.skipped
+        ? { ok: false, skipped: rec.data.skipped, error: rec.data?.error ?? "recording_pending", retry_pending: true }
+        : { ok: !!rec.data?.success, status: rec.data?.status ?? rec.status, error: rec.data?.error ?? null, detail: rec.data?.detail ?? null, permanent: rec.data?.permanent ?? false };
 
     // ── 3. Transcript ──────────────────────────────────────
     let transcript: string | null = call.transcript ?? call.transcript_raw ?? null;

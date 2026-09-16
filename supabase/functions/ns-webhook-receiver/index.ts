@@ -1,6 +1,6 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
-import { normalizeNsEvents, nsCallKey, shouldProcessCall } from "../_shared/ns-call-events.ts";
+import { normalizeNsEvents, nsCallKey, nsCdrExtensionCandidates, shouldProcessCall } from "../_shared/ns-call-events.ts";
 import { parseServiceAccount, sendFcmDataMessage } from "../_shared/fcm.ts";
 
 
@@ -123,13 +123,43 @@ async function processEvent(event: any) {
   }
 
 
-  const ext = data?.extension ?? data?.user ?? data?.to ?? data?.callee ?? null;
+  const cdrExtensions = type === "cdr"
+    ? [...new Set([
+        ...(Array.isArray(data?.extension_candidates) ? data.extension_candidates : []),
+        ...nsCdrExtensionCandidates(data),
+      ].map((value) => String(value ?? "").trim()).filter(Boolean))]
+    : [];
+  let ext = data?.extension ?? data?.user ?? data?.to ?? data?.callee ?? cdrExtensions[0] ?? null;
   let userId: string | null = null;
   let brokerProfile: any = null;
-  if (ext) {
+  const profileFields = "id, user_id, extension, ns_extension, dnd_enabled, dnd_auto_schedule, dnd_start_time, dnd_end_time, dnd_message_fr, notif_calls, notif_sms, notif_voicemails";
+  const candidateExtensions = type === "cdr" ? cdrExtensions : [String(ext ?? "")].filter(Boolean);
+  if (candidateExtensions.length) {
+    const predicates = candidateExtensions.flatMap((candidate) => [
+      `extension.eq.${candidate}`,
+      `ns_extension.eq.${candidate}`,
+    ]).join(",");
+    const { data: profiles } = await admin
+      .from("planipret_profiles")
+      .select(profileFields)
+      .or(predicates)
+      .limit(10);
+    for (const candidate of candidateExtensions) {
+      const matched = (profiles ?? []).find((p: any) =>
+        String(p.extension ?? "") === candidate || String(p.ns_extension ?? "") === candidate,
+      );
+      if (matched) {
+        ext = candidate;
+        userId = matched.user_id ?? null;
+        brokerProfile = matched;
+        break;
+      }
+    }
+  }
+  if (!brokerProfile && ext) {
     const { data: p } = await admin
-      .from("planipret_profiles").select("user_id, dnd_enabled, dnd_auto_schedule, dnd_start_time, dnd_end_time, dnd_message_fr, notif_calls, notif_sms, notif_voicemails")
-      .eq("extension", String(ext)).maybeSingle();
+      .from("planipret_profiles").select(profileFields)
+      .or(`extension.eq.${String(ext)},ns_extension.eq.${String(ext)}`).maybeSingle();
     userId = p?.user_id ?? null;
     brokerProfile = p;
   }
@@ -283,9 +313,48 @@ async function processEvent(event: any) {
     return false;
   }
 
+  const cdrValue = (keys: string[]) => {
+    for (const key of keys) {
+      const value = data?.[key];
+      if (value != null && String(value).trim()) return String(value).trim();
+    }
+    return null;
+  };
+  const cdrIdentityCandidates = () => [...new Set([
+    cdrValue(["call-id", "call_id", "callid"]),
+    cdrValue(["call-parent-call-id", "call-parent-cdr-id", "cdr-id", "cdr_id", "id"]),
+    cdrValue(["call-orig-call-id", "orig_callid", "orig-callid", "orig-call-id"]),
+    cdrValue(["call-term-call-id", "term_callid", "term-callid", "term-call-id"]),
+  ].filter((value): value is string => !!value))];
+
+  const findExistingCdrCall = async (identities: string[]) => {
+    if (!identities.length) return null;
+    for (const column of ["ns_call_id", "ns_callid", "ns_orig_callid", "ns_term_callid", "ns_cdr_id"]) {
+      const { data: rows, error } = await admin
+        .from("planipret_phone_calls")
+        .select("id,user_id,ns_call_id,ns_callid,ns_orig_callid,ns_term_callid,ns_cdr_id,metadata")
+        .in(column, identities)
+        .order("created_at", { ascending: false })
+        .limit(2);
+      if (error) {
+        console.warn("[ns-webhook] CDR reconciliation lookup failed", { column, code: error.code });
+        continue;
+      }
+      const ownerMatch = (rows ?? []).find((row: any) =>
+        !userId || String(row.user_id ?? "") === String(userId) || String(row.user_id ?? "") === String(brokerProfile?.id ?? ""),
+      );
+      if (ownerMatch) return ownerMatch;
+    }
+    return null;
+  };
+
   if (type === "cdr") {
-    const callId = data.call_id ?? data.id ?? data["cdr-id"] ?? data.cdr_id;
-    if (callId) {
+    const identities = cdrIdentityCandidates();
+    const cdrId = cdrValue(["cdr-id", "cdr_id", "call-parent-cdr-id", "id", "call_id", "call-id"]);
+    const origCallId = cdrValue(["call-orig-call-id", "orig_callid", "orig-callid", "orig-call-id"]);
+    const termCallId = cdrValue(["call-term-call-id", "term_callid", "term-callid", "term-call-id"]);
+    const parentCallId = cdrValue(["call-parent-call-id", "call-id", "call_id", "callid"]);
+    if (cdrId || identities.length) {
       // Extract recording URL from any of the possible NS-API field names
       const recUrl =
         data.recording_url ??
@@ -296,33 +365,64 @@ async function processEvent(event: any) {
         data["media-url"] ??
         null;
 
-      await admin.from("planipret_phone_calls").upsert({
-        user_id: userId,
-        ns_call_id: String(callId),
-        ns_callid: data["call-parent-cdr-id"] ?? data["call-orig-call-id"] ?? data["call-term-call-id"] ?? data["call-parent-call-id"] ?? data.id ?? String(callId),
-        ns_orig_callid: data["call-orig-call-id"] ?? data["orig-callid"] ?? data["orig-call-id"] ?? null,
-        ns_term_callid: data["call-term-call-id"] ?? data["term-callid"] ?? data["term-call-id"] ?? null,
-        direction: data.direction ?? null,
-        from_number: data.from_number ?? data.caller_number ?? data.from ?? null,
-        to_number: data.to_number ?? data.callee_number ?? data.to ?? null,
-        duration_seconds: data.duration ?? data.duration_seconds ?? null,
+      // A live call row is normally created by call.inbound / the dialer with
+      // the originating SIP Call-ID. The final CDR often has another primary
+      // ID. Update that original row when any leg matches, so its owner and
+      // consent sheet remain attached to the completed call.
+      const existing = await findExistingCdrCall(identities);
+      const cdrMetadata = { ...(existing?.metadata ?? {}), ns_cdr: data, cdr_identities: identities };
+      const callPatch: Record<string, unknown> = {
+        ns_cdr_id: cdrId,
+        ns_callid: parentCallId ?? origCallId ?? termCallId,
+        ns_orig_callid: origCallId,
+        ns_term_callid: termCallId,
+        direction: data.direction ?? data["call-direction"] ?? null,
+        from_number: data.from_number ?? data.caller_number ?? data.from ?? data["call-orig-from-user"] ?? null,
+        to_number: data.to_number ?? data.callee_number ?? data.to ?? data["call-term-user"] ?? null,
+        duration_seconds: data.duration ?? data.duration_seconds ?? data["call-talking-duration-seconds"] ?? null,
         recording_url: recUrl,
         status: "completed",
-      }, { onConflict: "ns_call_id" });
+        metadata: cdrMetadata,
+      };
+      let localCallId: string | null = null;
+      if (existing?.id) {
+        const { data: updated, error: updateError } = await admin.from("planipret_phone_calls")
+          .update(callPatch)
+          .eq("id", existing.id)
+          .select("id")
+          .maybeSingle();
+        if (updateError) {
+          console.error("[ns-webhook] CDR reconciliation update failed", { call_id: existing.id, code: updateError.code, message: updateError.message });
+        } else {
+          localCallId = updated?.id ?? existing.id;
+          console.log("[ns-webhook] CDR reconciled to existing call", { call_id: localCallId, cdr_id: cdrId, identities: identities.length });
+        }
+      } else if (userId && cdrId) {
+        const { data: inserted, error: insertError } = await admin.from("planipret_phone_calls").upsert({
+          user_id: userId,
+          ns_call_id: cdrId,
+          ...callPatch,
+        }, { onConflict: "ns_call_id" }).select("id").maybeSingle();
+        if (insertError) {
+          console.error("[ns-webhook] CDR insert failed", { cdr_id: cdrId, code: insertError.code, message: insertError.message });
+        } else {
+          localCallId = inserted?.id ?? null;
+          console.log("[ns-webhook] CDR inserted as new call", { call_id: localCallId, cdr_id: cdrId });
+        }
+      } else {
+        console.warn("[ns-webhook] CDR ignored: broker owner or CDR id unresolved", { cdr_id: cdrId, candidates: cdrExtensions });
+      }
 
       const authH = `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}`;
       // Resolve the local UUID and enter the single consent-aware orchestrator.
       // It returns `consent_pending` without fetching audio, invoking AI or
       // writing Maestro until pp-call-consent records an explicit approval.
-      void admin.from("planipret_phone_calls").select("id").eq("ns_call_id", String(callId)).maybeSingle()
-        .then(({ data: row }) => {
-          if (row?.id) {
-            void fetch(`${SUPABASE_URL}/functions/v1/pp-auto-process-call`, {
-              method: "POST", headers: { Authorization: authH, "Content-Type": "application/json" },
-              body: JSON.stringify({ call_id: row.id }),
-            }).catch(() => {});
-          }
-        }, () => {});
+      if (localCallId) {
+        void fetch(`${SUPABASE_URL}/functions/v1/pp-auto-process-call`, {
+          method: "POST", headers: { Authorization: authH, "Content-Type": "application/json" },
+          body: JSON.stringify({ call_id: localCallId }),
+        }).catch(() => {});
+      }
     }
   } else if (type === "call.inbound") {
     const callId = data.call_id ?? data.id;

@@ -49,6 +49,10 @@ function pickSmsNumber(row: any): string | null {
     (typeof row === "string" && row) ||
     row?.["from-number"] ||
     row?.from_number ||
+    row?.["caller-id-number"] ||
+    row?.caller_id_number ||
+    row?.callerid_number ||
+    row?.effective_caller_id_number ||
     row?.number ||
     row?.phone_number_e164 ||
     row?.phonenumber ||
@@ -75,18 +79,116 @@ function didDestination(row: any): string | null {
   return null;
 }
 
-async function getAssignedSmsNumbers(supabase: any, ctx: any): Promise<any[]> {
+function nsRows(raw: any, depth = 0): any[] {
+  if (Array.isArray(raw)) return raw;
+  if (!raw || typeof raw !== "object" || depth > 3) return [];
+  for (const key of ["smsnumbers", "phonenumbers", "phone_numbers", "data", "items", "results", "response", "payload"]) {
+    const value = raw[key];
+    if (Array.isArray(value)) return value;
+    const nested = nsRows(value, depth + 1);
+    if (nested.length) return nested;
+  }
+  return [];
+}
+
+function nsRecord(raw: any): any {
+  if (Array.isArray(raw)) return raw[0] ?? null;
+  if (!raw || typeof raw !== "object") return null;
+  const nested = nsRows(raw);
+  return nested[0] ?? raw?.data ?? raw;
+}
+
+type SmsDidDiagnostics = {
+  extension: string;
+  domain: string;
+  sources: string[];
+  user_caller_id: string | null;
+  caller_id_routing: "not_configured" | "verified" | "configured" | "contradictory" | "unavailable";
+  probes: Array<{ source: string; status: number; count: number }>;
+};
+
+type SmsDidResolution = { numbers: any[]; diagnostics: SmsDidDiagnostics };
+
+async function getAssignedSmsNumbers(supabase: any, ctx: any): Promise<SmsDidResolution> {
   const numbers: any[] = [];
+  const diagnostics: SmsDidDiagnostics = {
+    extension: String(ctx.extension),
+    domain: String(ctx.nsDomain),
+    sources: [],
+    user_caller_id: null,
+    caller_id_routing: "not_configured",
+    probes: [],
+  };
+  const add = (row: any, source: string, extra: Record<string, unknown> = {}) => {
+    const e164 = pickSmsNumber(row);
+    if (!e164) return false;
+    numbers.push({ ...(typeof row === "object" && row ? row : {}), number: e164, "from-number": e164, source, ...extra });
+    diagnostics.sources.push(source);
+    return true;
+  };
+
+  // Source 0 : caller ID courant du compte NS. C'est le DID déjà utilisé par
+  // les appels sortants de CE poste. La liste générale phonenumbers peut être
+  // paginée ou omettre une affectation to-user; ne pas perdre le DID du courtier
+  // simplement parce que cet inventaire est incomplet.
+  try {
+    const userPath = `/domains/${encodeURIComponent(ctx.nsDomain)}/users/${encodeURIComponent(ctx.extension)}`;
+    const userRes = await nsFetch(userPath, { method: "GET" });
+    diagnostics.probes.push({ source: "ns_user", status: userRes.status, count: userRes.ok ? 1 : 0 });
+    if (userRes.ok) {
+      const user = nsRecord(await userRes.json().catch(() => null));
+      const callerId = pickSmsNumber(user);
+      diagnostics.user_caller_id = callerId;
+      if (callerId) {
+        let verified = false;
+        let contradictory = false;
+        let readable = false;
+        const rawDigits = callerId.replace(/\D/g, "");
+        const ids = [...new Set([rawDigits, rawDigits.replace(/^1/, "")].filter(Boolean))];
+        for (const id of ids) {
+          const direct = await nsFetch(
+            `/domains/${encodeURIComponent(ctx.nsDomain)}/phonenumbers/${encodeURIComponent(id)}`,
+            { method: "GET" },
+          );
+          diagnostics.probes.push({ source: "caller_id_direct", status: direct.status, count: direct.ok ? 1 : 0 });
+          if (!direct.ok) continue;
+          readable = true;
+          const destination = didDestination(nsRecord(await direct.json().catch(() => null)));
+          if (destination && String(destination) !== String(ctx.extension)) contradictory = true;
+          if (String(destination ?? "") === String(ctx.extension)) verified = true;
+        }
+        diagnostics.caller_id_routing = contradictory
+          ? "contradictory"
+          : verified
+            ? "verified"
+            : readable
+              ? "configured"
+              : "unavailable";
+
+        // A caller ID returned by this extension's authenticated NS user record
+        // is its real outbound DID. Keep it unless a targeted PBX read proves it
+        // belongs to another extension. This remains NetSapiens-only and never
+        // falls back to Maestro or to another broker number.
+        if (!contradictory) add(user, verified ? "user_caller_id_verified" : "user_caller_id_configured", {
+          routing_verified: verified,
+          destination_extension: String(ctx.extension),
+        });
+      }
+    }
+  } catch (e) {
+    console.warn("[pp-ns-sms] user caller-id fallback error:", e);
+  }
 
   // Source 1 : NS-API smsnumbers endpoint
   try {
     const res = await nsFetch(`/domains/${encodeURIComponent(ctx.nsDomain)}/users/${encodeURIComponent(ctx.extension)}/smsnumbers`, { method: "GET" });
+    diagnostics.probes.push({ source: "ns_smsnumbers", status: res.status, count: 0 });
     if (res.ok) {
       const raw = await res.json();
-      const list = Array.isArray(raw) ? raw : (raw?.smsnumbers ?? raw?.data ?? []);
+      const list = nsRows(raw);
+      diagnostics.probes[diagnostics.probes.length - 1].count = list.length;
       for (const n of list) {
-        const e164 = pickSmsNumber(n);
-        if (e164) numbers.push({ ...(typeof n === "object" ? n : {}), number: e164, "from-number": e164, source: "ns_api" });
+        add(n, "ns_api");
       }
     } else {
       const txt = await res.text().catch(() => "");
@@ -107,8 +209,7 @@ async function getAssignedSmsNumbers(supabase: any, ctx: any): Promise<any[]> {
         .limit(5);
       if (error) console.warn("[pp-ns-sms] did_assignments (domain) error:", error.message);
       for (const n of data ?? []) {
-        const e164 = pickSmsNumber(n);
-        if (e164) numbers.push({ ...n, number: e164, "from-number": e164, source: "did_assignment" });
+        add(n, "did_assignment");
       }
     } catch (e) {
       console.warn("[pp-ns-sms] did_assignments (domain) error:", e);
@@ -125,53 +226,52 @@ async function getAssignedSmsNumbers(supabase: any, ctx: any): Promise<any[]> {
         .limit(5);
       if (error) console.warn("[pp-ns-sms] did_assignments (no domain) error:", error.message);
       for (const n of data ?? []) {
-        const e164 = pickSmsNumber(n);
-        if (e164) numbers.push({ ...n, number: e164, "from-number": e164, source: "did_assignment_no_domain" });
+        add(n, "did_assignment_no_domain");
       }
     } catch (e) {
       console.warn("[pp-ns-sms] did_assignments (no domain) error:", e);
     }
   }
 
-  // Source 4 : inventaire PBX live. A DID d'appel est souvent provisionné via
-  // `phonenumbers` sans que le sous-objet NetSapiens `smsnumbers` soit exposé
-  // au même moment. Read only: we retain only numbers whose live routing points
-  // to THIS broker extension. This is never a Maestro fallback and never picks
-  // another broker's sender.
+  // Source 4 : inventaire PBX live. Les filtres centrés sur le poste sont lus
+  // avant l'inventaire général, lequel peut être paginé. A DID d'appel est
+  // souvent provisionné ici sans que le sous-objet smsnumbers soit exposé.
   if (!numbers.length) {
-    try {
-      const res = await nsFetch(`/domains/${encodeURIComponent(ctx.nsDomain)}/phonenumbers?limit=2000`, { method: "GET" });
-      if (res.ok) {
-        const raw = await res.json();
-        const list = Array.isArray(raw) ? raw : (raw?.phonenumbers ?? raw?.data ?? []);
-        for (const row of Array.isArray(list) ? list : []) {
-          if (String(didDestination(row) ?? "") !== String(ctx.extension)) continue;
-          const e164 = pickSmsNumber(row?.phonenumber ?? row?.number ?? row);
-          if (e164) numbers.push({
-            ...row,
-            number: e164,
-            "from-number": e164,
-            source: "pbx_routing_verified",
-            destination_extension: String(ctx.extension),
-          });
+    const paths = [
+      `/domains/${encodeURIComponent(ctx.nsDomain)}/users/${encodeURIComponent(ctx.extension)}/phonenumbers`,
+      `/domains/${encodeURIComponent(ctx.nsDomain)}/phonenumbers?user=${encodeURIComponent(ctx.extension)}`,
+      `/domains/${encodeURIComponent(ctx.nsDomain)}/phonenumbers?limit=2000`,
+    ];
+    for (const path of paths) {
+      try {
+        const res = await nsFetch(path, { method: "GET" });
+        if (!res.ok) {
+          diagnostics.probes.push({ source: "pbx_inventory", status: res.status, count: 0 });
+          continue;
         }
-      } else {
-        console.warn(`[pp-ns-sms] phonenumbers fallback NS-API ${res.status}`);
+        const list = nsRows(await res.json().catch(() => null));
+        diagnostics.probes.push({ source: "pbx_inventory", status: res.status, count: list.length });
+        for (const row of list) {
+          if (String(didDestination(row) ?? "") !== String(ctx.extension)) continue;
+          add(row, "pbx_routing_verified", { destination_extension: String(ctx.extension), routing_verified: true });
+        }
+        if (numbers.length) break;
+      } catch (e) {
+        console.warn("[pp-ns-sms] phonenumbers fallback error:", e);
       }
-    } catch (e) {
-      console.warn("[pp-ns-sms] phonenumbers fallback error:", e);
     }
   }
 
-  console.log(`[pp-ns-sms] getAssignedSmsNumbers ext=${ctx.extension} domain=${ctx.nsDomain} found=${numbers.length} sources=${numbers.map((n: any) => n.source).join(",")}`);
+  console.log(`[pp-ns-sms] getAssignedSmsNumbers ext=${ctx.extension} domain=${ctx.nsDomain} found=${numbers.length} sources=${numbers.map((n: any) => n.source).join(",")} caller_id=${diagnostics.user_caller_id ? "configured" : "missing"} routing=${diagnostics.caller_id_routing}`);
 
   const seen = new Set<string>();
-  return numbers.filter((n) => {
+  const unique = numbers.filter((n) => {
     const v = pickSmsNumber(n);
     if (!v || seen.has(v)) return false;
     seen.add(v);
     return true;
   });
+  return { numbers: unique, diagnostics };
 }
 
 function newMessageSessionId() {
@@ -420,8 +520,8 @@ Deno.serve(async (req) => {
 
 
     if (action === "sms-numbers") {
-      const numbers = await getAssignedSmsNumbers(supabase, ctx);
-      return jsonResponse({ ok: true, numbers });
+      const resolution = await getAssignedSmsNumbers(supabase, ctx);
+      return jsonResponse({ ok: true, numbers: resolution.numbers, diagnostics: resolution.diagnostics });
     }
 
     if (action === "send") {
@@ -450,7 +550,12 @@ Deno.serve(async (req) => {
       // Blocage permanent : aucun texto de test n'est envoyé, sans exception.
       if (blockTestSms(ctx.userId, message)) {
         console.warn("[pp-ns-sms] test SMS blocked", { userId: ctx.userId, to });
-        return jsonResponse({ ok: false, blocked: true, error: TEST_SMS_BLOCK_MESSAGE }, 200);
+        return jsonResponse({
+          ok: false,
+          blocked: true,
+          error_code: "test_sms_blocked",
+          error: TEST_SMS_BLOCK_MESSAGE,
+        }, 200);
       }
 
       // ---- Barrière de confirmation (côté serveur) -------------------------
@@ -477,11 +582,32 @@ Deno.serve(async (req) => {
       const toDigits = String(to).replace(/\D/g, "");
       const isInternal = /^\d{2,6}$/.test(toDigits);
 
-      // Auto-detect broker DID/SMS number if not provided.
-      if (!from && !isInternal) {
-        const first = (await getAssignedSmsNumbers(supabase, ctx))[0];
-        from = pickSmsNumber(first) ?? undefined;
-        console.info("[pp-ns-sms] auto-detected from", from);
+      // Resolve the sender on EVERY external SMS, then enforce that a client
+      // cannot submit another broker's DID in `from`. The only permitted
+      // sender is the DID NetSapiens resolves for this exact extension.
+      let didDiagnostics: SmsDidDiagnostics | null = null;
+      if (!isInternal) {
+        const resolution = await getAssignedSmsNumbers(supabase, ctx);
+        didDiagnostics = resolution.diagnostics;
+        const first = resolution.numbers[0];
+        const permitted = new Set(
+          resolution.numbers.map((n: any) => pickSmsNumber(n)).filter((n): n is string => !!n),
+        );
+        const requested = normalizeE164(from);
+        if (requested && !permitted.has(requested)) {
+          return jsonResponse({
+            ok: false,
+            error_code: "sms_sender_not_assigned",
+            error: "Le numéro expéditeur demandé n’est pas le DID NetSapiens assigné à ce courtier.",
+            diagnostics: didDiagnostics,
+          }, 200);
+        }
+        from = requested ?? pickSmsNumber(first) ?? undefined;
+        console.info("[pp-ns-sms] auto-detected from", {
+          found: !!from,
+          source: first?.source ?? null,
+          caller_id_routing: didDiagnostics.caller_id_routing,
+        });
       }
 
       const destination = isInternal ? toDigits : normalizeE164(to);
@@ -489,7 +615,12 @@ Deno.serve(async (req) => {
 
       const fromNumber = isInternal ? String(ctx.extension) : normalizeE164(from);
       if (!fromNumber) {
-        return jsonResponse({ ok: false, error: "Aucun numéro SMS (DID) assigné à ce courtier — contactez un administrateur pour attribuer un DID." }, 200);
+        return jsonResponse({
+          ok: false,
+          error_code: "sms_did_unavailable",
+          error: "Aucun numéro SMS (DID) assigné à ce courtier — contactez un administrateur pour attribuer un DID.",
+          diagnostics: didDiagnostics,
+        }, 200);
       }
 
 

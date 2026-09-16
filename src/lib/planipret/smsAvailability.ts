@@ -24,7 +24,7 @@ export function smsNumberFromRow(row: unknown): string | null {
   if (typeof row === "string") return normalizeSmsNumber(row);
   const item = (row && typeof row === "object" ? row : {}) as Record<string, unknown>;
   return normalizeSmsNumber(
-    item.number ?? item["from-number"] ?? item.from_number ?? item.phonenumber ?? item.smsnumber ?? item.did ?? item.phone_number_e164,
+    item.number ?? item["from-number"] ?? item.from_number ?? item["caller-id-number"] ?? item.caller_id_number ?? item.callerid_number ?? item.effective_caller_id_number ?? item.phonenumber ?? item.smsnumber ?? item.did ?? item.phone_number_e164,
   );
 }
 

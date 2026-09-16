@@ -17,6 +17,7 @@ import {
 } from "../_shared/maestro.ts";
 import { recordingPermalink } from "../_shared/recording-link.ts";
 import { callCorrelationId, ensureMaestroCall } from "../_shared/maestro-guard.ts";
+import { authorizeCallAccess, requireApprovedCallConsent } from "../_shared/planipret-call-access.ts";
 
 function pickUrl(d: any): string | null {
   if (!d) return null;
@@ -46,9 +47,15 @@ Deno.serve(async (req) => {
   const admin = adminClient();
   let { data: call } = await admin
     .from("planipret_phone_calls")
-    .select("id, user_id, maestro_call_id, recording_url, metadata")
+    .select("id, user_id, maestro_call_id, recording_url, metadata, save_consent, deleted_at")
     .eq("id", call_id)
     .maybeSingle();
+
+  if (!call) return json({ success: false, error: "call_not_found" }, 404);
+  const access = await authorizeCallAccess(req, admin, call);
+  if (!access.ok) return json({ success: false, error: access.error }, access.status);
+  const consent = requireApprovedCallConsent(call);
+  if (!consent.ok) return json({ success: false, error: consent.error, skipped: "consent_required" }, consent.status);
 
   const userId = call?.user_id ?? null;
   let maestroCallId = (call as any)?.maestro_call_id ?? null;
@@ -75,7 +82,7 @@ Deno.serve(async (req) => {
   {
     const refreshed = await admin
       .from("planipret_phone_calls")
-      .select("id, user_id, maestro_call_id, recording_url, metadata")
+      .select("id, user_id, maestro_call_id, recording_url, metadata, save_consent, deleted_at")
       .eq("id", call_id)
       .maybeSingle();
     call = refreshed.data ?? call;
@@ -173,7 +180,7 @@ Deno.serve(async (req) => {
     });
     await pipelineLog(admin, {
       call_id, user_id: userId, step: "recording_push", status: put.ok ? "success" : "error",
-      error_message: put.ok ? null : `maestro_put_${put.status}: ${typeof (put as any).data === "string" ? String((put as any).data).slice(0, 300) : JSON.stringify((put as any).data ?? {}).slice(0, 300)}`,
+      error_message: put.ok ? undefined : `maestro_put_${put.status}: ${typeof (put as any).data === "string" ? String((put as any).data).slice(0, 300) : JSON.stringify((put as any).data ?? {}).slice(0, 300)}`,
       endpoint: (put as any).path ?? null,
       http_status: put.status,
       entity_type: "call",
@@ -197,7 +204,7 @@ Deno.serve(async (req) => {
       call_id, user_id: userId, maestro_call_id: maestroCallId, status: "pending",
       error_message: "media_not_ready", updated_at: new Date().toISOString(),
     }, { onConflict: "call_id" }).then(() => {}, () => {});
-    return json({ success: true, skipped: "media_not_ready", status: res.status });
+    return json({ success: false, retry_pending: true, skipped: "media_not_ready", status: res.status }, 200);
   }
 
 

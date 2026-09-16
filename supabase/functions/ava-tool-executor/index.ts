@@ -702,8 +702,31 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
   },
 
   async create_task(ctx, p) {
-    const target = p?.target ?? p?.xid ?? p?.client_id;
-    const target_type = String(p?.target_type ?? p?.type ?? "user").toLowerCase();
+    let target = p?.target ?? p?.xid;
+    let target_type = String(p?.target_type ?? p?.type ?? "").toLowerCase();
+    const clientId = String(p?.client_id ?? "").trim();
+    // `client_id` is not itself necessarily a valid Task API xid.  Resolve the
+    // published `task_targets` metadata first and attach a client reminder to
+    // its contract when possible.  This keeps AVA on the exact same authorized
+    // route as the mobile and portal follow-up buttons.
+    if (!target && clientId) {
+      const targetsResult: any = await taskApi(ctx, { action: "client_targets", search: clientId });
+      const targetRow = Array.isArray(targetsResult?.targets)
+        ? targetsResult.targets.find((row: any) => String(row?.client_id ?? "") === clientId)
+        : null;
+      const contractId = String(targetRow?.contracts?.[0]?.id ?? "").trim();
+      const userId = String(targetRow?.user?.id ?? "").trim();
+      target = contractId || userId || undefined;
+      target_type = contractId ? "contract" : userId ? "user" : "";
+      if (!target) {
+        return {
+          success: false,
+          error: "task_target_mapping_required",
+          message: "Aucune cible de tâche Maestro autorisée n’a été trouvée pour ce client. Le rappel n’a pas été créé.",
+        };
+      }
+    }
+    target_type = target_type || "user";
     const notes = p?.notes ?? p?.title;
     const due_at = p?.due_at ?? p?.date ?? p?.due_date;
     if (target_type !== "user" && target_type !== "contract") {

@@ -3,6 +3,7 @@ import {
   normalizeNsEvents,
   nsCallKey,
   isTeardown,
+  nsCdrExtensionCandidates,
   shouldProcessCall,
   __resetCallDedupForTests,
 } from "../ns-call-events.ts";
@@ -35,6 +36,36 @@ describe("normalizeNsEvents", () => {
   it("strips sip: and domain from the terminating extension", () => {
     const [ev] = normalizeNsEvents([{ orig_callid: "k", "term-user": "sip:207@dom.com" }]);
     expect(ev.data.extension).toBe("207");
+  });
+
+  it("classifies a completed CDR before its call-leg fields", () => {
+    const [ev] = normalizeNsEvents([{
+      "cdr-id": "cdr-1",
+      "call-orig-call-id": "orig-1",
+      "call-orig-user": "113",
+      "call-term-user": "5145550100",
+      duration: 42,
+    }]);
+    expect(ev.type).toBe("cdr");
+    expect(ev.data.extension_candidates).toContain("113");
+  });
+
+  it("keeps an active call with a transient duration as a call event", () => {
+    const [ev] = normalizeNsEvents([{
+      orig_callid: "live-1",
+      "call-orig-user": "5145550100",
+      "call-term-user": "113",
+      duration: 12,
+    }]);
+    expect(ev.type).toBe("call.inbound");
+  });
+
+  it("retains broker candidates from both CDR legs and ignores public DIDs", () => {
+    expect(nsCdrExtensionCandidates({
+      "call-term-user": "sip:207M@planipret.ca",
+      "call-orig-user": "113W@planipret.ca",
+      to: "+15145550100",
+    })).toEqual(["207", "113"]);
   });
 
   it("keeps the orig call id as the dedup key", () => {

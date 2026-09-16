@@ -65,4 +65,16 @@ describe("SMS DID availability", () => {
     });
     expect(canSendWithSmsAvailability(availability)).toBe(true);
   });
+
+  it("accepts the caller ID returned by the broker's own NetSapiens user record", () => {
+    const availability = smsAvailabilityFromPayload({
+      ok: true,
+      numbers: [{ "caller-id-number": "438 555 0142", source: "user_caller_id_verified" }],
+    });
+    expect(availability).toMatchObject({
+      state: "ready",
+      primaryNumber: "+14385550142",
+    });
+    expect(canSendWithSmsAvailability(availability)).toBe(true);
+  });
 });

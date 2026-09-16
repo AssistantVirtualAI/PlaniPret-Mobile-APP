@@ -11,10 +11,10 @@ import { createClientFollowUpTask } from "@/lib/planipret/tasks";
 describe("createClientFollowUpTask", () => {
   beforeEach(() => invokeEdgeMock.mockReset());
 
-  it("résout la cible user officielle avant de créer", async () => {
+  it("privilégie le contrat Maestro officiel pour un suivi client", async () => {
     invokeEdgeMock
       .mockResolvedValueOnce({
-        data: { targets: [{ client_id: "123", name: "Jane Doe", user: { id: "511", eligible_broker_ids: [] }, contracts: [] }] },
+        data: { targets: [{ client_id: "123", name: "Jane Doe", user: { id: "511", eligible_broker_ids: [] }, contracts: [{ id: "288984", number: "P-1" }] }] },
         error: null,
         unauthorized: false,
       })
@@ -31,8 +31,8 @@ describe("createClientFollowUpTask", () => {
     expect(invokeEdgeMock).toHaveBeenNthCalledWith(1, "planipret-task-api", { action: "client_targets", search: "Jane Doe" });
     expect(invokeEdgeMock).toHaveBeenNthCalledWith(2, "planipret-task-api", expect.objectContaining({
       action: "create",
-      xid: "511",
-      type: "user",
+      xid: "288984",
+      type: "contract",
       notes: "Faire un suivi",
     }));
   });
@@ -48,6 +48,32 @@ describe("createClientFollowUpTask", () => {
 
     await createClientFollowUpTask({ maestro_client_id: "123", notes: "Relancer" });
     expect(invokeEdgeMock).toHaveBeenNthCalledWith(2, "planipret-task-api", expect.objectContaining({ xid: "288984", type: "contract" }));
+  });
+
+  it("utilise la cible user seulement lorsqu’aucun contrat autorisé n’existe", async () => {
+    invokeEdgeMock
+      .mockResolvedValueOnce({
+        data: { targets: [{ client_id: "123", name: "Jane Doe", user: { id: "511", eligible_broker_ids: [] }, contracts: [] }] },
+        error: null,
+        unauthorized: false,
+      })
+      .mockResolvedValueOnce({ data: { success: true, read_back: true, visible_in_maestro: true }, error: null, unauthorized: false });
+
+    await createClientFollowUpTask({ maestro_client_id: "123", notes: "Relancer" });
+    expect(invokeEdgeMock).toHaveBeenNthCalledWith(2, "planipret-task-api", expect.objectContaining({ xid: "511", type: "user" }));
+  });
+
+  it("utilise la cible user seulement lorsqu’aucun contrat autorisé n’existe", async () => {
+    invokeEdgeMock
+      .mockResolvedValueOnce({
+        data: { targets: [{ client_id: "123", name: "Jane Doe", user: { id: "511", eligible_broker_ids: [] }, contracts: [] }] },
+        error: null,
+        unauthorized: false,
+      })
+      .mockResolvedValueOnce({ data: { success: true, read_back: true, visible_in_maestro: true }, error: null, unauthorized: false });
+
+    await createClientFollowUpTask({ maestro_client_id: "123", notes: "Relancer" });
+    expect(invokeEdgeMock).toHaveBeenNthCalledWith(2, "planipret-task-api", expect.objectContaining({ xid: "511", type: "user" }));
   });
 
   it("refuse un id client sans cible Maestro autorisée", async () => {

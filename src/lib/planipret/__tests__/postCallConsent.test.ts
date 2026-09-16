@@ -4,6 +4,7 @@ import {
   canSendFollowup,
   clientNameOf,
   followupIdempotencyKey,
+  clientNumberOf,
   needsClientSelection,
   pickEndedCall,
   type ConsentCall,
@@ -61,6 +62,12 @@ describe("client ambigu", () => {
 
   it("affiche le nom du client connu", () => {
     expect(clientNameOf(base())).toBe("Client Fictif");
+  });
+
+  it("choisit le numéro de l’appelant pour une direction inbound normalisée", () => {
+    const call = base({ direction: "inbound", from_number: "+15550001111", to_number: "+15550002222" });
+    expect(clientNumberOf(call)).toBe("+15550001111");
+    expect(clientNameOf({ ...call, maestro_client_name: null, from_name: "Marc", to_name: "Courtier" })).toBe("Marc");
   });
 });
 

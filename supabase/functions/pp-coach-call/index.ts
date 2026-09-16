@@ -98,11 +98,24 @@ Deno.serve(async (req) => {
 
   // ── C: acquérir le verrou ───────────────────────────────
   const lockId = crypto.randomUUID();
-  await admin.from("planipret_phone_calls").update({
+  const staleBefore = new Date(Date.now() - 120_000).toISOString();
+  const { data: locked, error: lockError } = await admin.from("planipret_phone_calls").update({
     analysis_in_progress: true,
     analysis_locked_at: new Date().toISOString(),
     analysis_locked_by: lockId,
-  }).eq("id", call_id);
+  }).eq("id", call_id)
+    .eq("save_consent", "approved")
+    .is("deleted_at", null)
+    .or(`analysis_in_progress.eq.false,analysis_in_progress.is.null,analysis_locked_at.is.null,analysis_locked_at.lt.${staleBefore}`)
+    .select("id")
+    .maybeSingle();
+  if (lockError || !locked?.id) {
+    return json({
+      success: false,
+      locked: true,
+      message: "Analyse déjà en cours ou consentement révoqué.",
+    }, 409);
+  }
 
   // Broadcast started
   try {

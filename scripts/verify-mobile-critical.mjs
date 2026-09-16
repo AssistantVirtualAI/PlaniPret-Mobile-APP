@@ -42,11 +42,18 @@ check(notifications.includes("listenersPromise") && notifications.includes("regi
 check(notifications.includes("openInternalRoute") && !notifications.includes("window.location.href = data.route"), "Push routing must use an internal allowlist without full reload");
 
 const webhook = read("supabase/functions/ns-webhook-receiver/index.ts");
+const nsEvents = read("supabase/functions/_shared/ns-call-events.ts");
+const postCallSweeper = read("supabase/functions/pp-maestro-push-sweeper/index.ts");
+const cdrRetryJob = read("supabase/functions/maestro-cdr-retry-job/index.ts");
 check(webhook.includes('got !== expected'), "NetSapiens webhook must validate its shared secret");
 check(webhook.includes('functions/v1/pp-auto-process-call'), "CDR webhook must enter the consent-aware post-call orchestrator");
 check(!webhook.includes('functions/v1/ai-analyze-call'), "CDR webhook must not invoke AI before consent");
 check(!webhook.includes('functions/v1/maestro-sync-call'), "CDR webhook must not push Maestro before consent");
+check(webhook.includes("CDR reconciled to existing call") && webhook.includes("findExistingCdrCall") && webhook.includes("ns_orig_callid"), "CDR webhook must reconcile the final CDR to the original owned call before post-call processing");
+check(nsEvents.includes('if (looksLikeCdr(item))') && nsEvents.indexOf('if (looksLikeCdr(item))') < nsEvents.indexOf('if (looksLikeCall(item))'), "NetSapiens CDRs must be classified before call-leg events so post-call processing is not skipped");
 check(webhook.includes('ignoreDuplicates: true'), "Incoming call persistence must suppress duplicate pushes across Edge instances");
+check(postCallSweeper.includes("maestro-cdr-retry-job") && postCallSweeper.includes("skip_cdr_retry"), "The scheduled Maestro sweeper must also drain consented CDR retries");
+check(cdrRetryJob.includes('.eq("save_consent", "approved")') && cdrRetryJob.includes('.is("deleted_at", null)'), "CDR retry sweeps must process only approved, undeleted calls");
 check(webhook.includes('stableWebhookId("sms"') && webhook.includes('duplicate SMS ignored') && webhook.includes('stableWebhookId("voicemail"') && webhook.includes('duplicate voicemail ignored'), "SMS and voicemail webhooks must be idempotent before broadcast/push");
 
 const nsCalls = read("supabase/functions/pp-ns-calls/index.ts");
@@ -91,6 +98,7 @@ const more = read("src/pages/planipret/mobile/MMore.tsx");
 const connections = read("src/pages/planipret/mobile/MConnections.tsx");
 const messages = read("src/pages/planipret/mobile/MMessages.tsx");
 const smsDraft = read("src/components/planipret/mobile/SmsDraftSheet.tsx");
+const smsEdge = read("supabase/functions/pp-ns-sms/index.ts");
 const sipDebug = read("src/pages/planipret/mobile/MSipDebug.tsx");
 const networkMonitor = read("src/lib/planipret/network/networkMonitor.ts");
 const callerLookup = read("src/lib/planipret/callerLookup.ts");
@@ -99,6 +107,9 @@ check(!connections.includes("setInterval(() => load()") && !messages.includes("s
 check(!networkMonitor.includes("setInterval(() => this.checkSignalQuality()") && !callerLookup.includes("window.setInterval"), "Calls must not generate periodic network probes or caller lookups");
 check(messages.includes("getSmsAvailability") && messages.includes("canSendWithSmsAvailability"), "Manual SMS must verify the broker DID before sending");
 check(smsDraft.includes("getSmsAvailability") && smsDraft.includes("canSendWithSmsAvailability"), "Draft SMS must stay disabled until the broker DID is confirmed");
+check(smsEdge.includes("user_caller_id_verified") && smsEdge.includes('"caller-id-number"') && smsEdge.includes("caller_id_routing"), "SMS DID lookup must accept the broker's own verified NetSapiens caller ID");
+check(smsEdge.includes("sms_sender_not_assigned") && smsEdge.includes("permitted.has(requested)"), "SMS must reject a client-supplied sender that is not assigned to the broker");
+check(smsEdge.includes("PAS de repli Maestro"), "SMS sender resolution must never fall back to Maestro");
 const taskHandler = read("supabase/functions/_shared/planipret-task-handler.ts");
 check(taskHandler.includes("pending_confirmation: !confirmed") && taskHandler.includes("visible_in_maestro: confirmed") && taskHandler.includes("maestro_readback_unconfirmed"), "Task creation must fail closed until documented Maestro read-back confirms visibility");
 const pipeline = read("src/pages/planipret/mobile/MPipeline.tsx");

@@ -769,7 +769,9 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
           typeof d.error === "string" ? d.error :
           JSON.stringify(d.error ?? d);
         console.error("[pp-ns-sms] server rejected", { status: d.status, from: d.from, to: d.to, endpoint: d.endpoint, body: d.body, error: d.error });
-        const hint = d.from ? "" : " — aucun numéro SMS (DID) assigné à ce courtier.";
+        const hint = d.error_code === "sms_did_unavailable"
+          ? " — aucun numéro SMS (DID) assigné à ce courtier."
+          : "";
         throw new Error(`SMS refusé${status}${hint}\n${bodyDetail.slice(0, 260)}`);
       }
        const result = d.result ?? {};

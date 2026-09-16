@@ -173,7 +173,12 @@ export default function PostCallConsentSheet() {
       if (error) throw error;
       if ((data as any)?.error) throw new Error(String((data as any).error));
       if (action === "approve") {
-        toast.success("Appel sauvegardé dans Maestro.");
+        const started = (data as any)?.ok === true && (data as any)?.processing !== "retryable";
+        if (started) {
+          toast.success("Consentement enregistré. Synchronisation avec Maestro en cours.");
+        } else {
+          toast.message("Consentement enregistré. La synchronisation sera relancée automatiquement.");
+        }
         setStep("followup");
       } else if (action === "decline") {
         toast.success("Appel non sauvegardé. Rien n'a été envoyé.");

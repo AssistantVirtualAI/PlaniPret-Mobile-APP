@@ -38,7 +38,8 @@ Deno.serve(async (req) => {
     const xid = String(profile.maestro_broker_id ?? "");
     const tid = String(profile.maestro_telecom_user_id ?? xid);
     const paths = [
-      `/api/main/tasks?status=pending&type=user&target_id=${encodeURIComponent(xid)}&page=1&per_page=50`,
+      `/api/main/tasks?status=all&delegate_users_id=${encodeURIComponent(tid)}&order_by=date&sort=desc&page=1&per_page=50`,
+      `/api/main/tasks?status=all&target_id=${encodeURIComponent(tid)}&order_by=date&sort=desc&page=1&per_page=50`,
     ];
     const results: unknown[] = [];
     for (const path of paths) {

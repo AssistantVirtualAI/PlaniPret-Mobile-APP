@@ -25,9 +25,13 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405);
 
+  const serviceRole = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+  const token = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
+  if (!token || token !== serviceRole) return json({ error: "unauthorized" }, 401);
+
   const admin = createClient(
     Deno.env.get("SUPABASE_URL")!,
-    Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+    serviceRole,
   );
 
   const body = await req.json().catch(() => ({} as any));
@@ -62,6 +66,8 @@ Deno.serve(async (req) => {
         .from("planipret_phone_calls")
         .select("id, user_id, maestro_call_id, recording_url, started_at")
         .is("maestro_call_id", null)
+        .eq("save_consent", "approved")
+        .is("deleted_at", null)
         .not("recording_url", "is", null)
         .gte("started_at", since)
         .limit(200);
@@ -74,6 +80,8 @@ Deno.serve(async (req) => {
         .from("planipret_phone_calls")
         .select("id, user_id, duration_seconds, started_at")
         .is("maestro_call_id", null)
+        .eq("save_consent", "approved")
+        .is("deleted_at", null)
         .gte("duration_seconds", 5)
         .gte("started_at", since)
         .lte("started_at", new Date(Date.now() - 10 * 60_000).toISOString())

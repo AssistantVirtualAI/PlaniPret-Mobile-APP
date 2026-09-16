@@ -37,8 +37,13 @@ function looksLikeCall(o: any): boolean {
 }
 
 function looksLikeCdr(o: any): boolean {
-  return o?.["cdr-id"] != null || o?.cdr_id != null || o?.["call-parent-cdr-id"] != null ||
-    o?.duration != null || o?.duration_seconds != null;
+  if (o?.["cdr-id"] != null || o?.cdr_id != null || o?.["call-parent-cdr-id"] != null) return true;
+  // Active-call events can also contain a temporary duration. Require a CDR
+  // completion marker when no CDR identifier is present.
+  const hasDuration = o?.duration != null || o?.duration_seconds != null || o?.["call-total-duration-seconds"] != null;
+  const completed = o?.["call-disconnect-datetime"] != null || o?.["call-end-datetime"] != null ||
+    o?.["time-release"] != null || o?.disposition != null || o?.["call-disposition"] != null;
+  return hasDuration && completed;
 }
 
 function looksLikeVoicemail(o: any): boolean {
@@ -57,6 +62,39 @@ export function nsTermExtension(o: any): string | null {
   // NS often reports "113@domain" or "sip:113@domain"
   const cleaned = str(raw).replace(/^sip:/i, "").split("@")[0].trim();
   return cleaned || null;
+}
+
+/** A PBX user/Device id is an extension optionally suffixed by M/W/X. Never
+ * interpret a 10-digit public phone number as an extension candidate. */
+export function nsExtensionCandidate(value: unknown): string | null {
+  const raw = str(value).replace(/^sips?:/i, "").split("@")[0].trim();
+  const match = raw.match(/^(\d{2,6})(?:[MWXmw])?$/);
+  return match?.[1] ?? null;
+}
+
+/** CDRs can identify the broker from either leg: term for inbound, orig for
+ * outbound. Return both in stable order so the webhook can map either to a
+ * Planiprêt profile instead of creating an unowned post-call row. */
+export function nsCdrExtensionCandidates(o: any): string[] {
+  const rawValues = [
+    o?.extension,
+    o?.user,
+    o?.["call-term-user"],
+    o?.["term-user"],
+    o?.term_user,
+    o?.["call-through-user"],
+    o?.["call-orig-user"],
+    o?.["orig-user"],
+    o?.orig_user,
+    o?.callee,
+    o?.to,
+  ];
+  const values: string[] = [];
+  for (const value of rawValues) {
+    const extension = nsExtensionCandidate(value);
+    if (extension && !values.includes(extension)) values.push(extension);
+  }
+  return values;
 }
 
 function mapCall(o: any): NsNormalizedEvent | null {
@@ -95,13 +133,20 @@ export function normalizeNsEvents(body: any): NsNormalizedEvent[] {
       continue;
     }
 
+    // A completed CDR contains call-orig-user / call-term-user too. Classify it
+    // BEFORE a live call, otherwise the final event becomes call.inbound and the
+    // consent-aware post-call pipeline is never entered.
+    if (looksLikeCdr(item)) {
+      const candidates = nsCdrExtensionCandidates(item);
+      out.push({ type: "cdr", data: { ...item, extension: candidates[0] ?? null, extension_candidates: candidates } });
+      continue;
+    }
     if (looksLikeCall(item)) {
       const mapped = mapCall(item);
       if (mapped) out.push(mapped);
       continue;
     }
     if (looksLikeVoicemail(item)) { out.push({ type: "voicemail.new", data: item }); continue; }
-    if (looksLikeCdr(item)) { out.push({ type: "cdr", data: item }); continue; }
     if (looksLikeMessage(item)) { out.push({ type: "message.inbound", data: item }); continue; }
   }
   return out;
