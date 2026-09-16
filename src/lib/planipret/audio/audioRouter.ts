@@ -27,6 +27,8 @@ let routeGeneration = 0;
 const listeners = new Set<(d: AudioDevices) => void>();
 let bound = false;
 
+const pause = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+
 function emit() {
   listeners.forEach((fn) => { try { fn({ ...devices }); } catch {} });
 }
@@ -82,7 +84,14 @@ export const audioRouter = {
     return { ...devices };
   },
 
-  async setRoute(route: AudioRoute): Promise<void> {
+  /**
+   * Ask the native owner for an audio route and return the route that iOS
+   * actually applied. A successful Capacitor callback is not proof that
+   * CallKit has accepted the override: it can restore its own route just
+   * after activation. Keeping the physical route here prevents the call UI
+   * from displaying “haut-parleur” while sound is still in the earpiece.
+   */
+  async setRoute(route: AudioRoute): Promise<AudioDevices> {
     routeGeneration += 1;
     if (reassertTimer) { clearTimeout(reassertTimer); reassertTimer = null; }
     currentRoute = route;
@@ -98,23 +107,26 @@ export const audioRouter = {
     // both made the two modules fight (quiet/muffled loudspeaker) and mapped
     // "bluetooth" to "earpiece".
     if (handled) {
-      // Vérifier la route effective : CallKit / PJSIP / AudioManager peuvent
-      // réécrire la sortie juste après. Si le natif n'a pas suivi, on relance
-      // et on retombe sur le toggle PJSIP en dernier recours.
+      // CallKit/PJSIP may rewrite the route shortly after activation. Verify
+      // twice before using the PJSIP compatibility path, then report the
+      // actual route rather than an optimistic requested one.
       const generation = routeGeneration;
-      const d = await audioRouter.refreshDevices();
-      if (generation === routeGeneration && d.route !== route) {
+      let applied = await audioRouter.refreshDevices();
+      if (generation === routeGeneration && applied.route !== route) {
+        await pause(220);
         try { await b.setAudioRoute({ route }); } catch {}
-        const d2 = await audioRouter.refreshDevices();
-        if (generation === routeGeneration && d2.route !== route) {
-          const p = pjsip();
-          if (p?.setSpeaker) { try { await p.setSpeaker({ enabled: route === "speaker" }); } catch {} }
+        await pause(220);
+        applied = await audioRouter.refreshDevices();
+      }
+      if (generation === routeGeneration && applied.route !== route) {
+        const p = pjsip();
+        if (p?.setSpeaker) {
+          try { await p.setSpeaker({ enabled: route === "speaker" }); } catch {}
+          await pause(260);
+          applied = await audioRouter.refreshDevices();
         }
       }
-      // L'UI doit refléter le choix de l'utilisateur même si la lecture native
-      // arrive en retard.
-      if (generation === routeGeneration) { devices = { ...devices, route }; currentRoute = route; emit(); }
-      return;
+      return applied;
     }
     {
       const p = pjsip();
@@ -123,7 +135,7 @@ export const audioRouter = {
       }
     }
 
-    if (handled) return;
+    if (handled) return audioRouter.refreshDevices();
     // Web fallback: try matching sinkId on every <audio> tag.
     try {
       document.querySelectorAll("audio").forEach((el: any) => {
@@ -132,6 +144,7 @@ export const audioRouter = {
         }
       });
     } catch {}
+    return audioRouter.refreshDevices();
   },
 
   async getCurrentRoute(): Promise<AudioRoute> {
@@ -171,7 +184,7 @@ export const audioRouter = {
     // Auto-detect: a connected Bluetooth headset always wins at call start.
     const route: AudioRoute = d.bluetooth ? "bluetooth" : "earpiece";
     currentRoute = route;
-    await audioRouter.setRoute(route);
+    const applied = await audioRouter.setRoute(route);
     // Some stacks (CallKit / AudioFocus) re-apply their own route ~1s after the
 
     // media session activates, so re-assert once — but never overwrite a change
@@ -189,7 +202,7 @@ export const audioRouter = {
       void audioRouter.resetSession().then(() => audioRouter.setRoute(currentRoute));
     }, 2500);
 
-    return route;
+    return applied.route;
   },
 
   stopCallAudio(): void {

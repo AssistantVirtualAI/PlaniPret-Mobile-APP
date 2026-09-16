@@ -188,11 +188,14 @@ async function syncProjection(admin: any, userId: string, tasks: any[], opts: { 
   await projectionUpsert(admin, userId, tasks);
   if (!opts.full) return;
   const keep = tasks.map((t) => String(t.id)).filter(Boolean);
-  let q = admin.from("planipret_tasks_projection")
+  // An empty upstream page is almost always a transient Maestro hiccup or a
+  // wrong owner id. Never wipe a broker's whole local copy on that signal.
+  if (!keep.length) return;
+  const q = admin.from("planipret_tasks_projection")
     .update({ deleted_at: new Date().toISOString() })
     .eq("user_id", userId)
-    .is("deleted_at", null);
-  if (keep.length) q = q.not("task_id", "in", `(${keep.map((k) => `"${k}"`).join(",")})`);
+    .is("deleted_at", null)
+    .not("task_id", "in", `(${keep.map((k) => `"${k}"`).join(",")})`);
   await q;
 }
 
@@ -545,21 +548,37 @@ export async function handleTaskRequest(
     // OAuth identity and can be a different numeric namespace: using it first
     // makes the list appear empty even though the task was accepted and is
     // visible in Maestro.  Prefer the directory-resolved internal id.
-    const listOwnerId = telecomId ?? maestroId;
-    const upstream = listOwnerId && token
-      ? await deps.listFetch(listOwnerId, { status, from, to })
-      : { ok: false as const, tasks: [] as any[], endpoint: null, status: 0 };
+    // A broker can carry two numeric identities (directory/telecom id and CRM
+    // OAuth id). Listing with the wrong one returns an empty page even though
+    // Maestro holds tasks, so try every known id until one answers.
+    const ownerCandidates = [...new Set(
+      (overrideBroker
+        ? [overrideBroker]
+        : [telecomId, maestroId, profile?.maestro_telecom_user_id, profile?.maestro_broker_id])
+        .map((v) => String(v ?? "").trim())
+        .filter(Boolean),
+    )];
+    const assigneeIds = overrideBroker
+      ? [maestroId, telecomId]
+      : [maestroId, telecomId, profile?.maestro_telecom_user_id, profile?.maestro_broker_id];
 
-    let all: any[];
+    let upstream: UpstreamList = { ok: false, tasks: [], endpoint: null, status: 0 };
+    let all: any[] = [];
+    if (token) {
+      for (const candidate of ownerCandidates) {
+        const attempt = await deps.listFetch(candidate, { status, from, to });
+        if (!attempt.ok) continue;
+        const rows = filterByAssignee(
+          (attempt.tasks ?? []).map((t: any) => normalizeTask(t)),
+          assigneeIds,
+        );
+        if (!upstream.ok) { upstream = attempt; all = rows; }
+        if (rows.length) { upstream = attempt; all = rows; break; }
+      }
+    }
+
     let src: "api" | "projection" | "unavailable";
     if (upstream.ok) {
-      all = (upstream.tasks ?? []).map((t: any) => normalizeTask(t));
-      // Align the calendar/list on the real assignment source: keep tasks
-      // assigned to this broker AND tasks whose assignment Maestro returned
-      // empty but which target him (otherwise they vanish from the calendar).
-      all = filterByAssignee(all, overrideBroker
-        ? [maestroId, telecomId]
-        : [maestroId, telecomId, profile?.maestro_telecom_user_id]);
       src = "api";
       // Never write another broker's tasks into the caller's local projection.
       // When an admin inspects a broker, mirror them under THAT broker's own

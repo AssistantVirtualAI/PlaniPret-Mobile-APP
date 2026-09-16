@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { supabase } from "@/integrations/supabase/client";
+import { toast } from "sonner";
 import {
   Mic, MicOff, Pause, Play, PhoneForwarded, Grid3X3, PhoneOff, Phone,
   User, Search, X, ChevronLeft, ChevronDown, Activity, Volume2, VolumeX, Bluetooth,
@@ -73,6 +74,7 @@ export default function PpActiveCallScreen({
   const [diagOpen, setDiagOpen] = useState(false);
   const [speakerOn, setSpeakerOn] = useState(false);
   const [audioDev, setAudioDev] = useState(() => audioRouter.devices());
+  const [speakerBusy, setSpeakerBusy] = useState(false);
   const [lineError, setLineError] = useState<string | null>(null);
   const [merging, setMerging] = useState(false);
 
@@ -175,6 +177,31 @@ export default function PpActiveCallScreen({
   }, [contacts, transferQuery]);
 
   const pressDtmf = useCallback((k: string) => { setDtmfBuf((b) => (b + k).slice(-16)); sendDTMF(k); }, [sendDTMF]);
+  const setCallAudioRoute = useCallback(async (requested: "speaker" | "bluetooth" | "earpiece") => {
+    if (speakerBusy) return;
+    setSpeakerBusy(true);
+    try {
+      const applied = await audioRouter.setRoute(requested);
+      setAudioDev(applied);
+      setSpeakerOn(applied.route === "speaker");
+      if (applied.route !== requested) {
+        toast.error("La sortie audio n’a pas changé", {
+          description: requested === "speaker"
+            ? "iOS garde la sortie actuelle. Réessayez une fois l’appel connecté."
+            : "La sortie audio est gérée par le périphérique connecté.",
+        });
+      }
+    } catch {
+      const actual = await audioRouter.refreshDevices();
+      setAudioDev(actual);
+      setSpeakerOn(actual.route === "speaker");
+      toast.error("Changement de sortie audio impossible", {
+        description: "La route actuelle a été conservée; aucun appel n’est interrompu.",
+      });
+    } finally {
+      setSpeakerBusy(false);
+    }
+  }, [speakerBusy]);
   const doTransfer = useCallback((target: string) => {
     const to = target.trim(); if (!to) return;
     transfer(to);
@@ -449,9 +476,7 @@ export default function PpActiveCallScreen({
                   speakerOn ? (audioDev.bluetooth ? "bluetooth" : "earpiece")
                   : audioDev.route === "bluetooth" ? "earpiece"
                   : "speaker";
-                setSpeakerOn(next === "speaker");
-                setAudioDev((d) => ({ ...d, route: next }));
-                audioRouter.setRoute(next).catch(() => {});
+                void setCallAudioRoute(next);
               }}
                 icon={audioDev.route === "bluetooth" ? <Bluetooth /> : speakerOn ? <Volume2 /> : <VolumeX />}
                 label={audioDev.route === "bluetooth" ? (audioDev.bluetoothName || "Bluetooth") : "H.-parleur"} />

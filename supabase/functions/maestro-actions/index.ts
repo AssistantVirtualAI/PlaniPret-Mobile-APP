@@ -95,6 +95,8 @@ function normalizeContact(c: any) {
  * ------------------------------------------------------------------ */
 const CACHE_TTL = 90_000; // 90 secondes
 const _listCache = new Map<string, { ts: number; data: unknown }>();
+const PROFILE_CACHE_TTL = 5 * 60_000;
+const _profileCache = new Map<string, { ts: number; data: Record<string, unknown> | null }>();
 function cacheGet(key: string) {
   const e = _listCache.get(key);
   return e && Date.now() - e.ts < CACHE_TTL ? e.data : null;
@@ -104,6 +106,52 @@ function cacheSet(key: string, data: unknown) {
 }
 function cacheInvalidate(prefix: string) {
   for (const k of [..._listCache.keys()]) if (k.startsWith(prefix)) _listCache.delete(k);
+}
+
+/**
+ * The documented client list contains identity fields but some Maestro
+ * records keep all telephone numbers on the documented profile resource.
+ * The installed Contacts screen needs a number before a row action can dial,
+ * so enrich only the first visible page, with bounded concurrency and an
+ * in-memory profile cache. This is read-only and never changes a client.
+ */
+async function enrichClientPageWithProfilePhones(cfg: any, telecomUserId: string, rows: any[]): Promise<any[]> {
+  const MAX_PROFILE_READS = 80;
+  const normalized = rows.map(normalizeContact);
+  const candidates = normalized
+    .map((row, index) => ({ row, index, clientId: String(row?.maestro_client_id ?? row?.id ?? "").trim() }))
+    .filter(({ row, clientId }) => !row?.phone && !!clientId)
+    .slice(0, MAX_PROFILE_READS);
+
+  const hydrate = async ({ row, index, clientId }: typeof candidates[number]) => {
+    const key = `${telecomUserId}:${clientId}`;
+    const cached = _profileCache.get(key);
+    let profile = cached && Date.now() - cached.ts < PROFILE_CACHE_TTL ? cached.data : null;
+    if (!profile) {
+      const r = await maestroTelecomFetch(
+        cfg,
+        `/users/${encodeURIComponent(telecomUserId)}/clients/${encodeURIComponent(clientId)}/profile`,
+        { method: "GET", timeoutMs: 7000, maxAttempts: 1 },
+      );
+      const raw: any = r.ok ? ((r.data as any)?.profile ?? (r.data as any)?.client ?? (r.data as any)?.data ?? r.data) : null;
+      profile = raw && typeof raw === "object" ? normalizeContact(raw) : null;
+      _profileCache.set(key, { ts: Date.now(), data: profile });
+    }
+    if (!profile) return;
+    // Preserve the list identity as the durable routing key and merge only
+    // contact fields returned by the profile endpoint.
+    normalized[index] = {
+      ...row,
+      ...profile,
+      id: row.id,
+      maestro_client_id: row.maestro_client_id ?? row.id,
+    };
+  };
+
+  for (let start = 0; start < candidates.length; start += 6) {
+    await Promise.all(candidates.slice(start, start + 6).map((candidate) => hydrate(candidate).catch(() => {})));
+  }
+  return normalized;
 }
 
 
@@ -535,11 +583,14 @@ Deno.serve(async (req) => {
         const prev_offset = offset > 0 ? Math.max(0, offset - limit) : null;
         const page = Math.floor(offset / limit) + 1;
         const page_count = Math.ceil(total / limit);
+        const normalizedClients = action === "list_clients"
+          ? await enrichClientPageWithProfilePhones(tCfg, telecomUserId, list)
+          : null;
 
         const response = action === "list_clients"
           ? {
               success: true,
-              clients: list.map(normalizeContact),
+              clients: normalizedClients,
               total,
               has_more,
               next_offset,

@@ -89,6 +89,23 @@ function normalizeContact(c: any) {
   };
 }
 
+/** Returns a dialable number from either a lightweight list row or a full Maestro profile. */
+function contactPhone(c: any): string {
+  const direct = [
+    c?.phone, c?.phone_number, c?.cell_phone, c?.cellphone, c?.cell,
+    c?.mobile, c?.mobile_phone, c?.mobilePhone, c?.work_phone, c?.workPhone,
+    c?.home_phone, c?.homePhone, c?.telephone,
+  ].find((value) => typeof value === "string" && value.trim());
+  if (typeof direct === "string") return direct.trim();
+  const telephones = Array.isArray(c?.telephones) ? c.telephones : [];
+  const first = telephones.find((item: any) =>
+    typeof (item?.telephone_number ?? item?.phone ?? item?.number) === "string" &&
+    String(item?.telephone_number ?? item?.phone ?? item?.number).trim(),
+  );
+  const value = first?.telephone_number ?? first?.phone ?? first?.number;
+  return typeof value === "string" ? value.trim() : "";
+}
+
 function presenceMeta(raw: string | undefined | null, t: (k: string) => string): { color: string; label: string } {
   const v = String(raw ?? "").toLowerCase();
   if (["available", "online", "active", "ready", "registered"].includes(v)) return { color: "#22c55e", label: t("contacts.presence.available") || "Available" };
@@ -128,6 +145,7 @@ export default function MContacts() {
   const [filterDept, setFilterDept] = useState<string>("");
   const [filterTeam, setFilterTeam] = useState<string>("");
   const [sortBy, setSortBy] = useState<"relevance" | "name" | "team" | "department">("relevance");
+  const [dialingContactKey, setDialingContactKey] = useState<string | null>(null);
   const loadedTabsRef = useRef<Set<Tab>>(new Set<Tab>([
     "favorites",
     ...(peekPpContacts("directory") ? (["directory"] as Tab[]) : []),
@@ -380,6 +398,38 @@ export default function MContacts() {
   const visibleList = useMemo(() => list.slice(0, visibleCount), [list, visibleCount]);
   const loading = loadingTab === tab;
 
+  const startContactCall = useCallback(async (contact: any, key: string) => {
+    if (dialingContactKey) return;
+    setDialingContactKey(key);
+    try {
+      let destination = contactPhone(contact);
+      if (!destination && contact?.__maestro_kind) {
+        const kind = contact.__maestro_kind === "broker" ? "broker" : "client";
+        const id = String(contact?.maestro_client_id ?? contact?.external_id ?? contact?.id ?? "").trim();
+        if (id) {
+          const data = await callEdge<any>("maestro-actions", {
+            action: kind === "broker" ? "broker_profile" : "client_profile",
+            payload: kind === "broker" ? { broker_id: id } : { client_id: id },
+          });
+          destination = contactPhone(data?.profile);
+        }
+      }
+      if (!destination) {
+        toast.error("Aucun numéro pour ce contact", {
+          description: "Le profil Maestro ne contient pas de téléphone joignable.",
+        });
+        return;
+      }
+      openDialer(toE164(destination), true);
+    } catch (e: any) {
+      toast.error("Impossible de charger le numéro du contact", {
+        description: e?.message || "Réessayez dans quelques instants.",
+      });
+    } finally {
+      setDialingContactKey(null);
+    }
+  }, [dialingContactKey, openDialer]);
+
   return (
     <div className="p-4 pb-2">
       <div className="flex items-center justify-between mb-3">
@@ -602,7 +652,7 @@ export default function MContacts() {
               : isFav
               ? (c.extension ? `${t("contacts.extension") || "Ext."} ${c.extension}` : (c.phone || c.email || c.company))
               : (c.phone || c.email || c.company);
-            const phone = isDir ? c.extension : (c.phone || c.extension);
+            const phone = isDir ? c.extension : (contactPhone(c) || c.extension);
             const pres = isDir ? presenceMeta(c.presence, t) : null;
 
 
@@ -698,19 +748,13 @@ export default function MContacts() {
                 {/* Appel — lance directement l'appel (aucun numéro = message clair) */}
                 <button onClick={(e) => {
                   e.stopPropagation();
-                  const dest = String(
-                    phone || c.cell_phone || c.work_phone || c.home_phone || c.mobile || c.extension || "",
-                  ).trim();
-                  if (!dest) {
-                    toast.error(tr("contacts.noNumber", "Aucun numéro pour ce contact"));
-                    return;
-                  }
-                  openDialer(dest, true);
+                  void startContactCall(c, favEntry.key);
                 }}
+                  disabled={dialingContactKey === favEntry.key}
                   className="flex items-center justify-center active:scale-95 transition"
-                  style={{ width: 32, height: 32, borderRadius: "50%", background: "rgba(46,155,220,0.12)", border: "1px solid rgba(46,155,220,0.3)", color: "var(--pp-brand-accent)" }}
+                  style={{ width: 32, height: 32, borderRadius: "50%", background: "rgba(46,155,220,0.12)", border: "1px solid rgba(46,155,220,0.3)", color: "var(--pp-brand-accent)", opacity: dialingContactKey === favEntry.key ? 0.55 : 1 }}
                   aria-label={t("common.call")}>
-                  <Phone className="w-3.5 h-3.5" />
+                  {dialingContactKey === favEntry.key ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Phone className="w-3.5 h-3.5" />}
                 </button>
               </div>
             );
