@@ -30,6 +30,8 @@ const emailAnalyzer = read("supabase/functions/ava-email-analyzer/index.ts");
 const supabaseConfig = read("supabase/config.toml");
 const mobileShell = read("src/pages/planipret/PlanipretMobile.tsx");
 const proactive = read("src/services/avaProactive.ts");
+const taskHandler = read("supabase/functions/_shared/planipret-task-handler.ts");
+const taskApi = read("supabase/functions/planipret-task-api/index.ts");
 
 const specNames = unique([...registry.matchAll(/mk\("([a-z0-9_]+)"/g)].map((m) => m[1]));
 const expectedBlock = registry.match(/export const EXPECTED_TOOL_NAMES = \[([\s\S]*?)\];/)?.[1] ?? "";
@@ -66,6 +68,9 @@ check(!proactive.includes('from("planipret_reminders")') && !proactive.includes(
 check(proactive.includes('result?.read_back !== true') && proactive.includes('result?.visible_in_maestro !== true'), "AVA reminders must not report success until Maestro read-back confirms visibility");
 check(chatEdge.includes('invokeFunction("ava-tool-executor"') && chatEdge.includes('error: "client_confirmation_required"'), "Chat mutations must use the canonical executor or remain client-only");
 check(chatEdge.includes('maestro_readback_unconfirmed') && chatEdge.includes('rappel n’est pas déclaré créé'), "AVA chat must explicitly report unconfirmed Maestro reminders as not created");
+check(taskHandler.includes('assignee_mapping_required') && taskHandler.includes('maestro_assignment_unconfirmed'), "Task creation must fail closed when Maestro assignment cannot be proven");
+check(!taskHandler.includes('success: true, in_flight'), "A concurrent task mutation must not be exposed as a successful reminder");
+check(taskApi.includes('read_back === true') && taskApi.includes('visible_in_maestro === true'), "AVA task claims must finish only after Maestro read-back confirms visibility");
 check(assistant.includes("ai_consent_required") && !assistant.includes('functions.invoke("mobile-calls-start"') && !assistant.includes('functions.invoke("mobile-sms"'), "Legacy assistant must require consent and must not execute mutations server-side");
 
 check(tokenEdge.includes("ai_consent_at") && tokenEdge.includes("ai_consent_required"), "Voice token minting must require server-side AI consent");

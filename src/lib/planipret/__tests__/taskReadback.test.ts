@@ -63,6 +63,40 @@ describe("authoritative Maestro task confirmation", () => {
     });
   });
 
+  it("does not POST a reminder when the internal Maestro assignee cannot be resolved", async () => {
+    const deps = depsWithList([]);
+    deps.resolveTaskAssigneeId.mockResolvedValue(null);
+    const result = await handleTaskRequest(createBody, deps);
+
+    expect(result.body).toMatchObject({
+      success: false,
+      error: "assignee_mapping_required",
+    });
+    expect(deps.apiFetch).not.toHaveBeenCalled();
+  });
+
+  it("does not confirm a task whose Maestro read-back lacks the requested assignee", async () => {
+    const deps = depsWithList([{
+      referral_option_id: 781150,
+      xid: 67,
+      type: "user",
+      notes: "Rappeler le client",
+      date: "2026-09-17 10:00:00",
+      status: "pending",
+    }]);
+    deps.resolveTaskAssigneeId.mockResolvedValue("71");
+    deps.listAllowedAssignees.mockResolvedValue(["67", "71"]);
+    const result = await handleTaskRequest(createBody, deps);
+
+    expect(result.body).toMatchObject({
+      success: false,
+      error: "maestro_assignment_unconfirmed",
+      pending_confirmation: true,
+      read_back: false,
+      visible_in_maestro: false,
+    });
+  });
+
   it("confirms the reminder only when documented GET /api/main/tasks returns referral_option_id", async () => {
     const result = await handleTaskRequest(createBody, depsWithList([{
       referral_option_id: 781150,

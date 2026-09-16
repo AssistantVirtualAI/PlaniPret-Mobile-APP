@@ -379,7 +379,10 @@ Deno.serve(async (req) => {
       },
     });
     if (taskClaimId) {
-      const ok = out.status < 400 && (out.body as any)?.success !== false;
+      const isCreate = String(body?.action ?? "").toLowerCase() === "create";
+      const ok = out.status < 400
+        && (out.body as any)?.success === true
+        && (!isCreate || ((out.body as any)?.read_back === true && (out.body as any)?.visible_in_maestro === true));
       await finishAction(admin, taskClaimId, ok, ok ? out.body : null,
         ok ? null : String((out.body as any)?.error ?? "task_error")).catch(() => null);
     }

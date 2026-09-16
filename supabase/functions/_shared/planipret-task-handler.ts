@@ -116,7 +116,18 @@ export async function withIdempotency(
       .select("response, http_status")
       .eq("user_id", userId).eq("idempotency_key", key).maybeSingle();
     if (row?.response) return { status: row.http_status ?? 200, body: { ...(row.response as any), replayed: true } };
-    return { status: 200, body: { success: true, in_flight: true, replayed: true } };
+    // A concurrent request may still succeed upstream, but its read-back is not
+    // known here. Never turn this race into a user-visible success claim.
+    return {
+      status: 200,
+      body: {
+        success: false,
+        pending_confirmation: true,
+        error: "mutation_in_flight",
+        message: "La demande est encore en cours de vérification dans Maestro. Elle n’est pas déclarée créée.",
+        replayed: true,
+      },
+    };
   }
   const out = await run();
   await admin.from("planipret_task_mutations")
@@ -886,13 +897,29 @@ export async function handleTaskRequest(
       // `xid` is the CRM/OAuth broker id. Maestro's task `users_id` belongs to
       // its internal user directory and can be different (for example 387… vs
       // 93135). Sending the CRM id is accepted but leaves `users: []`, so the
-      // task never appears in the assignee's Maestro calendar.
+      // task never appears in the assignee's Maestro calendar. Do not POST an
+      // ambiguously assigned task: resolving this internal id is mandatory.
       const internalAssignee = await withDeadline(
         Promise.resolve(deps.resolveTaskAssigneeId?.()).catch(() => null),
         5000,
         null,
       );
-      if (internalAssignee || ownXid) createInput.users_id = internalAssignee ?? ownXid;
+      if (!internalAssignee) {
+        await audit(admin, {
+          action: "task_create_denied", user_id: userId, source, session_id: sessionId,
+          correlation_id, result: "assignee_mapping_required",
+        });
+        return {
+          status: 200,
+          body: {
+            success: false,
+            error: "assignee_mapping_required",
+            message: "Votre identifiant interne Maestro n’a pas pu être vérifié. Le rappel n’a pas été créé; reconnectez Maestro puis réessayez.",
+            correlation_id,
+          },
+        };
+      }
+      createInput.users_id = internalAssignee;
     }
     const built = buildCreatePayload(createInput);
 
@@ -1005,17 +1032,19 @@ export async function handleTaskRequest(
         task = readBack;
         await projectionUpsert(admin, userId, [task]);
       }
-      const confirmed = !!readBack;
+      const readBackAssignment = readBack ? readAssignment(readBack.raw ?? readBack) : { ids: [], source: "none" as const };
+      const assignmentConfirmed = !!readBack && (!wantedAssignee || readBackAssignment.ids.includes(wantedAssignee));
+      const confirmed = !!readBack && assignmentConfirmed;
       await audit(admin, {
         action: "task_created", user_id: userId, task_id: task.id, source, session_id: sessionId,
-        status: res.status, correlation_id, result: confirmed ? (diag.ok ? "confirmed" : "confirmed_with_warnings") : "pending_confirmation",
+        status: res.status, correlation_id, result: confirmed ? (diag.ok ? "confirmed" : "confirmed_with_warnings") : (readBack ? "assignment_unconfirmed" : "pending_confirmation"),
       });
       if (!diag.ok) console.warn("[task-create-diagnostics]", correlation_id, JSON.stringify(diag.issues));
       return {
         status: 200,
         body: {
           success: confirmed,
-          ...(confirmed ? {} : { error: "maestro_readback_unconfirmed" }),
+          ...(confirmed ? {} : { error: readBack ? "maestro_assignment_unconfirmed" : "maestro_readback_unconfirmed" }),
           task: confirmed ? task : null,
           task_id: task.id,
           pending_confirmation: !confirmed,
@@ -1024,14 +1053,16 @@ export async function handleTaskRequest(
           endpoint: readBackEndpoint,
           message: confirmed
             ? "Tâche créée et relue dans Maestro."
-            : "Maestro a accepté la demande, mais la tâche n’est pas encore visible dans sa liste. Elle n’est pas déclarée créée; réessayez après actualisation.",
+            : readBack
+              ? "Maestro affiche la tâche, mais l’assignation n’est pas confirmée. Elle n’est pas déclarée créée; reconnectez Maestro puis réessayez."
+              : "Maestro a accepté la demande, mais la tâche n’est pas encore visible dans sa liste. Elle n’est pas déclarée créée; réessayez après actualisation.",
           diagnostics: {
             ok: diag.ok,
             issues: diag.issues,
             assignment_repair,
             expected_assignee: wantedAssignee || null,
-            returned_assignees: task.assignee_ids,
-            assignment_source: task.assignment_source,
+            returned_assignees: readBackAssignment.ids,
+            assignment_source: readBackAssignment.source,
             sent_date_toronto: payload.date ?? null,
             returned_due_at_utc: task.due_at,
             maestro_list_status: listStatus,
