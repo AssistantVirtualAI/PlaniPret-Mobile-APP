@@ -96,7 +96,10 @@ Deno.serve(async (req) => {
       const nsTxRes = await fetch(`${SUPABASE_URL}/functions/v1/ns-get-transcription`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: internalAuth },
-        body: JSON.stringify({ call_db_id: callId }),
+        // The public reader may invoke this function as a consented audio-STT
+        // fallback. Keep this internal probe native-NS-only so it cannot call
+        // back into this function when a PBX transcript has not been produced.
+        body: JSON.stringify({ call_db_id: callId, skip_fallback: true }),
       });
       const nsTx = await nsTxRes.json().catch(() => ({} as any));
       if (nsTx?.success && Array.isArray(nsTx.segments) && nsTx.segments.length) {

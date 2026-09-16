@@ -176,6 +176,10 @@ Deno.serve(async (req) => {
   try { body = await req.json(); } catch { /* empty */ }
   const url = new URL(req.url);
   const call_db_id = body.call_db_id ?? url.searchParams.get("call_db_id");
+  // `pp-admin-transcribe` first asks this endpoint for the native NS result.
+  // Keep that internal first pass native-only, otherwise the two endpoints
+  // would recursively invoke one another when a transcript is still absent.
+  const skipFallback = body.skip_fallback === true || url.searchParams.get("skip_fallback") === "1";
   let ns_callid: string | null = body.ns_callid ?? url.searchParams.get("ns_callid") ?? url.searchParams.get("call_id");
   let ns_extension: string | null = body.ns_extension ?? url.searchParams.get("ns_extension");
   let row: any = null;
@@ -368,15 +372,59 @@ Deno.serve(async (req) => {
     }
   }
 
+  if (!transcript && call_db_id && !skipFallback) {
+    // A completed, consented recording must remain useful even when the PBX
+    // does not expose PORTAL_VOICE_TRANSCRIPTION_SENTIMENT. Reuse the
+    // existing protected audio-STT pipeline; it resolves the recording through
+    // NS first, persists the result, and is idempotent per call. This request
+    // is server-to-server with the service role and never permits a caller to
+    // bypass `authorizeCallAccess` or `requireApprovedCallConsent` above.
+    try {
+      const fallbackResponse = await fetch(`${SUPABASE_URL}/functions/v1/pp-admin-transcribe`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${SERVICE_ROLE}`,
+          apikey: SERVICE_ROLE,
+        },
+        body: JSON.stringify({ call_id: call_db_id, source: "ns_get_transcription_fallback" }),
+      });
+      const fallback = await fallbackResponse.json().catch(() => ({} as any));
+      const fallbackText = String(fallback?.transcript ?? "").trim();
+      if (fallbackResponse.ok && fallback?.ok === true && fallbackText.length >= 5) {
+        const segments = parseTranscript(fallbackText);
+        return json({
+          success: true,
+          available: true,
+          reason: "audio_stt_fallback",
+          source: "consented_audio_stt",
+          ns_callid,
+          ns_extension,
+          domain,
+          segments,
+          raw: fallbackText,
+          fallback: true,
+        });
+      }
+      attempts.push({
+        kind: "consented_audio_stt_fallback",
+        status: fallbackResponse.status,
+        result: String(fallback?.error ?? fallback?.hint ?? fallback?.message ?? "unavailable").slice(0, 200),
+      });
+    } catch (e) {
+      attempts.push({ kind: "consented_audio_stt_fallback", error: (e as Error).message });
+    }
+  }
+
   if (!transcript) {
     return json({
       success: false,
       available: false,
       reason: "transcript_not_available",
       error: "TRANSCRIPT_NOT_AVAILABLE",
-      message: "Transcription non disponible pour cet appel.",
+      message: "La transcription n'est pas encore disponible pour cet appel.",
       ns_callid, ns_extension, domain, attempts,
-      action_required: "Demandez à Clinton d'activer PORTAL_VOICE_TRANSCRIPTION_SENTIMENT = yes sur planipret.ca",
+      action_required: "Réessayez après la finalisation de l'enregistrement. Si le problème persiste, vérifiez la configuration de transcription NetSapiens.",
     }, 200);
   }
 

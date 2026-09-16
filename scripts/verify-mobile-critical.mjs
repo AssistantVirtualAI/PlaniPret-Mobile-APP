@@ -102,6 +102,8 @@ const smsEdge = read("supabase/functions/pp-ns-sms/index.ts");
 const sipDebug = read("src/pages/planipret/mobile/MSipDebug.tsx");
 const networkMonitor = read("src/lib/planipret/network/networkMonitor.ts");
 const callerLookup = read("src/lib/planipret/callerLookup.ts");
+const nsTranscription = read("supabase/functions/ns-get-transcription/index.ts");
+const adminTranscription = read("supabase/functions/pp-admin-transcribe/index.ts");
 check(!more.includes("setInterval(() => run(true)") && !sipDebug.includes("setInterval(() => run(false)"), "PBX diagnostics must run on demand or on foreground resume");
 check(!connections.includes("setInterval(() => load()") && !messages.includes("setInterval(() => { load(); }"), "Integration and Microsoft views must not poll APIs continuously");
 check(!networkMonitor.includes("setInterval(() => this.checkSignalQuality()") && !callerLookup.includes("window.setInterval"), "Calls must not generate periodic network probes or caller lookups");
@@ -110,6 +112,8 @@ check(smsDraft.includes("getSmsAvailability") && smsDraft.includes("canSendWithS
 check(smsEdge.includes("user_caller_id_verified") && smsEdge.includes('"caller-id-number"') && smsEdge.includes("caller_id_routing"), "SMS DID lookup must accept the broker's own verified NetSapiens caller ID");
 check(smsEdge.includes("sms_sender_not_assigned") && smsEdge.includes("permitted.has(requested)"), "SMS must reject a client-supplied sender that is not assigned to the broker");
 check(smsEdge.includes("PAS de repli Maestro"), "SMS sender resolution must never fall back to Maestro");
+check(nsTranscription.includes("requireApprovedCallConsent") && nsTranscription.includes("pp-admin-transcribe") && nsTranscription.includes("skip_fallback"), "Missing NetSapiens transcript must use only the consented audio-STT fallback without recursion");
+check(adminTranscription.includes("skip_fallback: true"), "The internal transcription probe must disable its own audio-STT fallback to prevent recursion");
 const taskHandler = read("supabase/functions/_shared/planipret-task-handler.ts");
 check(taskHandler.includes("pending_confirmation: !confirmed") && taskHandler.includes("visible_in_maestro: confirmed") && taskHandler.includes("maestro_readback_unconfirmed"), "Task creation must fail closed until documented Maestro read-back confirms visibility");
 const pipeline = read("src/pages/planipret/mobile/MPipeline.tsx");
