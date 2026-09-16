@@ -30,7 +30,11 @@ export function smsNumberFromRow(row: unknown): string | null {
 
 export function smsAvailabilityFromPayload(payload: any): SmsAvailability {
   const rows = Array.isArray(payload?.numbers) ? payload.numbers : [];
-  const numbers = [...new Set(rows.map(smsNumberFromRow).filter((value): value is string => !!value))];
+  const numbers: string[] = [];
+  for (const row of rows) {
+    const number = smsNumberFromRow(row);
+    if (number && !numbers.includes(number)) numbers.push(number);
+  }
   const checkedAt = Date.now();
   if (numbers.length) {
     return { state: "ready", numbers, primaryNumber: numbers[0], message: null, checkedAt };

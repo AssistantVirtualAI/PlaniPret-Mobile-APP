@@ -75,7 +75,10 @@ export default function MBroker360() {
         lang={lang}
         lastSyncAt={lastSyncAt}
         loading={loading}
-        onOpenClient={(k) => navigate(`/mplanipret/clients-360/${encodeURIComponent(k)}`)}
+        onOpenClient={(client) => {
+          const query = client.maestroClientId ? `?maestro_client_id=${encodeURIComponent(client.maestroClientId)}` : "";
+          navigate(`/mplanipret/clients-360/${encodeURIComponent(client.key)}${query}`);
+        }}
       />
     </div>
   );
