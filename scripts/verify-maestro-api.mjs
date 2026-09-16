@@ -55,6 +55,9 @@ if (/PLANIPRET_ACCESS_TOKEN|getMaestroAdminAccessToken/.test(edge)) fail("jeton 
 if (/PLANIPRET_ACCESS_TOKEN/.test(taskApi)) fail("Task API peut encore utiliser un jeton global au nom du courtier");
 if (/PLANIPRET_ACCESS_TOKEN/.test(contractApi)) fail("Contracts API peut encore utiliser un jeton statique au nom du courtier");
 if (!contractApi.includes("needsFirmScope") || !contractApi.includes("canReadMultiple")) fail("le jeton cabinet Contracts n'est pas limité à une consultation administrative explicite");
+if (!taskApi.includes("findTaskId") || !taskApi.includes('withParam("delegate_users_id"') || !taskApi.includes('withParam("target_id"')) {
+  fail("la relecture ciblée des tâches ne parcourt pas les filtres documentés de GET /api/main/tasks");
+}
 if (activeMobile.includes('functions.invoke("maestro-task"')) fail("un écran mobile appelle encore maestro-task legacy");
 if (!activeMobile.includes('createClientFollowUpTask')) fail("les tâches mobiles ne passent pas par le résolveur officiel");
 if (!read("supabase/functions/maestro-client-create/index.ts").includes("createClient_(cfg, payload, { token })")) {

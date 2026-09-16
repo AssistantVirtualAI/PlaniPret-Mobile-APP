@@ -112,7 +112,7 @@ const LIST_STATUSES = new Set(["pending", "open", "complete", "all"]);
 function makeListFetch(token: string | null) {
   return async (
     maestroId: string,
-    opts: { status?: string | null; from?: string | null; to?: string | null },
+    opts: { status?: string | null; from?: string | null; to?: string | null; findTaskId?: string | null },
   ): Promise<UpstreamList> => {
     // Documented list endpoint (Scribe docs 2026-09-09):
     //   GET /api/main/tasks?status=&delegate_users_id=&date_from=&date_to=&per_page=
@@ -140,8 +140,13 @@ function makeListFetch(token: string | null) {
       `${API_BASE}/api/main/tasks?${base.toString()}`,
     ];
 
+    // Read-back of a precise task: keep probing the documented filters until
+    // this id appears, instead of stopping at the first non-empty page.
+    const wanted = String(opts.findTaskId ?? "").trim();
+
     let lastStatus = 0;
     let emptyOk: UpstreamList | null = null;
+    let firstOk: UpstreamList | null = null;
     for (const url of candidates) {
       const ctrl = new AbortController();
       const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
@@ -164,6 +169,12 @@ function makeListFetch(token: string | null) {
           extracted: tasks.length,
         });
         const out = { ok: true, tasks, endpoint: url.split("?")[0], status: res.status };
+        if (wanted) {
+          if (tasks.some((t: any) => String(t.id) === wanted)) return out;
+          firstOk = firstOk ?? (tasks.length ? out : null);
+          emptyOk = emptyOk ?? out;
+          continue;
+        }
         if (tasks.length) return out;
         // 200 but empty: remember it and keep probing the other shapes.
         emptyOk = emptyOk ?? out;
@@ -173,6 +184,7 @@ function makeListFetch(token: string | null) {
         clearTimeout(timer);
       }
     }
+    if (firstOk) return firstOk;
     if (emptyOk) return emptyOk;
     return { ok: false, tasks: [], endpoint: null, status: lastStatus };
 

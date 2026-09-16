@@ -45,7 +45,7 @@ export interface TaskDeps {
   /** Documented GET /api/main/tasks read-back. */
   listFetch: (
     telecomId: string,
-    opts: { status?: string | null; from?: string | null; to?: string | null },
+    opts: { status?: string | null; from?: string | null; to?: string | null; findTaskId?: string | null },
   ) => Promise<UpstreamList>;
   /**
    * Client List API (`GET /users/{telecomId}/clients`). Each row may carry a
@@ -662,7 +662,7 @@ export async function handleTaskRequest(
     let readBack = false;
 
     if (telecomId && token) {
-      const up = await deps.listFetch(telecomId, { status: null, from: null, to: null }).catch(() => null);
+      const up = await deps.listFetch(telecomId, { status: null, from: null, to: null, findTaskId: taskId }).catch(() => null);
       if (up?.ok) {
         const hit = (up.tasks ?? []).map((t: any) => normalizeTask(t)).find((t: any) => String(t.id) === taskId);
         if (hit) { task = hit; endpoint = up.endpoint; readBack = true; }
@@ -1015,7 +1015,7 @@ export async function handleTaskRequest(
         const telecomId = await deps.resolveTelecomUserId(listOwnerId);
         listOwnerId = listOwnerId ?? telecomId;
         if (task.id && listOwnerId) {
-          const upstream = await deps.listFetch(listOwnerId, { status: null, from: null, to: null });
+          const upstream = await deps.listFetch(listOwnerId, { status: null, from: null, to: null, findTaskId: String(task.id) });
           listStatus = upstream.status;
           if (upstream.ok) {
             const found = (upstream.tasks ?? []).map((item: any) => normalizeTask(item))

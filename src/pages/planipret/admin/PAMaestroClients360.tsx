@@ -100,7 +100,7 @@ export default function PAMaestroClients360() {
         lang={en ? "en" : "fr"}
         lastSyncAt={lastSyncAt}
         loading={loading}
-        onOpenClient={(k) => navigate(`/planipret/admin/maestro-clients/${encodeURIComponent(k)}${broker ? `?broker=${broker}` : ""}`)}
+        onOpenClient={(client) => navigate(`/planipret/admin/maestro-clients/${encodeURIComponent(typeof client === "string" ? client : client.key)}${broker ? `?broker=${broker}` : ""}`)}
       />
     </PAPage>
   );

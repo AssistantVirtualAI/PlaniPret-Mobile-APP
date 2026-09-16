@@ -50,7 +50,8 @@ const createBody = {
 
 describe("authoritative Maestro task confirmation", () => {
   it("does not declare a POST receipt as a created reminder without list read-back", async () => {
-    const result = await handleTaskRequest(createBody, depsWithList([]));
+    const deps = depsWithList([]);
+    const result = await handleTaskRequest(createBody, deps);
 
     expect(result.status).toBe(200);
     expect(result.body).toMatchObject({
@@ -61,6 +62,10 @@ describe("authoritative Maestro task confirmation", () => {
       visible_in_maestro: false,
       task_id: "781150",
     });
+    expect(deps.listFetch).toHaveBeenCalledWith("67", expect.objectContaining({
+      status: null,
+      findTaskId: "781150",
+    }));
   });
 
   it("does not POST a reminder when the internal Maestro assignee cannot be resolved", async () => {
