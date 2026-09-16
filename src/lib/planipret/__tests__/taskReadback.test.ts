@@ -63,7 +63,8 @@ describe("authoritative Maestro task confirmation", () => {
       task_id: "781150",
     });
     expect(deps.listFetch).toHaveBeenCalledWith("67", expect.objectContaining({
-      status: null,
+      status: "pending",
+      type: "user",
       findTaskId: "781150",
     }));
   });

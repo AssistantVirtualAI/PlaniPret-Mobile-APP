@@ -98,7 +98,21 @@ Deno.serve(async (req) => {
         const resp = r.response as any;
         return { status: resp.status, ok: resp.status >= 200 && resp.status < 300, data: resp.body };
       },
-      listFetch: async () => ({ ok: false, tasks: [], endpoint: null, status: 405 }),
+      listFetch: async (maestroId: string, opts: any) => {
+        const query = new URLSearchParams({
+          status: opts?.status === "pending" ? "pending" : "pending",
+          delegate_users_id: maestroId,
+          page: "1",
+          per_page: "200",
+          order_by: "date",
+          sort: "desc",
+        });
+        if (opts?.type === "user" || opts?.type === "contract") query.set("type", opts.type);
+        const r = await callWithToken(token, `/api/main/tasks?${query.toString()}`, "GET");
+        const body: any = (r.response as any).body;
+        const rows = Array.isArray(body?.data) ? body.data : [];
+        return { ok: (r.response as any).status >= 200 && (r.response as any).status < 300, tasks: rows, endpoint: "/api/main/tasks", status: (r.response as any).status };
+      },
       resolveTelecomUserId: async (c: string | null) => c ?? String(profile.maestro_telecom_user_id ?? profile.maestro_broker_id ?? ""),
     } as any;
 

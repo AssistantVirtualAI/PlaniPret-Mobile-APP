@@ -107,23 +107,28 @@ function extractTaskRows(payload: any): any[] {
   return [];
 }
 
-const LIST_STATUSES = new Set(["pending", "open", "complete", "all"]);
+// The published examples define pending tasks as the default list. `all` was
+// an application-side convention, not a documented API value; some Maestro
+// tenants accept it but return an empty page. Never use it for read-back.
+const LIST_STATUSES = new Set(["pending", "open", "complete"]);
 
 function makeListFetch(token: string | null) {
   return async (
     maestroId: string,
-    opts: { status?: string | null; from?: string | null; to?: string | null; findTaskId?: string | null },
+    opts: { status?: string | null; from?: string | null; to?: string | null; type?: "user" | "contract" | null; findTaskId?: string | null },
   ): Promise<UpstreamList> => {
     // Documented list endpoint (Scribe docs 2026-09-09):
     //   GET /api/main/tasks?status=&delegate_users_id=&date_from=&date_to=&per_page=
     const base = new URLSearchParams();
-    base.set("status", opts.status && LIST_STATUSES.has(opts.status) ? opts.status : "all");
+    base.set("status", opts.status && LIST_STATUSES.has(opts.status) ? opts.status : "pending");
+    if (opts.type === "user" || opts.type === "contract") base.set("type", opts.type);
     // date_from and date_to are only valid together.
     if (opts.from && opts.to) {
       base.set("date_from", opts.from);
       base.set("date_to", opts.to);
     }
     base.set("per_page", "200");
+    base.set("page", "1");
     base.set("order_by", "date");
     base.set("sort", "desc");
 

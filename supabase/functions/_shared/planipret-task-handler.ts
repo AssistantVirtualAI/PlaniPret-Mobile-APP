@@ -45,7 +45,7 @@ export interface TaskDeps {
   /** Documented GET /api/main/tasks read-back. */
   listFetch: (
     telecomId: string,
-    opts: { status?: string | null; from?: string | null; to?: string | null; findTaskId?: string | null },
+    opts: { status?: string | null; from?: string | null; to?: string | null; type?: "user" | "contract" | null; findTaskId?: string | null },
   ) => Promise<UpstreamList>;
   /**
    * Client List API (`GET /users/{telecomId}/clients`). Each row may carry a
@@ -1020,7 +1020,20 @@ export async function handleTaskRequest(
         // choice is required for a read-back to prove the task is visible.
         listOwnerId = telecomId ?? listOwnerId;
         if (task.id && listOwnerId) {
-          const upstream = await deps.listFetch(listOwnerId, { status: null, from: null, to: null, findTaskId: String(task.id) });
+          const readBackType = payload.type === "user" || payload.type === "contract"
+            ? payload.type
+            : null;
+          const upstream = await deps.listFetch(listOwnerId, {
+            // Maestro documents newly created tasks as pending. Request that
+            // concrete status and the known task type rather than the legacy
+            // pseudo-value `all`, which can return an empty page on some
+            // Maestro tenants.
+            status: "pending",
+            type: readBackType,
+            from: null,
+            to: null,
+            findTaskId: String(task.id),
+          });
           listStatus = upstream.status;
           if (upstream.ok) {
             const found = (upstream.tasks ?? []).map((item: any) => normalizeTask(item))
