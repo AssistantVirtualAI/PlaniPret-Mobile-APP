@@ -25,6 +25,47 @@ function normalizeEmail(value: unknown): string | null {
   return /.+@.+\..+/.test(email) ? email : null;
 }
 
+/**
+ * Profiles provisioned before Microsoft SSO may only be associated through
+ * their Supabase Auth user. Search every bounded Auth page, not just page 1,
+ * so an authorized broker is never rejected merely because the tenant has
+ * more than 200 accounts. The helper is read-only and cannot create access.
+ */
+async function findAuthUserByEmail(admin: any, email: string) {
+  const wanted = email.trim().toLowerCase();
+  for (let page = 1; page <= 50; page += 1) {
+    const { data, error } = await admin.auth.admin.listUsers({ page, perPage: 200 });
+    if (error) break;
+    const users = data?.users ?? [];
+    const hit = users.find((user: any) => String(user?.email ?? "").trim().toLowerCase() === wanted);
+    if (hit?.id) return hit;
+    if (users.length < 200) break;
+  }
+  return null;
+}
+
+/**
+ * A legacy portal account may use a different primary email. Associate it
+ * only when Microsoft returns one unique matching full name and the profile
+ * has no Microsoft address belonging to another person. No account is ever
+ * created by this fallback; ambiguous results remain blocked for admin review.
+ */
+async function findUniqueLegacyProfileByName(admin: any, displayName: unknown, msEmail: string) {
+  const name = String(displayName ?? "").trim();
+  if (!name) return null;
+  const { data, error } = await admin
+    .from("planipret_profiles")
+    .select("id,user_id,email,login_email,full_name,mobile_app_enabled,status,ms365_email")
+    .ilike("full_name", name)
+    .limit(3);
+  if (error) return null;
+  const candidates = (data ?? []).filter((p: any) => {
+    const existing = normalizeEmail(p?.ms365_email);
+    return Boolean(p?.user_id) && (!existing || existing === msEmail);
+  });
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
@@ -64,7 +105,7 @@ Deno.serve(async (req) => {
 
     let { data: profile, error: profileError } = await admin
       .from("planipret_profiles")
-      .select("id,user_id,email,login_email,full_name,mobile_app_enabled,status")
+      .select("id,user_id,email,login_email,full_name,mobile_app_enabled,status,ms365_email")
       .or(`email.ilike.${msEmail},login_email.ilike.${msEmail},ms365_email.ilike.${msEmail}`)
       .limit(1)
       .maybeSingle();
@@ -74,17 +115,21 @@ Deno.serve(async (req) => {
     // Fallback: the Microsoft address may differ from the portal email.
     // Look the user up in auth by the Microsoft email, then by alias table.
     if (!profile?.user_id) {
-      const { data: list } = await admin.auth.admin.listUsers({ page: 1, perPage: 200 });
-      const match = list?.users?.find((u) => (u.email ?? "").toLowerCase() === msEmail);
+      const match = await findAuthUserByEmail(admin, msEmail);
       if (match?.id) {
         const { data: byUser } = await admin
           .from("planipret_profiles")
-          .select("id,user_id,email,login_email,full_name,mobile_app_enabled,status")
+          .select("id,user_id,email,login_email,full_name,mobile_app_enabled,status,ms365_email")
           .eq("user_id", match.id)
           .limit(1)
           .maybeSingle();
         if (byUser?.user_id) profile = byUser;
       }
+    }
+
+    if (!profile?.user_id) {
+      const legacy = await findUniqueLegacyProfileByName(admin, me?.displayName, msEmail);
+      if (legacy?.user_id) profile = legacy;
     }
 
     if (!profile?.user_id) {

@@ -48,6 +48,51 @@ function normalizeEmail(value: unknown): string | null {
   return /.+@.+\..+/.test(email) ? email : null;
 }
 
+/**
+ * A Planiprêt profile can pre-date a Microsoft connection and therefore match
+ * through its Supabase Auth user rather than `email`/`login_email`. Supabase
+ * returns Auth users by page: looking at page 1 only caused valid brokers
+ * beyond the first 200 accounts to receive `account_not_linked` after a
+ * successful Microsoft sign-in. This is a read-only, bounded lookup; it does
+ * not grant or create any account.
+ */
+async function findAuthUserByEmail(admin: any, email: string) {
+  const wanted = email.trim().toLowerCase();
+  for (let page = 1; page <= 50; page += 1) {
+    const { data, error } = await admin.auth.admin.listUsers({ page, perPage: 200 });
+    if (error) break;
+    const users = data?.users ?? [];
+    const hit = users.find((user: any) => String(user?.email ?? "").trim().toLowerCase() === wanted);
+    if (hit?.id) return hit;
+    if (users.length < 200) break;
+  }
+  return null;
+}
+
+/**
+ * Legacy profiles were sometimes provisioned with a personal portal address
+ * before the broker connected their corporate Microsoft account. When the
+ * Microsoft display name has exactly one case-insensitive profile match and
+ * that profile has no other Microsoft address, it is safe to associate the
+ * already-authorized account. Ambiguous names and existing associations are
+ * deliberately rejected for an administrator to review.
+ */
+async function findUniqueLegacyProfileByName(admin: any, displayName: unknown, msEmail: string) {
+  const name = String(displayName ?? "").trim();
+  if (!name) return null;
+  const { data, error } = await admin
+    .from("planipret_profiles")
+    .select("id,user_id,email,login_email,full_name,mobile_app_enabled,status,ms365_email")
+    .ilike("full_name", name)
+    .limit(3);
+  if (error) return null;
+  const candidates = (data ?? []).filter((p: any) => {
+    const existing = normalizeEmail(p?.ms365_email);
+    return Boolean(p?.user_id) && (!existing || existing === msEmail);
+  });
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
@@ -101,7 +146,7 @@ Deno.serve(async (req) => {
 
     let { data: profile, error: profileError } = await admin
       .from("planipret_profiles")
-      .select("id,user_id,email,login_email,full_name,mobile_app_enabled,status")
+      .select("id,user_id,email,login_email,full_name,mobile_app_enabled,status,ms365_email")
       .or(`email.ilike.${msEmail},login_email.ilike.${msEmail},ms365_email.ilike.${msEmail}`)
       .limit(1)
       .maybeSingle();
@@ -111,17 +156,24 @@ Deno.serve(async (req) => {
     // Fallback: the Microsoft address may differ from the portal email.
     // Look the user up in auth by the Microsoft email, then by alias table.
     if (!profile?.user_id) {
-      const { data: list } = await admin.auth.admin.listUsers({ page: 1, perPage: 200 });
-      const match = list?.users?.find((u) => (u.email ?? "").toLowerCase() === msEmail);
+      const match = await findAuthUserByEmail(admin, msEmail);
       if (match?.id) {
         const { data: byUser } = await admin
           .from("planipret_profiles")
-          .select("id,user_id,email,login_email,full_name,mobile_app_enabled,status")
+          .select("id,user_id,email,login_email,full_name,mobile_app_enabled,status,ms365_email")
           .eq("user_id", match.id)
           .limit(1)
           .maybeSingle();
         if (byUser?.user_id) profile = byUser;
       }
+    }
+
+    // Last safe legacy bridge: an existing, uniquely named Planiprêt profile
+    // may have been created before its Microsoft email was known. This does
+    // not provision a user or bypass status/mobile access checks below.
+    if (!profile?.user_id) {
+      const legacy = await findUniqueLegacyProfileByName(admin, me?.displayName, msEmail);
+      if (legacy?.user_id) profile = legacy;
     }
 
     if (!profile?.user_id) {
