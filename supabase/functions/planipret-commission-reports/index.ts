@@ -38,6 +38,55 @@ const json = (body: unknown, status = 200, cid?: string) =>
     },
   });
 
+const PROFILE_FIELDS = "id, user_id, role, full_name, email, login_email, ms365_email, maestro_broker_id, maestro_telecom_user_id, maestro_connected";
+
+function normalizeEmail(value: unknown): string | null {
+  const email = String(value ?? "").trim().toLowerCase();
+  return /.+@.+\..+/.test(email) ? email : null;
+}
+
+/**
+ * Resolve the signed-in broker first by Supabase user id, then by the exact
+ * Microsoft/portal email recorded on an older profile.  The fallback is
+ * read-only and only accepts one exact profile match, so it cannot turn an
+ * arbitrary Microsoft address into access to another broker's commissions.
+ */
+async function findProfileForAuthenticatedUser(admin: any, user: any) {
+  const { data: direct } = await admin
+    .from("planipret_profiles")
+    .select(PROFILE_FIELDS)
+    .or(`user_id.eq.${user.id},id.eq.${user.id}`)
+    .maybeSingle();
+  if (direct) return direct;
+
+  const email = normalizeEmail(user?.email);
+  if (!email) return null;
+  const matches = new Map<string, any>();
+  for (const field of ["email", "login_email", "ms365_email"]) {
+    const { data }: { data: any[] | null } = await admin
+      .from("planipret_profiles")
+      .select(PROFILE_FIELDS)
+      .ilike(field, email)
+      .limit(3);
+    for (const profile of (data ?? []) as any[]) {
+      if (String(profile?.[field] ?? "").trim().toLowerCase() === email && profile?.id) {
+        matches.set(String(profile.id), profile);
+      }
+    }
+  }
+  return matches.size === 1 ? [...matches.values()][0] : null;
+}
+
+/**
+ * Existing Capacitor clients turn any non-2xx Edge response into the generic
+ * "Edge Function returned a non-2xx status code".  Once authentication has
+ * succeeded, expected account and Maestro failures use this 200 contract so
+ * the app can display an actionable French message instead of hiding it.
+ */
+function applicationError(error: string, message: string, cid: string, extra: Record<string, unknown> = {}) {
+  return json({ success: false, error, message, retryable: error === "maestro_error" || error === "internal_error", correlation_id: cid, ...extra }, 200, cid);
+}
+
 const SUMMARY_MAX_PAGES = 10; // 10 × 200 = 2000 rows max per summary
 
 const num = (v: unknown) => {
@@ -66,17 +115,14 @@ Deno.serve(async (req) => {
     const { data: userRes, error: userErr } = await admin.auth.getUser(jwt);
     const user = userRes?.user;
     if (userErr || !user) return json({ error: "unauthorized", message: "Session invalide." }, 401, cid);
+    const authenticatedUser = user;
 
-    const { data: profile } = await admin
-      .from("planipret_profiles")
-      .select("id, user_id, role, full_name, email, maestro_broker_id, maestro_telecom_user_id, maestro_connected")
-      .or(`user_id.eq.${user.id},id.eq.${user.id}`)
-      .maybeSingle();
+    const profile = await findProfileForAuthenticatedUser(admin, authenticatedUser);
 
-    if (!profile) return json({ error: "forbidden", message: "Profil Planiprêt introuvable." }, 403, cid);
+    if (!profile) return applicationError("profile_not_linked", "Votre compte connecté n'est pas encore associé à un profil courtier Planiprêt. Demandez à un administrateur de vérifier votre courriel Microsoft.", cid);
     const role = String(profile.role ?? "");
     if (role !== "admin" && role !== "broker") {
-      return json({ error: "forbidden", message: "Accès aux commissions réservé aux courtiers et administrateurs." }, 403, cid);
+      return applicationError("forbidden", "Accès aux commissions réservé aux courtiers et administrateurs.", cid);
     }
 
     const body = await req.json().catch(() => ({}));
@@ -106,14 +152,16 @@ Deno.serve(async (req) => {
     }
 
     // ---- Maestro token + identity ---------------------------------------
-    const ownToken = await getUserMaestroAccessToken(admin, user.id);
+    // A historical profile may be linked to the same authenticated Microsoft
+    // address but retain its original Supabase user id where the OAuth token
+    // is stored.  Use that profile owner only after exact email matching above.
+    const maestroTokenOwnerId = String(profile.user_id ?? authenticatedUser.id);
+    const ownToken = await getUserMaestroAccessToken(admin, maestroTokenOwnerId);
     const firmToken = role === "admin" ? await getMaestroAdminAccessToken() : { token: null, source: "none" as const };
-    const token = firmToken.token ?? ownToken;
+    const resolvedToken = firmToken.token ?? ownToken;
+    const token: string | null = resolvedToken;
     if (!token) {
-      return json({
-        error: "maestro_not_connected",
-        message: "Votre compte Maestro n'est pas connecté. Reconnectez-le dans Réglages › Connexions.",
-      }, 409, cid);
+      return applicationError("maestro_not_connected", "Votre compte Maestro n'est pas connecté. Reconnectez-le dans Réglages › Connexions.", cid);
     }
 
     let resolvedUsersId: string | null =
@@ -138,10 +186,7 @@ Deno.serve(async (req) => {
     // Broker scoping is server-enforced: they can never widen the scope.
     if (role === "broker") {
       if (!resolvedUsersId) {
-        return json({
-          error: "broker_id_unresolved",
-          message: "Impossible de résoudre votre identifiant Maestro. Reconnectez votre compte Maestro.",
-        }, 409, cid);
+        return applicationError("broker_id_unresolved", "Impossible de résoudre votre identifiant Maestro. Reconnectez votre compte Maestro.", cid);
       }
       filters.users_id = resolvedUsersId;
     } else if (role === "admin" && !filters.users_id && resolvedUsersId) {
@@ -215,7 +260,9 @@ Deno.serve(async (req) => {
       const isOwn = !selected || (resolvedUsersId && selected === String(resolvedUsersId));
 
       if (isOwn) {
-        return [{ token: ownToken ?? token, label: String(profile.full_name ?? profile.email ?? "moi"), user_id: user.id }];
+        // `token` is proven above; use the local constant in this closure so
+        // TypeScript does not lose the null check across async boundaries.
+        return [{ token: ownToken ?? token!, label: String(profile.full_name ?? profile.email ?? "moi"), user_id: authenticatedUser.id }];
       }
 
       // Admin qui consulte un autre courtier : jeton firme si disponible,
@@ -410,10 +457,10 @@ Deno.serve(async (req) => {
     }
 
 
-    return json({ error: "unknown_action", message: `Action inconnue: ${action}` }, 400, cid);
+    return applicationError("unknown_action", `Action inconnue: ${action}`, cid);
   } catch (e) {
     console.error(`[commission-reports][${cid}] fatal`, e);
-    return json({ error: "internal_error", message: (e as Error).message, correlation_id: cid }, 500, cid);
+    return applicationError("internal_error", "Le rapport de commissions est temporairement indisponible. Réessayez dans un instant.", cid);
   }
 
   function upstream(r: { status: number; data: any }, cid: string) {
@@ -425,12 +472,11 @@ Deno.serve(async (req) => {
       504: "Maestro n'a pas répondu à temps. Réessayez.",
     };
     console.warn(`[commission-reports][${cid}] upstream`, r.status, JSON.stringify(r.data)?.slice(0, 200));
-    return json({
-      error: "maestro_error",
-      status: r.status,
-      message: map[r.status] ?? "Maestro a retourné une erreur pour ce rapport de commissions.",
-      details: r.data?.message ?? null,
-      correlation_id: cid,
-    }, r.status === 401 ? 409 : 502, cid);
+    return applicationError(
+      "maestro_error",
+      map[r.status] ?? "Maestro a retourné une erreur pour ce rapport de commissions.",
+      cid,
+      { upstream_status: r.status },
+    );
   }
 });

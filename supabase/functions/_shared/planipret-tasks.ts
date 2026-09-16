@@ -424,11 +424,50 @@ export function readAssignment(raw: any): { ids: string[]; source: "users" | "us
   return { ids: [], source: "none" };
 }
 
+/**
+ * The official Maestro task list may contain rich-text copied from notes or a
+ * workflow stage.  It is data, not markup for the app to render.  Convert it
+ * to readable text at the server boundary so current installed clients never
+ * display `<p ...>` / `<table ...>` source in a task card.
+ */
+export function maestroPlainText(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  const source = String(value);
+  const withoutMarkup = source
+    .replace(/<\s*br\s*\/?\s*>/gi, "\n")
+    .replace(/<\s*\/\s*(p|div|li|tr|h[1-6])\s*>/gi, "\n")
+    .replace(/<[^>]*>/g, " ");
+  const decoded = withoutMarkup
+    .replace(/&#x([0-9a-f]+);?/gi, (_m, hex) => String.fromCodePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);?/g, (_m, dec) => String.fromCodePoint(parseInt(dec, 10)))
+    .replace(/&nbsp;|&#160;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&eacute;/gi, "é")
+    .replace(/&egrave;/gi, "è")
+    .replace(/&ecirc;/gi, "ê")
+    .replace(/&agrave;/gi, "à")
+    .replace(/&ocirc;/gi, "ô")
+    .replace(/&ccedil;/gi, "ç")
+    .replace(/&rsquo;|&lsquo;/gi, "'")
+    .replace(/&ndash;|&mdash;/gi, "-");
+  return decoded.replace(/[ \t]+/g, " ").replace(/\s*\n\s*/g, "\n").trim();
+}
+
+function sanitizeMaestroTaskValue(value: any, depth = 0): any {
+  if (typeof value === "string") return maestroPlainText(value);
+  if (!value || typeof value !== "object" || depth >= 4) return value;
+  if (Array.isArray(value)) return value.map((item) => sanitizeMaestroTaskValue(item, depth + 1));
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, sanitizeMaestroTaskValue(item, depth + 1)]));
+}
+
 export function normalizeTask(input: any): NormalizedTask {
   // Re-normalizing an already normalized task must not nest `raw` inside `raw`.
-  const raw = input && typeof input === "object" && input.raw && typeof input.raw === "object"
+  const rawSource = input && typeof input === "object" && input.raw && typeof input.raw === "object"
     ? { ...input.raw, ...input, raw: undefined }
     : input;
+  const raw = sanitizeMaestroTaskValue(rawSource);
   // Maestro's Task List API identifies rows as `referral_option_id`, while
   // mutation/readback responses use `id` or `task_id`.
   const id = String(raw?.id ?? raw?.task_id ?? raw?.referral_option_id ?? "");
@@ -437,8 +476,8 @@ export function normalizeTask(input: any): NormalizedTask {
 
   return {
     id,
-    notes: String(raw?.notes ?? raw?.title ?? raw?.subject ?? "").trim(),
-    description: raw?.description ? String(raw.description) : null,
+    notes: maestroPlainText(raw?.notes ?? raw?.title ?? raw?.subject ?? ""),
+    description: raw?.description ? maestroPlainText(raw.description) : null,
     due_at: fromApiDateTime(raw?.date ?? raw?.due_date ?? raw?.due_at ?? raw?.scheduled_at ?? null),
     status: raw?.status != null ? String(raw.status) : (raw?.status_option_id != null ? String(raw.status_option_id) : null),
     type: typeRaw === "user" || typeRaw === "contract" ? (typeRaw as TaskType) : null,
