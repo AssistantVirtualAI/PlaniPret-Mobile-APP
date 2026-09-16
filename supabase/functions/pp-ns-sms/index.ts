@@ -59,6 +59,22 @@ function pickSmsNumber(row: any): string | null {
   );
 }
 
+function didDestination(row: any): string | null {
+  const ruleParam = String(row?.["dial-rule-parameter"] ?? row?.dial_rule_parameter ?? "").trim();
+  const parameterUser = /^user_([a-z0-9._-]+)$/i.exec(ruleParam)?.[1] ?? null;
+  const candidates = [
+    parameterUser,
+    row?.["dial-rule-translation-destination-user"], row?.dial_rule_translation_destination_user,
+    row?.["destination-user"], row?.destination_user, row?.["dest-user"], row?.dest_user,
+    row?.["to-user"], row?.to_user, row?.extension,
+  ];
+  for (const candidate of candidates) {
+    const value = String(candidate ?? "").trim().replace(/^sip:/i, "").split("@")[0];
+    if (value && value !== "[*]" && /^[a-z0-9._-]{2,20}$/i.test(value)) return value;
+  }
+  return null;
+}
+
 async function getAssignedSmsNumbers(supabase: any, ctx: any): Promise<any[]> {
   const numbers: any[] = [];
 
@@ -117,20 +133,33 @@ async function getAssignedSmsNumbers(supabase: any, ctx: any): Promise<any[]> {
     }
   }
 
-  // Source 4 : planipret_profiles — colonne phone_number ou sms_number
+  // Source 4 : inventaire PBX live. A DID d'appel est souvent provisionné via
+  // `phonenumbers` sans que le sous-objet NetSapiens `smsnumbers` soit exposé
+  // au même moment. Read only: we retain only numbers whose live routing points
+  // to THIS broker extension. This is never a Maestro fallback and never picks
+  // another broker's sender.
   if (!numbers.length) {
     try {
-      const { data, error } = await supabase
-        .from("planipret_profiles")
-        .select("phone_number,sms_number")
-        .eq("id", ctx.profileId)
-        .maybeSingle();
-      if (error) console.warn("[pp-ns-sms] profiles fallback error:", error.message);
-      const raw = (data as any)?.sms_number ?? (data as any)?.phone_number ?? null;
-      const e164 = normalizeE164(raw);
-      if (e164) numbers.push({ number: e164, "from-number": e164, source: "profile" });
+      const res = await nsFetch(`/domains/${encodeURIComponent(ctx.nsDomain)}/phonenumbers?limit=2000`, { method: "GET" });
+      if (res.ok) {
+        const raw = await res.json();
+        const list = Array.isArray(raw) ? raw : (raw?.phonenumbers ?? raw?.data ?? []);
+        for (const row of Array.isArray(list) ? list : []) {
+          if (String(didDestination(row) ?? "") !== String(ctx.extension)) continue;
+          const e164 = pickSmsNumber(row?.phonenumber ?? row?.number ?? row);
+          if (e164) numbers.push({
+            ...row,
+            number: e164,
+            "from-number": e164,
+            source: "pbx_routing_verified",
+            destination_extension: String(ctx.extension),
+          });
+        }
+      } else {
+        console.warn(`[pp-ns-sms] phonenumbers fallback NS-API ${res.status}`);
+      }
     } catch (e) {
-      console.warn("[pp-ns-sms] profiles fallback error:", e);
+      console.warn("[pp-ns-sms] phonenumbers fallback error:", e);
     }
   }
 
@@ -529,9 +558,9 @@ Deno.serve(async (req) => {
 
       // ---- Voie 1 : NS-API v2 (DID NetSapiens du courtier) ----------------
       // On envoie TOUJOURS via NS-API en priorité : c'est la seule voie qui
-      // respecte `from-number` (le DID réel du courtier). Maestro
-      // `POST /users/{id}/messages` envoie depuis un numéro générique Maestro
-      // et sert donc uniquement de repli.
+      // respecte `from-number` (le DID réel du courtier). Il n’existe aucun
+      // fallback Maestro : cette route enverrait depuis un numéro générique et
+      // pourrait créer un deuxième SMS.
       const nsBody: Record<string, unknown> = isInternal
         ? { type: "chat", destination, message, "from-number": String(ctx.extension) }
         : {

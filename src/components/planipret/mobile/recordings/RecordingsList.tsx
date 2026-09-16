@@ -1216,7 +1216,7 @@ function TasksBlock({ call, tasks }: { call: RecordingCall; tasks: any[] }) {
         due_at: t.due_date,
       });
       if (!result?.success) throw new Error(result?.message ?? result?.error ?? "task_failed");
-      toast.success("Tâche créée dans Maestro");
+      toast.success(result.message ?? "Tâche créée et relue dans Maestro");
     } catch (e: any) {
       toast.error("Échec création tâche", { description: e?.message });
     } finally {

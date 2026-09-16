@@ -130,7 +130,7 @@ export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, br
       : await create(v as any);
     setBusy(false);
     if (r?.success) {
-      toast.success(editing ? L("Tâche modifiée", "Task updated") : L("Tâche créée", "Task created"));
+      toast.success(editing ? L("Tâche modifiée", "Task updated") : (r?.message ?? L("Tâche créée et relue dans Maestro", "Task created and read back in Maestro")));
       setFieldErrors(null);
       setComposer(null);
       const warn = describeTaskDiagnostics(r?.diagnostics, lang);

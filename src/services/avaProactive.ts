@@ -91,8 +91,18 @@ export async function applyAvaSuggestion(s: AvaSuggestion, ctx: AvaActionContext
             },
           },
         });
-        if (error || (data as any)?.success !== true) return { ok: false, message: (data as any)?.error ?? error?.message ?? "Échec du rappel" };
-        return { ok: true, message: (data as any)?.message ?? "Rappel créé" };
+        const result = data as any;
+        if (result?.pending_confirmation === true || result?.error === "maestro_readback_unconfirmed") {
+          return { ok: false, message: "Rappel non confirmé par Maestro; aucun rappel n’est déclaré créé." };
+        }
+        if (error || result?.success !== true || result?.read_back !== true || result?.visible_in_maestro !== true) {
+          return {
+            ok: false,
+            message: result?.message ?? result?.error ?? error?.message
+              ?? "Rappel non confirmé par Maestro; aucun rappel n’est déclaré créé.",
+          };
+        }
+        return { ok: true, message: result.message ?? "Rappel créé et relu dans Maestro" };
       }
       case "maestro_action": {
         const action = String(s.payload?.action ?? "");
@@ -103,8 +113,12 @@ export async function applyAvaSuggestion(s: AvaSuggestion, ctx: AvaActionContext
               body: { tool_name: action, parameters: { ...(s.payload ?? {}), confirmed: true } },
             });
         if (error) return { ok: false, message: error.message };
-        if ((data as any)?.success === false) return { ok: false, message: (data as any)?.error ?? "Échec Maestro" };
-        return { ok: true, message: (data as any)?.message ?? "Action Maestro exécutée" };
+        const result = data as any;
+        if (result?.success !== true) return { ok: false, message: result?.message ?? result?.error ?? "Échec Maestro" };
+        if (action === "create_task" && (result?.read_back !== true || result?.visible_in_maestro !== true)) {
+          return { ok: false, message: "Rappel non confirmé par Maestro; aucun rappel n’est déclaré créé." };
+        }
+        return { ok: true, message: result?.message ?? "Action Maestro exécutée" };
       }
       case "ms365_action": {
         const action = String(s.payload?.action ?? "");

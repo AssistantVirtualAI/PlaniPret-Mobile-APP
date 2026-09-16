@@ -14,18 +14,12 @@ import { tokenize, matchAllTokens } from "@/lib/textNormalize";
 import { peekPpContacts, prefetchPpContacts } from "@/lib/ppContactsCache";
 import { callEdge, toE164 } from "@/lib/callEdge";
 import { createClientFollowUpTask } from "@/lib/planipret/tasks";
+import { getSmsAvailability } from "@/lib/planipret/smsAvailability";
 
-// One-shot cache of the broker's assigned SMS numbers.
-let __ppSmsNumbersCache: { ts: number; numbers: any[] } | null = null;
 async function fetchSmsNumbers(force = false): Promise<any[]> {
-  const now = Date.now();
-  if (!force && __ppSmsNumbersCache && now - __ppSmsNumbersCache.ts < 5 * 60_000) {
-    return __ppSmsNumbersCache.numbers;
-  }
-  const data = await callEdge<{ numbers: any[] }>("pp-ns-sms", { action: "sms-numbers" });
-  const nums = Array.isArray(data?.numbers) ? data.numbers : [];
-  __ppSmsNumbersCache = { ts: now, numbers: nums };
-  return nums;
+  const availability = await getSmsAvailability(force);
+  if (availability.state === "error") throw new Error(availability.message ?? "Impossible de vérifier les numéros SMS");
+  return availability.numbers;
 }
 
 async function copyToClipboard(value: string, label: string) {
@@ -923,8 +917,8 @@ function ContactDetailSheet({
         client_name: name,
         notes: `${t("contacts.followUp") || "Suivi"} — ${name}`,
       });
-      if ((data as any)?.success === false) throw new Error((data as any)?.error || "task_failed");
-      toast.success(t("contacts.taskCreated") || "Tâche créée");
+      if ((data as any)?.success !== true) throw new Error((data as any)?.message || (data as any)?.error || "task_failed");
+      toast.success((data as any)?.message || t("contacts.taskCreated") || "Tâche créée et confirmée dans Maestro");
     } catch (e: any) {
       toast.error(t("contacts.taskCreateFailed") || "Échec création tâche", { description: e?.message });
     } finally {
@@ -932,8 +926,18 @@ function ContactDetailSheet({
     }
   };
 
-  const openSms = () => {
+  const openSms = async () => {
     if (!smsTarget) { toast.error("Aucun numéro disponible"); return; }
+    try {
+      const numbers = await fetchSmsNumbers();
+      if (!numbers.length) {
+        toast.error("Aucun DID SMS actif n’est confirmé pour votre poste. Contactez l’administrateur.");
+        return;
+      }
+    } catch (error: any) {
+      toast.error(error?.message ?? "Vérification du DID SMS impossible. Aucun texto n’a été préparé.");
+      return;
+    }
     const qs = new URLSearchParams({ tab: "sms", to: smsTarget, name });
     onClose();
     navigate(`/mplanipret/messages?${qs.toString()}`);

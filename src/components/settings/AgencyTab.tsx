@@ -46,20 +46,25 @@ export function AgencyTab() {
 
   const loadOrgData = async () => {
     if (!selectedOrgId) return;
-    const { data, error } = await supabase
-      .from('organizations')
-      .select('id, name, logo_dashboard_url, logo_login_url, gdpr_enabled, hipaa_enabled, api_key')
+    // `api_key` est révoqué pour le rôle applicatif : on lit la vue sûre.
+    const { data, error } = await (supabase as any)
+      .from('organizations_safe')
+      .select('id, name, logo_dashboard_url, logo_login_url, gdpr_enabled, hipaa_enabled')
       .eq('id', selectedOrgId)
       .single();
 
-    if (!error && data) {
+    if (error) {
+      toast.error(error.message || 'Impossible de charger l\'organisation');
+      return;
+    }
+    if (data) {
       setConfig({
         name: data.name || '',
         logo_dashboard_url: data.logo_dashboard_url || '',
         logo_login_url: data.logo_login_url || '',
         gdpr_enabled: data.gdpr_enabled || false,
         hipaa_enabled: data.hipaa_enabled || false,
-        api_key: data.api_key || '',
+        api_key: '',
       });
     }
   };

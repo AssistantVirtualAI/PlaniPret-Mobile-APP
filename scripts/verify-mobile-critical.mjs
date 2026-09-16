@@ -90,12 +90,17 @@ check(!calls.includes("setInterval(fetchActive") && !calls.includes("setTimeout(
 const more = read("src/pages/planipret/mobile/MMore.tsx");
 const connections = read("src/pages/planipret/mobile/MConnections.tsx");
 const messages = read("src/pages/planipret/mobile/MMessages.tsx");
+const smsDraft = read("src/components/planipret/mobile/SmsDraftSheet.tsx");
 const sipDebug = read("src/pages/planipret/mobile/MSipDebug.tsx");
 const networkMonitor = read("src/lib/planipret/network/networkMonitor.ts");
 const callerLookup = read("src/lib/planipret/callerLookup.ts");
 check(!more.includes("setInterval(() => run(true)") && !sipDebug.includes("setInterval(() => run(false)"), "PBX diagnostics must run on demand or on foreground resume");
 check(!connections.includes("setInterval(() => load()") && !messages.includes("setInterval(() => { load(); }"), "Integration and Microsoft views must not poll APIs continuously");
 check(!networkMonitor.includes("setInterval(() => this.checkSignalQuality()") && !callerLookup.includes("window.setInterval"), "Calls must not generate periodic network probes or caller lookups");
+check(messages.includes("getSmsAvailability") && messages.includes("canSendWithSmsAvailability"), "Manual SMS must verify the broker DID before sending");
+check(smsDraft.includes("getSmsAvailability") && smsDraft.includes("canSendWithSmsAvailability"), "Draft SMS must stay disabled until the broker DID is confirmed");
+const taskHandler = read("supabase/functions/_shared/planipret-task-handler.ts");
+check(taskHandler.includes("pending_confirmation: !confirmed") && taskHandler.includes("visible_in_maestro: confirmed") && taskHandler.includes("maestro_readback_unconfirmed"), "Task creation must fail closed until documented Maestro read-back confirms visibility");
 const pipeline = read("src/pages/planipret/mobile/MPipeline.tsx");
 check(!pipeline.includes('functions.invoke("maestro-actions"'), "MPipeline must not use undocumented Maestro mutations");
 check(pipeline.includes('functions.invoke("maestro-client-create"'), "MPipeline client creation must use the official Maestro client gateway");

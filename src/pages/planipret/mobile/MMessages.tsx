@@ -27,6 +27,7 @@ import EmailBodyFrame from "@/components/planipret/mobile/EmailBodyFrame";
 import { ms365Connected } from "@/lib/planipret/ms365Connected";
 import { Ms365ConnectionNotice } from "@/components/planipret/mobile/Ms365ConnectionNotice";
 import { useMs365Status } from "@/hooks/useMs365Status";
+import { canSendWithSmsAvailability, getSmsAvailability, type SmsAvailability } from "@/lib/planipret/smsAvailability";
 
 import DOMPurify from "dompurify";
 
@@ -650,6 +651,7 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [currentThreadId, setCurrentThreadId] = useState<string>(thId);
+  const [smsAvailability, setSmsAvailability] = useState<SmsAvailability | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollBoxRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
@@ -699,6 +701,11 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
 
   useEffect(() => { loadMessages(); /* eslint-disable-next-line */ }, [currentThreadId]);
   useEffect(() => {
+    let alive = true;
+    void getSmsAvailability().then((result) => { if (alive) setSmsAvailability(result); });
+    return () => { alive = false; };
+  }, []);
+  useEffect(() => {
     const box = scrollBoxRef.current;
     if (!box) return;
     if (!atBottomRef.current) { setNewCount((n) => n + 1); setShowJump(true); return; } // ne pas voler le scroll si l'utilisateur lit plus haut
@@ -716,6 +723,10 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
   const send = async (overrideText?: string) => {
     const body = (overrideText ?? text).trim();
     if (!body) return;
+    if (!canSendWithSmsAvailability(smsAvailability)) {
+      toast.error(smsAvailability?.message ?? "Vérification du DID SMS en cours. Aucun texto n’a été envoyé.", { duration: 6000 });
+      return;
+    }
     setSending(true);
     const optimistic: NsMessage = {
       id: `tmp-${Date.now()}`,
@@ -909,6 +920,7 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
         inputRef={inputRef}
         autoFocus
         text={text} setText={setText} onSend={send} sending={sending}
+        disabled={!canSendWithSmsAvailability(smsAvailability)}
         leftAction={
           <button onClick={() => setTplOpen(true)} className="p-2 rounded-full" style={{ color: "var(--pp-brand-accent)" }} title={t("messages.templates")}>
             <Zap className="w-5 h-5" />
@@ -1839,18 +1851,18 @@ function EmailComposeSheet({ init, onClose, onSent }: { init: ComposeInit; onClo
 // SHARED PRIMITIVES
 // ============================================================
 function Composer({
-  text, setText, onSend, sending, placeholder, leftAction, extra, aiAction, accent = "brand", inputRef, autoFocus = false,
+  text, setText, onSend, sending, disabled = false, placeholder, leftAction, extra, aiAction, accent = "brand", inputRef, autoFocus = false,
 }: {
   text: string; setText: (v: string) => void; onSend: () => void; sending: boolean;
   placeholder?: string; leftAction?: React.ReactNode; extra?: React.ReactNode; aiAction?: React.ReactNode;
-  accent?: "brand" | "agent"; inputRef?: React.RefObject<HTMLInputElement>; autoFocus?: boolean;
+  accent?: "brand" | "agent"; inputRef?: React.RefObject<HTMLInputElement>; autoFocus?: boolean; disabled?: boolean;
 }) {
   const { t } = useMplanipretLang();
   const lastSendAtRef = useRef(0);
   // Anti double-envoi : un seul déclenchement par 1,2 s, quelle que soit la
   // source (pointerdown, click fantôme, touche Entrée).
   const trigger = () => {
-    if (!text.trim() || sending) return;
+    if (!text.trim() || sending || disabled) return;
     const now = Date.now();
     if (now - lastSendAtRef.current < 1200) return;
     lastSendAtRef.current = now;
@@ -1894,7 +1906,7 @@ function Composer({
           trigger();
         }}
         onClick={(e) => { e.preventDefault(); trigger(); }}
-        disabled={!text.trim() || sending}
+        disabled={!text.trim() || sending || disabled}
         aria-label={t("common.send")}
         className="w-9 h-9 rounded-full flex items-center justify-center text-white disabled:opacity-50 shrink-0 touch-manipulation"
         style={{ background: accentBg, boxShadow: "0 2px 12px rgba(46,155,220,0.35)" }}

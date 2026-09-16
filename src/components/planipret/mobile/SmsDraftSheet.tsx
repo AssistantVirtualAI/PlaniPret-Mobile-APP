@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { followupIdempotencyKey } from "@/lib/planipret/postCallConsent";
+import { canSendWithSmsAvailability, getSmsAvailability, type SmsAvailability } from "@/lib/planipret/smsAvailability";
 
 export type SmsDraftTarget = { name: string; number: string; body?: string; clientKey?: string };
 
@@ -29,9 +30,9 @@ const btn = (bg: string): React.CSSProperties => ({
   background: bg, color: "#fff", fontWeight: 700, fontSize: 14,
 });
 
-export function canSendSmsDraft(d: { recipient: string; body: string; confirmed: boolean; busy: boolean }): boolean {
+export function canSendSmsDraft(d: { recipient: string; body: string; confirmed: boolean; busy: boolean; didReady?: boolean }): boolean {
   const digits = d.recipient.replace(/\D/g, "");
-  return d.confirmed && !d.busy && digits.length >= 10 && d.body.trim().length > 0;
+  return d.confirmed && !d.busy && d.didReady !== false && digits.length >= 10 && d.body.trim().length > 0;
 }
 
 export default function SmsDraftSheet({
@@ -46,6 +47,7 @@ export default function SmsDraftSheet({
   const [confirmed, setConfirmed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState<string | null>(null);
+  const [availability, setAvailability] = useState<SmsAvailability | null>(null);
   const sending = useRef(false);
   const userId = useRef<string>("anon");
 
@@ -55,8 +57,10 @@ export default function SmsDraftSheet({
     setBody(target.body ?? "");
     setConfirmed(false);
     setFailure(null);
+    setAvailability(null);
     sending.current = false;
     void supabase.auth.getUser().then(({ data }) => { userId.current = data.user?.id ?? "anon"; });
+    void getSmsAvailability().then(setAvailability);
   }, [target]);
 
   // Retour arrière Android / geste iOS = annulation, jamais un envoi.
@@ -69,7 +73,8 @@ export default function SmsDraftSheet({
 
   if (!target) return null;
 
-  const ready = canSendSmsDraft({ recipient, body, confirmed, busy });
+  const didReady = canSendWithSmsAvailability(availability);
+  const ready = canSendSmsDraft({ recipient, body, confirmed, busy, didReady });
 
   const send = async () => {
     if (!ready || sending.current) return;
@@ -135,8 +140,17 @@ export default function SmsDraftSheet({
         />
 
         <div style={{ fontSize: 12, opacity: 0.75 }}>
-          Canal : Texto depuis votre numéro · Destinataire : {recipient || "à saisir"} · Client : {target.name || "—"}
+          Canal : {availability?.primaryNumber ? `Texto depuis ${availability.primaryNumber}` : "DID SMS à vérifier"} · Destinataire : {recipient || "à saisir"} · Client : {target.name || "—"}
         </div>
+
+        {!availability && (
+          <div style={{ fontSize: 12, opacity: 0.75, marginTop: 8 }}>Vérification du DID SMS du courtier…</div>
+        )}
+        {availability && !didReady && (
+          <div style={{ fontSize: 12, color: "#FCD34D", marginTop: 8 }}>
+            {availability.message ?? "DID SMS non confirmé. Aucun texto ne peut être envoyé."}
+          </div>
+        )}
 
         {failure && (
           <div style={{ fontSize: 12, color: "#FCA5A5", marginTop: 8 }}>

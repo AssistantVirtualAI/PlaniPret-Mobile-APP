@@ -63,7 +63,9 @@ check(voice.includes('functions.invoke("pp-ava-chat"') && !voice.includes('funct
 check(!softphone.includes("restAnswerLiveCall"), "Incoming SIP answer must never fall back to a REST-created call leg");
 check(!mobileShell.includes("AvaChatSheet") && mobileShell.includes("ROUTES.MPLANIPRET_AVA"), "Global AVA chat shortcut must open the complete confirmation-capable chat page");
 check(!proactive.includes('from("planipret_reminders")') && !proactive.includes("maestro-pipeline-orchestrator"), "Proactive mutations must use the canonical confirmed AVA executor");
+check(proactive.includes('result?.read_back !== true') && proactive.includes('result?.visible_in_maestro !== true'), "AVA reminders must not report success until Maestro read-back confirms visibility");
 check(chatEdge.includes('invokeFunction("ava-tool-executor"') && chatEdge.includes('error: "client_confirmation_required"'), "Chat mutations must use the canonical executor or remain client-only");
+check(chatEdge.includes('maestro_readback_unconfirmed') && chatEdge.includes('rappel n’est pas déclaré créé'), "AVA chat must explicitly report unconfirmed Maestro reminders as not created");
 check(assistant.includes("ai_consent_required") && !assistant.includes('functions.invoke("mobile-calls-start"') && !assistant.includes('functions.invoke("mobile-sms"'), "Legacy assistant must require consent and must not execute mutations server-side");
 
 check(tokenEdge.includes("ai_consent_at") && tokenEdge.includes("ai_consent_required"), "Voice token minting must require server-side AI consent");

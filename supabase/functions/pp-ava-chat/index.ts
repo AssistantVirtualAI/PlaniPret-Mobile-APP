@@ -326,6 +326,9 @@ Deno.serve(async (req) => {
           const reply = /maestro_user_id_unresolved|maestro_not_connected|maestro_not_configured/.test(err)
             ? L("Ton compte n'est pas encore lié à Maestro. Va dans Plus → Connexions pour connecter Maestro, puis réessaie.",
                 "Your account isn't linked to Maestro yet. Go to More → Connections to connect Maestro, then try again.")
+            : action === "create_task" && (d.pending_confirmation === true || err === "maestro_readback_unconfirmed")
+              ? L("Maestro a reçu la demande de rappel, mais elle n’est pas encore visible dans sa liste officielle. Le rappel n’est pas déclaré créé. Actualise Maestro puis réessaie si nécessaire.",
+                  "Maestro received the reminder request, but it is not yet visible in its official list. The reminder is not reported as created. Refresh Maestro and retry if needed.")
             : `${L("Action Maestro échouée", "Maestro action failed")}: ${err}`;
           return json({ reply, result: d, suggestions: [] });
         }

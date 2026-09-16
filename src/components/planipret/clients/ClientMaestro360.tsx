@@ -25,7 +25,7 @@ export default function ClientMaestro360({
   lastSyncAt?: string | null;
   loading?: boolean;
   /** Ouvre l'écran dédié d'un client (fiche complète). */
-  onOpenClient?: (clientKey: string) => void;
+  onOpenClient?: (client: Pick<ClientBundle, "key" | "maestroClientId" | "name">) => void;
 }) {
   const en = lang === "en";
   const L = (fr: string, e: string) => (en ? e : fr);
@@ -33,7 +33,7 @@ export default function ClientMaestro360({
   const [deals, setDeals] = useState<ClientDeal[]>([]);
   const [deposits, setDeposits] = useState<ClientDeposit[]>([]);
   const [calls, setCalls] = useState<ClientCall[]>([]);
-  const [contacts, setContacts] = useState<{ name: string; phone: string | null }[]>([]);
+  const [contacts, setContacts] = useState<{ name: string; phone: string | null; email?: string | null; maestroClientId?: string | null }[]>([]);
   const [q, setQ] = useState("");
   const [qDebounced, setQDebounced] = useState("");
   const [open, setOpen] = useState<string | null>(null);
@@ -157,7 +157,7 @@ export default function ClientMaestro360({
               {onOpenClient && (
                 <div className="px-3 pb-2 -mt-1">
                   <button
-                    onClick={() => onOpenClient(b.key)}
+                    onClick={() => onOpenClient({ key: b.key, maestroClientId: b.maestroClientId, name: b.name })}
                     className="text-[11px] font-semibold inline-flex items-center gap-1"
                     style={{ color: "var(--pp-brand-accent)" }}
                   >

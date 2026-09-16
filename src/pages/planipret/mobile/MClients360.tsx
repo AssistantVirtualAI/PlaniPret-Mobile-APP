@@ -42,7 +42,10 @@ export default function MClients360() {
         lang={lang}
         lastSyncAt={lastSyncAt}
         loading={loading}
-        onOpenClient={(k) => navigate(`/mplanipret/clients-360/${encodeURIComponent(k)}`)}
+        onOpenClient={(client) => {
+          const query = client.maestroClientId ? `?mid=${encodeURIComponent(client.maestroClientId)}` : "";
+          navigate(`/mplanipret/clients-360/${encodeURIComponent(client.key)}${query}`);
+        }}
       />
     </div>
   );

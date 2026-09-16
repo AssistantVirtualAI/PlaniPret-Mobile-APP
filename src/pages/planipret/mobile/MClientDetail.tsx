@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { ChevronLeft } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { usePlanipretTasks } from "@/hooks/planipret/usePlanipretTasks";
@@ -10,6 +10,7 @@ import SmsDraftSheet, { type SmsDraftTarget } from "@/components/planipret/mobil
 export default function MClientDetail() {
   const navigate = useNavigate();
   const { clientKey = "" } = useParams();
+  const [searchParams] = useSearchParams();
   const [userId, setUserId] = useState<string | null>(null);
   const lang = (localStorage.getItem("pp_lang") === "en" ? "en" : "fr") as "fr" | "en";
 
@@ -41,6 +42,7 @@ export default function MClientDetail() {
 
       <ClientMaestroDetail
         clientKey={clientKey}
+        maestroClientId={searchParams.get("mid")}
         tasks={tasks}
         userIds={userId ? [userId] : []}
         lang={lang}

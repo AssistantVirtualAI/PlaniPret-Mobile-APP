@@ -181,10 +181,14 @@ export function ProvisionExtensionModal({ open, onOpenChange, prefill }: Props) 
           sip_domain: SIP_DOMAIN,
           wss_url: WSS_URL,
           display_name: displayName,
-          sip_password: sipPassword,
           portal_user_id: user?.id ?? null,
           status: 'offline',
         }, { onConflict: 'extension' });
+        // sip_password est révoqué pour le rôle applicatif : la propagation se
+        // fait via la fonction service-role, à partir de pbx_extensions.
+        await supabase.functions.invoke('softphone-sync-password', {
+          body: { extension, force_local_to_pbx: true },
+        });
       }
 
       toast.success(`✅ Extension ${extension} created successfully`);

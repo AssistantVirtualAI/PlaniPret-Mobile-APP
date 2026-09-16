@@ -88,9 +88,11 @@ export function ExtensionStatusDialog({ open, onOpenChange, ext }: Props) {
         },
         synced_at: new Date().toISOString(),
       }).eq('id', ext.id);
-      await supabase.from('pbx_softphone_users' as any)
-        .update({ sip_password: sipPassword })
-        .eq('extension', String(ext.extension));
+      // sip_password est révoqué pour le rôle applicatif : la propagation vers
+      // pbx_softphone_users passe par la fonction service-role.
+      await supabase.functions.invoke('softphone-sync-password', {
+        body: { extension: String(ext.extension), force_local_to_pbx: true },
+      });
       qc.invalidateQueries({ queryKey: ['pbx'] });
       toast.success(`Extension ${ext.extension} pushed to FusionPBX`);
     } catch (e: any) {

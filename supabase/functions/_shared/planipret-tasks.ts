@@ -3,10 +3,12 @@
 // (via src/lib/planipret/tasks.ts). Must stay free of Deno/Node globals.
 //
 // Official routes (https://client.planipret.com/api-docs/openapi.yaml):
+//   GET    /api/main/tasks
 //   POST   /api/main/tasks
 //   PUT    /api/main/tasks/{taskId}   (task_id also required in body)
 //   DELETE /api/main/tasks/{taskId}   (task_id also required in body)
-// There is NO documented list endpoint — listing is best-effort server side.
+// The documented list returns `referral_option_id`; create responses return
+// `task_id`. Both names identify the same Maestro task.
 
 export const TASK_TZ = "America/Toronto";
 
@@ -64,7 +66,7 @@ export function computeTaskSync(raw: any, assigneeIds: string[] = []): { sync_st
   const state = String(raw.sync_status ?? raw.nylas_status ?? "").toLowerCase();
   if (state === "synced" || state === "success") return { sync_status: "synced", sync_reason: "nylas_event_linked" };
   if (state === "failed" || state === "error") return { sync_status: "not_synced", sync_reason: "sync_failed" };
-  if (!String(raw.id ?? raw.task_id ?? "").trim()) return { sync_status: "not_synced", sync_reason: "not_created_yet" };
+  if (!String(raw.id ?? raw.task_id ?? raw.referral_option_id ?? "").trim()) return { sync_status: "not_synced", sync_reason: "not_created_yet" };
   return { sync_status: "synced", sync_reason: "nylas_event_linked" };
 }
 

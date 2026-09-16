@@ -1259,13 +1259,14 @@ function CallDetailSheet({
       error = response.error;
     }
     const createdId = data?.task?.id ?? data?.task_id ?? data?.event_id ?? data?.event?.id ?? "ok";
-    if (error || data?.success === false) {
-      toast.error(`Échec création ${type === "task" ? "tâche" : "événement"}`);
+    if (error || data?.success !== true) {
+      const detail = data?.message ?? data?.error;
+      toast.error(`Échec création ${type === "task" ? "tâche" : "événement"}`, { description: detail });
       if (type === "task") setTaskState((s) => ({ ...s, [key]: {} }));
       else setEventState((s) => ({ ...s, [key]: {} }));
       return;
     }
-    toast.success(type === "task" ? "Tâche créée ✅" : "Événement créé ✅");
+    toast.success(type === "task" ? (data?.message ?? "Tâche créée et relue dans Maestro") : "Événement créé ✅");
     if (type === "task") setTaskState((s) => ({ ...s, [key]: { createdId } }));
     else setEventState((s) => ({ ...s, [key]: { createdId } }));
   };

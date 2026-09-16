@@ -15,7 +15,6 @@ vi.mock("@/integrations/supabase/client", () => ({
   },
 }));
 
-// AVA calls are gated behind the AI consent gate; treat consent as granted.
 vi.mock("@/components/planipret/mobile/AiConsentGate", () => ({
   hasAiConsent: () => true,
   default: () => null,
@@ -70,8 +69,8 @@ describe("applyAvaSuggestion", () => {
     expect(ctx.navigateSms).toHaveBeenCalledWith("+1", "hi");
   });
 
-  it("creates reminder as a confirmed Planiprêt task", async () => {
-    invoke.mockResolvedValue({ data: { success: true, message: "ok" }, error: null });
+  it("creates reminder only after documented Maestro read-back", async () => {
+    invoke.mockResolvedValue({ data: { success: true, read_back: true, visible_in_maestro: true, message: "ok" }, error: null });
     const r = await applyAvaSuggestion({ id: "1", label: "R", kind: "reminder", payload: { title: "Rappeler client" } }, ctx);
     expect(invoke).toHaveBeenCalledWith("ava-tool-executor", expect.objectContaining({
       body: expect.objectContaining({
@@ -82,13 +81,20 @@ describe("applyAvaSuggestion", () => {
     expect(r.ok).toBe(true);
   });
 
+  it("does not report a reminder as created when Maestro has not read it back", async () => {
+    invoke.mockResolvedValue({ data: { success: false, pending_confirmation: true, error: "maestro_readback_unconfirmed" }, error: null });
+    const r = await applyAvaSuggestion({ id: "1", label: "R", kind: "reminder", payload: { title: "Rappeler client" } }, ctx);
+    expect(r.ok).toBe(false);
+    expect(r.message).toMatch(/non confirmé/i);
+  });
+
   it("rejects call without number", async () => {
     const r = await applyAvaSuggestion({ id: "1", label: "x", kind: "call", payload: {} }, ctx);
     expect(r.ok).toBe(false);
   });
 
   it("routes maestro_action via invoke", async () => {
-    invoke.mockResolvedValue({ data: { message: "ok" }, error: null });
+    invoke.mockResolvedValue({ data: { success: true, message: "ok" }, error: null });
     const r = await applyAvaSuggestion({ id: "1", label: "M", kind: "maestro_action", payload: { action: "x" } }, ctx);
     expect(invoke).toHaveBeenCalledWith("ava-tool-executor", expect.objectContaining({
       body: { tool_name: "x", parameters: { action: "x", confirmed: true } },

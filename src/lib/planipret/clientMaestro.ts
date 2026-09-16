@@ -62,6 +62,10 @@ export interface ClientMessage {
 export interface ClientBundle {
   key: string;
   name: string;
+  /** Stable identifier returned by Maestro's `/users/{id}/clients` API. */
+  maestroClientId: string | null;
+  phone: string | null;
+  email: string | null;
   tasks: NormalizedTask[];
   overdue: number;
   today: number;
@@ -74,6 +78,13 @@ export interface ClientBundle {
   messages: ClientMessage[];
   /** Courtiers (user_id) ayant une activité avec ce client. */
   brokerIds: string[];
+}
+
+export interface ClientContact {
+  name: string;
+  phone: string | null;
+  email?: string | null;
+  maestroClientId?: string | null;
 }
 
 /** Derniers 10 chiffres d'un numéro, pour comparer des formats différents. */
@@ -101,19 +112,33 @@ export function buildClientBundles(
   deposits: ClientDeposit[] = [],
   calls: ClientCall[] = [],
   messages: ClientMessage[] = [],
-  contacts: { name: string; phone?: string | null }[] = [],
+  contacts: ClientContact[] = [],
 ): ClientBundle[] {
   const { start, end } = dayBounds();
   const map = new Map<string, ClientBundle>();
 
-  const ensure = (name: string | null | undefined): ClientBundle | null => {
+  const ensure = (name: string | null | undefined, contact?: ClientContact): ClientBundle | null => {
     const label = String(name ?? "").trim();
     if (!label) return null;
     const key = clientKey(label);
     let b = map.get(key);
     if (!b) {
-      b = { key, name: label, tasks: [], overdue: 0, today: 0, upcoming: 0, nextDue: null, deals: [], deposits: [], depositTotal: 0, calls: [], messages: [], brokerIds: [] };
+      b = {
+        key, name: label,
+        maestroClientId: contact?.maestroClientId ? String(contact.maestroClientId) : null,
+        phone: contact?.phone ?? null,
+        email: contact?.email ?? null,
+        tasks: [], overdue: 0, today: 0, upcoming: 0, nextDue: null,
+        deals: [], deposits: [], depositTotal: 0, calls: [], messages: [], brokerIds: [],
+      };
       map.set(key, b);
+    } else if (contact) {
+      // Activity can create the bundle before the direct Maestro list arrives.
+      // Preserve the first durable id and contact details; never overwrite a
+      // valid value with an empty cache row.
+      if (!b.maestroClientId && contact.maestroClientId) b.maestroClientId = String(contact.maestroClientId);
+      if (!b.phone && contact.phone) b.phone = contact.phone;
+      if (!b.email && contact.email) b.email = contact.email;
     }
     return b;
   };
@@ -132,7 +157,7 @@ export function buildClientBundles(
     }
   }
 
-  for (const c of contacts) ensure(c.name);
+  for (const c of contacts) ensure(c.name, c);
 
   for (const d of deals) {
     const b = ensure(d.contact_name);
@@ -254,7 +279,7 @@ export async function fetchClientMessages(userIds: string[], limit = 500): Promi
 export async function fetchMaestroClientsLive(
   search?: string,
   limit = 200,
-): Promise<{ name: string; phone: string | null }[]> {
+): Promise<ClientContact[]> {
   try {
     const { data, error } = await supabase.functions.invoke("maestro-actions", {
       body: { action: "list_clients", payload: { limit, search: search || undefined } },
@@ -269,6 +294,8 @@ export async function fetchMaestroClientsLive(
           c.name ?? "",
         ).trim(),
         phone: (c.phone ?? c.mobile ?? c.cell_phone ?? c.phone_number ?? null) as string | null,
+        email: (c.email ?? c.email_address ?? c.mail ?? null) as string | null,
+        maestroClientId: c.id ?? c.client_id ?? c.maestro_client_id ?? null,
       }))
       .filter((c) => c.name);
   } catch {
@@ -280,14 +307,14 @@ export async function fetchMaestroClientsLive(
 export async function fetchClientContacts(
   userIds: string[],
   opts: { search?: string; limit?: number } = {},
-): Promise<{ name: string; phone: string | null }[]> {
+): Promise<ClientContact[]> {
   const ids = userIds.filter(Boolean);
   const term = String(opts.search ?? "").trim();
-  let local: { name: string; phone: string | null }[] = [];
+  let local: ClientContact[] = [];
   if (ids.length) {
     let q = supabase
       .from("planipret_contacts")
-      .select("full_name, first_name, last_name, phone, mobile, updated_at")
+      .select("full_name, first_name, last_name, phone, mobile, email, external_id, source, metadata, updated_at")
       .in("user_id", ids)
       .order("updated_at", { ascending: false })
       .limit(opts.limit ?? (term ? 100 : 200));
@@ -300,6 +327,10 @@ export async function fetchClientContacts(
       .map((c) => ({
         name: String(c.full_name ?? [c.first_name, c.last_name].filter(Boolean).join(" ") ?? "").trim(),
         phone: (c.phone ?? c.mobile ?? null) as string | null,
+        email: (c.email ?? null) as string | null,
+        maestroClientId: String(c.source ?? "").toLowerCase().includes("maestro")
+          ? (c.external_id ?? c.metadata?.maestro_client_id ?? null)
+          : (c.metadata?.maestro_client_id ?? null),
       }))
       .filter((c) => c.name);
   }
