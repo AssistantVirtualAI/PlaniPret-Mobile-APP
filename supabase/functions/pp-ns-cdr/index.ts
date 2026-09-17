@@ -31,9 +31,28 @@ function pickDirection(raw: any, ext?: string): "inbound" | "outbound" | "missed
 }
 
 
+function canonicalCdrKey(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/**
+ * NS-API deployments differ in whether a CDR key is hyphenated, underscored
+ * or title-cased. Resolve these spelling variants without guessing values.
+ */
 function val(raw: any, keys: string[], fb: any = null) {
+  if (!raw || typeof raw !== "object") return fb;
   for (const k of keys) {
-    const v = raw?.[k];
+    const v = raw[k];
+    if (v !== undefined && v !== null && `${v}` !== "") return v;
+  }
+  const canonical = new Map<string, unknown>();
+  for (const [key, value] of Object.entries(raw)) {
+    if (value !== undefined && value !== null && `${value}` !== "") {
+      canonical.set(canonicalCdrKey(key), value);
+    }
+  }
+  for (const k of keys) {
+    const v = canonical.get(canonicalCdrKey(k));
     if (v !== undefined && v !== null && `${v}` !== "") return v;
   }
   return fb;
@@ -81,7 +100,7 @@ function isInternalExtension(value: string | null, ownExtension?: string | null)
 function pickPeerEndpoint(raw: any, keys: string[], ownExtension?: string | null): string | null {
   let internalFallback: string | null = null;
   for (const k of keys) {
-    const endpoint = normalizeEndpoint(raw?.[k]);
+    const endpoint = normalizeEndpoint(val(raw, [k]));
     if (!endpoint) continue;
     if (!isInternalExtension(endpoint, ownExtension)) return endpoint;
     internalFallback ??= endpoint;
@@ -94,8 +113,24 @@ function normalizeCdr(it: any, ctx: any) {
   const nsCallId = val(it, ["call-id", "call_id", "callid", "call-parent-call-id", "orig_callid", "term_callid"]);
   const nsOrigCallId = val(it, ["call-orig-call-id", "orig_callid", "orig-callid", "orig-call-id"]);
   const nsTermCallId = val(it, ["call-term-call-id", "term_callid", "term-callid", "term-call-id"]);
-  const fromNumber = pickPeerEndpoint(it, ["from_number", "from", "caller_id_number", "caller-id-number", "call-orig-from-uri", "orig-from-uri", "orig_from_uri", "call-orig-from-user", "call-orig-caller-id", "call-orig-user", "orig-user", "orig_from_user", "ani", "by_number"], ctx.extension);
-  const toNumber = pickPeerEndpoint(it, ["to_number", "to", "destination", "dialed_number", "dnis", "call-orig-request-user", "call-orig-to-user", "call-orig-to-uri", "term_to_user", "term-user", "call-term-user", "orig_to_user", "orig-to-user", "call-term-to-uri"], ctx.extension);
+  // Prefer ANI/DNIS or URI data for the *external* peer.  The final short
+  // extension fallback is retained only in metadata for diagnostics; it is
+  // never presented as a customer phone number by the mobile UI.
+  const fromNumber = pickPeerEndpoint(it, [
+    "from_number", "from", "caller_id_number", "caller-id-number",
+    "call-orig-caller-id-number", "orig-caller-id-number", "orig_caller_id_number",
+    "caller-caller-id-number", "Caller-Caller-ID-Number", "effective-caller-id-number",
+    "call-orig-from-uri", "orig-from-uri", "orig_from_uri", "call-orig-from-user",
+    "call-orig-caller-id", "call-orig-user", "orig-user", "orig_from_user", "ani", "by_number",
+  ], ctx.extension);
+  const toNumber = pickPeerEndpoint(it, [
+    "to_number", "to", "destination", "destination-number", "destination_number",
+    "dialed_number", "dialed-number", "dnis", "callee-id-number", "callee_id_number",
+    "call-destination-number", "call-orig-to-number", "orig-to-number", "orig_to_number",
+    "caller-destination-number", "Caller-Destination-Number", "variable-destination-number",
+    "call-orig-request-user", "call-orig-to-user", "call-orig-to-uri", "term_to_user",
+    "term-user", "call-term-user", "orig_to_user", "orig-to-user", "call-term-to-uri",
+  ], ctx.extension);
   const recordingUrl = val(it, ["file-access-url", "recording_url", "recording-url", "record_url", "recording", "url"]);
   const recordingStatus = val(it, ["call-recording-status", "recording_status"]);
   return {
@@ -110,9 +145,16 @@ function normalizeCdr(it: any, ctx: any) {
     direction: pickDirection(it, ctx.extension),
     status: val(it, ["disposition", "status", "call-status"]),
     from_number: fromNumber,
-    from_name: val(it, ["from_name", "caller_id_name", "caller-id-name", "orig_from_name", "orig-name", "by_name"]),
+    from_name: val(it, [
+      "from_name", "caller_id_name", "caller-id-name", "call-orig-caller-id-name",
+      "orig-caller-id-name", "orig_from_name", "orig-name", "caller-caller-id-name",
+      "Caller-Caller-ID-Name", "by_name",
+    ]),
     to_number: toNumber,
-    to_name: val(it, ["to_name", "term_to_name", "term-name"]),
+    to_name: val(it, [
+      "to_name", "term_to_name", "term-name", "destination-name", "callee-id-name",
+      "call-term-caller-id-name", "caller-callee-id-name", "Caller-Callee-ID-Name",
+    ]),
     started_at: toIso(val(it, ["start_time", "started_at", "time_start", "time-start", "call-start-datetime", "call-batch-start-datetime"])),
     answered_at: toIso(val(it, ["answer_time", "answered_at", "time_answer", "time-answer", "call-answer-datetime"])),
     ended_at: toIso(val(it, ["end_time", "ended_at", "time_release", "time-release", "call-end-datetime"])),

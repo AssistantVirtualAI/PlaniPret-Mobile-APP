@@ -228,6 +228,12 @@ verify_jwt = true
 [functions.planipret-task-api]
 verify_jwt = true
 
+[functions.pp-maestro-machine-probe]
+verify_jwt = true
+
+[functions.pp-ns-cdr]
+verify_jwt = true
+
 [functions.pp-maestro-contracts]
 verify_jwt = true
 
