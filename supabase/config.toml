@@ -219,6 +219,9 @@ verify_jwt = true
 [functions.maestro-client-create]
 verify_jwt = true
 
+[functions.maestro-client-lookup]
+verify_jwt = true
+
 [functions.maestro-task]
 verify_jwt = true
 
@@ -250,6 +253,9 @@ verify_jwt = true
 verify_jwt = true
 
 [functions.maestro-cdr]
+verify_jwt = true
+
+[functions.maestro-recording-upload]
 verify_jwt = true
 
 [functions.ai-analyze-call]

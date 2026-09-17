@@ -216,24 +216,7 @@ async function getAssignedSmsNumbers(supabase: any, ctx: any): Promise<SmsDidRes
     }
   }
 
-  // Source 3 : planipret_did_assignments — extension seul (sans filtre domain)
-  if (!numbers.length) {
-    try {
-      const { data, error } = await supabase
-        .from("planipret_did_assignments")
-        .select("phone_number_e164,phone_number_digits,extension,domain,callerid_name")
-        .eq("extension", String(ctx.extension))
-        .limit(5);
-      if (error) console.warn("[pp-ns-sms] did_assignments (no domain) error:", error.message);
-      for (const n of data ?? []) {
-        add(n, "did_assignment_no_domain");
-      }
-    } catch (e) {
-      console.warn("[pp-ns-sms] did_assignments (no domain) error:", e);
-    }
-  }
-
-  // Source 4 : inventaire PBX live. Les filtres centrés sur le poste sont lus
+  // Source 3 : inventaire PBX live. Les filtres centrés sur le poste sont lus
   // avant l'inventaire général, lequel peut être paginé. A DID d'appel est
   // souvent provisionné ici sans que le sous-objet smsnumbers soit exposé.
   if (!numbers.length) {

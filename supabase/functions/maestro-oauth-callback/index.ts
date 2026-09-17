@@ -32,7 +32,7 @@ function brokerIdFromAccessToken(accessToken: string): string | null {
 }
 
 async function saveIntegrationState(
-  admin: ReturnType<typeof createClient>,
+  admin: any,
   provider: string,
   config: Record<string, unknown>,
 ) {
@@ -129,27 +129,35 @@ Deno.serve(async (req) => {
   try {
     const body = await req.json().catch(() => ({} as any));
     const { code, state, redirect_uri } = body ?? {};
-    if (!code) return j({ success: false, error: "code required" });
+    if (!code) return j({ success: false, error: "code_required" }, 400);
+    if (!state || typeof state !== "string") {
+      // Never exchange an authorization code that cannot be tied to the user
+      // who initiated the flow. The previous global fallback could bind a
+      // callback with a missing state to the wrong integration context.
+      return j({ success: false, error: "oauth_state_required" }, 400);
+    }
 
     const admin = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
     const env = getMaestroOAuthEnv();
 
-    // Resolve the user this OAuth flow belongs to via the state we stored in start.
-    let userId: string | null = null;
-    let storedRedirect: string | null = null;
-    let storedCodeVerifier: string | null = null;
-    if (state) {
-      const { data: st } = await admin
-        .from("planipret_maestro_oauth_states")
-        .select("user_id, redirect_uri, code_verifier")
-        .eq("state", state)
-        .maybeSingle();
-      if (st) {
-        userId = (st as any).user_id ?? null;
-        storedRedirect = (st as any).redirect_uri ?? null;
-        storedCodeVerifier = (st as any).code_verifier ?? null;
-      }
+    // Atomically consume one unexpired state before exchanging the code. A
+    // state is therefore single-use even when two callbacks race each other.
+    const { data: st, error: stateError } = await admin
+      .from("planipret_maestro_oauth_states")
+      .delete()
+      .eq("state", state)
+      .gt("expires_at", new Date().toISOString())
+      .select("user_id, redirect_uri, code_verifier")
+      .maybeSingle();
+    if (stateError || !st?.user_id) {
+      console.warn("[maestro-oauth-callback] rejected oauth state", JSON.stringify({
+        state_error: stateError?.code ?? null,
+      }));
+      return j({ success: false, error: "oauth_state_invalid_or_expired" }, 400);
     }
+    const userId = String((st as any).user_id);
+    const storedRedirect = (st as any).redirect_uri ? String((st as any).redirect_uri) : null;
+    const storedCodeVerifier = (st as any).code_verifier ? String((st as any).code_verifier) : null;
 
     if (!isMaestroOAuthConfigured(env)) {
       // Store the pending code so we can exchange later.
@@ -166,12 +174,14 @@ Deno.serve(async (req) => {
       });
     }
 
-    const effectiveRedirect = storedRedirect ?? redirect_uri ?? "";
-    if (storedRedirect && redirect_uri && storedRedirect !== redirect_uri) {
-      console.warn("[maestro-oauth-callback] redirect_uri mismatch", { stored: storedRedirect, received: redirect_uri });
+    const effectiveRedirect = storedRedirect ?? "";
+    if (redirect_uri && String(redirect_uri) !== effectiveRedirect) {
+      console.warn("[maestro-oauth-callback] redirect_uri mismatch");
+      return j({ success: false, error: "oauth_redirect_uri_mismatch" }, 400);
     }
-    // Utiliser le code_verifier stocké si présent (flux PKCE mobile client_id=3)
-    const codeVerifier = body?.code_verifier ?? storedCodeVerifier ?? null;
+    // The verifier is created and retained server-side by maestro-oauth-start.
+    // Do not trust a client-supplied verifier at the callback boundary.
+    const codeVerifier = storedCodeVerifier;
     const exch = await exchangeAuthorizationCode(env, code, effectiveRedirect, codeVerifier);
 
     if (!exch.ok || !exch.data) {
@@ -305,20 +315,11 @@ Deno.serve(async (req) => {
         console.error("[maestro-oauth-callback] telecom resolve failed", (e as Error).message);
       }
 
-      // Consume the state row.
-      await admin.from("planipret_maestro_oauth_states").delete().eq("state", state);
-
       // Every successful broker authentication immediately refreshes that
       // broker's official Commission Reports data. Run it in the background so
       // a long report history never blocks the OAuth redirect back to the app.
       await queueCommissionSync(userId);
       await queueTasksSync(userId);
-    } else {
-      await saveIntegrationState(admin, "maestro_oauth", {
-        ...exch.data,
-        state: state ?? null,
-        obtained_at: new Date().toISOString(),
-      });
     }
 
     return j({

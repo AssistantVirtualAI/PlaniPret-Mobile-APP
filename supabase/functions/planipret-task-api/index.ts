@@ -132,66 +132,107 @@ function makeListFetch(token: string | null) {
     base.set("order_by", "date");
     base.set("sort", "desc");
 
-    const withParam = (k: string, v: string) => {
+    const withParam = (k: string, v: string, page = 1, status = base.get("status") ?? "pending") => {
       const qs = new URLSearchParams(base);
+      qs.set("status", status);
+      qs.set("page", String(page));
       qs.set(k, v);
       return `${API_BASE}/api/main/tasks?${qs.toString()}`;
     };
 
-    const candidates = [
-      withParam("delegate_users_id", maestroId),
-      withParam("target_id", maestroId),
+    const candidates: Array<{ filter: "delegate_users_id" | "target_id" | null; value?: string }> = [
+      { filter: "delegate_users_id", value: maestroId },
+      { filter: "target_id", value: maestroId },
       // Dernier recours, non filtré côté Maestro (filtré localement par assignation).
-      `${API_BASE}/api/main/tasks?${base.toString()}`,
+      { filter: null },
     ];
 
     // Read-back of a precise task: keep probing the documented filters until
     // this id appears, instead of stopping at the first non-empty page.
     const wanted = String(opts.findTaskId ?? "").trim();
 
+    const statuses = opts.status && LIST_STATUSES.has(opts.status)
+      ? [opts.status]
+      : ["pending", "open", "complete"];
+    const maxPages = 20;
     let lastStatus = 0;
     let emptyOk: UpstreamList | null = null;
     let firstOk: UpstreamList | null = null;
-    for (const url of candidates) {
-      const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
-      try {
-        const res = await fetch(url, {
-          headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
-          signal: ctrl.signal,
-        });
-        lastStatus = res.status;
-        if (!res.ok) {
-          continue;
+
+    for (const candidate of candidates) {
+      const combined: any[] = [];
+      const seen = new Set<string>();
+      let pagesRead = 0;
+      let candidateOk = false;
+      let candidateTruncated = false;
+      let candidateIncomplete = false;
+      let candidateStatus = 0;
+
+      for (const status of statuses) {
+        for (let page = 1; page <= maxPages; page += 1) {
+          const url = candidate.filter
+            ? withParam(candidate.filter, candidate.value!, page, status)
+            : `${API_BASE}/api/main/tasks?${(() => { const qs = new URLSearchParams(base); qs.set("status", status); qs.set("page", String(page)); return qs.toString(); })()}`;
+          const ctrl = new AbortController();
+          const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+          try {
+            const res = await fetch(url, {
+              headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+              signal: ctrl.signal,
+            });
+            lastStatus = candidateStatus = res.status;
+            if (!res.ok) { candidateIncomplete = true; break; }
+            const j = await res.json().catch(() => null);
+            // A 2xx transport result is not proof of a valid Maestro list.
+            if (j && typeof j === "object" && (j as any).success === false) { candidateIncomplete = true; break; }
+            candidateOk = true;
+            pagesRead += 1;
+            const tasks = extractTaskRows(j).map(normalizeTask).filter((t: any) => t.id);
+            for (const task of tasks) {
+              if (!seen.has(String(task.id))) {
+                seen.add(String(task.id));
+                combined.push(task);
+              }
+            }
+            const meta = (j as any)?.meta ?? (j as any)?.data?.meta ?? null;
+            const lastPage = Number(meta?.last_page ?? meta?.lastPage ?? 0);
+            const hasNext = Boolean((j as any)?.links?.next ?? (j as any)?.links?.next_page_url);
+            console.info("[planipret-task-api] list page", {
+              endpoint: url.split("?")[0], maestroId, status: res.status, page,
+              extracted: tasks.length, last_page: lastPage || null,
+            });
+            if (wanted && tasks.some((t: any) => String(t.id) === wanted)) {
+              return { ok: true, tasks: combined, endpoint: url.split("?")[0], status: res.status, complete: false, pages_read: pagesRead, truncated: false };
+            }
+            if ((lastPage && page >= lastPage) || (!lastPage && !hasNext && tasks.length < 200)) break;
+            if (page === maxPages) candidateTruncated = true;
+          } catch {
+            lastStatus = candidateStatus = 599;
+            candidateIncomplete = true;
+            break;
+          } finally {
+            clearTimeout(timer);
+          }
         }
-        const j = await res.json().catch(() => null);
-        const tasks = extractTaskRows(j).map(normalizeTask).filter((t: any) => t.id);
-        console.info("[planipret-task-api] list probe", {
-          endpoint: url.split("?")[0],
-          maestroId,
-          status: res.status,
-          topLevelKeys: j && typeof j === "object" && !Array.isArray(j) ? Object.keys(j).slice(0, 20) : [],
-          extracted: tasks.length,
-        });
-        const out = { ok: true, tasks, endpoint: url.split("?")[0], status: res.status };
-        if (wanted) {
-          if (tasks.some((t: any) => String(t.id) === wanted)) return out;
-          firstOk = firstOk ?? (tasks.length ? out : null);
-          emptyOk = emptyOk ?? out;
-          continue;
-        }
-        if (tasks.length) return out;
-        // 200 but empty: remember it and keep probing the other shapes.
-        emptyOk = emptyOk ?? out;
-      } catch {
-        lastStatus = 599;
-      } finally {
-        clearTimeout(timer);
       }
+
+      if (!candidateOk) continue;
+      const out: UpstreamList = {
+        ok: true,
+        tasks: combined,
+        endpoint: `${API_BASE}/api/main/tasks`,
+        status: candidateStatus || lastStatus,
+        complete: !candidateTruncated && !candidateIncomplete,
+        pages_read: pagesRead,
+        truncated: candidateTruncated || candidateIncomplete,
+      };
+      if (combined.length) return out;
+      emptyOk = emptyOk ?? out;
+      firstOk = firstOk ?? out;
     }
     if (firstOk) return firstOk;
     if (emptyOk) return emptyOk;
-    return { ok: false, tasks: [], endpoint: null, status: lastStatus };
+    return { ok: false, tasks: [], endpoint: null, status: lastStatus, complete: false };
 
   };
 }

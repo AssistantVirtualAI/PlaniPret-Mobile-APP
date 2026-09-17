@@ -1,6 +1,6 @@
 // maestro-oauth-status — authenticated. Returns the connection status for the
-// current broker (reads planipret_profiles) and falls back to the global secret
-// store for legacy pre-per-user tokens.
+// current broker (reads planipret_profiles). A shared legacy token is never
+// considered a connection because it cannot prove which broker owns it.
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { getMaestroOAuthEnv, getUserMaestroAccessToken, isMaestroOAuthConfigured } from "../_shared/maestro-oauth.ts";
@@ -13,16 +13,19 @@ Deno.serve(async (req) => {
   const configured = isMaestroOAuthConfigured(env);
 
   const authHeader = req.headers.get("Authorization") ?? "";
-  let userId: string | null = null;
-  let authReason: string | null = null;
-  if (authHeader.startsWith("Bearer ")) {
-    const token = authHeader.slice(7);
-    const { data: u, error: uErr } = await admin.auth.getUser(token);
-    userId = u?.user?.id ?? null;
-    if (!userId) authReason = uErr?.message ?? "invalid_token";
-  } else {
-    authReason = "no_authorization_header";
+  if (!authHeader.startsWith("Bearer ")) {
+    return new Response(JSON.stringify({ connected: false, error: "unauthorized" }), {
+      status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
   }
+  const { data: u } = await admin.auth.getUser(authHeader.slice(7));
+  const userId = u?.user?.id ?? null;
+  if (!userId) {
+    return new Response(JSON.stringify({ connected: false, error: "unauthorized" }), {
+      status: 401, headers: { ...corsHeaders, "Content-Type": "application/json" },
+    });
+  }
+  let authReason: string | null = null;
 
 
   const origin = req.headers.get("origin") ?? "https://avastatistic.ca";
@@ -37,7 +40,7 @@ Deno.serve(async (req) => {
   let lastError: { message: string; at: string | null; http_status?: number } | null = null;
   let pendingCount = 0;
 
-  if (userId) {
+  {
     const { data: profRows } = await admin
       .from("planipret_profiles")
       .select("id, user_id, maestro_broker_id, maestro_email, maestro_broker_token, maestro_token_expires_at, maestro_last_sync_at, maestro_connected")
@@ -52,7 +55,8 @@ Deno.serve(async (req) => {
     const validToken = prof?.maestro_broker_token
       ? await getUserMaestroAccessToken(admin, userId)
       : null;
-    if (validToken) {
+    const identityVerified = Boolean(maestroBrokerId);
+    if (validToken && identityVerified) {
       status = "connected";
       lastConnectedAt = (prof as any).maestro_last_sync_at ?? null;
       const expAt = (prof as any).maestro_token_expires_at ? Date.parse((prof as any).maestro_token_expires_at) : 0;
@@ -61,49 +65,19 @@ Deno.serve(async (req) => {
     } else if (!prof) {
       authReason = "no_profile_row";
     } else {
-      authReason = maestroBrokerId ? "oauth_expired_reconnect_required" : "no_token";
+      authReason = validToken ? "maestro_identity_unverified" : (maestroBrokerId ? "oauth_expired_reconnect_required" : "no_token");
     }
 
-  }
-
-
-  // Fallback to global legacy tokens if nothing per-user
-  if (status !== "connected") {
-    const { data: connected } = await admin
-      .from("planipret_integration_secrets")
-      .select("config, updated_at")
-      .eq("provider", "maestro_oauth")
-      .order("updated_at", { ascending: false })
-      .limit(1);
-    if (connected && connected.length > 0) {
-      status = "connected";
-      lastConnectedAt = (connected[0] as any).updated_at ?? null;
-      try {
-        const parsed = (connected[0] as any).config ?? {};
-        expiresIn = parsed?.expires_in ?? null;
-      } catch { /* ignore */ }
-    }
   }
 
   const { data: pending } = await admin
-    .from("planipret_integration_secrets")
-    .select("provider")
-    .eq("provider", "maestro_oauth_pending")
+    .from("planipret_maestro_oauth_states")
+    .select("state")
+    .eq("user_id", userId)
+    .gt("expires_at", new Date().toISOString())
     .limit(5);
   pendingCount = pending?.length ?? 0;
 
-  const { data: errRows } = await admin
-    .from("planipret_integration_secrets")
-    .select("config, updated_at")
-    .eq("provider", "maestro_oauth_error")
-    .order("updated_at", { ascending: false })
-    .limit(1);
-  if (errRows && errRows.length > 0) {
-    try {
-      const parsed = (errRows[0] as any).config ?? {};
-      lastError = { message: parsed?.error ?? "Erreur inconnue", at: (errRows[0] as any).updated_at, http_status: parsed?.http_status };
-    } catch { lastError = { message: "Erreur inconnue", at: (errRows[0] as any).updated_at }; }
-  }
   if (status === "connected") lastError = null;
   if (status !== "connected" && lastError) status = "error";
   else if (status !== "connected" && !configured) status = "not_configured";
@@ -123,6 +97,8 @@ Deno.serve(async (req) => {
     email: maestroEmail,
     maestro_broker_id: maestroBrokerId,
     maestro_email: maestroEmail,
+    token_present: status === "connected" || authReason === "maestro_identity_unverified",
+    identity_verified: Boolean(maestroBrokerId),
     last_error: lastError,
 
   }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });

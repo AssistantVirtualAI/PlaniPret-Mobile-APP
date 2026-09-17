@@ -4,9 +4,7 @@
 import {
   adminClient,
   broadcastPipeline,
-  cacheMaestroClient,
   corsHeaders,
-  getBrokerAuth,
   getMaestroConfig,
   json,
   maestroAudit,
@@ -145,44 +143,16 @@ Deno.serve(async (req) => {
         mortgageStage = cached.mortgage_stage;
         await pipelineLog(admin, { call_id, user_id: call.user_id, step: "client_lookup", status: "success", payload: { source: "cache", client_id: maestroClientId } });
       } else {
-        const t0 = Date.now();
-        const lookup = auth.brokerId
-          ? await maestroFetch(cfg, {
-              method: "POST",
-              path: `/api/v1/users/${encodeURIComponent(String(auth.brokerId))}/lookup-by-phone`,
-              token: auth.token,
-              machine: auth.machine,
-              body: { phone: contactPhone },
-            })
-          : { ok: false, status: 0, data: null, path: "lookup_skipped_no_broker_id" } as any;
+        // The former private phone-search route is not published by the Maestro contract. A CDR
+        // may still be synchronized without a client id; the next documented
+        // directory refresh repopulates the broker-scoped cache.
         await pipelineLog(admin, {
           call_id,
           user_id: call.user_id,
           step: "client_lookup",
-          status: lookup.ok ? "success" : "skipped",
-          duration_ms: Date.now() - t0,
-          payload: { source: "maestro", status: lookup.status },
+          status: "skipped",
+          payload: { source: "broker_cache", reason: "cache_miss" },
         });
-        if (lookup.ok && lookup.data) {
-          const c = lookup.data?.user ?? lookup.data?.client ?? lookup.data;
-          maestroClientId = c?.id ?? c?.client_id ?? null;
-          clientName = c?.full_name ?? c?.name ?? ([c?.first_name, c?.last_name].filter(Boolean).join(" ") || null);
-          clientCompany = c?.company ?? null;
-          mortgageStage = c?.mortgage_stage ?? null;
-          if (maestroClientId) {
-            await cacheMaestroClient(admin, {
-              user_id: call.user_id,
-              maestro_client_id: maestroClientId,
-              phone_e164: contactPhone,
-              full_name: clientName,
-              company: clientCompany,
-              email: c?.email ?? null,
-              mortgage_stage: mortgageStage,
-              preferred_lang: c?.preferred_lang ?? "fr",
-              tags: c?.tags ?? [],
-            });
-          }
-        }
       }
     }
 

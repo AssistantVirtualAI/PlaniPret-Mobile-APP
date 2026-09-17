@@ -95,31 +95,25 @@ export function sortDeals(deals: MaestroDeal[]): MaestroDeal[] {
  */
 export async function fetchClientDeals(
   cfg: MaestroConfig,
-  opts: { token?: string | null; brokerId?: string | null; clientId: string; inline?: any },
+  opts: { token: string; brokerId?: string | null; clientId: string; inline?: any },
 ): Promise<{ deals: MaestroDeal[]; source: string }> {
   const inline = sortDeals(dealsFromClientPayload(opts.inline));
   if (inline.length) return { deals: inline, source: "client_payload" };
 
   const cid = encodeURIComponent(String(opts.clientId));
-  const bid = encodeURIComponent(String(opts.brokerId ?? ""));
-  const candidates = [
-    opts.brokerId ? `/api/v1/users/${bid}/clients/${cid}/deals` : null,
-    opts.brokerId ? `/api/v1/users/${bid}/clients/${cid}/mortgages` : null,
-    `/api/v1/clients/${cid}/deals`,
-    `/api/main/deals?client_id=${cid}`,
-  ].filter(Boolean) as string[];
-
-  for (const path of candidates) {
-    try {
-      const res = await maestroFetch(cfg, { method: "GET", path, token: opts.token ?? undefined });
-      if (!res.ok) continue;
-      const deals = sortDeals(
-        pickArray(res.data).map(normalizeDeal).filter((d): d is MaestroDeal => !!d),
-      );
-      if (deals.length) return { deals, source: path };
-    } catch (_e) {
-      // Probing an unsupported route must never break caller resolution.
+  // The official API exposes a client filter on GET /api/main/contracts. Do not
+  // probe unpublished `deals` or `mortgages` endpoints as a fallback.
+  const path = `/api/main/contracts?client_id=${cid}&page=1&per_page=50`;
+  try {
+    const res = await maestroFetch(cfg, { method: "GET", path, token: opts.token });
+    if (!res.ok || (res.data && typeof res.data === "object" && (res.data as any).success === false)) {
+      return { deals: [], source: "unavailable" };
     }
+    const deals = sortDeals(
+      pickArray(res.data).map(normalizeDeal).filter((d): d is MaestroDeal => !!d),
+    );
+    return { deals, source: "contracts" };
+  } catch (_e) {
+    return { deals: [], source: "unavailable" };
   }
-  return { deals: [], source: "none" };
 }

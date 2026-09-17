@@ -130,9 +130,12 @@ async function processEvent(event: any) {
       ].map((value) => String(value ?? "").trim()).filter(Boolean))]
     : [];
   let ext = data?.extension ?? data?.user ?? data?.to ?? data?.callee ?? cdrExtensions[0] ?? null;
+  const eventDomain = String(
+    data?.domain ?? data?.domain_name ?? data?.["domain-name"] ?? data?.["sip-domain"] ?? "",
+  ).trim().toLowerCase() || null;
   let userId: string | null = null;
   let brokerProfile: any = null;
-  const profileFields = "id, user_id, extension, ns_extension, dnd_enabled, dnd_auto_schedule, dnd_start_time, dnd_end_time, dnd_message_fr, notif_calls, notif_sms, notif_voicemails";
+  const profileFields = "id, user_id, extension, ns_extension, ns_domain, dnd_enabled, dnd_auto_schedule, dnd_start_time, dnd_end_time, dnd_message_fr, notif_calls, notif_sms, notif_voicemails";
   const candidateExtensions = type === "cdr" ? cdrExtensions : [String(ext ?? "")].filter(Boolean);
   if (candidateExtensions.length) {
     const predicates = candidateExtensions.flatMap((candidate) => [
@@ -145,9 +148,17 @@ async function processEvent(event: any) {
       .or(predicates)
       .limit(10);
     for (const candidate of candidateExtensions) {
-      const matched = (profiles ?? []).find((p: any) =>
+      const extensionMatches = (profiles ?? []).filter((p: any) =>
         String(p.extension ?? "") === candidate || String(p.ns_extension ?? "") === candidate,
       );
+      const domainMatches = eventDomain
+        ? extensionMatches.filter((p: any) => String(p.ns_domain ?? "").trim().toLowerCase() === eventDomain)
+        : extensionMatches;
+      // Without a domain from NetSapiens, an extension may only resolve when it
+      // maps to one broker identity. This avoids delivering another tenant's
+      // call, CDR or push to a matching extension in a different domain.
+      const identities = new Set(domainMatches.map((p: any) => String(p.user_id ?? p.id ?? "")).filter(Boolean));
+      const matched = identities.size === 1 ? domainMatches[0] : null;
       if (matched) {
         ext = candidate;
         userId = matched.user_id ?? null;
@@ -157,11 +168,19 @@ async function processEvent(event: any) {
     }
   }
   if (!brokerProfile && ext) {
-    const { data: p } = await admin
+    const { data: candidates } = await admin
       .from("planipret_profiles").select(profileFields)
-      .or(`extension.eq.${String(ext)},ns_extension.eq.${String(ext)}`).maybeSingle();
-    userId = p?.user_id ?? null;
-    brokerProfile = p;
+      .or(`extension.eq.${String(ext)},ns_extension.eq.${String(ext)}`).limit(10);
+    const domainMatches = eventDomain
+      ? (candidates ?? []).filter((p: any) => String(p.ns_domain ?? "").trim().toLowerCase() === eventDomain)
+      : (candidates ?? []);
+    const identities = new Set(domainMatches.map((p: any) => String(p.user_id ?? p.id ?? "")).filter(Boolean));
+    if (identities.size === 1) {
+      brokerProfile = domainMatches[0];
+      userId = brokerProfile?.user_id ?? null;
+    } else if (identities.size > 1) {
+      console.warn("[ns-webhook] ambiguous extension ignored", { extension: String(ext), domain_present: Boolean(eventDomain) });
+    }
   }
 
   const sendPush = (uid: string, payload: any) => {

@@ -102,6 +102,7 @@ Deno.serve(async (req) => {
   });
   let url = res.ok ? pickUrl(res.data) : null;
   let source: "maestro" | "netsapiens" = "maestro";
+  let maestroLinkConfirmed = false;
   const meta = ((call as any)?.metadata ?? {}) as Record<string, unknown>;
 
   // Maestro ne génère pas toujours le média (404 récurrent). L'audio réel vit
@@ -178,9 +179,10 @@ Deno.serve(async (req) => {
         notes,
       },
     });
+    maestroLinkConfirmed = put.ok && !((put as any)?.data && typeof (put as any).data === "object" && (put as any).data.success === false);
     await pipelineLog(admin, {
-      call_id, user_id: userId, step: "recording_push", status: put.ok ? "success" : "error",
-      error_message: put.ok ? undefined : `maestro_put_${put.status}: ${typeof (put as any).data === "string" ? String((put as any).data).slice(0, 300) : JSON.stringify((put as any).data ?? {}).slice(0, 300)}`,
+      call_id, user_id: userId, step: "recording_push", status: maestroLinkConfirmed ? "success" : "error",
+      error_message: maestroLinkConfirmed ? undefined : `maestro_put_${put.status}: ${typeof (put as any).data === "string" ? String((put as any).data).slice(0, 300) : JSON.stringify((put as any).data ?? {}).slice(0, 300)}`,
       endpoint: (put as any).path ?? null,
       http_status: put.status,
       entity_type: "call",
@@ -205,6 +207,24 @@ Deno.serve(async (req) => {
       error_message: "media_not_ready", updated_at: new Date().toISOString(),
     }, { onConflict: "call_id" }).then(() => {}, () => {});
     return json({ success: false, retry_pending: true, skipped: "media_not_ready", status: res.status }, 200);
+  }
+
+  // A usable local/NetSapiens URL is not proof that Maestro received the link.
+  // Preserve it for the next retry, but never mark the CRM recording as synced.
+  if (!maestroLinkConfirmed) {
+    await admin.from("planipret_phone_calls").update({
+      metadata: {
+        ...meta,
+        maestro_media_pending: true,
+        maestro_recording_last_poll_at: new Date().toISOString(),
+        maestro_recording_candidate_url: url,
+      },
+    }).eq("id", call_id);
+    await admin.from("planipret_recording_uploads").upsert({
+      call_id, user_id: userId, maestro_call_id: maestroCallId, status: "pending",
+      error_message: "maestro_recording_link_unconfirmed", updated_at: new Date().toISOString(),
+    }, { onConflict: "call_id" }).then(() => {}, () => {});
+    return json({ success: false, retry_pending: true, error: "maestro_recording_link_unconfirmed", recording_url: url }, 200);
   }
 
 

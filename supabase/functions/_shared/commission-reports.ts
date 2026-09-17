@@ -124,8 +124,11 @@ export function normalizeFilters(input: any): { filters: NormalizedFilters; erro
   }
   if (raw.per_page != null && String(raw.per_page).trim() !== "") {
     const n = Number(raw.per_page);
-    if (!Number.isInteger(n) || n < 1 || n > 200) errors.per_page = "per_page doit être entre 1 et 200.";
-    else f.per_page = n;
+    if (!Number.isInteger(n) || n < 1) errors.per_page = "per_page doit être un entier >= 1.";
+    // Some installed clients predate the server-side 200-row ceiling and ask
+    // for 250 or 500 rows. Clamp at the gateway rather than treating a valid
+    // Maestro query as an empty report; pagination metadata remains truthful.
+    else f.per_page = Math.min(n, 200);
   }
   return { filters: f, errors };
 }
@@ -153,6 +156,13 @@ export interface ApiCall {
   error?: string;
 }
 
+function upstreamMessage(status: number, text: string, contentType: string | null): string {
+  const looksHtml = /<\s*(?:!doctype|html|head|body|center|h1)\b/i.test(text)
+    || (contentType ?? "").toLowerCase().includes("text/html");
+  if (status >= 500 || looksHtml) return "maestro_upstream_unavailable";
+  return "maestro_response_invalid";
+}
+
 /** GET with 8s timeout and exactly one retry, only for network/5xx. */
 export async function commissionGet(path: string, token: string, correlationId: string): Promise<ApiCall> {
   const url = `${COMMISSION_API_BASE}${path}`;
@@ -174,8 +184,32 @@ export async function commissionGet(path: string, token: string, correlationId: 
       });
       const text = await res.text();
       let data: any = null;
-      try { data = text ? JSON.parse(text) : null; } catch { data = { message: text.slice(0, 300) }; }
-      last = { ok: res.ok, status: res.status, data, durationMs: Date.now() - started };
+      try { data = text ? JSON.parse(text) : null; } catch {
+        data = { message: upstreamMessage(res.status, text, res.headers.get("content-type")) };
+      }
+      // The published Maestro contract uses a JSON object with success/data.
+      // Never expose an HTML gateway page or accept a business-level failure
+      // as an empty list merely because its HTTP status was 2xx.
+      const contractFailure = res.ok && (!data || typeof data !== "object" || data.success === false);
+      if (contractFailure) {
+        last = {
+          ok: false,
+          status: 502,
+          data: { message: "maestro_contract_error" },
+          durationMs: Date.now() - started,
+          error: "maestro_contract_error",
+        };
+      } else if (!res.ok && res.status >= 500) {
+        last = {
+          ok: false,
+          status: res.status,
+          data: { message: "maestro_upstream_unavailable" },
+          durationMs: Date.now() - started,
+          error: "maestro_upstream_unavailable",
+        };
+      } else {
+        last = { ok: res.ok, status: res.status, data, durationMs: Date.now() - started };
+      }
       if (res.ok) return last;
       // 401/403/422 are terminal — never retry.
       if (res.status < 500) return last;

@@ -13,49 +13,58 @@ import {
   getMaestroConfig,
   json,
   maestroAudit,
-  maestroFetch,
   normalizePhone,
 } from "../_shared/maestro.ts";
 import { clientUrl, fetchClientDeals } from "../_shared/maestro-deals.ts";
+import { guardPlanipret } from "../_shared/planipret-guard.ts";
 
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
+  if (req.method !== "GET" && req.method !== "POST") return json({ found: false, error: "method_not_allowed" }, 405);
   try {
     const url = new URL(req.url);
-    const phone = normalizePhone(url.searchParams.get("phone"));
-    const callId = url.searchParams.get("call_id");
-    const userIdHeader = req.headers.get("x-user-id");
+    const body = req.method === "POST" ? await req.json().catch(() => ({} as any)) : {};
+    const phone = normalizePhone(body?.phone ?? url.searchParams.get("phone"));
+    const callId = String(body?.call_id ?? url.searchParams.get("call_id") ?? "").trim() || null;
     if (!phone) return json({ found: false, error: "phone_required" }, 400);
+
+    const guard = await guardPlanipret(req);
+    if ("error" in guard) return guard.error;
 
     const admin = adminClient();
     const cfg = await getMaestroConfig(admin);
     if (!cfg.url || !cfg.key) return json({ found: false, error: "maestro_not_configured" }, 200);
 
-    const auth = await getBrokerAuth(admin, userIdHeader);
-    const res = await maestroFetch(cfg, {
-      method: "POST",
-      path: `/api/v1/users/${encodeURIComponent(String(auth.brokerId ?? ""))}/lookup-by-phone`,
-      token: auth.token,
-      body: { phone },
-    });
-
-    if (res.status === 404 || (res.ok && !res.data)) {
-      return json({ found: false, phone });
+    const auth = await getBrokerAuth(admin, guard.user.id);
+    if (!auth.brokerId || !auth.token) return json({ found: false, error: "maestro_not_connected" }, 200);
+    // The former private phone-search route is not part of the published Maestro contract. The
+    // app's client list is already hydrated through the documented, per-user
+    // directory endpoint; restrict this convenience lookup to that broker's
+    // cached result rather than probing a private upstream route.
+    const { data: cached, error: cacheError } = await admin
+      .from("planipret_maestro_clients")
+      .select("*")
+      .eq("user_id", guard.user.id)
+      .eq("phone_e164", phone)
+      .order("cached_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (cacheError) {
+      await maestroAudit(admin, "client_lookup_cache_failed", { status: "cache_error" });
+      return json({ found: false, error: "lookup_unavailable" }, 200);
     }
-    if (!res.ok) {
-      await maestroAudit(admin, "client_lookup_failed", { phone, status: res.status });
-      return json({ found: false, error: "lookup_failed", status: res.status }, 200);
-    }
+    if (!cached) return json({ found: false, phone, source: "broker_cache" });
 
-    const client = res.data?.client ?? res.data;
+    const client = cached;
     const clientId = client?.id ?? client?.client_id;
 
     if (callId && clientId) {
       await admin
         .from("planipret_phone_calls")
         .update({ maestro_client_id: String(clientId) })
-        .eq("id", callId);
+        .eq("id", callId)
+        .eq("user_id", guard.user.id);
     }
 
     // Best-effort dossier resolution. When Maestro exposes no dossier for this

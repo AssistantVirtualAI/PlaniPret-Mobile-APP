@@ -26,6 +26,7 @@ import {
 } from "../_shared/maestro.ts";
 import { callCorrelationId, ensureMaestroCall } from "../_shared/maestro-guard.ts";
 import { recordingPermalink } from "../_shared/recording-link.ts";
+import { authorizeCallAccess, requireApprovedCallConsent } from "../_shared/planipret-call-access.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -201,15 +202,13 @@ Deno.serve(async (req) => {
     }
     log("call_loaded", { user_id: call.user_id, maestro_synced: call.maestro_synced, maestro_call_id: call.maestro_call_id });
 
-    // ── Consentement du courtier ───────────────────────────
-    // Rien ne part vers Maestro tant que le courtier n'a pas dit oui,
-    // et jamais pour un appel supprimé.
-    if ((call as any).deleted_at) {
-      return json({ success: false, skipped: "call_deleted", request_id: rid }, 200);
-    }
-    if (String((call as any).save_consent ?? "pending") !== "approved") {
-      return json({ success: false, skipped: "consent_pending", request_id: rid }, 200);
-    }
+    // ── Autorisation et consentement du courtier ───────────
+    // A broker may only process a call they own. Internal workers authenticate
+    // with the service-role token and retain the same consent requirement.
+    const access = await authorizeCallAccess(req, admin, call as any);
+    if (!access.ok) return json({ success: false, error: access.error, request_id: rid }, access.status);
+    const consent = requireApprovedCallConsent(call as any);
+    if (!consent.ok) return json({ success: false, skipped: consent.error, request_id: rid }, consent.status);
 
 
 

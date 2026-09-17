@@ -573,27 +573,18 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
     try {
       const query = String(p?.query ?? "").trim();
       if (!query) return { success: false, error: "query_required" };
-      // Cache first
+      // Cache first, but never cross a broker boundary. The cache is only an
+      // acceleration of the live per-user Maestro lookup, not a shared directory.
       const { data: cached } = await ctx.admin.from("planipret_maestro_clients")
-        .select("*").or(`name.ilike.%${query}%,phone.ilike.%${query}%,email.ilike.%${query}%`).limit(5);
+        .select("*")
+        .eq("user_id", ctx.userId)
+        .or(`full_name.ilike.%${query}%,phone_e164.ilike.%${query}%,email.ilike.%${query}%`)
+        .limit(5);
       if (cached?.length) return { success: true, found: true, clients: cached, source: "cache" };
 
-      const uid = await maestroUserId(ctx);
-      if (!uid) return MAESTRO_NOT_LINKED;
-
-      // Production: phone lookup is a POST, name/email search goes through the
-      // per-user client list.
-      const digits = query.replace(/[^\d+]/g, "");
-      if (digits.length >= 7) {
-        try {
-          const result = await maestroFetch(ctx, `/users/${uid}/lookup-by-phone`, {
-            method: "POST",
-            body: JSON.stringify({ phone: digits }),
-          });
-          const client = result?.client ?? result?.data ?? (Array.isArray(result) ? result[0] : null);
-          if (client) return { success: true, found: true, clients: [client], source: "maestro" };
-        } catch { /* fall through to list search */ }
-      }
+      if (!(await maestroUserId(ctx))) return MAESTRO_NOT_LINKED;
+      // The published per-user client directory supports the user-facing
+      // search; avoid the private lookup-by-phone route even for numeric input.
       const r = await maestroActions(ctx, "list_clients", { search: query, limit: 5 });
       const clients = r?.clients ?? [];
       return r?.success
@@ -625,29 +616,23 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
         if (!cid) return { success: false, error: "client_not_found", message: `Aucun client Maestro pour ${q}` };
         p = { ...p, client_id: String(cid) };
       }
-      const uid = await maestroUserId(ctx);
-      if (!uid) return MAESTRO_NOT_LINKED;
       const limit = p?.limit ?? 20;
-      try {
-        const result = await maestroFetch(ctx, `/users/${uid}/clients/${encodeURIComponent(p.client_id)}/communications?limit=${limit}`);
-        const list = result?.data ?? result?.communications ?? result;
-        return { success: true, communications: list, count: Array.isArray(list) ? list.length : 0, source: "maestro" };
-      } catch (_) {
-        // Maestro n'expose pas encore l'historique en prod → repli sur nos données locales.
-        const { data: calls } = await ctx.admin.from("planipret_phone_calls")
-          .select("id, direction, created_at, duration_seconds, ai_summary, from_number, to_number")
-          .eq("maestro_client_id", String(p.client_id))
-          .in("user_id", ownerIds(ctx))
-          .order("created_at", { ascending: false })
-          .limit(limit);
-        return {
-          success: true,
-          communications: calls ?? [],
-          count: (calls ?? []).length,
-          source: "local",
-          message: "Historique Maestro indisponible — données locales Planiprêt utilisées.",
-        };
-      }
+      // Maestro publishes the client profile but not a client communications
+      // endpoint in the approved contract. Return only the broker-owned local
+      // call history instead of probing a private upstream route.
+      const { data: calls } = await ctx.admin.from("planipret_phone_calls")
+        .select("id, direction, created_at, duration_seconds, ai_summary, from_number, to_number")
+        .eq("maestro_client_id", String(p.client_id))
+        .in("user_id", ownerIds(ctx))
+        .order("created_at", { ascending: false })
+        .limit(limit);
+      return {
+        success: true,
+        communications: calls ?? [],
+        count: (calls ?? []).length,
+        source: "local",
+        message: "Historique Maestro non publié — données locales Planiprêt utilisées.",
+      };
     } catch (e) { return { success: false, error: String(e) }; }
   },
 

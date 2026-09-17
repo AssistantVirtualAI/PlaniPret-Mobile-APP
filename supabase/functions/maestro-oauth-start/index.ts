@@ -8,6 +8,24 @@ import { getMaestroOAuthEnv, isMaestroOAuthConfigured } from "../_shared/maestro
 const j = (b: unknown, s = 200) =>
   new Response(JSON.stringify(b), { status: s, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
+const MAESTRO_CALLBACK_PATH = "/auth/maestro/callback";
+const WEB_CALLBACK_HOSTS = new Set([
+  "avastatistic.ca",
+  "www.avastatistic.ca",
+  "client.planipret.com",
+  "www.client.planipret.com",
+]);
+
+function redirectAllowed(value: string, isMobile: boolean): boolean {
+  if (isMobile && value === "planipret://auth/maestro/callback") return true;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.pathname === MAESTRO_CALLBACK_PATH && WEB_CALLBACK_HOSTS.has(url.host.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   try {
@@ -43,17 +61,10 @@ Deno.serve(async (req) => {
     const platform = body?.platform ?? "web"; // "web" | "mobile"
     const isMobile = platform === "mobile";
 
-    // For web, refuse non-https redirect_uri — Maestro would echo it and Safari
-    // would then fail to open the returned page ("l'adresse n'est pas valide").
-    if (!isMobile) {
-      try {
-        const r = new URL(redirectUri);
-        if (r.protocol !== "https:") {
-          return j({ error: "redirect_uri_not_https", detail: `web redirect_uri must be https, got ${redirectUri}` }, 400);
-        }
-      } catch {
-        return j({ error: "redirect_uri_invalid", detail: `redirect_uri is not a valid URL: ${redirectUri}` }, 400);
-      }
+    // OAuth codes may return only to a registered Planiprêt callback. Mobile
+    // uses the app deep link; every web callback is HTTPS and host allowlisted.
+    if (!redirectAllowed(String(redirectUri), isMobile)) {
+      return j({ error: "redirect_uri_not_allowed" }, 400);
     }
 
     const clientId = isMobile ? env.mobileClientId : env.clientId;
@@ -73,13 +84,17 @@ Deno.serve(async (req) => {
 
     // Un seul insert — code_verifier inclus directement si mobile
     const state = crypto.randomUUID();
-    await admin.from("planipret_maestro_oauth_states").insert({
+    const { error: stateInsertError } = await admin.from("planipret_maestro_oauth_states").insert({
       state,
       user_id: u.user.id,
       redirect_uri: redirectUri,
       platform,
       ...(codeVerifier ? { code_verifier: codeVerifier } : {}),
     });
+    if (stateInsertError) {
+      console.error("[maestro-oauth-start] state insert failed", stateInsertError.code);
+      return j({ error: "oauth_state_create_failed" }, 500);
+    }
 
     const url = new URL(env.authUrl);
     url.searchParams.set("response_type", "code");

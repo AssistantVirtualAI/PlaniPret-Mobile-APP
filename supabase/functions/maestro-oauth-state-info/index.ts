@@ -20,6 +20,7 @@ Deno.serve(async (req) => {
       .from("planipret_maestro_oauth_states")
       .select("platform, redirect_uri")
       .eq("state", state)
+      .gt("expires_at", new Date().toISOString())
       .maybeSingle();
 
     if (!data) return j({ found: false, platform: "web" });

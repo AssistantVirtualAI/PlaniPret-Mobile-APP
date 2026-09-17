@@ -194,10 +194,16 @@ Deno.serve(async (req) => {
 
     const { rows, error } = await fetchPages(token, source === "admin_token" ? mid : null);
     if (error) {
+      const reason = error.status >= 500
+        ? "maestro_upstream_temporarily_unavailable"
+        : `${source}:${error.message}`.slice(0, 400);
       diagRows.push({
         broker_user_id: p.user_id, broker_label: label, broker_email: p.email ?? null,
         maestro_broker_id: mid, connected: source === "broker_token", status: "error",
-        reason: `${source}:${error.message}`.slice(0, 400), http_status: error.status,
+        // A 5xx means the broker token was accepted but Maestro was temporarily
+        // unavailable. The scheduled 30-minute run retries it; never persist
+        // raw proxy HTML in a diagnostic visible to brokers.
+        reason, http_status: error.status,
         rows_count: 0, source, last_attempt_at: attemptedAt,
       });
       continue;

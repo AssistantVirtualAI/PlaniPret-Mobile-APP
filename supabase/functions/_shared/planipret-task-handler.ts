@@ -33,6 +33,10 @@ export interface UpstreamList {
   tasks: any[];
   endpoint: string | null;
   status: number;
+  /** True only when every reported upstream page has been read. */
+  complete?: boolean;
+  pages_read?: number;
+  truncated?: boolean;
 }
 
 export interface TaskDeps {
@@ -584,14 +588,14 @@ export async function handleTaskRequest(
       // When an admin inspects a broker, mirror them under THAT broker's own
       // local user id so the admin task board reflects the real Maestro data.
       if (!overrideBroker) {
-        await syncProjection(admin, userId, all, { full: !from && !to });
+        await syncProjection(admin, userId, all, { full: Boolean(upstream.complete) && !from && !to });
       } else {
         try {
           const { data: owner } = await admin
             .from("planipret_profiles").select("user_id")
             .eq("maestro_broker_id", overrideBroker).not("user_id", "is", null).limit(1);
           const ownerId = owner?.[0]?.user_id ? String(owner[0].user_id) : null;
-          if (ownerId) await syncProjection(admin, ownerId, all, { full: !from && !to });
+          if (ownerId) await syncProjection(admin, ownerId, all, { full: Boolean(upstream.complete) && !from && !to });
         } catch { /* mirroring is best effort */ }
       }
     } else if (overrideBroker) {
@@ -624,13 +628,17 @@ export async function handleTaskRequest(
         overdue_count: counts.overdue,
         page: pageOut.page,
         limit: pageOut.limit,
-        total: pageOut.total,
-        has_more: pageOut.has_more,
-        ...(src === "unavailable"
-          ? { error: "tasks_unavailable", message: "Liste des tâches indisponible pour le moment." }
-          : src === "projection"
-            ? { message: "Dernier état connu (liste live indisponible)." }
-            : {}),
+          total: pageOut.total,
+          has_more: pageOut.has_more,
+          upstream_pages_read: upstream.pages_read ?? null,
+          upstream_truncated: upstream.truncated ?? false,
+          ...(src === "unavailable"
+            ? { error: "tasks_unavailable", message: "Liste des tâches indisponible pour le moment." }
+            : src === "projection"
+              ? { message: "Dernier état connu (liste live indisponible)." }
+              : upstream.truncated
+                ? { message: "Liste Maestro partielle : actualisation en cours." }
+              : {}),
         correlation_id,
       },
     };
@@ -996,7 +1004,7 @@ export async function handleTaskRequest(
     const key = String(createInput?.idempotency_key ?? idempotencyKey(["create", userId, payload.xid as any, payload.type as any, payload.date as any, payload.notes as any]));
     const out = await withIdempotency(admin, userId, key, "create", async () => {
       const res = await deps.apiFetch("/api/main/tasks", { method: "POST", body: JSON.stringify(payload) });
-      if (!res.ok) {
+      if (!res.ok || res.data?.success === false) {
         await audit(admin, { action: "task_create_failed", user_id: userId, source, session_id: sessionId, status: res.status, correlation_id, result: "error" });
         return { status: 200, body: { ...mapTaskApiError(res.status, res.data), correlation_id } };
       }
@@ -1013,7 +1021,7 @@ export async function handleTaskRequest(
           method: "PUT",
           body: JSON.stringify({ task_id: Number(task.id) || task.id, users_id: Number(wantedAssignee) }),
         });
-        if (rep.ok) {
+        if (rep.ok && rep.data?.success !== false) {
           const repRaw = rep.data?.data ?? rep.data?.task ?? rep.data ?? {};
           const merged = normalizeTask({ ...payload, ...raw, ...repRaw, created_by_ava: source !== "app" });
           assignment_repair = readAssignment(merged.raw ?? merged).source === "users" ? "repaired" : "failed";
@@ -1129,7 +1137,7 @@ export async function handleTaskRequest(
       const res = await deps.apiFetch(`/api/main/tasks/${encodeURIComponent(taskId)}`, {
         method: "PUT", body: JSON.stringify(built.payload),
       });
-      if (!res.ok) {
+      if (!res.ok || res.data?.success === false) {
         await audit(admin, { action: "task_update_failed", user_id: userId, task_id: taskId, source, session_id: sessionId, status: res.status, correlation_id, result: "error" });
         return { status: 200, body: { ...mapTaskApiError(res.status, res.data), correlation_id } };
       }
@@ -1158,7 +1166,7 @@ export async function handleTaskRequest(
       const res = await deps.apiFetch(`/api/main/tasks/${encodeURIComponent(taskId)}`, {
         method: "DELETE", body: JSON.stringify({ task_id: Number.isNaN(Number(taskId)) ? taskId : Number(taskId) }),
       });
-      if (!res.ok) {
+      if (!res.ok || res.data?.success === false) {
         await audit(admin, { action: "task_delete_failed", user_id: userId, task_id: taskId, source, session_id: sessionId, status: res.status, correlation_id, result: "error" });
         return { status: 200, body: { ...mapTaskApiError(res.status, res.data), correlation_id } };
       }

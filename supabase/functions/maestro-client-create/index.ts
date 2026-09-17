@@ -12,7 +12,6 @@ import {
 import { guardPlanipret } from "../_shared/planipret-guard.ts";
 import { createClient_ } from "../_shared/maestro-scribe.ts";
 import { getUserMaestroAccessToken } from "../_shared/maestro-oauth.ts";
-import { getMaestroAdminAccessToken } from "../_shared/maestro-admin-token.ts";
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -33,13 +32,16 @@ Deno.serve(async (req) => {
     const admin = adminClient();
     const cfg = await getMaestroConfig(admin);
     const ownToken = await getUserMaestroAccessToken(admin, guard.user.id).catch(() => null);
-    const firm = ownToken ? { token: null, source: "none" as const } : await getMaestroAdminAccessToken();
-    const staticToken = Deno.env.get("PLANIPRET_ACCESS_TOKEN") ?? null;
-    const token = ownToken ?? firm.token ?? staticToken;
-    const tokenSource = ownToken ? "broker_oauth" : firm.token ? firm.source : staticToken ? "static_env" : "none";
-    if (!token) {
-      return json({ success: false, error: "maestro_not_connected", token_source: tokenSource }, 200);
+    if (!ownToken) {
+      return json({
+        success: false,
+        error: "maestro_not_connected",
+        message: "Connectez votre propre compte Maestro avant de créer un client.",
+        token_source: "none",
+      }, 200);
     }
+    const token = ownToken;
+    const tokenSource = "broker_oauth";
 
     const payload: Record<string, unknown> = {
       first_name: firstName,
