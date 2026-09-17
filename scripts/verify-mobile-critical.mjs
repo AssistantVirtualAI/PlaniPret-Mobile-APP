@@ -58,6 +58,13 @@ check(!webhook.includes('functions/v1/maestro-sync-call'), "CDR webhook must not
 check(webhook.includes("CDR reconciled to existing call") && webhook.includes("findExistingCdrCall") && webhook.includes("ns_orig_callid"), "CDR webhook must reconcile the final CDR to the original owned call before post-call processing");
 check(nsEvents.includes('if (looksLikeCdr(item))') && nsEvents.indexOf('if (looksLikeCdr(item))') < nsEvents.indexOf('if (looksLikeCall(item))'), "NetSapiens CDRs must be classified before call-leg events so post-call processing is not skipped");
 check(webhook.includes('ignoreDuplicates: true'), "Incoming call persistence must suppress duplicate pushes across Edge instances");
+const inboundWebhookStart = webhook.indexOf('} else if (type === "call.inbound")');
+const inboundWebhookEnd = webhook.indexOf('} else if (type === "message.inbound")', inboundWebhookStart);
+const inboundWebhook = inboundWebhookStart >= 0 && inboundWebhookEnd > inboundWebhookStart
+  ? webhook.slice(inboundWebhookStart, inboundWebhookEnd)
+  : "";
+check(inboundWebhook.includes('metadata: dndActive') && inboundWebhook.includes(': {},'), "Incoming call persistence must write an empty metadata object instead of null");
+check(inboundWebhook.includes('if (!insertedCall && !insertCallError)') && inboundWebhook.includes('await sendVoipPush(userId, inboundPushPayload)'), "An incoming-call persistence error must not suppress the broker VoIP ring");
 check(postCallSweeper.includes("maestro-cdr-retry-job") && postCallSweeper.includes("skip_cdr_retry"), "The scheduled Maestro sweeper must also drain consented CDR retries");
 check(cdrRetryJob.includes('.eq("save_consent", "approved")') && cdrRetryJob.includes('.is("deleted_at", null)'), "CDR retry sweeps must process only approved, undeleted calls");
 check(webhook.includes('stableWebhookId("sms"') && webhook.includes('duplicate SMS ignored') && webhook.includes('stableWebhookId("voicemail"') && webhook.includes('duplicate voicemail ignored'), "SMS and voicemail webhooks must be idempotent before broadcast/push");

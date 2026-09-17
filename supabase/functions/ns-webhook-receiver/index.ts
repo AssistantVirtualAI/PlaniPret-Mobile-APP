@@ -455,13 +455,15 @@ async function processEvent(event: any) {
       from_number: extractCaller(data) || null,
       to_number: data.to_number ?? data.to ?? null,
       status: dndActive ? "voicemail" : "inbound_ringing",
-      metadata: dndActive ? { dnd_auto_voicemail: true, dnd_message: brokerProfile?.dnd_message_fr } : null,
+      // `metadata` is NOT NULL: never write null, or the insert fails and the
+      // incoming-call push is never delivered (phone stays silent).
+      metadata: dndActive ? { dnd_auto_voicemail: true, dnd_message: brokerProfile?.dnd_message_fr ?? null } : {},
     }, { onConflict: "ns_call_id", ignoreDuplicates: true }).select("id").maybeSingle();
     if (insertCallError) {
+      // Persisting the call row must never block ringing the broker's phone.
       console.error("[ns-webhook] inbound call persist failed", insertCallError.message);
-      return;
     }
-    if (!insertedCall) {
+    if (!insertedCall && !insertCallError) {
       console.info("[ns-webhook] inbound call already persisted; duplicate push suppressed", { call_id: callId });
       return;
     }
