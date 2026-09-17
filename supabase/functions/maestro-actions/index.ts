@@ -241,6 +241,16 @@ Deno.serve(async (req) => {
     const h = { Authorization: `Bearer ${cfg.key}`, "Content-Type": "application/json", "X-Account-Id": cfg.accountId };
     const j = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
+    // `/tasks` and `/calendar` are a legacy machine-key CRM surface, not the
+    // broker-scoped public `/api/main` API. AVA mutations use the confirmed
+    // Planiprêt gateways instead. Keep this bridge for trusted server jobs only.
+    if (CRM_ACTIONS.has(action) && !isServiceRole) {
+      return j({ success: false, error: "maestro_legacy_action_forbidden" }, 403);
+    }
+    if (CRM_ACTIONS.has(action) && !authenticatedUserId && !payload?.user_id) {
+      return j({ success: false, error: "broker_user_required" }, 400);
+    }
+
     switch (action) {
       case "create_task": {
         const r = await fetch(`${cfg.url}/tasks`, { method: "POST", headers: h, body: JSON.stringify(payload) });

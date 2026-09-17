@@ -8,7 +8,11 @@ const appDir = path.resolve(path.dirname(__filename), "..");
 const repoRoot = path.resolve(appDir, "../..");
 const appSrc = path.join(appDir, "src");
 const rootSrc = path.join(repoRoot, "src");
-const importReportPath = path.join(appDir, "reports", "imports.json");
+// The standalone release repository contains the mobile application directly
+// at its root. It intentionally also contains portal-only source files and
+// assets, which are not copied into Capacitor and must not be audited as if
+// they were mobile sources.
+const standaloneReleaseRepo = path.basename(appDir) === "planipret-build";
 
 const failures = [];
 
@@ -37,13 +41,35 @@ function sameFile(a, b) {
   return fs.existsSync(a) && fs.existsSync(b) && read(a) === read(b);
 }
 
+function isTestSource(file) {
+  const relative = path.relative(appSrc, file);
+  return /(?:^|[\/])(?:__tests__|test|tests)(?:[\/]|$)|\.(?:test|spec)\.[cm]?[jt]sx?$|_test\.[cm]?[jt]sx?$/.test(relative);
+}
+
+function isMobileSourceFile(file) {
+  if (!standaloneReleaseRepo) return true;
+  const relative = path.relative(appSrc, file).replaceAll(path.sep, "/");
+  return (
+    relative.startsWith("pages/planipret/mobile/")
+    || relative.startsWith("components/planipret/mobile/")
+    || relative.startsWith("lib/planipret/")
+    || relative.startsWith("locales/")
+    || [
+      "pages/planipret/PlanipretMobile.tsx",
+      "components/auth/MplanipretGuard.tsx",
+      "hooks/useMplanipretLang.ts",
+      "hooks/useMplanipretTheme.ts",
+      "hooks/useAvaNavigation.ts",
+      "hooks/usePullToRefresh.tsx",
+      "hooks/useRealtimeManager.ts",
+      "lib/routes.ts",
+      "lib/debug/navDebug.ts",
+    ].includes(relative)
+  );
+}
+
 function scanImports() {
-  const report = fs.existsSync(importReportPath) ? JSON.parse(read(importReportPath)) : { orphanFiles: [] };
-  const orphanFiles = new Set((report.orphanFiles ?? []).map((file) => path.normalize(String(file))));
-  const files = walk(appSrc).filter((file) => {
-    const rel = path.normalize(path.relative(appDir, file));
-    return [".ts", ".tsx", ".js", ".jsx"].includes(path.extname(file)) && !orphanFiles.has(rel);
-  });
+  const files = walk(appSrc).filter((file) => [".ts", ".tsx", ".js", ".jsx"].includes(path.extname(file)) && !isTestSource(file) && isMobileSourceFile(file));
   const importRe = /(?:import|export)\s+(?:[^"']*?\s+from\s+)?["']([^"']+)["']|import\(["']([^"']+)["']\)/g;
 
   for (const file of files) {
@@ -51,6 +77,7 @@ function scanImports() {
     let match;
     while ((match = importRe.exec(source))) {
       const spec = match[1] || match[2];
+      if (/\b(?:import|export)\s+type\b/.test(match[0])) continue;
       if (!spec || !spec.startsWith(".")) continue;
       const resolved = path.resolve(path.dirname(file), spec);
       assert(resolved === appSrc || resolved.startsWith(appSrc + path.sep), `${path.relative(appDir, file)} imports outside mobile src: ${spec}`);
@@ -59,35 +86,19 @@ function scanImports() {
 }
 
 function scanAliasConfig() {
+  if (standaloneReleaseRepo) return;
   const vite = read(path.join(appDir, "vite.config.ts"));
-  const tsconfig = JSON.parse(read(path.join(appDir, "tsconfig.json")));
+  const tsconfig = read(path.join(appDir, "tsconfig.json"));
   assert(vite.includes("path.resolve(__dirname, './src')"), "vite.config.ts alias @ must point to ./src");
-  const aliases = tsconfig?.compilerOptions?.paths?.["@/*"];
-  assert(Array.isArray(aliases) && aliases.length === 1 && aliases[0] === "./src/*", "tsconfig.json alias @ must point to ./src only");
+  assert(tsconfig.includes('"@/*": ["./src/*"]'), "tsconfig.json alias @ must point to ./src only");
 }
 
 function scanNativeAssets() {
-  const report = fs.existsSync(importReportPath) ? JSON.parse(read(importReportPath)) : { orphanFiles: [] };
-  const orphanFiles = new Set((report.orphanFiles ?? []).map((file) => path.normalize(String(file))));
-  const codeFiles = walk(appSrc).filter((file) => {
-    const rel = path.normalize(path.relative(appDir, file));
-    return [".ts", ".tsx", ".js", ".jsx"].includes(path.extname(file)) && !orphanFiles.has(rel);
-  });
-  const importedSidecars = new Set();
-  for (const file of codeFiles) {
-    for (const match of read(file).matchAll(/["']([^"']+\.asset\.json)["']/g)) {
-      const spec = match[1];
-      const resolved = spec.startsWith("@/")
-        ? path.join(appSrc, spec.slice(2))
-        : path.resolve(path.dirname(file), spec);
-      importedSidecars.add(resolved);
-    }
-  }
-  for (const file of importedSidecars) {
-    assert(fs.existsSync(file), `${path.relative(appDir, file)} is imported but missing`);
-    if (!fs.existsSync(file)) continue;
+  if (standaloneReleaseRepo) return;
+  const assetFiles = walk(path.join(appSrc, "assets")).filter((file) => file.endsWith(".asset.json"));
+  for (const file of assetFiles) {
     const json = JSON.parse(read(file));
-    assert(typeof json.url === "string" && json.url.startsWith("https://"), `${path.relative(appDir, file)} must use an absolute https URL`);
+    assert(typeof json.url === "string" && json.url.startsWith("https://"), `${path.relative(appDir, file)} must use an absolute https URL for Capacitor WebView assets`);
   }
 }
 
@@ -105,10 +116,7 @@ function scanDistIfPresent() {
 }
 
 function scanParity() {
-  if (!fs.existsSync(rootSrc)) {
-    console.log("  [standalone] aucun arbre portail parent à comparer; le bundle mobile local reste la source de vérité");
-    return;
-  }
+  if (standaloneReleaseRepo) return;
   const pairs = [
     ["pages/planipret/mobile", "pages/planipret/mobile"],
     ["components/planipret/mobile", "components/planipret/mobile"],

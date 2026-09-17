@@ -97,7 +97,7 @@ const callParty = (c: Call, resolvedName?: string | null) => presentCallParty({
   toName: c.to_name,
   resolvedName,
 });
-const otherNumber = (c: Call) => callParty(c).phone || "";
+const otherNumber = (c: Call) => callParty(c).phone ?? callParty(c).internalExtension ?? "";
 const otherName = (c: Call) => callParty(c).name || "";
 // Label priority: NS caller_id_name → resolved (Maestro/MS/contacts) → phone
 // number → localized "Numéro non résolu" fallback.
@@ -693,9 +693,12 @@ function CallRow({ call, onTap, onCall, showCallBtn }: { call: Call; onTap: () =
   const dirColor = missed ? "var(--pp-danger)" : out ? "var(--pp-success)" : "var(--pp-brand-accent)";
   const Icon = missed ? PhoneMissed : out ? PhoneOutgoing : PhoneIncoming;
   const party = callParty(call);
-  const num = party.phone || "";
-  const names = useCallerNames([num]);
-  const partyWithName = callParty(call, names[num]);
+  // An internal endpoint has no public number, but it can still be resolved by
+  // the company directory. Looking it up prevents a known colleague appearing
+  // as only their extension in Recents.
+  const lookupKey = party.phone ?? party.internalExtension ?? "";
+  const names = useCallerNames([lookupKey]);
+  const partyWithName = callParty(call, names[lookupKey]);
   const label = partyWithName.name || partyWithName.formattedPhone || (lang === "en" ? UNRESOLVED_EN : UNRESOLVED_FR);
   const numberSub = partyWithName.formattedPhone;
   const showNumberSub = !!numberSub && !!partyWithName.name;

@@ -54,9 +54,12 @@ function makeApiFetch(token: string | null) {
         },
       });
       const text = await res.text();
+      const contentType = res.headers.get("content-type") ?? "";
+      const html = /text\/html/i.test(contentType) || /<\s*(?:!doctype|html|head|body|form)\b/i.test(text);
       let data: any = null;
       try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text.slice(0, 500) }; }
-      return { status: res.status, ok: res.ok, data };
+      if (html) data = { error: "maestro_html_response", raw: text.slice(0, 500) };
+      return { status: res.status, ok: res.ok && !html, data };
     } catch (e) {
       const aborted = String(e).includes("Abort");
       return { status: aborted ? 408 : 599, ok: false, data: { message: aborted ? "timeout" : String(e) } };
@@ -182,9 +185,13 @@ function makeListFetch(token: string | null) {
             });
             lastStatus = candidateStatus = res.status;
             if (!res.ok) { candidateIncomplete = true; break; }
-            const j = await res.json().catch(() => null);
+            const text = await res.text();
+            const contentType = res.headers.get("content-type") ?? "";
+            const html = /text\/html/i.test(contentType) || /<\s*(?:!doctype|html|head|body|form)\b/i.test(text);
+            let j: any = null;
+            try { j = text ? JSON.parse(text) : null; } catch { /* invalid response */ }
             // A 2xx transport result is not proof of a valid Maestro list.
-            if (j && typeof j === "object" && (j as any).success === false) { candidateIncomplete = true; break; }
+            if (html || !j || typeof j !== "object" || (j as any).success === false) { candidateIncomplete = true; break; }
             candidateOk = true;
             pagesRead += 1;
             const tasks = extractTaskRows(j).map(normalizeTask).filter((t: any) => t.id);

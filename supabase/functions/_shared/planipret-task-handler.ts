@@ -998,7 +998,25 @@ export async function handleTaskRequest(
       const check = await withDeadline(
         validateTaskTarget(deps, admin, profile, userId, payload.type, payload.xid, ownIds),
         8000,
-        { ok: true, type: payload.type as "user" | "contract", xid: String(payload.xid ?? ""), reason: "scope_check_timeout_passthrough" } as any,
+        // A timeout must not turn an unverified client or contract into an
+        // authorized target. A retry is safe; cross-broker task creation is not.
+        payload.type === "user"
+          ? {
+              ok: false,
+              type: "user" as const,
+              xid: String(payload.xid ?? ""),
+              error: "xid_out_of_scope" as const,
+              reason: "scope_check_timeout_fail_closed",
+              message: "Le périmètre client n'a pas pu être vérifié à temps. Réessayez avant de créer la tâche.",
+            }
+          : {
+              ok: false,
+              type: "contract" as const,
+              xid: String(payload.xid ?? ""),
+              error: "target_mapping_required" as const,
+              reason: "scope_check_timeout_fail_closed",
+              message: "Le périmètre du contrat n'a pas pu être vérifié à temps. Réessayez avant de créer la tâche.",
+            },
       );
       if (!check.ok) {
         await audit(admin, {

@@ -4,7 +4,6 @@
     <base-config cleartextTrafficPermitted="false">
         <trust-anchors>
             <certificates src="system" />
-            <certificates src="user" />
         </trust-anchors>
     </base-config>
     <!-- Explicit trust for NetSapiens WSS server -->
@@ -14,7 +13,6 @@
         <domain includeSubdomains="true">planipret.ca</domain>
         <trust-anchors>
             <certificates src="system" />
-            <certificates src="user" />
         </trust-anchors>
     </domain-config>
 </network-security-config>

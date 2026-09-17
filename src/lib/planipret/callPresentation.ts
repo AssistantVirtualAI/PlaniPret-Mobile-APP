@@ -87,7 +87,8 @@ function meaningfulName(value: unknown, ownExtension?: unknown): string | null {
 /**
  * Presents the *other party* in a call. Name comes first, then a resolved
  * contact name, then the public number. A PBX extension is never selected as
- * a primary label or phone sublabel.
+ * a primary label or phone sublabel. A trusted resolved name is also valid for
+ * an internal extension, so known colleagues do not appear as a bare extension.
  */
 export function presentCallParty(input: CallPartyInput): CallParty {
   const outbound = String(input.direction ?? "").toLowerCase() === "outbound";
@@ -95,7 +96,7 @@ export function presentCallParty(input: CallPartyInput): CallParty {
   const rawName = outbound ? input.toName : input.fromName;
   const phone = publicPhone(rawNumber, input.ownExtension);
   const directName = meaningfulName(rawName, input.ownExtension);
-  const resolvedName = phone ? meaningfulName(input.resolvedName, input.ownExtension) : null;
+  const resolvedName = meaningfulName(input.resolvedName, input.ownExtension);
   const endpoint = normalizeCallEndpoint(rawNumber);
 
   return {

@@ -20,6 +20,7 @@ import java.nio.charset.StandardCharsets;
 import java.security.*;
 import java.util.*;
 import java.util.concurrent.*;
+import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
 
@@ -139,6 +140,12 @@ public class PpSipKeepAliveService extends Service {
     // SIP REGISTER can ever be sent.
     SSLSocket raw = (SSLSocket) SSLSocketFactory.getDefault().createSocket(host, port);
     raw.setUseClientMode(true);
+    // Require the peer certificate to match the configured WSS host. Without
+    // endpoint identification, a system-trusted certificate for another host
+    // could complete the TLS handshake on this long-lived VoIP channel.
+    SSLParameters tlsParameters = raw.getSSLParameters();
+    tlsParameters.setEndpointIdentificationAlgorithm("HTTPS");
+    raw.setSSLParameters(tlsParameters);
     raw.startHandshake();
     raw.setKeepAlive(true);
     raw.setSoTimeout(90000);

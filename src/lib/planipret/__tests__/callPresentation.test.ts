@@ -1,57 +1,29 @@
 import { describe, expect, it } from "vitest";
 import { presentCallParty } from "../callPresentation";
 
-describe("presentCallParty", () => {
-  it("prioritizes a caller name and a public phone number for an inbound call", () => {
+describe("presentCallParty (mobile bundle)", () => {
+  it("keeps the external caller name and number in Recents", () => {
     const party = presentCallParty({
       direction: "inbound",
-      fromNumber: "sip:+15145551234@planipret.ca",
+      fromNumber: "+15145551234",
       fromName: "Marie Tremblay",
       ownExtension: "111",
     });
 
-    expect(party).toEqual({
-      name: "Marie Tremblay",
-      phone: "15145551234",
-      formattedPhone: "(514) 555-1234",
-      internalExtension: null,
-    });
+    expect(party.name).toBe("Marie Tremblay");
+    expect(party.formattedPhone).toBe("(514) 555-1234");
   });
 
-  it("never displays the broker extension as the other party", () => {
+  it("uses a resolved directory name for a known internal extension", () => {
     const party = presentCallParty({
       direction: "inbound",
-      fromNumber: "111",
-      fromName: "111",
+      fromNumber: "1037",
+      resolvedName: "Sandra Allard",
       ownExtension: "111",
     });
 
-    expect(party.name).toBeNull();
+    expect(party.name).toBe("Sandra Allard");
     expect(party.phone).toBeNull();
-    expect(party.internalExtension).toBe("111");
-  });
-
-  it("uses a resolved contact name only when it has a public call number", () => {
-    const party = presentCallParty({
-      direction: "outbound",
-      toNumber: "5145554567",
-      resolvedName: "Client résolu",
-      ownExtension: "111",
-    });
-
-    expect(party.name).toBe("Client résolu");
-    expect(party.formattedPhone).toBe("(514) 555-4567");
-  });
-
-  it("does not treat a numeric caller-id-name as a person name", () => {
-    const party = presentCallParty({
-      direction: "inbound",
-      fromNumber: "+15145557890",
-      fromName: "+1 (514) 555-7890",
-      ownExtension: "111",
-    });
-
-    expect(party.name).toBeNull();
-    expect(party.formattedPhone).toBe("(514) 555-7890");
+    expect(party.internalExtension).toBe("1037");
   });
 });

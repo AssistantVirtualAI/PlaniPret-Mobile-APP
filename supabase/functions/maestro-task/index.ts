@@ -9,33 +9,49 @@ import {
   maestroAudit,
   maestroFetch,
 } from "../_shared/maestro.ts";
+import { guardPlanipret } from "../_shared/planipret-guard.ts";
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (req.method !== "POST") return json({ error: "method_not_allowed" }, 405);
+  const guard = await guardPlanipret(req);
+  if ("error" in guard) return guard.error;
   try {
     const body = await req.json().catch(() => ({}));
     const { maestro_client_id, title, due_date, priority, call_id, source } = body;
     if (!maestro_client_id || !title) {
       return json({ success: false, error: "missing_fields" }, 400);
     }
-    const userIdHeader = req.headers.get("x-user-id");
 
     const admin = adminClient();
     const cfg = await getMaestroConfig(admin);
     if (!cfg.url || !cfg.key) return json({ success: false, error: "maestro_not_configured" }, 200);
 
-    // Resolve user from call if not provided
-    let userId = userIdHeader;
-    if (!userId && call_id) {
+    // The authenticated broker is the sole identity source. Never honor a
+    // caller-controlled header, and never create a task on another broker's call.
+    const userId = guard.user.id;
+    if (call_id) {
       const { data } = await admin
         .from("planipret_phone_calls")
         .select("user_id")
         .eq("id", call_id)
         .maybeSingle();
-      userId = data?.user_id ?? null;
+      if (!data) return json({ success: false, error: "call_not_found" }, 404);
+      if (data.user_id !== userId) {
+        const { data: profile } = await admin
+          .from("planipret_profiles")
+          .select("id, user_id")
+          .eq("user_id", userId)
+          .maybeSingle();
+        if (!profile || (data.user_id !== profile.id && data.user_id !== profile.user_id)) {
+          return json({ success: false, error: "forbidden_call_scope" }, 403);
+        }
+      }
     }
     const auth = await getBrokerAuth(admin, userId);
+    if (!auth.brokerId) {
+      return json({ success: false, error: "maestro_broker_unresolved" }, 200);
+    }
 
     const res = await maestroFetch(cfg, {
       method: "POST",

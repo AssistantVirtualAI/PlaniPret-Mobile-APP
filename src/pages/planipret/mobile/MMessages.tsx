@@ -28,6 +28,7 @@ import { ms365Connected } from "@/lib/planipret/ms365Connected";
 import { Ms365ConnectionNotice } from "@/components/planipret/mobile/Ms365ConnectionNotice";
 import { useMs365Status } from "@/hooks/useMs365Status";
 import { canSendWithSmsAvailability, getSmsAvailability, type SmsAvailability } from "@/lib/planipret/smsAvailability";
+import { getSmsSubmission, type SmsSubmission } from "@/lib/planipret/smsSendGuard";
 
 import DOMPurify from "dompurify";
 
@@ -244,13 +245,6 @@ const msgIsOut = (m: any, myExt: string) => {
  * (copie « orig » + écho « term »). On dédoublonne sur corps + fenêtre de 2 min,
  * en gardant la copie sortante.
  */
-/** Hash court et stable d'une chaîne (clé d'idempotence). */
-const hashText = (str: string) => {
-  let h = 0;
-  for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0;
-  return h;
-};
-
 const dedupeMessages = (list: any[], myExt: string) => {
   const kept: any[] = [];
   for (const m of list) {
@@ -720,6 +714,8 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
   };
   const inputRef = useRef<HTMLInputElement>(null);
   const autoSentRef = useRef(false);
+  const smsSubmissionRef = useRef<SmsSubmission | null>(null);
+  const smsSendInFlightRef = useRef(false);
 
   const loadMessages = async () => {
     if (!currentThreadId) { setLoading(false); return; }
@@ -765,10 +761,14 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
   const send = async (overrideText?: string) => {
     const body = (overrideText ?? text).trim();
     if (!body) return;
+    if (smsSendInFlightRef.current) return;
     if (!canSendWithSmsAvailability(smsAvailability)) {
       toast.error(smsAvailability?.message ?? "Vérification du DID SMS en cours. Aucun texto n’a été envoyé.", { duration: 6000 });
       return;
     }
+    smsSendInFlightRef.current = true;
+    const submission = getSmsSubmission(smsSubmissionRef.current, { to: number, body });
+    smsSubmissionRef.current = submission;
     setSending(true);
     const optimistic: NsMessage = {
       id: `tmp-${Date.now()}`,
@@ -782,27 +782,17 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
     setMessages((prev) => dedupeMessages([...prev, optimistic], myExt));
     setText("");
     try {
-      // Clé d'idempotence stable : survit au retry, au double tap et au refresh.
-      const idempotencyKey = optimistic.id.replace("tmp-", "sms-") + "-" + Math.abs(hashText(`${number}|${body}`)).toString(36);
-      const payload = { action: "send", to: number, message: body, idempotency_key: idempotencyKey, ...(currentThreadId ? { thread_id: currentThreadId } : {}) };
+      const payload = { action: "send", to: number, message: body, idempotency_key: submission.idempotencyKey, ...(currentThreadId ? { thread_id: currentThreadId } : {}) };
       console.info("[pp-ns-sms] send →", { to: number, len: body.length, thread_id: currentThreadId ?? null });
-      // Retry automatique avec backoff exponentiel (2s → 6s → 18s).
-      const d: any = await retryWithBackoff(async () => {
-        const { data, error: err } = await ppEdgeInvoke("pp-ns-sms", payload);
-        if (err) {
-          console.error("[pp-ns-sms] invoke error", err);
-          throw new Error(err.message || t("messages.sendFailed"));
-        }
-        const res: any = data ?? {};
-        // Erreurs transitoires (réseau / 5xx) → retry ; refus métier → échec immédiat.
-        if (res?.status && Number(res.status) >= 500) throw new Error(`SMS temporairement indisponible (HTTP ${res.status})`);
-        return res;
-      }, {
-        attempts: 3,
-        baseDelayMs: 2000,
-        maxDelayMs: 20_000,
-        onRetry: ({ attempt, delayMs }) => console.warn(`[pp-ns-sms] retry ${attempt} dans ${delayMs}ms`),
-      });
+      // Do not retry automatically. A network/5xx response can arrive after
+      // NetSapiens accepted the message; another POST could then deliver a
+      // second SMS. An explicit future retry must reuse this idempotency key.
+      const { data, error: err } = await ppEdgeInvoke("pp-ns-sms", payload);
+      if (err) {
+        console.error("[pp-ns-sms] invoke error", err);
+        throw new Error(err.message || t("messages.sendFailed"));
+      }
+      const d: any = data ?? {};
       if (d.ok === false || d.error) {
         const status = d.status ? ` (HTTP ${d.status})` : "";
         const bodyDetail =
@@ -834,6 +824,7 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
       // Refresh from server to reconcile optimistic message
       window.dispatchEvent(new CustomEvent("ava:sms-sent", { detail: { number, body } }));
       setTimeout(() => loadMessages(), 600);
+      smsSubmissionRef.current = null;
 
 
     } catch (e: any) {
@@ -841,6 +832,7 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
       toast.error(e?.message ?? t("messages.sendFailed"), { duration: 6000 });
       setMessages((prev) => prev.filter((m) => m.id !== optimistic.id));
     } finally {
+      smsSendInFlightRef.current = false;
       setSending(false);
     }
   };

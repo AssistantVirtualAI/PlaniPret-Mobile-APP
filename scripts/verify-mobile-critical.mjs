@@ -68,6 +68,15 @@ check(inboundWebhook.includes('if (!insertedCall && !insertCallError)') && inbou
 check(postCallSweeper.includes("maestro-cdr-retry-job") && postCallSweeper.includes("skip_cdr_retry"), "The scheduled Maestro sweeper must also drain consented CDR retries");
 check(cdrRetryJob.includes('.eq("save_consent", "approved")') && cdrRetryJob.includes('.is("deleted_at", null)'), "CDR retry sweeps must process only approved, undeleted calls");
 check(webhook.includes('stableWebhookId("sms"') && webhook.includes('duplicate SMS ignored') && webhook.includes('stableWebhookId("voicemail"') && webhook.includes('duplicate voicemail ignored'), "SMS and voicemail webhooks must be idempotent before broadcast/push");
+const smsGuard = read("src/lib/planipret/smsSendGuard.ts");
+const smsMessages = read("src/pages/planipret/mobile/MMessages.tsx");
+const smsContacts = read("src/pages/planipret/mobile/MContacts.tsx");
+const smsSendStart = smsMessages.indexOf("const send = async (overrideText?: string) =>");
+const smsSendEnd = smsMessages.indexOf("useEffect(() => {\n    if (!initialText)", smsSendStart);
+const smsSend = smsSendStart >= 0 && smsSendEnd > smsSendStart ? smsMessages.slice(smsSendStart, smsSendEnd) : "";
+check(smsGuard.includes("SMS_AUTOMATIC_ATTEMPTS = 1") && smsGuard.includes("canAutomaticallyRetrySms(): false"), "Broker SMS must prohibit automatic transport retries");
+check(smsSend.includes("getSmsSubmission") && smsSend.includes("smsSendInFlightRef") && !smsSend.includes("retryWithBackoff"), "Thread SMS must use one in-flight request and a stable idempotency key");
+check(smsContacts.includes("getSmsSubmission") && smsContacts.includes("idempotency_key: submission.idempotencyKey") && !smsContacts.includes("pp-pbx-action-queue") && !smsContacts.includes("queueForRetry"), "Contact SMS must never queue or automatically replay a broker message");
 
 const nsCalls = read("supabase/functions/pp-ns-calls/index.ts");
 check(nsCalls.includes("callback_disabled_use_sip_dialog") && !nsCalls.includes('"call-orig-user": `${deviceName}'), "Inbound answer fallback must never create a callback/double call");

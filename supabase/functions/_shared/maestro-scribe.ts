@@ -66,17 +66,34 @@ export async function scribeFetch<T = any>(
       body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
     });
     const text = await res.text();
+    const contentType = res.headers.get("content-type") ?? "";
+    const html = /text\/html/i.test(contentType) || /<\s*(?:!doctype|html|head|body|form)\b/i.test(text);
     let payload: any = null;
-    try { payload = text ? JSON.parse(text) : null; } catch { payload = { raw: text.slice(0, 800) }; }
+    let invalidJson = false;
+    try { payload = text ? JSON.parse(text) : null; } catch {
+      invalidJson = true;
+      payload = { raw: text.slice(0, 800) };
+    }
+    const invalidResponse = html || invalidJson || !payload || typeof payload !== "object";
+    const businessFailure = payload?.success === false;
     return {
-      ok: res.ok && payload?.success !== false,
+      // A 2xx HTML login/proxy page is not a successful Planiprêt API response.
+      ok: res.ok && !invalidResponse && !businessFailure,
       status: res.status,
       // The documented envelope is { data, meta?, links?, success }.
       data: payload && Object.prototype.hasOwnProperty.call(payload, "data") ? payload.data : payload,
       meta: payload?.meta ?? null,
       links: payload?.links ?? null,
-      success: payload?.success !== false,
-      error: res.ok ? null : (payload?.message || payload?.error || `HTTP ${res.status}`),
+      success: !invalidResponse && !businessFailure,
+      error: !res.ok
+        ? (payload?.message || payload?.error || `HTTP ${res.status}`)
+        : html
+          ? "maestro_html_response"
+          : invalidResponse
+            ? "maestro_response_invalid"
+            : businessFailure
+              ? (payload?.message || payload?.error || "maestro_contract_error")
+              : null,
       errors: payload?.errors ?? null,
       endpoint,
     };

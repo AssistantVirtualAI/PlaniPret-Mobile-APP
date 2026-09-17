@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useOutletContext } from "react-router-dom";
 import { ChevronLeft, Link2, MessageSquare, Phone, RefreshCw, CheckSquare, Wallet } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -11,6 +11,7 @@ import {
   type ClientCall, type ClientMessage,
 } from "@/lib/planipret/clientMaestro";
 import CommissionHomeCard from "@/components/planipret/mobile/CommissionHomeCard";
+import type { PlanipretMobileContext } from "../PlanipretMobile";
 
 type Tab = "calls" | "texts" | "tasks" | "commissions";
 
@@ -26,9 +27,10 @@ export default function MMaestro() {
   const lang = (localStorage.getItem("pp_lang") === "en" ? "en" : "fr") as "fr" | "en";
   const en = lang === "en";
   const L = (fr: string, e: string) => (en ? e : fr);
-
-  const [userId, setUserId] = useState<string | null>(null);
-  const [profile, setProfile] = useState<any>(null);
+  // The mobile shell has already authenticated and loaded this profile. Reusing
+  // it avoids a second profile request that can stall Maestro on a waking radio.
+  const { profile } = useOutletContext<PlanipretMobileContext>();
+  const userId = profile?.user_id ?? profile?.id ?? null;
   const [tab, setTab] = useState<Tab>("calls");
   const [calls, setCalls] = useState<ClientCall[]>([]);
   const [messages, setMessages] = useState<ClientMessage[]>([]);
@@ -36,25 +38,16 @@ export default function MMaestro() {
   const [picked, setPicked] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let alive = true;
-    void (async () => {
-      const { data } = await supabase.auth.getUser();
-      const uid = data.user?.id ?? null;
-      if (!alive) return;
-      setUserId(uid);
-      if (uid) {
-        const { data: row } = await supabase.from("planipret_profiles").select("role, maestro_broker_id").eq("user_id", uid).maybeSingle();
-        if (alive) setProfile(row ?? null);
-      }
-    })();
-    return () => { alive = false; };
-  }, []);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const load = useCallback(async (force = false) => {
-    if (!userId) return;
+    if (!userId) {
+      setLoadError(en ? "Profile unavailable. Please retry." : "Profil indisponible. Veuillez réessayer.");
+      setLoading(false);
+      return;
+    }
     const key = `maestro:view:${userId}`;
+    setLoadError(null);
     if (!force) {
       const hit = readScreenCache<any>(key, TTL.fiveMinutes);
       if (hit) {
@@ -76,11 +69,12 @@ export default function MMaestro() {
       // Une panne ne doit jamais effacer la dernière vue connue.
       const known = readScreenCache<any>(key, Number.MAX_SAFE_INTEGER);
       if (known) { setCalls(known.value.calls ?? []); setMessages(known.value.messages ?? []); setClients(known.value.clients ?? []); }
+      setLoadError(en ? "Maestro data could not be loaded. Please retry." : "Les données Maestro n’ont pas pu être chargées. Veuillez réessayer.");
       console.warn("[MMaestro] load failed", e);
     } finally {
       setLoading(false);
     }
-  }, [userId]);
+  }, [userId, en]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -150,8 +144,18 @@ export default function MMaestro() {
         ))}
       </div>
 
+      {loadError && (
+        <div role="alert" className="rounded-xl px-3 py-2.5 text-xs flex items-center justify-between gap-3" style={surface}>
+          <span>{loadError}</span>
+          <button onClick={() => void load(true)} className="shrink-0 underline font-semibold" style={{ color: "var(--pp-brand-accent)" }}>
+            {L("Réessayer", "Retry")}
+          </button>
+        </div>
+      )}
+
       {tab === "calls" && (
         <ul className="space-y-2">
+          {loading && calls.length === 0 && <Loading text={L("Chargement de Maestro…", "Loading Maestro…")} />}
           {calls.length === 0 && !loading && <Empty text={L("Aucun appel.", "No call.")} />}
           {calls.map((c) => {
             const peer = peerOf(c);
@@ -200,6 +204,7 @@ export default function MMaestro() {
 
       {tab === "texts" && (
         <ul className="space-y-2">
+          {loading && messages.length === 0 && <Loading text={L("Chargement de Maestro…", "Loading Maestro…")} />}
           {messages.length === 0 && !loading && <Empty text={L("Aucun texto.", "No text.")} />}
           {messages.map((m) => {
             const peer = peerOf(m);
@@ -262,4 +267,8 @@ export default function MMaestro() {
 
 function Empty({ text }: { text: string }) {
   return <p className="text-[11.5px] py-6 text-center" style={muted}>{text}</p>;
+}
+
+function Loading({ text }: { text: string }) {
+  return <p role="status" className="text-[11.5px] py-6 text-center" style={muted}>{text}</p>;
 }

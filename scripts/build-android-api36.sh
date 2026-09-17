@@ -1,64 +1,56 @@
 #!/usr/bin/env bash
 # =============================================================================
-# build-android-api36.sh — Build .aab Planipret Mobile v1.2.2 (API 36)
-# À exécuter depuis votre Mac dans ~/planipret-standalone
+# build-android-api36.sh — produit l'AAB local Android cible API 36.
+# N'effectue ni git fetch/reset, ni création/modification de keystore.
 # =============================================================================
-set -e
+set -euo pipefail
+
+APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$APP_DIR"
+
+VERSION_NAME="$(node -p "require('./package.json').version")"
+VERSION_CODE="$(node -p "require('./package.json').androidVersionCode")"
+TARGET_SDK="$(sed -n "s/^[[:space:]]*targetSdkVersion[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p" android/variables.gradle | head -n 1)"
+
+if [ "$TARGET_SDK" != "36" ]; then
+  echo "❌ targetSdkVersion attendu : 36 ; valeur trouvée : ${TARGET_SDK:-absente}."
+  exit 1
+fi
+
+if [ ! -f package-lock.json ]; then
+  echo "❌ package-lock.json absent ; impossible d'installer les dépendances de façon reproductible."
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
-# 1. Récupérer le dernier commit (99a3739 — API 36 + versionCode 6)
+# 1. Installer les dépendances verrouillées et construire le bundle web
 # ---------------------------------------------------------------------------
-cd ~/planipret-standalone
-git fetch origin
-git reset --hard origin/main
-
-# ---------------------------------------------------------------------------
-# 2. Installer les dépendances et construire le bundle web
-# ---------------------------------------------------------------------------
-npm install
+npm ci
 npm run build
 
 # ---------------------------------------------------------------------------
-# 3. Synchroniser vers Android
+# 2. Synchroniser le bundle web et la configuration native vers Android
 # ---------------------------------------------------------------------------
 npx cap sync android
 
 # ---------------------------------------------------------------------------
-# 4. Générer le keystore (UNE SEULE FOIS — ignorer si déjà fait)
+# 3. Générer l'AAB avec la signature release déjà configurée.
+# La tâche Gradle échoue explicitement si les secrets de signature sont absents.
 # ---------------------------------------------------------------------------
-# Décommentez et exécutez cette section une seule fois :
-#
-# keytool -genkey -v \
-#   -keystore ~/planipret-release.keystore \
-#   -alias planipret \
-#   -keyalg RSA -keysize 2048 -validity 10000 \
-#   -dname "CN=Planipret, OU=Mobile, O=Planipret Inc, L=Montreal, ST=QC, C=CA"
-#
-# Ensuite ajoutez ces 4 lignes dans ~/.gradle/gradle.properties :
-#   PLANIPRET_KEYSTORE_FILE=/Users/VOTRE_USER/planipret-release.keystore
-#   PLANIPRET_KEYSTORE_PASSWORD=VOTRE_MOT_DE_PASSE
-#   PLANIPRET_KEY_ALIAS=planipret
-#   PLANIPRET_KEY_PASSWORD=VOTRE_MOT_DE_PASSE
-
-# ---------------------------------------------------------------------------
-# 5. Générer le .aab signé
-# ---------------------------------------------------------------------------
-cd ~/planipret-standalone/android
+cd "$APP_DIR/android"
 ./gradlew bundleRelease
 
 # ---------------------------------------------------------------------------
-# 6. Résultat
+# 4. Résultat
 # ---------------------------------------------------------------------------
-AAB_PATH="$HOME/planipret-standalone/android/app/build/outputs/bundle/release/app-release.aab"
+AAB_PATH="$APP_DIR/android/app/build/outputs/bundle/release/app-release.aab"
 if [ -f "$AAB_PATH" ]; then
   echo ""
   echo "✅ Build réussi !"
   echo "   Fichier : $AAB_PATH"
   echo "   Taille  : $(du -sh "$AAB_PATH" | cut -f1)"
-  echo ""
-  echo "→ Aller sur https://play.google.com/console"
-  echo "  Production → Créer une nouvelle version → Téléverser $AAB_PATH"
-  echo "  versionCode : 6  |  versionName : 1.2.2"
+  echo "   targetSdk : $TARGET_SDK"
+  echo "   versionCode : $VERSION_CODE | versionName : $VERSION_NAME"
 else
   echo "❌ Le fichier .aab n'a pas été trouvé. Vérifiez les erreurs Gradle ci-dessus."
   exit 1
