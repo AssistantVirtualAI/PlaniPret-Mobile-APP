@@ -248,9 +248,18 @@ export function usePlanipretTasks(
 
   const buckets = useMemo(() => bucketTasks(tasks), [tasks]);
   const openCount = counts.open || (buckets.overdue.length + buckets.today.length + buckets.upcoming.length);
+  // A cached first page can be visible before the live count request returns.
+  // Never show contradictory zero badges while tasks are already on screen.
+  const visibleCounts = useMemo(() => ({
+    overdue: counts.overdue || buckets.overdue.length,
+    today: counts.today || buckets.today.length,
+    upcoming: counts.upcoming || buckets.upcoming.length,
+    open: openCount,
+    all: counts.all || total || tasks.length,
+  }), [counts, buckets, openCount, total, tasks.length]);
 
   return {
-    tasks, buckets, counts, openCount, filter, setFilter, page, total, hasMore,
+    tasks, buckets, counts: visibleCounts, openCount, filter, setFilter, page, total, hasMore,
     loadMore, loadingMore, loading, refreshing, lastSyncAt, source, error, message,
     refresh, create, update, remove,
   };
