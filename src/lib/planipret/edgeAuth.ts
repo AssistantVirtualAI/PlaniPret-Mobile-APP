@@ -41,6 +41,53 @@ export function isUnauthorized(error: unknown): boolean {
   return status === 401 || /\b401\b|unauthorized/i.test(err?.message || "");
 }
 
+async function invokeWithTimeout<T>(
+  functionName: string,
+  body: Record<string, unknown>,
+  token: string,
+  timeoutMs: number,
+): Promise<EdgeInvokeResult<T>> {
+  const baseUrl = String(import.meta.env.VITE_SUPABASE_URL ?? "").replace(/\/$/, "");
+  const publishableKey = String(import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ?? "");
+  if (!baseUrl || !publishableKey) {
+    return { data: null, error: { message: "edge_configuration_unavailable" }, unauthorized: false };
+  }
+
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${baseUrl}/functions/v1/${functionName}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: publishableKey,
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    let payload: T | null = null;
+    try { payload = text ? JSON.parse(text) as T : null; } catch { /* contract error handled below */ }
+    if (!response.ok) {
+      const message = payload && typeof payload === "object"
+        ? String((payload as Record<string, unknown>).error ?? (payload as Record<string, unknown>).message ?? `HTTP ${response.status}`)
+        : `HTTP ${response.status}`;
+      const error = { message, status: response.status };
+      if (isUnauthorized(error)) return { data: null, error, unauthorized: true };
+      return { data: null, error, unauthorized: false };
+    }
+    return { data: payload, error: null, unauthorized: false };
+  } catch (error: unknown) {
+    const message = error instanceof DOMException && error.name === "AbortError"
+      ? "edge_timeout"
+      : error instanceof Error ? error.message : "edge_request_failed";
+    return { data: null, error: { message }, unauthorized: false };
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 /**
  * Authenticated Edge Function call.
  * - no session   -> skipped, `unauthorized: true`, `pp:auth-required` emitted
@@ -49,7 +96,7 @@ export function isUnauthorized(error: unknown): boolean {
 export async function invokeEdge<T = any>(
   functionName: string,
   body: Record<string, unknown> = {},
-  opts: { silent?: boolean } = {},
+  opts: { silent?: boolean; timeoutMs?: number } = {},
 ): Promise<EdgeInvokeResult<T>> {
   const token = await getValidAccessToken();
   if (!token) {
@@ -57,10 +104,17 @@ export async function invokeEdge<T = any>(
     return { data: null, error: { message: "unauthenticated", status: 401 }, unauthorized: true };
   }
 
-  const { data, error } = await supabase.functions.invoke(functionName, {
-    body,
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const result = opts.timeoutMs
+    ? await invokeWithTimeout<T>(functionName, body, token, opts.timeoutMs)
+    : await (async () => {
+        const { data, error } = await supabase.functions.invoke(functionName, {
+          body,
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        return { data: (data ?? null) as T | null, error: error ? { message: error.message, status: (error as any)?.context?.status } : null, unauthorized: false };
+      })();
+
+  const { data, error } = result;
 
   if (error && isUnauthorized(error)) {
     if (!opts.silent) emitAuthRequired("expired");

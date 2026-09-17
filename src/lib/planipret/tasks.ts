@@ -27,8 +27,9 @@ export interface TaskListResult {
 
 async function invoke(body: Record<string, unknown>): Promise<any> {
   // Shared auth guard: skips the call when there is no valid session and asks
-  // the shell to send the user back to login on 401.
-  const { data, error, unauthorized } = await invokeEdge("planipret-task-api", body);
+  // the shell to send the user back to login on 401. A list or mutation must
+  // never keep the mobile screen busy for the browser/WebView transport timeout.
+  const { data, error, unauthorized } = await invokeEdge("planipret-task-api", body, { timeoutMs: 10_000 });
   if (unauthorized) {
     return { success: false, source: "unavailable", error: "unauthenticated", message: "Session expirée — reconnectez-vous." };
   }

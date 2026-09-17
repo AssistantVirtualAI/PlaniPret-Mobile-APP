@@ -8,14 +8,11 @@ import { Link, useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { logDeepLink } from "@/lib/deepLinkDebug";
-// Import statique : le import() dynamique renvoyait un module vide dans le
-// bundle natif ("ie is not a function"), ce qui cassait « Reconnecter ».
 import { startNativeOAuthSession, canUseNativeAuthSession } from "@/lib/ms365AuthSession";
 
 type Status = "loading" | "disconnected" | "pending" | "connected" | "error";
 
-
-interface StatusData {
+type StatusData = {
   status?: "connected" | "pending" | "not_configured" | "disconnected" | "error";
   connected?: boolean;
   broker_id?: string | null;
@@ -30,15 +27,80 @@ interface StatusData {
   reason?: string | null;
   user_id?: string | null;
   expires_in?: number | null;
+};
 
+const EDGE_TIMEOUT_MS = 8_000;
+const STATUS_COOLDOWN_MS = 5_000;
+const POST_AUTH_WINDOW_MS = 60_000;
+const POST_AUTH_POLL_DELAYS = [0, 2_000, 5_000];
+
+function statusFrom(data: StatusData): Status {
+  if (data.status === "connected" || data.connected) return "connected";
+  if (data.configured === false || data.status === "error" || data.error || data.last_error) return "error";
+  if (data.status === "pending") return "pending";
+  return "disconnected";
+}
+
+function readRecentPostAuthMarker(): boolean {
+  try {
+    const raw = localStorage.getItem("pp_maestro_just_connected");
+    const timestamp = Number(raw);
+    const fresh = Number.isFinite(timestamp) && timestamp > 0 && Date.now() - timestamp >= 0 && Date.now() - timestamp <= POST_AUTH_WINDOW_MS;
+    if (!fresh) localStorage.removeItem("pp_maestro_just_connected");
+    return fresh;
+  } catch {
+    return false;
+  }
+}
+
+function clearPostAuthMarker() {
+  try { localStorage.removeItem("pp_maestro_just_connected"); } catch { /* storage unavailable */ }
+}
+
+async function invokeMaestroEdge<T>(functionName: string, body: Record<string, unknown>, accessToken: string): Promise<T> {
+  const baseUrl = String(import.meta.env.VITE_SUPABASE_URL ?? "").replace(/\/$/, "");
+  const publishableKey = String(import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ?? "");
+  if (!baseUrl || !publishableKey) throw new Error("maestro_configuration_unavailable");
+
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), EDGE_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${baseUrl}/functions/v1/${functionName}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        apikey: publishableKey,
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    let payload: unknown = null;
+    try { payload = text ? JSON.parse(text) : null; } catch { payload = null; }
+    if (!response.ok) {
+      const message = typeof payload === "object" && payload
+        ? String((payload as Record<string, unknown>).error ?? (payload as Record<string, unknown>).message ?? `HTTP ${response.status}`)
+        : `HTTP ${response.status}`;
+      throw new Error(message);
+    }
+    return payload as T;
+  } catch (error: unknown) {
+    if (error instanceof DOMException && error.name === "AbortError") throw new Error("maestro_status_timeout");
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+  }
 }
 
 /**
  * Per-broker Maestro OAuth connect card for the mobile app.
- * Uses PKCE flow (mobile client_id=3) and returns via planipret:// deep link.
+ * Status checks are deliberately short, deduplicated and never trigger OAuth.
+ * A disconnected Maestro account remains a non-blocking state: only an explicit
+ * tap on "Se connecter à Maestro" starts an authorization session.
  */
 export default function MaestroConnectCard() {
-  const { t, lang } = useMplanipretLang();
+  const { lang } = useMplanipretLang();
   const navigate = useNavigate();
   const [status, setStatus] = useState<Status>("loading");
   const [data, setData] = useState<StatusData>({});
@@ -47,10 +109,12 @@ export default function MaestroConnectCard() {
   const [showDetails, setShowDetails] = useState(false);
   const pollTimers = useRef<number[]>([]);
   const authInFlight = useRef(false);
+  const statusRequest = useRef<Promise<StatusData | null> | null>(null);
+  const lastStatusStartedAt = useRef(0);
 
   const isFr = lang === "fr";
   const L = {
-    title: isFr ? "Maestro" : "Maestro",
+    title: "Maestro",
     sub: isFr ? "Connectez votre compte Maestro à AVA" : "Connect your Maestro account to AVA",
     connect: isFr ? "Se connecter à Maestro" : "Connect to Maestro",
     reconnect: isFr ? "Reconnecter" : "Reconnect",
@@ -61,69 +125,83 @@ export default function MaestroConnectCard() {
     disconnected: isFr ? "Non connecté" : "Not connected",
     pending: isFr ? "Connexion en attente" : "Connection pending",
     notConfigured: isFr ? "Maestro n'est pas configuré côté serveur" : "Maestro is not configured on the server",
+    statusUnavailable: isFr ? "Statut Maestro temporairement indisponible. L’application reste utilisable; réessayez plus tard." : "Maestro status is temporarily unavailable. The app remains usable; try again later.",
     disconnectOk: isFr ? "Déconnecté de Maestro" : "Disconnected from Maestro",
     refresh: isFr ? "Rafraîchir" : "Refresh",
     details: isFr ? "Détails techniques" : "Technical details",
     checkedAt: isFr ? "Vérifié à" : "Checked at",
   };
 
-  const load = useCallback(async () => {
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const { data: res, error } = await supabase.functions.invoke("maestro-oauth-status", {
-        body: {},
-        headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : undefined,
-      });
-      if (error) throw error;
-      const d = (res ?? {}) as StatusData;
-      setData(d);
-      setLastFetch(new Date());
-      if (d.status === "connected" || d.connected) setStatus("connected");
-      else if (d.configured === false) setStatus("error");
-      else if (d.status === "pending") setStatus("pending");
-      else if (d.status === "error" || d.error || d.last_error) setStatus("error");
-      else setStatus("disconnected");
-      return d;
-    } catch (e: any) {
-      setData({ error: e?.message || "status_failed" });
-      setLastFetch(new Date());
-      setStatus("error");
-      return null;
-    }
+  const clearPollTimers = useCallback(() => {
+    pollTimers.current.forEach((timer) => window.clearTimeout(timer));
+    pollTimers.current = [];
   }, []);
 
-  // Poll a few times so the UI catches up with the server write after OAuth.
+  const load = useCallback(async (force = false): Promise<StatusData | null> => {
+    if (statusRequest.current) return statusRequest.current;
+    if (!force && lastStatusStartedAt.current && Date.now() - lastStatusStartedAt.current < STATUS_COOLDOWN_MS) return null;
+
+    lastStatusStartedAt.current = Date.now();
+    const request = (async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session?.access_token) throw new Error("maestro_session_required");
+        const response = await invokeMaestroEdge<StatusData>("maestro-oauth-status", {}, session.access_token);
+        setData(response ?? {});
+        setLastFetch(new Date());
+        setStatus(statusFrom(response ?? {}));
+        return response ?? {};
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : "maestro_status_unavailable";
+        const normalized = /timeout|abort|failed to fetch|network|load failed/i.test(message) ? "maestro_status_timeout" : message;
+        setData({ error: normalized });
+        setLastFetch(new Date());
+        setStatus("error");
+        return null;
+      } finally {
+        statusRequest.current = null;
+      }
+    })();
+    statusRequest.current = request;
+    return request;
+  }, []);
+
+  // After a completed OAuth callback, perform at most three serial reads.
+  // The marker expires, and every end state clears it, so no stale session can
+  // create a repeated connection loop on subsequent app launches.
   const pollStatus = useCallback(() => {
-    pollTimers.current.forEach((t) => window.clearTimeout(t));
-    pollTimers.current = [0, 1500, 4000, 8000].map((delay) =>
-      window.setTimeout(async () => {
-        const d = await load();
-        if (d?.status === "connected" || d?.connected) {
-          try { localStorage.removeItem("pp_maestro_just_connected"); } catch {}
-        }
-      }, delay),
-    );
-  }, [load]);
+    clearPollTimers();
+    let attempt = 0;
+    const run = async () => {
+      const response = await load(true);
+      if (response?.connected || response?.status === "connected" || attempt >= POST_AUTH_POLL_DELAYS.length - 1) {
+        clearPostAuthMarker();
+        return;
+      }
+      attempt += 1;
+      const delay = POST_AUTH_POLL_DELAYS[attempt];
+      pollTimers.current.push(window.setTimeout(() => { void run(); }, delay));
+    };
+    pollTimers.current.push(window.setTimeout(() => { void run(); }, POST_AUTH_POLL_DELAYS[0]));
+  }, [clearPollTimers, load]);
 
   useEffect(() => {
-    let justConnected = false;
-    try { justConnected = !!localStorage.getItem("pp_maestro_just_connected"); } catch {}
-    if (justConnected) pollStatus(); else load();
-    return () => pollTimers.current.forEach((t) => window.clearTimeout(t));
-  }, [load, pollStatus]);
+    if (readRecentPostAuthMarker()) pollStatus(); else void load(true);
+    return clearPollTimers;
+  }, [clearPollTimers, load, pollStatus]);
 
-  // Refresh whenever the OAuth callback finishes, the app resumes from the
-  // in-app browser, or the tab becomes visible again.
+  // Refreshing status is passive. It never starts OAuth and is coalesced with
+  // any request already underway, including app resume on a mobile device.
   useEffect(() => {
     const onConnected = () => pollStatus();
-    const onVisible = () => { if (document.visibilityState === "visible") load(); };
+    const onVisible = () => { if (document.visibilityState === "visible") void load(false); };
     window.addEventListener("maestro:connected", onConnected);
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("focus", onVisible);
     let remove: (() => void) | undefined;
     if (Capacitor.isNativePlatform()) {
-      CapApp.addListener("appStateChange", ({ isActive }) => { if (isActive) load(); })
-        .then((h) => { remove = () => h.remove(); })
+      CapApp.addListener("appStateChange", ({ isActive }) => { if (isActive) void load(false); })
+        .then((handle) => { remove = () => handle.remove(); })
         .catch(() => {});
     }
     return () => {
@@ -134,71 +212,63 @@ export default function MaestroConnectCard() {
     };
   }, [load, pollStatus]);
 
-
   const startAuth = async (force = false) => {
     if (authInFlight.current) return;
     authInFlight.current = true;
     setBusy(true);
     try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) throw new Error(isFr ? "Session Planiprêt expirée. Reconnectez-vous puis réessayez." : "Your Planiprêt session has expired. Sign in again and retry.");
+
       const isNative = Capacitor.isNativePlatform();
-
       const platform = isNative ? "mobile" : "web";
-      const redirectUri = isNative
-        ? "planipret://auth/maestro/callback"
-        : `${window.location.origin}/auth/maestro/callback`;
-
+      const redirectUri = isNative ? "planipret://auth/maestro/callback" : `${window.location.origin}/auth/maestro/callback`;
       let mustForceLogin = force;
-      try { mustForceLogin = mustForceLogin || localStorage.getItem("pp_maestro_force_login") === "1"; } catch { /* ignore */ }
-      const { data: res, error } = await supabase.functions.invoke("maestro-oauth-start", {
-        body: { platform, redirect_uri: redirectUri, origin: window.location.origin, force: mustForceLogin },
-      });
-      if (error) throw error;
-      const url = (res as any)?.authorize_url;
-      if (!url) throw new Error((res as any)?.error || "no_authorize_url");
-      try { localStorage.removeItem("pp_maestro_force_login"); } catch { /* ignore */ }
+      try { mustForceLogin = mustForceLogin || localStorage.getItem("pp_maestro_force_login") === "1"; } catch { /* storage unavailable */ }
+      const response = await invokeMaestroEdge<{ authorize_url?: string; error?: string }>(
+        "maestro-oauth-start",
+        { platform, redirect_uri: redirectUri, origin: window.location.origin, force: mustForceLogin },
+        session.access_token,
+      );
+      const url = response?.authorize_url;
+      if (!url) throw new Error(response?.error || "no_authorize_url");
+      try { localStorage.removeItem("pp_maestro_force_login"); } catch { /* storage unavailable */ }
 
       if (isNative) {
         logDeepLink({ kind: "info", source: "MaestroConnect", detail: `opening Maestro with redirect_uri=${redirectUri}` });
         if (Capacitor.getPlatform() === "ios") {
-          // Browser.open cannot return a custom-scheme callback on iOS
-          // ("Unable to display URL"): ASWebAuthenticationSession is mandatory.
           logDeepLink({ kind: "info", source: "MaestroConnect", detail: "auth path=ASWebAuthenticationSession" });
           let callbackUrl: string | null = null;
           try {
             callbackUrl = typeof startNativeOAuthSession === "function" && canUseNativeAuthSession()
               ? await startNativeOAuthSession(url, redirectUri, mustForceLogin)
               : null;
-          } catch (e: any) {
-            logDeepLink({ kind: "error", source: "MaestroConnect", detail: `native auth session failed: ${e?.message ?? e}` });
+          } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : String(error);
+            logDeepLink({ kind: "error", source: "MaestroConnect", detail: `native auth session failed: ${message}` });
             throw new Error(isFr ? "La session Maestro n’a pas pu s’ouvrir. Synchronisez puis réinstallez l’app iOS." : "The Maestro session could not open. Sync and reinstall the iOS app.");
           }
           if (!callbackUrl) {
-            // User cancelled ASWebAuthenticationSession. Browser.open is not a
-            // valid fallback for a custom iOS scheme ("Unable to display URL").
             logDeepLink({ kind: "info", source: "MaestroConnect", detail: "ASWebAuthenticationSession cancelled" });
             return;
           }
-          try { localStorage.setItem("pp_maestro_callback_url", callbackUrl); } catch {}
+          try { localStorage.setItem("pp_maestro_callback_url", callbackUrl); } catch { /* storage unavailable */ }
           const callback = new URL(callbackUrl);
-          // NE PAS faire `window.location.href` ici : sur iOS/Android cela
-          // recharge tout le WebView depuis capacitor://localhost/auth/... et
-          // l'app reste bloquée sur l'écran « Démarrage… ». On route côté
-          // client pour rester dans l'application déjà montée.
           navigate(`/auth/maestro/callback${callback.search}`, { replace: true });
         } else {
           logDeepLink({ kind: "info", source: "MaestroConnect", detail: "auth path=Browser.open (android)" });
           await Browser.open({ url, presentationStyle: "fullscreen" });
         }
       } else {
+        try { localStorage.setItem("pp_maestro_return_to", window.location.pathname + window.location.search); } catch { /* storage unavailable */ }
         window.location.href = url;
       }
       toast.info(L.opening);
-      try { localStorage.setItem("pp_maestro_just_connected", String(Date.now())); } catch {}
-      // Refresh status shortly after — the deep-link callback will complete auth
-      pollStatus();
-
-    } catch (e: any) {
-      toast.error(e?.message || L.error);
+    } catch (error: unknown) {
+      const message = error instanceof Error && error.message === "maestro_status_timeout"
+        ? (isFr ? "Maestro ne répond pas après 8 secondes. Réessayez sans fermer l’application." : "Maestro did not respond within 8 seconds. Retry without closing the app.")
+        : error instanceof Error ? error.message : L.error;
+      toast.error(message);
     } finally {
       authInFlight.current = false;
       setBusy(false);
@@ -208,29 +278,26 @@ export default function MaestroConnectCard() {
   const disconnect = async () => {
     setBusy(true);
     try {
-      const { error } = await supabase.functions.invoke("maestro-oauth-disconnect", { body: {} });
-      if (error) throw error;
-      // The next connection must show Maestro's login page instead of silently
-      // reusing the browser/webview SSO session.
-      try { localStorage.setItem("pp_maestro_force_login", "1"); } catch { /* ignore */ }
-      window.dispatchEvent(new Event("maestro:connected"));
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) throw new Error("maestro_session_required");
+      await invokeMaestroEdge("maestro-oauth-disconnect", {}, session.access_token);
+      try { localStorage.setItem("pp_maestro_force_login", "1"); } catch { /* storage unavailable */ }
+      clearPostAuthMarker();
       toast.success(L.disconnectOk);
-      await load();
-    } catch (e: any) {
-      toast.error(e?.message || L.error);
+      await load(true);
+    } catch (error: unknown) {
+      toast.error(error instanceof Error ? error.message : L.error);
     } finally {
       setBusy(false);
     }
   };
 
-  const dot =
-    status === "connected" ? "#22c55e" :
-    status === "error" ? "#ef4444" :
-    status === "pending" ? "#f59e0b" :
-    status === "loading" ? "#64748b" : "#f59e0b";
+  const dot = status === "connected" ? "#22c55e" : status === "error" ? "#ef4444" : status === "pending" ? "#f59e0b" : status === "loading" ? "#64748b" : "#f59e0b";
   const email = data.email ?? data.maestro_email;
   const brokerId = data.broker_id ?? data.maestro_broker_id;
-  const errorMessage = data.error ?? data.last_error?.message ?? L.error;
+  const errorMessage = data.error === "maestro_status_timeout"
+    ? L.statusUnavailable
+    : data.error ?? data.last_error?.message ?? L.error;
 
   return (
     <div style={{ padding: "0 12px 8px" }}>
@@ -259,16 +326,8 @@ export default function MaestroConnectCard() {
           </div>
         )}
 
-        {status === "pending" && (
-          <div style={{ fontSize: 11, color: "var(--pp-text-secondary)" }}>{L.pending}</div>
-        )}
-
-        {status === "disconnected" && (
-          <div style={{ fontSize: 11, color: "var(--pp-text-secondary)" }}>
-            {L.disconnected}{data.reason ? ` (${data.reason})` : ""}
-          </div>
-        )}
-
+        {status === "pending" && <div style={{ fontSize: 11, color: "var(--pp-text-secondary)" }}>{L.pending}</div>}
+        {status === "disconnected" && <div style={{ fontSize: 11, color: "var(--pp-text-secondary)" }}>{L.disconnected}{data.reason ? ` (${data.reason})` : ""}</div>}
         {status === "error" && (
           <div className="flex items-start gap-1" style={{ fontSize: 11, color: "#ef4444" }}>
             <AlertCircle className="w-3 h-3 mt-0.5 flex-shrink-0" />
@@ -277,17 +336,13 @@ export default function MaestroConnectCard() {
         )}
 
         <div className="flex items-center justify-between mt-2" style={{ fontSize: 10, color: "var(--pp-text-muted)" }}>
-          <button onClick={() => load()} className="flex items-center gap-1" style={{ background: "transparent", color: "var(--pp-text-muted)" }}>
+          <button onClick={() => { void load(true); }} disabled={busy} className="flex items-center gap-1 disabled:opacity-60" style={{ background: "transparent", color: "var(--pp-text-muted)" }}>
             <RefreshCw className="w-3 h-3" /> {L.refresh}
           </button>
           {lastFetch && <span>{L.checkedAt} {lastFetch.toLocaleTimeString()}</span>}
         </div>
 
-        <button
-          onClick={() => setShowDetails((v) => !v)}
-          className="flex items-center gap-1 mt-1"
-          style={{ background: "transparent", fontSize: 10, color: "var(--pp-text-muted)" }}
-        >
+        <button onClick={() => setShowDetails((value) => !value)} className="flex items-center gap-1 mt-1" style={{ background: "transparent", fontSize: 10, color: "var(--pp-text-muted)" }}>
           <ChevronDown className="w-3 h-3" style={{ transform: showDetails ? "rotate(180deg)" : "none" }} /> {L.details}
         </button>
         {showDetails && (
@@ -296,51 +351,25 @@ export default function MaestroConnectCard() {
           </pre>
         )}
 
-
         <div className="flex gap-2 mt-3">
           {status !== "connected" ? (
-            <button
-              onClick={() => startAuth(false)}
-              disabled={busy || data.configured === false}
-              className="flex items-center justify-center gap-1 flex-1 rounded-md"
-              style={{
-                background: "#a855f7", color: "white", fontSize: 12, fontWeight: 600,
-                padding: "8px 10px", opacity: busy || data.configured === false ? 0.5 : 1,
-              }}
-            >
+            <button onClick={() => { void startAuth(false); }} disabled={busy || data.configured === false} className="flex items-center justify-center gap-1 flex-1 rounded-md" style={{ background: "#a855f7", color: "white", fontSize: 12, fontWeight: 600, padding: "8px 10px", opacity: busy || data.configured === false ? 0.5 : 1 }}>
               {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Link2 className="w-3 h-3" />}
               {L.connect}
             </button>
           ) : (
             <>
-              <button
-                onClick={async () => {
-                  try { await supabase.functions.invoke("maestro-oauth-disconnect", { body: {} }); } catch { /* ignore */ }
-                  await startAuth(true);
-                }}
-                disabled={busy}
-                className="flex items-center justify-center gap-1 flex-1 rounded-md"
-                style={{ background: "var(--pp-bg-border-2)", color: "var(--pp-text-primary)", fontSize: 12, fontWeight: 600, padding: "8px 10px" }}
-              >
+              <button onClick={async () => { await disconnect(); await startAuth(true); }} disabled={busy} className="flex items-center justify-center gap-1 flex-1 rounded-md" style={{ background: "var(--pp-bg-border-2)", color: "var(--pp-text-primary)", fontSize: 12, fontWeight: 600, padding: "8px 10px" }}>
                 <RefreshCw className="w-3 h-3" /> {L.reconnect}
               </button>
-              <button
-                onClick={disconnect}
-                disabled={busy}
-                className="flex items-center justify-center gap-1 rounded-md"
-                style={{ background: "transparent", border: "1px solid #ef4444", color: "#ef4444", fontSize: 12, fontWeight: 600, padding: "8px 10px" }}
-              >
+              <button onClick={() => { void disconnect(); }} disabled={busy} className="flex items-center justify-center gap-1 rounded-md" style={{ background: "transparent", border: "1px solid #ef4444", color: "#ef4444", fontSize: 12, fontWeight: 600, padding: "8px 10px" }}>
                 <LogOut className="w-3 h-3" /> {L.disconnect}
               </button>
             </>
           )}
         </div>
 
-        <Link
-          to="/mplanipret/deep-link-debug"
-          className="flex items-center gap-1 mt-2"
-          style={{ fontSize: 10, color: "var(--pp-text-muted)", textDecoration: "none" }}
-        >
+        <Link to="/mplanipret/deep-link-debug" className="flex items-center gap-1 mt-2" style={{ fontSize: 10, color: "var(--pp-text-muted)", textDecoration: "none" }}>
           <Bug className="w-3 h-3" /> {isFr ? "Debug deep links" : "Deep link debug"}
         </Link>
       </div>
