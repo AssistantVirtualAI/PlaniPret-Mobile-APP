@@ -117,6 +117,12 @@ describe("MTasks (mobile)", () => {
     await waitFor(() => expect(refresh).toHaveBeenCalled());
   });
 
+  it("identifie une liste relue dans Maestro", async () => {
+    hookState = baseState({ source: "api" });
+    render(<MTasks />);
+    expect(await screen.findByTestId("task-live-maestro-source")).toHaveTextContent("Liste relue dans Maestro");
+  });
+
   it("affiche l'état vide", async () => {
     hookState = baseState({ tasks: [], buckets: { overdue: [], today: [], upcoming: [] }, counts: { overdue: 0, today: 0, upcoming: 0, open: 0, all: 0 }, openCount: 0 });
     render(<MTasks />);

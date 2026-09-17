@@ -118,9 +118,13 @@ export function usePlanipretTasks(
         return merged;
       });
     } else {
-      // Never hide visible tasks because a background refresh failed.
-      setError(null);
-      setMessage(null);
+      // Never hide visible tasks because a background refresh failed, but do
+      // tell the broker that this view is no longer a live Maestro result.
+      // An explicit unavailable source must never be rendered as an empty
+      // successful list or mistaken for a confirmed Maestro synchronisation.
+      setSource(res.source ?? "unavailable");
+      setError(res.error ?? "tasks_unavailable");
+      setMessage(res.message ?? "Liste des tâches Maestro indisponible pour le moment.");
     }
   }, [userId, filter, brokerId, mergePending]);
 

@@ -37,7 +37,7 @@ export interface NormalizedTask {
   sync_status: TaskSyncStatus;
   /** Machine readable reason explaining `sync_status`. */
   sync_reason: TaskSyncReason;
-  raw?: unknown;
+  raw?: Record<string, any>;
 }
 
 export type TaskSyncStatus = "synced" | "pending" | "not_synced" | "unknown";

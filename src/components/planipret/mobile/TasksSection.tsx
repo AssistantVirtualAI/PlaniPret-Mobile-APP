@@ -1,10 +1,11 @@
-import { useMemo, useState } from "react";
-import { AlertCircle, CheckSquare, ChevronRight, Clock, Plus, RefreshCw, Repeat, Sparkles, Trash2, Pencil, CalendarClock, ExternalLink, ShieldCheck, Loader2, History } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { AlertCircle, CheckSquare, ChevronRight, Clock, Plus, RefreshCw, Repeat, Sparkles, Trash2, Pencil, CalendarClock, CheckCircle2, ExternalLink, ShieldCheck, Loader2, History } from "lucide-react";
 import { usePlanipretTasks } from "@/hooks/planipret/usePlanipretTasks";
 import { describeTaskDiagnostics, describeTaskSync, formatTaskDue, isTaskOpen, toTorontoLocalInput, verifyTask, maestroTaskUrl, type NormalizedTask, type TaskFilterValue, type TaskVerifyResult, taskHistory, type TaskHistoryEvent } from "@/lib/planipret/tasks";
 import MaestroTaskRow from "./MaestroTaskRow";
 import TaskComposerSheet, { type TaskComposerValue } from "./TaskComposerSheet";
 import { toast } from "sonner";
+import { supabase } from "@/integrations/supabase/client";
 
 interface Props {
   userId: string | null | undefined;
@@ -40,6 +41,69 @@ function SyncChip({ task, lang }: { task: NormalizedTask; lang: "fr" | "en" }) {
 
 function Shimmer({ className = "" }: { className?: string }) {
   return <div className={`animate-pulse rounded ${className}`} style={{ background: "#E2E8F0" }} />;
+}
+
+interface SyncRun { id: string; ok: boolean; tasks_count: number; source: string; error: string | null; finished_at: string }
+
+/**
+ * Historique de synchronisation Maestro du courtier connecté : dernière
+ * synchro réussie + les tentatives récentes (succès, nombre de tâches, erreur).
+ */
+function SyncHistory({ userId, lang }: { userId: string | null | undefined; lang: "fr" | "en" }) {
+  const L = (fr: string, en: string) => (lang === "en" ? en : fr);
+  const [runs, setRuns] = useState<SyncRun[] | null>(null);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    if (!userId) return;
+    (async () => {
+      try {
+        // The table is intentionally informational.  Some installed/OTA
+        // bundles can carry an older generated Supabase schema that predates
+        // this server-side audit table, so keep this read runtime-safe.
+        const { data } = await (supabase as any)
+          .from("planipret_task_sync_runs")
+          .select("id, ok, tasks_count, source, error, finished_at")
+          .eq("user_id", userId)
+          .order("finished_at", { ascending: false })
+          .limit(5);
+        if (alive) setRuns((data ?? []) as any);
+      } catch {
+        // L'historique est informatif : son échec ne doit jamais masquer les tâches.
+        if (alive) setRuns([]);
+      }
+    })();
+    return () => { alive = false; };
+  }, [userId]);
+
+  const last = runs?.find((r) => r.ok) ?? runs?.[0] ?? null;
+  const fmt = (iso: string) => new Date(iso).toLocaleString(lang === "en" ? "en-CA" : "fr-CA",
+    { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "America/Toronto" });
+
+  if (!runs || !runs.length) return null;
+
+  return (
+    <div className="mb-2 text-[10.5px]" style={{ color: "var(--pp-text-muted)" }}>
+      <button type="button" onClick={() => setOpen((o) => !o)} className="min-h-[32px] inline-flex items-center gap-1"
+        aria-expanded={open} data-testid="task-sync-history-toggle">
+        <History className="w-3 h-3" />
+        {last
+          ? `${L("Dernière synchro Maestro", "Last Maestro sync")} ${fmt(last.finished_at)} · ${last.tasks_count} ${L("tâches", "tasks")}`
+          : L("Historique de synchronisation", "Sync history")}
+      </button>
+      {open && (
+        <ul className="mt-1 space-y-0.5" data-testid="task-sync-history">
+          {runs.map((r) => (
+            <li key={r.id}>
+              {fmt(r.finished_at)} · {r.ok ? L("succès", "success") : L("échec", "failed")} · {r.tasks_count} {L("tâches", "tasks")} · {r.source}
+              {r.error ? ` · ${r.error}` : ""}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
 }
 
 export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, brokerId, readOnly }: Props) {
@@ -159,6 +223,23 @@ export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, br
     due_at: toTorontoLocalInput(task.due_at),
   } });
 
+  /**
+   * Traiter la tâche depuis l'app : Maestro la passe à « complété » via la
+   * même route que le portail, puis la liste est relue pour refléter l'état
+   * réellement confirmé côté Maestro.
+   */
+  const completeTask = async (task: NormalizedTask) => {
+    setBusy(true);
+    const r = await update(task.id, { status: "completed", update_status: true });
+    setBusy(false);
+    if (r?.success) {
+      toast.success(L("Tâche traitée", "Task completed"));
+      void refresh();
+    } else {
+      toast.error(r?.message ?? L("Traitement impossible", "Could not complete"));
+    }
+  };
+
   const snooze = async (task: NormalizedTask) => {
     const base = task.due_at ? new Date(task.due_at) : new Date();
     const next = new Date(base.getTime() + 24 * 3600 * 1000);
@@ -209,9 +290,17 @@ export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, br
         </div>
       )}
 
+      <SyncHistory userId={userId} lang={lang} />
+
       {source === "projection" && !loading && (
         <p className="text-[11px] mb-2" style={{ color: "var(--pp-text-muted)" }}>
           {L("Hors ligne — dernier état connu.", "Offline — last known state.")}
+        </p>
+      )}
+
+      {source === "api" && !loading && (
+        <p className="text-[11px] mb-2 inline-flex items-center gap-1" style={{ color: "var(--pp-success, #16A34A)" }} data-testid="task-live-maestro-source">
+          <ShieldCheck className="w-3 h-3" /> {L("Liste relue dans Maestro", "List read back from Maestro")}
         </p>
       )}
 
@@ -300,6 +389,7 @@ export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, br
                         </IconBtn>
                         <IconBtn label={L("Ouvrir dans Maestro", "Open in Maestro")} onClick={() => openInMaestro(task.id)}><ExternalLink className="w-3.5 h-3.5" /></IconBtn>
                         <IconBtn label={L("Historique", "History")} onClick={() => void openHistory(task)}><History className="w-3.5 h-3.5" /></IconBtn>
+                        {!readOnly && <IconBtn label={L("Traiter (marquer terminée)", "Complete task")} onClick={() => void completeTask(task)}><CheckCircle2 className="w-3.5 h-3.5" /></IconBtn>}
                         {!readOnly && <IconBtn label={L("Modifier", "Edit")} onClick={() => openEdit(task)}><Pencil className="w-3.5 h-3.5" /></IconBtn>}
                         {!readOnly && <IconBtn label={L("Reporter", "Snooze")} onClick={() => void snooze(task)}><CalendarClock className="w-3.5 h-3.5" /></IconBtn>}
                         {!readOnly && <IconBtn label={L("Supprimer", "Delete")} danger onClick={() => setConfirmDelete(task)}><Trash2 className="w-3.5 h-3.5" /></IconBtn>}
