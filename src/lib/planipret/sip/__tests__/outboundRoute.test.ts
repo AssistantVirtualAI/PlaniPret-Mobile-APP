@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { decideOutboundRoute } from "../outboundRoute";
+import { canUseDistinctWebAorFallback, decideOutboundRoute } from "../outboundRoute";
 
 describe("decideOutboundRoute", () => {
   it("compose via le moteur natif quand la ligne mobile est inscrite", () => {
@@ -8,15 +8,37 @@ describe("decideOutboundRoute", () => {
     })).toBe("native");
   });
 
-  it("refuse l'appel (pas de faux ringing REST) si la ligne n'est pas inscrite", () => {
+  it("refuse l'appel si PJSIP est présent mais sa ligne TLS n'est pas inscrite", () => {
     expect(decideOutboundRoute({
       clientType: "mobile", isNativePlatform: true, platform: "ios", engineAvailable: true, engineRegistered: false,
     })).toBe("native_unregistered");
   });
 
-  it("ne bascule jamais iOS sur JsSIP quand PJSIP est absent", () => {
+  it("autorise uniquement le device W distinct si PJSIP est absent du binaire", () => {
+    const allowDistinctWebAorFallback = canUseDistinctWebAorFallback({
+      clientType: "mobile", isNativePlatform: true, platform: "ios", nativeFailure: "engine_not_linked",
+    });
+    expect(allowDistinctWebAorFallback).toBe(true);
     expect(decideOutboundRoute({
       clientType: "mobile", isNativePlatform: true, platform: "ios", engineAvailable: false, engineRegistered: false,
+      allowDistinctWebAorFallback,
+    })).toBe("webview");
+  });
+
+  it("autorise le device W si le plugin PJSIP n'existe pas dans un ancien binaire", () => {
+    expect(canUseDistinctWebAorFallback({
+      clientType: "mobile", isNativePlatform: true, platform: "ios", nativeFailure: "plugin_absent",
+    })).toBe(true);
+  });
+
+  it("interdit le repli WSS lors d'un échec transitoire TLS", () => {
+    const allowDistinctWebAorFallback = canUseDistinctWebAorFallback({
+      clientType: "mobile", isNativePlatform: true, platform: "ios", nativeFailure: "native_register_timeout",
+    });
+    expect(allowDistinctWebAorFallback).toBe(false);
+    expect(decideOutboundRoute({
+      clientType: "mobile", isNativePlatform: true, platform: "ios", engineAvailable: true, engineRegistered: false,
+      allowDistinctWebAorFallback,
     })).toBe("native_unregistered");
   });
 

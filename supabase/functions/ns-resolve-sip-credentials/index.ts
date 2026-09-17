@@ -1,6 +1,11 @@
 // Resolve per-broker SIP credentials by querying NS-API for the real device.
 // Uses NS_API_KEY server-side; the browser never sees the NS token.
 //
+// IMPORTANT: this endpoint is deliberately read-only. A client login must
+// never create/update a NetSapiens device, caller ID or answering rule. It
+// reports a missing or mismatched device so an explicitly authorised,
+// audited restoration can be performed separately.
+//
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import {
   mobileDeviceId,
@@ -83,15 +88,6 @@ function usablePassword(value: unknown): string | null {
   return password;
 }
 
-// Deterministic fallback for newly-created devices only. The device id is part
-// of the seed so mobile and widget never share credentials.
-async function derivePassword(userId: string, deviceId: string): Promise<string> {
-  const enc = new TextEncoder().encode(`${userId}:${deviceId}:planipret-sip-2026`);
-  const h = await crypto.subtle.digest("SHA-256", enc);
-  const hex = Array.from(new Uint8Array(h)).map((b) => b.toString(16).padStart(2, "0")).join("");
-  return `Pp${hex.substring(0, 12)}!`;
-}
-
 // Hard timeout so an unreachable NS host can never hang the function until the
 // 150s platform idle timeout (which surfaces as a 504 + blank screen).
 const NS_TIMEOUT_MS = 12000;
@@ -142,161 +138,9 @@ async function nsGet(path: string) {
   return { ...r, ok: r.status >= 200 && r.status < 300 };
 }
 
-async function nsPut(path: string, payload: Record<string, unknown>) {
-  return await nsFetch(path, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-}
-
-async function nsPatch(path: string, payload: Record<string, unknown>) {
-  return await nsFetch(path, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-}
-
-async function nsPost(path: string, payload: Record<string, unknown>) {
-  return await nsFetch(path, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-}
-
-/**
- * Ring-rule resync (fire-and-forget).
- *
- * Root cause observed on ext. 113: the corrected sim-ring payload in
- * `pp-sync-answering-rules` had never been applied to that extension, so NS
- * still held the legacy self-referencing rule → instant voicemail.
- * We therefore resync on EVERY credential resolve, throttled per broker, so no
- * extension can stay on a stale rule waiting for an admin to press a button.
- */
-const RING_RULE_RESYNC_TTL_MS = 6 * 60 * 60 * 1000; // 6h per broker
-const lastRingRuleResync = new Map<string, number>();
-
-function queueRingRuleResync(brokerId: string, reason: string, force = false) {
-  if (!brokerId) return;
-  const now = Date.now();
-  const last = lastRingRuleResync.get(brokerId) ?? 0;
-  if (!force && now - last < RING_RULE_RESYNC_TTL_MS) return;
-  lastRingRuleResync.set(brokerId, now);
-  try {
-    const svc = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-    if (!svc) return;
-    const p = fetch(`${SUPABASE_URL}/functions/v1/pp-sync-answering-rules`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-internal-call": "1",
-        Authorization: `Bearer ${svc}`,
-      },
-      body: JSON.stringify({ broker_id: brokerId }),
-    })
-      .then((r) => console.log(`[ns-resolve] ring-rule resync (${reason}) status=${r.status}`))
-      .catch((e) => console.error(`[ns-resolve] ring-rule resync (${reason}) failed`, e));
-    try { (globalThis as any).EdgeRuntime?.waitUntil?.(p); } catch { /* ignore */ }
-  } catch (e) {
-    console.error("[ns-resolve] ring-rule resync error", e);
-  }
-}
-
-/**
- * Device/registration refresh on every mobile sign-in (fire-and-forget).
- *
- * Observed: a broker whose NS devices drifted (expired registration, stale
- * core-server) stayed uncallable until an admin pressed "resync". The mobile
- * app resolves credentials at each login, so we rebuild the broker devices
- * right there, throttled per broker, and always on an explicit login.
- * Read-only for PJSIP/CallKit/audio: only the NS device record is refreshed.
- */
-const DEVICE_REFRESH_TTL_MS = 30 * 60 * 1000; // 30 min per broker
-const lastDeviceRefresh = new Map<string, number>();
-
-function queueDeviceRefresh(
-  brokerId: string,
-  transport: SipTransport,
-  reason: string,
-  force = false,
-) {
-  if (!brokerId) return;
-  const now = Date.now();
-  const last = lastDeviceRefresh.get(brokerId) ?? 0;
-  if (!force && now - last < DEVICE_REFRESH_TTL_MS) return;
-  lastDeviceRefresh.set(brokerId, now);
-  try {
-    const svc = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
-    if (!svc) return;
-    const p = fetch(`${SUPABASE_URL}/functions/v1/ns-provision-broker-devices`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-internal-call": "1",
-        Authorization: `Bearer ${svc}`,
-      },
-      body: JSON.stringify({ broker_id: brokerId, force: true, transport }),
-    })
-      .then((r) => console.log(`[ns-resolve] device refresh (${reason}) status=${r.status}`))
-      .catch((e) => console.error(`[ns-resolve] device refresh (${reason}) failed`, e));
-    try { (globalThis as any).EdgeRuntime?.waitUntil?.(p); } catch { /* ignore */ }
-  } catch (e) {
-    console.error("[ns-resolve] device refresh error", e);
-  }
-}
-
-
-/**
- * Transport arbitration.
- *
- * ONE transport per AOR. A NetSapiens Device object carries a single
- * `device-sip-transport-type`; registering the same AOR over another transport
- * leaves the PBX bookkeeping pointing at the wrong contact and inbound calls are
- * never forked to it (they fall through to voicemail).
- *
- * The client therefore declares which transport it will actually register with:
- *  - `wss` (default) — WebView / JsSIP over wss:9002 on a core node.
- *  - `tls` (mobile default) — native SIP over sip:5061 on a core node.
- *  - `tcp` — legacy native fallback only.
- */
+/** One AOR uses one SIP transport. This resolver only compares, never repairs. */
 type SipTransport = "wss" | "tls" | "tcp";
-const nsTransport = (t: SipTransport) => (t === "tls" ? "TLS" : t === "tcp" ? "TCP" : "WSS");
 const sipPortFor = (t: SipTransport) => (t === "tls" ? 5061 : t === "tcp" ? 5060 : 9002);
-
-/**
- * Same device payload as ns-provision-broker-devices so EVERY broker ends up
- * with an identical `<ext>M` + `<ext>W` pair (no per-user drift).
- */
-function deviceCreatePayload(
-  id: string,
-  isMobile: boolean,
-  password: string,
-  coreServer: string,
-  transport: SipTransport = "wss",
-) {
-  return {
-    device: id,
-    "device-sip-registration-password": password,
-    "device-provisioning-protocol": "sip",
-    "device-model": isMobile ? "Mobile Softphone" : "Web Softphone",
-    "core-server": coreServer,
-    "device-provisioning-registration-core-server": coreServer,
-    "server-nat": isMobile ? "yes" : "no",
-    // Documented NS-API v2 device fields. The registration expiry default is 60s,
-    // which marks the softphone unregistered between re-REGISTERs (calls -> voicemail).
-    "device-sip-registration-expiry-seconds": 1800,
-    "device-sip-nat-traversal-enabled": "automatic",
-    transport: nsTransport(transport),
-    "device-sip-transport-type": nsTransport(transport),
-    "device-provisioning-sip-transport-protocol": transport,
-    "device-srtp-enabled": "opportunistic",
-    "device-sip-allowed-user-agent": "",
-    "device-push-enabled": isMobile ? "yes" : "no",
-
-  };
-}
 
 
 
@@ -307,10 +151,6 @@ Deno.serve(async (req) => {
   let body: any = {};
   try { body = await req.json(); } catch { /* empty ok */ }
   const clientType = normalizeClientType(body?.client_type);
-  // The installed mobile app currently registers `<ext>M` through the
-  // foreground/background WSS stack on the NetSapiens core (:9002). Provision
-  // the Device with the same transport; declaring it TLS while the client sends
-  // WSS REGISTERs leaves the AOR permanently unregistered.
   const requestedTransport = String(body?.transport ?? (clientType === "mobile" ? "tls" : "wss")).toLowerCase();
   const sipTransport: SipTransport = requestedTransport === "tcp" ? "tcp"
     : requestedTransport === "tls" ? "tls"
@@ -332,7 +172,7 @@ Deno.serve(async (req) => {
     .maybeSingle();
 
   const profileExtension = String(profile?.extension || profile?.ns_extension || "").trim();
-  if (!profileExtension) {
+  if (!profile || !profileExtension) {
     return json({
       ok: false,
       error: "no_extension",
@@ -350,23 +190,9 @@ Deno.serve(async (req) => {
 
   console.log(`[ns-resolve] client_type=${clientType} ext=${ext} device=${deviceName}`);
 
-  // Auto-renew the broker's NS devices at every mobile sign-in (forced on an
-  // explicit login, throttled otherwise) so no broker stays unregistered while
-  // waiting for an admin resync.
-  if (clientType === "mobile") {
-    queueDeviceRefresh(
-      String(profile.user_id ?? user.id),
-      sipTransport,
-      body?.on_login ? "mobile_login" : "mobile_resolve",
-      !!body?.on_login,
-    );
-  }
-
-
   // Try the specific device first.
   let detail = await nsGet(`/domains/${encodeURIComponent(domain)}/users/${encodeURIComponent(ext)}/devices/${encodeURIComponent(deviceName)}`);
   let device: any = detail.ok ? (Array.isArray(detail.data) ? detail.data[0] : detail.data) : null;
-  let createdPassword: string | null = null;
   let availableDevices: string[] = [];
 
   let unreachable = (detail as any).unreachable === true;
@@ -393,47 +219,17 @@ Deno.serve(async (req) => {
 
 
 
-  // Self-heal: brokers provisioned before the `<ext>W` device existed (or whose
-  // device was deleted in the portal) get it created on the fly, with exactly
-  // the same payload as ns-provision-broker-devices. Applies to every broker,
-  // not just the ones an admin re-provisioned manually.
-  if (!device) {
-    const selfHealPwd = await derivePassword(String(profile.user_id), deviceName);
-    createdPassword = selfHealPwd;
-    const isMobile = clientType === "mobile";
-    const created = await nsPost(
-      `/domains/${encodeURIComponent(domain)}/users/${encodeURIComponent(ext)}/devices`,
-      deviceCreatePayload(deviceName, isMobile, selfHealPwd, FALLBACK_PROXY, sipTransport),
-    );
-    console.log(`[ns-resolve] self-heal device ${deviceName} status=${created.status}`);
-    if (created.ok || created.status === 409) {
-      // A freshly created device is not in the user's answering rule yet →
-      // inbound calls would keep going straight to voicemail. Force a resync.
-      queueRingRuleResync(String(profile.user_id), "self_heal_device", true);
-
-      const again = await nsGet(
-        `/domains/${encodeURIComponent(domain)}/users/${encodeURIComponent(ext)}/devices/${encodeURIComponent(deviceName)}`,
-      );
-      device = again.ok ? (Array.isArray(again.data) ? again.data[0] : again.data) : null;
-      if (!device) device = { device: deviceName, "core-server": FALLBACK_PROXY };
-    }
-  } else {
-    // Device already exists but the answering rule may still be the legacy
-    // self-referencing one (never re-synced since the fix). Throttled resync.
-    queueRingRuleResync(String(profile.user_id), "periodic");
-  }
-
-
   if (!device) {
     return json({
       ok: false,
-      error: `device_not_found`,
+      error: "device_not_found",
       device_name: deviceName,
       available_devices: availableDevices,
       extension: ext,
       domain,
-      action: "Aucun device SIP trouvé. Lancez la provision (ns-provision-broker-devices) ou contactez votre administrateur.",
-    }, 200);
+      configuration_locked: true,
+      action: "Le dispositif attendu est absent. Aucune création automatique n’est autorisée; un administrateur doit d’abord auditer puis restaurer explicitement la configuration.",
+    }, 409);
   }
 
 
@@ -459,6 +255,32 @@ Deno.serve(async (req) => {
   }
   const sipUri = device["device-sip-registration-uri"] ?? `sip:${resolvedId}@${domain}`;
   const sipState = device["device-sip-registration-state"] ?? device["registration-state"] ?? null;
+  const rawDeviceTransport = String(
+    device["device-sip-transport-type"]
+      ?? device["device-provisioning-sip-transport-protocol"]
+      ?? device.transport
+      ?? "",
+  ).toLowerCase();
+  const deviceTransport: SipTransport | null = rawDeviceTransport.includes("tls")
+    ? "tls"
+    : rawDeviceTransport.includes("tcp")
+      ? "tcp"
+      : rawDeviceTransport.includes("ws")
+        ? "wss"
+        : null;
+  if (deviceTransport && deviceTransport !== sipTransport) {
+    return json({
+      ok: false,
+      error: "transport_mismatch",
+      extension: ext,
+      domain,
+      device_id: resolvedId,
+      expected_transport: sipTransport,
+      actual_transport: deviceTransport,
+      configuration_locked: true,
+      action: "Le transport du dispositif ne correspond pas au client. Aucune correction automatique n’est autorisée; utilisez la procédure d’audit et de restauration approuvée.",
+    }, 409);
+  }
 
   // Preserve the password owned by this exact NS Device. Replacing it during a
   // credential lookup disconnects whichever app already owns that AOR and can
@@ -479,23 +301,12 @@ Deno.serve(async (req) => {
     .limit(1)
     .maybeSingle();
   const assignedCallerId = String(didRow?.phone_number_digits ?? didRow?.phone_number_e164 ?? "").replace(/\D/g, "");
-  let callerIdRepair: { ok: boolean; status: number } | null = null;
-  if (assignedCallerId) {
-    const repaired = await nsPatch(
-      `/domains/${encodeURIComponent(domain)}/users/${encodeURIComponent(ext)}`,
-      {
-        "caller-id-number": assignedCallerId,
-      },
-    );
-    callerIdRepair = { ok: repaired.ok, status: repaired.status };
-  }
   const secretName = clientType === "mobile"
     ? `pp_sip_${profile.id}_mobile`
     : `pp_sip_${profile.id}_widget`;
   const { data: storedSecret } = await admin.rpc("read_planipret_sip_secret", { _name: secretName });
   const sipPassword = usablePassword(device["device-sip-registration-password"])
-    ?? usablePassword(storedSecret)
-    ?? createdPassword;
+    ?? usablePassword(storedSecret);
   if (!sipPassword) {
     return json({
       ok: false,
@@ -505,33 +316,6 @@ Deno.serve(async (req) => {
       action: "Les identifiants de ce device existent dans NetSapiens mais ne sont pas lisibles. Reprovisionnez uniquement ce device.",
     }, 409);
   }
-  let repairStatus: any = null;
-  repairStatus = await nsPut(
-    `/domains/${encodeURIComponent(domain)}/users/${encodeURIComponent(ext)}/devices/${encodeURIComponent(resolvedId)}`,
-    {
-      "core-server": coreServer,
-      "device-provisioning-registration-core-server": coreServer,
-      "device-srtp-enabled": "opportunistic",
-      "device-sip-allowed-user-agent": "",
-      // ONE transport per AOR — the device is aligned on the transport the
-      // caller declared it will register with (wss for JsSIP, tls for PJSIP).
-      transport: nsTransport(sipTransport),
-      // SIP transport at the core level — a mismatch here means the PBX never
-      // forks inbound calls to the contact this client registered.
-      "device-sip-transport-type": nsTransport(sipTransport),
-      "device-provisioning-sip-transport-protocol": sipTransport,
-      "server-nat": clientType === "mobile" ? "yes" : "no",
-      // Documented NS-API v2 keys — default expiry of 60s was dropping the
-      // registration between re-REGISTERs; "automatic" NAT traversal keeps the
-      // Contact rewritten for mobile networks.
-      "device-sip-registration-expiry-seconds": 1800,
-      "device-sip-nat-traversal-enabled": "automatic",
-      "device-push-enabled": clientType === "mobile" ? "yes" : "no",
-    },
-  );
-
-
-
   return json({
     ok: true,
     client_type: clientType,
@@ -544,8 +328,9 @@ Deno.serve(async (req) => {
     sip_proxy: coreServer,
     sip_core_server: coreServer,
     sip_uri: sipUri,
-    // Transport actually provisioned on the NS Device for this AOR.
-    sip_transport: sipTransport,
+    // Transport read from the NS Device (or the explicit client expectation
+    // when older NS versions omit the field).
+    sip_transport: deviceTransport ?? sipTransport,
     sip_port: sipPortFor(sipTransport),
     sip_tls_uri: `sip:${coreServer}:5061;transport=tls`,
     sip_tcp_uri: `sip:${coreServer}:5060;transport=tcp`,
@@ -558,8 +343,8 @@ Deno.serve(async (req) => {
     display_name: brokerDisplayName,
     sip_state: sipState,
     device_registered: sipState === "registered",
-    repair_status: repairStatus ? { ok: repairStatus.ok, status: repairStatus.status } : null,
+    repair_status: { attempted: false, configuration_locked: true },
     caller_id_number: assignedCallerId || null,
-    caller_id_repair: callerIdRepair,
+    caller_id_repair: { attempted: false, configuration_locked: true },
   });
 });

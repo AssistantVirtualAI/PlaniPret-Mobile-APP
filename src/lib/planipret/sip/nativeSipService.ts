@@ -253,7 +253,9 @@ export class NativeSipService {
     const { data, error } = await withNativeTimeout(supabase.functions.invoke("ns-resolve-sip-credentials", {
       // Align the NS Device object with the native PJSIP TLS contact — ONE
       // transport per AOR. `<ext>W` remains the separate WSS browser AOR.
-      body: { client_type: "mobile", transport: "tls", on_login: true },
+      // Credential resolution is read-only: it must never change the device,
+      // caller ID or answering rules while an app is opening.
+      body: { client_type: "mobile", transport: "tls", on_login: false },
     }), "sip_credentials");
 
     const creds = (data ?? {}) as Record<string, string>;
@@ -269,12 +271,16 @@ export class NativeSipService {
       return false;
     }
     // Diagnostic: the resolver must return a native transport, never WSS.
+    // A mismatch is an audited configuration incident; never repair it from a
+    // handset because that drops live registrations and can reroute inbound
+    // calls mid-session.
     const resolvedTransport = String(creds.sip_transport ?? "").toLowerCase();
     if (resolvedTransport && resolvedTransport !== "tcp" && resolvedTransport !== "tls") {
-      console.warn(
-        `[SIP] ns-resolve-sip-credentials a renvoyé sip_transport="${resolvedTransport}" alors que TLS était demandé — réalignement natif forcé`,
-      );
-      void this.forceDeviceTlsTransport({ sipPort: 5061, contact: creds.sip_native_uri ?? creds.sip_tls_uri ?? "" }, true);
+      const reason = `transport_mismatch:${resolvedTransport}`;
+      console.error(`[SIP] ${reason} — configuration conservée, aucune réécriture automatique`);
+      releaseAorFromNative(reason);
+      this.setState("failed");
+      return false;
     }
 
 
@@ -383,68 +389,6 @@ export class NativeSipService {
     }
   }
 
-  /**
-   * Force `device-sip-transport-type = TLS` sur le device `<ext>M` juste après
-   * le 200 OK du REGISTER natif. Sans ça, NetSapiens conserve le Contact WSS
-   * 9002 et route les INVITEs entrants vers JsSIP, jamais vers PJSIP/TLS.
-   * Idempotent et throttlé à 60 s.
-   */
-  private lastTlsProvisionAt = 0;
-  private lastTlsProvisionSignature = "";
-  private lastTlsProvisionOk = false;
-  private tlsProvisionInFlight = false;
-
-  private async forceDeviceTlsTransport(payload?: any, urgent = false): Promise<void> {
-    const port = Number(payload?.sipPort ?? 5061);
-    const contact = String(payload?.contact ?? "").trim();
-    const registrationServer = String(payload?.registrationServer ?? payload?.server ?? "").trim();
-    // Garde : un contact vide produit `sip:@` côté NetSapiens, ce qui casse le
-    // binding du device. On n'écrit jamais un Contact incomplet.
-    const contactUsable = /^sips?:[^@\s]+@[^@\s]+/i.test(contact) || /^sips?:[^@\s]+$/i.test(contact);
-    if (!contactUsable && !registrationServer) {
-      console.warn("[SIP] reprovision TLS ignoré — contact/serveur vide", { contact, registrationServer });
-      return;
-    }
-
-    // Idempotence : chaque reprovisioning provoque un cycle Expires:0 côté
-    // NetSapiens, fenêtre pendant laquelle les appels partent en messagerie.
-    // On ne réécrit que si le contact/port TLS a réellement changé.
-    const signature = `tls:${port}:${contact}`;
-    if (this.lastTlsProvisionSignature === signature && this.lastTlsProvisionOk) {
-      if (!urgent) return;
-      // Même en urgence, on ne réécrit pas plus d'une fois par minute.
-      if (Date.now() - this.lastTlsProvisionAt < 60_000) return;
-    }
-    if (!urgent && Date.now() - this.lastTlsProvisionAt < 60_000) return;
-    if (this.tlsProvisionInFlight) return;
-    this.tlsProvisionInFlight = true;
-    this.lastTlsProvisionAt = Date.now();
-    try {
-      const { data, error } = await supabase.functions.invoke("ns-provision-broker-devices", {
-        body: {
-          transport: port === 5061 ? "tls" : "tcp",
-          sip_port: port,
-          ...(contactUsable ? { contact } : {}),
-
-          force: true,
-          client_type: "mobile",
-        },
-      });
-      if (error) throw error;
-      this.lastTlsProvisionSignature = signature;
-      this.lastTlsProvisionOk = true;
-      console.log("[SIP] device réaligné en TLS après REGISTER natif", data);
-    } catch (e: any) {
-      this.lastTlsProvisionOk = false;
-      console.warn("[SIP] échec du réalignement TLS du device:", e?.message ?? e);
-      this.lastTlsProvisionAt = 0;
-    } finally {
-      this.tlsProvisionInFlight = false;
-    }
-  }
-
-
-
   private setState(state: SipRegistrationState) {
     this.lastState = state;
     this.registered = state === "registered";
@@ -523,16 +467,17 @@ export class NativeSipService {
     });
 
     // Événement dédié émis uniquement après le 200 OK du REGISTER natif.
+    // It is observability only: modifying a NetSapiens device after REGISTER
+    // can send Expires: 0 and make the next inbound call fall to voicemail.
     await pjsip.addListener("registered", (payload: any) => {
-      console.info("[SIP] PJSIP registered → reprovision TLS immédiat", payload?.contact ?? "");
-      void this.forceDeviceTlsTransport(payload);
+      console.info("[SIP] PJSIP registered — configuration PBX left unchanged", payload?.contact ? "contact_present" : "contact_absent");
     });
 
     // Aucun INVITE natif dans les 5 s suivant Answer : réappliquer TLS 5061
-    // immédiatement au lieu d'attendre le prochain cycle de provisioning.
+    // is now an audit signal only. A transport repair requires an approved
+    // restore operation, never a background client mutation.
     await pjsip.addListener("registrationRepairRequested", (payload: any) => {
-      console.warn("[SIP] INVITE TLS absent → reprovision immédiat", payload?.contact ?? "");
-      void this.forceDeviceTlsTransport(payload, true);
+      console.warn("[SIP] INVITE TLS absent — audit required; configuration unchanged", payload?.contact ? "contact_present" : "contact_absent");
     });
 
 
@@ -690,4 +635,3 @@ export const nativeSip = NativeSipService.getInstance();
 // Arbitrage d'AOR au chargement : si le plugin PJSIP est embarqué, le natif
 // possède `<ext>M` avant que JsSIP puisse tenter le moindre REGISTER.
 preclaimNativeAor();
-

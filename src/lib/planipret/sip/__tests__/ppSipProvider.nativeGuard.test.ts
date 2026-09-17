@@ -58,6 +58,11 @@ const MOBILE_CFG = {
   password: "secret",
 };
 
+const WEB_FALLBACK_CFG = {
+  ...MOBILE_CFG,
+  sipUsername: "113W",
+};
+
 describe("ppSipProvider — garde plateforme native", () => {
   let provider: typeof import("../ppSipProvider").ppSipProvider;
   let wsSpy: ReturnType<typeof vi.spyOn> | null = null;
@@ -105,5 +110,14 @@ describe("ppSipProvider — garde plateforme native", () => {
   it("ne déclenche aucun REGISTER JsSIP pour 113M", async () => {
     await provider.init({ ...MOBILE_CFG });
     expect(created.uas.reduce((n, ua) => n + ua.registerCalls + ua.startCalls, 0)).toBe(0);
+  });
+
+  it("autorise uniquement l’AOR W distinct lorsque le client iOS utilise le repli WebRTC", async () => {
+    await provider.init({ ...WEB_FALLBACK_CFG });
+
+    expect(created.uas).toHaveLength(1);
+    expect(created.uas[0].config.uri).toContain("113W@");
+    expect(created.sockets).toHaveLength(1);
+    expect(provider.getSnapshot().errorCause).not.toBe("native_sip_unavailable");
   });
 });
