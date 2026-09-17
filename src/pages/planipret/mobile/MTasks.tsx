@@ -1,32 +1,21 @@
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useOutletContext } from "react-router-dom";
 import { ChevronLeft } from "lucide-react";
-import { useEffect, useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
 import TasksSection from "@/components/planipret/mobile/TasksSection";
+import type { PlanipretMobileContext } from "../PlanipretMobile";
 
+/**
+ * Full task screen. The shell already resolves the authenticated profile before
+ * routing here, so this view must not make a second auth/profile request. A
+ * duplicate lookup can hang on a waking mobile radio and leave the task card on
+ * skeletons even though the application is otherwise usable.
+ */
 export default function MTasks() {
   const navigate = useNavigate();
-  const [userId, setUserId] = useState<string | null>(null);
-  const [target, setTarget] = useState<string | null>(null);
+  const context = useOutletContext<PlanipretMobileContext | null>();
+  const profile = context?.profile;
   const lang = (localStorage.getItem("pp_lang") === "en" ? "en" : "fr") as "fr" | "en";
-
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      const { data } = await supabase.auth.getUser();
-      const uid = data.user?.id ?? null;
-      if (!alive) return;
-      setUserId(uid);
-      if (!uid) return;
-      const { data: p } = await supabase
-        .from("planipret_profiles")
-        .select("maestro_broker_id")
-        .eq("user_id", uid)
-        .maybeSingle();
-      if (alive) setTarget(p?.maestro_broker_id ? String(p.maestro_broker_id) : null);
-    })();
-    return () => { alive = false; };
-  }, []);
+  const userId = profile?.user_id ?? profile?.id ?? null;
+  const target = profile?.maestro_broker_id ? String(profile.maestro_broker_id) : null;
 
   return (
     <div className="p-4 space-y-4">

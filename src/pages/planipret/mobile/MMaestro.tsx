@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ChevronLeft, Link2, MessageSquare, Phone, RefreshCw, CheckSquare } from "lucide-react";
+import { ChevronLeft, Link2, MessageSquare, Phone, RefreshCw, CheckSquare, Wallet } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { usePlanipretTasks } from "@/hooks/planipret/usePlanipretTasks";
@@ -9,8 +9,9 @@ import {
   clientKey as makeKey, digits10, fetchClientCalls, fetchClientContacts, fetchClientMessages,
   type ClientCall, type ClientMessage,
 } from "@/lib/planipret/clientMaestro";
+import CommissionHomeCard from "@/components/planipret/mobile/CommissionHomeCard";
 
-type Tab = "calls" | "texts" | "tasks";
+type Tab = "calls" | "texts" | "tasks" | "commissions";
 
 const surface = { background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border)", color: "var(--pp-text-primary)" };
 const muted = { color: "var(--pp-text-muted)" };
@@ -26,6 +27,7 @@ export default function MMaestro() {
   const L = (fr: string, e: string) => (en ? e : fr);
 
   const [userId, setUserId] = useState<string | null>(null);
+  const [profile, setProfile] = useState<any>(null);
   const [tab, setTab] = useState<Tab>("calls");
   const [calls, setCalls] = useState<ClientCall[]>([]);
   const [messages, setMessages] = useState<ClientMessage[]>([]);
@@ -38,7 +40,13 @@ export default function MMaestro() {
     let alive = true;
     void (async () => {
       const { data } = await supabase.auth.getUser();
-      if (alive) setUserId(data.user?.id ?? null);
+      const uid = data.user?.id ?? null;
+      if (!alive) return;
+      setUserId(uid);
+      if (uid) {
+        const { data: row } = await supabase.from("planipret_profiles").select("role, maestro_broker_id").eq("user_id", uid).maybeSingle();
+        if (alive) setProfile(row ?? null);
+      }
     })();
     return () => { alive = false; };
   }, []);
@@ -57,8 +65,7 @@ export default function MMaestro() {
 
   useEffect(() => { void load(); }, [load]);
 
-  const { tasks, loading: tasksLoading, lastSyncAt, setFilter } = usePlanipretTasks(userId);
-  useEffect(() => { setFilter("all"); }, [setFilter]);
+  const { tasks, loading: tasksLoading, lastSyncAt } = usePlanipretTasks(userId, { initialFilter: "all" });
 
   /** Nom du client déjà rattaché à un numéro (via un appel). */
   const nameByPhone = useMemo(() => {
@@ -109,16 +116,17 @@ export default function MMaestro() {
         </button>
       </div>
 
-      <div className="flex gap-1.5">
+      <div className="grid grid-cols-2 gap-1.5">
         {([
           { k: "calls" as Tab, label: L("Appels", "Calls"), Icon: Phone, n: calls.length },
           { k: "texts" as Tab, label: L("Textos", "Texts"), Icon: MessageSquare, n: messages.length },
           { k: "tasks" as Tab, label: L("Tâches", "Tasks"), Icon: CheckSquare, n: tasks.length },
+          { k: "commissions" as Tab, label: L("Commissions", "Commissions"), Icon: Wallet, n: null },
         ]).map(({ k, label, Icon, n }) => (
           <button key={k} onClick={() => setTab(k)}
             className="flex-1 min-h-[40px] rounded-xl text-xs font-semibold inline-flex items-center justify-center gap-1.5"
             style={{ ...surface, borderColor: tab === k ? "var(--pp-brand-accent)" : "var(--pp-bg-border)", color: tab === k ? "var(--pp-brand-accent)" : "var(--pp-text-primary)" }}>
-            <Icon className="w-3.5 h-3.5" /> {label} <span style={muted}>{n}</span>
+            <Icon className="w-3.5 h-3.5" /> {label} {n !== null && <span style={muted}>{n}</span>}
           </button>
         ))}
       </div>
@@ -218,6 +226,16 @@ export default function MMaestro() {
             </li>
           ))}
         </ul>
+      )}
+
+      {tab === "commissions" && (
+        <div className="space-y-3">
+          <CommissionHomeCard profile={profile} lang={lang} />
+          <button onClick={() => navigate("/mplanipret/commissions")}
+            className="w-full min-h-[44px] rounded-xl text-sm font-semibold" style={surface}>
+            {L("Ouvrir tous les rapports", "Open all reports")}
+          </button>
+        </div>
       )}
     </div>
   );

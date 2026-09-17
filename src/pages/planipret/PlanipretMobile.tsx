@@ -754,7 +754,7 @@ export default function PlanipretMobile() {
     refreshActive();
     const ch = supabase
       .channel(`mplanipret-active-call-${Math.random().toString(36).slice(2, 8)}`)
-      .on("postgres_changes", { event: "*", schema: "public", table: "planipret_phone_calls" }, refreshActive)
+      .on("postgres_changes", { event: "*", schema: "public", table: "planipret_phone_calls", filter: `user_id=eq.${profile.user_id}` }, refreshActive)
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [profile?.user_id, attachRestCall]);
@@ -840,7 +840,10 @@ export default function PlanipretMobile() {
       .on("postgres_changes", { event: "*", schema: "public", table: "planipret_ava_notifications", filter: `user_id=eq.${profile.user_id}` }, (p: any) => { if (p.eventType === "INSERT") onNewNotif(p); refreshCounts(); })
       .subscribe();
     return () => { supabase.removeChannel(ch); };
-  }, [profile?.user_id, location.pathname, navigate, t]);
+    // Navigation must not recreate this channel and repeat all badge queries.
+    // The handlers remain valid for the lifetime of the signed-in profile.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile?.user_id]);
 
   const loadProfile = async (attempt = 0) => {
     if (attempt === 0) {

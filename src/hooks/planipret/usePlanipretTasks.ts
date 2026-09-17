@@ -10,10 +10,35 @@ import {
   updateTask as apiUpdate,
   type NormalizedTask,
   type TaskFilterValue,
+  type TaskListResult,
   type TaskSource,
 } from "@/lib/planipret/tasks";
 
 const PAGE_SIZE = 20;
+
+const taskRequests = new Map<string, Promise<TaskListResult>>();
+
+function listKey(userId: string, brokerId: string | null, filter: TaskFilterValue, page: number) {
+  return `${userId}:${brokerId ?? "self"}:${filter}:${page}`;
+}
+
+async function readTasks(
+  userId: string,
+  brokerId: string | null,
+  filter: TaskFilterValue,
+  page: number,
+  _force: boolean,
+): Promise<TaskListResult> {
+  const key = listKey(userId, brokerId, filter, page);
+  const pending = taskRequests.get(key);
+  if (pending) return pending;
+
+  const request = listTasks({ filter, page, limit: PAGE_SIZE, broker_id: brokerId })
+    .then((result) => result)
+    .finally(() => { taskRequests.delete(key); });
+  taskRequests.set(key, request);
+  return request;
+}
 
 export interface UsePlanipretTasks {
   tasks: NormalizedTask[];
@@ -34,7 +59,7 @@ export interface UsePlanipretTasks {
   source: TaskSource;
   error: string | null;
   message: string | null;
-  refresh: () => Promise<void>;
+  refresh: (options?: { force?: boolean }) => Promise<void>;
   create: (input: Record<string, unknown>) => Promise<any>;
   update: (taskId: string, changes: Record<string, unknown>) => Promise<any>;
   remove: (taskId: string) => Promise<any>;
@@ -43,6 +68,8 @@ export interface UsePlanipretTasks {
 export interface UsePlanipretTasksOptions {
   /** Admin only: scope the list to another broker's Maestro id (read-only). */
   brokerId?: string | null;
+  /** First filter rendered by an embedded read-only task view. */
+  initialFilter?: TaskFilterValue;
 }
 
 export function usePlanipretTasks(
@@ -58,103 +85,142 @@ export function usePlanipretTasks(
   const [source, setSource] = useState<TaskSource>("projection");
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const [filter, setFilterState] = useState<TaskFilterValue>("open");
+  const [filter, setFilterState] = useState<TaskFilterValue>(options.initialFilter ?? "open");
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [hasMore, setHasMore] = useState(false);
   const [counts, setCounts] = useState({ overdue: 0, today: 0, upcoming: 0, open: 0, all: 0 });
   const generation = useRef(0);
+  const activeRefresh = useRef<{ key: string; promise: Promise<void> } | null>(null);
+  const realtimeTimer = useRef<number | null>(null);
   /** Tasks created locally in the last 5 min — merged in until the server list catches up. */
   const pending = useRef<Map<string, { task: NormalizedTask; at: number }>>(new Map());
 
   const mergePending = useCallback((list: NormalizedTask[]): NormalizedTask[] => {
     const cutoff = Date.now() - 5 * 60 * 1000;
-    for (const [id, v] of pending.current) if (v.at < cutoff) pending.current.delete(id);
+    for (const [id, value] of pending.current) if (value.at < cutoff) pending.current.delete(id);
     if (!pending.current.size) return list;
-    // Locally-known versions win over the eventually-consistent server list.
     const seen = new Set<string>();
-    const merged = list.map((t) => {
-      const p = pending.current.get(String(t.id));
-      if (!p) return t;
-      seen.add(String(t.id));
-      return p.task;
+    const merged = list.map((task) => {
+      const local = pending.current.get(String(task.id));
+      if (!local) return task;
+      seen.add(String(task.id));
+      return local.task;
     });
-    for (const [id, v] of pending.current) if (!seen.has(id)) merged.push(v.task);
+    for (const [id, value] of pending.current) if (!seen.has(id)) merged.push(value.task);
     return merged;
   }, []);
 
-  // Paint the per-user cache immediately.
-  useEffect(() => {
-    if (!userId || brokerId) return;
-    const cached = loadTaskCache(userId);
-    if (cached.length) { setTasks(cached); setLoading(false); }
-  }, [userId, brokerId]);
-
-  const refresh = useCallback(async () => {
-    if (!userId) return;
-    const gen = ++generation.current;
-    setRefreshing(true);
-    const res = await listTasks({ filter, page: 1, limit: PAGE_SIZE, broker_id: brokerId });
-    if (gen !== generation.current) return; // stale identity/response
-    setRefreshing(false);
-    setLoading(false);
-    if (res.success && res.source !== "unavailable") {
-      setSource(res.source);
+  const applyResult = useCallback((result: TaskListResult, currentUserId: string, currentBrokerId: string | null) => {
+    if (result.success && result.source !== "unavailable") {
+      setSource(result.source);
       setError(null);
       setMessage(null);
-      setPage(res.page);
-      setCounts(res.counts);
-      setTotal(res.total);
-      setHasMore(res.has_more);
+      setPage(result.page);
+      setCounts(result.counts);
+      setTotal(result.total);
+      setHasMore(result.has_more);
       setLastSyncAt(new Date().toISOString());
       setTasks((current) => {
         // A successful-but-incomplete response must not briefly erase known
         // tasks while Maestro still reports that tasks exist.
-        const next = res.tasks.length === 0 && res.counts.all > 0 && current.length > 0
+        const next = result.tasks.length === 0 && result.counts.all > 0 && current.length > 0
           ? current
-          : res.tasks;
+          : result.tasks;
         const merged = mergePending(next);
-        if (!brokerId) saveTaskCache(userId, merged);
+        if (!currentBrokerId) saveTaskCache(currentUserId, merged);
         return merged;
       });
-    } else {
-      // Never hide visible tasks because a background refresh failed, but do
-      // tell the broker that this view is no longer a live Maestro result.
-      // An explicit unavailable source must never be rendered as an empty
-      // successful list or mistaken for a confirmed Maestro synchronisation.
-      setSource(res.source ?? "unavailable");
-      setError(res.error ?? "tasks_unavailable");
-      setMessage(res.message ?? "Liste des tâches Maestro indisponible pour le moment.");
+      return;
     }
-  }, [userId, filter, brokerId, mergePending]);
+
+    // Never hide visible tasks because a refresh failed. This is essential on
+    // iOS when switching tabs wakes the radio and one request is dropped.
+    setSource(result.source ?? "unavailable");
+    setError(result.error ?? "tasks_unavailable");
+    setMessage(result.message ?? "Liste des tâches Maestro indisponible pour le moment.");
+  }, [mergePending]);
+
+  // Paint the per-user cache immediately, including a cached empty list. The
+  // latter prevents the page from waiting forever on a slow auth/profile path.
+  useEffect(() => {
+    if (!userId || brokerId) return;
+    const cached = loadTaskCache(userId);
+    setTasks(cached);
+    setLoading(false);
+  }, [userId, brokerId]);
+
+  useEffect(() => {
+    if (userId) return;
+    setLoading(false);
+    setRefreshing(false);
+    setError("task_identity_unavailable");
+    setMessage("Session de tâches en cours de préparation.");
+  }, [userId]);
+
+  const refresh = useCallback(async (options: { force?: boolean } = {}) => {
+    if (!userId) return;
+    const force = !!options.force;
+    const key = listKey(userId, brokerId, filter, 1);
+    if (activeRefresh.current?.key === key) return activeRefresh.current.promise;
+
+    const hasVisibleData = tasks.length > 0 || (!brokerId && loadTaskCache(userId).length > 0);
+    const gen = ++generation.current;
+    if (hasVisibleData) setRefreshing(true); else setLoading(true);
+
+    const promise = (async () => {
+      try {
+        const result = await readTasks(userId, brokerId, filter, 1, force);
+        if (gen !== generation.current) return;
+        applyResult(result, userId, brokerId);
+      } catch {
+        if (gen !== generation.current) return;
+        setSource("unavailable");
+        setError("tasks_unavailable");
+        setMessage("Liste des tâches Maestro indisponible pour le moment.");
+      } finally {
+        if (gen === generation.current) {
+          setRefreshing(false);
+          setLoading(false);
+        }
+        if (activeRefresh.current?.key === key) activeRefresh.current = null;
+      }
+    })();
+    activeRefresh.current = { key, promise };
+    return promise;
+  }, [userId, brokerId, filter, tasks.length, applyResult]);
 
   const loadMore = useCallback(async () => {
     if (!userId || !hasMore || loadingMore) return;
     const gen = generation.current;
     setLoadingMore(true);
     const next = page + 1;
-    const res = await listTasks({ filter, page: next, limit: PAGE_SIZE, broker_id: brokerId });
-    setLoadingMore(false);
-    if (gen !== generation.current) return;
-    if (!res.success) return;
-    setPage(res.page);
-    setTotal(res.total);
-    setHasMore(res.has_more);
-    setCounts(res.counts);
-    setTasks((cur) => {
-      const seen = new Set(cur.map((t) => t.id));
-      return [...cur, ...res.tasks.filter((t) => !seen.has(t.id))];
-    });
-  }, [userId, filter, brokerId, page, hasMore, loadingMore]);
+    try {
+      const result = await readTasks(userId, brokerId, filter, next, false);
+      if (gen !== generation.current || !result.success) return;
+      setPage(result.page);
+      setTotal(result.total);
+      setHasMore(result.has_more);
+      setCounts(result.counts);
+      setTasks((current) => {
+        const seen = new Set(current.map((task) => task.id));
+        return [...current, ...result.tasks.filter((task) => !seen.has(task.id))];
+      });
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [userId, brokerId, filter, page, hasMore, loadingMore]);
 
-  const setFilter = useCallback((f: TaskFilterValue) => {
-    setFilterState(f);
+  const setFilter = useCallback((value: TaskFilterValue) => {
+    setFilterState(value);
     setPage(1);
   }, []);
 
   useEffect(() => { if (userId) void refresh(); }, [userId, refresh]);
 
-  // Refresh when the home screen comes back to the foreground.
+  // Screen focus must be passive: cached data is shown immediately and the
+  // request is skipped for 45 seconds. It cannot create a request storm while
+  // the user switches between Home, Messages, Tasks and Commissions.
   useEffect(() => {
     if (!userId) return;
     const onVisible = () => { if (document.visibilityState === "visible") void refresh(); };
@@ -166,42 +232,54 @@ export function usePlanipretTasks(
     };
   }, [userId, refresh]);
 
-  // Realtime: AVA (or another device) mutated a task.
+  // Coalesce realtime bursts produced by a mutation/audit write into one live
+  // read, rather than three overlapping reads of the same Maestro list.
   useEffect(() => {
     if (!userId) return;
+    const scheduleRealtimeRefresh = () => {
+      if (realtimeTimer.current !== null) return;
+      realtimeTimer.current = window.setTimeout(() => {
+        realtimeTimer.current = null;
+        void refresh({ force: true });
+      }, 250);
+    };
     const channel = supabase.channel(`pp-tasks:${userId}`)
-      .on("broadcast", { event: "tasks" }, () => { void refresh(); })
-      .on("postgres_changes", { event: "*", schema: "public", table: "planipret_tasks_projection" }, () => { void refresh(); })
-      .on("postgres_changes", { event: "*", schema: "public", table: "planipret_task_mutations" }, () => { void refresh(); })
+      .on("broadcast", { event: "tasks" }, scheduleRealtimeRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "planipret_tasks_projection" }, scheduleRealtimeRefresh)
+      .on("postgres_changes", { event: "*", schema: "public", table: "planipret_task_mutations" }, scheduleRealtimeRefresh)
       .subscribe();
-    return () => { void supabase.removeChannel(channel); };
+    return () => {
+      if (realtimeTimer.current !== null) window.clearTimeout(realtimeTimer.current);
+      realtimeTimer.current = null;
+      void supabase.removeChannel(channel);
+    };
   }, [userId, refresh]);
 
   const create = useCallback(async (input: Record<string, unknown>) => {
-    const r = await apiCreate(input);
-    if (r?.success) {
-      // Paint the new task immediately — the upstream list endpoint is
-      // eventually consistent (and currently undocumented).
-      if (r.task?.id) {
-        const id = String(r.task.id);
-        pending.current.set(id, { task: r.task, at: Date.now() });
-        setTasks((cur) => (cur.some((t) => String(t.id) === id) ? cur : [...cur, r.task]));
-        setCounts((c) => ({ ...c, open: c.open + 1, all: c.all + 1 }));
+    const result = await apiCreate(input);
+    if (result?.success) {
+      if (result.task?.id) {
+        const id = String(result.task.id);
+        pending.current.set(id, { task: result.task, at: Date.now() });
+        setTasks((current) => (current.some((task) => String(task.id) === id) ? current : [...current, result.task]));
+        setCounts((current) => ({ ...current, open: current.open + 1, all: current.all + 1 }));
       }
-      await refresh();
+      // The write response is the authoritative immediate result. Do not keep
+      // the form busy waiting for an eventually-consistent list refresh.
+      void refresh({ force: true });
     }
-    return r;
+    return result;
   }, [refresh]);
 
   const update = useCallback(async (taskId: string, changes: Record<string, unknown>) => {
     const previous = tasks;
     const id = String(taskId);
-    const patch = (t: NormalizedTask): NormalizedTask => {
-      const next: NormalizedTask = { ...t };
+    const patch = (task: NormalizedTask): NormalizedTask => {
+      const next: NormalizedTask = { ...task };
       const due = changes.date ?? changes.due_at;
       if (due) {
-        const d = new Date(String(due));
-        if (!Number.isNaN(d.getTime())) next.due_at = d.toISOString();
+        const date = new Date(String(due));
+        if (!Number.isNaN(date.getTime())) next.due_at = date.toISOString();
       }
       if (changes.notes !== undefined) next.notes = String(changes.notes);
       if (changes.description !== undefined) next.description = changes.description ? String(changes.description) : null;
@@ -215,41 +293,37 @@ export function usePlanipretTasks(
       }
       return next;
     };
-    setTasks((cur) => cur.map((t) => (String(t.id) === id ? patch(t) : t)));
-    const r = await apiUpdate(taskId, changes);
-    if (!r?.success) { setTasks(previous); return r; }
+    setTasks((current) => current.map((task) => (String(task.id) === id ? patch(task) : task)));
+    const result = await apiUpdate(taskId, changes);
+    if (!result?.success) { setTasks(previous); return result; }
 
-    // Maestro's list endpoint is eventually consistent (and sometimes absent):
-    // keep the edited version pinned locally so re-opening shows the changes.
-    const base = previous.find((t) => String(t.id) === id);
-    const edited: NormalizedTask | null = r.task?.id
-      ? { ...(base ?? ({} as NormalizedTask)), ...r.task }
+    const base = previous.find((task) => String(task.id) === id);
+    const edited: NormalizedTask | null = result.task?.id
+      ? { ...(base ?? ({} as NormalizedTask)), ...result.task }
       : base ? patch(base) : null;
     if (edited) {
       pending.current.set(id, { task: edited, at: Date.now() });
-      setTasks((cur) => {
-        const merged = cur.map((t) => (String(t.id) === id ? edited : t));
+      setTasks((current) => {
+        const merged = current.map((task) => (String(task.id) === id ? edited : task));
         if (userId) saveTaskCache(userId, merged);
         return merged;
       });
     }
-    await refresh();
-    return r;
+    void refresh({ force: true });
+    return result;
   }, [tasks, refresh, userId]);
 
   const remove = useCallback(async (taskId: string) => {
     const previous = tasks;
-    setTasks((cur) => cur.filter((t) => t.id !== taskId));
+    setTasks((current) => current.filter((task) => task.id !== taskId));
     pending.current.delete(String(taskId));
-    const r = await apiDelete(taskId);
-    if (!r?.success) setTasks(previous); else await refresh();
-    return r;
+    const result = await apiDelete(taskId);
+    if (!result?.success) setTasks(previous); else void refresh({ force: true });
+    return result;
   }, [tasks, refresh]);
 
   const buckets = useMemo(() => bucketTasks(tasks), [tasks]);
   const openCount = counts.open || (buckets.overdue.length + buckets.today.length + buckets.upcoming.length);
-  // A cached first page can be visible before the live count request returns.
-  // Never show contradictory zero badges while tasks are already on screen.
   const visibleCounts = useMemo(() => ({
     overdue: counts.overdue || buckets.overdue.length,
     today: counts.today || buckets.today.length,

@@ -181,6 +181,11 @@ type NsThread = {
   timestamp?: string;
 };
 
+const SMS_LIST_TIMEOUT_MS = 6_500;
+const SMS_LIST_CACHE_MS = 60_000;
+const smsThreadCache = new Map<string, { at: number; value: NsThread[] }>();
+const smsThreadRequests = new Map<string, Promise<NsThread[]>>();
+
 type NsMessage = {
   id?: string;
   message_id?: string;
@@ -300,8 +305,10 @@ function SmsList({ profile, openDialer, registerRefresh, initialTo }: any) {
   const { t } = useMplanipretLang();
   const [searchParams, setSearchParams] = useSearchParams();
   const myExt = profile?.extension ?? "";
-  const [threads, setThreads] = useState<NsThread[]>([]);
-  const [loading, setLoading] = useState(true);
+  const userId = String(profile?.user_id ?? profile?.id ?? "");
+  const initialCache = userId ? smsThreadCache.get(userId) : null;
+  const [threads, setThreads] = useState<NsThread[]>(() => initialCache?.value ?? []);
+  const [loading, setLoading] = useState(() => !initialCache?.value);
   const [error, setError] = useState<string | null>(null);
   const [activeThread, setActiveThread] = useState<{ id: string; number: string; body?: string; autoSend?: boolean } | null>(null);
   const [newOpen, setNewOpen] = useState(false);
@@ -320,16 +327,35 @@ function SmsList({ profile, openDialer, registerRefresh, initialTo }: any) {
     document.querySelector<HTMLInputElement>('[data-sms-recipient-search="true"]')?.focus({ preventScroll: true });
   };
 
-  const load = async () => {
-    if (!profile?.user_id) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const { data, error: err } = await supabase.functions.invoke("pp-ns-sms", {
-        body: { action: "threads" },
+  const load = async (force = false) => {
+    if (!userId) {
+      setLoading(false);
+      setError(t("messages.sendFailed"));
+      return;
+    }
+    const cached = smsThreadCache.get(userId);
+    if (!force && cached && Date.now() - cached.at < SMS_LIST_CACHE_MS) {
+      setThreads(cached.value);
+      setLoading(false);
+      return;
+    }
+    const existing = smsThreadRequests.get(userId);
+    if (existing) {
+      try { setThreads(await existing); } finally { setLoading(false); }
+      return;
+    }
+    const hasVisibleData = threads.length > 0 || !!cached?.value.length;
+    if (!hasVisibleData) {
+      setLoading(true);
+      setError(null);
+    }
+    const request = (async () => {
+      const { data, error: err } = await ppEdgeInvoke<{ threads?: NsThread[] }>("pp-ns-sms", { action: "threads" }, {
+        retries: 1,
+        timeoutMs: SMS_LIST_TIMEOUT_MS,
       });
-      if (err) throw err;
-      const list: NsThread[] = (data as any)?.threads ?? [];
+      if (err) throw new Error(err.message);
+      const list: NsThread[] = data?.threads ?? [];
       list.sort((a, b) => +new Date(threadTime(b)) - +new Date(threadTime(a)));
       // Le PBX renvoie parfois plusieurs sessions pour le même correspondant
       // (15149522685 / +15149522685 / sessions distinctes) : on garde la plus récente.
@@ -342,12 +368,23 @@ function SmsList({ profile, openDialer, registerRefresh, initialTo }: any) {
         seen.add(key);
         deduped.push(th);
       }
-      setThreads(deduped);
+      smsThreadCache.set(userId, { at: Date.now(), value: deduped });
+      return deduped;
+    })();
+    smsThreadRequests.set(userId, request);
+    try {
+      setThreads(await request);
+      setError(null);
     } catch (e: any) {
       console.error("[pp-ns-sms] threads", e);
-      setError(e?.message ?? t("messages.sendFailed"));
-      toast.error(e?.message ?? t("messages.sendFailed"));
+      // A refresh failure must never empty a previously usable conversations
+      // list. The user can keep opening/creating SMS threads while retrying.
+      if (!hasVisibleData) {
+        setError(e?.message ?? t("messages.sendFailed"));
+        toast.error(e?.message ?? t("messages.sendFailed"));
+      }
     } finally {
+      smsThreadRequests.delete(userId);
       setLoading(false);
     }
   };
@@ -378,7 +415,7 @@ function SmsList({ profile, openDialer, registerRefresh, initialTo }: any) {
           autoSend={activeThread.autoSend}
           myExt={myExt}
           userId={profile.user_id}
-          onBack={() => { setActiveThread(null); load(); }}
+          onBack={() => { setActiveThread(null); void load(); }}
           onCall={(n) => openDialer(n)}
         />
       </div>
@@ -389,7 +426,7 @@ function SmsList({ profile, openDialer, registerRefresh, initialTo }: any) {
     <div className="h-full overflow-y-auto p-3">
       <div className="flex justify-end mb-2 gap-2">
         <button
-          onClick={load}
+          onClick={() => void load(true)}
           className="px-3 py-1.5 rounded-full flex items-center gap-1.5 text-xs font-semibold"
           style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
         >
@@ -417,7 +454,7 @@ function SmsList({ profile, openDialer, registerRefresh, initialTo }: any) {
         <div className="rounded-2xl p-6 text-center" style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)" }}>
           <p className="text-sm mb-3" style={{ color: "var(--pp-danger)" }}>{error}</p>
           <button
-            onClick={load}
+            onClick={() => void load(true)}
             className="px-4 py-2 rounded-full text-xs font-semibold text-white"
             style={{ background: "linear-gradient(135deg, var(--pp-brand-accent), var(--pp-brand-accent-2))" }}
           >
