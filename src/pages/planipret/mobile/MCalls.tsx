@@ -20,6 +20,7 @@ import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { useCallerNames } from "@/lib/planipret/callerLookup";
 import { createClientFollowUpTask } from "@/lib/planipret/tasks";
 import { presentCallParty } from "@/lib/planipret/callPresentation";
+import { readScreenCache, writeScreenCache, invalidateScreenCache, TTL } from "@/lib/planipret/screenCache";
 
 
 
@@ -180,8 +181,14 @@ export default function MCalls() {
     return filters.join(",");
   }, [userId, profileAuthId, profileExtension]);
 
-  const load = useCallback(async () => {
+
+  const load = useCallback(async (force = false) => {
     if (!userId) return;
+    // Cache 5 min : revenir sur l'écran n'appelle plus les endpoints.
+    if (!force) {
+      const hit = readScreenCache<Call[]>(`calls:list:${userId}`, TTL.fiveMinutes);
+      if (hit) { setCalls(hit.value); setLoading(false); return; }
+    }
     setLoading(true);
     try {
       // 1) NS-API live CDRs via pp-ns-cdr (segmenté par extension côté serveur)
@@ -255,26 +262,37 @@ export default function MCalls() {
       );
 
       // Fallback : si NS ne renvoie rien, montrer le cache local
-      setCalls(all.length ? all : ((local ?? []) as Call[]));
+      const next = (all.length ? all : ((local ?? []) as Call[])) as Call[];
+      setCalls(next);
+      writeScreenCache(`calls:list:${userId}`, next);
 
     } catch (e: any) {
       console.error("[pp-ns-cdr] list failed", e);
-      toast.error(e?.message ?? "Échec chargement CDR");
-      let fallbackQuery: any = supabase
-        .from("planipret_phone_calls")
-        .select("*")
-        .order("started_at", { ascending: false })
-        .limit(100);
-      if (phoneCallScopeFilter) fallbackQuery = fallbackQuery.or(phoneCallScopeFilter);
-      const { data } = await fallbackQuery;
-      setCalls((data ?? []) as Call[]);
+      // Une panne ne doit jamais vider la liste déjà affichée.
+      const known = readScreenCache<Call[]>(`calls:list:${userId}`, Number.MAX_SAFE_INTEGER);
+      if (known?.value?.length) { setCalls(known.value); }
+      else {
+        toast.error(e?.message ?? "Échec chargement CDR");
+        let fallbackQuery: any = supabase
+          .from("planipret_phone_calls")
+          .select("*")
+          .order("started_at", { ascending: false })
+          .limit(100);
+        if (phoneCallScopeFilter) fallbackQuery = fallbackQuery.or(phoneCallScopeFilter);
+        const { data } = await fallbackQuery;
+        setCalls((data ?? []) as Call[]);
+      }
     } finally {
       setLoading(false);
     }
   }, [userId, phoneCallScopeFilter]);
 
-  const loadRecordingsFromCache = useCallback(async (silent = false) => {
+  const loadRecordingsFromCache = useCallback(async (silent = false, force = false) => {
     if (!userId) return;
+    if (!force) {
+      const hit = readScreenCache<Call[]>(`calls:recordings:${userId}`, TTL.fiveMinutes);
+      if (hit) { setRecordings(hit.value); setRecordingsLoading(false); return; }
+    }
     // Only show the spinner when we have nothing to display yet — otherwise
     // refresh silently in the background so opening the tab feels instant.
     setRecordings((prev) => {
@@ -303,6 +321,13 @@ export default function MCalls() {
         proxy_ns_callid: r.ns_callid ?? r.ns_orig_callid ?? r.ns_term_callid ?? r.ns_call_id ?? null,
         has_recording: !!(r.has_recording || r.recording_url || r.ns_callid || r.ns_orig_callid || r.ns_term_callid || r.ns_call_id),
       })) as Call[]);
+      writeScreenCache(`calls:recordings:${userId}`, (local ?? []).filter((r: any) => r.has_recording || r.recording_url || r.ns_callid || r.ns_orig_callid || r.ns_term_callid || r.ns_call_id).map((r: any) => ({
+        ...r,
+        stream_via_proxy: true,
+        proxy_call_db_id: r.id,
+        proxy_ns_callid: r.ns_callid ?? r.ns_orig_callid ?? r.ns_term_callid ?? r.ns_call_id ?? null,
+        has_recording: true,
+      })));
     } catch (e) {
       console.warn("[MCalls] recordings load failed", e);
     } finally {
@@ -317,7 +342,7 @@ export default function MCalls() {
       const end = new Date().toISOString();
       const start = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
       await supabase.functions.invoke("pp-ns-cdr", { body: { action: "sync", start, end, limit: 25 } });
-      await loadRecordingsFromCache(true);
+      await loadRecordingsFromCache(true, true);
     } catch (e) {
       console.warn("[MCalls] recordings sync failed", e);
     } finally {
@@ -325,10 +350,13 @@ export default function MCalls() {
     }
   }, [userId, loadRecordingsFromCache]);
 
-  const loadRecordings = useCallback(async (silent = false) => {
-    await loadRecordingsFromCache(silent);
-    void syncRecordingsInBackground();
-  }, [loadRecordingsFromCache, syncRecordingsInBackground]);
+  const loadRecordings = useCallback(async (silent = false, force = false) => {
+    await loadRecordingsFromCache(silent, force);
+    // Synchronisation NetSapiens seulement si le cache 5 min est périmé.
+    if (force || !readScreenCache(`calls:recordings:${userId}`, TTL.fiveMinutes)) {
+      void syncRecordingsInBackground();
+    }
+  }, [userId, loadRecordingsFromCache, syncRecordingsInBackground]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -390,7 +418,7 @@ export default function MCalls() {
         table: "planipret_phone_calls",
         filter: `user_id=eq.${id}`,
       }, () => {
-        if (tab === "recordings") void loadRecordingsFromCache(true);
+        if (tab === "recordings") void loadRecordingsFromCache(true, true);
       })
       .subscribe());
     return () => { channels.forEach((channel) => { void supabase.removeChannel(channel); }); };
@@ -401,7 +429,7 @@ export default function MCalls() {
   useEffect(() => { setVisibleCount(25); }, [tab, search]);
 
   useEffect(() => {
-    registerRefresh(() => { load(); loadRecordings(); });
+    registerRefresh(() => { load(true); loadRecordings(false, true); });
     return () => registerRefresh(null);
   }, [load, loadRecordings, registerRefresh]);
 
@@ -427,7 +455,7 @@ export default function MCalls() {
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await Promise.all([load(), tab === "recordings" ? loadRecordings() : Promise.resolve()]);
+    await Promise.all([load(true), tab === "recordings" ? loadRecordings(false, true) : Promise.resolve()]);
     setTimeout(() => setRefreshing(false), 300);
   };
 
@@ -487,7 +515,7 @@ export default function MCalls() {
               {degraded.reason ? ` (${degraded.reason})` : ""}
             </span>
             <button
-              onClick={() => { setDegraded({ active: false }); load(); }}
+              onClick={() => { setDegraded({ active: false }); load(true); }}
               className="px-3 py-1 rounded-full text-xs font-medium"
               style={{ background: "var(--pp-primary)", color: "#fff" }}
             >
@@ -547,7 +575,7 @@ export default function MCalls() {
           <>
             <div className="px-4 pt-2 flex items-center justify-end">
               <button
-                onClick={() => loadRecordings()}
+                onClick={() => loadRecordings(false, true)}
                 className="text-xs flex items-center gap-1 px-2 py-1"
                 style={{ color: "var(--pp-text-muted)" }}
               >

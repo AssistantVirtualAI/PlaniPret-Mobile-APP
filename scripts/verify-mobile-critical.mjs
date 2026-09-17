@@ -22,6 +22,12 @@ check(hook.includes('data?.source === "pjsip"'), "CallKit/PJSIP answer and rejec
 check(hook.includes("nativeSip.repairRegistration()"), "iOS must repair registration through PJSIP");
 check(hook.includes("ppSipProvider.forceReregister()"), "Android/web must repair registration through JsSIP");
 check(!hook.includes("setInterval(run, 30_000)") && !hook.includes("ownershipTick") && !hook.includes("voipRecheck"), "SIP/PBX and PushKit checks must be event-driven, not periodic API polling");
+const pjsipEngine = readOptional("ios/App/App/Plugins/PpPjsip/PpPjsipEngine.swift");
+if (pjsipEngine) {
+  check(pjsipEngine.includes("pendingAnswerInviteTimeout: TimeInterval = 28.0"), "Native PJSIP must retain a pre-INVITE answer for 28 seconds, below CallKit's 32-second watchdog");
+  check(pjsipEngine.includes("Self.pendingAnswerInviteTimeout") && !pjsipEngine.includes("pendingAnswer timeout 5s"), "Native PJSIP must not abandon a pending inbound answer after five seconds");
+  check(pjsipEngine.includes("PJSIP_INV_STATE_CONFIRMED") && pjsipEngine.includes("PpPjsipCallConnected"), "Native PJSIP must confirm an inbound dialog before CallKit becomes connected");
+}
 const backendCheck = read("src/lib/planipret/sip/sipBackendCheck.ts");
 check(backendCheck.includes("Capacitor.getPlatform()"), "SIP backend health check must send the native platform");
 const backendHealth = read("supabase/functions/pp-sip-registration-check/index.ts");

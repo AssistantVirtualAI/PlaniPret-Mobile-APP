@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useOutletContext, useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
+import { readScreenCache, writeScreenCache, TTL } from "@/lib/planipret/screenCache";
 import { ArrowLeft, Phone, TrendingUp, Award, Flame, Sparkles } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, PieChart, Pie, Cell, Legend } from "recharts";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
@@ -46,6 +47,9 @@ export default function MStats() {
 
   useEffect(() => {
     if (!profile?.id && !profile?.user_id) return;
+    const cacheKey = `stats:${profile?.id ?? profile?.user_id}:${period}`;
+    const hit = readScreenCache<any>(cacheKey, TTL.fiveMinutes);
+    if (hit) { setCalls(hit.value.calls ?? []); setLeads(hit.value.leads ?? []); setLoading(false); return; }
     (async () => {
       setLoading(true);
       const days = period === "week" ? 7 : period === "month" ? 30 : 90;
@@ -58,6 +62,7 @@ export default function MStats() {
           .gte("created_at", since),
       ]);
       setCalls(cRes.data ?? []); setLeads(lRes.data ?? []); setLoading(false);
+      writeScreenCache(cacheKey, { calls: cRes.data ?? [], leads: lRes.data ?? [] });
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile?.id, profile?.user_id, profile?.extension, profile?.ns_extension, period]);

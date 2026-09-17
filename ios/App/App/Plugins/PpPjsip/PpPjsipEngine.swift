@@ -111,6 +111,13 @@ private func ppDisplayFromUri(_ uri: String) -> String {
 final class PjsipEngine {
     static let shared = PjsipEngine()
 
+    /// CallKit conserve l'action Répondre pendant 32 secondes. Lorsqu'un push
+    /// arrive avant l'INVITE TLS, PJSIP doit garder l'intention assez longtemps
+    /// pour laisser terminer le REGISTER/407 sur réseau cellulaire, sans jamais
+    /// dépasser le délai CallKit. Une fenêtre de 5 s rejetait les entrants avant
+    /// l'arrivée normale de l'INVITE et produisait un appel abandonné.
+    private static let pendingAnswerInviteTimeout: TimeInterval = 28.0
+
     /// Injecté par le plugin Capacitor pour diffuser les events vers JS.
     var eventSink: ((String, [String: Any]) -> Void)?
 
@@ -378,9 +385,11 @@ final class PjsipEngine {
             if !registered, accId != pjsua_acc_id(-1) {
                 setRegistration(true)
             }
-            // Si aucun INVITE TLS n'arrive rapidement, demander au JS de
-            // réaligner immédiatement le device NetSapiens avant d'expirer.
-            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 5.0) { [weak self] in
+            // Le push peut précéder l'INVITE TLS pendant le REGISTER/407 sur
+            // cellulaire. Garder l'intention jusqu'à la borne CallKit (32 s)
+            // plutôt que de la rejeter après 5 s; aucun reprovisionnement PBX
+            // n'est déclenché par ce garde-fou lecture seule.
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + Self.pendingAnswerInviteTimeout) { [weak self] in
                 guard let self = self else { return }
                 self.lock.lock()
                 let stillPending = self.pendingAnswerRequest
@@ -393,7 +402,7 @@ final class PjsipEngine {
                 self.lock.unlock()
                 if stillPending {
                     let contact = "sip:\(self.username)@\(self.domain);transport=\(self.registrationTransport)"
-                    NSLog("[PpPjsip] pendingAnswer timeout 5s → TLS re-provision requested contact=%@", contact)
+                    NSLog("[PpPjsip] pendingAnswer timeout %.0fs → INVITE TLS absent; audit only contact=%@", Self.pendingAnswerInviteTimeout, contact)
                     self.emit("registrationRepairRequested", [
                         "transport": self.registrationTransport, "sipPort": self.registrationPort,
                         "contact": contact, "server": self.registrationServer,
