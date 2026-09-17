@@ -27,6 +27,12 @@ echo "📦 Installation des dépendances..."
 cd "$APP_DIR"
 npm install --legacy-peer-deps
 
+# Une archive iOS sans `libpjsip.xcframework` compile les sources Swift mais
+# exclut le moteur via `#if canImport(pjsua)`. Elle démarre alors avec le faux
+# statut `native_sip_unavailable` et ne peut ni REGISTER en TLS ni appeler.
+echo "📞 Vérification du moteur PJSIP/TLS..."
+bash scripts/ensure-pjsip-ios.sh
+
 # 3. Audit + build Vite de l'app mobile uniquement
 echo "🔎 Audit app mobile autonome..."
 npm run audit:native
@@ -37,6 +43,9 @@ npm run build
 # 4. Synchronisation Capacitor
 echo "⚡ Synchronisation Capacitor iOS..."
 npx cap sync ios
+PP_REQUIRE_PJSIP=1 node scripts/apply-native-config.mjs
+bash scripts/verify-pjsip-tls.sh
+node scripts/verify-ios-pjsip-link.mjs
 
 # 5. Vérification de la configuration
 echo "✅ Vérification de la configuration..."

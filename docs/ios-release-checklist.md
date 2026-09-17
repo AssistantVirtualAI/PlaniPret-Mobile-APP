@@ -24,7 +24,9 @@ Le backend choisit automatiquement `api.sandbox.push.apple.com` ou `api.push.app
 ## Avant chaque archive
 
 ```bash
-cd apps/planipret-mobile
+cd ~/planipret-standalone
 rm -rf dist ios/App/App/public
-npm run ios:verify     # build + strip fallback + cap sync + boot check
+npm run ios:oneclick
 ```
+
+Le script `ios:oneclick` est obligatoire pour une archive de livraison. Il construit ou vérifie `libpjsip.xcframework`, exige TLS/OpenSSL, l’injecte dans la cible Xcode puis refuse la synchronisation si le module Swift `pjsua` ne peut pas être lié. Une OTA ne contient que le bundle web et ne peut jamais ajouter ce framework à une application déjà installée.

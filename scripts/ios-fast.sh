@@ -54,8 +54,9 @@ else
 fi
 
 echo "▶ Validation obligatoire du moteur PJSIP natif"
-node scripts/apply-native-config.mjs
+PP_REQUIRE_PJSIP=1 node scripts/apply-native-config.mjs
 bash scripts/verify-pjsip-tls.sh
+node scripts/verify-ios-pjsip-link.mjs
 node scripts/verify-ios-scene.mjs
 
 echo "▶ [4/4] Ouverture Xcode workspace"

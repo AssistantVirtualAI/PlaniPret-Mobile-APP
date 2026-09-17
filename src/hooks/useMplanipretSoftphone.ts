@@ -483,8 +483,14 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
           const nativeEngineReady = await nativeSip.initialize();
           if (cancelled) return;
           if (!nativeEngineReady) {
+            const diagnostic = nativeSip.getDiagnostics();
+            const failure = diagnostic.failure || "native_sip_unavailable";
             console.error("[softphone] iOS PJSIP/TLS registration failed — JsSIP fallback forbidden");
-            setSnap((current) => ({ ...current, status: "error", errorCause: "native_sip_unavailable" }));
+            // Preserve the actual native reason (`engine_not_linked`,
+            // `credentials_missing`, `native_register_timeout`, etc.). The old
+            // umbrella token made a missing PJSIP framework indistinguishable
+            // from a network or NetSapiens registration failure.
+            setSnap((current) => ({ ...current, status: "error", errorCause: failure }));
           }
           return;
         }
