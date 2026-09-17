@@ -1,6 +1,6 @@
 /**
  * Shared cache for pp-ns-contacts + Maestro contacts.
- * - In-memory TTL (60s) with in-flight dedup so parallel callers share one request.
+ * - In-memory TTL (5 min) with in-flight dedup so parallel callers share one request.
  * - Persisted to localStorage so the directory is available INSTANTLY on the
  *   next app open (dialer / search / contacts render from disk while a fresh
  *   copy is fetched in the background).
@@ -14,7 +14,7 @@ type Entry = { at: number; value: any[]; scope?: string | null };
 /** Maestro-scoped lists must never be reused across Maestro accounts. */
 const MAESTRO_SCOPED: Action[] = ["maestro", "maestro_clients", "maestro_brokers"];
 
-const TTL_MS = 60_000;
+export const CONTACTS_SYNC_INTERVAL_MS = 5 * 60 * 1000;
 const LS_PREFIX = "pp:contacts:cache:v1:";
 const LS_TTL_MS = 24 * 60 * 60 * 1000; // keep stale copy up to 24h
 
@@ -87,9 +87,9 @@ function syncMaestroScope(id: string | null | undefined) {
 }
 
 /** Scott's new Maestro endpoints: /users/{id}/clients and /users/{id}/brokers. */
-async function fetchMaestroList(kind: "clients" | "brokers", limit: number): Promise<any[]> {
+async function fetchMaestroList(kind: "clients" | "brokers", limit: number, refresh = false): Promise<any[]> {
   const { data, error } = await supabase.functions.invoke("maestro-actions", {
-    body: { action: kind === "clients" ? "list_clients" : "list_brokers", payload: { limit, refresh: true } },
+    body: { action: kind === "clients" ? "list_clients" : "list_brokers", payload: { limit, refresh } },
   });
   const payload: any = data ?? {};
   if (error && !payload?.success) throw new Error(payload?.error || error.message || kind);
@@ -149,7 +149,7 @@ export async function getPpContacts(
   const now = Date.now();
   if (!opts.force) {
     const hit = cache.get(action);
-    if (hit && now - hit.at < TTL_MS && scopeValid(action, hit)) return hit.value;
+    if (hit && now - hit.at < CONTACTS_SYNC_INTERVAL_MS && scopeValid(action, hit)) return hit.value;
     const pending = inflight.get(action);
     if (pending) return pending;
   }
@@ -158,9 +158,9 @@ export async function getPpContacts(
     const value = action === "maestro"
       ? await fetchMaestro()
       : action === "maestro_clients"
-      ? await fetchMaestroList("clients", opts.limit ?? 500)
+      ? await fetchMaestroList("clients", opts.limit ?? 500, !!opts.force)
       : action === "maestro_brokers"
-      ? await fetchMaestroList("brokers", opts.limit ?? 500)
+      ? await fetchMaestroList("brokers", opts.limit ?? 500, !!opts.force)
       : await fetchNs(action, opts.limit ?? 500);
     // A Maestro reconnect may happen while an old request is still running.
     // Never let that old response repopulate the cache for the new account.
@@ -214,7 +214,7 @@ export function prefetchPpContacts(
   for (const action of actions) {
     // If cache is fresh (< TTL) skip; otherwise refresh in background.
     const hit = cache.get(action);
-    if (hit && Date.now() - hit.at < TTL_MS) continue;
+    if (hit && Date.now() - hit.at < CONTACTS_SYNC_INTERVAL_MS) continue;
     void getPpContacts(action, { limit }).catch(() => {});
   }
 }

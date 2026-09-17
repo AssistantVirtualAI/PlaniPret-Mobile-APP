@@ -14,6 +14,19 @@ Object.defineProperty(window, "matchMedia", {
   }),
 });
 
-// jsdom does not implement Blob URL helpers used by attachment downloads.
-if (typeof URL.createObjectURL !== "function") (URL as any).createObjectURL = () => "blob:stub";
-if (typeof URL.revokeObjectURL !== "function") (URL as any).revokeObjectURL = () => {};
+if (!(URL as any).createObjectURL) {
+  (URL as any).createObjectURL = () => "blob:mock";
+}
+if (!(URL as any).revokeObjectURL) {
+  (URL as any).revokeObjectURL = () => {};
+}
+
+// Les écrans mobiles utilisent un cache persistant (mémoire + localStorage).
+// Chaque test doit repartir d'un cache vide pour observer les vrais appels.
+import { beforeEach } from "vitest";
+import { invalidateScreenCache } from "@/lib/planipret/screenCache";
+
+beforeEach(() => {
+  invalidateScreenCache();
+  try { localStorage.clear(); } catch { /* noop */ }
+});

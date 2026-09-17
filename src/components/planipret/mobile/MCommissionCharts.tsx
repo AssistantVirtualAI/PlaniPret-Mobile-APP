@@ -1,8 +1,9 @@
 // Graphiques de commissions mobiles — parité avec le portail (RegisterCommissions).
 // Les données proviennent uniquement de l'action `deposits` de
 // `planipret-commission-reports` (année courante + même fenêtre l'an dernier).
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
+import { isStatsCacheFresh, readStatsCache, statsCacheKey, writeStatsCache } from "@/lib/planipret/commissionsCache";
 import {
   BarChart, Bar, ComposedChart, Line, AreaChart, Area, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -73,23 +74,40 @@ const axisTick = { fontSize: 10, fill: "var(--pp-text-secondary, #B4C6D8)" };
 export default function MCommissionCharts({
   filters,
   lang,
+  cacheScope,
+  refreshToken = 0,
 }: {
   filters: Record<string, unknown>;
   lang?: string;
+  cacheScope: string;
+  refreshToken?: number;
 }) {
   const fr = lang !== "en";
   const [cy, setCy] = useState<Row[] | null>(null);
   const [py, setPy] = useState<Row[]>([]);
   const [failed, setFailed] = useState(false);
+  const appliedRefreshToken = useRef(refreshToken);
 
   const from = String((filters as any).date_from ?? "");
   const to = String((filters as any).date_to ?? "");
   const key = JSON.stringify(filters);
+  const cacheKey = statsCacheKey("broker", [cacheScope, "charts", key]);
 
   useEffect(() => {
     if (!from || !to) return;
     let cancelled = false;
-    setCy(null); setFailed(false);
+    const cached = readStatsCache(cacheKey);
+    const cachedRows = cached?.value as { cy?: Row[]; py?: Row[] } | undefined;
+    if (cachedRows) {
+      setCy(cachedRows.cy ?? []);
+      setPy(cachedRows.py ?? []);
+      setFailed(false);
+    } else {
+      setCy(null); setFailed(false);
+    }
+    const force = refreshToken !== appliedRefreshToken.current;
+    appliedRefreshToken.current = refreshToken;
+    if (!force && isStatsCacheFresh(cached)) return;
 
     const call = (f: Record<string, unknown>) =>
       supabase.functions.invoke("planipret-commission-reports", {
@@ -103,13 +121,18 @@ export default function MCommissionCharts({
       ]);
       if (cancelled) return;
       if (a.error || (a.data as any)?.error) { setFailed(true); return; }
-      setCy(((a.data as any)?.rows ?? []) as Row[]);
-      setPy((!b.error && ((b.data as any)?.rows ?? [])) || []);
+      const next = {
+        cy: ((a.data as any)?.rows ?? []) as Row[],
+        py: ((!b.error && ((b.data as any)?.rows ?? [])) || []) as Row[],
+      };
+      setCy(next.cy);
+      setPy(next.py);
+      writeStatsCache(cacheKey, next);
     })().catch(() => { if (!cancelled) setFailed(true); });
 
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
+  }, [key, cacheKey, refreshToken]);
 
   const months: MonthRow[] = useMemo(() => {
     if (!cy) return [];

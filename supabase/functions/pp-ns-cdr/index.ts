@@ -65,13 +65,37 @@ function pickEndpoint(raw: any, keys: string[]): string | null {
   return null;
 }
 
+/**
+ * NetSapiens CDRs can expose the broker's short extension before the public
+ * ANI/DNIS. Keep the short value only as a last diagnostic fallback; the
+ * mobile history must prefer the external party whenever the CDR provides it.
+ */
+function isInternalExtension(value: string | null, ownExtension?: string | null): boolean {
+  if (!value) return false;
+  const digits = value.replace(/\D/g, "");
+  const ownDigits = String(ownExtension ?? "").replace(/\D/g, "");
+  if (ownDigits && digits === ownDigits) return true;
+  return digits.length >= 2 && digits.length <= 6;
+}
+
+function pickPeerEndpoint(raw: any, keys: string[], ownExtension?: string | null): string | null {
+  let internalFallback: string | null = null;
+  for (const k of keys) {
+    const endpoint = normalizeEndpoint(raw?.[k]);
+    if (!endpoint) continue;
+    if (!isInternalExtension(endpoint, ownExtension)) return endpoint;
+    internalFallback ??= endpoint;
+  }
+  return internalFallback;
+}
+
 function normalizeCdr(it: any, ctx: any) {
   const nsCdrId = val(it, ["call-parent-cdr-id", "cdr-id", "cdr_id", "id", "uuid", "call_id", "call-id"]);
   const nsCallId = val(it, ["call-id", "call_id", "callid", "call-parent-call-id", "orig_callid", "term_callid"]);
   const nsOrigCallId = val(it, ["call-orig-call-id", "orig_callid", "orig-callid", "orig-call-id"]);
   const nsTermCallId = val(it, ["call-term-call-id", "term_callid", "term-callid", "term-call-id"]);
-  const fromNumber = pickEndpoint(it, ["from_number", "from", "caller_id_number", "caller-id-number", "call-orig-from-uri", "orig-from-uri", "orig_from_uri", "call-orig-from-user", "call-orig-caller-id", "call-orig-user", "orig-user", "orig_from_user", "ani", "by_number"]);
-  const toNumber = pickEndpoint(it, ["to_number", "to", "destination", "dialed_number", "dnis", "call-orig-request-user", "call-orig-to-user", "call-orig-to-uri", "term_to_user", "term-user", "call-term-user", "orig_to_user", "orig-to-user", "call-term-to-uri"]);
+  const fromNumber = pickPeerEndpoint(it, ["from_number", "from", "caller_id_number", "caller-id-number", "call-orig-from-uri", "orig-from-uri", "orig_from_uri", "call-orig-from-user", "call-orig-caller-id", "call-orig-user", "orig-user", "orig_from_user", "ani", "by_number"], ctx.extension);
+  const toNumber = pickPeerEndpoint(it, ["to_number", "to", "destination", "dialed_number", "dnis", "call-orig-request-user", "call-orig-to-user", "call-orig-to-uri", "term_to_user", "term-user", "call-term-user", "orig_to_user", "orig-to-user", "call-term-to-uri"], ctx.extension);
   const recordingUrl = val(it, ["file-access-url", "recording_url", "recording-url", "record_url", "recording", "url"]);
   const recordingStatus = val(it, ["call-recording-status", "recording_status"]);
   return {

@@ -26,11 +26,11 @@ const rows = [
 const filters = { date_from: "2026-01-01", date_to: "2026-12-31", commission_type: "base" };
 
 describe("MCommissionCharts", () => {
-  beforeEach(() => invoke.mockReset());
+  beforeEach(() => { invoke.mockReset(); localStorage.clear(); });
 
   it("charge l'année courante et l'année précédente puis affiche les graphiques", async () => {
     invoke.mockResolvedValue({ data: { rows }, error: null });
-    render(<MCommissionCharts filters={filters} lang="fr" />);
+    render(<MCommissionCharts filters={filters} lang="fr" cacheScope="test-a" />);
 
     await waitFor(() => expect(screen.getByTestId("commission-charts")).toBeInTheDocument());
     expect(invoke).toHaveBeenCalledTimes(2);
@@ -41,7 +41,15 @@ describe("MCommissionCharts", () => {
 
   it("ne rend rien si l'API échoue", async () => {
     invoke.mockResolvedValue({ data: null, error: { message: "boom" } });
-    const { container } = render(<MCommissionCharts filters={filters} lang="fr" />);
+    const { container } = render(<MCommissionCharts filters={filters} lang="fr" cacheScope="test-b" />);
     await waitFor(() => expect(container.querySelector('[data-testid="commission-charts"]')).toBeNull());
+  });
+
+  it("revalide une seule fois les graphiques lorsqu’un rafraîchissement est demandé", async () => {
+    invoke.mockResolvedValue({ data: { rows }, error: null });
+    const view = render(<MCommissionCharts filters={filters} lang="fr" cacheScope="test-c" refreshToken={0} />);
+    await waitFor(() => expect(invoke).toHaveBeenCalledTimes(2));
+    view.rerender(<MCommissionCharts filters={filters} lang="fr" cacheScope="test-c" refreshToken={1} />);
+    await waitFor(() => expect(invoke).toHaveBeenCalledTimes(4));
   });
 });

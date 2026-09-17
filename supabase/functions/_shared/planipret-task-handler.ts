@@ -142,7 +142,20 @@ export async function withIdempotency(
 
 async function projectionUpsert(admin: any, userId: string, tasks: any[]) {
   if (!tasks.length) return;
-  const rows = tasks.map((t) => ({
+  const ids = tasks.map((t) => String(t.id)).filter(Boolean);
+  const { data: current } = await admin
+    .from("planipret_tasks_projection")
+    .select("task_id,due_at,status,payload")
+    .eq("user_id", userId)
+    .in("task_id", ids);
+  const existing = new Map<string, any>((current ?? []).map((row: any) => [String(row.task_id), row]));
+  const rows = tasks.filter((t) => {
+    const prior: any = existing.get(String(t.id));
+    if (!prior) return true;
+    return prior.due_at !== t.due_at
+      || prior.status !== t.status
+      || JSON.stringify(prior.payload ?? null) !== JSON.stringify(t ?? null);
+  }).map((t) => ({
     user_id: userId,
     task_id: String(t.id),
     due_at: t.due_at,
@@ -150,7 +163,7 @@ async function projectionUpsert(admin: any, userId: string, tasks: any[]) {
     payload: t,
     updated_at: new Date().toISOString(),
   }));
-  await admin.from("planipret_tasks_projection").upsert(rows, { onConflict: "user_id,task_id" });
+  if (rows.length) await admin.from("planipret_tasks_projection").upsert(rows, { onConflict: "user_id,task_id" });
 }
 
 async function loadProjection(admin: any, userId: string) {

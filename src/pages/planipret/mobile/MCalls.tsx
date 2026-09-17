@@ -19,6 +19,8 @@ import GreetingStudio from "@/components/planipret/mobile/voicemail/GreetingStud
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { useCallerNames } from "@/lib/planipret/callerLookup";
 import { createClientFollowUpTask } from "@/lib/planipret/tasks";
+import { presentCallParty } from "@/lib/planipret/callPresentation";
+
 
 
 const PRIMARY = "var(--pp-brand-accent-2)";
@@ -79,20 +81,6 @@ type Insight = {
 const isOutbound = (c: Call) => c.direction === "outbound";
 const isMissed = (c: Call) => c.direction === "missed" || c.status === "missed" || c.status === "no-answer";
 
-// Normalize NS values like "sip:15145551234@planipret.ca", "tel:+1...",
-// "anonymous", "1000@planipret.ca", or empty strings.
-function cleanNumber(v: unknown): string | null {
-  if (v == null) return null;
-  let s = String(v).trim();
-  if (!s) return null;
-  s = s.replace(/^sips?:/i, "").replace(/^tel:/i, "");
-  const at = s.indexOf("@");
-  if (at !== -1) s = s.slice(0, at);
-  s = s.replace(/^\+?1(\d{10})$/, "$1");
-  if (!s || /^(anonymous|unknown|restricted|private|unavailable)$/i.test(s)) return null;
-  return s;
-}
-
 const pick = (raw: any, keys: string[]) => {
   for (const k of keys) {
     const v = raw?.[k];
@@ -100,29 +88,27 @@ const pick = (raw: any, keys: string[]) => {
   }
   return null;
 };
-function fmtPhone(n: string | null): string | null {
-  if (!n) return null;
-  const d = n.replace(/\D/g, "");
-  if (d.length === 10) return `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`;
-  if (d.length === 11 && d.startsWith("1")) return `(${d.slice(1, 4)}) ${d.slice(4, 7)}-${d.slice(7)}`;
-  return n;
-}
-
-const otherNumber = (c: Call) => cleanNumber(isOutbound(c) ? c.to_number : c.from_number) || "";
-const otherName = (c: Call) => (isOutbound(c) ? c.to_name : c.from_name) || "";
+const callParty = (c: Call, resolvedName?: string | null) => presentCallParty({
+  direction: c.direction,
+  fromNumber: c.from_number,
+  fromName: c.from_name,
+  toNumber: c.to_number,
+  toName: c.to_name,
+  resolvedName,
+});
+const otherNumber = (c: Call) => callParty(c).phone || "";
+const otherName = (c: Call) => callParty(c).name || "";
 // Label priority: NS caller_id_name → resolved (Maestro/MS/contacts) → phone
 // number → localized "Numéro non résolu" fallback.
 const UNRESOLVED_FR = "Numéro non résolu";
 const UNRESOLVED_EN = "Unresolved number";
 function displayLabelWith(c: Call, resolved?: string | null, lang: "fr" | "en" = "fr"): string {
-  const name = otherName(c);
-  if (name) return name;
-  if (resolved) return resolved;
-  const num = fmtPhone(otherNumber(c));
-  if (num) return num;
+  const party = callParty(c, resolved);
+  if (party.name) return party.name;
+  if (party.formattedPhone) return party.formattedPhone;
   return lang === "en" ? UNRESOLVED_EN : UNRESOLVED_FR;
 }
-const displayLabel = (c: Call) => otherName(c) || fmtPhone(otherNumber(c)) || UNRESOLVED_FR;
+const displayLabel = (c: Call) => callParty(c).name || callParty(c).formattedPhone || UNRESOLVED_FR;
 
 const localizedDateTime = (iso: string, lang: "fr" | "en", todayLabel: string, yesterdayLabel: string) => {
   const d = new Date(iso);
@@ -234,6 +220,7 @@ export default function MCalls() {
         const to_number = pick(it, ["to_number", "to", "destination", "dialed_number", "dnis", "term_to_user", "term-user", "call-term-user", "orig_to_user", "orig-to-user", "call-orig-to-uri", "call-term-to-uri"]) ?? enriched?.to_number ?? null;
         const from_name = pick(it, ["from_name", "caller_id_name", "caller-id-name", "orig_from_name", "orig-name", "by_name"]) ?? enriched?.from_name ?? null;
         return {
+          ...(enriched ?? {}),
           id: enriched?.id ?? nsId ?? `ns-${i}`,
           user_id: enriched?.user_id ?? userId,
           ns_call_id: nsId,
@@ -253,8 +240,9 @@ export default function MCalls() {
           has_recording: Boolean(pick(it, ["recording_url", "ns_recording_url", "file-access-url", "call-recording-status", "recording", "record_url", "url"]) ?? enriched?.has_recording),
           transcript: enriched?.transcript ?? null,
           ai_summary: enriched?.ai_summary ?? null,
-          metadata: it,
-          ...(enriched ?? {}),
+          // Live CDR identity is authoritative. An older local row may have
+          // captured the broker extension instead of the external caller.
+          metadata: { ...(enriched?.metadata ?? {}), netSapiens: it },
         } as Call;
       });
 
@@ -676,12 +664,13 @@ function CallRow({ call, onTap, onCall, showCallBtn }: { call: Call; onTap: () =
   const out = isOutbound(call);
   const dirColor = missed ? "var(--pp-danger)" : out ? "var(--pp-success)" : "var(--pp-brand-accent)";
   const Icon = missed ? PhoneMissed : out ? PhoneOutgoing : PhoneIncoming;
-  const num = otherNumber(call);
+  const party = callParty(call);
+  const num = party.phone || "";
   const names = useCallerNames([num]);
-  const resolved = names[num];
-  const label = displayLabelWith(call, resolved, lang as "fr" | "en");
-  const numberSub = fmtPhone(num);
-  const showNumberSub = !!numberSub && numberSub !== label;
+  const partyWithName = callParty(call, names[num]);
+  const label = partyWithName.name || partyWithName.formattedPhone || (lang === "en" ? UNRESOLVED_EN : UNRESOLVED_FR);
+  const numberSub = partyWithName.formattedPhone;
+  const showNumberSub = !!numberSub && !!partyWithName.name;
   const st = statusInfo(call, lang as "fr" | "en");
   const hasAi = !!call.ai_summary;
 
@@ -781,8 +770,55 @@ function EmptyState({ tab }: { tab: "recents" | "active" | "missed" }) {
 
 // ---------- Transcript view (chat bubbles + auto-fetch + Analyze CTA) ----------
 type Seg = { speaker: string; text: string; start?: number | null; end?: number | null };
+type TxStatus = {
+  source?: string | null;
+  status?: string | null;
+  pending?: boolean;
+  attempts?: number;
+  fetchedAt?: string | null;
+  lastAttemptAt?: string | null;
+};
+function TranscriptStatusBanner({ s, has }: { s?: TxStatus; has: boolean }) {
+  if (!s) return null;
+  const src = (s.source || "").toLowerCase();
+  const label = src.includes("netsapiens")
+    ? "NetSapiens"
+    : src.includes("whisper") || src.includes("stt") || src.includes("audio")
+      ? "audio_stt_fallback"
+      : has ? (s.source || "source inconnue") : "en attente";
+  const isPending = !has || s.pending || label === "en attente";
+  const fmt = (v?: string | null) => (v ? new Date(v).toLocaleString("fr-CA") : null);
+  const history = [
+    fmt(s.fetchedAt) ? `Transcrit le ${fmt(s.fetchedAt)}` : null,
+    fmt(s.lastAttemptAt) ? `Dernière tentative ${fmt(s.lastAttemptAt)}` : null,
+    s.attempts ? `${s.attempts} tentative(s)` : null,
+    s.status ? `État : ${s.status}` : null,
+  ].filter(Boolean) as string[];
+  return (
+    <div className="pp-card p-3 space-y-1">
+      <div className="flex items-center gap-2 text-[11px] font-semibold" style={{ color: "var(--pp-text-primary)" }}>
+        <span
+          className="px-2 py-0.5 rounded-full"
+          style={{
+            background: isPending ? "var(--pp-bg-elevated)" : "var(--pp-bg-surface)",
+            border: "1px solid var(--pp-bg-border-2)",
+            color: isPending ? "var(--pp-warning, #F5A623)" : "var(--pp-brand-accent)",
+          }}
+        >
+          {isPending ? "⏳ en attente" : `✅ ${label}`}
+        </span>
+        <span style={{ color: "var(--pp-text-secondary)" }}>Source de transcription</span>
+      </div>
+      {history.length > 0 && (
+        <ul className="text-[10px] space-y-0.5" style={{ color: "var(--pp-text-secondary)" }}>
+          {history.map((h) => <li key={h}>• {h}</li>)}
+        </ul>
+      )}
+    </div>
+  );
+}
 function TranscriptView({
-  segments, transcript, loading, preparing = false, attempt = 0, onFetch, onAnalyze, aiLoading, analyzed, t, filenameHint,
+  segments, transcript, loading, preparing = false, attempt = 0, onFetch, onAnalyze, aiLoading, analyzed, t, filenameHint, status,
 }: {
   segments: Seg[] | null;
   transcript: string | null;
@@ -795,9 +831,11 @@ function TranscriptView({
   analyzed: boolean;
   t: (k: string) => string;
   filenameHint?: string;
+  status?: TxStatus;
 }) {
   const has = (segments && segments.length > 0) || !!(transcript && transcript.trim());
   const fetchedRef = useRef(false);
+
 
   useEffect(() => {
     if (!has && !loading && !preparing && !fetchedRef.current) {
@@ -813,7 +851,10 @@ function TranscriptView({
 
   if ((loading || preparing) && !has) {
     return (
+      <div className="space-y-3">
+      <TranscriptStatusBanner s={status} has={false} />
       <div className="pp-card p-4 space-y-3">
+
         <div className="flex items-center gap-2 text-xs" style={{ color: "var(--pp-text-primary)" }}>
           <Loader2 className="w-4 h-4 animate-spin" style={{ color: "var(--pp-brand-accent)" }} />
           {preparing
@@ -833,12 +874,16 @@ function TranscriptView({
           ))}
         </div>
       </div>
+      </div>
     );
   }
 
   if (!has) {
     return (
+      <div className="space-y-3">
+      <TranscriptStatusBanner s={status} has={false} />
       <div className="pp-card p-4 space-y-3">
+
         <div className="text-xs" style={{ color: "var(--pp-warning, #F5A623)" }}>
           ⚠️ {t("calls.transcriptUnavailable") || "Transcription non disponible."}
         </div>
@@ -850,7 +895,9 @@ function TranscriptView({
           <RefreshCw className="w-3.5 h-3.5 inline mr-1" /> Réessayer
         </button>
       </div>
+      </div>
     );
+
   }
 
   const segs: Seg[] = segments && segments.length > 0
@@ -899,6 +946,8 @@ function TranscriptView({
 
   return (
     <div className="space-y-3">
+      <TranscriptStatusBanner s={status} has={true} />
+
       <div className="flex items-center justify-between gap-2 sticky top-0 z-10 py-1"
         style={{ background: "var(--pp-bg-base)" }}>
         <div className="text-[11px]" style={{ color: "var(--pp-text-muted)" }}>
@@ -1433,9 +1482,18 @@ function CallDetailSheet({
               aiLoading={aiLoading}
               analyzed={!!(call as any).ai_analysis_json}
               t={t}
+              status={{
+                source: (call as any).transcript_source ?? null,
+                status: (call as any).transcript_status ?? null,
+                pending: !!(call as any).transcript_pending,
+                attempts: Number((call as any).transcript_attempts ?? 0),
+                fetchedAt: (call as any).transcript_fetched_at ?? null,
+                lastAttemptAt: (call as any).transcript_last_attempt_at ?? null,
+              }}
               filenameHint={`transcript_${displayLabel(call)}_${(call.started_at || "").slice(0,10)}`}
             />
           )}
+
 
 
 

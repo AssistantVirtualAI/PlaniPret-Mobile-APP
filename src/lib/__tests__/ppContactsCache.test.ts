@@ -7,7 +7,7 @@ vi.mock("@/integrations/supabase/client", () => ({
 }));
 
 /**
- * Non-récurrence sync Contacts : TTL 60 s + anti-concurrence (dedup in-flight).
+ * Non-récurrence sync Contacts : TTL 5 min + anti-concurrence (dedup in-flight).
  * Un appel réseau par cycle => plus de tempête de logs
  * ("QUARANTINED DUE TO HIGH LOGGING VOLUME").
  */
@@ -33,7 +33,7 @@ describe("ppContactsCache — TTL et anti-concurrence", () => {
 
   it("sert le cache pendant le TTL puis re-fetch après expiration", async () => {
     await mod.getPpContacts("directory");
-    vi.setSystemTime(Date.now() + 30_000);
+    vi.setSystemTime(Date.now() + 4 * 60_000);
     await mod.getPpContacts("directory");
     expect(invoke).toHaveBeenCalledTimes(1);
 
@@ -45,7 +45,7 @@ describe("ppContactsCache — TTL et anti-concurrence", () => {
   it("5 cycles de sync => 5 requêtes max (pas de tempête de logs)", async () => {
     for (let cycle = 0; cycle < 5; cycle++) {
       await Promise.all(Array.from({ length: 8 }, () => mod.getPpContacts("directory")));
-      vi.setSystemTime(Date.now() + 61_000);
+      vi.setSystemTime(Date.now() + 5 * 60_000 + 1);
     }
     expect(invoke.mock.calls.length).toBeLessThanOrEqual(5);
   });

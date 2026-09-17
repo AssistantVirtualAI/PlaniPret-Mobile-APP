@@ -115,6 +115,24 @@ beforeEach(() => {
 });
 
 describe("EmailsList (mobile inbox)", () => {
+  it("réutilise la boîte mise en cache pendant cinq minutes après navigation", async () => {
+    const cachedProfile = { ...PROFILE, user_id: "email-cache-user" };
+    const first = render(<EmailsList profile={cachedProfile} />);
+    await screen.findByText("Subject 0");
+    const firstReads = invokeMock.mock.calls.filter(
+      ([fn, opts]) => fn === "ms365-actions" && opts?.body?.action === "read_emails",
+    ).length;
+    expect(firstReads).toBe(1);
+    first.unmount();
+
+    render(<EmailsList profile={cachedProfile} />);
+    await screen.findByText("Subject 0");
+    const secondReads = invokeMock.mock.calls.filter(
+      ([fn, opts]) => fn === "ms365-actions" && opts?.body?.action === "read_emails",
+    ).length;
+    expect(secondReads).toBe(1);
+  });
+
   it("opens an email and marks it as read via ms365-actions", async () => {
     render(<EmailsList profile={PROFILE} />);
 

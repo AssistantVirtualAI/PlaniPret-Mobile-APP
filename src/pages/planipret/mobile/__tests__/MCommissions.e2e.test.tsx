@@ -103,6 +103,7 @@ const money = (expected: string) =>
   screen.getByText((_, el) => !!el && el.children.length === 0 && norm(el.textContent ?? "") === norm(expected));
 
 beforeEach(() => {
+  localStorage.clear();
   invokeMock.mockReset();
   invokeMock.mockImplementation(respond);
   outletProfile = { role: "broker" };

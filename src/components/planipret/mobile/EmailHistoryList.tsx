@@ -3,7 +3,7 @@
  * `planipret_email_messages`. Includes emails saved on send even before
  * MS Graph delta sync catches up.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { Search, Mail, Send, Inbox } from "lucide-react";
@@ -24,6 +24,12 @@ type Row = {
 };
 
 type Filter = "all" | "sent" | "inbox";
+const EMAIL_SYNC_INTERVAL_MS = 5 * 60 * 1000;
+type CacheEntry = { at: number; rows: Row[] };
+const emailCache = new Map<string, CacheEntry>();
+const emailInFlight = new Map<string, Promise<Row[]>>();
+
+function cacheKey(userId: string, filter: Filter) { return `${userId}:${filter}`; }
 
 export default function EmailHistoryList() {
   const { lang } = useMplanipretLang();
@@ -31,22 +37,55 @@ export default function EmailHistoryList() {
   const [q, setQ] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   const [loading, setLoading] = useState(true);
+  const [userId, setUserId] = useState<string | null>(null);
 
-  const load = async () => {
-    setLoading(true);
-    let query = supabase
-      .from("planipret_email_messages")
-      .select("id, graph_id, subject, from_email, from_name, to_recipients, body_preview, sent_at, received_at, is_sent_by_me, folder, locally_saved")
-      .order("sent_at", { ascending: false, nullsFirst: false })
-      .limit(200);
-    if (filter === "sent") query = query.eq("is_sent_by_me", true);
-    else if (filter === "inbox") query = query.eq("is_sent_by_me", false);
-    const { data } = await query;
-    setRows((data ?? []) as Row[]);
-    setLoading(false);
-  };
+  useEffect(() => {
+    let alive = true;
+    void supabase.auth.getUser().then(({ data }) => {
+      if (alive) setUserId(data.user?.id ?? null);
+    });
+    return () => { alive = false; };
+  }, []);
 
-  useEffect(() => { load(); }, [filter]);
+  const load = useCallback(async (force = false) => {
+    if (!userId) return;
+    const key = cacheKey(userId, filter);
+    const cached = emailCache.get(key);
+    if (cached) {
+      setRows(cached.rows);
+      setLoading(false);
+    }
+    if (!force && cached && Date.now() - cached.at < EMAIL_SYNC_INTERVAL_MS) return;
+    if (!cached) setLoading(true);
+
+    const pending = emailInFlight.get(key);
+    const request = pending ?? (async () => {
+      let query = supabase
+        .from("planipret_email_messages")
+        .select("id, graph_id, subject, from_email, from_name, to_recipients, body_preview, sent_at, received_at, is_sent_by_me, folder, locally_saved")
+        .order("sent_at", { ascending: false, nullsFirst: false })
+        .limit(200);
+      if (filter === "sent") query = query.eq("is_sent_by_me", true);
+      else if (filter === "inbox") query = query.eq("is_sent_by_me", false);
+      const { data, error } = await query;
+      if (error) throw error;
+      return (data ?? []) as Row[];
+    })();
+    if (!pending) emailInFlight.set(key, request);
+    try {
+      const next = await request;
+      emailCache.set(key, { at: Date.now(), rows: next });
+      setRows(next);
+    } catch {
+      // Keep the existing list visible while the device radio or M365 bridge
+      // recovers; a navigation event must not blank the inbox.
+    } finally {
+      if (emailInFlight.get(key) === request) emailInFlight.delete(key);
+      setLoading(false);
+    }
+  }, [filter, userId]);
+
+  useEffect(() => { void load(); }, [load]);
 
   const filtered = useMemo(() => {
     const term = q.trim().toLowerCase();

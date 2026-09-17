@@ -10,6 +10,8 @@
 const STATS_PREFIX = "pp-commissions-cache:";
 const STATUS_PREFIX = "pp-maestro-sync-status:";
 const MAX_AGE_MS = 30 * 24 * 3600 * 1000;
+/** Commissions are refreshed at most once per day unless the broker requests it. */
+export const COMMISSION_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 export type StatsCacheEntry = { ts: number; value: any };
 
@@ -39,6 +41,10 @@ export function readStatsCache(key: string): StatsCacheEntry | null {
 
 export function writeStatsCache(key: string, value: any): void {
   try { localStorage.setItem(key, JSON.stringify({ ts: Date.now(), value })); } catch { /* quota */ }
+}
+
+export function isStatsCacheFresh(entry: StatsCacheEntry | null, now = Date.now()): boolean {
+  return !!entry && now - entry.ts >= 0 && now - entry.ts < COMMISSION_SYNC_INTERVAL_MS;
 }
 
 /** Most recent cached payload for a scope, whatever the filters were. */

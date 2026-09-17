@@ -12,6 +12,7 @@ import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGri
 import MCommissionCharts from "@/components/planipret/mobile/MCommissionCharts";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import { isStatsCacheFresh, readStatsCache, statsCacheKey, writeStatsCache } from "@/lib/planipret/commissionsCache";
 
 type Period = "month" | "quarter" | "year" | "ytd" | "custom";
 
@@ -142,6 +143,7 @@ export default function MCommissions() {
   const [error, setError] = useState<string | null>(null);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [avaPref, setAvaPref] = useState<boolean | null>(null);
+  const [chartRefreshToken, setChartRefreshToken] = useState(0);
 
   const range = useMemo(() => rangeFor(period, customFrom, customTo), [period, customFrom, customTo]);
   const rangeReady = period !== "custom" || (!!customFrom && !!customTo);
@@ -158,6 +160,18 @@ export default function MCommissions() {
     ...(agentId ? { users_id: agentId } : {}),
   }), [range.from, range.to, commissionType, institutionId, splitType, numberPrefix, orderBy, sortDir, agentId]);
 
+  // Cache keys include the signed-in user and complete filter set. Commission
+  // rows are never shared across brokers on a device.
+  const cacheScope = String(profile?.user_id ?? profile?.id ?? "anonymous");
+  const reportCacheKey = useMemo(
+    () => statsCacheKey(isAdmin ? "admin" : "broker", [cacheScope, "report", JSON.stringify(filters)]),
+    [isAdmin, cacheScope, filters],
+  );
+  const metadataCacheKey = useMemo(
+    () => statsCacheKey(isAdmin ? "admin" : "broker", [cacheScope, "metadata"]),
+    [isAdmin, cacheScope],
+  );
+
 
   const call = useCallback(async (body: Record<string, unknown>) => {
     const { data, error: fnErr } = await supabase.functions.invoke("planipret-commission-reports", { body });
@@ -166,9 +180,20 @@ export default function MCommissions() {
     return data;
   }, []);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (force = false) => {
     if (!allowed || !rangeReady) return;
-    setLoading(true); setError(null); setPage(1);
+    const cached = readStatsCache(reportCacheKey);
+    const cachedReport = cached?.value as { summary?: Summary; rows?: DepositRow[]; total?: number } | undefined;
+    if (cachedReport) {
+      setSummary(cachedReport.summary ?? null);
+      setRows(cachedReport.rows ?? []);
+      setTotal(cachedReport.total ?? 0);
+      setPage(1);
+      setLoading(false);
+    }
+    if (!force && isStatsCacheFresh(cached)) return;
+    if (!cachedReport) setLoading(true);
+    setError(null);
     try {
       const [s, d] = await Promise.all([
         call({ action: "summary", filters }),
@@ -177,22 +202,53 @@ export default function MCommissions() {
       setSummary(s.summary);
       setRows(d.rows ?? []);
       setTotal(d.pagination?.total ?? 0);
+      setPage(1);
+      writeStatsCache(reportCacheKey, {
+        summary: s.summary ?? null,
+        rows: d.rows ?? [],
+        total: d.pagination?.total ?? 0,
+      });
+      if (force) setChartRefreshToken((value) => value + 1);
     } catch (e) {
       setError((e as Error).message);
-      setSummary(null); setRows([]); setTotal(0);
+      // Keep the last known report on screen. A temporary Maestro outage must
+      // never turn a populated commissions page into an empty error screen.
+      if (!cachedReport) { setSummary(null); setRows([]); setTotal(0); }
     } finally {
       setLoading(false);
     }
-  }, [allowed, rangeReady, filters, call]);
+  }, [allowed, rangeReady, filters, call, reportCacheKey]);
 
   useEffect(() => { load(); }, [load]);
 
   useEffect(() => {
     if (!allowed) return;
-    call({ action: "preference" }).then((d) => setAvaPref(d.ava_include_commissions === true)).catch(() => setAvaPref(null));
-    call({ action: "institutions" }).then((d) => setInstitutions(d.institutions ?? [])).catch(() => setInstitutions([]));
-    call({ action: "agents" }).then((d) => setAgents(d.agents ?? [])).catch(() => setAgents([]));
-  }, [allowed, call]);
+    const cached = readStatsCache(metadataCacheKey);
+    const cachedMetadata = cached?.value as { avaPref?: boolean | null; institutions?: { id: number; label: string }[]; agents?: { users_id: number; name: string }[] } | undefined;
+    if (cachedMetadata) {
+      setAvaPref(cachedMetadata.avaPref ?? null);
+      setInstitutions(cachedMetadata.institutions ?? []);
+      setAgents(cachedMetadata.agents ?? []);
+    }
+    if (isStatsCacheFresh(cached)) return;
+    Promise.all([
+      call({ action: "preference" }),
+      call({ action: "institutions" }),
+      call({ action: "agents" }),
+    ]).then(([preference, institutionData, agentData]) => {
+      const next = {
+        avaPref: preference.ava_include_commissions === true,
+        institutions: institutionData.institutions ?? [],
+        agents: agentData.agents ?? [],
+      };
+      setAvaPref(next.avaPref);
+      setInstitutions(next.institutions);
+      setAgents(next.agents);
+      writeStatsCache(metadataCacheKey, next);
+    }).catch(() => {
+      if (!cachedMetadata) { setAvaPref(null); setInstitutions([]); setAgents([]); }
+    });
+  }, [allowed, call, metadataCacheKey]);
 
 
   const loadMore = async () => {
@@ -238,7 +294,7 @@ export default function MCommissions() {
           <button onClick={() => setFiltersOpen(true)} aria-label={fr ? "Filtres" : "Filters"} className="p-2 rounded-lg" style={{ color: "var(--pp-text-secondary, #B4C6D8)" }}>
             <SlidersHorizontal className="w-4 h-4" />
           </button>
-          <button onClick={load} aria-label={fr ? "Rafraîchir" : "Refresh"} className="p-2 rounded-lg" style={{ color: "var(--pp-text-secondary, #B4C6D8)" }}>
+          <button onClick={() => load(true)} aria-label={fr ? "Rafraîchir" : "Refresh"} className="p-2 rounded-lg" style={{ color: "var(--pp-text-secondary, #B4C6D8)" }}>
             <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
           </button>
         </div>
@@ -318,7 +374,7 @@ export default function MCommissions() {
             </p>
           )}
 
-          <MCommissionCharts filters={filters} lang={lang} />
+              <MCommissionCharts filters={filters} lang={lang} cacheScope={cacheScope} refreshToken={chartRefreshToken} />
 
           {chartData.length > 0 && (
             <Card title={fr ? "Par date" : "By date"}>
@@ -497,7 +553,7 @@ export default function MCommissions() {
               </div>
             </div>
 
-            <button onClick={() => { setFiltersOpen(false); load(); }}
+            <button onClick={() => { setFiltersOpen(false); }}
               className="w-full py-3 rounded-xl text-[14px] font-bold" style={{ minHeight: 44, background: "var(--pp-brand-accent, #9B7FE8)", color: "#0A1628" }}>
               {fr ? "Appliquer" : "Apply"}
             </button>

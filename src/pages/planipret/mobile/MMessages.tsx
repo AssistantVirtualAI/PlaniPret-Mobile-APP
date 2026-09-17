@@ -76,6 +76,11 @@ const fmtTime = (iso: string, lang: "fr" | "en" = "fr", t?: (key: string) => str
   return d.toLocaleDateString(lang === "en" ? "en-CA" : "fr-CA", { day: "2-digit", month: "2-digit" });
 };
 
+const EMAIL_INBOX_SYNC_INTERVAL_MS = 5 * 60 * 1000;
+type EmailInboxCache = { at: number; emails: any[]; hasMore: boolean };
+const emailInboxCache = new Map<string, EmailInboxCache>();
+const emailInboxInflight = new Map<string, Promise<EmailInboxCache>>();
+
 export default function MMessages() {
   const { t, lang } = useMplanipretLang();
   const { profile, openDialer, registerRefresh } = useOutletContext<PlanipretMobileContext>();
@@ -1149,35 +1154,52 @@ export function EmailsList({ profile, initialTo, initialName }: { profile: any; 
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const cacheIdentity = String(profile?.user_id ?? profile?.id ?? profile?.ms365_email ?? "").trim();
 
-  const load = async () => {
+  const load = async (force = false) => {
     if (!ms365Connected(profile)) { setState("no_m365"); return; }
-    setState((s) => (s === "ready" ? s : "loading"));
+    const cached = cacheIdentity ? emailInboxCache.get(cacheIdentity) : null;
+    if (cached) {
+      setEmails(cached.emails);
+      setHasMore(cached.hasMore);
+      setState("ready");
+    } else {
+      setState((s) => (s === "ready" ? s : "loading"));
+    }
+    if (!force && cached && Date.now() - cached.at < EMAIL_INBOX_SYNC_INTERVAL_MS) return;
     // Cellular networks drop a single request often enough that one timeout
     // used to render the whole inbox as "erreur edge function".
-    let data: any = null;
-    let error: any = null;
     try {
-      const res: any = await retryWithBackoff(
-        () => supabase.functions.invoke("ms365-actions", {
-          body: { action: "read_emails", payload: { top: PAGE_SIZE, skip: 0 } },
-        }),
-        { attempts: 3, baseDelayMs: 1200 },
-      );
-      data = res?.data; error = res?.error;
-    } catch (e) { error = e; }
-    if (error || !(data as any)?.success) {
-      const detail = (data as any)?.error ?? (error as any)?.message ?? "";
+      const existing = cacheIdentity ? emailInboxInflight.get(cacheIdentity) : null;
+      const request = existing ?? (async (): Promise<EmailInboxCache> => {
+        const response: any = await retryWithBackoff(async () => {
+          const res: any = await supabase.functions.invoke("ms365-actions", {
+            body: { action: "read_emails", payload: { top: PAGE_SIZE, skip: 0 } },
+          });
+          if (res?.error || !(res?.data as any)?.success) {
+            throw new Error((res?.data as any)?.error ?? res?.error?.message ?? "emails_unavailable");
+          }
+          return res;
+        }, { attempts: 3, baseDelayMs: 1200 });
+        const list = ((response as any).data.emails ?? (response as any).data.messages ?? []) as any[];
+        return { at: Date.now(), emails: list, hasMore: Boolean((response as any).data.hasMore) && list.length === PAGE_SIZE };
+      })();
+      if (!existing && cacheIdentity) emailInboxInflight.set(cacheIdentity, request);
+      const next = await request;
+      if (cacheIdentity) emailInboxCache.set(cacheIdentity, next);
+      setEmails(next.emails);
+      setHasMore(next.hasMore);
+      setEmailsError(null);
+      setState("ready");
+    } catch (error: any) {
+      const detail = error?.message ?? "emails_unavailable";
       console.error("[emails] load failed", detail);
-      setEmailsError(String(detail).slice(0, 180) || null);
-      setState("error");
-      return;
+      setEmailsError(String(detail).slice(0, 180));
+      // A transient refresh failure must never erase a previously visible inbox.
+      setState((emails || cached) ? "ready" : "error");
+    } finally {
+      if (cacheIdentity) emailInboxInflight.delete(cacheIdentity);
     }
-    setEmailsError(null);
-    const list = ((data as any).emails ?? (data as any).messages ?? []) as any[];
-    setEmails(list);
-    setHasMore(Boolean((data as any).hasMore) && list.length === PAGE_SIZE);
-    setState("ready");
   };
 
   const loadMore = async () => {
@@ -1193,7 +1215,9 @@ export function EmailsList({ profile, initialTo, initialName }: { profile: any; 
       const seen = new Set(emails.map((e) => e.id));
       const merged = [...emails, ...more.filter((e) => !seen.has(e.id))];
       setEmails(merged);
-      setHasMore(Boolean((data as any).hasMore) && more.length === PAGE_SIZE);
+      const nextHasMore = Boolean((data as any).hasMore) && more.length === PAGE_SIZE;
+      setHasMore(nextHasMore);
+      if (cacheIdentity) emailInboxCache.set(cacheIdentity, { at: Date.now(), emails: merged, hasMore: nextHasMore });
     } finally {
       setLoadingMore(false);
     }
@@ -1247,7 +1271,7 @@ export function EmailsList({ profile, initialTo, initialName }: { profile: any; 
         </button>
         <div className="flex items-center gap-2">
           <button
-            onClick={load}
+            onClick={() => { void load(true); }}
             className="text-xs flex items-center gap-1 px-2 py-1"
             style={{ color: "var(--pp-text-muted)" }}
           >
@@ -1273,7 +1297,7 @@ export function EmailsList({ profile, initialTo, initialName }: { profile: any; 
           <p className="text-sm" style={{ color: "var(--pp-text-muted)" }}>{t("messages.emailsLoadFailed")}</p>
           {emailsError && <p className="mt-1 text-[11px]" style={{ color: "var(--pp-text-muted)" }}>{emailsError}</p>}
           <button
-            onClick={load}
+            onClick={() => { void load(true); }}
             className="mt-3 text-xs px-3 py-1.5 rounded-full"
             style={{ border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
           >
@@ -1343,6 +1367,12 @@ export function EmailsList({ profile, initialTo, initialName }: { profile: any; 
         </>
       ))}
 
+      {state === "ready" && emailsError && (
+        <p className="mt-2 text-center text-[11px]" style={{ color: "var(--pp-text-muted)" }}>
+          {t("messages.emailsLoadFailed")} — {emailsError}
+        </p>
+      )}
+
       {active && createPortal(
         <EmailDetailSheet
           email={active}
@@ -1357,7 +1387,7 @@ export function EmailsList({ profile, initialTo, initialName }: { profile: any; 
         <EmailComposeSheet
           init={composeInit}
           onClose={() => setComposeOpen(false)}
-          onSent={() => { setComposeOpen(false); load(); }}
+          onSent={() => { setComposeOpen(false); void load(true); }}
         />,
         document.body
       )}

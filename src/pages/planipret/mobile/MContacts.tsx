@@ -133,7 +133,9 @@ export default function MContacts() {
     return cached ? (cached as any[]).map(normalizeContact) : [];
   });
   const [directory, setDirectory] = useState<any[]>(() => peekPpContacts("directory") ?? []);
-  const [clients, setClients] = useState<any[]>(() => peekPpContacts("maestro_clients") ?? []);
+  const [clients, setClients] = useState<any[]>(() =>
+    ((peekPpContacts("maestro_clients") ?? []) as any[]).map((contact) => ({ ...contact, __maestro_kind: "client" })),
+  );
   const [favorites, setFavorites] = useState<FavEntry[]>(() => loadFavs());
   const [loadingTab, setLoadingTab] = useState<Tab | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -242,8 +244,6 @@ export default function MContacts() {
   useEffect(() => {
     if (tab === "favorites") return;
     void load(tab, { limit: 120 });
-    const id = window.setTimeout(() => { void load(tab, { force: true, limit: 500, background: true }); }, 700);
-    return () => window.clearTimeout(id);
   }, [tab, load]);
 
   useEffect(() => {
@@ -257,12 +257,12 @@ export default function MContacts() {
   }, [tab, load]);
 
   // Prefetch personal + directory in parallel after first paint so subsequent
-  // tab switches render from memory. Dedup + TTL handled by ppContactsCache.
+  // tab switches render from memory. The five-minute cache avoids an immediate
+  // second Maestro request after every navigation.
   useEffect(() => {
     prefetchPpContacts(["list", "directory", "maestro_clients", "maestro_brokers"], 500);
     const quick = window.setTimeout(() => { void load("directory", { limit: 120, background: true }); }, 250);
-    const full = window.setTimeout(() => { void load("directory", { force: true, limit: 500, background: true }); }, 1000);
-    return () => { window.clearTimeout(quick); window.clearTimeout(full); };
+    return () => { window.clearTimeout(quick); };
   }, [load]);
 
   // Contacts permission: show the request on the Contacts page, then trigger the
@@ -402,7 +402,7 @@ export default function MContacts() {
     if (dialingContactKey) return;
     setDialingContactKey(key);
     try {
-      let destination = contactPhone(contact);
+      let destination = contactPhone(contact) || String(contact?.extension ?? contact?.ext ?? "").trim();
       if (!destination && contact?.__maestro_kind) {
         const kind = contact.__maestro_kind === "broker" ? "broker" : "client";
         const id = String(contact?.maestro_client_id ?? contact?.external_id ?? contact?.id ?? "").trim();
@@ -936,6 +936,13 @@ function ContactDetailSheet({
 
   useEffect(() => {
     let cancel = false;
+    // A device contact or an internal directory entry is not a Maestro client.
+    // Never send its local id as client_id to the Maestro history endpoint.
+    if (maestroKind !== "client" || !maestroId) {
+      setHistory([]);
+      setLoading(false);
+      return () => { cancel = true; };
+    }
     (async () => {
       setLoading(true);
       try {
@@ -950,7 +957,7 @@ function ContactDetailSheet({
       }
     })();
     return () => { cancel = true; };
-  }, [maestroId, phone]);
+  }, [maestroId, phone, maestroKind]);
 
   const createTask = async () => {
     if (!maestroId) { toast.error("Client Maestro requis pour créer une tâche"); return; }
