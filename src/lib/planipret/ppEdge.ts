@@ -56,6 +56,11 @@ export async function ppEdgeInvoke<T = any>(
 ): Promise<PpEdgeResult<T>> {
   const retries = opts.retries ?? 2;
   const timeoutMs = opts.timeoutMs ?? 20_000;
+  // A caller that specifies a timeout explicitly opts out of the SDK-first
+  // path: Supabase's invoke does not accept an AbortSignal, so it can remain
+  // pending after the screen has changed. Use the authenticated fetch path
+  // from the first attempt to honour the caller's time budget.
+  const mustHonorTimeout = opts.timeoutMs !== undefined;
 
   let token: string | null = null;
   try {
@@ -66,7 +71,7 @@ export async function ppEdgeInvoke<T = any>(
   let lastError: { message: string; status?: number } | null = null;
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      if (attempt === 0) {
+      if (attempt === 0 && !mustHonorTimeout) {
         const { data, error } = await supabase.functions.invoke(fn, { body });
         if (!error) return { data: data as T, error: null };
         if (!isTransport(error)) {
