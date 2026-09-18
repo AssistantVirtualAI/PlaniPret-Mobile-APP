@@ -233,6 +233,14 @@ function makeListFetch(token: string | null) {
         pages_read: pagesRead,
         truncated: candidateTruncated || candidateIncomplete,
       };
+      // During a creation read-back, an assignee can already have other
+      // pending tasks.  Those rows are not proof that the newly created id is
+      // absent from the next documented filter, so continue probing until the
+      // requested id is actually found.
+      if (wanted && combined.length) {
+        firstOk = firstOk ?? out;
+        continue;
+      }
       if (combined.length) return out;
       emptyOk = emptyOk ?? out;
       firstOk = firstOk ?? out;

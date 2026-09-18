@@ -65,6 +65,8 @@ export interface TaskDeps {
   resolveTelecomUserId: (candidate: string | null) => Promise<string | null>;
   /** Resolve the numeric internal Maestro user id accepted by `users_id`. */
   resolveTaskAssigneeId?: () => Promise<string | null>;
+  /** Injectable delay for the bounded post-create Maestro indexing read-back. */
+  wait?: (ms: number) => Promise<void>;
   /** Ids this broker may assign a task to: self + authorized team assistants. */
   listAllowedAssignees?: () => Promise<string[]>;
   now?: () => Date;
@@ -1070,35 +1072,48 @@ export async function handleTaskRequest(
       let readBack: NormalizedTask | null = null;
       let readBackEndpoint: string | null = null;
       let listStatus = 0;
-      let listOwnerId: string | null = profile?.maestro_broker_id ? String(profile.maestro_broker_id) : null;
+      // The documented `delegate_users_id` / `target_id` filters use the same
+      // internal Maestro directory id as `users_id`.  A telecom device id can
+      // differ and produces a valid but unrelated list, which made a just
+      // created Contacts follow-up look absent from Maestro.
+      const listAssigneeId = wantedAssignee || await withDeadline(
+        Promise.resolve(deps.resolveTaskAssigneeId?.()).catch(() => null),
+        5000,
+        null,
+      );
       try {
-        const telecomId = await deps.resolveTelecomUserId(listOwnerId);
-        // `users_id` and the documented task-list filters use the internal
-        // Maestro directory id, not the CRM/OAuth broker id.  This exact
-        // choice is required for a read-back to prove the task is visible.
-        listOwnerId = telecomId ?? listOwnerId;
-        if (task.id && listOwnerId) {
+        if (task.id && listAssigneeId) {
           const readBackType = payload.type === "user" || payload.type === "contract"
             ? payload.type
             : null;
-          const upstream = await deps.listFetch(listOwnerId, {
-            // Maestro documents newly created tasks as pending. Request that
-            // concrete status and the known task type rather than the legacy
-            // pseudo-value `all`, which can return an empty page on some
-            // Maestro tenants.
-            status: "pending",
-            type: readBackType,
-            from: null,
-            to: null,
-            findTaskId: String(task.id),
-          });
-          listStatus = upstream.status;
-          if (upstream.ok) {
-            const found = (upstream.tasks ?? []).map((item: any) => normalizeTask(item))
-              .find((item: NormalizedTask) => String(item.id) === String(task.id));
-            if (found) {
-              readBack = found;
-              readBackEndpoint = upstream.endpoint;
+          // Maestro can acknowledge POST before its task index serves the new
+          // row.  Retry only this documented GET and only for a short bounded
+          // window.  It never changes the task, repeats the POST, or weakens
+          // the fail-closed confirmation rule.
+          const retryDelays = [0, 500, 1200];
+          for (let attempt = 0; attempt < retryDelays.length && !readBack; attempt += 1) {
+            if (attempt > 0) {
+              await (deps.wait ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(retryDelays[attempt]);
+            }
+            const upstream = await deps.listFetch(String(listAssigneeId), {
+              // Maestro documents newly created tasks as pending. Request that
+              // concrete status and the known task type rather than the legacy
+              // pseudo-value `all`, which can return an empty page on some
+              // Maestro tenants.
+              status: "pending",
+              type: readBackType,
+              from: null,
+              to: null,
+              findTaskId: String(task.id),
+            });
+            listStatus = upstream.status;
+            if (upstream.ok) {
+              const found = (upstream.tasks ?? []).map((item: any) => normalizeTask(item))
+                .find((item: NormalizedTask) => String(item.id) === String(task.id));
+              if (found) {
+                readBack = found;
+                readBackEndpoint = upstream.endpoint;
+              }
             }
           }
         }
