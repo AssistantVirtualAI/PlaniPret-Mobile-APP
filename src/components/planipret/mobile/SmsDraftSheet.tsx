@@ -73,7 +73,8 @@ export default function SmsDraftSheet({
 
   if (!target) return null;
 
-  const didReady = canSendWithSmsAvailability(availability);
+  // Preflight still running = not a refusal; the server stays authoritative.
+  const didReady = availability ? canSendWithSmsAvailability(availability) : true;
   const ready = canSendSmsDraft({ recipient, body, confirmed, busy, didReady });
 
   const send = async () => {

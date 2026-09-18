@@ -78,3 +78,10 @@ describe("SMS DID availability", () => {
     expect(canSendWithSmsAvailability(availability)).toBe(true);
   });
 });
+
+describe("SMS DID transient preflight", () => {
+  it("lets the protected server decide after a temporary preflight failure", () => {
+    expect(canSendWithSmsAvailability({ state: "error" })).toBe(true);
+    expect(canSendWithSmsAvailability({ state: "unavailable" })).toBe(false);
+  });
+});

@@ -762,7 +762,7 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
     const body = (overrideText ?? text).trim();
     if (!body) return;
     if (smsSendInFlightRef.current) return;
-    if (!canSendWithSmsAvailability(smsAvailability)) {
+    if (smsAvailability && !canSendWithSmsAvailability(smsAvailability)) {
       toast.error(smsAvailability?.message ?? "Vérification du DID SMS en cours. Aucun texto n’a été envoyé.", { duration: 6000 });
       return;
     }
@@ -956,7 +956,7 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
         inputRef={inputRef}
         autoFocus
         text={text} setText={setText} onSend={send} sending={sending}
-        disabled={!canSendWithSmsAvailability(smsAvailability)}
+        disabled={!!smsAvailability && !canSendWithSmsAvailability(smsAvailability)}
         leftAction={
           <button onClick={() => setTplOpen(true)} className="p-2 rounded-full" style={{ color: "var(--pp-brand-accent)" }} title={t("messages.templates")}>
             <Zap className="w-5 h-5" />

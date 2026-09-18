@@ -1,4 +1,4 @@
-import { supabase } from "@/integrations/supabase/client";
+import { ppEdgeInvoke } from "@/lib/planipret/ppEdge";
 
 export type SmsAvailability = {
   state: "ready" | "unavailable" | "error";
@@ -53,7 +53,9 @@ export async function getSmsAvailability(force = false): Promise<SmsAvailability
   if (!force && inflight) return inflight;
   const request = (async () => {
     try {
-      const { data, error } = await supabase.functions.invoke("pp-ns-sms", { body: { action: "sms-numbers" } });
+      // Bounded, retrying transport: in the mobile WebView a hanging preflight
+      // used to leave the composer permanently blocked ("texto ne part pas").
+      const { data, error } = await ppEdgeInvoke("pp-ns-sms", { action: "sms-numbers" }, { timeoutMs: 8_000, retries: 1 });
       if (error) throw error;
       const result = smsAvailabilityFromPayload(data);
       cached = result;
@@ -82,7 +84,12 @@ export function clearSmsAvailabilityCache() {
   cached = null;
 }
 
-/** A send UI must never optimistic-send while DID preflight is unavailable. */
+/**
+ * The server (pp-ns-sms) is authoritative: it refuses to send unless the
+ * broker owns a verified SMS DID. The client preflight is only an early hint,
+ * so a failed/unreachable check must not block texting — only a confirmed
+ * "unavailable" (no DID assigned) does.
+ */
 export function canSendWithSmsAvailability(availability: Pick<SmsAvailability, "state"> | null | undefined) {
-  return availability?.state === "ready";
+  return availability?.state === "ready" || availability?.state === "error";
 }

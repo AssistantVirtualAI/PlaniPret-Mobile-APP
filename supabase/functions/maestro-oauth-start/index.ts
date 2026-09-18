@@ -14,6 +14,9 @@ const WEB_CALLBACK_HOSTS = new Set([
   "www.avastatistic.ca",
   "client.planipret.com",
   "www.client.planipret.com",
+  // Portail courtier servi via le proxy Planiprêt.
+  "courtierai.planipret.com",
+  "www.courtierai.planipret.com",
 ]);
 
 function redirectAllowed(value: string, isMobile: boolean): boolean {
