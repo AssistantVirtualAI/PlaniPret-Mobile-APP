@@ -61,12 +61,22 @@ fi
 build_openssl () {
   local tag="$1" sdk_alias="$2" ossl_target="$3"
   local prefix="$WORK/openssl/$tag"
-  if [ -f "$prefix/lib/libssl.a" ] && [ -f "$prefix/lib/libcrypto.a" ]; then
+  local sdk_path
+  sdk_path="$(xcrun --sdk "$sdk_alias" --show-sdk-path)"
+  local deployment_flag="-miphoneos-version-min=$MIN_IOS"
+  if [ "$sdk_alias" = "iphonesimulator" ]; then
+    deployment_flag="-mios-simulator-version-min=$MIN_IOS"
+  fi
+  local build_marker="sdk=$sdk_alias;target=$ossl_target;min=$deployment_flag;arch=arm64"
+  if [ -f "$prefix/lib/libssl.a" ] && [ -f "$prefix/lib/libcrypto.a" ] \
+    && [ -f "$prefix/.planipret-build-marker" ] \
+    && [ "$(cat "$prefix/.planipret-build-marker")" = "$build_marker" ]; then
     echo "▶ OpenSSL: $tag déjà construit → $prefix"
     return 0
   fi
-  local sdk_path
-  sdk_path="$(xcrun --sdk "$sdk_alias" --show-sdk-path)"
+  # Les anciens caches avaient le flag iPhone device pour le SDK Simulator.
+  # Une librairie sans marqueur est donc reconstruite au lieu d'être réutilisée.
+  rm -rf "$prefix"
   # Nom de plateforme sans version (iPhoneOS ou iPhoneSimulator)
   local platform_name
   platform_name="$(basename "$sdk_path" | sed 's/[0-9][0-9.]*\.sdk$//' | sed 's/\.sdk$//')"
@@ -78,9 +88,9 @@ build_openssl () {
 
   export CROSS_TOP="$(xcode-select -p)/Platforms/${platform_name}.platform/Developer"
   export CROSS_SDK="$(basename "$sdk_path")"
-  export CC="$(xcrun -find clang)"
+  export CC="$(xcrun --sdk "$sdk_alias" -find clang)"
   # Passer le sysroot et l'arch explicitement pour que clang trouve les headers iOS
-  export CFLAGS="-arch arm64 -isysroot $sdk_path -mios-version-min=$MIN_IOS"
+  export CFLAGS="-arch arm64 -isysroot $sdk_path $deployment_flag"
   export CXXFLAGS="$CFLAGS"
 
   ./Configure "$ossl_target" no-shared no-dso no-async no-tests \
@@ -95,6 +105,7 @@ build_openssl () {
   if [ ! -d "$prefix/lib" ] && [ -d "$prefix/lib64" ]; then ln -s lib64 "$prefix/lib"; fi
   test -f "$prefix/lib/libssl.a" || { echo "❌ OpenSSL $tag: libssl.a manquant"; exit 1; }
   test -f "$prefix/lib/libcrypto.a" || { echo "❌ OpenSSL $tag: libcrypto.a manquant"; exit 1; }
+  printf '%s\n' "$build_marker" > "$prefix/.planipret-build-marker"
 }
 
 # ios64-xcrun et iossimulator-xcrun sont les cibles modernes pour Xcode récent
@@ -132,6 +143,10 @@ build_arch () {
   sdk_path="$(xcrun --sdk "$sdk_alias" --show-sdk-path)"
   local sdk_basename
   sdk_basename="$(basename "$sdk_path")"  # ex: iPhoneOS26.5.sdk
+  local deployment_flag="-miphoneos-version-min=$MIN_IOS"
+  if [ "$sdk_alias" = "iphonesimulator" ]; then
+    deployment_flag="-mios-simulator-version-min=$MIN_IOS"
+  fi
   echo "▶ pjproject $PJ_TAG: $tag ($sdk_basename / $arch), --with-ssl=$ssl_prefix"
 
   # Dériver le DEVPATH depuis le chemin SDK réel
@@ -139,7 +154,7 @@ build_arch () {
   local platform_dir
   platform_dir="$(dirname "$(dirname "$sdk_path")")"  # remonte de SDKs/xxx.sdk à Developer
   make distclean >/dev/null 2>&1 || true
-  DEVPATH="$platform_dir" IPHONESDK="$sdk_basename" ARCH="-arch $arch" \
+  DEVPATH="$platform_dir" IPHONESDK="$sdk_basename" ARCH="-arch $arch" MIN_IOS="$deployment_flag" \
     ./configure-iphone --with-ssl="$ssl_prefix" \
       --disable-video --disable-libyuv --disable-opencore-amr 2>&1 | tee "$log"
 
