@@ -66,7 +66,9 @@ export async function getSmsAvailability(force = false): Promise<SmsAvailability
         message: error?.message || "La vérification du DID SMS est indisponible. Aucun texto n’a été envoyé.",
         checkedAt: Date.now(),
       };
-      cached = result;
+      // Never cache a failed check: a transient network error must not block
+      // texting for the whole cache window. Keep any previous good result.
+      if (cached?.state === "ready" && Date.now() - cached.checkedAt < CACHE_MS) return cached;
       return result;
     } finally {
       inflight = null;

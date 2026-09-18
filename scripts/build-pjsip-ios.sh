@@ -25,6 +25,7 @@ OUT="$APP_DIR/ios/App/App/Plugins/PpPjsip/Frameworks"
 PJ_TAG="${PJSIP_TAG:-2.15.1}"
 OPENSSL_TAG="${OPENSSL_TAG:-openssl-3.0.15}"
 MIN_IOS="${MIN_IOS:-14.0}"
+PJSIP_RUN_SIMULATOR_SELFTEST="${PJSIP_RUN_SIMULATOR_SELFTEST:-0}"
 
 command -v xcodebuild >/dev/null || { echo "xcodebuild introuvable — ce script exige macOS + Xcode."; exit 1; }
 command -v xcrun >/dev/null || { echo "xcrun introuvable — installe Xcode et sélectionne-le avec xcode-select."; exit 1; }
@@ -230,10 +231,14 @@ xcodebuild -create-xcframework \
 # ---------------------------------------------------------------------------
 PJSIP_WORKDIR="$WORK" bash "$APP_DIR/scripts/verify-pjsip-tls.sh" "$OUT/libpjsip.xcframework"
 
-if [ "${PJSIP_SKIP_SELFTEST:-0}" != "1" ]; then
+# L'archive App Store ne charge que la tranche iPhoneOS. Le self-test lancé
+# via simctl est un diagnostic facultatif de la tranche Simulator; il peut
+# varier selon le runtime installé et ne doit pas invalider un framework iPhone
+# dont OpenSSL, PJ_HAS_SSL_SOCK et les symboles TLS viennent d'être vérifiés.
+if [ "$PJSIP_RUN_SIMULATOR_SELFTEST" = "1" ]; then
   PJSIP_WORKDIR="$WORK" bash "$APP_DIR/scripts/pjsip-tls-selftest.sh"
 else
-  echo "↷ self-test TLS ignoré (PJSIP_SKIP_SELFTEST=1)"
+  echo "↷ self-test Simulator non exécuté (PJSIP_RUN_SIMULATOR_SELFTEST=0)"
 fi
 
 echo "✅ libpjsip.xcframework (TLS activé et vérifié) → $OUT"

@@ -87,7 +87,7 @@ Deno.serve(async (req) => {
     // dans la même invocation, on filtre les tentatives récentes < 10 min.)
     const { data: rows, error } = await admin
       .from("planipret_phone_calls")
-      .select("id, transcript, analyzed_at, ai_summary, ai_coaching, coaching_score, analysis_in_progress, analysis_locked_at, transcript_last_attempt_at, transcript_attempts, ns_call_id, ns_callid, ns_cdr_id, ns_orig_callid, duration_seconds, has_recording")
+      .select("id, transcript, analyzed_at, ai_summary, ai_coaching, coaching_score, analysis_in_progress, analysis_locked_at, transcript_last_attempt_at, transcript_attempts, ns_call_id, ns_callid, ns_cdr_id, ns_orig_callid, duration_seconds, has_recording, save_consent")
       .or([
         "has_recording.eq.true",
         "ns_call_id.not.is.null",
@@ -95,6 +95,10 @@ Deno.serve(async (req) => {
         "ns_cdr_id.not.is.null",
         "ns_orig_callid.not.is.null",
       ].join(","))
+      // Sans consentement approuvé, pp-admin-transcribe refuse l'appel (409
+      // call_consent_required) AVANT d'incrémenter transcript_attempts : ces
+      // appels seraient re-tentés indéfiniment. On ne les met jamais en file.
+      .eq("save_consent", "approved")
       .gte("duration_seconds", minDuration)
       .order("started_at", { ascending: false })
       .limit(limit);
