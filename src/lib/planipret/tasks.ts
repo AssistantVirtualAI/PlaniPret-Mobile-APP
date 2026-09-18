@@ -29,7 +29,12 @@ async function invoke(body: Record<string, unknown>): Promise<any> {
   // Shared auth guard: skips the call when there is no valid session and asks
   // the shell to send the user back to login on 401. A list or mutation must
   // never keep the mobile screen busy for the browser/WebView transport timeout.
-  const { data, error, unauthorized } = await invokeEdge("planipret-task-api", body, { timeoutMs: 10_000 });
+  // A confirmed create has a bounded Maestro read-back window (pending/open/
+  // complete) and therefore needs a little more budget than a screen list.
+  const isMutation = ["create", "update", "delete"].includes(String(body.action ?? ""));
+  const { data, error, unauthorized } = await invokeEdge("planipret-task-api", body, {
+    timeoutMs: isMutation ? 15_000 : 10_000,
+  });
   if (unauthorized) {
     return { success: false, source: "unavailable", error: "unauthenticated", message: "Session expirée — reconnectez-vous." };
   }

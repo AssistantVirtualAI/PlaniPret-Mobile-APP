@@ -1090,17 +1090,19 @@ export async function handleTaskRequest(
           // row.  Retry only this documented GET and only for a short bounded
           // window.  It never changes the task, repeats the POST, or weakens
           // the fail-closed confirmation rule.
-          const retryDelays = [0, 500, 1200];
+          const retryDelays = [0, 800, 2200];
           for (let attempt = 0; attempt < retryDelays.length && !readBack; attempt += 1) {
             if (attempt > 0) {
               await (deps.wait ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))))(retryDelays[attempt]);
             }
             const upstream = await deps.listFetch(String(listAssigneeId), {
-              // Maestro documents newly created tasks as pending. Request that
-              // concrete status and the known task type rather than the legacy
-              // pseudo-value `all`, which can return an empty page on some
-              // Maestro tenants.
-              status: "pending",
+              // A POST defaults to `pending`, but production Maestro tenants
+              // can immediately expose the same row as `open` (for example
+              // when a workflow option is applied server-side).  Leaving the
+              // status unset makes `makeListFetch` probe the three documented
+              // states — pending, open, complete — with the precise task id.
+              // Never use the undocumented `all` pseudo-value.
+              status: null,
               type: readBackType,
               from: null,
               to: null,
