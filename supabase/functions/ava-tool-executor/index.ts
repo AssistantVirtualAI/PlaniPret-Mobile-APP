@@ -256,6 +256,75 @@ async function resolveContact(ctx: Ctx, name: string, want: "phone" | "email"): 
   return null;
 }
 
+type SmsContactResolution =
+  | { ok: true; value: string; name: string }
+  | { ok: false; error: "contact_not_found" | "contact_ambiguous"; message: string };
+
+function comparableContactName(value: unknown): string {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+/**
+ * SMS must only use a resolved, external telephone number. Unlike calls, an
+ * internal extension is never silently selected as an SMS target. Multiple
+ * contacts with the same name require the broker to specify a number.
+ */
+async function resolveSmsContact(ctx: Ctx, requestedName: string): Promise<SmsContactResolution> {
+  const name = String(requestedName ?? "").trim();
+  if (!name) {
+    return { ok: false, error: "contact_not_found", message: "Aucun contact SMS n’a été précisé." };
+  }
+
+  const queryName = comparableContactName(name);
+  const hits = await unifiedSearch(ctx, name, { limit: 10 });
+  const candidates = new Map<string, { value: string; name: string; exact: boolean }>();
+  for (const contact of hits) {
+    const value = normalizePhoneE164(String(contact?.phone ?? ""));
+    // Extensions are valid call destinations but not valid SMS recipients.
+    if (!value || !value.startsWith("+")) continue;
+    const contactName = firstText(contact?.name, name);
+    candidates.set(value, {
+      value,
+      name: contactName,
+      exact: comparableContactName(contactName) === queryName,
+    });
+  }
+
+  const all = [...candidates.values()];
+  const exact = all.filter((candidate) => candidate.exact);
+  const selected = exact.length ? exact : all;
+  if (selected.length === 1) return { ok: true, value: selected[0].value, name: selected[0].name };
+  if (selected.length > 1) {
+    return {
+      ok: false,
+      error: "contact_ambiguous",
+      message: `Plusieurs numéros correspondent à ${name}. Précise le numéro ou le contact exact avant l’envoi.`,
+    };
+  }
+
+  // Last-resort Outlook lookup is allowed only if it yields exactly one phone.
+  const r = await msAction(ctx, "search_contact", { query: name });
+  const outlook = new Map<string, { value: string; name: string }>();
+  for (const contact of r?.results ?? []) {
+    const value = normalizePhoneE164(String(contact?.phone ?? ""));
+    if (value?.startsWith("+")) outlook.set(value, { value, name: firstText(contact?.name, name) });
+  }
+  if (outlook.size === 1) return { ok: true, ...[...outlook.values()][0] };
+  if (outlook.size > 1) {
+    return {
+      ok: false,
+      error: "contact_ambiguous",
+      message: `Plusieurs numéros correspondent à ${name}. Précise le numéro ou le contact exact avant l’envoi.`,
+    };
+  }
+  return { ok: false, error: "contact_not_found", message: `Aucun numéro mobile trouvé pour ${name}.` };
+}
+
 async function callClaude(system: string, userText: string): Promise<string | null> {
   // Prompt caching: `system` is the static prefix → cached for 5 min at 0.1x.
   const res = await claudeText(system, userText, {
@@ -452,15 +521,38 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
 
   async send_sms(ctx, p) {
     let to = firstText(p?.to, p?.to_number, p?.destination, p?.number, p?.phone_number, p?.phone);
-    let name = p?.contact_name;
+    let name = firstText(p?.contact_name, p?.recipient_name, p?.client_name, p?.full_name);
+    const recipient = firstText(p?.recipient);
+    if (to) {
+      const normalized = normalizePhoneE164(to);
+      if (normalized?.startsWith("+")) to = normalized;
+      else if (!normalized) {
+        // Defensive compatibility for stale chat/voice suggestions that put a
+        // contact name in `number` instead of `contact_name`.
+        name ||= to;
+        to = "";
+      }
+    }
+    if (!to && recipient) {
+      const normalizedRecipient = normalizePhoneE164(recipient);
+      if (normalizedRecipient?.startsWith("+")) to = normalizedRecipient;
+      else name ||= recipient;
+    }
     if (!to && name) {
-      const hit = await resolveContact(ctx, name, "phone");
-      if (!hit) return { success: false, error: "contact_not_found", message: `Aucun numéro trouvé pour ${name}` };
+      const hit = await resolveSmsContact(ctx, name);
+      if (!hit.ok) return { success: false, error: hit.error, message: hit.message };
       to = hit.value; name = hit.name;
     }
     const message = firstText(p?.message, p?.body, p?.text, p?.content);
     if (!to || !message) return { success: false, error: "to_and_message_required", message: "Il manque le numéro ou le contenu du SMS." };
-    to = normalizePhoneE164(to) ?? to;
+    to = normalizePhoneE164(to) ?? "";
+    if (!to.startsWith("+")) {
+      return {
+        success: false,
+        error: "sms_external_number_required",
+        message: "Un SMS doit viser un numéro mobile externe. Précise le numéro du contact.",
+      };
+    }
     const r = await callPlanipretFunction(ctx, "pp-ns-sms", {
       action: "send",
       to,
@@ -1877,7 +1969,7 @@ Deno.serve(async (req) => {
   // ElevenLabs ou une requête directe ne peuvent pas sauter cette étape.
   if (isSensitiveAvaTool(tool_name)) {
     const destination = String(
-      params.to ?? params.number ?? params.phone ?? params.recipient ?? params.email ?? params.client_id ?? "",
+      params.to ?? params.number ?? params.phone ?? params.recipient ?? params.contact_name ?? params.email ?? params.client_id ?? "",
     ).slice(0, 120) || null;
     const callId = params.call_id ? String(params.call_id) : null;
     const idempotencyKey = await buildIdempotencyKey({

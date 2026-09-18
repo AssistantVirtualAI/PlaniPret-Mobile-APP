@@ -58,9 +58,11 @@ const sendSmsBlock = executor.match(/async send_sms\(ctx, p\) \{([\s\S]*?)\n  \}
 check(sendSmsBlock.includes('callPlanipretFunction(ctx, "pp-ns-sms"'), "AVA SMS must use pp-ns-sms");
 check(sendSmsBlock.includes('origin: "ava_tool"') && sendSmsBlock.includes("idempotency_key"), "AVA SMS must carry confirmation origin and idempotence");
 check(!sendSmsBlock.includes("sms_globally_disabled"), "AVA SMS must not remain globally disabled");
+check(sendSmsBlock.includes("resolveSmsContact(ctx, name)") && executor.includes('error: "contact_ambiguous"'), "AVA SMS must resolve a contact name safely and reject ambiguous recipients");
 
 check(!chat.includes("sp.placeCall") && !chat.includes('functions.invoke("pp-ns-sms"'), "Chat suggestions must have one call owner and one SMS owner");
 check(chat.includes('functions.invoke("ava-tool-executor"') && chat.includes('tool_name: "send_sms"'), "Confirmed chat SMS must execute once through ava-tool-executor");
+check(chat.includes("normalizeAvaSmsRecipient") && chat.includes("contact_name: recipient.contactName"), "Confirmed chat SMS must pass a contact name to the server instead of discarding it");
 check(voice.includes('callServerTool(tool, { ...params, confirmed: true })'), "Voice confirmation button must pass confirmed=true");
 check(voice.includes('tool === "make_call"') && voice.includes('owner: "mobile_softphone"'), "Confirmed voice calls must remain owned by the local mobile softphone");
 check(voice.includes('functions.invoke("pp-ava-chat"') && !voice.includes('functions.invoke("ava-assistant"'), "Voice text fallback must use the canonical Planiprêt chatbot");

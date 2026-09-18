@@ -15,6 +15,7 @@ import VoiceSettingsSheet from "@/components/planipret/mobile/VoiceSettingsSheet
 import avaLogo from "@/assets/ava-statistics-logo.png.asset.json";
 import { useAvaContext } from "@/hooks/useAvaContext";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import { normalizeAvaSmsRecipient } from "@/lib/planipret/avaSmsRecipient";
 
 type AvaSuggestion = { id: string; label: string; kind: string; payload?: Record<string, any> };
 type AvaPagination = {
@@ -194,14 +195,20 @@ export default function MAvaChat() {
       }
 
       if (suggestion.kind === "sms") {
-        const number = String(suggestion.payload?.number ?? suggestion.payload?.to ?? suggestion.payload?.phone ?? "").trim();
-        const body = String(suggestion.payload?.message ?? suggestion.payload?.text ?? suggestion.payload?.body ?? "").trim();
-        if (!number) throw new Error(t("avaChat.callMissingNumber"));
+        const recipient = normalizeAvaSmsRecipient(suggestion.payload);
+        const number = recipient.number;
+        const body = recipient.message;
+        if (!number && !recipient.contactName) throw new Error(t("avaChat.callMissingNumber"));
         if (!body) throw new Error(t("avaChat.smsRefused"));
         const { data, error } = await supabase.functions.invoke("ava-tool-executor", {
           body: {
             tool_name: "send_sms",
-            parameters: { to: number, message: body, confirmed: true },
+            parameters: {
+              ...(number ? { to: number } : {}),
+              ...(recipient.contactName ? { contact_name: recipient.contactName } : {}),
+              message: body,
+              confirmed: true,
+            },
             session_id: sessionId,
           },
         });
