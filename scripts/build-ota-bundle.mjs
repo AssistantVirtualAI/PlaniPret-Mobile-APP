@@ -9,7 +9,7 @@
 // (SIP, CallKit, permissions, plugins) exige une soumission aux stores.
 import { execSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -19,6 +19,19 @@ const OUT_DIR = resolve(ROOT, "ota");
 
 if (!existsSync(DIST)) {
   console.error("✗ dist/ absent — lance `npm run build` avant.");
+  process.exit(1);
+}
+
+function walk(dir) {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const fullPath = resolve(dir, entry.name);
+    return entry.isDirectory() ? walk(fullPath) : [fullPath];
+  });
+}
+
+const builtFiles = walk(DIST);
+if (builtFiles.some((file) => file.includes("capgo-updater-shim"))) {
+  console.error("✗ paquet OTA invalide — le moteur de mise à jour a été remplacé par son shim web.");
   process.exit(1);
 }
 

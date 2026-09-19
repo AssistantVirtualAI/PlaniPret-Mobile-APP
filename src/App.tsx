@@ -36,6 +36,7 @@ const MAvaDirectory = lazyWithRetry(() => import('@/pages/planipret/mobile/MAvaD
 const MStats = lazyWithRetry(() => import('@/pages/planipret/mobile/MStats'), 'MStats');
 const MCommissions = lazyWithRetry(() => import('@/pages/planipret/mobile/MCommissions'), 'MCommissions');
 const MTasks = lazyWithRetry(() => import('@/pages/planipret/mobile/MTasks'), 'MTasks');
+const MMaestro = lazyWithRetry(() => import('@/pages/planipret/mobile/MMaestro'), 'MMaestro');
 const MClients360 = lazyWithRetry(() => import('@/pages/planipret/mobile/MClients360'), 'MClients360');
 const MBroker360 = lazyWithRetry(() => import('@/pages/planipret/mobile/MBroker360'), 'MBroker360');
 const MClientDetail = lazyWithRetry(() => import('@/pages/planipret/mobile/MClientDetail'), 'MClientDetail');
@@ -47,6 +48,7 @@ const MConnections = lazyWithRetry(() => import('@/pages/planipret/mobile/MConne
 const MMaestroSync = lazyWithRetry(() => import('@/pages/planipret/mobile/MMaestroSync'), 'MMaestroSync');
 const Ms365Callback = lazyWithRetry(() => import('@/pages/planipret/Ms365Callback'), 'Ms365Callback');
 const MaestroCallback = lazyWithRetry(() => import('@/pages/planipret/MaestroCallback'), 'MaestroCallback');
+const PortalHandoff = lazyWithRetry(() => import('@/pages/planipret/PortalHandoff'), 'PortalHandoff');
 const MMs365Diagnostics = lazyWithRetry(() => import('@/pages/planipret/mobile/MMs365Diagnostics'), 'MMs365Diagnostics');
 const MStyleDiagnostics = lazyWithRetry(() => import('@/pages/planipret/mobile/MStyleDiagnostics'), 'MStyleDiagnostics');
 const MDiagnostics = lazyWithRetry(() => import('@/pages/planipret/mobile/MDiagnostics'), 'MDiagnostics');
@@ -160,6 +162,7 @@ export default function App() {
                   <Route path="/auth/ms365/callback" element={<Ms365Callback />} />
                   <Route path="/auth/microsoft/callback" element={<Ms365Callback />} />
                   <Route path="/auth/maestro/callback" element={<MaestroCallback />} />
+                  <Route path="/planipret/portal-handoff" element={<PortalHandoff />} />
                   <Route
                     path="/mplanipret"
                     element={<MplanipretGuard><PlanipretMobile /></MplanipretGuard>}
@@ -177,6 +180,7 @@ export default function App() {
                     <Route path="stats" element={<MStats />} />
                     <Route path="commissions" element={<MCommissions />} />
                     <Route path="tasks" element={<MTasks />} />
+                    <Route path="maestro" element={<MMaestro />} />
                     <Route path="clients-360" element={<MClients360 />} />
                     <Route path="brokers-360" element={<MBroker360 />} />
                     <Route path="clients-360/:clientKey" element={<MClientDetail />} />

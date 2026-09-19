@@ -26,4 +26,17 @@ describe("presentCallParty (mobile bundle)", () => {
     expect(party.phone).toBeNull();
     expect(party.internalExtension).toBe("1037");
   });
+
+  it("recovers the public caller number from reversed NetSapiens endpoints", () => {
+    const party = presentCallParty({
+      direction: "inbound",
+      fromNumber: "1136",
+      toNumber: "+15145557890",
+      ownExtension: "1136",
+    });
+
+    expect(party.phone).toBe("15145557890");
+    expect(party.formattedPhone).toBe("(514) 555-7890");
+    expect(party.internalExtension).toBe("1136");
+  });
 });

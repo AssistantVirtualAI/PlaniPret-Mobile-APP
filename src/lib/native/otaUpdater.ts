@@ -5,6 +5,7 @@
 // suivant. Aucun code natif n'est modifié : les changements natifs passent
 // toujours par une soumission aux stores.
 import { supabase } from "@/integrations/supabase/client";
+import { CapacitorUpdater } from "@capgo/capacitor-updater";
 
 const APP_KEY = "planipret";
 const CHANNEL = "prod";
@@ -23,27 +24,26 @@ function log(msg: string, detail?: unknown) {
   console.info(`[ota] ${msg}`, detail ?? "");
 }
 
-function currentWebVersion(): string | null {
+function bundledWebVersion(): string | null {
   try {
-    return (
-      localStorage.getItem(LAST_APPLIED_KEY) ||
-      ((import.meta as any).env?.VITE_APP_VERSION ?? null)
-    );
+    return (import.meta as any).env?.VITE_APP_VERSION ?? null;
   } catch {
     return (import.meta as any).env?.VITE_APP_VERSION ?? null;
   }
 }
 
-async function loadUpdater() {
+async function activeWebVersion(): Promise<string | null> {
   try {
-    // Import dynamique : absent en preview web, présent sur iOS/Android.
-    const mod = await import(
-      /* @vite-ignore */ "@capgo/capacitor-updater"
-    );
-    return (mod as any).CapacitorUpdater ?? null;
+    const current = await CapacitorUpdater.current();
+    const version = current?.bundle?.version;
+    if (version && version !== "builtin") {
+      try { localStorage.setItem(LAST_APPLIED_KEY, version); } catch { /* noop */ }
+      return version;
+    }
   } catch {
-    return null;
+    // Le bundle natif demeure la source de repli.
   }
+  return bundledWebVersion();
 }
 
 /**
@@ -53,18 +53,14 @@ async function loadUpdater() {
 export async function checkAndApplyOtaUpdate(): Promise<
   { status: "no-plugin" | "up-to-date" | "downloaded" | "error"; version?: string }
 > {
-  const CapacitorUpdater = await loadUpdater();
-  if (!CapacitorUpdater) {
-    log("plugin absent — OTA ignorée (web ou build natif sans plugin)");
-    return { status: "no-plugin" };
-  }
-
   try {
     // Confirme le bundle courant pour éviter un rollback automatique.
     try { await CapacitorUpdater.notifyAppReady(); } catch { /* noop */ }
 
+    const currentVersion = await activeWebVersion();
+
     const { data, error } = await supabase.functions.invoke("mobile-config", {
-      body: { app_key: APP_KEY, channel: CHANNEL, version: currentWebVersion() },
+      body: { app_key: APP_KEY, channel: CHANNEL, version: currentVersion },
     });
     if (error || (data as any)?.error) {
       log("configuration indisponible", error ?? (data as any)?.error);
@@ -73,7 +69,7 @@ export async function checkAndApplyOtaUpdate(): Promise<
 
     const release = (data as any).release as ReleaseInfo | null;
     if (!release?.url || !release.version) return { status: "up-to-date" };
-    if (release.version === currentWebVersion()) return { status: "up-to-date" };
+    if (release.version === currentVersion) return { status: "up-to-date" };
 
     log("téléchargement du paquet", release.version);
     const bundle = await CapacitorUpdater.download({
@@ -85,7 +81,6 @@ export async function checkAndApplyOtaUpdate(): Promise<
     // `next` applique le paquet au prochain démarrage complet : jamais en
     // pleine session pour ne pas couper un appel en cours.
     await CapacitorUpdater.next({ id: bundle.id });
-    try { localStorage.setItem(LAST_APPLIED_KEY, release.version); } catch { /* noop */ }
     log("paquet prêt, appliqué au prochain démarrage", release.version);
     return { status: "downloaded", version: release.version };
   } catch (e) {
@@ -96,8 +91,6 @@ export async function checkAndApplyOtaUpdate(): Promise<
 
 /** Revient au bundle livré avec l'application (dépannage). */
 export async function resetOtaToBuiltin(): Promise<boolean> {
-  const CapacitorUpdater = await loadUpdater();
-  if (!CapacitorUpdater) return false;
   try {
     await CapacitorUpdater.reset();
     try { localStorage.removeItem(LAST_APPLIED_KEY); } catch { /* noop */ }

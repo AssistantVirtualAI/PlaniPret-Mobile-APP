@@ -117,7 +117,9 @@ async function processEvent(event: any) {
 
   // The `call` model fires on every state change — only the first ringing
   // event for a given SIP Call-ID may trigger a VoIP push.
-  if (type === "call.inbound" && !shouldProcessCall(nsCallKey(data))) {
+  // An internal call shares one SIP Call-ID between the caller leg and the
+  // callee leg, so the key must also carry the ringing extension.
+  if (type === "call.inbound" && !shouldProcessCall(`${nsCallKey(data)}:${data?.extension ?? data?.to_number ?? ""}`)) {
     console.log("[ns-webhook] duplicate call event ignored", { call_id: nsCallKey(data) });
     return;
   }
@@ -450,23 +452,42 @@ async function processEvent(event: any) {
       return;
     }
     const dndActive = isDndActive(brokerProfile);
-    const { data: insertedCall, error: insertCallError } = await admin.from("planipret_phone_calls").upsert({
-      user_id: userId, ns_call_id: callId ? String(callId) : null, direction: "inbound",
+    const callRow = {
+      user_id: userId, direction: "inbound" as const,
       from_number: extractCaller(data) || null,
       to_number: data.to_number ?? data.to ?? null,
       status: dndActive ? "voicemail" : "inbound_ringing",
       // `metadata` is NOT NULL: never write null, or the insert fails and the
       // incoming-call push is never delivered (phone stays silent).
       metadata: dndActive ? { dnd_auto_voicemail: true, dnd_message: brokerProfile?.dnd_message_fr ?? null } : {},
-    }, { onConflict: "ns_call_id", ignoreDuplicates: true }).select("id").maybeSingle();
+    };
+    const { data: insertedCall, error: insertCallError } = await admin.from("planipret_phone_calls").upsert(
+      { ...callRow, ns_call_id: String(callId) },
+      { onConflict: "ns_call_id", ignoreDuplicates: true },
+    ).select("id").maybeSingle();
     if (insertCallError) {
       // Persisting the call row must never block ringing the broker's phone.
       console.error("[ns-webhook] inbound call persist failed", insertCallError.message);
     }
     if (!insertedCall && !insertCallError) {
-      console.info("[ns-webhook] inbound call already persisted; duplicate push suppressed", { call_id: callId });
-      return;
+      // An INTERNAL call (extension → extension) reuses the caller's SIP
+      // Call-ID, so the caller's own outbound row already holds `ns_call_id`.
+      // Returning here left the callee's phone silent. Only a row owned by the
+      // SAME user is a true duplicate; otherwise persist the callee leg under a
+      // distinct id and keep ringing.
+      const { data: existing } = await admin
+        .from("planipret_phone_calls").select("id,user_id").eq("ns_call_id", String(callId)).maybeSingle();
+      if (!userId || existing?.user_id === userId) {
+        console.info("[ns-webhook] inbound call already persisted; duplicate push suppressed", { call_id: callId });
+        return;
+      }
+      await admin.from("planipret_phone_calls").upsert(
+        { ...callRow, ns_call_id: `${callId}#${ext ?? userId}` },
+        { onConflict: "ns_call_id", ignoreDuplicates: true },
+      );
+      console.info("[ns-webhook] internal call: callee leg persisted separately", { call_id: callId, extension: ext });
     }
+
     if (userId && !dndActive) {
       await admin.channel(`call-events:${userId}`).send({
         type: "broadcast", event: "inbound_call",

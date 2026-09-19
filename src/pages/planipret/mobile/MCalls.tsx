@@ -20,7 +20,7 @@ import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { useCallerNames } from "@/lib/planipret/callerLookup";
 import { createClientFollowUpTask } from "@/lib/planipret/tasks";
 import { presentCallParty } from "@/lib/planipret/callPresentation";
-import { readScreenCache, writeScreenCache, invalidateScreenCache, TTL } from "@/lib/planipret/screenCache";
+import { peekScreenCache, readScreenCache, writeScreenCache, invalidateScreenCache, TTL } from "@/lib/planipret/screenCache";
 
 
 
@@ -66,6 +66,9 @@ type Call = {
   ai_client_insights?: any;
   ai_tasks?: any;
   pipeline_state?: any;
+  save_consent?: string | null;
+  recording_storage_path?: string | null;
+  recording_cached_at?: string | null;
 };
 
 type Insight = {
@@ -300,36 +303,37 @@ export default function MCalls() {
       return prev;
     });
     try {
-      const end = new Date().toISOString();
-      const start = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-      let localQuery: any = supabase
-        .from("planipret_phone_calls")
-        .select("*")
-        .not("to_number", "ilike", "%vmail%")
-        .not("to_number", "ilike", "%voicemail%")
-        .not("to_number", "ilike", "%vm@%")
-        .gte("started_at", start)
-        .lte("started_at", end)
-        .order("started_at", { ascending: false })
-        .limit(50);
-      if (phoneCallScopeFilter) localQuery = localQuery.or(phoneCallScopeFilter);
-      const { data: local } = await localQuery;
-      setRecordings((local ?? []).filter((r: any) => r.has_recording || r.recording_url || r.ns_callid || r.ns_orig_callid || r.ns_term_callid || r.ns_call_id).map((r: any) => ({
+      const pageSize = 200;
+      const local: any[] = [];
+      for (let from = 0; ; from += pageSize) {
+        let localQuery: any = supabase
+          .from("planipret_phone_calls")
+          .select("*")
+          .eq("save_consent", "approved")
+          .not("to_number", "ilike", "%vmail%")
+          .not("to_number", "ilike", "%voicemail%")
+          .not("to_number", "ilike", "%vm@%")
+          .order("started_at", { ascending: false })
+          .range(from, from + pageSize - 1);
+        if (phoneCallScopeFilter) localQuery = localQuery.or(phoneCallScopeFilter);
+        const { data, error } = await localQuery;
+        if (error) throw error;
+        local.push(...(data ?? []));
+        if (!data || data.length < pageSize) break;
+      }
+      const next = local.filter((r: any) => r.has_recording || r.recording_url || r.recording_storage_path || r.ns_callid || r.ns_orig_callid || r.ns_term_callid || r.ns_call_id).map((r: any) => ({
         ...r,
         stream_via_proxy: true,
         proxy_call_db_id: r.id,
         proxy_ns_callid: r.ns_callid ?? r.ns_orig_callid ?? r.ns_term_callid ?? r.ns_call_id ?? null,
-        has_recording: !!(r.has_recording || r.recording_url || r.ns_callid || r.ns_orig_callid || r.ns_term_callid || r.ns_call_id),
-      })) as Call[]);
-      writeScreenCache(`calls:recordings:${userId}`, (local ?? []).filter((r: any) => r.has_recording || r.recording_url || r.ns_callid || r.ns_orig_callid || r.ns_term_callid || r.ns_call_id).map((r: any) => ({
-        ...r,
-        stream_via_proxy: true,
-        proxy_call_db_id: r.id,
-        proxy_ns_callid: r.ns_callid ?? r.ns_orig_callid ?? r.ns_term_callid ?? r.ns_call_id ?? null,
-        has_recording: true,
-      })));
+        has_recording: !!(r.has_recording || r.recording_url || r.recording_storage_path || r.ns_callid || r.ns_orig_callid || r.ns_term_callid || r.ns_call_id),
+      })) as Call[];
+      setRecordings(next);
+      writeScreenCache(`calls:recordings:${userId}`, next);
     } catch (e) {
       console.warn("[MCalls] recordings load failed", e);
+      const stale = peekScreenCache<Call[]>(`calls:recordings:${userId}`);
+      if (stale) setRecordings((current) => current.length ? current : stale.value);
     } finally {
       setRecordingsLoading(false);
     }
@@ -351,12 +355,22 @@ export default function MCalls() {
   }, [userId, loadRecordingsFromCache]);
 
   const loadRecordings = useCallback(async (silent = false, force = false) => {
+    const hadFreshCache = !!readScreenCache(`calls:recordings:${userId}`, TTL.fiveMinutes);
     await loadRecordingsFromCache(silent, force);
     // Synchronisation NetSapiens seulement si le cache 5 min est périmé.
-    if (force || !readScreenCache(`calls:recordings:${userId}`, TTL.fiveMinutes)) {
+    // Vérifier la fraîcheur avant la lecture, car celle-ci écrit le cache.
+    if (force || !hadFreshCache) {
       void syncRecordingsInBackground();
     }
   }, [userId, loadRecordingsFromCache, syncRecordingsInBackground]);
+
+  const updateRecording = useCallback((updated: Call) => {
+    setRecordings((prev) => {
+      const next = prev.map((current) => current.id === updated.id ? { ...current, ...updated } : current);
+      if (userId) writeScreenCache(`calls:recordings:${userId}`, next);
+      return next;
+    });
+  }, [userId]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -440,6 +454,28 @@ export default function MCalls() {
 
 
   const missedCount = useMemo(() => calls.filter(isMissed).length, [calls]);
+
+  // Appels enregistrés localement qui n'ont pas encore de CDR NetSapiens :
+  // ils restent visibles et peuvent être resynchronisés à la demande.
+  const unsynced = useMemo(
+    () => calls.filter((c) => !c.ns_call_id && !String(c.id ?? "").startsWith("ns-")),
+    [calls],
+  );
+  const [resyncing, setResyncing] = useState(false);
+  const resyncUnsynced = useCallback(async () => {
+    if (resyncing) return;
+    setResyncing(true);
+    try {
+      const end = new Date().toISOString();
+      const start = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      await supabase.functions.invoke("pp-ns-cdr", { body: { action: "sync", start, end, limit: 50 } });
+      await load(true);
+    } catch (e: any) {
+      toast.error(lang === "en" ? "Resync failed" : "Échec de la resynchronisation", { description: e?.message });
+    } finally {
+      setResyncing(false);
+    }
+  }, [resyncing, load, lang]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -586,7 +622,7 @@ export default function MCalls() {
               calls={recordings as any}
               loading={recordingsLoading}
               userId={userId}
-              onUpdated={(c) => setRecordings((prev) => prev.map((p) => (p.id === c.id ? { ...p, ...c } as any : p)))}
+              onUpdated={updateRecording as any}
             />
           </>
         ) : tab === "voicemails" ? (
@@ -606,6 +642,52 @@ export default function MCalls() {
                 <RefreshCw className={`w-3 h-3 ${refreshing ? "animate-spin" : ""}`} /> {t("common.refresh")}
               </button>
             </div>
+            {tab !== "missed" && unsynced.length > 0 && (
+              <div
+                className="mx-3 mt-2 rounded-xl px-3 py-2.5"
+                style={{
+                  background: "rgba(245, 158, 11, 0.10)",
+                  border: "1px solid rgba(245, 158, 11, 0.35)",
+                  color: "var(--pp-text-primary)",
+                }}
+                role="status"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-semibold">
+                    {unsynced.length}{" "}
+                    {lang === "en"
+                      ? (unsynced.length > 1 ? "calls not synced" : "call not synced")
+                      : (unsynced.length > 1 ? "appels non synchronisés" : "appel non synchronisé")}
+                  </span>
+                  <button
+                    onClick={resyncUnsynced}
+                    disabled={resyncing}
+                    className="px-3 py-1 rounded-full text-[11px] font-semibold flex items-center gap-1 disabled:opacity-60"
+                    style={{ background: "var(--pp-primary)", color: "#fff" }}
+                  >
+                    <RefreshCw className={`w-3 h-3 ${resyncing ? "animate-spin" : ""}`} />
+                    {lang === "en" ? "Reload" : "Recharger"}
+                  </button>
+                </div>
+                <ul className="mt-2 space-y-1">
+                  {unsynced.slice(0, 5).map((c) => (
+                    <li key={`unsynced-${c.id}`} className="flex items-center justify-between gap-2 text-[11px]" style={{ color: "var(--pp-text-secondary)" }}>
+                      <button className="truncate text-left flex-1" onClick={() => setSelected(c)}>
+                        {displayLabelWith(c, undefined, lang as "fr" | "en")}
+                      </button>
+                      <span className="shrink-0">
+                        {localizedDateTime(c.started_at, lang as "fr" | "en", t("common.today"), t("common.yesterday"))}
+                      </span>
+                    </li>
+                  ))}
+                  {unsynced.length > 5 && (
+                    <li className="text-[11px]" style={{ color: "var(--pp-text-muted)" }}>
+                      +{unsynced.length - 5}
+                    </li>
+                  )}
+                </ul>
+              </div>
+            )}
             {loading ? (
               <ul className="px-3 pt-3 pb-4 space-y-1.5">
                 {Array.from({ length: 5 }).map((_, i) => (
@@ -1164,6 +1246,7 @@ function CallDetailSheet({
   const peerNumber = (call.direction === "outbound" ? call.to_number : call.from_number) ?? "";
   const _resolvedNames = useCallerNames([peerNumber]);
   const _callerLabel = displayLabelWith(call, _resolvedNames[peerNumber], lang as "fr" | "en");
+  const recordingCanResolve = !!(call.recording_url || call.has_recording || call.ns_callid || call.ns_call_id);
 
   // Load insight
   useEffect(() => {
@@ -1494,10 +1577,16 @@ function CallDetailSheet({
 
           {/* ===== TAB AUDIO ===== */}
           {activeTab === "audio" && (
-            <CallRecordingPlayer
-              callId={call.id}
-              duration={call.duration_seconds ?? 0}
-            />
+            recordingCanResolve ? (
+              <CallRecordingPlayer
+                callId={call.id}
+                duration={call.duration_seconds ?? 0}
+              />
+            ) : (
+              <div className="pp-card p-4 text-xs" style={{ color: "var(--pp-text-secondary)" }}>
+                {lang === "en" ? "Recording is waiting for call synchronization." : "L’enregistrement attend la synchronisation de l’appel."}
+              </div>
+            )
           )}
 
           {/* ===== TAB TRANSCRIPT ===== */}

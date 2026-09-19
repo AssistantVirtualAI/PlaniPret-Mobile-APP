@@ -59,7 +59,11 @@ export function nsTermExtension(o: any): string | null {
   const raw = o?.term_user ?? o?.["term-user"] ?? o?.["call-term-user"] ??
     o?.extension ?? o?.user ?? o?.to ?? o?.callee ?? null;
   if (raw == null) return null;
-  // NS often reports "113@domain" or "sip:113@domain"
+  // Active mobile/softphone legs are commonly reported as 113M/113W/113X.
+  // Normalize those device ids to the broker's bare extension before lookup.
+  const extension = nsExtensionCandidate(raw);
+  if (extension) return extension;
+  // Preserve non-numeric legacy identifiers after removing the SIP wrapper.
   const cleaned = str(raw).replace(/^sip:/i, "").split("@")[0].trim();
   return cleaned || null;
 }

@@ -31,7 +31,10 @@ export default function PortalHandoff() {
       const params = fragmentParams.has("th") ? fragmentParams : queryParams;
       const tokenHash = params.get("th") ?? "";
       const email = params.get("em") ?? "";
-      const to = params.get("to") ?? "/planipret/broker/overview";
+      const requestedTarget = params.get("to") ?? "/planipret/broker/overview";
+      const to = /^\/planipret\/(admin|broker)(\/|$)/.test(requestedTarget)
+        ? requestedTarget
+        : "/planipret/broker/overview";
 
       // Le fragment est effacé immédiatement : le jeton ne doit pas rester
       // dans l'historique du navigateur.
@@ -46,27 +49,33 @@ export default function PortalHandoff() {
         // Déjà connecté dans ce navigateur : on entre directement.
         if (await hasSession()) {
           try { sessionStorage.setItem("pp_portal_just_signed_in", String(Date.now())); } catch { /* ignore */ }
-          navigate(to.startsWith("/planipret/") ? to : "/planipret/broker/overview", { replace: true });
+          window.location.replace(to);
           return;
         }
         setError("Lien incomplet ou expiré. Relancez l'ouverture depuis l'application mobile.");
         return;
       }
 
-      const { error: otpError } = await supabase.auth.verifyOtp({
-        type: "magiclink",
-        token_hash: tokenHash,
-        email,
-      } as never);
+      let otpError: { message?: string } | null = null;
+      for (const type of ["magiclink", "email"] as const) {
+        const { error } = await supabase.auth.verifyOtp({ type, token_hash: tokenHash } as never);
+        if (!error) { otpError = null; break; }
+        otpError = error;
+      }
+      if (otpError) {
+        const { error } = await supabase.auth.verifyOtp({ type: "magiclink", token_hash: tokenHash, email } as never);
+        if (!error) otpError = null;
+      }
 
       if (otpError && !(await hasSession())) {
-        setError("Lien expiré ou déjà utilisé. Relancez l'ouverture depuis l'application mobile.");
+        handoffRan = false;
+        setError(`Connexion au portail impossible (${otpError.message ?? "lien invalide"}). Relancez l'ouverture depuis l'application mobile.`);
         return;
       }
 
 
       try { sessionStorage.setItem("pp_portal_just_signed_in", String(Date.now())); } catch { /* ignore */ }
-      navigate(to.startsWith("/planipret/") ? to : "/planipret/broker/overview", { replace: true });
+      window.location.replace(to);
     })();
     /* eslint-disable-next-line react-hooks/exhaustive-deps */
   }, []);

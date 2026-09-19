@@ -63,7 +63,9 @@ describe("authoritative Maestro task confirmation", () => {
       task_id: "781150",
     });
     expect(deps.listFetch).toHaveBeenCalledWith("67", expect.objectContaining({
-      status: "pending",
+      // A null status asks the edge list adapter to probe all documented
+      // Maestro statuses: pending, open and complete.
+      status: null,
       type: "user",
       findTaskId: "781150",
     }));
@@ -125,7 +127,7 @@ describe("authoritative Maestro task confirmation", () => {
     });
   });
 
-  it("uses the resolved internal Maestro user id for task read-back", async () => {
+  it("uses the validated task assignee rather than a telecom device id for task read-back", async () => {
     const deps = depsWithList([]);
     deps.profile = {
       id: "profile-1",
@@ -137,7 +139,7 @@ describe("authoritative Maestro task confirmation", () => {
     const result = await handleTaskRequest(createBody, deps);
 
     expect(result.body).toMatchObject({ success: false, error: "maestro_readback_unconfirmed" });
-    expect(deps.listFetch).toHaveBeenCalledWith("387460525", expect.objectContaining({
+    expect(deps.listFetch).toHaveBeenCalledWith("67", expect.objectContaining({
       findTaskId: "781150",
     }));
   });

@@ -3,8 +3,10 @@ import { retryWithBackoff } from "@/lib/planipret/retryBackoff";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 import { createClientFollowUpTask } from "@/lib/planipret/tasks";
+import { recordingAudioCache } from "@/lib/planipret/persistentMediaCache";
+import { getCachedRecordingUrl, persistRecordingUrl } from "@/lib/planipret/persistentRecordingCache";
 import {
-  Play, Pause, Download, RotateCcw, RotateCw, Sparkles, FileText, Bot,
+  Play, Pause, Clock, Download, RotateCcw, RotateCw, Sparkles, FileText, Bot,
   Loader2, Search, Copy, Check, ChevronDown, Link2, User, Flame, Snowflake, Thermometer, ListChecks,
   CloudUpload, CloudOff, CheckCircle2,
 } from "lucide-react";
@@ -55,6 +57,9 @@ export type RecordingCall = {
   proxy_ns_callid?: string | null;
   analyzed_at?: string | null;
   transcript_source?: string | null;
+  save_consent?: string | null;
+  recording_storage_path?: string | null;
+  recording_cached_at?: string | null;
 };
 
 const fmtDate = (iso: string) => {
@@ -166,10 +171,26 @@ export default function RecordingsList({
   );
   const autoPipelineDoneRef = useRef<Set<string>>(new Set());
   const autoCrmSyncDoneRef = useRef<Set<string>>(new Set());
+  const audioPreloadDoneRef = useRef<Set<string>>(new Set());
   const maestroUnavailableRef = useRef(false);
   const audioBlobCacheRef = useRef<Map<string, string>>(new Map());
   const [audioStatus, setAudioStatus] = useState<Record<string, AudioStatus>>({});
   const [uploadLedger, setUploadLedger] = useState<Record<string, string>>({});
+  const cacheScope = String(userId ?? "").trim();
+  const recordingCacheKey = (id: string) => cacheScope && id ? `${cacheScope}:${id}` : "";
+
+  useEffect(() => {
+    // Do not retain a preceding broker's object URLs when accounts change on a
+    // shared device. The durable entries are separately namespaced as well.
+    for (const url of audioBlobCacheRef.current.values()) {
+      if (url.startsWith("blob:")) {
+        try { URL.revokeObjectURL(url); } catch { /* noop */ }
+      }
+    }
+    audioBlobCacheRef.current.clear();
+    audioPreloadDoneRef.current.clear();
+    setAudioStatus({});
+  }, [cacheScope]);
 
   // Statut d'upload persistant (déduplication par call_id) — source de vérité serveur.
   const ledgerKey = useMemo(() => withRec.map((c) => c.id).join(","), [withRec]);
@@ -195,6 +216,70 @@ export default function RecordingsList({
 
   const setStatus = (id: string, s: AudioStatus) =>
     setAudioStatus((prev) => (prev[id] === s ? prev : { ...prev, [id]: s }));
+
+  // Résout d'abord l'audio de TOUS les appels, indépendamment des longues
+  // transcriptions. Deux travailleurs évitent de surcharger le réseau mobile.
+  useEffect(() => {
+    const eligible = withRec.filter((c) =>
+      c.save_consent === "approved" &&
+      hasResolvableAudio(c) &&
+      !isVoicemailCall(c)
+    );
+    // 1) Réhydratation immédiate depuis le cache persistant (survit au
+    //    redémarrage de l'app) : l'enregistrement est jouable sans réseau.
+    for (const call of eligible) {
+      if (audioPreloadDoneRef.current.has(call.id)) continue;
+      const cacheKey = recordingCacheKey(call.id);
+      const cachedUrl = cacheKey ? recordingAudioCache.get(cacheKey) : null;
+      if (!cachedUrl) {
+        if (!cacheKey) continue;
+        void getCachedRecordingUrl(cacheKey).then((durableUrl) => {
+          if (!durableUrl || cancelled) return;
+          audioPreloadDoneRef.current.add(call.id);
+          audioBlobCacheRef.current.set(call.id, durableUrl);
+          setStatus(call.id, "uploaded");
+          onUpdated({ ...call, recording_url: durableUrl, has_recording: true, stream_via_proxy: false });
+        });
+        continue;
+      }
+      audioPreloadDoneRef.current.add(call.id);
+      audioBlobCacheRef.current.set(call.id, cachedUrl);
+      setStatus(call.id, "uploaded");
+      if (call.recording_url !== cachedUrl) {
+        onUpdated({ ...call, recording_url: cachedUrl, has_recording: true, stream_via_proxy: false });
+      }
+    }
+    const queue = eligible.filter((c) => !audioPreloadDoneRef.current.has(c.id));
+    if (!queue.length) return;
+    const controller = new AbortController();
+    let cancelled = false;
+    const worker = async (offset: number) => {
+      for (let index = offset; index < queue.length; index += 2) {
+        const call = queue[index];
+        if (cancelled) return;
+        audioPreloadDoneRef.current.add(call.id);
+        setStatus(call.id, "uploading");
+        try {
+          const remoteUrl = await fetchAudioUrl(call, { signal: controller.signal });
+          const cacheKey = recordingCacheKey(call.id);
+          const url = cacheKey ? await persistRecordingUrl(cacheKey, remoteUrl, controller.signal) : remoteUrl;
+          if (cancelled) return;
+          audioBlobCacheRef.current.set(call.id, url);
+          if (cacheKey && !url.startsWith("blob:")) recordingAudioCache.set(cacheKey, url);
+          setStatus(call.id, "uploaded");
+          onUpdated({ ...call, recording_url: url, has_recording: true, stream_via_proxy: false });
+        } catch (e: any) {
+          if (!cancelled) {
+            setStatus(call.id, "error");
+            audioPreloadDoneRef.current.delete(call.id);
+            console.warn("[RecordingsList] audio preload failed", otherLabel(call), e?.message);
+          }
+        }
+      }
+    };
+    void Promise.all([worker(0), worker(1)]);
+    return () => { cancelled = true; controller.abort(); };
+  }, [withRec, cacheScope]);
 
   // Background preload: audio URL + transcript + AI for the 5 most recent recordings.
   // Runs one-by-one so the recordings screen stays responsive.
@@ -265,27 +350,7 @@ export default function RecordingsList({
         if (cancelled) break;
         const who = otherLabel(call);
 
-        // 1) Audio : cache signé côté serveur, silencieux.
-        const alreadyResolved = !!call.recording_url && (call.stream_via_proxy === false || /^(blob:|data:|https?:)/i.test(String(call.recording_url)));
-        if (!audioBlobCacheRef.current.has(call.id) && !alreadyResolved) {
-          setStatus(call.id, "uploading");
-          try {
-            const url = await fetchAudioUrl(call, { signal: controller.signal });
-            if (cancelled) break;
-            audioBlobCacheRef.current.set(call.id, url);
-            setStatus(call.id, "uploaded");
-            onUpdated({ ...call, recording_url: url, has_recording: true, stream_via_proxy: false });
-          } catch (e: any) {
-            if (!cancelled) {
-              setStatus(call.id, "error");
-              console.warn("[RecordingsList] auto-upload failed", who, e?.message);
-            }
-          }
-        } else if (alreadyResolved || audioBlobCacheRef.current.has(call.id)) {
-          setStatus(call.id, "uploaded");
-        }
-
-        // 2) Transcript + 3) IA — pipeline complet, indépendant de l'audio.
+        // Transcript + IA — pipeline indépendant du préchargement audio.
         if (!autoPipelineDoneRef.current.has(call.id) && (!call.transcript || !call.ai_summary)) {
           autoPipelineDoneRef.current.add(call.id);
           try {
@@ -440,10 +505,13 @@ export default function RecordingsList({
   const retryAudio = async (call: RecordingCall) => {
     setStatus(call.id, "uploading");
     try {
-      const url = await fetchAudioUrl(call, { retries: 3 });
+      const remoteUrl = await fetchAudioUrl(call, { retries: 3 });
+      const cacheKey = recordingCacheKey(call.id);
+      const url = cacheKey ? await persistRecordingUrl(cacheKey, remoteUrl) : remoteUrl;
       const prev = audioBlobCacheRef.current.get(call.id);
       if (prev?.startsWith("blob:")) { try { URL.revokeObjectURL(prev); } catch {} }
       audioBlobCacheRef.current.set(call.id, url);
+      if (cacheKey && !url.startsWith("blob:")) recordingAudioCache.set(cacheKey, url);
       setStatus(call.id, "uploaded");
       onUpdated({ ...call, recording_url: url, has_recording: true, stream_via_proxy: false });
     } catch (e: any) {
@@ -465,6 +533,7 @@ export default function RecordingsList({
           audioStatus={audioStatus[c.id] ?? "idle"}
           ledgerStatus={uploadLedger[c.id] ?? null}
           cachedAudioUrl={audioBlobCacheRef.current.get(c.id) ?? null}
+          cacheKey={recordingCacheKey(c.id)}
           onRetryAudio={() => retryAll(c)}
         />
       ))}
@@ -476,13 +545,14 @@ export default function RecordingsList({
 
 // ===================== Card =====================
 function RecordingCard({
-  call, onUpdated, audioStatus, ledgerStatus, cachedAudioUrl, onRetryAudio,
+  call, onUpdated, audioStatus, ledgerStatus, cachedAudioUrl, cacheKey, onRetryAudio,
 }: {
   call: RecordingCall;
   onUpdated: (c: RecordingCall) => void;
   audioStatus: AudioStatus;
   ledgerStatus?: string | null;
   cachedAudioUrl: string | null;
+  cacheKey: string;
   onRetryAudio: () => void;
 }) {
   const [open, setOpen] = useState<"rec" | "txt" | "ai" | "crm" | null>(null);
@@ -575,7 +645,7 @@ function RecordingCard({
       </div>
 
       {/* Sections */}
-      {open === "rec" && <RecordingSection call={call} onUpdated={onUpdated} />}
+      {open === "rec" && <RecordingSection call={call} cacheKey={cacheKey} onUpdated={onUpdated} />}
       {open === "txt" && <TranscriptSection call={call} onUpdated={onUpdated} />}
       {open === "ai" && <AISection call={call} onUpdated={onUpdated} />}
       {open === "crm" && <MaestroSyncSection call={call} onUpdated={onUpdated} />}
@@ -659,7 +729,7 @@ function SyncStatusBadge({
   stage, busy, onRetry,
 }: { stage: SyncStage; busy: boolean; onRetry: () => void }) {
   const map: Record<SyncStage, { label: string; bg: string; color: string; Icon: any }> = {
-    pending: { label: "En attente", bg: "var(--pp-bg-elevated)", color: "var(--pp-text-muted)", Icon: Loader2 },
+    pending: { label: "En attente", bg: "var(--pp-bg-elevated)", color: "var(--pp-text-muted)", Icon: Clock },
     uploaded: { label: "Uploadé", bg: "rgba(46,155,220,0.14)", color: "var(--pp-brand-accent)", Icon: CheckCircle2 },
     synced: { label: "Transmis à Maestro", bg: "rgba(34,197,94,0.14)", color: "var(--pp-success)", Icon: CheckCircle2 },
     failed: { label: "En échec", bg: "rgba(239,68,68,0.14)", color: "var(--pp-danger)", Icon: CloudOff },
@@ -712,7 +782,7 @@ function AudioStatusBadge({ status, onRetry }: { status: AudioStatus; onRetry: (
 
 
 // ===================== Recording =====================
-function RecordingSection({ call, onUpdated }: { call: RecordingCall; onUpdated: (c: RecordingCall) => void }) {
+function RecordingSection({ call, cacheKey, onUpdated }: { call: RecordingCall; cacheKey: string; onUpdated: (c: RecordingCall) => void }) {
   const [loading, setLoading] = useState(false);
   const audioRef = useRef<HTMLAudioElement>(null);
   const playAfterLoadRef = useRef(false);
@@ -725,17 +795,19 @@ function RecordingSection({ call, onUpdated }: { call: RecordingCall; onUpdated:
   const audioErrorRetryRef = useRef(false);
   const playableUrl = localUrl ?? (!!call.recording_url && (/^(blob:|data:)/i.test(String(call.recording_url)) || call.stream_via_proxy === false) ? call.recording_url : null);
 
-  const fetchRec = async (opts: { play?: boolean } = {}) => {
+  const fetchRec = async (opts: { play?: boolean; silent?: boolean } = {}) => {
     setLoading(true);
     try {
-      const url = await fetchAudioUrl(call);
+      const cachedUrl = cacheKey ? await getCachedRecordingUrl(cacheKey) : null;
+      const remoteUrl = cachedUrl ?? await fetchAudioUrl(call);
+      const url = cachedUrl ?? (cacheKey ? await persistRecordingUrl(cacheKey, remoteUrl) : remoteUrl);
       if (localObjectUrlRef.current?.startsWith("blob:")) URL.revokeObjectURL(localObjectUrlRef.current);
       localObjectUrlRef.current = url;
       audioErrorRetryRef.current = false;
       playAfterLoadRef.current = !!opts.play;
       setLocalUrl(url);
       onUpdated({ ...call, recording_url: url, has_recording: true, stream_via_proxy: false });
-      toast.success("Enregistrement chargé");
+      if (!opts.silent) toast.success("Enregistrement chargé");
     } catch (e: any) {
       // Fallback : maestro-recording
       try {
@@ -749,9 +821,9 @@ function RecordingSection({ call, onUpdated }: { call: RecordingCall; onUpdated:
         playAfterLoadRef.current = !!opts.play;
         setLocalUrl(url);
         onUpdated({ ...call, recording_url: url, stream_via_proxy: false });
-        toast.success("Enregistrement chargé");
+        if (!opts.silent) toast.success("Enregistrement chargé");
       } catch {
-        toast.error("Enregistrement indisponible", { description: e?.message });
+        if (!opts.silent) toast.error("Enregistrement indisponible", { description: e?.message });
       }
     } finally {
       setLoading(false);
@@ -807,9 +879,7 @@ function RecordingSection({ call, onUpdated }: { call: RecordingCall; onUpdated:
               setPlaying(false);
               if (!audioErrorRetryRef.current) {
                 audioErrorRetryRef.current = true;
-                void fetchRec({ play: true });
-              } else {
-                toast.error("Audio non disponible");
+                void fetchRec({ play: true, silent: true });
               }
             }}
             onPlay={() => setPlaying(true)}

@@ -26,6 +26,7 @@ import BriefListenButton from "@/components/planipret/mobile/BriefListenButton";
 import CommissionHomeCard from "@/components/planipret/mobile/CommissionHomeCard";
 import TasksHomeCard from "@/components/planipret/mobile/TasksHomeCard";
 import { presentCallParty } from "@/lib/planipret/callPresentation";
+import { useCallerNames } from "@/lib/planipret/callerLookup";
 import { loadMHomeCache, saveMHomeCache } from "@/lib/mhomeCache";
 
 
@@ -113,6 +114,18 @@ export default function MHome() {
 
   const [stats, setStats] = useState({ calls: 0, missed: 0, sms: 0, voicemails: 0, meetings: 0, hotLeads: 0, tasks: 0, outbound: 0 });
   const [recent, setRecent] = useState<any[]>([]);
+  const recentLookupKeys = useMemo(() => recent.map((call) => {
+    const party = presentCallParty({
+      direction: call?.direction,
+      fromNumber: call?.from_number,
+      fromName: call?.from_name,
+      toNumber: call?.to_number,
+      toName: call?.to_name,
+      ownExtension: profile?.ns_extension ?? profile?.extension,
+    });
+    return party.phone ?? party.internalExtension ?? "";
+  }).filter(Boolean), [recent, profile?.ns_extension, profile?.extension]);
+  const recentCallerNames = useCallerNames(recentLookupKeys);
   const [hotLeads, setHotLeads] = useState<any[]>([]);
   const [dueReminders, setDueReminders] = useState<any[]>([]);
   const [meetings, setMeetings] = useState<any[]>([]);
@@ -712,7 +725,7 @@ export default function MHome() {
               const missed = c.direction === "missed";
               const Icon = missed ? X : inbound ? ArrowDownLeft : ArrowUpRight;
               const color = missed ? "var(--pp-danger)" : inbound ? "var(--pp-brand-accent)" : "var(--pp-success)";
-              const party = presentCallParty({
+              const unresolvedParty = presentCallParty({
                 direction: c.direction,
                 fromNumber: c.from_number,
                 fromName: c.from_name,
@@ -720,18 +733,28 @@ export default function MHome() {
                 toName: c.to_name,
                 ownExtension: profile?.ns_extension ?? profile?.extension,
               });
+              const lookupKey = unresolvedParty.phone ?? unresolvedParty.internalExtension ?? "";
+              const party = presentCallParty({
+                direction: c.direction,
+                fromNumber: c.from_number,
+                fromName: c.from_name,
+                toNumber: c.to_number,
+                toName: c.to_name,
+                ownExtension: profile?.ns_extension ?? profile?.extension,
+                resolvedName: recentCallerNames[lookupKey],
+              });
               const name = party.name || party.formattedPhone || t("common.unknown");
               const phone = party.phone;
               return (
                 <li key={c.id}
-                  className="flex items-center gap-3 py-2.5 px-2 rounded-lg active:opacity-70"
+                  className="flex items-center gap-3 py-3 px-2 rounded-lg active:opacity-70"
                   onClick={() => openDialer(phone ?? undefined)}>
-                  <span className="w-8 h-8 rounded-full flex items-center justify-center"
+                  <span className="w-9 h-9 rounded-full flex items-center justify-center shrink-0"
                     style={{ background: "#F0F4F9", color }}>
-                    <Icon className="w-3.5 h-3.5" />
+                    <Icon className="w-4 h-4" />
                   </span>
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium truncate flex items-center gap-1.5" style={{ color: "var(--pp-text-primary)" }}>
+                    <p className="text-base font-bold leading-5 truncate flex items-center gap-1.5" style={{ color: "var(--pp-text-primary)" }}>
                       {name}
                       {c.ai_summary && (
                         <span className="text-[8px] px-1.5 py-0.5 rounded-full font-bold"
@@ -740,8 +763,8 @@ export default function MHome() {
                         </span>
                       )}
                     </p>
-                    <p className="text-[11px] truncate" style={{ color: "var(--pp-text-muted)" }}>
-                      {[party.name ? party.formattedPhone : null, c.started_at ? new Date(c.started_at).toLocaleTimeString(lang === "en" ? "en-CA" : "fr-CA", { hour: "2-digit", minute: "2-digit" }) : null].filter(Boolean).join(" · ")}
+                    <p className="text-[13px] font-medium leading-5 truncate" style={{ color: "var(--pp-text-secondary)" }}>
+                      {[party.formattedPhone, c.started_at ? new Date(c.started_at).toLocaleTimeString(lang === "en" ? "en-CA" : "fr-CA", { hour: "2-digit", minute: "2-digit" }) : null].filter(Boolean).join(" · ")}
                     </p>
                   </div>
                 </li>

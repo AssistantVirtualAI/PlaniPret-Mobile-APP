@@ -195,11 +195,12 @@ Deno.serve(async (req) => {
         .eq("user_id", userId)
         .maybeSingle();
       if (me?.organization_id) {
+        const extensionCandidate = normalized.replace(/^\+1/, "").replace(/[MWX]$/i, "");
         const { data } = await admin
           .from("planipret_profiles")
-          .select("full_name, email, avatar_url, extension")
+          .select("full_name, email, avatar_url, extension, ns_extension")
           .eq("organization_id", me.organization_id)
-          .or(`phone.eq.${normalized},extension.eq.${normalized.replace(/^\+1/, "")}`)
+          .or(`phone.eq.${normalized},extension.eq.${extensionCandidate},ns_extension.eq.${extensionCandidate}`)
           .limit(1)
           .maybeSingle();
         if (data) {

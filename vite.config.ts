@@ -19,9 +19,9 @@ function readCapacitorVersion(): string {
 
 const capacitorVersion = readCapacitorVersion();
 const mobilePackage = JSON.parse(fs.readFileSync(path.resolve(__dirname, 'package.json'), 'utf8'));
-
-// L'updater OTA n'est présent que dans les builds natifs. Quand le paquet
-// n'est pas installé, on l'alias vers un stub pour ne pas casser le build web.
+// The OTA plugin exists only in native builds. Keep a compile-time shim for
+// CI, portal previews and fresh worktrees before the mobile dependencies are
+// installed; the runtime updater already fails safely when no plugin exists.
 const hasCapgoUpdater = fs.existsSync(
   path.resolve(__dirname, 'node_modules/@capgo/capacitor-updater/package.json'),
 );

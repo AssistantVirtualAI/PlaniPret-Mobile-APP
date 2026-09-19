@@ -38,6 +38,16 @@ describe("normalizeNsEvents", () => {
     expect(ev.data.extension).toBe("207");
   });
 
+  it("strips the mobile device suffix from an active internal call", () => {
+    const [ev] = normalizeNsEvents([{
+      orig_callid: "mobile-leg",
+      "call-orig-user": "111M@planipret.ca",
+      "call-term-user": "sip:1037M@planipret.ca",
+    }]);
+    expect(ev.type).toBe("call.inbound");
+    expect(ev.data.extension).toBe("1037");
+  });
+
   it("classifies a completed CDR before its call-leg fields", () => {
     const [ev] = normalizeNsEvents([{
       "cdr-id": "cdr-1",

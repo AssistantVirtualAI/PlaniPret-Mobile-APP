@@ -51,9 +51,62 @@ export async function lookupCaller(phone: string | null | undefined): Promise<st
   return promise;
 }
 
+/** NANP normalization shared with the backend lookup (+1XXXXXXXXXX). */
+export function normalizeLookupPhone(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const digits = String(raw).replace(/\D/g, "");
+  if (!digits) return null;
+  if (digits.length <= 6) return null; // internal extension: resolved server-side
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  if (digits.length >= 8 && digits.length <= 15) return `+${digits}`;
+  return null;
+}
+
+/**
+ * Batch-resolves display numbers against the broker's own contacts in a single
+ * query. This is the fast path: it avoids one edge call per row on mobile
+ * networks, where individual invocations often fail and leave bare numbers.
+ */
+async function batchLookupContacts(phones: string[]): Promise<Record<string, string>> {
+  const byNormalized = new Map<string, string[]>();
+  for (const p of phones) {
+    const n = normalizeLookupPhone(p);
+    if (!n) continue;
+    const list = byNormalized.get(n) ?? [];
+    list.push(p);
+    byNormalized.set(n, list);
+  }
+  if (byNormalized.size === 0) return {};
+  try {
+    const { data, error } = await supabase
+      .from("planipret_contacts")
+      .select("full_name, phone_normalized")
+      .in("phone_normalized", Array.from(byNormalized.keys()))
+      .limit(500);
+    if (error || !data) return {};
+    const out: Record<string, string> = {};
+    for (const row of data as Array<{ full_name: string | null; phone_normalized: string | null }>) {
+      const name = (row.full_name ?? "").trim();
+      const normalized = row.phone_normalized ?? "";
+      if (!name || !normalized) continue;
+      for (const original of byNormalized.get(normalized) ?? []) {
+        if (out[original]) continue;
+        out[original] = name;
+        cache.set(original, name);
+        negative.delete(original);
+      }
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 /**
  * Hook: returns a { [phone]: name } map that fills in progressively.
- * Each newly displayed number is resolved once; there is no background polling.
+ * Contacts are resolved in one batched query first, then anything still
+ * unknown (colleagues, Maestro, Microsoft) falls back to the edge lookup.
  */
 export function useCallerNames(
   phones: (string | null | undefined)[],
@@ -82,7 +135,16 @@ export function useCallerNames(
       });
     };
 
-    uniq.forEach(tryLookup);
+    const pending = uniq.filter((p) => !cache.has(p));
+    if (pending.length === 0) return () => { aliveRef.current = false; };
+
+    batchLookupContacts(pending).then((resolved) => {
+      if (!aliveRef.current) return;
+      if (Object.keys(resolved).length) {
+        setNames((prev) => ({ ...prev, ...resolved }));
+      }
+      pending.filter((p) => !resolved[p]).forEach(tryLookup);
+    });
 
     return () => { aliveRef.current = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps

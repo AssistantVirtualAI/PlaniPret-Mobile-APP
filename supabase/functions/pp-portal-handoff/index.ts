@@ -46,7 +46,11 @@ Deno.serve(async (req) => {
 
     // Destination demandée (optionnelle) — toujours restreinte au portail.
     const body = await req.json().catch(() => ({}));
-    const home = isAdmin ? "/planipret/admin/overview" : "/planipret/broker/overview";
+    // Depuis l'app courtier, la destination par défaut reste toujours le portail
+    // courtier. Un administrateur peut demander explicitement une page admin,
+    // mais son rôle ne doit jamais le détourner automatiquement vers le tableau
+    // admin mobile (dont l'écran d'avertissement causait la page blanche signalée).
+    const home = "/planipret/broker/overview";
     let target = typeof body?.path === "string" ? body.path : home;
     if (!/^\/planipret\/(admin|broker)\//.test(target)) target = home;
 
@@ -77,7 +81,7 @@ Deno.serve(async (req) => {
 
     return json({
       ok: true,
-      portal: isAdmin ? "admin" : "broker",
+      portal: target.startsWith("/planipret/admin/") && isAdmin ? "admin" : "broker",
       email: user.email,
       // Capacitor's iOS in-app browser can discard URL fragments while opening
       // an external origin. Query parameters survive that handoff reliably;

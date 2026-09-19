@@ -29,6 +29,7 @@ import { Ms365ConnectionNotice } from "@/components/planipret/mobile/Ms365Connec
 import { useMs365Status } from "@/hooks/useMs365Status";
 import { canSendWithSmsAvailability, getSmsAvailability, type SmsAvailability } from "@/lib/planipret/smsAvailability";
 import { getSmsSubmission, type SmsSubmission } from "@/lib/planipret/smsSendGuard";
+import { emailBodyCache } from "@/lib/planipret/persistentMediaCache";
 
 import DOMPurify from "dompurify";
 
@@ -1248,6 +1249,46 @@ export function EmailsList({ profile, initialTo, initialName }: { profile: any; 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasMore, loadingMore, emails?.length]);
 
+  // Préchargement du contenu complet des courriels récents, comme pour les
+  // enregistrements d'appels : ouverture instantanée et lecture hors ligne.
+  // Un seul téléchargement à la fois pour ne pas saturer le réseau mobile.
+  const bodyPrefetchDoneRef = useRef<Set<string>>(new Set());
+  const bodyCacheKey = (id: string) => cacheIdentity && id ? `${cacheIdentity}:${id}` : "";
+  useEffect(() => {
+    // A device can legitimately change broker accounts. Never reuse the
+    // prefetch markers from the preceding identity in that case.
+    bodyPrefetchDoneRef.current.clear();
+  }, [cacheIdentity]);
+  useEffect(() => {
+    if (!emails || emails.length === 0) return;
+    const queue = emails
+      .slice(0, 20)
+      .map((e: any) => {
+        const id = String(e?.id ?? "");
+        return { id, key: bodyCacheKey(id) };
+      })
+      .filter(({ id, key }) => id && key && !bodyPrefetchDoneRef.current.has(key) && !emailBodyCache.has(key));
+    if (!queue.length) return;
+    let cancelled = false;
+    (async () => {
+      for (const { id, key } of queue) {
+        if (cancelled) return;
+        bodyPrefetchDoneRef.current.add(key);
+        try {
+          const { data } = await supabase.functions.invoke("ms365-actions", {
+            body: { action: "read_email_detail", payload: { message_id: id } },
+          });
+          if ((data as any)?.success) emailBodyCache.set(key, (data as any).email);
+          else bodyPrefetchDoneRef.current.delete(key);
+        } catch {
+          bodyPrefetchDoneRef.current.delete(key);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [emails]);
+
+
   return (
     <div className="relative flex flex-col overflow-y-auto p-3" style={{ height: "calc(100dvh - 242px)", minHeight: 400 }}>
       <div className="flex items-center justify-between mb-2">
@@ -1302,7 +1343,7 @@ export function EmailsList({ profile, initialTo, initialName }: { profile: any; 
         <EmptyState Icon={Mail} title={t("messages.emptyInbox")} sub={t("messages.noRecentEmail")} />
       ) : (
         <>
-          <ul className="space-y-1.5">
+          <ul className="space-y-2">
             {emails!.map((e: any, i: number) => {
               const from = e.from?.emailAddress?.name ?? e.from?.emailAddress?.address ?? t("messages.sender");
               const subject = e.subject ?? t("messages.noSubject");
@@ -1314,25 +1355,26 @@ export function EmailsList({ profile, initialTo, initialName }: { profile: any; 
                 <li key={e.id ?? i}>
                   <button
                     onClick={() => setActive(e)}
-                    className="w-full text-left rounded-2xl p-3 active:opacity-80"
+                    className="w-full text-left rounded-xl px-3.5 py-3.5 active:opacity-80"
                     style={{
                       background: "var(--pp-bg-surface)",
                       border: "1px solid var(--pp-bg-border-2)",
                       borderLeft: unread ? "3px solid var(--pp-brand-accent)" : "1px solid var(--pp-bg-border-2)",
                     }}
                   >
-                    <div className="flex items-start justify-between gap-2 mb-1">
-                      <p className="font-semibold text-sm truncate flex items-center gap-1.5" style={{ color: "var(--pp-text-primary)" }}>
+                    <div className="flex items-start justify-between gap-3 mb-1.5">
+                      <p className={`${unread ? "font-extrabold" : "font-bold"} text-base leading-5 truncate flex items-center gap-1.5`} style={{ color: "var(--pp-text-primary)" }}>
+                        {unread && <span className="w-2 h-2 rounded-full shrink-0" style={{ background: "var(--pp-brand-accent)" }} aria-label="Non lu" />}
                         {from}
                         {e.hasAttachments && <Paperclip className="w-3 h-3" style={{ color: "var(--pp-text-muted)" }} />}
                         {flagged && <Flag className="w-3 h-3" style={{ color: "#f59e0b", fill: "#f59e0b" }} />}
                       </p>
-                      <span className="text-[10px] shrink-0" style={{ color: "var(--pp-text-faint)" }}>
+                      <span className="text-xs font-semibold shrink-0" style={{ color: "var(--pp-text-primary)" }}>
                         {received ? fmtTime(received, lang, t) : ""}
                       </span>
                     </div>
-                    <p className="text-xs truncate mb-1" style={{ color: "var(--pp-text-secondary)" }}>{subject}</p>
-                    <p className="text-[11px] line-clamp-2" style={{ color: "var(--pp-text-muted)" }}>{preview}</p>
+                    <p className={`${unread ? "font-bold" : "font-semibold"} text-sm leading-5 truncate mb-1`} style={{ color: "var(--pp-text-primary)" }}>{subject}</p>
+                    <p className="text-[13px] font-medium leading-5 line-clamp-2" style={{ color: "var(--pp-text-secondary)" }}>{preview}</p>
                   </button>
                 </li>
               );
@@ -1368,6 +1410,7 @@ export function EmailsList({ profile, initialTo, initialName }: { profile: any; 
       {active && createPortal(
         <EmailDetailSheet
           email={active}
+          cacheIdentity={cacheIdentity}
           onClose={() => setActive(null)}
           onCompose={(init) => { setActive(null); setComposeInit(init); setComposeOpen(true); }}
           onChanged={() => load()}
@@ -1397,8 +1440,9 @@ type ComposeInit = {
   body?: string;
 };
 
-function EmailDetailSheet({ email, onClose, onCompose, onChanged, onOptimisticRemove }: {
+function EmailDetailSheet({ email, cacheIdentity, onClose, onCompose, onChanged, onOptimisticRemove }: {
   email: any;
+  cacheIdentity: string;
   onClose: () => void;
   onCompose: (init: ComposeInit) => void;
   onChanged: () => void;
@@ -1406,7 +1450,13 @@ function EmailDetailSheet({ email, onClose, onCompose, onChanged, onOptimisticRe
 }) {
   const { t } = useMplanipretLang();
   const safeArea = useSafeAreaInsets();
-  const [detail, setDetail] = useState<any | null>(null);
+  const bodyCacheKey = (id: string) => cacheIdentity && id ? `${cacheIdentity}:${id}` : "";
+  // Corps déjà téléchargé (préchargement ou lecture antérieure) : affichage
+  // instantané, y compris après un redémarrage de l'app.
+  const [detail, setDetail] = useState<any | null>(() => {
+    const key = bodyCacheKey(String(email?.id ?? ""));
+    return key ? emailBodyCache.get(key) : null;
+  });
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [sumOpen, setSumOpen] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
@@ -1424,19 +1474,28 @@ function EmailDetailSheet({ email, onClose, onCompose, onChanged, onOptimisticRe
   const toList = Array.isArray(merged.toRecipients) ? merged.toRecipients : [];
   const ccList = Array.isArray(merged.ccRecipients) ? merged.ccRecipients : [];
   const bodyHtml: string = merged?.body?.content ?? "";
-  const bodyType: string = merged?.body?.contentType ?? "text";
+  const bodyType: string = String(merged?.body?.contentType ?? "text").toLowerCase();
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       if (!email?.id) return;
-      setLoadingDetail(true);
+      const key = bodyCacheKey(String(email.id));
+      const cached = key ? emailBodyCache.get(key) : null;
+      if (cached && !cancelled) {
+        setDetail(cached);
+        setFlagged(cached?.flag?.flagStatus === "flagged");
+      }
+      setLoadingDetail(!cached);
       const { data } = await supabase.functions.invoke("ms365-actions", {
         body: { action: "read_email_detail", payload: { message_id: email.id } },
       });
-      if (!cancelled && (data as any)?.success) {
-        setDetail((data as any).email);
-        setFlagged((data as any).email?.flag?.flagStatus === "flagged");
+      if ((data as any)?.success) {
+        if (key) emailBodyCache.set(key, (data as any).email);
+        if (!cancelled) {
+          setDetail((data as any).email);
+          setFlagged((data as any).email?.flag?.flagStatus === "flagged");
+        }
       }
       if (!cancelled) setLoadingDetail(false);
       // Mark as read on open (fire-and-forget). Also mutate the incoming
@@ -1595,18 +1654,18 @@ function EmailDetailSheet({ email, onClose, onCompose, onChanged, onOptimisticRe
           className="flex-1 overflow-y-auto px-4 py-3 space-y-3"
           style={{ WebkitOverflowScrolling: "touch", minHeight: 0, overflowX: "hidden", maxWidth: "100vw" }}
         >
-          <div>
-            <p className="text-base font-semibold" style={{ color: "var(--pp-text-primary)" }}>{subject}</p>
-            <p className="text-xs mt-1" style={{ color: "var(--pp-text-muted)" }}>
+          <div className="rounded-xl p-3.5" style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)" }}>
+            <p className="text-xl leading-7 font-extrabold" style={{ color: "var(--pp-text-primary)" }}>{subject}</p>
+            <p className="text-sm font-semibold leading-5 mt-2" style={{ color: "var(--pp-text-primary)" }}>
               {t("messages.from")} <span style={{ color: "var(--pp-text-secondary)" }}>{from}</span> {fromAddr && `<${fromAddr}>`}
             </p>
             {toList.length > 0 && (
-              <p className="text-xs mt-0.5" style={{ color: "var(--pp-text-muted)" }}>
+               <p className="text-[13px] font-medium leading-5 mt-1" style={{ color: "var(--pp-text-primary)" }}>
                 À: {toList.map((r: any) => r?.emailAddress?.address).filter(Boolean).join(", ")}
               </p>
             )}
             {ccList.length > 0 && (
-              <p className="text-xs mt-0.5" style={{ color: "var(--pp-text-muted)" }}>
+               <p className="text-[13px] font-medium leading-5 mt-1" style={{ color: "var(--pp-text-primary)" }}>
                 Cc: {ccList.map((r: any) => r?.emailAddress?.address).filter(Boolean).join(", ")}
               </p>
             )}
@@ -1625,15 +1684,15 @@ function EmailDetailSheet({ email, onClose, onCompose, onChanged, onOptimisticRe
           {analysis && (<AvaProposedActionsCard analysis={analysis} onDismiss={() => setAnalysis(null)} />)}
 
           <div
-            className="rounded-xl p-3 text-sm"
-            style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
+            className="rounded-xl overflow-hidden text-base font-medium leading-7"
+            style={{ background: "var(--pp-email-paper)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
           >
             {loadingDetail && !detail ? (
               <div className="text-center py-6"><Loader2 className="w-4 h-4 animate-spin mx-auto" /></div>
             ) : bodyType === "html" && bodyHtml ? (
               <EmailBodyFrame html={bodyHtml} />
             ) : (
-              <div className="whitespace-pre-wrap break-words">{bodyHtml || merged.bodyPreview || t("messages.previewUnavailable")}</div>
+              <div className="whitespace-pre-wrap break-words p-4">{bodyHtml || merged.bodyPreview || t("messages.previewUnavailable")}</div>
             )}
 
           </div>
