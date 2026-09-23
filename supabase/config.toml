@@ -213,6 +213,9 @@ verify_jwt = false
 [functions.maestro-oauth-state-info]
 verify_jwt = false
 
+[functions.maestro-oauth-callback]
+verify_jwt = true
+
 [functions.pp-maestro-scribe]
 verify_jwt = true
 

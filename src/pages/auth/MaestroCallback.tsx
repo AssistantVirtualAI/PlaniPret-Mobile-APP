@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 
@@ -20,32 +20,31 @@ function getMaestroRedirectUri(): string {
   if (origin.startsWith("capacitor://") || origin.startsWith("ionic://")) {
     return "planipret://auth/maestro/callback";
   }
-  // Vérifier aussi via le localStorage — startAuth y stocke la valeur exacte
-  try {
-    const stored = localStorage.getItem("pp_maestro_callback_url");
-    if (stored) {
-      const u = new URL(stored);
-      if (u.protocol === "planipret:") return "planipret://auth/maestro/callback";
-    }
-  } catch { /* ignore */ }
   return `${origin}/auth/maestro/callback`;
 }
 
 export default function MaestroCallback() {
   const [params] = useSearchParams();
+  const ran = useRef(false);
   const [status, setStatus] = useState<"loading" | "ok" | "error">("loading");
   const [message, setMessage] = useState<string>("Traitement de l'autorisation Maestro…");
-  const [details, setDetails] = useState<Record<string, string>>({});
 
   useEffect(() => {
+    if (ran.current) return;
+    ran.current = true;
     const code = params.get("code");
     const state = params.get("state");
     const error = params.get("error");
-    const errorDesc = params.get("error_description");
+    // OAuth parameters are one-time credentials. Remove them immediately from
+    // history and local storage after React has read the initial route.
+    try {
+      localStorage.removeItem("pp_maestro_callback_url");
+      window.history.replaceState({}, "", window.location.pathname);
+    } catch { /* ignore */ }
 
     if (error) {
       setStatus("error");
-      setMessage(errorDesc || error);
+      setMessage("L’autorisation Maestro a été annulée ou refusée. Réessayez lorsque vous êtes prêt.");
       return;
     }
     if (!code) {
@@ -55,7 +54,6 @@ export default function MaestroCallback() {
     }
 
     const redirectUri = getMaestroRedirectUri();
-    setDetails({ code: code.slice(0, 12) + "…", state: state ?? "—", redirect_uri: redirectUri });
 
     (async () => {
       try {
@@ -64,7 +62,7 @@ export default function MaestroCallback() {
         });
         if (fnErr || !(data as any)?.success) {
           setStatus("error");
-          setMessage((data as any)?.error ?? fnErr?.message ?? "Échec de l'échange du code.");
+          setMessage("La connexion Maestro n’a pas pu être confirmée. Réessayez sans fermer l’application.");
           return;
         }
         // Signaler aux composants qui écoutent (MaestroConnectCard) que la connexion est faite
@@ -74,12 +72,10 @@ export default function MaestroCallback() {
         setMessage("Compte Maestro connecté avec succès. Vous pouvez fermer cet onglet.");
       } catch (e: any) {
         setStatus("error");
-        setMessage(e?.message ?? "Erreur inconnue");
+        setMessage("La connexion Maestro n’a pas pu être confirmée. Réessayez sans fermer l’application.");
       }
     })();
   }, [params]);
-
-  const displayUri = getMaestroRedirectUri();
 
   return (
     <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0b1220", color: "#e5e7eb", padding: 24 }}>
@@ -98,14 +94,6 @@ export default function MaestroCallback() {
           </div>
         </div>
         <p style={{ fontSize: 14, lineHeight: 1.5, opacity: 0.9 }}>{message}</p>
-        {Object.keys(details).length > 0 && (
-          <pre style={{ marginTop: 16, padding: 12, background: "#0b1220", border: "1px solid #1f2a44", borderRadius: 8, fontSize: 11, overflow: "auto" }}>
-            {JSON.stringify(details, null, 2)}
-          </pre>
-        )}
-        <div style={{ marginTop: 20, fontSize: 11, opacity: 0.5 }}>
-          Callback: <code>{displayUri}</code>
-        </div>
       </div>
     </div>
   );

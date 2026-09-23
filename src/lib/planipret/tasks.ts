@@ -66,10 +66,20 @@ export async function taskHistory(task_id: string): Promise<TaskHistoryEvent[]> 
 export async function listTasks(opts: ListTaskOptions = {}): Promise<TaskListResult> {
   const { broker_id, ...rest } = opts;
   const d = await invoke({ action: "list", ...rest, ...(broker_id ? { broker_id } : {}) });
-  const tasks = Array.isArray(d?.tasks) ? d.tasks : [];
+  const source = (d?.source ?? "unavailable") as TaskSource;
+  // The list source is the only client-side evidence that this representation
+  // was read back from the documented Maestro endpoint. Projections and caches
+  // remain usable offline but must never gain a confirmed lifecycle badge.
+  const tasks = Array.isArray(d?.tasks)
+    ? d.tasks.map((task: NormalizedTask) => ({
+        ...task,
+        maestro_read_back: source === "api",
+        raw: { ...(task?.raw ?? {}), maestro_read_back: source === "api" },
+      }))
+    : [];
   return {
     success: !!d?.success,
-    source: (d?.source ?? "unavailable") as TaskSource,
+    source,
     tasks,
     buckets: d?.buckets ?? { overdue: [], today: [], upcoming: [] },
     overdue_count: d?.overdue_count ?? 0,

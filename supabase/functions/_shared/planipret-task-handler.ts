@@ -23,6 +23,7 @@ import {
   readAssignment,
   paginate,
   taskCounts,
+  toApiDateTime,
   type NormalizedTask,
 } from "./planipret-tasks.ts";
 
@@ -166,6 +167,31 @@ async function projectionUpsert(admin: any, userId: string, tasks: any[]) {
     updated_at: new Date().toISOString(),
   }));
   if (rows.length) await admin.from("planipret_tasks_projection").upsert(rows, { onConflict: "user_id,task_id" });
+}
+
+/** Compare a documented GET read-back to the actual PUT fields. */
+function updateReadBackMatches(task: NormalizedTask, payload: Record<string, unknown>) {
+  const raw = task.raw ?? {};
+  const issues: string[] = [];
+  if (payload.notes !== undefined && String(task.notes ?? "") !== String(payload.notes ?? "")) issues.push("notes_mismatch");
+  if (payload.description !== undefined && String(task.description ?? "") !== String(payload.description ?? "")) issues.push("description_mismatch");
+  if (payload.date !== undefined) {
+    const actual = toApiDateTime(task.due_at ?? "");
+    if (!actual || actual !== String(payload.date)) issues.push("date_mismatch");
+  }
+  if (payload.users_id !== undefined) {
+    const assignment = readAssignment(raw);
+    if (!assignment.ids.includes(String(payload.users_id))) issues.push("assignment_mismatch");
+  }
+  if (payload.status_option_id !== undefined
+    && String(raw?.status_option_id ?? "") !== String(payload.status_option_id)) {
+    issues.push("status_option_mismatch");
+  }
+  // `update_status` is documented only in conjunction with the selected
+  // `status_option_id`; Maestro does not document a textual "completed"
+  // value or a global completion-option id. Never guess one.
+  if (payload.update_status === 1 && payload.status_option_id === undefined) issues.push("status_unverifiable");
+  return { ok: issues.length === 0, issues };
 }
 
 async function loadProjection(admin: any, userId: string) {
@@ -570,16 +596,27 @@ export async function handleTaskRequest(
     // A broker can carry two numeric identities (directory/telecom id and CRM
     // OAuth id). Listing with the wrong one returns an empty page even though
     // Maestro holds tasks, so try every known id until one answers.
+    // A task created from Contacts is assigned with the INTERNAL Maestro
+    // directory id (`resolveTaskAssigneeId`). Listing without that id queries a
+    // different namespace, so a freshly created task is reported as created but
+    // never shows up in the task list. Always include it here.
+    const internalAssigneeId = overrideBroker
+      ? null
+      : await withDeadline(
+          Promise.resolve(deps.resolveTaskAssigneeId?.()).catch(() => null),
+          5000,
+          null,
+        );
     const ownerCandidates = [...new Set(
       (overrideBroker
         ? [overrideBroker]
-        : [telecomId, maestroId, profile?.maestro_telecom_user_id, profile?.maestro_broker_id])
+        : [internalAssigneeId, telecomId, maestroId, profile?.maestro_telecom_user_id, profile?.maestro_broker_id])
         .map((v) => String(v ?? "").trim())
         .filter(Boolean),
     )];
     const assigneeIds = overrideBroker
       ? [maestroId, telecomId]
-      : [maestroId, telecomId, profile?.maestro_telecom_user_id, profile?.maestro_broker_id];
+      : [internalAssigneeId, maestroId, telecomId, profile?.maestro_telecom_user_id, profile?.maestro_broker_id];
 
     let upstream: UpstreamList = { ok: false, tasks: [], endpoint: null, status: 0 };
     let all: any[] = [];
@@ -1186,12 +1223,63 @@ export async function handleTaskRequest(
         await audit(admin, { action: "task_update_failed", user_id: userId, task_id: taskId, source, session_id: sessionId, status: res.status, correlation_id, result: "error" });
         return { status: 200, body: { ...mapTaskApiError(res.status, res.data), correlation_id } };
       }
-      const { data: row } = await admin.from("planipret_tasks_projection")
-        .select("payload").eq("user_id", userId).eq("task_id", taskId).maybeSingle();
-      const merged = normalizeTask({ ...(row?.payload ?? { id: taskId }), ...(res.data?.data ?? res.data ?? {}), ...built.payload, id: taskId });
-      await projectionUpsert(admin, userId, [merged]);
-      await audit(admin, { action: "task_updated", user_id: userId, task_id: taskId, source, session_id: sessionId, status: res.status, correlation_id, result: "ok" });
-      return { status: 200, body: { success: true, task: merged, task_id: taskId, correlation_id } };
+      const expectedAssignee = built.payload.users_id !== undefined ? String(built.payload.users_id) : null;
+      const listAssigneeId = expectedAssignee || await withDeadline(
+        Promise.resolve(deps.resolveTaskAssigneeId?.()).catch(() => null),
+        5000,
+        null,
+      );
+      let readBack: NormalizedTask | null = null;
+      let readBackEndpoint: string | null = null;
+      let readBackComplete = false;
+      if (listAssigneeId) {
+        try {
+          const upstream = await deps.listFetch(String(listAssigneeId), {
+            status: null, type: null, from: null, to: null, findTaskId: taskId,
+          });
+          readBackComplete = upstream.complete === true;
+          if (upstream.ok) {
+            const found = (upstream.tasks ?? []).map((item: any) => normalizeTask(item))
+              .find((item: NormalizedTask) => String(item.id) === taskId);
+            if (found) {
+              readBack = found;
+              readBackEndpoint = upstream.endpoint;
+            }
+          }
+        } catch { /* an accepted PUT is still not confirmed without a GET read-back */ }
+      }
+      const comparison = readBack ? updateReadBackMatches(readBack, built.payload) : { ok: false, issues: ["maestro_readback_unconfirmed"] };
+      if (!readBack || !comparison.ok) {
+        await audit(admin, {
+          action: "task_update_pending_confirmation", user_id: userId, task_id: taskId, source, session_id: sessionId,
+          status: res.status, correlation_id, result: readBack ? "readback_mismatch" : "pending_confirmation",
+        });
+        return {
+          status: 200,
+          body: {
+            success: false,
+            pending_confirmation: true,
+            error: readBack ? "maestro_update_readback_mismatch" : "maestro_readback_unconfirmed",
+            task: null,
+            task_id: taskId,
+            read_back: false,
+            visible_in_maestro: false,
+            endpoint: readBackEndpoint,
+            message: readBack
+              ? "Maestro affiche la tâche, mais les modifications demandées ne sont pas encore confirmées."
+              : "Maestro a accepté la demande, mais la modification n’est pas encore relue dans sa liste.",
+            diagnostics: { issues: comparison.issues, list_complete: readBackComplete, expected_assignee: expectedAssignee },
+            correlation_id,
+          },
+        };
+      }
+      const confirmed = { ...readBack, maestro_read_back: true, raw: { ...(readBack.raw ?? {}), maestro_read_back: true } };
+      await projectionUpsert(admin, userId, [confirmed]);
+      await audit(admin, { action: "task_updated", user_id: userId, task_id: taskId, source, session_id: sessionId, status: res.status, correlation_id, result: "confirmed" });
+      return {
+        status: 200,
+        body: { success: true, task: confirmed, task_id: taskId, read_back: true, visible_in_maestro: true, endpoint: readBackEndpoint, correlation_id },
+      };
     });
     return { status: 200, body: out.body };
   }
@@ -1215,11 +1303,47 @@ export async function handleTaskRequest(
         await audit(admin, { action: "task_delete_failed", user_id: userId, task_id: taskId, source, session_id: sessionId, status: res.status, correlation_id, result: "error" });
         return { status: 200, body: { ...mapTaskApiError(res.status, res.data), correlation_id } };
       }
+      const assigneeId = await withDeadline(
+        Promise.resolve(deps.resolveTaskAssigneeId?.()).catch(() => null),
+        5000,
+        null,
+      );
+      let deletedReadBack = false;
+      let readBackEndpoint: string | null = null;
+      if (assigneeId) {
+        try {
+          const upstream = await deps.listFetch(String(assigneeId), {
+            status: null, type: null, from: null, to: null, findTaskId: taskId,
+          });
+          readBackEndpoint = upstream.endpoint;
+          const stillPresent = (upstream.tasks ?? []).some((item: any) => String(normalizeTask(item).id) === taskId);
+          // Absence proves a deletion only after the bounded, documented list
+          // completed every candidate/status page.
+          deletedReadBack = upstream.ok && upstream.complete === true && !stillPresent;
+        } catch { /* DELETE acceptance alone is not confirmation */ }
+      }
+      if (!deletedReadBack) {
+        await audit(admin, { action: "task_delete_pending_confirmation", user_id: userId, task_id: taskId, source, session_id: sessionId, status: res.status, correlation_id, result: "pending_confirmation" });
+        return {
+          status: 200,
+          body: {
+            success: false,
+            pending_confirmation: true,
+            error: "maestro_delete_readback_unconfirmed",
+            task_id: taskId,
+            deleted: false,
+            read_back: false,
+            endpoint: readBackEndpoint,
+            message: "Maestro a accepté la suppression, mais son absence n’est pas encore confirmée par relecture.",
+            correlation_id,
+          },
+        };
+      }
       await admin.from("planipret_tasks_projection")
         .update({ deleted_at: new Date().toISOString() })
         .eq("user_id", userId).eq("task_id", taskId);
-      await audit(admin, { action: "task_deleted", user_id: userId, task_id: taskId, source, session_id: sessionId, status: res.status, correlation_id, result: "ok" });
-      return { status: 200, body: { success: true, task_id: taskId, deleted: true, correlation_id } };
+      await audit(admin, { action: "task_deleted", user_id: userId, task_id: taskId, source, session_id: sessionId, status: res.status, correlation_id, result: "confirmed" });
+      return { status: 200, body: { success: true, task_id: taskId, deleted: true, read_back: true, correlation_id } };
     });
     return { status: 200, body: out.body };
   }

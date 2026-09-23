@@ -11,7 +11,7 @@ import { Browser } from "@capacitor/browser";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { Loader2 } from "lucide-react";
-import { logDeepLink, markOAuthCallbackCompleted } from "@/lib/deepLinkDebug";
+import { logDeepLink } from "@/lib/deepLinkDebug";
 
 // Module-level dedupe: the OS may deliver the same deep link via BOTH
 // getLaunchUrl() (cold start) and appUrlOpen, which remounts this route
@@ -50,23 +50,20 @@ export default function MaestroCallback() {
     if (ran.current) return;
     ran.current = true;
 
-    const storedUrl = (() => {
-      try { return localStorage.getItem("pp_maestro_callback_url"); } catch { return null; }
-    })();
-    const storedParams = (() => {
-      if (!storedUrl) return null;
-      try { return new URL(storedUrl).searchParams; } catch { return null; }
-    })();
-
-    const code = searchParams.get("code") ?? storedParams?.get("code") ?? null;
-    const state = searchParams.get("state") ?? storedParams?.get("state") ?? null;
-    const error = searchParams.get("error") ?? storedParams?.get("error") ?? null;
+    const code = searchParams.get("code");
+    const state = searchParams.get("state");
+    const error = searchParams.get("error");
+    // The callback query carries one-time credentials. It must never survive
+    // in localStorage or in the WebView history after this initial read.
+    try {
+      localStorage.removeItem("pp_maestro_callback_url");
+      window.history.replaceState({}, "", window.location.pathname);
+    } catch { /* storage/history unavailable */ }
 
     logDeepLink({
       kind: "handler",
       source: "MaestroCallback",
-      url: window.location.href,
-      detail: `code=${code ? code.slice(0, 8) + "…" : "null"} state=${state ?? "null"} error=${error ?? "none"}`,
+      detail: error ? "oauth callback denied" : "oauth callback received",
     });
 
     if (Capacitor.isNativePlatform() && document.visibilityState === "hidden") {
@@ -80,8 +77,8 @@ export default function MaestroCallback() {
     }
 
     if (error) {
-      setMessage(`Maestro: ${error}`);
-      toast.error(`Maestro: ${error}`);
+      setMessage("Autorisation Maestro annulée ou refusée.");
+      toast.error("Autorisation Maestro annulée ou refusée.");
       goBackToApp(1200);
       return;
     }
@@ -119,22 +116,18 @@ export default function MaestroCallback() {
         const { data, error: fnErr } = await Promise.race([callbackPromise, timeoutPromise]);
 
         if (fnErr) throw fnErr;
-        if (!(data as any)?.success) throw new Error((data as any)?.error || "token_exchange_failed");
+        if (!(data as any)?.success) throw new Error("token_exchange_failed");
 
         completedCodes.add(code);
         logDeepLink({ kind: "handler", source: "MaestroCallback", detail: "token exchange OK" });
-        markOAuthCallbackCompleted("maestro", storedUrl ?? window.location.href ?? window.location.search);
-        try { localStorage.removeItem("pp_maestro_callback_url"); } catch {}
         try { localStorage.setItem("pp_maestro_just_connected", String(Date.now())); } catch {}
         try { window.dispatchEvent(new CustomEvent("maestro:connected")); } catch {}
         setMessage("Maestro connecté. Retour à l’accueil…");
         toast.success("Maestro connecté avec succès !");
       } catch (e: any) {
-        logDeepLink({ kind: "error", source: "MaestroCallback", detail: e?.message || "exchange failed" });
-        markOAuthCallbackCompleted("maestro", storedUrl ?? window.location.href ?? window.location.search);
-        try { localStorage.removeItem("pp_maestro_callback_url"); } catch {}
+        logDeepLink({ kind: "error", source: "MaestroCallback", detail: "exchange failed" });
         setMessage("Connexion Maestro interrompue. Retour à l’accueil…");
-        toast.error(`Maestro: ${e?.message || "Erreur de connexion"}`);
+        toast.error("Connexion Maestro interrompue. Réessayez sans fermer l’application.");
       } finally {
         inflightCodes.delete(code);
         goBackToApp(900);

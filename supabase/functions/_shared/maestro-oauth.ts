@@ -203,7 +203,8 @@ export async function getUserMaestroAccessToken(
 
   const expAt = Date.parse(rawExp);
   if (!Number.isFinite(expAt)) return prof.maestro_broker_token as string;
-  const stillFresh = expAt - Date.now() > 60_000;
+  // Refresh proactively 10 min before expiry to avoid mid-session drops.
+  const stillFresh = expAt - Date.now() > 10 * 60_000;
   if (stillFresh) return prof.maestro_broker_token as string;
 
   // Never return a token that is known to be expired. Doing so made callers
@@ -216,11 +217,18 @@ export async function getUserMaestroAccessToken(
   const refreshed = await refreshAccessToken(env, prof.maestro_refresh_token as string, isMobile);
   if (!refreshed.ok || !refreshed.data) {
     console.warn("[maestro-oauth] refresh failed", refreshed.status, refreshed.error);
-    await updateProfileByEitherKey(admin, userId, {
-      maestro_connected: false,
-      maestro_broker_token: null,
-    }, "refresh-failure");
-    return null;
+    // Only a definitive rejection (revoked/invalid refresh token) disconnects.
+    // Network errors, 5xx and rate limits keep the session for the next try.
+    const definitive = (refreshed.status === 400 || refreshed.status === 401)
+      && /invalid_grant|invalid_request|revoked|expired/i.test(String(refreshed.error ?? ""));
+    if (definitive) {
+      await updateProfileByEitherKey(admin, userId, {
+        maestro_connected: false,
+        maestro_broker_token: null,
+      }, "refresh-failure");
+      return null;
+    }
+    return expAt > Date.now() ? prof.maestro_broker_token as string : null;
   }
   await persistTokenSet(admin, userId, refreshed.data, isMobile);
   return refreshed.data.access_token;

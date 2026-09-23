@@ -169,7 +169,9 @@ describe("planipret task handler — idempotency", () => {
   });
 
   it("replayed AVA tool-call deletes only once", async () => {
-    const { deps, apiFetch } = makeDeps();
+    const { deps, apiFetch } = makeDeps({
+      listFetch: async () => ({ ok: true, tasks: [], endpoint: "/api/main/tasks", status: 200, complete: true }),
+    });
     const body = { action: "delete", task_id: "946044", source: "ava_voice" };
     const a = await handleTaskRequest(body, deps);
     const b = await handleTaskRequest(body, deps);
@@ -192,7 +194,13 @@ describe("planipret task handler — idempotency", () => {
 
 describe("planipret task handler — update & delete", () => {
   it("puts task_id in the URL and in the body", async () => {
-    const { deps, calls } = makeDeps();
+    const { deps, calls } = makeDeps({
+      listFetch: async () => ({
+        ok: true,
+        tasks: [{ id: 946044, notes: "Déplacée", date: "2026-09-05 09:30:00", type: "user", xid: 387460525 }],
+        endpoint: "/api/main/tasks", status: 200, complete: true,
+      }),
+    });
     const out = await handleTaskRequest(
       { action: "update", task_id: "946044", changes: { date: "2026-09-05 09:30:00", notes: "Déplacée" } },
       deps,
@@ -201,6 +209,30 @@ describe("planipret task handler — update & delete", () => {
     expect(calls[0].path).toBe("/api/main/tasks/946044");
     expect(calls[0].init.method).toBe("PUT");
     expect(JSON.parse(calls[0].init.body)).toMatchObject({ task_id: 946044, date: "2026-09-05 09:30:00", notes: "Déplacée" });
+    expect(out.body).toMatchObject({ read_back: true, visible_in_maestro: true });
+  });
+
+  it("never declares an update successful before Maestro reads it back", async () => {
+    const { deps } = makeDeps({
+      listFetch: async () => ({ ok: true, tasks: [], endpoint: "/api/main/tasks", status: 200, complete: true }),
+    });
+    const out = await handleTaskRequest(
+      { action: "update", task_id: "946044", changes: { notes: "Déplacée" } },
+      deps,
+    );
+    expect(out.body).toMatchObject({ success: false, pending_confirmation: true, error: "maestro_readback_unconfirmed" });
+  });
+
+  it("does not invent a completion status when Maestro requires status_option_id", async () => {
+    const { deps } = makeDeps({
+      listFetch: async () => ({ ok: true, tasks: [{ id: 946044, status: "pending" }], endpoint: "/api/main/tasks", status: 200, complete: true }),
+    });
+    const out = await handleTaskRequest(
+      { action: "update", task_id: "946044", changes: { update_status: true } },
+      deps,
+    );
+    expect(out.body).toMatchObject({ success: false, pending_confirmation: true, error: "maestro_update_readback_mismatch" });
+    expect((out.body as any).diagnostics.issues).toContain("status_unverifiable");
   });
 
   it("rejects an update with no updatable field", async () => {
@@ -213,12 +245,28 @@ describe("planipret task handler — update & delete", () => {
     const admin = createMockAdmin({
       planipret_tasks_projection: [{ user_id: USER, task_id: "946044", deleted_at: null, payload: { id: "946044" } }],
     });
-    const { deps, calls } = makeDeps({ admin });
+    const { deps, calls } = makeDeps({
+      admin,
+      listFetch: async () => ({ ok: true, tasks: [], endpoint: "/api/main/tasks", status: 200, complete: true }),
+    });
     const out = await handleTaskRequest({ action: "delete", task_id: "946044" }, deps);
     expect(out.body).toMatchObject({ success: true, deleted: true });
     expect(calls[0].init.method).toBe("DELETE");
     expect(JSON.parse(calls[0].init.body)).toEqual({ task_id: 946044 });
     expect(admin.db.planipret_tasks_projection[0].deleted_at).toBeTruthy();
+  });
+
+  it("does not hide a task after DELETE until its absence is read back", async () => {
+    const admin = createMockAdmin({
+      planipret_tasks_projection: [{ user_id: USER, task_id: "946044", deleted_at: null, payload: { id: "946044" } }],
+    });
+    const { deps } = makeDeps({
+      admin,
+      listFetch: async () => ({ ok: true, tasks: [{ id: "946044" }], endpoint: "/api/main/tasks", status: 200, complete: true }),
+    });
+    const out = await handleTaskRequest({ action: "delete", task_id: "946044" }, deps);
+    expect(out.body).toMatchObject({ success: false, pending_confirmation: true, deleted: false });
+    expect(admin.db.planipret_tasks_projection[0].deleted_at).toBeNull();
   });
 
   it("forbids delete for the assistant role", async () => {

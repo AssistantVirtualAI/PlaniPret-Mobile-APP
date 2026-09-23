@@ -16,6 +16,8 @@ export type TaskType = "user" | "contract";
 
 export interface NormalizedTask {
   id: string;
+  /** True only when this exact representation was obtained by GET /api/main/tasks. */
+  maestro_read_back?: boolean;
   notes: string;
   description: string | null;
   due_at: string | null; // ISO
@@ -408,6 +410,7 @@ export function normalizeTask(input: any): NormalizedTask {
 
   return {
     id,
+    maestro_read_back: raw?.maestro_read_back === true || raw?.read_back === true || raw?.visible_in_maestro === true,
     notes: String(raw?.notes ?? raw?.title ?? raw?.subject ?? "").trim(),
     description: raw?.description ? String(raw.description) : null,
     due_at: fromApiDateTime(raw?.date ?? raw?.due_date ?? raw?.due_at ?? raw?.scheduled_at ?? null),

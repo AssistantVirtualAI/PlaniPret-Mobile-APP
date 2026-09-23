@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Link2, CheckCircle2, AlertCircle, Loader2, RefreshCw, LogOut, Bug, ChevronDown } from "lucide-react";
+import { Link2, CheckCircle2, AlertCircle, Loader2, RefreshCw, LogOut, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
 import { Capacitor } from "@capacitor/core";
 import { App as CapApp } from "@capacitor/app";
 import { Browser } from "@capacitor/browser";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { logDeepLink } from "@/lib/deepLinkDebug";
@@ -30,9 +30,14 @@ type StatusData = {
 };
 
 const EDGE_TIMEOUT_MS = 8_000;
-const STATUS_COOLDOWN_MS = 5_000;
+const STATUS_COOLDOWN_MS = 60_000;
+const STATUS_FRESH_MS = 5 * 60_000;
 const POST_AUTH_WINDOW_MS = 60_000;
 const POST_AUTH_POLL_DELAYS = [0, 2_000, 5_000];
+
+// Shared across mounts: navigating between Commissions / Tâches remounts this
+// card, and a forced status call on every mount made the app feel laggy.
+const statusCache: { data: StatusData | null; at: number } = { data: null, at: 0 };
 
 function statusFrom(data: StatusData): Status {
   if (data.status === "connected" || data.connected) return "connected";
@@ -102,15 +107,16 @@ async function invokeMaestroEdge<T>(functionName: string, body: Record<string, u
 export default function MaestroConnectCard() {
   const { lang } = useMplanipretLang();
   const navigate = useNavigate();
-  const [status, setStatus] = useState<Status>("loading");
-  const [data, setData] = useState<StatusData>({});
+  const [status, setStatus] = useState<Status>(() => (statusCache.data ? statusFrom(statusCache.data) : "loading"));
+  const [data, setData] = useState<StatusData>(() => statusCache.data ?? {});
   const [busy, setBusy] = useState(false);
-  const [lastFetch, setLastFetch] = useState<Date | null>(null);
+  const [lastFetch, setLastFetch] = useState<Date | null>(() => (statusCache.at ? new Date(statusCache.at) : null));
   const [showDetails, setShowDetails] = useState(false);
   const pollTimers = useRef<number[]>([]);
   const authInFlight = useRef(false);
+  const disconnectInFlight = useRef(false);
   const statusRequest = useRef<Promise<StatusData | null> | null>(null);
-  const lastStatusStartedAt = useRef(0);
+  const lastStatusStartedAt = useRef(statusCache.at);
 
   const isFr = lang === "fr";
   const L = {
@@ -147,6 +153,8 @@ export default function MaestroConnectCard() {
         const { data: { session } } = await supabase.auth.getSession();
         if (!session?.access_token) throw new Error("maestro_session_required");
         const response = await invokeMaestroEdge<StatusData>("maestro-oauth-status", {}, session.access_token);
+        statusCache.data = response ?? {};
+        statusCache.at = Date.now();
         setData(response ?? {});
         setLastFetch(new Date());
         setStatus(statusFrom(response ?? {}));
@@ -154,6 +162,12 @@ export default function MaestroConnectCard() {
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : "maestro_status_unavailable";
         const normalized = /timeout|abort|failed to fetch|network|load failed/i.test(message) ? "maestro_status_timeout" : message;
+        // Keep the last known good status visible instead of flashing an error
+        // when a background refresh fails while browsing the app.
+        if (statusCache.data && (statusCache.data.connected || statusCache.data.status === "connected")) {
+          setLastFetch(new Date());
+          return null;
+        }
         setData({ error: normalized });
         setLastFetch(new Date());
         setStatus("error");
@@ -186,7 +200,8 @@ export default function MaestroConnectCard() {
   }, [clearPollTimers, load]);
 
   useEffect(() => {
-    if (readRecentPostAuthMarker()) pollStatus(); else void load(true);
+    if (readRecentPostAuthMarker()) pollStatus();
+    else if (!statusCache.data || Date.now() - statusCache.at > STATUS_FRESH_MS) void load(true);
     return clearPollTimers;
   }, [clearPollTimers, load, pollStatus]);
 
@@ -241,7 +256,7 @@ export default function MaestroConnectCard() {
           let callbackUrl: string | null = null;
           try {
             callbackUrl = typeof startNativeOAuthSession === "function" && canUseNativeAuthSession()
-              ? await startNativeOAuthSession(url, redirectUri, mustForceLogin)
+              ? await startNativeOAuthSession(url, redirectUri)
               : null;
           } catch (error: unknown) {
             const message = error instanceof Error ? error.message : String(error);
@@ -252,7 +267,6 @@ export default function MaestroConnectCard() {
             logDeepLink({ kind: "info", source: "MaestroConnect", detail: "ASWebAuthenticationSession cancelled" });
             return;
           }
-          try { localStorage.setItem("pp_maestro_callback_url", callbackUrl); } catch { /* storage unavailable */ }
           const callback = new URL(callbackUrl);
           navigate(`/auth/maestro/callback${callback.search}`, { replace: true });
         } else {
@@ -267,7 +281,7 @@ export default function MaestroConnectCard() {
     } catch (error: unknown) {
       const message = error instanceof Error && error.message === "maestro_status_timeout"
         ? (isFr ? "Maestro ne répond pas après 8 secondes. Réessayez sans fermer l’application." : "Maestro did not respond within 8 seconds. Retry without closing the app.")
-        : error instanceof Error ? error.message : L.error;
+        : L.statusUnavailable;
       toast.error(message);
     } finally {
       authInFlight.current = false;
@@ -275,7 +289,9 @@ export default function MaestroConnectCard() {
     }
   };
 
-  const disconnect = async () => {
+  const disconnect = async (): Promise<boolean> => {
+    if (disconnectInFlight.current) return false;
+    disconnectInFlight.current = true;
     setBusy(true);
     try {
       const { data: { session } } = await supabase.auth.getSession();
@@ -285,9 +301,12 @@ export default function MaestroConnectCard() {
       clearPostAuthMarker();
       toast.success(L.disconnectOk);
       await load(true);
+      return true;
     } catch (error: unknown) {
-      toast.error(error instanceof Error ? error.message : L.error);
+      toast.error(L.statusUnavailable);
+      return false;
     } finally {
+      disconnectInFlight.current = false;
       setBusy(false);
     }
   };
@@ -295,9 +314,7 @@ export default function MaestroConnectCard() {
   const dot = status === "connected" ? "#22c55e" : status === "error" ? "#ef4444" : status === "pending" ? "#f59e0b" : status === "loading" ? "#64748b" : "#f59e0b";
   const email = data.email ?? data.maestro_email;
   const brokerId = data.broker_id ?? data.maestro_broker_id;
-  const errorMessage = data.error === "maestro_status_timeout"
-    ? L.statusUnavailable
-    : data.error ?? data.last_error?.message ?? L.error;
+  const errorMessage = data.configured === false ? L.notConfigured : L.statusUnavailable;
 
   return (
     <div style={{ padding: "0 12px 8px" }}>
@@ -331,7 +348,7 @@ export default function MaestroConnectCard() {
         {status === "error" && (
           <div className="flex items-start gap-1" style={{ fontSize: 11, color: "#ef4444" }}>
             <AlertCircle className="w-3 h-3 mt-0.5 flex-shrink-0" />
-            <div>{data.configured === false ? L.notConfigured : errorMessage}</div>
+            <div>{errorMessage}</div>
           </div>
         )}
 
@@ -352,14 +369,14 @@ export default function MaestroConnectCard() {
         )}
 
         <div className="flex gap-2 mt-3">
-          {status !== "connected" ? (
+          {status === "connected" ? (
             <button onClick={() => { void startAuth(false); }} disabled={busy || data.configured === false} className="flex items-center justify-center gap-1 flex-1 rounded-md" style={{ background: "#a855f7", color: "white", fontSize: 12, fontWeight: 600, padding: "8px 10px", opacity: busy || data.configured === false ? 0.5 : 1 }}>
               {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Link2 className="w-3 h-3" />}
               {L.connect}
             </button>
           ) : (
             <>
-              <button onClick={async () => { await disconnect(); await startAuth(true); }} disabled={busy} className="flex items-center justify-center gap-1 flex-1 rounded-md" style={{ background: "var(--pp-bg-border-2)", color: "var(--pp-text-primary)", fontSize: 12, fontWeight: 600, padding: "8px 10px" }}>
+              <button onClick={async () => { if (await disconnect()) await startAuth(true); }} disabled={busy} className="flex items-center justify-center gap-1 flex-1 rounded-md" style={{ background: "var(--pp-bg-border-2)", color: "var(--pp-text-primary)", fontSize: 12, fontWeight: 600, padding: "8px 10px" }}>
                 <RefreshCw className="w-3 h-3" /> {L.reconnect}
               </button>
               <button onClick={() => { void disconnect(); }} disabled={busy} className="flex items-center justify-center gap-1 rounded-md" style={{ background: "transparent", border: "1px solid #ef4444", color: "#ef4444", fontSize: 12, fontWeight: 600, padding: "8px 10px" }}>
@@ -368,10 +385,6 @@ export default function MaestroConnectCard() {
             </>
           )}
         </div>
-
-        <Link to="/mplanipret/deep-link-debug" className="flex items-center gap-1 mt-2" style={{ fontSize: 10, color: "var(--pp-text-muted)", textDecoration: "none" }}>
-          <Bug className="w-3 h-3" /> {isFr ? "Debug deep links" : "Deep link debug"}
-        </Link>
       </div>
     </div>
   );

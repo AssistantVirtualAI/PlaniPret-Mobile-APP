@@ -127,6 +127,20 @@ Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
   try {
+    const authorization = req.headers.get("Authorization") ?? "";
+    const supabaseUrl = Deno.env.get("SUPABASE_URL");
+    const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
+    if (!authorization || !supabaseUrl || !anonKey) {
+      return j({ success: false, error: "planipret_unauthorized" }, 401);
+    }
+    const callerClient = createClient(supabaseUrl, anonKey, {
+      global: { headers: { Authorization: authorization } },
+    });
+    const { data: caller, error: callerError } = await callerClient.auth.getUser();
+    if (callerError || !caller.user?.id) {
+      return j({ success: false, error: "planipret_unauthorized" }, 401);
+    }
+
     const body = await req.json().catch(() => ({} as any));
     const { code, state, redirect_uri } = body ?? {};
     if (!code) return j({ success: false, error: "code_required" }, 400);
@@ -146,6 +160,7 @@ Deno.serve(async (req) => {
       .from("planipret_maestro_oauth_states")
       .delete()
       .eq("state", state)
+      .eq("user_id", caller.user.id)
       .gt("expires_at", new Date().toISOString())
       .select("user_id, redirect_uri, code_verifier")
       .maybeSingle();

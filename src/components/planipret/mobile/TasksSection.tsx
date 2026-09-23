@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertCircle, CheckSquare, ChevronRight, Clock, Plus, RefreshCw, Repeat, Sparkles, Trash2, Pencil, CalendarClock, CheckCircle2, ExternalLink, ShieldCheck, Loader2, History } from "lucide-react";
+import { AlertCircle, CheckSquare, ChevronRight, Clock, Plus, RefreshCw, Repeat, Sparkles, Trash2, Pencil, CalendarClock, ExternalLink, ShieldCheck, Loader2, History } from "lucide-react";
 import { usePlanipretTasks } from "@/hooks/planipret/usePlanipretTasks";
 import { describeTaskDiagnostics, describeTaskSync, formatTaskDue, isTaskOpen, toTorontoLocalInput, verifyTask, maestroTaskUrl, type NormalizedTask, type TaskFilterValue, type TaskVerifyResult, taskHistory, type TaskHistoryEvent } from "@/lib/planipret/tasks";
 import MaestroTaskRow from "./MaestroTaskRow";
+import { taskLifecycleBadge, isMobileCreatedTask, taskCreatedAt, formatTaskTimestamp } from "@/lib/planipret/taskLifecycle";
 import TaskComposerSheet, { type TaskComposerValue } from "./TaskComposerSheet";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -16,6 +17,8 @@ interface Props {
   brokerId?: string | null;
   /** Hide every mutation (used when viewing another broker's tasks). */
   readOnly?: boolean;
+  /** Portail : bloc de suivi des tâches créées depuis l'app mobile. */
+  showMobileOrigin?: boolean;
 }
 
 function SyncChip({ task, lang }: { task: NormalizedTask; lang: "fr" | "en" }) {
@@ -106,7 +109,53 @@ function SyncHistory({ userId, lang }: { userId: string | null | undefined; lang
   );
 }
 
-export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, brokerId, readOnly }: Props) {
+/** Suivi portail : tâches créées depuis l'app mobile, avec statut et dates. */
+function MobileOriginTasks({ tasks, lang }: { tasks: NormalizedTask[]; lang: "fr" | "en" }) {
+  const L = (fr: string, en: string) => (lang === "en" ? en : fr);
+  const rows = useMemo(() => {
+    const list = tasks.filter(isMobileCreatedTask);
+    return list
+      .slice()
+      .sort((a, b) => String(taskCreatedAt(b) ?? b.due_at ?? "").localeCompare(String(taskCreatedAt(a) ?? a.due_at ?? "")))
+      .slice(0, 10);
+  }, [tasks]);
+
+  if (!rows.length) return null;
+
+  return (
+    <div className="mb-3 rounded-xl p-2.5" data-testid="mobile-origin-tasks"
+      style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border)" }}>
+      <p className="text-[10px] uppercase tracking-wider mb-1.5" style={{ color: "var(--pp-text-muted)", fontWeight: 700 }}>
+        {L("Créées depuis l'app mobile", "Created from the mobile app")} · {rows.length}
+      </p>
+      <ul className="space-y-1">
+        {rows.map((t) => {
+          const badge = taskLifecycleBadge(t, lang);
+          return (
+            <li key={`mob-${t.id}`} className="flex items-start gap-2 text-[11px]" data-testid={`mobile-origin-task-${t.id}`}>
+              <span className="shrink-0 inline-flex items-center gap-1 text-[9.5px] font-semibold px-1.5 py-0.5 rounded-full mt-0.5"
+                title={badge.detail} style={{ background: badge.background, color: badge.color }}>
+                <span aria-hidden className="w-1.5 h-1.5 rounded-full" style={{ background: badge.color }} />
+                {badge.label}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-medium" style={{ color: "var(--pp-text-primary)" }}>
+                  {t.target_name || t.notes || `#${t.id}`}
+                </span>
+                <span className="block" style={{ color: "var(--pp-text-muted)" }}>
+                  {L("Créée", "Created")} {formatTaskTimestamp(taskCreatedAt(t), lang)}
+                  {" · "}{L("Échéance", "Due")} {formatTaskDue(t.due_at, lang)}
+                </span>
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, brokerId, readOnly, showMobileOrigin }: Props) {
   const L = (fr: string, en: string) => (lang === "en" ? en : fr);
   const { tasks, buckets, counts, openCount, filter, setFilter, hasMore, loadMore, loadingMore, total, loading, refreshing, lastSyncAt, source, error, message, refresh, create, update, remove } = usePlanipretTasks(userId, { brokerId });
   const [composer, setComposer] = useState<null | { initial?: any }>(null);
@@ -178,10 +227,8 @@ export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, br
           notes: v.notes,
           description: v.description,
           users_id: v.users_id,
-          status: v.status,
           xid: v.target,
           type: v.target_type,
-          update_status: v.update_status,
           ...(v.recurrence
             ? {
                 is_recurring: true,
@@ -200,6 +247,11 @@ export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, br
       const warn = describeTaskDiagnostics(r?.diagnostics, lang);
       setDiagnostic(warn ? { text: warn, correlationId: r?.correlation_id } : null);
       if (warn) toast.warning(L("Réponse Maestro incohérente", "Inconsistent Maestro response"), { description: warn });
+    } else if (r?.pending_confirmation) {
+      setFieldErrors(null);
+      toast.warning(L("Action en attente de confirmation Maestro", "Action awaiting Maestro confirmation"), {
+        description: r?.message ?? L("Aucune confirmation n’est affichée tant que Maestro n’a pas relu la tâche.", "No confirmation is shown until Maestro reads the task back."),
+      });
     } else {
       setFieldErrors(r?.fields && typeof r.fields === "object" ? r.fields : null);
       toast.error(r?.message ?? L("Échec de l'enregistrement", "Save failed"));
@@ -211,6 +263,7 @@ export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, br
     setConfirmDelete(null);
     const r = await remove(task.id);
     if (r?.success) toast.success(L("Tâche supprimée", "Task deleted"));
+    else if (r?.pending_confirmation) toast.warning(L("Suppression en attente de confirmation Maestro", "Deletion awaiting Maestro confirmation"), { description: r?.message });
     else toast.error(r?.message ?? L("Suppression impossible", "Delete failed"));
   };
 
@@ -223,28 +276,12 @@ export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, br
     due_at: toTorontoLocalInput(task.due_at),
   } });
 
-  /**
-   * Traiter la tâche depuis l'app : Maestro la passe à « complété » via la
-   * même route que le portail, puis la liste est relue pour refléter l'état
-   * réellement confirmé côté Maestro.
-   */
-  const completeTask = async (task: NormalizedTask) => {
-    setBusy(true);
-    const r = await update(task.id, { status: "completed", update_status: true });
-    setBusy(false);
-    if (r?.success) {
-      toast.success(L("Tâche traitée", "Task completed"));
-      void refresh();
-    } else {
-      toast.error(r?.message ?? L("Traitement impossible", "Could not complete"));
-    }
-  };
-
   const snooze = async (task: NormalizedTask) => {
     const base = task.due_at ? new Date(task.due_at) : new Date();
     const next = new Date(base.getTime() + 24 * 3600 * 1000);
     const r = await update(task.id, { date: next.toISOString() });
     if (r?.success) toast.success(L("Reportée à demain", "Moved to tomorrow"));
+    else if (r?.pending_confirmation) toast.warning(L("Report en attente de confirmation Maestro", "Snooze awaiting Maestro confirmation"), { description: r?.message });
     else toast.error(r?.message ?? L("Report impossible", "Snooze failed"));
   };
 
@@ -257,7 +294,7 @@ export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, br
           <span className="pp-eyebrow" aria-label={L("Tâches ouvertes", "Open tasks")}>{openCount}</span>
         </h2>
         <div className="flex items-center gap-1">
-          <button onClick={() => void refresh()} aria-label={L("Rafraîchir", "Refresh")}
+          <button onClick={() => void refresh({ force: true })} aria-label={L("Rafraîchir", "Refresh")}
             className="w-11 h-11 flex items-center justify-center" style={{ color: "var(--pp-text-muted)" }}>
             <RefreshCw className={`w-4 h-4 ${refreshing ? "animate-spin" : ""}`} />
           </button>
@@ -292,6 +329,8 @@ export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, br
 
       <SyncHistory userId={userId} lang={lang} />
 
+      {showMobileOrigin && !loading && <MobileOriginTasks tasks={tasks} lang={lang} />}
+
       {source === "projection" && !loading && (
         <p className="text-[11px] mb-2" style={{ color: "var(--pp-text-muted)" }}>
           {L("Hors ligne — dernier état connu.", "Offline — last known state.")}
@@ -302,6 +341,17 @@ export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, br
         <p className="text-[11px] mb-2 inline-flex items-center gap-1" style={{ color: "var(--pp-success, #16A34A)" }} data-testid="task-live-maestro-source">
           <ShieldCheck className="w-3 h-3" /> {L("Liste relue dans Maestro", "List read back from Maestro")}
         </p>
+      )}
+
+      {error && tasks.length > 0 && !loading && (
+        <div className="mb-3 flex items-center gap-2 rounded-lg px-3 py-2 text-[11px]" role="status"
+          style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border)", color: "var(--pp-text-muted)" }}>
+          <AlertCircle className="h-3.5 w-3.5 shrink-0" style={{ color: "var(--pp-warning)" }} />
+          <span className="flex-1">{L("Actualisation Maestro temporairement indisponible. Dernier état connu affiché.", "Maestro refresh is temporarily unavailable. Showing the last known state.")}</span>
+          <button onClick={() => void refresh({ force: true })} className="min-h-[32px] px-2 font-semibold" style={{ color: "var(--pp-brand-accent)" }}>
+            {L("Réessayer", "Retry")}
+          </button>
+        </div>
       )}
 
       <div className="flex items-center gap-1.5 mb-3 overflow-x-auto" role="tablist" aria-label={L("Filtrer les tâches", "Filter tasks")}>
@@ -334,13 +384,13 @@ export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, br
 
       {loading ? (
         <div className="space-y-2" aria-busy="true">{[0, 1, 2].map((i) => <Shimmer key={i} className="h-12" />)}</div>
-      ) : error ? (
+      ) : error && tasks.length === 0 ? (
         // Chargement en échec : ne jamais afficher « aucune tâche » (faux vide trompeur).
         <div className="py-4 text-center space-y-2" role="alert">
           <p className="text-sm" style={{ color: "var(--pp-text-muted)" }}>
-            {message ?? L("Chargement impossible", "Loading failed")}
+            {L("Les tâches Maestro sont temporairement indisponibles.", "Maestro tasks are temporarily unavailable.")}
           </p>
-          <button onClick={() => void refresh()} className="min-h-[44px] px-4 rounded-xl text-[12px] font-semibold text-white"
+          <button onClick={() => void refresh({ force: true })} className="min-h-[44px] px-4 rounded-xl text-[12px] font-semibold text-white"
             style={{ background: "var(--pp-brand-accent)" }}>
             {L("Réessayer", "Retry")}
           </button>
@@ -389,7 +439,6 @@ export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, br
                         </IconBtn>
                         <IconBtn label={L("Ouvrir dans Maestro", "Open in Maestro")} onClick={() => openInMaestro(task.id)}><ExternalLink className="w-3.5 h-3.5" /></IconBtn>
                         <IconBtn label={L("Historique", "History")} onClick={() => void openHistory(task)}><History className="w-3.5 h-3.5" /></IconBtn>
-                        {!readOnly && <IconBtn label={L("Traiter (marquer terminée)", "Complete task")} onClick={() => void completeTask(task)}><CheckCircle2 className="w-3.5 h-3.5" /></IconBtn>}
                         {!readOnly && <IconBtn label={L("Modifier", "Edit")} onClick={() => openEdit(task)}><Pencil className="w-3.5 h-3.5" /></IconBtn>}
                         {!readOnly && <IconBtn label={L("Reporter", "Snooze")} onClick={() => void snooze(task)}><CalendarClock className="w-3.5 h-3.5" /></IconBtn>}
                         {!readOnly && <IconBtn label={L("Supprimer", "Delete")} danger onClick={() => setConfirmDelete(task)}><Trash2 className="w-3.5 h-3.5" /></IconBtn>}

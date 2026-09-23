@@ -355,15 +355,21 @@ export function usePlanipretTasks(
       }
       return next;
     };
-    setTasks((current) => current.map((task) => (String(task.id) === id ? patch(task) : task)));
     const result = await apiUpdate(taskId, changes);
-    if (!result?.success) { setTasks(previous); return result; }
+    if (!result?.success) {
+      // A write can be accepted while Maestro's authoritative list is still
+      // catching up. Do not render the proposed value as confirmed.
+      if (result?.pending_confirmation) void refresh({ force: true });
+      return result;
+    }
 
     const base = previous.find((task) => String(task.id) === id);
     const edited: NormalizedTask | null = result.task?.id
       ? { ...(base ?? ({} as NormalizedTask)), ...result.task }
       : base ? patch(base) : null;
     if (edited) {
+      edited.maestro_read_back = true;
+      edited.raw = { ...(edited.raw ?? {}), maestro_read_back: true };
       pending.current.set(id, { task: edited, at: Date.now() });
       setTasks((current) => {
         const merged = current.map((task) => (String(task.id) === id ? edited : task));
@@ -387,6 +393,7 @@ export function usePlanipretTasks(
     if (!result?.success) {
       setTasks(previous);
       if (userId) saveTaskCache(userId, previous);
+      if (result?.pending_confirmation) void refresh({ force: true });
     } else void refresh({ force: true });
     return result;
   }, [tasks, refresh, userId]);

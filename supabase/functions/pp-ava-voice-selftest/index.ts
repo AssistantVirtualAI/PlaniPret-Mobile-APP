@@ -79,11 +79,25 @@ Deno.serve(async (req) => {
       headers: { "xi-api-key": KEY, "Content-Type": "application/json" },
       body: JSON.stringify({ text: "Bonjour, test AVA.", model_id: "eleven_multilingual_v2" }),
     });
-    const buf = await r.arrayBuffer();
-    results.push({ name: "elevenlabs:POST /v1/text-to-speech (preview)", ok: r.ok, ms: Date.now() - t1, detail: `HTTP ${r.status} — ${buf.byteLength} bytes audio` });
+    const txt = r.ok ? "" : (await r.text()).slice(0, 300);
+    results.push({ name: "elevenlabs:POST /v1/text-to-speech (preview)", ok: r.ok, ms: Date.now() - t1, detail: `HTTP ${r.status} ${txt}` });
   } catch (e) {
     results.push({ name: "elevenlabs:POST /v1/text-to-speech (preview)", ok: false, ms: Date.now() - t1, detail: String((e as Error).message ?? e) });
   }
+
+  // 4. Convai conversation token (exact call used by pp-ava-webrtc-token)
+  const envAgent = Deno.env.get("ELEVENLABS_DEFAULT_AGENT_ID") ?? "";
+  const convAgent = envAgent || agentIdFinal;
+  results.push({ name: "env:ELEVENLABS_DEFAULT_AGENT_ID", ok: !!envAgent, ms: 0, detail: envAgent ? envAgent : "missing" });
+  if (convAgent) {
+    const tok = await el(`/v1/convai/conversation/token?agent_id=${encodeURIComponent(convAgent)}`);
+    results.push({ name: "elevenlabs:GET conversation/token", ok: tok.ok, ms: tok.ms, detail: `HTTP ${tok.status} — ${tok.sample}` });
+    const su = await el(`/v1/convai/conversation/get-signed-url?agent_id=${encodeURIComponent(convAgent)}`);
+    results.push({ name: "elevenlabs:GET conversation/get-signed-url", ok: su.ok, ms: su.ms, detail: `HTTP ${su.status} — ${su.sample.slice(0, 80)}` });
+  }
+
+  const subs = await el("/v1/user/subscription");
+  results.push({ name: "elevenlabs:subscription detail", ok: subs.ok, ms: subs.ms, detail: subs.sample });
 
   return jsonResponse({ success: true, generated_at: new Date().toISOString(), results });
 });

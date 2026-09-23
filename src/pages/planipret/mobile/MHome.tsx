@@ -14,6 +14,7 @@ import type { PlanipretMobileContext } from "../PlanipretMobile";
 import { toast } from "sonner";
 import PWAInstallBanner from "@/components/planipret/PWAInstallBanner";
 import ExtensionSyncBanner from "@/components/planipret/mobile/ExtensionSyncBanner";
+import MaestroConnectCard from "@/components/planipret/mobile/MaestroConnectCard";
 import PermissionBanners from "@/components/planipret/mobile/PermissionBanners";
 import { TEMP_EMOJI } from "@/components/planipret/leadHelpers";
 import { useMaestroPipelineToasts } from "@/hooks/useMaestroPipelineToasts";
@@ -417,6 +418,7 @@ export default function MHome() {
       <PWAInstallBanner />
       <PermissionBanners />
       <ExtensionSyncBanner profile={profile} reloadProfile={reloadProfile} />
+      <MaestroConnectCard />
 
       {/* ===== HEADER ===== */}
       <header className="min-w-0">
@@ -620,12 +622,12 @@ export default function MHome() {
             <Kpi icon={<Phone className="w-3.5 h-3.5" />} value={stats.calls} label={t("home.kpi.calls")} accent="var(--pp-brand-accent)" onClick={() => navigate("/mplanipret/calls")} />
             <Kpi icon={<PhoneMissed className="w-3.5 h-3.5" />} value={stats.missed} label={t("home.kpi.missed")} accent="var(--pp-danger)" pulse={stats.missed > 0} onClick={() => navigate("/mplanipret/calls?tab=missed")} />
             <Kpi icon={<MessageSquare className="w-3.5 h-3.5" />} value={stats.sms} label={t("home.kpi.sms")} accent="var(--pp-success)" onClick={() => navigate("/mplanipret/messages")} />
-            <Kpi icon={<Calendar className="w-3.5 h-3.5" />} value={stats.meetings} label={t("home.kpi.meetings")} accent="var(--pp-brand-accent-2)" />
-            <Kpi icon={<Flame className="w-3.5 h-3.5" />} value={stats.hotLeads} label={t("home.kpi.hotLeads")} accent="#C9582A" />
-            <Kpi icon={<CheckSquare className="w-3.5 h-3.5" />} value={stats.tasks} label={t("home.kpi.tasks")} accent="var(--pp-agent)" />
+            <Kpi icon={<Calendar className="w-3.5 h-3.5" />} value={stats.meetings} label={t("home.kpi.meetings")} accent="var(--pp-brand-accent-2)" onClick={() => document.getElementById("pp-meetings-calendar")?.scrollIntoView({ behavior: "smooth", block: "start" })} />
+            <Kpi icon={<Flame className="w-3.5 h-3.5" />} value={stats.hotLeads} label={t("home.kpi.hotLeads")} accent="#C9582A" onClick={() => navigate("/mplanipret/pipeline")} />
+            <Kpi icon={<CheckSquare className="w-3.5 h-3.5" />} value={stats.tasks} label={t("home.kpi.tasks")} accent="var(--pp-agent)" onClick={() => navigate("/mplanipret/tasks")} />
             <Kpi icon={<Voicemail className="w-3.5 h-3.5" />} value={stats.voicemails} label={t("home.kpi.voicemails")} accent="#6C5CE7" onClick={() => navigate("/mplanipret/voicemail")} />
-            <Kpi icon={<Mail className="w-3.5 h-3.5" />} value={stats.outbound} label={t("home.kpi.sent")} accent="#7A8FB0" />
-            <Kpi icon={<UsersIcon className="w-3.5 h-3.5" />} value={totalComms} label={t("home.kpi.total")} accent="var(--pp-brand-accent-2)" />
+            <Kpi icon={<Mail className="w-3.5 h-3.5" />} value={stats.outbound} label={t("home.kpi.sent")} accent="#7A8FB0" onClick={() => navigate("/mplanipret/messages")} />
+            <Kpi icon={<UsersIcon className="w-3.5 h-3.5" />} value={totalComms} label={t("home.kpi.total")} accent="var(--pp-brand-accent-2)" onClick={() => navigate("/mplanipret/stats")} />
           </>
         )}
       </section>
@@ -858,7 +860,7 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
   const monthLabel = cursor.toLocaleDateString(locale, { month: "long", year: "numeric" });
 
   return (
-    <section className="pp-card p-4">
+    <section id="pp-meetings-calendar" className="pp-card p-4 scroll-mt-3">
       <div className="flex items-center justify-between mb-3">
         <h2 className="text-sm font-semibold flex items-center gap-1.5 pp-heading">
           <Calendar className="w-4 h-4" style={{ color: "var(--pp-brand-accent)" }} />

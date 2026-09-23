@@ -602,18 +602,20 @@ export default function TaskComposerSheet({ open, lang, defaultTarget, busy, ini
               aria-label={L("Description", "Description")} onChange={(e) => setDescription(e.target.value)} />
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <span className={labelCls} style={labelStyle}>{L("Statut", "Status")}</span>
-              <div className="relative">
-                <select className={`${field} appearance-none pr-9`} style={fieldStyle} value={status} aria-label={L("Statut", "Status")}
-                  onChange={(e) => setStatus(e.target.value)}>
-                  {STATUSES.map((s) => <option key={s.value} value={s.value}>{lang === "en" ? s.en : s.fr}</option>)}
-                </select>
-                <ChevronDown className="w-4 h-4 absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: "var(--pp-text-muted)" }} />
+          <div className={initial?.task_id ? "" : "grid grid-cols-2 gap-3"}>
+            {!initial?.task_id && (
+              <div>
+                <span className={labelCls} style={labelStyle}>{L("Statut", "Status")}</span>
+                <div className="relative">
+                  <select className={`${field} appearance-none pr-9`} style={fieldStyle} value={status} aria-label={L("Statut", "Status")}
+                    onChange={(e) => setStatus(e.target.value)}>
+                    {STATUSES.map((s) => <option key={s.value} value={s.value}>{lang === "en" ? s.en : s.fr}</option>)}
+                  </select>
+                  <ChevronDown className="w-4 h-4 absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: "var(--pp-text-muted)" }} />
+                </div>
+                <FieldError keys={["status", "option"]} />
               </div>
-              <FieldError keys={["status", "option"]} />
-            </div>
+            )}
             <div>
               <span className={labelCls} style={labelStyle}>
                 <span style={{ color: "var(--pp-danger)" }}>* </span>{L("Assigné à", "Assigned to")}
@@ -749,7 +751,7 @@ export default function TaskComposerSheet({ open, lang, defaultTarget, busy, ini
                 </div>
               )}
 
-              <Toggle label={L("Mettre à jour le statut du dossier", "Update the file status")} checked={updateStatus} onChange={setUpdateStatus} last />
+              {!initial?.task_id && <Toggle label={L("Mettre à jour le statut du dossier", "Update the file status")} checked={updateStatus} onChange={setUpdateStatus} last />}
             </div>
           )}
 

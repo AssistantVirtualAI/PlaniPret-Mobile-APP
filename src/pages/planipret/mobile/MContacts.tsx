@@ -13,7 +13,8 @@ import { openAppSettings, type PermStatus } from "@/lib/native/permissions/platf
 import { tokenize, matchAllTokens } from "@/lib/textNormalize";
 import { peekPpContacts, prefetchPpContacts } from "@/lib/ppContactsCache";
 import { callEdge, toE164 } from "@/lib/callEdge";
-import { createClientFollowUpTask } from "@/lib/planipret/tasks";
+import { createTask as apiCreateTask, listClientTargets } from "@/lib/planipret/tasks";
+import TaskComposerSheet, { type TaskComposerValue } from "@/components/planipret/mobile/TaskComposerSheet";
 import { getSmsAvailability } from "@/lib/planipret/smsAvailability";
 import { getSmsSubmission, type SmsSubmission } from "@/lib/planipret/smsSendGuard";
 
@@ -884,6 +885,7 @@ function ContactDetailSheet({
   const [history, setHistory] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [creatingTask, setCreatingTask] = useState(false);
+  const [taskComposer, setTaskComposer] = useState<{ target: string; target_type: "user" | "contract"; target_name: string; notes: string } | null>(null);
   const [summarizeOpen, setSummarizeOpen] = useState(false);
   const [smsOpen, setSmsOpen] = useState(false);
   const [emailOpen, setEmailOpen] = useState(false);
@@ -960,11 +962,12 @@ function ContactDetailSheet({
     return () => { cancel = true; };
   }, [maestroId, phone, maestroKind]);
 
-  const createTask = async () => {
+  // Tâche: ouvre le composeur complet (type rapide/personnalisé, date, options)
+  // pré-rempli avec la cible Maestro du contact, comme depuis la page Tâches.
+  const openTaskComposer = async () => {
     if (!maestroId && !bestPhone) { toast.error("Un numéro ou un client Maestro est requis pour créer une tâche"); return; }
     setCreatingTask(true);
     try {
-      const notes = `${t("contacts.followUp") || "Suivi"} — ${name}`;
       let resolvedMaestroId = maestroKind === "client" && maestroId ? String(maestroId) : "";
       let resolvedName = name;
       if (!resolvedMaestroId && bestPhone) {
@@ -978,35 +981,40 @@ function ContactDetailSheet({
         }
       }
       if (!resolvedMaestroId) throw new Error("Ce contact n’est pas associé à un client Maestro.");
-      let data = await createClientFollowUpTask({
-        maestro_client_id: resolvedMaestroId,
-        client_name: name,
-        notes,
-      });
-      // Device/directory contacts carry no Maestro id: resolve the client by
-      // phone through the broker's cached Maestro directory, then retry once.
-      if ((data as any)?.success !== true && bestPhone &&
-          ["task_target_not_found", "maestro_client_id_required"].includes(String((data as any)?.error))) {
-        try {
-          const { data: lookup } = await supabase.functions.invoke("maestro-client-lookup", {
-            body: { phone: bestPhone },
-          });
-          const resolvedId = (lookup as any)?.client_id;
-          if ((lookup as any)?.found && resolvedId && String(resolvedId) !== resolvedMaestroId) {
-            data = await createClientFollowUpTask({
-              maestro_client_id: String(resolvedId),
-              client_name: (lookup as any)?.name || resolvedName,
-              notes,
-            });
-          }
-        } catch { /* fall through to the original error */ }
+      // Maestro rule: a task only lands on the Tasks page when its xid comes
+      // from the Client List API `task_targets` metadata (contract preferred).
+      let targets = await listClientTargets(resolvedName);
+      let target = targets.find((row) => String(row.client_id) === resolvedMaestroId);
+      if (!target) {
+        targets = await listClientTargets();
+        target = targets.find((row) => String(row.client_id) === resolvedMaestroId);
       }
-      if ((data as any)?.success !== true) throw new Error((data as any)?.message || (data as any)?.error || "task_failed");
-      toast.success((data as any)?.message || t("contacts.taskCreated") || "Tâche créée et confirmée dans Maestro");
+      const contractXid = String(target?.contracts?.[0]?.id ?? "").trim();
+      const userXid = String(target?.user?.id ?? "").trim();
+      const xid = contractXid || userXid;
+      if (!xid) throw new Error("Aucune cible de tâche Maestro n'est disponible pour ce client.");
+      setTaskComposer({
+        target: xid,
+        target_type: contractXid ? "contract" : "user",
+        target_name: resolvedName,
+        notes: `${t("contacts.followUp") || "Suivi"} — ${resolvedName}`,
+      });
     } catch (e: any) {
       toast.error(t("contacts.taskCreateFailed") || "Échec création tâche", { description: e?.message });
     } finally {
       setCreatingTask(false);
+    }
+  };
+
+  const submitTask = async (v: TaskComposerValue) => {
+    setCreatingTask(true);
+    const r = await apiCreateTask({ ...(v as any), source: "mobile_manual" });
+    setCreatingTask(false);
+    if (r?.success) {
+      toast.success(r?.message ?? t("contacts.taskCreated") ?? "Tâche créée et confirmée dans Maestro");
+      setTaskComposer(null);
+    } else {
+      toast.error(r?.message ?? (t("contacts.taskCreateFailed") || "Échec création tâche"));
     }
   };
 
@@ -1079,7 +1087,7 @@ function ContactDetailSheet({
           <QuickAction icon={<Phone className="w-4 h-4" />} label={t("common.call")} onClick={() => phone && onCall(phone)} disabled={!phone} />
           <QuickAction icon={<MessageSquare className="w-4 h-4" />} label="SMS" onClick={openSms} disabled={!smsTarget} />
           <QuickAction icon={<Mail className="w-4 h-4" />} label="Email" onClick={openEmail} disabled={!email} />
-          <QuickAction icon={creatingTask ? <Loader2 className="w-4 h-4 animate-spin" /> : <ListChecks className="w-4 h-4" />} label="Tâche" onClick={createTask} disabled={creatingTask || (!maestroId && !bestPhone)} />
+          <QuickAction icon={creatingTask ? <Loader2 className="w-4 h-4 animate-spin" /> : <ListChecks className="w-4 h-4" />} label="Tâche" onClick={openTaskComposer} disabled={creatingTask || (!maestroId && !bestPhone)} />
           <QuickAction icon={<Calendar className="w-4 h-4" />} label="RDV" onClick={openAppt} disabled={!maestroId} />
         </div>
 
@@ -1187,6 +1195,15 @@ function ContactDetailSheet({
           onClose={() => setApptOpen(false)}
         />
       )}
+
+      <TaskComposerSheet
+        open={taskComposer !== null}
+        lang={lang === "en" ? "en" : "fr"}
+        busy={creatingTask}
+        initial={taskComposer ?? undefined}
+        onClose={() => setTaskComposer(null)}
+        onSubmit={submitTask}
+      />
     </div>
   );
 }

@@ -19,10 +19,38 @@ const COMPLETED_KEY = "pp_completed_oauth_callbacks";
 const ROUTED_KEY = "pp_routed_oauth_callbacks";
 const ROUTED_TTL_MS = 120_000;
 
+function stableDigest(value: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+/** Never persist or print OAuth codes, state values, token fragments or errors. */
+function redactCallbackUrl(rawUrl: string): string {
+  try {
+    const url = new URL(rawUrl, window.location.origin);
+    const safe = new URLSearchParams();
+    // The scheme probe is not an authorization callback and may retain its marker.
+    if (url.searchParams.has("probe")) safe.set("probe", url.searchParams.get("probe") ?? "");
+    const query = safe.toString();
+    return `${url.protocol}//${url.host}${url.pathname}${query ? `?${query}` : ""}`;
+  } catch {
+    return "[invalid-deep-link]";
+  }
+}
+
+function redactDetail(detail?: string): string | undefined {
+  if (!detail) return detail;
+  return detail.replace(/(?:code|state|token|error_description)=([^\s&]+)/gi, "$1=[redacted]");
+}
+
 function callbackKey(kind: "ms365" | "maestro", url: URL): string {
   const state = url.searchParams.get("state") || "no-state";
   const code = url.searchParams.get("code") || url.searchParams.get("error") || url.search;
-  return `${kind}:${state}:${String(code).slice(0, 32)}`;
+  return `${kind}:${stableDigest(`${state}|${code}`)}`;
 }
 
 function readCompleted(): string[] {
@@ -97,11 +125,16 @@ function write(list: DeepLinkEvent[]) {
 
 export function logDeepLink(ev: Omit<DeepLinkEvent, "ts">) {
   const list = read();
-  list.push({ ...ev, ts: Date.now() });
+  const safeEvent = {
+    ...ev,
+    ...(ev.url ? { url: redactCallbackUrl(ev.url) } : {}),
+    ...(ev.detail ? { detail: redactDetail(ev.detail) } : {}),
+  };
+  list.push({ ...safeEvent, ts: Date.now() });
   write(list);
   try {
     // eslint-disable-next-line no-console
-    console.log("[deep-link]", ev.source, ev.kind, ev.url ?? "", ev.detail ?? "");
+    console.log("[deep-link]", safeEvent.source, safeEvent.kind, safeEvent.url ?? "", safeEvent.detail ?? "");
   } catch {}
 }
 
@@ -166,11 +199,9 @@ export async function handleIncomingDeepLink(
         .catch(() => {});
     }
     if (isMs365Callback) {
-      try { localStorage.setItem('pp_ms365_callback_url', rawUrl); } catch {}
       void import('@/lib/ms365CallbackStore').then((m) => m.rememberMs365CallbackUrl(rawUrl)).catch(() => {});
       navigate?.(`/auth/microsoft/callback${url.search}`, { replace: true });
     } else {
-      try { localStorage.setItem('pp_maestro_callback_url', rawUrl); } catch {}
       navigate?.(`/auth/maestro/callback${url.search}`, { replace: true });
     }
     logDeepLink({ kind: "handler", source, url: rawUrl, detail: isMs365Callback ? "routed ms365 callback" : "routed maestro callback" });
