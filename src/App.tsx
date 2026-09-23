@@ -43,6 +43,7 @@ const MClientDetail = lazyWithRetry(() => import('@/pages/planipret/mobile/MClie
 const MBrokerActivity = lazyWithRetry(() => import('@/pages/planipret/mobile/MBrokerActivity'), 'MBrokerActivity');
 const MAvaChat = lazyWithRetry(() => import('@/pages/planipret/mobile/MAvaChat'), 'MAvaChat');
 const MAvaNotifications = lazyWithRetry(() => import('@/pages/planipret/mobile/MAvaNotifications'), 'MAvaNotifications');
+const MFeedback = lazyWithRetry(() => import('@/pages/planipret/mobile/MFeedback'), 'MFeedback');
 const MExtensionSync = lazyWithRetry(() => import('@/pages/planipret/mobile/MExtensionSync'), 'MExtensionSync');
 const MConnections = lazyWithRetry(() => import('@/pages/planipret/mobile/MConnections'), 'MConnections');
 const MMaestroSync = lazyWithRetry(() => import('@/pages/planipret/mobile/MMaestroSync'), 'MMaestroSync');
@@ -183,6 +184,7 @@ export default function App() {
                     <Route path="privacy" element={<PlanipretPrivacy />} />
 
                     <Route path="notifications" element={<MAvaNotifications />} />
+                    <Route path="feedback" element={<MFeedback />} />
                     <Route path="extension-sync" element={<MExtensionSync />} />
                     <Route path="connections" element={<MConnections />} />
                     <Route path="maestro-sync" element={<MMaestroSync />} />

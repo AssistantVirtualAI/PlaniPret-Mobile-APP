@@ -7,11 +7,11 @@ import {
 } from "../../../../supabase/functions/_shared/ava-tools";
 
 describe("contrat des outils AVA / ElevenLabs", () => {
-  it("expose exactement 77 outils uniques", () => {
+  it("expose exactement 78 outils uniques", () => {
     const configs = buildAvaToolConfigs("https://example.supabase.co", "anon-test");
     const names = configs.map((entry: any) => entry.tool_config.name);
-    expect(configs).toHaveLength(77);
-    expect(new Set(names).size).toBe(77);
+    expect(configs).toHaveLength(78);
+    expect(new Set(names).size).toBe(78);
     expect(new Set(EXPECTED_TOOL_NAMES)).toEqual(new Set(names));
   });
 
@@ -36,6 +36,7 @@ describe("contrat des outils AVA / ElevenLabs", () => {
     expect(byName.get("send_sms")?.type).toBe("client");
     expect(byName.get("make_call")?.type).toBe("client");
     expect(byName.get("hangup_call")?.type).toBe("client");
+    expect(byName.get("submit_feedback")?.type).toBe("client");
     expect(byName.get("get_call_history")?.type).toBe("webhook");
     expect(byName.get("list_tasks")?.type).toBe("webhook");
   });

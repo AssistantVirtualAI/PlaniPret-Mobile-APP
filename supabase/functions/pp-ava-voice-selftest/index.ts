@@ -11,9 +11,10 @@ async function el(path: string) {
   try {
     const r = await fetch(`${EL}${path}`, { headers: { "xi-api-key": KEY } });
     const txt = await r.text();
-    return { path, status: r.status, ok: r.ok, ms: Date.now() - t0, sample: txt.slice(0, 200), size: txt.length };
+    return { path, status: r.status, ok: r.ok, ms: Date.now() - t0, size: txt.length };
   } catch (e) {
-    return { path, status: 0, ok: false, ms: Date.now() - t0, sample: String((e as Error).message ?? e), size: 0 };
+    console.warn("[pp-ava-voice-selftest] provider request failed", path, String((e as Error).message ?? e).slice(0, 120));
+    return { path, status: 0, ok: false, ms: Date.now() - t0, size: 0 };
   }
 }
 
@@ -79,10 +80,11 @@ Deno.serve(async (req) => {
       headers: { "xi-api-key": KEY, "Content-Type": "application/json" },
       body: JSON.stringify({ text: "Bonjour, test AVA.", model_id: "eleven_multilingual_v2" }),
     });
-    const txt = r.ok ? "" : (await r.text()).slice(0, 300);
-    results.push({ name: "elevenlabs:POST /v1/text-to-speech (preview)", ok: r.ok, ms: Date.now() - t1, detail: `HTTP ${r.status} ${txt}` });
+    if (!r.ok) await r.text();
+    results.push({ name: "elevenlabs:POST /v1/text-to-speech (preview)", ok: r.ok, ms: Date.now() - t1, detail: `HTTP ${r.status}` });
   } catch (e) {
-    results.push({ name: "elevenlabs:POST /v1/text-to-speech (preview)", ok: false, ms: Date.now() - t1, detail: String((e as Error).message ?? e) });
+    console.warn("[pp-ava-voice-selftest] tts failed", String((e as Error).message ?? e).slice(0, 120));
+    results.push({ name: "elevenlabs:POST /v1/text-to-speech (preview)", ok: false, ms: Date.now() - t1, detail: "request_failed" });
   }
 
   // 4. Convai conversation token (exact call used by pp-ava-webrtc-token)
@@ -91,13 +93,13 @@ Deno.serve(async (req) => {
   results.push({ name: "env:ELEVENLABS_DEFAULT_AGENT_ID", ok: !!envAgent, ms: 0, detail: envAgent ? envAgent : "missing" });
   if (convAgent) {
     const tok = await el(`/v1/convai/conversation/token?agent_id=${encodeURIComponent(convAgent)}`);
-    results.push({ name: "elevenlabs:GET conversation/token", ok: tok.ok, ms: tok.ms, detail: `HTTP ${tok.status} — ${tok.sample}` });
+    results.push({ name: "elevenlabs:GET conversation/token", ok: tok.ok, ms: tok.ms, detail: `HTTP ${tok.status} — ${tok.size} bytes` });
     const su = await el(`/v1/convai/conversation/get-signed-url?agent_id=${encodeURIComponent(convAgent)}`);
-    results.push({ name: "elevenlabs:GET conversation/get-signed-url", ok: su.ok, ms: su.ms, detail: `HTTP ${su.status} — ${su.sample.slice(0, 80)}` });
+    results.push({ name: "elevenlabs:GET conversation/get-signed-url", ok: su.ok, ms: su.ms, detail: `HTTP ${su.status} — ${su.size} bytes` });
   }
 
   const subs = await el("/v1/user/subscription");
-  results.push({ name: "elevenlabs:subscription detail", ok: subs.ok, ms: subs.ms, detail: subs.sample });
+  results.push({ name: "elevenlabs:subscription detail", ok: subs.ok, ms: subs.ms, detail: `HTTP ${subs.status} — ${subs.size} bytes` });
 
   return jsonResponse({ success: true, generated_at: new Date().toISOString(), results });
 });

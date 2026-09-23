@@ -8,7 +8,9 @@ import {
   buildIdempotencyKey,
   claimAction,
   confirmationRequiredResult,
+  consumeFeedbackConfirmation,
   finishAction,
+  issueFeedbackConfirmation,
   isConfirmed,
   isSensitiveAvaTool,
   logProposal,
@@ -356,6 +358,43 @@ function ownerIds(ctx: Ctx): string[] {
 
 // ─── tool implementations ───────────────────────────────────────────────
 const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
+  // ===== FEEDBACK (chat + voice) =====
+  async submit_feedback(ctx, p) {
+    const title = String(p?.title ?? "").trim().slice(0, 200);
+    if (!title || /[\r\n]/.test(title)) return { success: false, error: "title_required" };
+    const sev = ["low", "normal", "high", "blocker"].includes(String(p?.severity)) ? String(p.severity) : "normal";
+    const source = p?.source === "ava_voice" ? "ava_voice" : "ava_chat";
+    const description = p?.description ? String(p.description).trim().slice(0, 5000) : null;
+    const page = p?.page ? String(p.page).trim().replace(/[?#].*$/, "").slice(0, 200) : null;
+    if (page && /[\r\n]/.test(page)) return { success: false, error: "page_invalid" };
+    // AVA never captures the current screen automatically. A broker can attach
+    // an explicit image only through the dedicated Feedback form.
+    const screenshots: string[] = [];
+    const { data, error } = await ctx.admin.from("pp_feedback_reports").insert({
+      reporter_id: ctx.userId,
+      reporter_name: (ctx.profile as any)?.full_name ?? (ctx.profile as any)?.email ?? null,
+      title, description, page, severity: sev, source, screenshots,
+      idempotency_key: String(p?.idempotency_key ?? "").slice(0, 160),
+    }).select("id").single();
+    if (error) return { success: false, error: error.message };
+    let notificationStatus = "pending";
+    try {
+      const response = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/pp-feedback-notify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")}` },
+        body: JSON.stringify({ report_id: data.id }),
+      });
+      const notification = await response.json().catch(() => ({}));
+      notificationStatus = String(notification?.notification_status ?? (response.ok ? "pending" : "failed"));
+    } catch { notificationStatus = "failed"; }
+    return {
+      success: true, report_id: data.id, screenshot_attached: false, notification_status: notificationStatus,
+      message: notificationStatus === "sent"
+        ? "Signalement enregistré et équipe avisée."
+        : "Signalement enregistré; avis à l'équipe en attente de confirmation.",
+    };
+  },
+
   // ===== TELEPHONY =====
   async make_call(ctx, p) {
     let to_number = firstText(p?.to_number, p?.to, p?.destination, p?.number, p?.phone_number, p?.phone);
@@ -1972,16 +2011,65 @@ Deno.serve(async (req) => {
       params.to ?? params.number ?? params.phone ?? params.recipient ?? params.contact_name ?? params.email ?? params.client_id ?? "",
     ).slice(0, 120) || null;
     const callId = params.call_id ? String(params.call_id) : null;
+    const feedback = tool_name === "submit_feedback";
+    const { feedback_confirmation_token: feedbackToken, confirmed: _confirmed, approved: _approved, ...feedbackPayload } = params;
     const idempotencyKey = await buildIdempotencyKey({
       userId: ctx.userId,
       action: tool_name,
       destination,
       callId,
-      payload: params,
+      payload: feedback ? feedbackPayload : params,
       provided: params.idempotency_key ?? null,
     });
 
-    if (!isConfirmed(params)) {
+    if (feedback && typeof feedbackToken !== "string") {
+      const { data: existingFeedback } = await ctx.admin
+        .from("planipret_ava_action_confirmations")
+        .select("status, result, confirmation_token, confirmation_expires_at")
+        .eq("user_id", ctx.userId)
+        .eq("action", "submit_feedback")
+        .eq("idempotency_key", idempotencyKey)
+        .maybeSingle();
+      if (existingFeedback?.status === "success") {
+        return jsonResponse({ ...(existingFeedback.result ?? {}), idempotent_replay: true, idempotency_key: idempotencyKey });
+      }
+      if (existingFeedback?.status === "pending" && existingFeedback.confirmation_token
+        && new Date(existingFeedback.confirmation_expires_at ?? 0).getTime() > Date.now()) {
+        const res = confirmationRequiredResult(tool_name, params);
+        return jsonResponse({ ...res, idempotency_key: idempotencyKey, feedback_confirmation_token: existingFeedback.confirmation_token });
+      }
+      const res = confirmationRequiredResult(tool_name, params);
+      await logProposal(ctx.admin, {
+        userId: ctx.userId,
+        callId,
+        sessionId: session_id ?? null,
+        action: tool_name,
+        surface: "ava_tool",
+        destination,
+        decision: "proposed",
+        idempotencyKey,
+      });
+      const token = await issueFeedbackConfirmation(ctx.admin, { userId: ctx.userId, sessionId: session_id ?? null, idempotencyKey });
+      if (!token) return jsonResponse({ success: false, error: "confirmation_unavailable" }, 503);
+      await logTool(ctx, session_id ?? "no-session", tool_name, params, res);
+      return jsonResponse({ ...res, idempotency_key: idempotencyKey, feedback_confirmation_token: token });
+    }
+
+    let feedbackClaimId: string | null = null;
+    if (feedback) {
+      feedbackClaimId = await consumeFeedbackConfirmation(ctx.admin, {
+        userId: ctx.userId,
+        token: feedbackToken,
+        idempotencyKey,
+      });
+      if (!feedbackClaimId) {
+        const { data: previous } = await ctx.admin.from("planipret_ava_action_confirmations")
+          .select("status, result").eq("user_id", ctx.userId).eq("action", "submit_feedback")
+          .eq("idempotency_key", idempotencyKey).maybeSingle();
+        if (previous?.status === "success") return jsonResponse({ ...(previous.result ?? {}), idempotent_replay: true, idempotency_key: idempotencyKey });
+        return jsonResponse({ success: false, needs_confirmation: true, error: "confirmation_invalid_or_expired" }, 409);
+      }
+    } else if (!isConfirmed(params)) {
       const res = confirmationRequiredResult(tool_name, params);
       await logProposal(ctx.admin, {
         userId: ctx.userId,
@@ -1997,20 +2085,22 @@ Deno.serve(async (req) => {
       return jsonResponse({ ...res, idempotency_key: idempotencyKey });
     }
 
-    const claim = await claimAction(ctx.admin, {
-      userId: ctx.userId,
-      brokerId: ctx.profile?.maestro_broker_id ? String(ctx.profile.maestro_broker_id) : null,
-      callId,
-      sessionId: session_id ?? null,
-      action: tool_name,
-      surface: "ava_tool",
-      destination,
-      idempotencyKey,
-    });
+    const claim = feedback
+      ? { id: feedbackClaimId, replay: false, result: null }
+      : await claimAction(ctx.admin, {
+        userId: ctx.userId,
+        brokerId: ctx.profile?.maestro_broker_id ? String(ctx.profile.maestro_broker_id) : null,
+        callId,
+        sessionId: session_id ?? null,
+        action: tool_name,
+        surface: "ava_tool",
+        destination,
+        idempotencyKey,
+      });
     if (claim.replay) return jsonResponse(claim.result);
 
     try {
-      const result = await fn(ctx, { ...params, confirmed: true, idempotency_key: idempotencyKey });
+      const result = await fn(ctx, { ...feedbackPayload, confirmed: true, idempotency_key: idempotencyKey });
       const ok = (result as any)?.success !== false;
       await finishAction(ctx.admin, claim.id, ok, result, ok ? null : String((result as any)?.error ?? "error"));
       await logTool(ctx, session_id ?? "no-session", tool_name, params, result);

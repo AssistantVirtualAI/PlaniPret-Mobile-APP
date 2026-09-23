@@ -22,8 +22,8 @@ android {
         applicationId = "com.planipret.mobile"
         minSdk = rootProject.ext.minSdkVersion
         targetSdk = rootProject.ext.targetSdkVersion
-        versionCode = 31
-        versionName = "1.5.1"
+        versionCode = 32
+        versionName = "1.5.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate

@@ -70,9 +70,9 @@
 
 <!-- Additional purpose strings required by App Review -->
 <key>NSCameraUsageDescription</key>
-<string>Planiprêt utilise l'appareil photo pour définir votre photo de profil.</string>
+<string>Planiprêt utilise l'appareil photo pour votre photo de profil et les captures jointes au feedback.</string>
 <key>NSPhotoLibraryUsageDescription</key>
-<string>Planiprêt accède à vos photos pour définir votre photo de profil.</string>
+<string>Planiprêt accède à vos photos pour votre photo de profil et les captures jointes au feedback.</string>
 <key>NSLocalNetworkUsageDescription</key>
 <string>Planiprêt utilise le réseau local pour établir l'audio des appels VoIP.</string>
 <key>NSSpeechRecognitionUsageDescription</key>

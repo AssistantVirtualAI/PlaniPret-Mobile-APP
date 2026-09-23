@@ -44,14 +44,14 @@ const voiceNames = new Set([...voiceBlock.matchAll(/"([a-z0-9_]+)"/g)].map((m) =
 const sensitiveBlock = confirmation.match(/AVA_SENSITIVE_TOOLS = new Set<string>\(\[([\s\S]*?)\]\)/)?.[1] ?? "";
 const sensitiveNames = unique([...sensitiveBlock.matchAll(/"([a-z0-9_]+)"/g)].map((m) => m[1]));
 
-check(specNames.length === 77, `Expected 77 AVA tool specs, found ${specNames.length}`);
+check(specNames.length === 78, `Expected 78 AVA tool specs, found ${specNames.length}`);
 check(expectedNames.length === specNames.length && specNames.every((n) => expectedNames.includes(n)), "EXPECTED_TOOL_NAMES must exactly cover all tool specs");
 check(specNames.every((n) => handlerNames.has(n)), `Missing executor handlers: ${specNames.filter((n) => !handlerNames.has(n)).join(", ")}`);
 check(specNames.every((n) => voiceNames.has(n)), `Missing voice client handlers: ${specNames.filter((n) => !voiceNames.has(n)).join(", ")}`);
 check(sensitiveNames.filter((n) => specNames.includes(n)).every((n) => voiceNames.has(n)), "Every registered sensitive AVA tool must be present in the mobile clientTools map");
 check(registry.includes('if (isSensitiveAvaTool(name))') && registry.includes('type: "client"') && registry.includes("expects_response: true"), "Sensitive ElevenLabs tools must be client tools with responses");
 check(executor.includes('auth.authMode === "ava_session" && isSensitiveAvaTool(tool_name)'), "Stale sensitive ElevenLabs webhooks must be rejected server-side");
-check(executor.includes('{ ...params, confirmed: true, idempotency_key: idempotencyKey }'), "Confirmed client execution must carry confirmation and idempotence");
+check(executor.includes('idempotency_key: idempotencyKey') && executor.includes('consumeFeedbackConfirmation') && executor.includes('issueFeedbackConfirmation'), "Confirmed client execution must carry idempotence and a server-bound Feedback confirmation");
 check(executor.includes('.in("user_id", ownerIds(ctx))') && executor.includes('error: "call_consent_required"'), "Recording, transcript and analysis tools must enforce call ownership and consent");
 
 const sendSmsBlock = executor.match(/async send_sms\(ctx, p\) \{([\s\S]*?)\n  \},\n\n  async get_sms_conversations/)?.[1] ?? "";
@@ -63,7 +63,7 @@ check(sendSmsBlock.includes("resolveSmsContact(ctx, name)") && executor.includes
 check(!chat.includes("sp.placeCall") && !chat.includes('functions.invoke("pp-ns-sms"'), "Chat suggestions must have one call owner and one SMS owner");
 check(chat.includes('functions.invoke("ava-tool-executor"') && chat.includes('tool_name: "send_sms"'), "Confirmed chat SMS must execute once through ava-tool-executor");
 check(chat.includes("normalizeAvaSmsRecipient") && chat.includes("contact_name: recipient.contactName"), "Confirmed chat SMS must pass a contact name to the server instead of discarding it");
-check(voice.includes('callServerTool(tool, { ...params, confirmed: true })'), "Voice confirmation button must pass confirmed=true");
+check(voice.includes('callServerTool(tool, { ...params, ...patched, confirmed: true })') && voice.includes('callServerTool(tool, { ...params, ...patched })'), "Voice confirmation must preserve standard confirmation and the Feedback token flow");
 check(voice.includes('tool === "make_call"') && voice.includes('owner: "mobile_softphone"'), "Confirmed voice calls must remain owned by the local mobile softphone");
 check(voice.includes('functions.invoke("pp-ava-chat"') && !voice.includes('functions.invoke("ava-assistant"'), "Voice text fallback must use the canonical Planiprêt chatbot");
 check(!softphone.includes("restAnswerLiveCall"), "Incoming SIP answer must never fall back to a REST-created call leg");

@@ -61,6 +61,7 @@ TÉLÉPHONIE: make_call, get_active_calls, hangup_call, get_call_history,
   get_recording, get_transcript, send_sms, get_sms_conversations,
   get_voicemails, generate_voicemail_greeting
 IA: analyze_call, get_hot_leads, get_coaching_summary
+FEEDBACK: submit_feedback (bug/problème/idée signalé par le courtier; présente titre, résumé, gravité et page; confirmation obligatoire; aucune capture automatique).
 MAESTRO (CRM interne uniquement): search_client, get_client_profile, get_client_history, create_task,
   create_appointment (⚠️ crée un RDV Maestro + miroir Outlook automatique si MS365 connecté),
   get_pending_tasks, get_upcoming_appointments, update_client, create_client,
@@ -123,6 +124,7 @@ MODE AUTONOMIE: confirmation obligatoire
 - Les lectures peuvent s'exécuter directement.
 - Toute action qui appelle, raccroche, envoie, crée, modifie, supprime ou pousse vers Maestro doit être confirmée dans l'interface mobile.
 - Ne prétends jamais qu'une action a réussi avant d'avoir reçu result.success === true.
+- Pour submit_feedback, dis « équipe avisée » uniquement si notification_status === "sent". Sinon, dis « signalement enregistré; avis à l'équipe en attente ».
 
 ═══════════════════════════════════
 EXEMPLES

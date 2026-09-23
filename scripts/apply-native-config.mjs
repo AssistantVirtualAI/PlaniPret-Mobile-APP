@@ -92,6 +92,8 @@ const ANDROID_PERMISSIONS = [
   "android.permission.DISABLE_KEYGUARD",
   "android.permission.TURN_SCREEN_ON",
   "android.permission.SHOW_WHEN_LOCKED",
+  // Feedback: take a photo. Gallery uses the Android system Photo Picker (no media permission needed).
+  "android.permission.CAMERA",
 ];
 
 const ANDROID_SERVICE = `
@@ -2808,13 +2810,16 @@ function patchIosInfoPlist() {
   const REQUIRED_PLIST_STRINGS = [
     ["NSMicrophoneUsageDescription", "Planipret uses the microphone to place and receive VoIP business calls."],
     ["NSContactsUsageDescription", "Planipret accesses your contacts so you can call and message your clients."],
-    ["NSCameraUsageDescription", "Planipret uses the camera so you can set a profile photo."],
-    ["NSPhotoLibraryUsageDescription", "Planipret accesses your photo library so you can pick a profile photo."],
+    ["NSCameraUsageDescription", "Planipret uses the camera so you can set a profile photo or take a screenshot photo for a feedback report."],
+    ["NSPhotoLibraryUsageDescription", "Planipret accesses your photo library so you can pick a profile photo or attach screenshots to a feedback report."],
     ["NSLocalNetworkUsageDescription", "Planipret uses the local network to establish VoIP call audio."],
     ["NSSpeechRecognitionUsageDescription", "Planipret transcribes your recorded calls when you enable transcription."],
   ];
   for (const [key, value] of REQUIRED_PLIST_STRINGS) {
-    if (!xml.includes(`<key>${key}</key>`)) {
+    const existing = new RegExp(`<key>${key}</key>\\s*<string>[\\s\\S]*?<\\/string>`);
+    if (existing.test(xml)) {
+      xml = xml.replace(existing, `<key>${key}</key>\n\t<string>${value}</string>`);
+    } else {
       xml = xml.replace(/\n<\/dict>\s*\n<\/plist>\s*$/, `\n\t<key>${key}</key>\n\t<string>${value}</string>\n</dict>\n</plist>\n`);
     }
   }

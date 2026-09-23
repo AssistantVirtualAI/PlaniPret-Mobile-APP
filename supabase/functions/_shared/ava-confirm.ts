@@ -31,6 +31,7 @@ export const AVA_SENSITIVE_TOOLS = new Set<string>([
   "push_call_summary",
   "push_client_note",
   "push_communication_log",
+  "submit_feedback",
 ]);
 
 export const isSensitiveAvaTool = (tool: string) => AVA_SENSITIVE_TOOLS.has(String(tool));
@@ -53,7 +54,8 @@ export const MS365_SENSITIVE_ACTIONS = new Set<string>([
 
 export const isSensitiveMs365Action = (action: string) => MS365_SENSITIVE_ACTIONS.has(String(action));
 
-/** `confirmed: true` (ou `approved: true`) explicitement fourni par le courtier. */
+/** Compatibility confirmation for established flows. New Feedback actions use
+ * an opaque, single-use server token instead of trusting this client boolean. */
 export function isConfirmed(params: any): boolean {
   return params?.confirmed === true || params?.approved === true;
 }
@@ -69,15 +71,16 @@ export function isAvaOriginated(params: any): boolean {
 
 
 export function confirmationRequiredResult(tool: string, params: any) {
+  const feedback = tool === "submit_feedback";
   return {
     success: false,
     needs_confirmation: true,
     error: "confirmation_required",
     tool_name: tool,
     proposal: params ?? {},
-    message:
-      "Cette action doit être confirmée par le courtier. Présente le canal, le destinataire " +
-      "et le texte complet, puis rappelle l'outil avec confirmed=true et la même idempotency_key.",
+    message: feedback
+      ? "Ce signalement doit être confirmé par le courtier. Présente le titre, le résumé, la gravité et la page, sans destinataire externe."
+      : "Cette action doit être confirmée par le courtier. Présente le canal, le destinataire et le texte complet.",
   };
 }
 
@@ -104,17 +107,21 @@ export async function buildIdempotencyKey(opts: {
   windowMs?: number;
   provided?: string | null;
 }): Promise<string> {
-  if (opts.provided && String(opts.provided).trim()) return String(opts.provided).trim().slice(0, 160);
+  if (opts.provided && String(opts.provided).trim()) {
+    const supplied = String(opts.provided).trim().slice(0, 160);
+    if (supplied.startsWith(`u:${opts.userId}:`)) return supplied;
+    return `u:${opts.userId}:${await sha(`provided:${supplied}`)}`.slice(0, 160);
+  }
   const win = Math.floor(Date.now() / (opts.windowMs ?? 10 * 60_000));
   const digest = await sha(stable(opts.payload ?? {}));
-  return [
-    opts.userId,
+  const canonical = [
     opts.action,
     (opts.destination ?? "").toString().slice(0, 64),
     opts.callId ?? "",
     digest,
     win,
-  ].join("|").slice(0, 160);
+  ].join("|");
+  return `u:${opts.userId}:${await sha(canonical)}`.slice(0, 160);
 }
 
 export type Claim =
@@ -140,6 +147,7 @@ export async function claimAction(admin: any, row: {
     .from("planipret_ava_action_confirmations")
     .select("id, status, result")
     .eq("idempotency_key", row.idempotencyKey)
+    .eq("user_id", row.userId)
     .maybeSingle();
 
   if (existing) {
@@ -179,6 +187,7 @@ export async function claimAction(admin: any, row: {
       .from("planipret_ava_action_confirmations")
       .select("id, status, result")
       .eq("idempotency_key", row.idempotencyKey)
+      .eq("user_id", row.userId)
       .maybeSingle();
     if (again?.status === "success") return { replay: true, result: { ...(again.result ?? {}), idempotent_replay: true } };
     return { replay: true, result: { success: true, pending: true, idempotent_replay: true } };
@@ -194,6 +203,48 @@ export async function finishAction(admin: any, id: string | null, ok: boolean, r
     error_code: ok ? null : String(errorCode ?? "").slice(0, 120) || "error",
     result: ok ? result ?? {} : { error: String(errorCode ?? "error").slice(0, 200) },
   }).eq("id", id);
+}
+
+/** Issues a short-lived token only for a Feedback proposal persisted under the
+ * authenticated broker. The client sends this token after a real confirmation tap. */
+export async function issueFeedbackConfirmation(admin: any, opts: {
+  userId: string;
+  sessionId?: string | null;
+  idempotencyKey: string;
+}): Promise<string | null> {
+  const token = crypto.randomUUID();
+  const expires = new Date(Date.now() + 10 * 60_000).toISOString();
+  const { error } = await admin.from("planipret_ava_action_confirmations").upsert({
+    user_id: opts.userId,
+    session_id: opts.sessionId ?? null,
+    action: "submit_feedback",
+    surface: "ava_feedback",
+    decision: "proposed",
+    status: "pending",
+    idempotency_key: opts.idempotencyKey,
+    confirmation_token: token,
+    confirmation_expires_at: expires,
+  }, { onConflict: "idempotency_key" });
+  return error ? null : token;
+}
+
+/** Atomically consumes the exact broker-bound Feedback token. */
+export async function consumeFeedbackConfirmation(admin: any, opts: {
+  userId: string;
+  token: string;
+  idempotencyKey: string;
+}): Promise<string | null> {
+  const { data, error } = await admin.from("planipret_ava_action_confirmations")
+    .update({ decision: "accepted", decided_at: new Date().toISOString(), status: "running", confirmation_token: null, confirmation_expires_at: null })
+    .eq("user_id", opts.userId)
+    .eq("action", "submit_feedback")
+    .eq("idempotency_key", opts.idempotencyKey)
+    .eq("confirmation_token", opts.token)
+    .gt("confirmation_expires_at", new Date().toISOString())
+    .eq("status", "pending")
+    .select("id")
+    .maybeSingle();
+  return !error && data?.id ? String(data.id) : null;
 }
 
 /** Trace une proposition refusée / annulée / non confirmée (jamais exécutée). */

@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties } from "react";
-import { Bell, Languages, Moon, Settings as SettingsIcon, Sun } from "lucide-react";
+import { Bell, Bug, Languages, Moon, Settings as SettingsIcon, Sun } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { useMplanipretTheme } from "@/hooks/useMplanipretTheme";
@@ -95,6 +95,15 @@ export default function MobileHeaderControls({ profile, reloadProfile }: { profi
           title={theme === "dark" ? "Mode clair" : "Mode sombre"}
         >
           {theme === "dark" ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
+        </button>
+
+        <button
+          onClick={() => navigate("/mplanipret/feedback")}
+          style={btn}
+          aria-label="Feedback"
+          title="Feedback"
+        >
+          <Bug className="w-3.5 h-3.5" />
         </button>
 
         <button

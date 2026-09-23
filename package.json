@@ -1,7 +1,7 @@
 {
   "name": "planipret-mobile",
-  "version": "1.5.1",
-  "androidVersionCode": 31,
+  "version": "1.5.2",
+  "androidVersionCode": 32,
   "description": "Planiprêt — Standalone Capacitor Mobile App (iOS + Android)",
   "private": true,
   "type": "module",
@@ -85,6 +85,7 @@
     "clsx": "^2.1.1",
     "dompurify": "^3.4.11",
     "framer-motion": "^11.15.0",
+    "html2canvas": "^1.4.1",
     "jssip": "^3.10.0",
     "lucide-react": "^0.462.0",
     "react": "^18.3.1",

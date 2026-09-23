@@ -71,6 +71,13 @@ describe("barrière de confirmation AVA", () => {
     expect(res.success).toBe(false);
     expect(res.needs_confirmation).toBe(true);
   });
+
+  it("classe le feedback comme mutation sensible et le résume sans destinataire", () => {
+    expect(isSensitiveAvaTool("submit_feedback")).toBe(true);
+    const res = confirmationRequiredResult("submit_feedback", { title: "Erreur tâches", severity: "high" });
+    expect(res.message).toMatch(/titre/i);
+    expect(res.message).toMatch(/sans destinataire externe/i);
+  });
 });
 
 describe("idempotence serveur", () => {
@@ -82,6 +89,14 @@ describe("idempotence serveur", () => {
 
   it("produit une clé différente si le contenu change", async () => {
     expect(await buildIdempotencyKey(args)).not.toBe(await buildIdempotencyKey({ ...args, payload: { body: "Autre" } }));
+  });
+
+  it("cloisonne une clé fournie entre courtiers", async () => {
+    const a = await buildIdempotencyKey({ ...args, userId: "broker-a", provided: "same-client-key" });
+    const b = await buildIdempotencyKey({ ...args, userId: "broker-b", provided: "same-client-key" });
+    expect(a).not.toBe(b);
+    expect(a).toMatch(/^u:broker-a:/);
+    expect(b).toMatch(/^u:broker-b:/);
   });
 
   it("un double tap ne produit qu'une seule exécution", async () => {
