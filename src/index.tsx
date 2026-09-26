@@ -9,6 +9,16 @@ import { Capacitor } from '@capacitor/core';
 import App from './App';
 import './styles.css';
 import { scheduleRuntimeSmokeCheck } from './lib/runtimeSmoke';
+// Benign browser notice from layout observers; never surface it as an app error.
+if (typeof window !== "undefined") {
+  window.addEventListener("error", (e) => {
+    if (typeof e.message === "string" && e.message.includes("ResizeObserver loop")) {
+      e.stopImmediatePropagation();
+      e.preventDefault();
+    }
+  }, true);
+}
+
 
 type BootWindow = Window & {
   __PP_REACT_BOOTED__?: boolean;

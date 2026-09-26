@@ -40,6 +40,7 @@ import { prefetchPpContacts, peekPpContacts } from "@/lib/ppContactsCache";
 import { PLANIPRET_PROFILE_SAFE_COLUMNS, PLANIPRET_PROFILE_BOOT_COLUMNS } from "@/lib/planipret/profileColumns";
 import { useRemoteConfig } from "@/hooks/useRemoteConfig";
 import { rememberPageForAva } from "@/lib/planipret/avaFeedback";
+import { rememberLastRoute } from "@/lib/planipret/lastRoute";
 
 import { retryWithBackoff, adaptiveTimeout } from "@/lib/net/resilient";
 
@@ -494,7 +495,7 @@ function Dialer({ open, onClose, initial, autoDial, openMessages, softphone, mae
 export default function PlanipretMobile() {
   const navigate = useNavigate();
   const location = useLocation();
-  useEffect(() => { rememberPageForAva(location.pathname); }, [location.pathname]);
+  useEffect(() => { rememberPageForAva(location.pathname); rememberLastRoute(location.pathname); }, [location.pathname]);
   const { t, lang, setLang } = useMplanipretLang();
   // Onglets pilotés à distance depuis le portail admin (aucun rebuild requis).
   const { isEnabled: isFeatureEnabled } = useRemoteConfig();
@@ -545,6 +546,20 @@ export default function PlanipretMobile() {
   const registerRefresh = (fn: (() => Promise<void> | void) | null) => { refreshFn.current = fn; };
   const handlePull = async () => { if (refreshFn.current) await refreshFn.current(); };
   const { ref: scrollRef, pullDist, refreshing, threshold } = usePullToRefresh(handlePull);
+
+  // Remember each page's scroll position so returning to a tab reopens it
+  // where the broker left it instead of jumping back to the top.
+  const scrollPositions = useRef(new Map<string, number>());
+  useEffect(() => {
+    const node = scrollRef.current as HTMLElement | null;
+    if (!node) return;
+    const path = location.pathname;
+    const onScroll = () => { scrollPositions.current.set(path, node.scrollTop); };
+    node.addEventListener("scroll", onScroll, { passive: true });
+    const saved = scrollPositions.current.get(path) ?? 0;
+    const raf = requestAnimationFrame(() => { node.scrollTop = saved; });
+    return () => { cancelAnimationFrame(raf); node.removeEventListener("scroll", onScroll); };
+  }, [location.pathname, scrollRef]);
 
   // Any Edge Function rejecting the session (401) routes here: clear message,
   // then back to the login screen instead of a silent failure / blank screen.
@@ -1189,8 +1204,8 @@ export default function PlanipretMobile() {
 
 
         {/* Tab bar (onglets pilotés depuis le portail) */}
-        <nav className="absolute bottom-[22px] inset-x-0 grid z-10 pp-mobile-tabbar"
-          style={{ height: 84, gridTemplateColumns: `repeat(${visibleTabs.length || 1}, minmax(0, 1fr))` }}>
+        <nav className="absolute inset-x-0 grid z-10 pp-mobile-tabbar"
+          style={{ bottom: "max(22px, env(safe-area-inset-bottom, 0px))", height: 84, gridTemplateColumns: `repeat(${visibleTabs.length || 1}, minmax(0, 1fr))` }}>
 
           {visibleTabs.map((tabItem) => {
             const badge = tabItem.to.endsWith("/messages") ? unreadMsg : 0;

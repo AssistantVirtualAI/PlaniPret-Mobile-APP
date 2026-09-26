@@ -5,6 +5,7 @@
 import { Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import AiConsentHost from "@/components/planipret/mobile/AiConsentHost";
 import { handleIncomingDeepLink } from '@/lib/deepLinkDebug';
+import { lastRememberedRoute } from '@/lib/planipret/lastRoute';
 import { useEffect } from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Toaster } from 'sonner';
@@ -75,6 +76,12 @@ const queryClient = new QueryClient({
     },
   },
 });
+
+// Cold start: reopen the last page the broker was on instead of always Home.
+function LastRouteRedirect() {
+  const target = lastRememberedRoute() ?? "/mplanipret";
+  return <Navigate to={target} replace />;
+}
 
 function NativeDeepLinkBridge() {
   const navigate = useNavigate();
@@ -151,7 +158,7 @@ export default function App() {
               <LazyRouteBoundary>
                 <NativeDeepLinkBridge />
                 <Routes>
-                  <Route path="/" element={<Navigate to="/mplanipret" replace />} />
+                  <Route path="/" element={<LastRouteRedirect />} />
                   <Route path="/login" element={<Navigate to="/mplanipret" replace />} />
                   <Route path="/auth/ms365/callback" element={<Ms365Callback />} />
                   <Route path="/auth/microsoft/callback" element={<Ms365Callback />} />

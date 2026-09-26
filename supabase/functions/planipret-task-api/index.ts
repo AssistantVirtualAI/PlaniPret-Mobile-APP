@@ -118,7 +118,7 @@ const LIST_STATUSES = new Set(["pending", "open", "complete"]);
 function makeListFetch(token: string | null) {
   return async (
     maestroId: string,
-    opts: { status?: string | null; from?: string | null; to?: string | null; type?: "user" | "contract" | null; findTaskId?: string | null },
+    opts: { status?: string | null; from?: string | null; to?: string | null; type?: "user" | "contract" | null; findTaskId?: string | null; scopeOnly?: boolean },
   ): Promise<UpstreamList> => {
     // Documented list endpoint (Scribe docs 2026-09-09):
     //   GET /api/main/tasks?status=&delegate_users_id=&date_from=&date_to=&per_page=
@@ -146,8 +146,9 @@ function makeListFetch(token: string | null) {
     const candidates: Array<{ filter: "delegate_users_id" | "target_id" | null; value?: string }> = [
       { filter: "delegate_users_id", value: maestroId },
       { filter: "target_id", value: maestroId },
-      // Dernier recours, non filtré côté Maestro (filtré localement par assignation).
-      { filter: null },
+      // Scope checks for PUT/DELETE must never fall back to an unfiltered list:
+      // knowing another broker's task id is not authority to mutate it.
+      ...(opts.scopeOnly ? [] : [{ filter: null }]),
     ];
 
     // Read-back of a precise task: keep probing the documented filters until

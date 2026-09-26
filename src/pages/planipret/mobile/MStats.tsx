@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { useOutletContext, useNavigate } from "react-router-dom";
+import MobilePageHeader from "@/components/planipret/mobile/MobilePageHeader";
+import { useOutletContext } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { readScreenCache, writeScreenCache, TTL } from "@/lib/planipret/screenCache";
-import { ArrowLeft, Phone, TrendingUp, Award, Flame, Sparkles } from "lucide-react";
+import { Phone, TrendingUp, Award, Flame, Sparkles } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, PieChart, Pie, Cell, Legend } from "recharts";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
 import CoachOverlay from "@/components/planipret/ava/CoachOverlay";
@@ -22,7 +23,6 @@ const DANGER = "#E84C4C";
 export default function MStats() {
   const { t, lang } = useMplanipretLang();
   const { profile, openDialer, openAva } = useOutletContext<PlanipretMobileContext>();
-  const navigate = useNavigate();
   const [period, setPeriod] = useState<Period>("week");
   const [calls, setCalls] = useState<any[]>([]);
   const [leads, setLeads] = useState<any[]>([]);
@@ -112,13 +112,10 @@ export default function MStats() {
 
   return (
     <div className="p-4">
-      <header className="flex items-center gap-2 mb-4">
-        <button onClick={() => navigate(-1)} className="p-1.5 rounded-full hover:bg-slate-100"><ArrowLeft className="w-5 h-5" /></button>
-        <div>
-          <h1 className="text-xl font-bold" style={{ color: "var(--pp-text-primary)" }}>{t("stats.title")}</h1>
-          <p className="text-xs text-slate-400">{profile?.full_name ?? ""} · {new Date().toLocaleDateString(lang === "en" ? "en-CA" : "fr-CA", { month: "long", year: "numeric" })}</p>
-        </div>
-      </header>
+      <div className="mb-4">
+        <MobilePageHeader title={t("stats.title")}
+          subtitle={`${profile?.full_name ?? ""} · ${new Date().toLocaleDateString(lang === "en" ? "en-CA" : "fr-CA", { month: "long", year: "numeric" })}`} />
+      </div>
 
       <div className="flex gap-1.5 mb-4 bg-slate-100 rounded-full p-1 text-xs">
         {(["week", "month", "quarter"] as Period[]).map((p) => (

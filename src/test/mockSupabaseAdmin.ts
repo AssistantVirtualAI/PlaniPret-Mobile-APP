@@ -19,6 +19,7 @@ class Query implements PromiseLike<{ data: any; error: any }> {
   select(_cols?: string) { this.mode = "select"; return this; }
   update(patch: Row) { this.mode = "update"; this.patch = patch; return this; }
   eq(col: string, value: any) { this.filters.push({ col, op: "eq", value }); return this; }
+  neq(col: string, value: any) { this.filters.push({ col, op: "notIn", value: [String(value)] }); return this; }
   in(col: string, values: any[]) { this.filters.push({ col, op: "in", value: values.map(String) }); return this; }
   is(col: string, value: any) { this.filters.push({ col, op: "is", value }); return this; }
   not(col: string, _op: string, list: string) {

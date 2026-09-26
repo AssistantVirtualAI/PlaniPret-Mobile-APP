@@ -170,7 +170,11 @@ describe("planipret task handler — idempotency", () => {
 
   it("replayed AVA tool-call deletes only once", async () => {
     const { deps, apiFetch } = makeDeps({
-      listFetch: async () => ({ ok: true, tasks: [], endpoint: "/api/main/tasks", status: 200, complete: true }),
+      listFetch: async (_id: string, opts: any) => ({
+        ok: true,
+        tasks: opts.scopeOnly ? [{ id: 946044, users: [{ id: 93135 }], xid: 387460525, type: "user" }] : [],
+        endpoint: "/api/main/tasks", status: 200, complete: true,
+      }),
     });
     const body = { action: "delete", task_id: "946044", source: "ava_voice" };
     const a = await handleTaskRequest(body, deps);
@@ -214,7 +218,11 @@ describe("planipret task handler — update & delete", () => {
 
   it("never declares an update successful before Maestro reads it back", async () => {
     const { deps } = makeDeps({
-      listFetch: async () => ({ ok: true, tasks: [], endpoint: "/api/main/tasks", status: 200, complete: true }),
+      listFetch: async (_id: string, opts: any) => ({
+        ok: true,
+        tasks: opts.scopeOnly ? [{ id: 946044, users: [{ id: 93135 }], xid: 387460525, type: "user" }] : [],
+        endpoint: "/api/main/tasks", status: 200, complete: true,
+      }),
     });
     const out = await handleTaskRequest(
       { action: "update", task_id: "946044", changes: { notes: "Déplacée" } },
@@ -241,13 +249,32 @@ describe("planipret task handler — update & delete", () => {
     expect(out.body.error).toBe("validation_failed");
   });
 
+  it("does not PUT a task absent from the broker's documented scoped lists", async () => {
+    const listFetch = vi.fn(async (_id: string, opts: any) => ({
+      ok: true,
+      // Simulate a task visible only from an unfiltered lookup. Scope validation
+      // must neither trust that result nor send a mutating Maestro request.
+      tasks: opts.scopeOnly ? [] : [{ id: "2", users: [{ id: 777 }], xid: 999999, type: "user" }],
+      endpoint: "/api/main/tasks", status: 200, complete: true,
+    }));
+    const { deps, apiFetch } = makeDeps({ listFetch });
+    const out = await handleTaskRequest({ action: "update", task_id: "2", changes: { notes: "Interdit" } }, deps);
+    expect(out.body).toMatchObject({ success: false, error: "task_not_in_broker_scope", task_id: "2" });
+    expect(apiFetch).not.toHaveBeenCalled();
+    expect(listFetch).toHaveBeenCalledWith("93135", expect.objectContaining({ findTaskId: "2", scopeOnly: true }));
+  });
+
   it("allows delete for a broker and soft-deletes the projection row", async () => {
     const admin = createMockAdmin({
       planipret_tasks_projection: [{ user_id: USER, task_id: "946044", deleted_at: null, payload: { id: "946044" } }],
     });
     const { deps, calls } = makeDeps({
       admin,
-      listFetch: async () => ({ ok: true, tasks: [], endpoint: "/api/main/tasks", status: 200, complete: true }),
+      listFetch: async (_id: string, opts: any) => ({
+        ok: true,
+        tasks: opts.scopeOnly ? [{ id: 946044, users: [{ id: 93135 }], xid: 387460525, type: "user" }] : [],
+        endpoint: "/api/main/tasks", status: 200, complete: true,
+      }),
     });
     const out = await handleTaskRequest({ action: "delete", task_id: "946044" }, deps);
     expect(out.body).toMatchObject({ success: true, deleted: true });
@@ -262,11 +289,28 @@ describe("planipret task handler — update & delete", () => {
     });
     const { deps } = makeDeps({
       admin,
-      listFetch: async () => ({ ok: true, tasks: [{ id: "946044" }], endpoint: "/api/main/tasks", status: 200, complete: true }),
+      listFetch: async (_id: string, opts: any) => ({
+        ok: true,
+        tasks: opts.scopeOnly ? [{ id: "946044", users: [{ id: 93135 }], xid: 387460525, type: "user" }] : [{ id: "946044" }],
+        endpoint: "/api/main/tasks", status: 200, complete: true,
+      }),
     });
     const out = await handleTaskRequest({ action: "delete", task_id: "946044" }, deps);
     expect(out.body).toMatchObject({ success: false, pending_confirmation: true, deleted: false });
     expect(admin.db.planipret_tasks_projection[0].deleted_at).toBeNull();
+  });
+
+  it("does not DELETE a task absent from the broker's documented scoped lists", async () => {
+    const listFetch = vi.fn(async (_id: string, opts: any) => ({
+      ok: true,
+      tasks: opts.scopeOnly ? [] : [{ id: "2", users: [{ id: 777 }], xid: 999999, type: "user" }],
+      endpoint: "/api/main/tasks", status: 200, complete: true,
+    }));
+    const { deps, apiFetch } = makeDeps({ listFetch });
+    const out = await handleTaskRequest({ action: "delete", task_id: "2" }, deps);
+    expect(out.body).toMatchObject({ success: false, error: "task_not_in_broker_scope", task_id: "2" });
+    expect(apiFetch).not.toHaveBeenCalled();
+    expect(listFetch).toHaveBeenCalledWith("93135", expect.objectContaining({ findTaskId: "2", scopeOnly: true }));
   });
 
   it("forbids delete for the assistant role", async () => {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import MobilePageHeader from "@/components/planipret/mobile/MobilePageHeader";
 import { Link, useNavigate, useOutletContext } from "react-router-dom";
-import { ChevronLeft, Link2, MessageSquare, Phone, RefreshCw, CheckSquare, Wallet } from "lucide-react";
+import { Link2, MessageSquare, Phone, CheckSquare, Wallet } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { readScreenCache, writeScreenCache, TTL } from "@/lib/planipret/screenCache";
@@ -117,17 +118,7 @@ export default function MMaestro() {
 
   return (
     <div className="p-4 space-y-4">
-      <div className="flex items-center gap-2">
-        <button onClick={() => navigate(-1)} aria-label={L("Retour", "Back")}
-          className="w-11 h-11 rounded-xl flex items-center justify-center" style={surface}>
-          <ChevronLeft className="w-4 h-4" />
-        </button>
-        <h1 className="text-base font-semibold pp-heading">Maestro</h1>
-        <button onClick={() => void load(true)} aria-label={L("Actualiser", "Refresh")}
-          className="ml-auto w-11 h-11 rounded-xl flex items-center justify-center" style={surface}>
-          <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
-        </button>
-      </div>
+      <MobilePageHeader title="Maestro" onRefresh={() => void load(true)} refreshing={loading} />
 
       <div className="grid grid-cols-2 gap-1.5">
         {([
