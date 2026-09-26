@@ -175,4 +175,40 @@ describe("MCommissions (mobile)", () => {
     fireEvent.click(rows[0].closest("button")!);
     await waitFor(() => expect(screen.getAllByLabelText("Fermer").length).toBeGreaterThan(0));
   });
+
+  it("permet à un administrateur de basculer entre la vue cabinet et sa vue personnelle", async () => {
+    outletProfile = { role: "admin", maestro_broker_id: "123", user_id: "admin-1" };
+    render(<MCommissions />);
+    await waitFor(() => expect(money("156 282 $")).toBeInTheDocument());
+
+    const summaryCalls = () => invokeMock.mock.calls
+      .filter((c) => c[1]?.body?.action === "summary");
+    expect(summaryCalls()[0][1].body.filters.users_id).toBeUndefined();
+
+    fireEvent.click(screen.getByText("Mes commissions"));
+    await waitFor(() => {
+      const calls = summaryCalls();
+      expect(calls[calls.length - 1][1].body.filters.users_id).toBe("123");
+    });
+  });
+
+  it("affiche une cause utile quand le jeton Maestro administrateur manque", async () => {
+    outletProfile = { role: "admin", maestro_broker_id: "123", user_id: "admin-1" };
+    invokeMock.mockImplementation((fn: string, opts: any) =>
+      opts?.body?.action === "summary" || opts?.body?.action === "deposits"
+        ? Promise.resolve({
+          data: {
+            success: false,
+            error: "admin_scope_unavailable",
+            message: "server implementation detail",
+          },
+          error: null,
+        })
+        : respond(fn, opts),
+    );
+
+    render(<MCommissions />);
+    expect(await screen.findByText(/requiert un accès Maestro administrateur/i)).toBeInTheDocument();
+    expect(screen.queryByText("server implementation detail")).not.toBeInTheDocument();
+  });
 });

@@ -3,7 +3,6 @@
 // hors de la session, aucun jeton Maestro côté client.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useOutletContext, useNavigate, useSearchParams } from "react-router-dom";
-import { supabase } from "@/integrations/supabase/client";
 import {
   ArrowLeft, RefreshCw, SlidersHorizontal, TrendingUp, Wallet,
   Building2, Receipt, X, Bot, AlertTriangle,
@@ -13,6 +12,7 @@ import MCommissionCharts from "@/components/planipret/mobile/MCommissionCharts";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { isStatsCacheFresh, readStatsCache, statsCacheKey, writeStatsCache } from "@/lib/planipret/commissionsCache";
+import { ppEdgeInvoke } from "@/lib/planipret/ppEdge";
 
 type Period = "month" | "quarter" | "year" | "ytd" | "custom";
 
@@ -69,6 +69,18 @@ const numOf = (v: unknown) => {
   const n = Number(String(v ?? "").replace(/[^0-9.\-]/g, ""));
   return Number.isFinite(n) ? n : 0;
 };
+
+function commissionErrorMessage(error: unknown, payload?: any) {
+  const code = String(payload?.error ?? error ?? "").trim();
+  const message = String(payload?.message ?? error ?? "").trim();
+  if (code === "admin_scope_unavailable") {
+    return "La vue « Tous les courtiers » requiert un accès Maestro administrateur. Vos commissions personnelles restent disponibles.";
+  }
+  if (/failed to send|failed to fetch|networkerror|load failed/i.test(message)) {
+    return "La connexion aux commissions est temporairement indisponible. Réessayez dans un instant.";
+  }
+  return message || "Les commissions sont temporairement indisponibles.";
+}
 /** Masque raisonnable des noms de clients dans les aperçus de liste. */
 const mask = (name: string | null | undefined) => {
   const v = String(name ?? "").trim();
@@ -174,9 +186,11 @@ export default function MCommissions() {
 
 
   const call = useCallback(async (body: Record<string, unknown>) => {
-    const { data, error: fnErr } = await supabase.functions.invoke("planipret-commission-reports", { body });
-    if (fnErr) throw new Error(fnErr.message);
-    if (data?.error) throw new Error(data.message ?? data.error);
+    const { data, error: fnErr } = await ppEdgeInvoke<any>("planipret-commission-reports", body, { retries: 1 });
+    if (fnErr) throw new Error(commissionErrorMessage(fnErr.message, data));
+    if (data?.error || data?.success === false || data?.ok === false) {
+      throw new Error(commissionErrorMessage(data?.error, data));
+    }
     return data;
   }, []);
 

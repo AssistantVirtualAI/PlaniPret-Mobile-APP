@@ -350,3 +350,6 @@ verify_jwt = true
 
 [functions.call-center-sync]
 verify_jwt = true
+
+[functions.planipret-commission-reports]
+verify_jwt = true

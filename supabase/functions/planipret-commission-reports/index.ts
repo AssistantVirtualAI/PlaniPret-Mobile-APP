@@ -26,6 +26,7 @@ import {
   type CommissionDepositRow,
 } from "../_shared/commission-reports.ts";
 import { getMaestroAdminAccessToken } from "../_shared/maestro-admin-token.ts";
+import { resolveCommissionScope } from "../_shared/commission-scope.ts";
 
 const json = (body: unknown, status = 200, cid?: string) =>
   new Response(JSON.stringify(body), {
@@ -157,18 +158,15 @@ Deno.serve(async (req) => {
     // is stored.  Use that profile owner only after exact email matching above.
     const maestroTokenOwnerId = String(profile.user_id ?? authenticatedUser.id);
     const ownToken = await getUserMaestroAccessToken(admin, maestroTokenOwnerId);
-    const firmToken = role === "admin" ? await getMaestroAdminAccessToken() : { token: null, source: "none" as const };
-    const resolvedToken = firmToken.token ?? ownToken;
-    const token: string | null = resolvedToken;
-    if (!token) {
-      return applicationError("maestro_not_connected", "Votre compte Maestro n'est pas connecté. Reconnectez-le dans Réglages › Connexions.", cid);
-    }
+    const firmToken = role === "admin"
+      ? await getMaestroAdminAccessToken()
+      : { token: null, source: "none" as const };
 
     let resolvedUsersId: string | null =
       profile.maestro_broker_id != null ? String(profile.maestro_broker_id) : null;
-    if (!resolvedUsersId) {
+    if (!resolvedUsersId && ownToken) {
       const env = getMaestroOAuthEnv();
-      const identity = await fetchMaestroUserProfile(env, token);
+      const identity = await fetchMaestroUserProfile(env, ownToken);
       resolvedUsersId = extractMaestroBrokerId(identity);
       if (resolvedUsersId) {
         await admin.from("planipret_profiles")
@@ -189,15 +187,29 @@ Deno.serve(async (req) => {
         return applicationError("broker_id_unresolved", "Impossible de résoudre votre identifiant Maestro. Reconnectez votre compte Maestro.", cid);
       }
       filters.users_id = resolvedUsersId;
-    } else if (role === "admin" && !filters.users_id && resolvedUsersId) {
-      // Un admin ne rapatrie jamais la firme entière par défaut : sans courtier
-      // explicitement choisi, la portée reste son propre identifiant Maestro.
-      filters.users_id = resolvedUsersId;
     }
+
+    const scopeError = (error: "broker_id_unresolved" | "maestro_not_connected" | "admin_scope_unavailable") => {
+      const messages = {
+        broker_id_unresolved: "Impossible de résoudre votre identifiant Maestro. Reconnectez votre compte Maestro.",
+        maestro_not_connected: "Votre compte Maestro n'est pas connecté. Reconnectez-le dans Réglages › Connexions.",
+        admin_scope_unavailable: "La vue « Tous les courtiers » requiert un accès Maestro administrateur. Votre vue personnelle reste disponible.",
+      };
+      return applicationError(error, messages[error], cid);
+    };
 
     // ---- Institutions ----------------------------------------------------
     if (action === "institutions") {
-      const r = await commissionGet("/api/main/financial-institutions", token, cid);
+      const scope = resolveCommissionScope({
+        role: role as "admin" | "broker",
+        action,
+        requestedUsersId: filters.users_id,
+        ownUsersId: resolvedUsersId,
+        ownToken,
+        firmToken: firmToken.token,
+      });
+      if (!scope.ok) return scopeError(scope.error);
+      const r = await commissionGet("/api/main/financial-institutions", scope.token, cid);
       if (!r.ok) return upstream(r, cid);
       const list = Array.isArray(r.data?.data) ? r.data.data : Array.isArray(r.data) ? r.data : [];
       return json({
@@ -210,7 +222,16 @@ Deno.serve(async (req) => {
 
     // ---- Agents (admin: tous ; broker: soi-même + son équipe, filtré par Maestro) ----
     if (action === "agents") {
-      const r = await commissionGet("/api/main/commissions/reports/agents", token, cid);
+      const scope = resolveCommissionScope({
+        role: role as "admin" | "broker",
+        action,
+        requestedUsersId: filters.users_id,
+        ownUsersId: resolvedUsersId,
+        ownToken,
+        firmToken: firmToken.token,
+      });
+      if (!scope.ok) return scopeError(scope.error);
+      const r = await commissionGet("/api/main/commissions/reports/agents", scope.token, cid);
       if (!r.ok) return upstream(r, cid);
       const list = Array.isArray(r.data?.data) ? r.data.data : Array.isArray(r.data) ? r.data : [];
       const pick = (a: any) =>
@@ -247,43 +268,32 @@ Deno.serve(async (req) => {
     }
 
 
-    // ---- Source unique (aucun fan-out firme) ------------------------------
-    // Volume oblige : on n'interroge jamais Maestro avec les jetons de tous les
-    // courtiers. La portée est toujours UN courtier — soi-même par défaut, ou
-    // celui explicitement sélectionné par un admin.
+    // ---- Source unique (aucun fan-out ni jeton d'un autre courtier) -------
+    // La portée est strictement celle du jeton appelant, ou celle du jeton
+    // administrateur Maestro explicitement configuré pour « Tous les courtiers ».
+    const reportScope = resolveCommissionScope({
+      role: role as "admin" | "broker",
+      action,
+      requestedUsersId: filters.users_id,
+      ownUsersId: resolvedUsersId,
+      ownToken,
+      firmToken: firmToken.token,
+    });
+    if (!reportScope.ok) return scopeError(reportScope.error);
+    const activeReportScope: Extract<typeof reportScope, { ok: true }> = reportScope;
+
     type Src = { token: string; label: string; user_id: string | null };
     const failures: { broker: string; status: number; message: string }[] = [];
     let coverage = { connected: 1, total: 1 };
 
     async function collectSources(): Promise<Src[]> {
-      const selected = filters.users_id ? String(filters.users_id) : null;
-      const isOwn = !selected || (resolvedUsersId && selected === String(resolvedUsersId));
-
-      if (isOwn) {
-        // `token` is proven above; use the local constant in this closure so
-        // TypeScript does not lose the null check across async boundaries.
-        return [{ token: ownToken ?? token!, label: String(profile.full_name ?? profile.email ?? "moi"), user_id: authenticatedUser.id }];
-      }
-
-      // Admin qui consulte un autre courtier : jeton firme si disponible,
-      // sinon le jeton personnel de CE courtier uniquement.
-      if (firmToken.token) {
-        return [{ token: firmToken.token, label: "Planiprêt", user_id: null }];
-      }
-      const { data: peer } = await admin
-        .from("planipret_profiles")
-        .select("id, user_id, full_name, email")
-        .eq("maestro_broker_id", selected)
-        .limit(1)
-        .maybeSingle();
-      const pid = (peer as any)?.user_id ?? (peer as any)?.id ?? null;
-      const label = String((peer as any)?.full_name ?? (peer as any)?.email ?? selected);
-      const t = pid ? await getUserMaestroAccessToken(admin, pid).catch(() => null) : null;
-      if (!t) {
-        failures.push({ broker: label, status: 409, message: "maestro_not_connected" });
-        return [];
-      }
-      return [{ token: t, label, user_id: pid }];
+      if (activeReportScope.usersId) filters.users_id = activeReportScope.usersId;
+      else delete filters.users_id;
+      return [{
+        token: activeReportScope.token,
+        label: activeReportScope.mode === "own" ? String(profile.full_name ?? profile.email ?? "moi") : "Planiprêt",
+        user_id: activeReportScope.mode === "own" ? authenticatedUser.id : null,
+      }];
     }
 
     /** Parcourt toutes les pages de dépôts pour un jeton donné. */
