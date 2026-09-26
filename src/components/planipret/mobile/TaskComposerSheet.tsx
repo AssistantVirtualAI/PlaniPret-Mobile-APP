@@ -659,19 +659,32 @@ export default function TaskComposerSheet({ open, lang, defaultTarget, busy, ini
 
           {recurring && (
             <div className="space-y-3 rounded-2xl p-4" style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border)" }}>
-              <div className="flex gap-3">
-                <input type="number" min={1} className={field} style={fieldStyle} value={recValue}
-                  aria-label={L("Valeur de récurrence", "Recurrence value")}
-                  onChange={(e) => setRecValue(Math.max(1, Number(e.target.value) || 1))} />
-                <div className="relative flex-1">
-                  <select className={`${field} appearance-none pr-9`} style={fieldStyle} value={pattern} aria-label={L("Fréquence", "Pattern")}
-                    onChange={(e) => setPattern(e.target.value)}>
-                    <option value="day">{L("Jour", "Day")}</option>
-                    <option value="week">{L("Semaine", "Week")}</option>
-                    <option value="month">{L("Mois", "Month")}</option>
-                    <option value="year">{L("Année", "Year")}</option>
-                  </select>
-                  <ChevronDown className="w-4 h-4 absolute right-3.5 top-1/2 -translate-y-1/2 pointer-events-none" style={{ color: "var(--pp-text-muted)" }} />
+              <div>
+                <span className={labelCls} style={labelStyle}>{L("Répéter tous les", "Repeat every")}</span>
+                <div className="grid grid-cols-[88px_1fr] gap-3 mt-1">
+                  <input type="number" min={1} inputMode="numeric" className={field} style={fieldStyle} value={recValue}
+                    aria-label={L("Nombre d’intervalles", "Number of intervals")}
+                    onChange={(e) => setRecValue(Math.max(1, Number(e.target.value) || 1))} />
+                  <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label={L("Fréquence", "Frequency")}>
+                    {[
+                      ["day", L("Jour", "Day")],
+                      ["week", L("Semaine", "Week")],
+                      ["month", L("Mois", "Month")],
+                      ["year", L("Année", "Year")],
+                    ].map(([value, text]) => {
+                      const selected = pattern === value;
+                      return (
+                        <button key={value} type="button" role="radio" aria-checked={selected}
+                          onClick={() => setPattern(value)}
+                          className="min-h-[44px] rounded-xl px-2 text-sm font-semibold"
+                          style={selected
+                            ? { background: "var(--pp-brand-accent)", color: "var(--pp-text-on-accent)", border: "1px solid var(--pp-brand-accent)" }
+                            : { background: "var(--pp-bg-surface)", color: "var(--pp-text-primary)", border: "1px solid var(--pp-bg-border)" }}>
+                          {text}
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
               {pattern === "week" && (

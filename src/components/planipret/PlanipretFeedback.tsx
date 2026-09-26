@@ -196,7 +196,7 @@ export default function PlanipretFeedback({ source = "portal", compact = false }
   const takePhoto = async () => {
     try {
       if (!(await ensurePerm("camera"))) return;
-      const ph = await CapCamera.getPhoto({ quality: 80, resultType: CameraResultType.Uri, source: CameraSource.Camera });
+      const ph = await CapCamera.getPhoto({ quality: 80, saveToGallery: false, resultType: CameraResultType.Uri, source: CameraSource.Camera });
       if (ph.webPath) { const f = await webPathToFile(ph.webPath, 0); if (SAFE_IMAGE_TYPES.has(f.type) && f.size <= MAX_FILE_BYTES) setFiles((p) => [...p, f].slice(0, MAX_ATTACHMENTS)); }
     } catch (e: any) { if (!/cancel/i.test(e?.message ?? "")) toast.error(e?.message ?? "Camera"); }
   };

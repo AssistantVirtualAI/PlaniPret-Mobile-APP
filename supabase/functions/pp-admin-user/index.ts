@@ -387,10 +387,10 @@ Deno.serve(async (req) => {
       //    with the widget (widget device is NEVER touched here).
       const mobile = await ensureMobileDevice(admin, newProfile.id, ns_extension, NS_DEFAULT_DOMAIN);
 
-      // 5) Assignation automatique d'un DID au nouveau poste : sans destination
-      //    `user_XXXX` dans le PBX, l'opérateur répond « the number can't be
-      //    completed as dialled ». Écriture ciblée + relecture obligatoire.
-      const did = await autoAssignDid(admin, ns_extension, full_name);
+      // 5) DID : jamais écrit automatiquement (contrainte NetSapiens — le
+      //    numéro public est assigné manuellement dans le portail NetSapiens).
+      void autoAssignDid;
+      const did: any = { assigned: false, diagnostic: "DID à assigner manuellement dans NetSapiens." };
 
       await logAudit(admin, req, {
         admin_id: profile.id, action: "USER_CREATE",

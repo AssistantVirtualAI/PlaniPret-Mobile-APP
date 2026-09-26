@@ -1129,11 +1129,11 @@ export default function PlanipretMobile() {
   return (
     <Frame>
       <AiConsentHost />
-      <div className="h-full flex flex-col relative overflow-hidden" style={{ background: "var(--pp-bg-base)" }}>
+      <div data-pp-pinned="true" className="h-full flex flex-col relative overflow-hidden" style={{ background: "var(--pp-bg-base)" }}>
 
         {/* Top brand header — AVA (left) · Planiprêt (center) · Settings (right) */}
         <header
-          className="relative flex items-center px-4 pp-mobile-header"
+          className="relative shrink-0 flex items-center px-4 pp-mobile-header"
           style={{ paddingTop: "calc(env(safe-area-inset-top, 0px) + 6px)", paddingBottom: 6 }}
         >
 
@@ -1322,10 +1322,44 @@ function Frame({ children, forceDark = false }: { children: React.ReactNode; for
     lockHeight(true);
     const onResize = () => lockHeight(false);
     const onOrientation = () => window.setTimeout(() => lockHeight(true), 350);
-    window.addEventListener("resize", onResize);
+    // iOS keeps the page scrolled after the keyboard or an external browser
+    // (Maestro OAuth) closes, pushing the top header out of view.
+    const resetScroll = () => {
+      if (isTyping()) return;
+      if (window.scrollY || document.documentElement.scrollTop || document.body.scrollTop) window.scrollTo(0, 0);
+      document.documentElement.scrollTop = 0; document.body.scrollTop = 0;
+      const frame = document.getElementById("pp-mobile-frame");
+      if (frame) frame.scrollTop = 0;
+      frame?.querySelectorAll<HTMLElement>('[data-pp-pinned="true"]').forEach((el) => { if (el.scrollTop) el.scrollTop = 0; });
+    };
+    const onFocusOut = () => window.setTimeout(() => { lockHeight(true); resetScroll(); }, 120);
+    const onVisible = () => { if (document.visibilityState === "visible") window.setTimeout(() => { lockHeight(true); resetScroll(); }, 200); };
+    const onResizeAll = () => { onResize(); resetScroll(); };
+    window.addEventListener("resize", onResizeAll);
     window.addEventListener("orientationchange", onOrientation);
+    // scrollIntoView() also scrolls overflow-hidden ancestors (the frame and
+    // the header column), which hides the top bar until a reload. Pin them.
+    const onAnyScroll = (e: Event) => {
+      const el = e.target as HTMLElement | Document;
+      if (el === document || el === document.documentElement || el === document.body) {
+        if (!isTyping() && window.scrollY) window.scrollTo(0, 0);
+        return;
+      }
+      const node = el as HTMLElement;
+      if (node.scrollTop && (node.id === "pp-mobile-frame" || node.dataset?.ppPinned === "true")) node.scrollTop = 0;
+    };
+    document.addEventListener("scroll", onAnyScroll, true);
+    window.addEventListener("focusout", onFocusOut);
+    window.addEventListener("pageshow", onVisible);
+    document.addEventListener("visibilitychange", onVisible);
+    window.visualViewport?.addEventListener("resize", onResizeAll);
     return () => {
-      window.removeEventListener("resize", onResize);
+      document.removeEventListener("scroll", onAnyScroll, true);
+      window.removeEventListener("focusout", onFocusOut);
+      window.removeEventListener("pageshow", onVisible);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.visualViewport?.removeEventListener("resize", onResizeAll);
+      window.removeEventListener("resize", onResizeAll);
       window.removeEventListener("orientationchange", onOrientation);
     };
   }, []);

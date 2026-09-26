@@ -8473,6 +8473,8 @@ export type Database = {
           action: string
           broker_id: string | null
           call_id: string | null
+          confirmation_expires_at: string | null
+          confirmation_token: string | null
           created_at: string
           decided_at: string | null
           decision: string
@@ -8494,6 +8496,8 @@ export type Database = {
           action: string
           broker_id?: string | null
           call_id?: string | null
+          confirmation_expires_at?: string | null
+          confirmation_token?: string | null
           created_at?: string
           decided_at?: string | null
           decision?: string
@@ -8515,6 +8519,8 @@ export type Database = {
           action?: string
           broker_id?: string | null
           call_id?: string | null
+          confirmation_expires_at?: string | null
+          confirmation_token?: string | null
           created_at?: string
           decided_at?: string | null
           decision?: string
@@ -12561,6 +12567,54 @@ export type Database = {
         }
         Relationships: []
       }
+      planipret_task_sync_runs: {
+        Row: {
+          created_at: string
+          duration_ms: number | null
+          error: string | null
+          finished_at: string
+          http_status: number | null
+          id: string
+          maestro_broker_id: string | null
+          ok: boolean
+          result_source: string | null
+          source: string
+          started_at: string
+          tasks_count: number
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          duration_ms?: number | null
+          error?: string | null
+          finished_at?: string
+          http_status?: number | null
+          id?: string
+          maestro_broker_id?: string | null
+          ok?: boolean
+          result_source?: string | null
+          source?: string
+          started_at?: string
+          tasks_count?: number
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          duration_ms?: number | null
+          error?: string | null
+          finished_at?: string
+          http_status?: number | null
+          id?: string
+          maestro_broker_id?: string | null
+          ok?: boolean
+          result_source?: string | null
+          source?: string
+          started_at?: string
+          tasks_count?: number
+          user_id?: string
+        }
+        Relationships: []
+      }
       planipret_tasks_projection: {
         Row: {
           created_at: string
@@ -12869,6 +12923,110 @@ export type Database = {
           updated_at?: string
           updated_by?: string | null
           website_title?: string | null
+        }
+        Relationships: []
+      }
+      pp_feedback_comments: {
+        Row: {
+          author_id: string
+          author_name: string | null
+          body: string
+          created_at: string
+          id: string
+          report_id: string
+        }
+        Insert: {
+          author_id?: string
+          author_name?: string | null
+          body: string
+          created_at?: string
+          id?: string
+          report_id: string
+        }
+        Update: {
+          author_id?: string
+          author_name?: string | null
+          body?: string
+          created_at?: string
+          id?: string
+          report_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "pp_feedback_comments_report_id_fkey"
+            columns: ["report_id"]
+            isOneToOne: false
+            referencedRelation: "pp_feedback_reports"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      pp_feedback_reports: {
+        Row: {
+          created_at: string
+          description: string | null
+          expires_at: string
+          id: string
+          idempotency_key: string
+          notification_attempts: number
+          notification_last_error: string | null
+          notification_next_retry_at: string | null
+          notification_sent_at: string | null
+          notification_status: string
+          page: string | null
+          reporter_id: string
+          reporter_name: string | null
+          resolved_at: string | null
+          screenshots: Json
+          severity: string
+          source: string
+          status: string
+          title: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          description?: string | null
+          expires_at?: string
+          id?: string
+          idempotency_key: string
+          notification_attempts?: number
+          notification_last_error?: string | null
+          notification_next_retry_at?: string | null
+          notification_sent_at?: string | null
+          notification_status?: string
+          page?: string | null
+          reporter_id?: string
+          reporter_name?: string | null
+          resolved_at?: string | null
+          screenshots?: Json
+          severity?: string
+          source?: string
+          status?: string
+          title: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          description?: string | null
+          expires_at?: string
+          id?: string
+          idempotency_key?: string
+          notification_attempts?: number
+          notification_last_error?: string | null
+          notification_next_retry_at?: string | null
+          notification_sent_at?: string | null
+          notification_status?: string
+          page?: string | null
+          reporter_id?: string
+          reporter_name?: string | null
+          resolved_at?: string | null
+          screenshots?: Json
+          severity?: string
+          source?: string
+          status?: string
+          title?: string
+          updated_at?: string
         }
         Relationships: []
       }
@@ -16765,6 +16923,37 @@ export type Database = {
         Args: { _org_id: string; _user_id: string }
         Returns: boolean
       }
+      claim_pp_feedback_notification: {
+        Args: { _report_id: string }
+        Returns: {
+          created_at: string
+          description: string | null
+          expires_at: string
+          id: string
+          idempotency_key: string
+          notification_attempts: number
+          notification_last_error: string | null
+          notification_next_retry_at: string | null
+          notification_sent_at: string | null
+          notification_status: string
+          page: string | null
+          reporter_id: string
+          reporter_name: string | null
+          resolved_at: string | null
+          screenshots: Json
+          severity: string
+          source: string
+          status: string
+          title: string
+          updated_at: string
+        }
+        SetofOptions: {
+          from: "*"
+          to: "pp_feedback_reports"
+          isOneToOne: true
+          isSetofReturn: false
+        }
+      }
       cleanup_expired_maestro_oauth_states: { Args: never; Returns: undefined }
       create_group_chat: {
         Args: { _member_ids: string[]; _name: string }
@@ -16930,6 +17119,10 @@ export type Database = {
             Returns: boolean
           }
       is_planipret_admin: { Args: { _user_id: string }; Returns: boolean }
+      is_planipret_feedback_admin: {
+        Args: { _user_id: string }
+        Returns: boolean
+      }
       is_planipret_member: { Args: { _user_id: string }; Returns: boolean }
       is_planipret_only: { Args: { _user_id: string }; Returns: boolean }
       is_super_admin: { Args: { _user_id: string }; Returns: boolean }

@@ -420,7 +420,7 @@ async function processEvent(event: any) {
         }
       } else if (userId && cdrId) {
         const { data: inserted, error: insertError } = await admin.from("planipret_phone_calls").upsert({
-          user_id: userId,
+          user_id: brokerProfile?.id ?? null,
           ns_call_id: cdrId,
           ...callPatch,
         }, { onConflict: "ns_call_id" }).select("id").maybeSingle();
@@ -453,7 +453,7 @@ async function processEvent(event: any) {
     }
     const dndActive = isDndActive(brokerProfile);
     const callRow = {
-      user_id: userId, direction: "inbound" as const,
+      user_id: brokerProfile?.id ?? null, direction: "inbound" as const,
       from_number: extractCaller(data) || null,
       to_number: data.to_number ?? data.to ?? null,
       status: dndActive ? "voicemail" : "inbound_ringing",
@@ -477,7 +477,7 @@ async function processEvent(event: any) {
       // distinct id and keep ringing.
       const { data: existing } = await admin
         .from("planipret_phone_calls").select("id,user_id").eq("ns_call_id", String(callId)).maybeSingle();
-      if (!userId || existing?.user_id === userId) {
+      if (!userId || existing?.user_id === (brokerProfile?.id ?? null)) {
         console.info("[ns-webhook] inbound call already persisted; duplicate push suppressed", { call_id: callId });
         return;
       }
@@ -526,7 +526,7 @@ async function processEvent(event: any) {
     if (!userId) return;
     const messageId = await stableWebhookId("sms", data, data.id ?? data.message_id ?? data["message-id"]);
     const { data: inboundMsg, error: messageError } = await admin.from("planipret_phone_messages").insert({
-      user_id: userId, direction: "inbound",
+      user_id: brokerProfile?.id ?? null, direction: "inbound",
       from_number: data.from_number ?? data.from ?? null, ns_message_id: messageId, thread_id: data.messagesession_id ?? data["messagesession-id"] ?? null,
       to_number: data.to_number ?? data.to ?? null,
       body: data.body ?? data.message ?? "",
@@ -565,7 +565,7 @@ async function processEvent(event: any) {
     if (!userId) return;
     const vmId = await stableWebhookId("voicemail", data, data.vm_id ?? data.id ?? data.message_id ?? data["message-id"]);
     const { data: voicemail, error: voicemailError } = await admin.from("planipret_voicemails").insert({
-      user_id: userId, ns_vm_id: vmId,
+      user_id: brokerProfile?.id ?? null, ns_vm_id: vmId,
       from_number: data.from_number ?? data.from ?? null, ns_message_id: data.id ?? data.message_id ?? data["message-id"] ?? null, thread_id: data.messagesession_id ?? data["messagesession-id"] ?? null,
       duration_seconds: data.duration ?? data.duration_seconds ?? null,
       is_read: false,

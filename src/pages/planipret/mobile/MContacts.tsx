@@ -1196,6 +1196,7 @@ function ContactDetailSheet({
         />
       )}
 
+      <div onClick={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()}>
       <TaskComposerSheet
         open={taskComposer !== null}
         lang={lang === "en" ? "en" : "fr"}
@@ -1204,6 +1205,7 @@ function ContactDetailSheet({
         onClose={() => setTaskComposer(null)}
         onSubmit={submitTask}
       />
+      </div>
     </div>
   );
 }

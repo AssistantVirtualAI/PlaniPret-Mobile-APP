@@ -382,8 +382,8 @@ export default function MHome() {
 
   // Realtime: refresh KPIs when new calls / messages / voicemails land for this broker.
   useEffect(() => {
-    if (!profile?.user_id) return;
-    const uid = profile.user_id;
+    if (!profile?.id && !profile?.user_id) return;
+    const uid = profile.id ?? profile.user_id;
     const scheduleStatsRefresh = () => {
       if (realtimeRefreshTimer.current) window.clearTimeout(realtimeRefreshTimer.current);
       realtimeRefreshTimer.current = window.setTimeout(() => { void loadStats(true); }, 1200);
@@ -622,7 +622,7 @@ export default function MHome() {
             <Kpi icon={<Phone className="w-3.5 h-3.5" />} value={stats.calls} label={t("home.kpi.calls")} accent="var(--pp-brand-accent)" onClick={() => navigate("/mplanipret/calls")} />
             <Kpi icon={<PhoneMissed className="w-3.5 h-3.5" />} value={stats.missed} label={t("home.kpi.missed")} accent="var(--pp-danger)" pulse={stats.missed > 0} onClick={() => navigate("/mplanipret/calls?tab=missed")} />
             <Kpi icon={<MessageSquare className="w-3.5 h-3.5" />} value={stats.sms} label={t("home.kpi.sms")} accent="var(--pp-success)" onClick={() => navigate("/mplanipret/messages")} />
-            <Kpi icon={<Calendar className="w-3.5 h-3.5" />} value={stats.meetings} label={t("home.kpi.meetings")} accent="var(--pp-brand-accent-2)" onClick={() => document.getElementById("pp-meetings-calendar")?.scrollIntoView({ behavior: "smooth", block: "start" })} />
+            <Kpi icon={<Calendar className="w-3.5 h-3.5" />} value={stats.meetings} label={t("home.kpi.meetings")} accent="var(--pp-brand-accent-2)" onClick={() => (() => { const el = document.getElementById("pp-meetings-calendar"); const sc = el?.closest(".overflow-y-auto") as HTMLElement | null; if (el && sc) sc.scrollTo({ top: el.getBoundingClientRect().top - sc.getBoundingClientRect().top + sc.scrollTop - 12, behavior: "smooth" }); })()} />
             <Kpi icon={<Flame className="w-3.5 h-3.5" />} value={stats.hotLeads} label={t("home.kpi.hotLeads")} accent="#C9582A" onClick={() => navigate("/mplanipret/pipeline")} />
             <Kpi icon={<CheckSquare className="w-3.5 h-3.5" />} value={stats.tasks} label={t("home.kpi.tasks")} accent="var(--pp-agent)" onClick={() => navigate("/mplanipret/tasks")} />
             <Kpi icon={<Voicemail className="w-3.5 h-3.5" />} value={stats.voicemails} label={t("home.kpi.voicemails")} accent="#6C5CE7" onClick={() => navigate("/mplanipret/voicemail")} />

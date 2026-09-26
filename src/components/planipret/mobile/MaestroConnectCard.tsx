@@ -369,7 +369,7 @@ export default function MaestroConnectCard() {
         )}
 
         <div className="flex gap-2 mt-3">
-          {status === "connected" ? (
+          {status !== "connected" ? (
             <button onClick={() => { void startAuth(false); }} disabled={busy || data.configured === false} className="flex items-center justify-center gap-1 flex-1 rounded-md" style={{ background: "#a855f7", color: "white", fontSize: 12, fontWeight: 600, padding: "8px 10px", opacity: busy || data.configured === false ? 0.5 : 1 }}>
               {busy ? <Loader2 className="w-3 h-3 animate-spin" /> : <Link2 className="w-3 h-3" />}
               {L.connect}

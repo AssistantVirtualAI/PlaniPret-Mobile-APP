@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertCircle, CheckSquare, ChevronRight, Clock, Plus, RefreshCw, Repeat, Sparkles, Trash2, Pencil, CalendarClock, ExternalLink, ShieldCheck, Loader2, History } from "lucide-react";
+import { AlertCircle, CheckSquare, ChevronRight, Clock, Plus, RefreshCw, Repeat, Sparkles, Trash2, Pencil, CalendarClock, CheckCircle2, ExternalLink, ShieldCheck, Loader2, History } from "lucide-react";
 import { usePlanipretTasks } from "@/hooks/planipret/usePlanipretTasks";
 import { describeTaskDiagnostics, describeTaskSync, formatTaskDue, isTaskOpen, toTorontoLocalInput, verifyTask, maestroTaskUrl, type NormalizedTask, type TaskFilterValue, type TaskVerifyResult, taskHistory, type TaskHistoryEvent } from "@/lib/planipret/tasks";
 import MaestroTaskRow from "./MaestroTaskRow";
@@ -249,9 +249,8 @@ export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, br
       if (warn) toast.warning(L("Réponse Maestro incohérente", "Inconsistent Maestro response"), { description: warn });
     } else if (r?.pending_confirmation) {
       setFieldErrors(null);
-      toast.warning(L("Action en attente de confirmation Maestro", "Action awaiting Maestro confirmation"), {
-        description: r?.message ?? L("Aucune confirmation n’est affichée tant que Maestro n’a pas relu la tâche.", "No confirmation is shown until Maestro reads the task back."),
-      });
+      toast.message(L("Envoyé à Maestro — la liste se met à jour", "Sent to Maestro — list updating"));
+      setComposer(null);
     } else {
       setFieldErrors(r?.fields && typeof r.fields === "object" ? r.fields : null);
       toast.error(r?.message ?? L("Échec de l'enregistrement", "Save failed"));
@@ -263,7 +262,7 @@ export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, br
     setConfirmDelete(null);
     const r = await remove(task.id);
     if (r?.success) toast.success(L("Tâche supprimée", "Task deleted"));
-    else if (r?.pending_confirmation) toast.warning(L("Suppression en attente de confirmation Maestro", "Deletion awaiting Maestro confirmation"), { description: r?.message });
+    else if (r?.pending_confirmation) { /* list refreshes live */ }
     else toast.error(r?.message ?? L("Suppression impossible", "Delete failed"));
   };
 
@@ -276,12 +275,19 @@ export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, br
     due_at: toTorontoLocalInput(task.due_at),
   } });
 
+  const completeTask = async (task: NormalizedTask) => {
+    const r = await update(task.id, { status: "complete" } as any);
+    if (r?.success) toast.success(L("Tâche terminée", "Task completed"));
+    else if (r?.pending_confirmation) { /* list refreshes live */ }
+    else toast.error(r?.message ?? L("Clôture impossible", "Could not complete task"));
+  };
+
   const snooze = async (task: NormalizedTask) => {
     const base = task.due_at ? new Date(task.due_at) : new Date();
     const next = new Date(base.getTime() + 24 * 3600 * 1000);
     const r = await update(task.id, { date: next.toISOString() });
     if (r?.success) toast.success(L("Reportée à demain", "Moved to tomorrow"));
-    else if (r?.pending_confirmation) toast.warning(L("Report en attente de confirmation Maestro", "Snooze awaiting Maestro confirmation"), { description: r?.message });
+    else if (r?.pending_confirmation) { /* list refreshes live */ }
     else toast.error(r?.message ?? L("Report impossible", "Snooze failed"));
   };
 
@@ -431,17 +437,33 @@ export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, br
                           <SyncChip task={task} lang={lang} />
                         </div>
                       }
-                      actions={<span className="contents" style={{ display: "contents" }} onClick={(e) => e.stopPropagation()}>
-                        <IconBtn label={L("Vérifier dans Maestro", "Verify in Maestro")} onClick={() => void checkTask(task.id)}>
-                          {verif[task.id] === "loading"
-                            ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            : <ShieldCheck className="w-3.5 h-3.5" />}
-                        </IconBtn>
-                        <IconBtn label={L("Ouvrir dans Maestro", "Open in Maestro")} onClick={() => openInMaestro(task.id)}><ExternalLink className="w-3.5 h-3.5" /></IconBtn>
-                        <IconBtn label={L("Historique", "History")} onClick={() => void openHistory(task)}><History className="w-3.5 h-3.5" /></IconBtn>
-                        {!readOnly && <IconBtn label={L("Modifier", "Edit")} onClick={() => openEdit(task)}><Pencil className="w-3.5 h-3.5" /></IconBtn>}
-                        {!readOnly && <IconBtn label={L("Reporter", "Snooze")} onClick={() => void snooze(task)}><CalendarClock className="w-3.5 h-3.5" /></IconBtn>}
-                        {!readOnly && <IconBtn label={L("Supprimer", "Delete")} danger onClick={() => setConfirmDelete(task)}><Trash2 className="w-3.5 h-3.5" /></IconBtn>}
+                       actions={<span className="contents" style={{ display: "contents" }} onClick={(e) => e.stopPropagation()}>
+                        {!readOnly && (
+                          <div className="mt-2 space-y-2">
+                            <button
+                              onClick={() => void completeTask(task)}
+                              className="w-full min-h-[44px] rounded-xl text-sm font-semibold flex items-center justify-center gap-2 active:opacity-80"
+                              style={{ background: "var(--pp-success, #16A34A)", color: "#fff" }}
+                            >
+                              <CheckCircle2 className="w-4 h-4" />
+                              {L("Marquer terminée", "Mark as done")}
+                            </button>
+                            <div className="flex gap-2">
+                              <ActionBtn label={L("Reporter", "Snooze")} onClick={() => void snooze(task)}><CalendarClock className="w-3.5 h-3.5" /> {L("Reporter +24 h", "Snooze +24 h")}</ActionBtn>
+                              <ActionBtn label={L("Modifier", "Edit")} onClick={() => openEdit(task)}><Pencil className="w-3.5 h-3.5" /> {L("Modifier", "Edit")}</ActionBtn>
+                              <ActionBtn label={L("Supprimer", "Delete")} danger onClick={() => setConfirmDelete(task)}><Trash2 className="w-3.5 h-3.5" /> {L("Supprimer", "Delete")}</ActionBtn>
+                            </div>
+                          </div>
+                        )}
+                        <div className="flex items-center gap-1 mt-1">
+                          <IconBtn label={L("Vérifier dans Maestro", "Verify in Maestro")} onClick={() => void checkTask(task.id)}>
+                            {verif[task.id] === "loading"
+                              ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              : <ShieldCheck className="w-3.5 h-3.5" />}
+                          </IconBtn>
+                          <IconBtn label={L("Ouvrir dans Maestro", "Open in Maestro")} onClick={() => openInMaestro(task.id)}><ExternalLink className="w-3.5 h-3.5" /></IconBtn>
+                          <IconBtn label={L("Historique", "History")} onClick={() => void openHistory(task)}><History className="w-3.5 h-3.5" /></IconBtn>
+                        </div>
                       </span>}
                     />
                   </li>
@@ -469,9 +491,11 @@ export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, br
                       expanded={expandedTaskId === task.id}
                       onToggle={() => setExpandedTaskId((id) => id === task.id ? null : task.id)}
                       syncedAt={(task as any)?.raw?.updated_at ?? lastSyncAt}
-                      actions={<span style={{ display: "contents" }} onClick={(e) => e.stopPropagation()}>
-                        <IconBtn label={L("Ouvrir dans Maestro", "Open in Maestro")} onClick={() => openInMaestro(task.id)}><ExternalLink className="w-3.5 h-3.5" /></IconBtn>
-                        {!readOnly && <IconBtn label={L("Modifier", "Edit")} onClick={() => openEdit(task)}><Pencil className="w-3.5 h-3.5" /></IconBtn>}
+                       actions={<span style={{ display: "contents" }} onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center gap-2 mt-1 flex-wrap">
+                          <IconBtn label={L("Ouvrir dans Maestro", "Open in Maestro")} onClick={() => openInMaestro(task.id)}><ExternalLink className="w-3.5 h-3.5" /></IconBtn>
+                          {!readOnly && <ActionBtn label={L("Modifier", "Edit")} onClick={() => openEdit(task)}><Pencil className="w-3.5 h-3.5" /> {L("Modifier", "Edit")}</ActionBtn>}
+                        </div>
                       </span>}
                     />
                   </li>
@@ -596,6 +620,20 @@ function TaskStatusChip({ lang, source, state }: { lang: "fr" | "en"; source: st
       style={{ background: bg, color }}>
       {label}
     </span>
+  );
+}
+
+function ActionBtn({ label, onClick, children, danger }: { label: string; onClick: () => void; children: React.ReactNode; danger?: boolean }) {
+  return (
+    <button onClick={onClick} aria-label={label} title={label}
+      className="flex-1 min-h-[40px] rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 active:opacity-70"
+      style={{
+        background: "var(--pp-bg-surface)",
+        border: `1px solid ${danger ? "var(--pp-danger)" : "var(--pp-bg-border)"}`,
+        color: danger ? "var(--pp-danger)" : "var(--pp-text-primary)",
+      }}>
+      {children}
+    </button>
   );
 }
 

@@ -359,7 +359,7 @@ export function usePlanipretTasks(
     if (!result?.success) {
       // A write can be accepted while Maestro's authoritative list is still
       // catching up. Do not render the proposed value as confirmed.
-      if (result?.pending_confirmation) void refresh({ force: true });
+      if (result?.pending_confirmation) [0, 2000, 5000, 10000, 20000].forEach((ms) => setTimeout(() => void refresh({ force: true }), ms));
       return result;
     }
 
@@ -393,7 +393,7 @@ export function usePlanipretTasks(
     if (!result?.success) {
       setTasks(previous);
       if (userId) saveTaskCache(userId, previous);
-      if (result?.pending_confirmation) void refresh({ force: true });
+      if (result?.pending_confirmation) [0, 2000, 5000, 10000, 20000].forEach((ms) => setTimeout(() => void refresh({ force: true }), ms));
     } else void refresh({ force: true });
     return result;
   }, [tasks, refresh, userId]);

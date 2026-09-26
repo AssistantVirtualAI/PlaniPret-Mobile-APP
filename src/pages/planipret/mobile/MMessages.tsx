@@ -1032,7 +1032,7 @@ function TeamChat({ profile }: { profile: any }) {
   };
 
   useEffect(() => { load(); }, []);
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth" }); }, [msgs.length]);
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }); }, [msgs.length]);
 
   useEffect(() => {
     const ch = supabase

@@ -53,7 +53,7 @@ export default function MVoicemail() {
   const [forwardFor, setForwardFor] = useState<VM | null>(null);
 
   const load = async () => {
-    if (!profile?.user_id) return;
+    if (!profile?.id && !profile?.user_id) return;
     setLoading(true);
     try {
       // 1) NS-API live via pp-ns-voicemail (segmenté par extension côté serveur)
@@ -68,7 +68,7 @@ export default function MVoicemail() {
       const { data: local } = await supabase
         .from("planipret_voicemails")
         .select("*")
-        .eq("user_id", profile.user_id)
+        .eq("user_id", profile.id ?? profile.user_id)
         .order("created_at", { ascending: false });
 
       const byVmId = new Map<string, VM>();
@@ -103,7 +103,7 @@ export default function MVoicemail() {
       const { data } = await supabase
         .from("planipret_voicemails")
         .select("*")
-        .eq("user_id", profile.user_id)
+        .eq("user_id", profile.id ?? profile.user_id)
         .order("created_at", { ascending: false });
       setItems((data ?? []) as VM[]);
     } finally {
@@ -115,10 +115,10 @@ export default function MVoicemail() {
   useEffect(() => { registerRefresh(load); return () => registerRefresh(null); }, [profile?.user_id]);
 
   useEffect(() => {
-    if (!profile?.user_id) return;
+    if (!profile?.id && !profile?.user_id) return;
     const ch = supabase
       .channel(`mplanipret-vm-${Math.random().toString(36).slice(2, 8)}`)
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "planipret_voicemails", filter: `user_id=eq.${profile.user_id}` }, (payload) => {
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "planipret_voicemails", filter: `user_id=eq.${profile.id ?? profile.user_id}` }, (payload) => {
         const v = payload.new as VM;
         setItems((p) => [v, ...p]);
         toast(`📬 ${t("voicemail.newFrom")} ${v.from_number ?? t("voicemail.unknownLower")}`);

@@ -347,3 +347,6 @@ verify_jwt = true
 
 [functions.pp-push-notify]
 verify_jwt = true
+
+[functions.call-center-sync]
+verify_jwt = true
