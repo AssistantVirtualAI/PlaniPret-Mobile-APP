@@ -23,11 +23,10 @@ export async function getMaestroAdminAccessToken(): Promise<AdminTokenResult> {
   const stat = Deno.env.get("MAESTRO_ADMIN_ACCESS_TOKEN");
   if (stat && stat.trim()) return { token: stat.trim(), source: "static" };
 
-  // Prefer dedicated firm credentials, but also probe the existing confidential
-  // web OAuth client. Some Maestro tenants grant that client firm-wide
-  // client_credentials access and previously it was ignored entirely.
-  const id = Deno.env.get("MAESTRO_ADMIN_CLIENT_ID") ?? Deno.env.get("MAESTRO_OAUTH_CLIENT_ID");
-  const secret = Deno.env.get("MAESTRO_ADMIN_CLIENT_SECRET") ?? Deno.env.get("MAESTRO_OAUTH_CLIENT_SECRET");
+  // Only dedicated firm-admin credentials are accepted. Never fall back to the
+  // broker web OAuth client, Telecom or machine secrets.
+  const id = Deno.env.get("MAESTRO_ADMIN_CLIENT_ID");
+  const secret = Deno.env.get("MAESTRO_ADMIN_CLIENT_SECRET");
   if (!id || !secret) {
     return { token: null, source: "none", reason: "admin_scope_not_configured" };
   }

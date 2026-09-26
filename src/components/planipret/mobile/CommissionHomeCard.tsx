@@ -2,8 +2,8 @@
 // top prêteurs. Visible uniquement pour les courtiers et administrateurs.
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { supabase } from "@/integrations/supabase/client";
 import { Wallet, ChevronRight, TrendingUp, TrendingDown } from "lucide-react";
+import { ppEdgeInvoke } from "@/lib/planipret/ppEdge";
 
 const cad = (n: number, max = 0) =>
   new Intl.NumberFormat("fr-CA", { style: "currency", currency: "CAD", maximumFractionDigits: max }).format(n || 0);
@@ -36,6 +36,8 @@ export default function CommissionHomeCard({ profile, lang }: { profile: any; la
   useEffect(() => {
     if (!allowed) return;
     let cancelled = false;
+    setFailed(false);
+    setState(null);
 
     const now = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Toronto" }));
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -46,15 +48,17 @@ export default function CommissionHomeCard({ profile, lang }: { profile: any; la
     // commissions de tout le cabinet sur leur écran d'accueil).
     const ownId = profile?.maestro_broker_id ? String(profile.maestro_broker_id) : "";
     const call = (from: Date, to: Date) =>
-      supabase.functions.invoke("planipret-commission-reports", {
-        body: { action: "summary", filters: { date_from: pad(from), date_to: pad(to), commission_type: "base", ...(ownId ? { users_id: ownId } : {}) } },
-      });
+      ppEdgeInvoke("planipret-commission-reports", {
+        action: "summary",
+        filters: { date_from: pad(from), date_to: pad(to), commission_type: "base", ...(ownId ? { users_id: ownId } : {}) },
+      }, { retries: 1, timeoutMs: 12_000 });
 
     (async () => {
       const [monthRes, rangeRes] = await Promise.all([call(monthStart, monthEnd), call(rangeStart, monthEnd)]);
       if (cancelled) return;
       const m: any = monthRes.data;
-      if (monthRes.error || m?.error || !m?.summary) { setFailed(true); return; }
+      const r: any = rangeRes.data;
+      if (monthRes.error || rangeRes.error || m?.error || r?.error || !m?.summary || !r?.summary) { setFailed(true); return; }
 
       // Monthly buckets from the 6-month window (single upstream fetch).
       const buckets = new Map<string, number>();
@@ -62,7 +66,7 @@ export default function CommissionHomeCard({ profile, lang }: { profile: any; la
         const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
         buckets.set(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`, 0);
       }
-      const byDate: any[] = (rangeRes.data as any)?.summary?.by_date ?? [];
+      const byDate: any[] = r.summary.by_date ?? [];
       for (const row of byDate) {
         const k = String(row.date ?? "").slice(0, 7);
         if (buckets.has(k)) buckets.set(k, (buckets.get(k) ?? 0) + Number(row.amount ?? 0));
@@ -95,7 +99,7 @@ export default function CommissionHomeCard({ profile, lang }: { profile: any; la
     return ((state.total - state.prevTotal) / state.prevTotal) * 100;
   }, [state]);
 
-  if (!allowed || failed) return null;
+  if (!allowed) return null;
 
   const open = (params?: Record<string, string>) => {
     const qp = new URLSearchParams({ period: "month", ...(params ?? {}) });
@@ -129,7 +133,16 @@ export default function CommissionHomeCard({ profile, lang }: { profile: any; la
           <ChevronRight className="w-4 h-4" style={{ color: "var(--pp-text-muted)" }} />
         </button>
 
-        {!state ? (
+        {failed ? (
+          <div className="mt-3 flex items-center justify-between gap-2">
+            <p className="text-[12px]" style={{ color: "var(--pp-text-muted)" }}>
+              {fr ? "Commissions Maestro indisponibles. Reconnectez Maestro ou réessayez." : "Maestro commissions unavailable. Reconnect Maestro or retry."}
+            </p>
+            <button onClick={() => navigate("/mplanipret/maestro")} className="text-[12px] font-semibold shrink-0" style={{ color: "var(--pp-brand-accent)" }}>
+              {fr ? "Reconnecter" : "Reconnect"}
+            </button>
+          </div>
+        ) : !state ? (
           <div className="mt-3 space-y-2">
             <div className="h-7 w-40 rounded-lg animate-pulse" style={{ background: "rgba(59,111,160,0.12)" }} />
             <div className="h-14 w-full rounded-lg animate-pulse" style={{ background: "rgba(59,111,160,0.08)" }} />

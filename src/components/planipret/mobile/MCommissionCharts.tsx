@@ -2,8 +2,8 @@
 // Les données proviennent uniquement de l'action `deposits` de
 // `planipret-commission-reports` (année courante + même fenêtre l'an dernier).
 import { useEffect, useMemo, useRef, useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
 import { isStatsCacheFresh, readStatsCache, statsCacheKey, writeStatsCache } from "@/lib/planipret/commissionsCache";
+import { ppEdgeInvoke } from "@/lib/planipret/ppEdge";
 import {
   BarChart, Bar, ComposedChart, Line, AreaChart, Area, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -110,9 +110,10 @@ export default function MCommissionCharts({
     if (!force && isStatsCacheFresh(cached)) return;
 
     const call = (f: Record<string, unknown>) =>
-      supabase.functions.invoke("planipret-commission-reports", {
-        body: { action: "deposits", filters: { ...f, page: 1, per_page: CHART_ROWS } },
-      });
+      ppEdgeInvoke("planipret-commission-reports", {
+        action: "deposits",
+        filters: { ...f, page: 1, per_page: CHART_ROWS },
+      }, { retries: 1, timeoutMs: 12_000 });
 
     (async () => {
       const [a, b] = await Promise.all([
@@ -120,10 +121,10 @@ export default function MCommissionCharts({
         call({ ...filters, date_from: shiftYear(from, -1), date_to: shiftYear(to, -1) }),
       ]);
       if (cancelled) return;
-      if (a.error || (a.data as any)?.error) { setFailed(true); return; }
+      if (a.error || (a.data as any)?.error || (a.data as any)?.success === false) { setFailed(true); return; }
       const next = {
         cy: ((a.data as any)?.rows ?? []) as Row[],
-        py: ((!b.error && ((b.data as any)?.rows ?? [])) || []) as Row[],
+        py: ((!b.error && !(b.data as any)?.error && ((b.data as any)?.rows ?? [])) || []) as Row[],
       };
       setCy(next.cy);
       setPy(next.py);
@@ -204,7 +205,13 @@ export default function MCommissionCharts({
     return [...map.entries()].map(([type, amount]) => ({ type, amount })).filter((d) => d.amount > 0);
   }, [cy]);
 
-  if (failed) return null;
+  if (failed) {
+    return (
+      <p data-testid="commission-charts-unavailable" className="rounded-xl px-3 py-2.5 mb-3 text-[12px]" style={{ background: "rgba(240,180,41,0.10)", color: "var(--pp-text-secondary, #B4C6D8)" }}>
+        {fr ? "Les graphiques sont temporairement indisponibles. Les totaux et dépôts ci-dessus restent accessibles." : "Charts are temporarily unavailable. The totals and deposits above remain available."}
+      </p>
+    );
+  }
 
   if (!cy) {
     return (

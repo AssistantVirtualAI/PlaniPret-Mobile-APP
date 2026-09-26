@@ -3,7 +3,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 
 const invoke = vi.fn();
-vi.mock("@/integrations/supabase/client", () => ({ supabase: { functions: { invoke: (...a: any[]) => invoke(...a) } } }));
+vi.mock("@/lib/planipret/ppEdge", () => ({ ppEdgeInvoke: (...a: any[]) => invoke(...a) }));
 
 vi.mock("recharts", async () => {
   const R = await import("react");
@@ -34,15 +34,15 @@ describe("MCommissionCharts", () => {
 
     await waitFor(() => expect(screen.getByTestId("commission-charts")).toBeInTheDocument());
     expect(invoke).toHaveBeenCalledTimes(2);
-    const years = invoke.mock.calls.map((c) => c[1].body.filters.date_from);
+    const years = invoke.mock.calls.map((c) => c[1].filters.date_from);
     expect(years).toEqual(expect.arrayContaining(["2026-01-01", "2025-01-01"]));
     expect(screen.getAllByTestId("chart").length).toBeGreaterThan(3);
   });
 
-  it("ne rend rien si l'API échoue", async () => {
+  it("garde les totaux accessibles et explique l'indisponibilité des graphiques si l'API échoue", async () => {
     invoke.mockResolvedValue({ data: null, error: { message: "boom" } });
-    const { container } = render(<MCommissionCharts filters={filters} lang="fr" cacheScope="test-b" />);
-    await waitFor(() => expect(container.querySelector('[data-testid="commission-charts"]')).toBeNull());
+    render(<MCommissionCharts filters={filters} lang="fr" cacheScope="test-b" />);
+    expect(await screen.findByTestId("commission-charts-unavailable")).toHaveTextContent(/graphiques sont temporairement indisponibles/i);
   });
 
   it("revalide une seule fois les graphiques lorsqu’un rafraîchissement est demandé", async () => {
