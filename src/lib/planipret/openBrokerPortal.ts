@@ -8,6 +8,7 @@
  */
 import { Capacitor } from "@capacitor/core";
 import { supabase } from "@/integrations/supabase/client";
+import { validPortalHandoffUrl } from "@/lib/planipret/portalHandoffUrl";
 
 export type OpenPortalResult = { ok: true; portal: "admin" | "broker" } | { ok: false; error: string };
 
@@ -31,20 +32,27 @@ export async function openBrokerPortal(path?: string): Promise<OpenPortalResult>
       headers: { Authorization: `Bearer ${session.access_token}` },
     });
     const out = data as { ok?: boolean; url?: string; portal?: "admin" | "broker"; error?: string } | null;
-    if (error || !out?.ok || !out.url) {
+    const url = validPortalHandoffUrl(out?.url);
+    if (error || !out?.ok || !url) {
       const code = out?.error ?? error?.message ?? "unknown";
-      return { ok: false, error: ERRORS[code] ?? "Ouverture du portail impossible. Réessayez." };
+      return { ok: false, error: ERRORS[code] ?? "Lien du portail invalide. Réessayez." };
     }
 
     if (Capacitor.isNativePlatform()) {
+      // iOS rend parfois la présentation « popover » comme une feuille blanche.
+      // Une vue plein écran garantit que le portail et sa redirection de session
+      // disposent d'une vraie surface de navigation.
       const { Browser } = await import("@capacitor/browser");
+      // Safari may still be retained by a previous external flow (OAuth, help,
+      // or a former portal opening). Close it first; Browser.open otherwise
+      // rejects a valid HTTPS URL with “Unable to display URL” on iOS.
+      await Browser.close().catch(() => undefined);
       await Browser.open({
-        url: out.url,
+        url,
         presentationStyle: "fullscreen",
-        windowName: "_system",
       });
     } else {
-      window.open(out.url, "_blank", "noopener,noreferrer");
+      window.open(url, "_blank", "noopener,noreferrer");
     }
     return { ok: true, portal: out.portal ?? "broker" };
   } catch (e) {

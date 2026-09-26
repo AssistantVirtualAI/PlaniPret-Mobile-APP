@@ -7,6 +7,7 @@ import {
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { Capacitor } from "@capacitor/core";
 import { Camera as CapCamera, CameraResultType, CameraSource } from "@capacitor/camera";
+import { cameraPhotoToFile } from "@/lib/planipret/feedbackCamera";
 
 const isNative = () => { try { return Capacitor.isNativePlatform(); } catch { return false; } };
 async function webPathToFile(webPath: string, i: number): Promise<File> {
@@ -196,8 +197,19 @@ export default function PlanipretFeedback({ source = "portal", compact = false }
   const takePhoto = async () => {
     try {
       if (!(await ensurePerm("camera"))) return;
-      const ph = await CapCamera.getPhoto({ quality: 80, saveToGallery: false, resultType: CameraResultType.Uri, source: CameraSource.Camera });
-      if (ph.webPath) { const f = await webPathToFile(ph.webPath, 0); if (SAFE_IMAGE_TYPES.has(f.type) && f.size <= MAX_FILE_BYTES) setFiles((p) => [...p, f].slice(0, MAX_ATTACHMENTS)); }
+      // iOS may expose a temporary capacitor:// URL for `Uri`. Do not pass that
+      // local URL to any browser; keep the captured image in memory instead.
+      const ph = await CapCamera.getPhoto({
+        quality: 75,
+        width: 2048,
+        height: 2048,
+        saveToGallery: false,
+        resultType: CameraResultType.Base64,
+        source: CameraSource.Camera,
+      });
+      const f = cameraPhotoToFile(ph, 0);
+      if (SAFE_IMAGE_TYPES.has(f.type) && f.size <= MAX_FILE_BYTES) setFiles((p) => [...p, f].slice(0, MAX_ATTACHMENTS));
+      else toast.error(t("La photo dépasse 5 Mo. Réessaie avec une photo plus simple.", "The photo exceeds 5 MB. Try a simpler photo."));
     } catch (e: any) { if (!/cancel/i.test(e?.message ?? "")) toast.error(e?.message ?? "Camera"); }
   };
 
