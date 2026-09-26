@@ -73,6 +73,8 @@
 <string>Planiprêt utilise l'appareil photo pour votre photo de profil et les captures jointes au feedback.</string>
 <key>NSPhotoLibraryUsageDescription</key>
 <string>Planiprêt accède à vos photos pour votre photo de profil et les captures jointes au feedback.</string>
+<key>NSPhotoLibraryAddUsageDescription</key>
+<string>Planiprêt peut enregistrer dans votre photothèque la photo que vous choisissez de prendre pour un rapport de feedback.</string>
 <key>NSLocalNetworkUsageDescription</key>
 <string>Planiprêt utilise le réseau local pour établir l'audio des appels VoIP.</string>
 <key>NSSpeechRecognitionUsageDescription</key>

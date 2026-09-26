@@ -2812,6 +2812,7 @@ function patchIosInfoPlist() {
     ["NSContactsUsageDescription", "Planipret accesses your contacts so you can call and message your clients."],
     ["NSCameraUsageDescription", "Planipret uses the camera so you can set a profile photo or take a screenshot photo for a feedback report."],
     ["NSPhotoLibraryUsageDescription", "Planipret accesses your photo library so you can pick a profile photo or attach screenshots to a feedback report."],
+    ["NSPhotoLibraryAddUsageDescription", "Planipret may save a photo you choose to capture for a feedback report to your photo library."],
     ["NSLocalNetworkUsageDescription", "Planipret uses the local network to establish VoIP call audio."],
     ["NSSpeechRecognitionUsageDescription", "Planipret transcribes your recorded calls when you enable transcription."],
   ];

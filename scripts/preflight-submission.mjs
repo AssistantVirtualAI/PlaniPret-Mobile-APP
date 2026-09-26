@@ -85,6 +85,7 @@ const IOS_REQUIRED = [
   "NSContactsUsageDescription",
   "NSCameraUsageDescription",
   "NSPhotoLibraryUsageDescription",
+  "NSPhotoLibraryAddUsageDescription",
   "NSLocalNetworkUsageDescription",
   "UIBackgroundModes",
   "CFBundleURLTypes",

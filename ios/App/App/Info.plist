@@ -77,6 +77,8 @@
 		<!-- Bibliothèque photos (optionnel — photo de profil ou pièce jointe au feedback) -->
 		<key>NSPhotoLibraryUsageDescription</key>
 	<string>Planipret accesses your photo library so you can pick a profile photo or attach screenshots to a feedback report.</string>
+		<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Planipret may save a photo you choose to capture for a feedback report to your photo library.</string>
 
 	<!-- Face ID / Touch ID (optionnel) -->
 	<key>NSFaceIDUsageDescription</key>
@@ -108,6 +110,9 @@
 
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+
+
+
 
 
 

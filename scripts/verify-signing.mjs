@@ -96,6 +96,7 @@ if (wantIos) {
     check(plist.includes("UIBackgroundModes"), "iOS Info.plist : UIBackgroundModes manquant (voip/audio)");
     check(plist.includes("<string>voip</string>"), "iOS Info.plist : background mode `voip` manquant");
     check(plist.includes("ITSAppUsesNonExemptEncryption"), "iOS Info.plist : ITSAppUsesNonExemptEncryption manquant (blocage TestFlight)");
+    check(plist.includes("NSPhotoLibraryAddUsageDescription"), "iOS Info.plist : NSPhotoLibraryAddUsageDescription manquant (caméra Feedback)");
     const shortVersion = plist.match(/<key>CFBundleShortVersionString<\/key>\s*<string>([^<]+)<\/string>/)?.[1];
     if (shortVersion && !shortVersion.includes("$(") && shortVersion !== pkg.version) {
       failures.push(`iOS : CFBundleShortVersionString (${shortVersion}) ≠ package.json version (${pkg.version})`);
@@ -128,7 +129,7 @@ if (wantAndroid) {
       gradle.includes(`applicationId '${appId}'`) ||
       gradle.includes(`applicationId = "${appId}"`) ||
       gradle.includes(`applicationId = '${appId}'`),
-      `Android signing : applicationId doit être ${appId}`
+      `Android signing : applicationId doit être ${appId}`,
     );
     check(/signingConfigs\s*{[\s\S]*release/.test(gradle),
       "Android signing : aucun signingConfigs.release — le bundle ne pourra pas être publié sur Play");
