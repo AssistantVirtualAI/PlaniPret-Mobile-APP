@@ -365,7 +365,7 @@ Deno.serve(async (req) => {
         truncated,
         coverage,
         sources: { queried: sources.length, failed: failures.length, failures: failures.slice(0, 10) },
-        scope: { role, users_id: filters.users_id ?? null, mode: sources.length > 1 ? "all_brokers" : "token_owner" },
+        scope: { role, users_id: filters.users_id ?? null, mode: activeReportScope.mode },
         correlation_id: cid,
       }, 200, cid);
     }
@@ -432,7 +432,7 @@ Deno.serve(async (req) => {
         sources: { queried: sources.length, failed: failures.length, failures: failures.slice(0, 10) },
 
         filters,
-        scope: { role, users_id: filters.users_id ?? null, mode: sources.length > 1 ? "all_brokers" : "token_owner" },
+        scope: { role, users_id: filters.users_id ?? null, mode: activeReportScope.mode },
         correlation_id: cid,
       }, 200, cid);
     }
@@ -460,7 +460,7 @@ Deno.serve(async (req) => {
         total_available: total,
         coverage,
         sources: { queried: sources.length, failed: failures.length, failures: failures.slice(0, 10) },
-        scope: { role, users_id: filters.users_id ?? null, mode: sources.length > 1 ? "all_brokers" : "token_owner" },
+        scope: { role, users_id: filters.users_id ?? null, mode: activeReportScope.mode },
         filters,
         correlation_id: cid,
       }, 200, cid);
