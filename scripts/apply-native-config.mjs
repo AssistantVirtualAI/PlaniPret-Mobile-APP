@@ -710,6 +710,15 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       DispatchQueue.main.async { [weak self] in
         guard let self = self else { call.resolve(["ok": false]); return }
         self.callActive = active
+        // nativeEngineOwnsAor is a module-scoped value shared with PJSIP;
+        // it is not a property of this Capacitor plugin instance.
+        if nativeEngineOwnsAor {
+          if !active { self.stopAudioKeepAlive() }
+          self.backgroundHandoffWorkItem?.cancel(); self.backgroundHandoffWorkItem = nil
+          self.setStatus("protected", active ? "pjsip_callkit_audio_owner" : "pjsip_call_ended")
+          call.resolve(self.snapshot(ok: true))
+          return
+        }
         if active {
           self.beginBackgroundTask()
           self.activateAudioSession()
@@ -1563,7 +1572,9 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         })
         pjsipObservers.append(nc.addObserver(forName: Notification.Name("PpPjsipCallEnded"), object: nil, queue: .main) { [weak self] note in
             guard let self = self, let uuid = self.activeCallUUID else { return }
-            let endedCallId = String(note.userInfo?["callId"] ?? "")
+            // userInfo is heterogeneous; use an explicit cast compatible with
+            // the Swift overloads shipped by current Xcode toolchains.
+            let endedCallId = (note.userInfo?["callId"] as? String) ?? ""
             // PJSIP callbacks can arrive after CallKit has already moved to a
             // newer call. Never let the old dialog close that newer UI.
             if !endedCallId.isEmpty,

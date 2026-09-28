@@ -64,6 +64,28 @@ describe("native telephony safety invariants", () => {
     expect(keepAlive).toContain("audio reset skipped — PJSIP/CallKit owns session");
   });
 
+  it("uses Swift-compatible PJSIP import types", () => {
+    const engine = read("ios/App/App/Plugins/PpPjsip/PpPjsipEngine.swift");
+    const keepAlive = read("ios/App/App/Plugins/PpSipKeepAlive/PpSipKeepAlive.swift");
+    const callKit = read("ios/App/App/Plugins/PpVoipCall/PpVoipCall.swift");
+    const generator = read("scripts/apply-native-config.mjs");
+
+    expect(engine).toContain("Int(rdata.pointee.code)");
+    expect(engine).toContain("lastCode: Int(info.last_status)");
+    expect(engine).not.toContain("code.rawValue");
+    expect(engine).not.toContain("last_status.rawValue");
+    expect(engine).toContain("acc.lock_codec = 0");
+    expect(engine).toContain("acc.use_rfc5626 = 1");
+    expect(engine).not.toContain("UnsafeMutablePointer<pj_thread_t>");
+    expect(engine).toContain("var handle: OpaquePointer?");
+    expect(engine).toContain('pj_thread_register("pp-worker", desc, &handle)');
+    expect(engine).not.toContain("PJSIP_EUNSUPTRANSPORT.rawValue");
+    expect(keepAlive).not.toContain("self.nativeEngineOwnsAor");
+    expect(callKit).toContain('(note.userInfo?["callId"] as? String) ?? ""');
+    expect(generator).not.toContain("self.nativeEngineOwnsAor");
+    expect(generator).toContain('(note.userInfo?["callId"] as? String) ?? ""');
+  });
+
   it("closes a terminated native call without reviving a stale REST attachment", () => {
     const callKit = read("ios/App/App/Plugins/PpVoipCall/PpVoipCall.swift");
     const hook = read("src/hooks/useMplanipretSoftphone.ts");

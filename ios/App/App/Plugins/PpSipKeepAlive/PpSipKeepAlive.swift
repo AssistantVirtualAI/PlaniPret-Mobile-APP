@@ -197,7 +197,10 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         // ne doit pas être activée, réinitialisée ou maintenue par le fallback
         // WSS/WebView : ces appels concurrents ré-arbitraient les entrées et
         // sorties iOS. Le routage explicite reste traité plus bas.
-        if self.nativeEngineOwnsAor {
+        // `nativeEngineOwnsAor` est une variable de module partagée avec les
+        // callbacks PJSIP. Ce n'est pas une propriété de cette instance
+        // Capacitor : l'accès via `self` ne compile pas en Swift.
+        if nativeEngineOwnsAor {
           if !active { self.stopAudioKeepAlive() }
           self.backgroundHandoffWorkItem?.cancel(); self.backgroundHandoffWorkItem = nil
           self.setStatus("protected", active ? "pjsip_callkit_audio_owner" : "pjsip_call_ended")

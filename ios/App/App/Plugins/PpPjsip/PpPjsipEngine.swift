@@ -40,7 +40,8 @@ private func ppPjsipLogWriter(_ level: Int32, _ data: UnsafePointer<CChar>?, _ l
 
 private func ppPjsipOnRegState2(_ accId: pjsua_acc_id, _ info: UnsafeMutablePointer<pjsua_reg_info>?) {
     guard let info = info, let rdata = info.pointee.cbparam else { return }
-    let code = Int(rdata.pointee.code.rawValue)
+    // pjsip_rx_data.code est importé en Int32, pas en enum Swift.
+    let code = Int(rdata.pointee.code)
     let reason = ppPjStr(rdata.pointee.reason)
     NSLog("[PpPjsip] REGISTER response acc=%d code=%d reason=%@", accId, code, reason)
     PjsipEngine.shared.handleRegState(accId: accId, code: code, reason: reason)
@@ -63,7 +64,8 @@ private func ppPjsipOnCallState(_ callId: pjsua_call_id, _ event: UnsafeMutableP
     PjsipEngine.shared.handleCallState(
         callId: callId,
         state: info.state,
-        lastCode: Int(info.last_status.rawValue),
+        // pjsua_call_info.last_status est également importé comme entier.
+        lastCode: Int(info.last_status),
         remoteUri: ppPjStr(info.remote_info)
     )
 }
@@ -333,7 +335,9 @@ final class PjsipEngine {
         // nouveau tag SDES (crypto:3 au lieu de crypto:1), puis PJSIP détruit
         // le média avec PJMEDIA_SRTP_ESDPINCRYPTOTAG. Garder l'offre négociée
         // dans le 183/200 préserve le flux SRTP bidirectionnel.
-        acc.lock_codec = pj_bool_t(0)
+        // Ces deux champs PJSUA sont des `unsigned` (UInt32 dans Swift),
+        // contrairement aux drapeaux pj_bool_t voisins.
+        acc.lock_codec = 0
         // Les session timers sont également inutiles sur ce trunk et peuvent
         // provoquer une seconde renégociation SDP. Le keep-alive TCP suffit.
         acc.use_timer = PJSUA_SIP_TIMER_INACTIVE
@@ -341,7 +345,7 @@ final class PjsipEngine {
         // Un seul `+sip.instance` : on laisse RFC5626 le générer avec NOTRE
         // UUID stable au lieu d'ajouter un second param manuel (pjsua émettait
         // sinon un doublon dont un UUID à zéros).
-        acc.use_rfc5626 = pj_bool_t(1)
+        acc.use_rfc5626 = 1
         acc.rfc5626_instance_id = ppMakePjStr(instanceId, keep: &strings)
 
 
@@ -991,7 +995,7 @@ final class PjsipEngine {
         acc.proxy.0 = ppMakePjStr("sip:\(server):5061;transport=tls;lr", keep: &strings)
         acc.reg_timeout = 300
         acc.register_on_acc_add = pj_bool_t(1)
-        acc.use_rfc5626 = pj_bool_t(1)
+        acc.use_rfc5626 = 1
         acc.rfc5626_instance_id = ppMakePjStr(instanceId, keep: &strings)
 
         NSLog("[PpPjsip] PROBE REGISTER → sip:%@:%d TLS aor=sip:%@@%@", server, Int32(port), probeUser, domain)
@@ -1095,7 +1099,11 @@ final class PjsipEngine {
         let count = max(1, MemoryLayout<pj_thread_desc>.size / MemoryLayout<Int>.size)
         let desc = UnsafeMutablePointer<Int>.allocate(capacity: count)
         desc.initialize(repeating: 0, count: count)
-        var handle: UnsafeMutablePointer<pj_thread_t>?
+        // pj_thread_t est opaque et n'est pas exposé nominalement par le
+        // module map pjsua. Swift l'importe comme OpaquePointer. PJLIB écrit
+        // obligatoirement ce handle de sortie; conserver le descripteur garde
+        // l'enregistrement valide pour toute la vie du thread.
+        var handle: OpaquePointer?
         let status = pj_thread_register("pp-worker", desc, &handle)
         NSLog("[PpPjsip] pj_thread_register status=%d", status)
         lock.lock()
@@ -1146,7 +1154,10 @@ final class PjsipEngine {
               sslBackendPresent ? "OUI" : "NON", count, cipherStatus)
         NSLog("[PpPjsip]   TLS est le SEUL transport natif possible — PJSIP n'a pas de transport SIP/WebSocket.")
 
-        if status == pj_status_t(PJSIP_EUNSUPTRANSPORT.rawValue) || !sslBackendPresent {
+        // Les macros C comme PJSIP_EUNSUPTRANSPORT ne sont pas forcément
+        // importées par Swift. pj_strerror conserve le diagnostic exact;
+        // l'absence du backend SSL est, elle, déterminante.
+        if !sslBackendPresent {
             NSLog("[PpPjsip] 🔎 CAUSE : PJSIP_EUNSUPTRANSPORT — libpjsip.xcframework construit SANS OpenSSL.")
             NSLog("[PpPjsip]    CORRECTIF : bash scripts/build-pjsip-ios.sh puis npx cap sync ios")
         } else {

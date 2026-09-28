@@ -159,7 +159,9 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         })
         pjsipObservers.append(nc.addObserver(forName: Notification.Name("PpPjsipCallEnded"), object: nil, queue: .main) { [weak self] note in
             guard let self = self, let uuid = self.activeCallUUID else { return }
-            let endedCallId = String(note.userInfo?["callId"] ?? "")
+            // `userInfo` est [AnyHashable: Any]. Un cast explicite évite une
+            // résolution d'overload invalide de String(Any) sur Xcode récent.
+            let endedCallId = (note.userInfo?["callId"] as? String) ?? ""
             // PJSIP callbacks can arrive after CallKit has already moved to a
             // newer call. Never let the old dialog close that newer UI.
             if !endedCallId.isEmpty,
