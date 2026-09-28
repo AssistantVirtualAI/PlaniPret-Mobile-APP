@@ -11,8 +11,14 @@ const rootSrc = path.join(repoRoot, "src");
 // The standalone release repository contains the mobile application directly
 // at its root. It intentionally also contains portal-only source files and
 // assets, which are not copied into Capacitor and must not be audited as if
-// they were mobile sources.
-const standaloneReleaseRepo = path.basename(appDir) === "planipret-build";
+// they were mobile sources. Detect the project layout instead of a clone
+// folder name: developer Macs commonly use "planipret-standalone".
+const embeddedMobileProject = path.join(repoRoot, "apps", "planipret-mobile", "package.json");
+const standaloneReleaseRepo = fs.existsSync(path.join(appDir, "package.json"))
+  && fs.existsSync(appSrc)
+  && !fs.existsSync(embeddedMobileProject);
+
+console.log(`[native-audit] mode=${standaloneReleaseRepo ? "standalone" : "monorepo"} app=${appDir}`);
 
 const failures = [];
 
