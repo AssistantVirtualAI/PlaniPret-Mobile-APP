@@ -162,6 +162,10 @@ final class PjsipEngine {
 
     /// Appel sortant en cours (piloté par CallKit côté PpVoipCall).
     private var outgoingCall: pjsua_call_id = pjsua_call_id(-1)
+    /// Incrémente pour chaque dialogue. Un call-id PJSIP peut être réutilisé;
+    /// la reprise différée d'un raccrochage ne doit jamais toucher l'appel qui
+    /// lui succède, même si son ID numérique est identique.
+    private var dialogGeneration: UInt64 = 0
     /// Armé AVANT `pjsua_call_make_call` : le callback d'état `CALLING` peut
     /// arriver avant que `outgoingCall` soit affecté, ce qui faisait annoncer
     /// `direction=in` sur un appel sortant (double écran d'appel côté JS).
@@ -433,6 +437,7 @@ final class PjsipEngine {
                 var uri = ppMakePjStr(target, keep: &keep)
                 var newCall = pjsua_call_id(-1)
                 self.outgoingPending = true
+                self.dialogGeneration &+= 1
                 let status = pjsua_call_make_call(self.accId, &uri, nil, nil, nil, &newCall)
                 keep.forEach { free($0) }
 
@@ -590,25 +595,31 @@ final class PjsipEngine {
             DispatchQueue.main.async { closeCallKit() }
             return
         }
-        var done = false
-        thread.run { [weak self] in
+        // A queued PJSIP worker is not evidence that the BYE/CANCEL was
+        // accepted. Previously `done` was set before checking the PJSIP return
+        // value, so a transient failure could leave the remote party hearing an
+        // apparently endless call after CallKit had already closed locally.
+        let generation = dialogGeneration
+        let attemptHangup: (String) -> Void = { [weak self] origin in
             guard let self = self else { return }
-            self.registerCurrentThreadIfNeeded()
-            self.scheduleOnPjsipThread {
-                if done { return }
-                done = true
-                let status = pjsua_call_hangup(target, UInt32(code), nil, nil)
-                NSLog("[PpPjsip] hangup callId=%d code=%d status=%d", target, code, status)
+            self.thread.run {
+                self.registerCurrentThreadIfNeeded()
+                self.scheduleOnPjsipThread {
+                    // A newer call must never be affected by a delayed retry.
+                    guard self.dialogGeneration == generation,
+                          self.activeCall == target || self.outgoingCall == target else { return }
+                    let status = pjsua_call_hangup(target, UInt32(code), nil, nil)
+                    NSLog("[PpPjsip] hangup %@ callId=%d code=%d status=%d", origin, target, code, status)
+                }
             }
         }
-        // Filet de sécurité si le timer PJSIP ne s'exécute pas.
+        attemptHangup("primary")
+        // Retry only the same active PJSIP call when the first hangup was not
+        // accepted. It never touches registration, devices, DIDs or a future
+        // dialog, and prevents the stale remote leg reported in production.
         DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 1.0) { [weak self] in
-            guard let self = self, !done else { return }
-            done = true
-            self.thread.run {
-                let status = pjsua_call_hangup(target, UInt32(code), nil, nil)
-                NSLog("[PpPjsip] hangup FALLBACK callId=%d status=%d", target, status)
-            }
+            guard self != nil else { return }
+            attemptHangup("retry")
         }
         DispatchQueue.main.async { closeCallKit() }
     }
@@ -731,11 +742,18 @@ final class PjsipEngine {
     }
 
     func handleIncomingCall(callId: pjsua_call_id, remoteUri: String) {
+        // Une retransmission du même INVITE ne doit ni réinitialiser l'époque
+        // du dialogue ni demander une seconde sonnerie CallKit.
+        if activeCall == callId {
+            NSLog("[PpPjsip] duplicate incoming INVITE ignored callId=%d", callId)
+            return
+        }
         // Un seul appel simultané : tout INVITE concurrent est refusé (486).
-        if activeCall >= 0 && activeCall != callId {
+        if activeCall >= 0 {
             pjsua_call_answer(callId, 486, nil, nil)
             return
         }
+        dialogGeneration &+= 1
         activeCall = callId
         muted = false
         let number = ppUserFromUri(remoteUri)

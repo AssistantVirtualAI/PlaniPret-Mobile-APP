@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { AVA_SENSITIVE_TOOLS } from "../../../../supabase/functions/_shared/ava-confirm";
+import { AVA_SENSITIVE_TOOLS } from "@planipret-edge/ava-confirm";
 import {
   buildAvaToolConfigs,
   buildAvaToolsArray,
   EXPECTED_TOOL_NAMES,
-} from "../../../../supabase/functions/_shared/ava-tools";
+} from "@planipret-edge/ava-tools";
 
 describe("contrat des outils AVA / ElevenLabs", () => {
   it("expose exactement les 81 outils canoniques uniques", () => {

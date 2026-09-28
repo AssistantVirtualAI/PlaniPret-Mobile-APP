@@ -25,12 +25,19 @@ const mobilePackage = JSON.parse(fs.readFileSync(path.resolve(__dirname, 'packag
 const hasCapgoUpdater = fs.existsSync(
   path.resolve(__dirname, 'node_modules/@capgo/capacitor-updater/package.json'),
 );
+// The mobile source lives under apps/ in the Lovable repository but at the
+// root of the standalone release repository. Tests importing shared Edge
+// contracts must resolve correctly in both layouts.
+const edgeSharedRoot = fs.existsSync(path.resolve(__dirname, 'supabase/functions/_shared'))
+  ? path.resolve(__dirname, 'supabase/functions/_shared')
+  : path.resolve(__dirname, '../../supabase/functions/_shared');
 
 export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      '@planipret-edge': edgeSharedRoot,
       // Replace framer-motion with a lightweight shim on mobile.
       // See src/lib/motion-shim.tsx for the rationale (iOS WKWebView
       // GPU/memory crashes with the full library).

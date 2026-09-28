@@ -11,7 +11,8 @@ import {
 } from "../_shared/maestro.ts";
 import { guardPlanipret } from "../_shared/planipret-guard.ts";
 import { maestroClientHasTelephone } from "../_shared/maestro-client-telephone.ts";
-import { createClient_, createTelephone, getClient } from "../_shared/maestro-scribe.ts";
+import { createClient_, getClient } from "../_shared/maestro-scribe.ts";
+import { ensureClientTelephone } from "../_shared/maestro-client-telephone.ts";
 import { getUserMaestroAccessToken } from "../_shared/maestro-oauth.ts";
 
 function clientName(client: any, fallbackFirst: string, fallbackLast: string): string {
@@ -130,13 +131,47 @@ Deno.serve(async (req) => {
       }
     }
 
+    const s = (v: unknown, max = 120) => String(v ?? "").trim().slice(0, max);
+    const a = (body?.address && typeof body.address === "object") ? body.address : {};
+    const salutation = Number(body?.salutation);
+    const sex = s(body?.sex, 10).toLowerCase();
+    const language = s(body?.language, 10).toLowerCase();
+    const address = {
+      ...(s(a.unit ?? a.apartment, 20) ? { unit: s(a.unit ?? a.apartment, 20) } : {}),
+      street_number: s(a.street_number, 20),
+      street_name: s(a.street_name),
+      street_type_dd: Number(a.street_type_dd),
+      city: s(a.city),
+      region: s(a.region, 2).toUpperCase(),
+      zip: s(a.zip, 12).toUpperCase(),
+      country: "ca",
+      address_type: "primary",
+    };
+    const validation: Record<string, string[]> = {};
+    if (!lastName) validation.last_name = ["last_name_required"];
+    if (!phone) validation.phone = ["phone_required"];
+    if (!Number.isInteger(salutation) || salutation <= 0) validation.salutation = ["salutation_required"];
+    if (sex !== "m" && sex !== "f") validation.sex = ["sex_m_or_f_required"];
+    if (language !== "fr" && language !== "en") validation.language = ["language_fr_or_en_required"];
+    if (!address.street_number) validation.street_number = ["address.street_number_required"];
+    if (!address.street_name) validation.street_name = ["address.street_name_required"];
+    if (!Number.isInteger(address.street_type_dd) || address.street_type_dd <= 0) validation.street_type_dd = ["address.street_type_dd_required"];
+    if (!address.city) validation.city = ["address.city_required"];
+    if (!/^[A-Z]{2}$/.test(address.region)) validation.region = ["address.region_required"];
+    if (!/^[A-Z]\d[A-Z] ?\d[A-Z]\d$/.test(address.zip)) validation.zip = ["address.zip_required"];
+    if (Object.keys(validation).length > 0) {
+      return json({ success: false, error: "validation_failed", errors: validation }, 422);
+    }
     const payload: Record<string, unknown> = {
       first_name: firstName,
-      ...(lastName ? { last_name: lastName } : {}),
+      last_name: lastName,
+      salutation,
+      sex,
+      language,
+      mobile_number: phone,
+      address,
       ...(body?.email ? { email: String(body.email).trim() } : {}),
       ...(body?.company ? { company: String(body.company).trim() } : {}),
-      ...(body?.language ? { language: String(body.language).trim() } : {}),
-      ...(phone ? { mobile_number: phone } : {}),
     };
 
     const res = await createClient_(cfg, payload, { token });
@@ -194,38 +229,13 @@ Deno.serve(async (req) => {
     }
 
     let confirmed = readBack.data as any;
-    // Maestro stores numbers in the documented telephones sub-resource; the
-    // POST /clients body may ignore a flat phone field. Ensure the caller's
-    // number is attached so the directory/caller lookup can match it.
     if (phone) {
-      if (!maestroClientHasTelephone(confirmed, phone)) {
-        const telephoneNumber = phone.replace(/\D/g, "").slice(-10);
-        const tel = await createTelephone(cfg, clientId, {
-          telephone_type: "mobile",
-          telephone_number: telephoneNumber,
-          extension: "",
-          priority: "principal",
-        }, { token });
-        await maestroAudit(admin, tel.ok ? "client_telephone_added" : "client_telephone_failed", { client_id: clientId, status: tel.status });
-        if (tel.ok) {
-          const rb2 = await getClient(cfg, clientId, { token });
-          if (rb2.ok && rb2.data) confirmed = rb2.data as any;
-        }
+      const tel = await ensureClientTelephone(cfg, clientId, confirmed, phone, token);
+      await maestroAudit(admin, tel.confirmed ? "client_telephone_confirmed" : "client_telephone_unconfirmed", { client_id: clientId, added: tel.added, status: tel.status ?? null });
+      if (!tel.confirmed) {
+        return json({ success: false, error: "maestro_telephone_unconfirmed", client_id: clientId, message: "Client créé, mais Maestro ne confirme pas encore son numéro." }, 200);
       }
-
-      // Never claim a caller is durable when Maestro did not retain its
-      // telephone. The next incoming call would otherwise not resolve.
-      if (!maestroClientHasTelephone(confirmed, phone)) {
-        await maestroAudit(admin, "client_telephone_unconfirmed", {
-          client_id: clientId,
-          token_source: tokenSource,
-        });
-        return json({
-          success: false,
-          error: "maestro_telephone_unconfirmed",
-          message: "Client créé, mais son numéro n’a pas été confirmé par Maestro. Réessayez avant de lier l’appel.",
-        }, 200);
-      }
+      confirmed = tel.client;
     }
     const name = clientName(confirmed, firstName, lastName);
     await linkCallToClient(admin, guard.user.id, body?.call_id, clientId, name);

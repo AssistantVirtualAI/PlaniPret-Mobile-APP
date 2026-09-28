@@ -8,7 +8,7 @@ import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import {
   User, Lock, Phone, Info, Mail, Bell, Moon, HelpCircle, MessageCircle,
-  LogOut, Trash2, ChevronRight, Bot, Sparkles, X, Download, Shield, BellOff, Settings as SettingsIcon, BarChart3, Voicemail, Edit3, Languages, ExternalLink,
+  LogOut, Trash2, ChevronRight, Bot, Sparkles, X, Download, Shield, BellOff, Settings as SettingsIcon, BarChart3, Voicemail, Edit3, Languages, ExternalLink, Database,
 } from "lucide-react";
 import { openBrokerPortal } from "@/lib/planipret/openBrokerPortal";
 import { getAppVersionInfo } from "@/lib/planipret/appVersion";
@@ -265,6 +265,9 @@ export default function MMore() {
       </div>
 
       <Section title={t("more.sections.pipeline")}>
+        <Row icon={<Database className="w-4 h-4" />} label="Maestro"
+          sub={lang === "fr" ? "Appels, tâches et commissions" : "Calls, tasks and commissions"}
+          onClick={() => navigate("/mplanipret/maestro")} chevron />
         <Row icon={<Sparkles className="w-4 h-4" />} label={t("screens.more.discussWithAva")} sub={t("screens.more.avaAssistantSub")} onClick={() => navigate("/mplanipret/ava")} chevron />
         <Row icon={<Bell className="w-4 h-4" />} label={t("screens.more.avaNotifTitle")} sub={t("screens.more.avaNotifSub")} onClick={() => navigate("/mplanipret/notifications")} chevron />
         <Row icon={<BarChart3 className="w-4 h-4" />} label={t("more.pipelineFiles")} onClick={() => navigate("/mplanipret/pipeline")} chevron />

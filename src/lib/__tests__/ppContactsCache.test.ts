@@ -63,4 +63,38 @@ describe("ppContactsCache — TTL et anti-concurrence", () => {
     const fresh = await import("../ppContactsCache");
     expect(fresh.peekPpContacts("directory")).toEqual([{ id: "1" }]);
   });
+
+  it("charge toutes les pages Maestro sans limiter la liste à 500 clients", async () => {
+    const firstPage = Array.from({ length: 500 }, (_, index) => ({ maestro_client_id: `client-${index}` }));
+    const secondPage = Array.from({ length: 150 }, (_, index) => ({ maestro_client_id: `client-${500 + index}` }));
+    invoke.mockImplementation((_functionName: string, { body }: any) => {
+      const offset = Number(body?.payload?.offset ?? 0);
+      if (offset === 0) {
+        return Promise.resolve({
+          data: { success: true, maestro_user_id: "maestro-broker-1", clients: firstPage, total: 650 },
+          error: null,
+        });
+      }
+      if (offset === 500) {
+        return Promise.resolve({
+          data: { success: true, maestro_user_id: "maestro-broker-1", clients: secondPage, total: 650 },
+          error: null,
+        });
+      }
+      return Promise.resolve({ data: { success: true, maestro_user_id: "maestro-broker-1", clients: [], total: 650 }, error: null });
+    });
+
+    const clients = await mod.getPpContacts("maestro_clients", { force: true, limit: 500 });
+
+    expect(clients).toHaveLength(650);
+    expect(new Set(clients.map((row: any) => row.maestro_client_id)).size).toBe(650);
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(invoke.mock.calls.map(([, options]) => options.body.payload.offset)).toEqual([0, 500]);
+  });
+
+  it("propage un refus Maestro au lieu de présenter une liste vide", async () => {
+    invoke.mockResolvedValue({ data: { success: false, error: "maestro_unavailable" }, error: null });
+
+    await expect(mod.getPpContacts("maestro_clients", { force: true })).rejects.toThrow("maestro_unavailable");
+  });
 });

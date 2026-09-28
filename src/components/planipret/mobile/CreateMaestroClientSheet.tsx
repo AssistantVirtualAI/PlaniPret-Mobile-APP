@@ -3,6 +3,14 @@ import { X, UserPlus, Loader2, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { invalidateCallerClient, resolveCallerClient } from "@/lib/planipret/callerClient";
+import { hasRequiredMaestroClientFields } from "@/lib/planipret/maestroClientDraft";
+
+/** Codes numériques des listes Maestro (salutation, type de rue). */
+const MAESTRO_SALUTATIONS = [{ v: "1", l: "M." }, { v: "2", l: "Mme" }];
+const MAESTRO_STREET_TYPES = [
+  { v: "1", l: "Rue" }, { v: "2", l: "Avenue" }, { v: "3", l: "Boulevard" },
+  { v: "4", l: "Chemin" }, { v: "5", l: "Rang" }, { v: "6", l: "Place" },
+];
 
 export interface CreateClientTarget {
   phone: string;
@@ -25,6 +33,16 @@ export default function CreateMaestroClientSheet({
   const [last, setLast] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
+  const [salutation, setSalutation] = useState("");
+  const [sex, setSex] = useState("");
+  const [language, setLanguage] = useState("fr");
+  const [streetNumber, setStreetNumber] = useState("");
+  const [streetName, setStreetName] = useState("");
+  const [streetType, setStreetType] = useState("");
+  const [apartment, setApartment] = useState("");
+  const [city, setCity] = useState("");
+  const [region, setRegion] = useState("QC");
+  const [zip, setZip] = useState("");
   const [busy, setBusy] = useState(false);
   const [webUrl, setWebUrl] = useState<string | null>(null);
 
@@ -35,13 +53,30 @@ export default function CreateMaestroClientSheet({
     setLast(parts.slice(1).join(" "));
     setEmail("");
     setPhone(target.phone ?? "");
+    setSalutation(""); setSex(""); setLanguage("fr");
+    setStreetNumber(""); setStreetName(""); setStreetType(""); setApartment("");
+    setCity(""); setRegion("QC"); setZip("");
     setWebUrl(null);
   }, [target]);
 
   if (!target) return null;
 
   const emailOk = !email.trim() || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
-  const canSubmit = first.trim().length > 0 && first.length <= 80 && last.length <= 80 && emailOk && phone.replace(/\D/g, "").length >= 10 && !busy;
+  const zipOk = /^[A-Za-z]\d[A-Za-z] ?\d[A-Za-z]\d$/.test(zip.trim());
+  const canSubmit = hasRequiredMaestroClientFields({
+    firstName: first,
+    lastName: last,
+    phone,
+    salutation,
+    sex,
+    language,
+    streetNumber,
+    streetName,
+    streetType,
+    city,
+    region,
+    zip,
+  }) && emailOk && !busy;
 
   const submit = async () => {
     if (!canSubmit) return;
@@ -63,7 +98,19 @@ export default function CreateMaestroClientSheet({
       const { data, error } = await supabase.functions.invoke("maestro-client-create", {
         body: {
           first_name: first.trim(),
-          last_name: last.trim() || undefined,
+          last_name: last.trim(),
+          salutation: Number(salutation),
+          sex,
+          language,
+          address: {
+            street_number: streetNumber.trim(),
+            street_name: streetName.trim(),
+            street_type_dd: Number(streetType),
+            apartment: apartment.trim() || undefined,
+            city: city.trim(),
+            region,
+            zip: zip.trim().toUpperCase().replace(/\s/g, ""),
+          },
           email: email.trim() || undefined,
           phone: phone.trim(),
           call_id: target.callId ?? undefined,
@@ -76,6 +123,10 @@ export default function CreateMaestroClientSheet({
         return;
       }
       if (d?.error === "maestro_not_connected") throw new Error("Connectez votre compte Maestro dans Réglages → Maestro.");
+      if (d?.errors && typeof d.errors === "object") {
+        const first = Object.values(d.errors as Record<string, string[]>).flat()[0];
+        throw new Error(first || "Maestro a refusé certaines informations.");
+      }
       if (error || !d?.success || !d?.client_id) throw new Error(d?.message || d?.error || error?.message || "Création refusée par Maestro");
 
       const id = String(d.client_id);
@@ -104,15 +155,47 @@ export default function CreateMaestroClientSheet({
 
   return (
     <div className="fixed inset-0 z-[95] flex items-end justify-center" style={{ background: "rgba(0,0,0,.5)" }} onClick={onClose}>
-      <div className="w-full max-w-md rounded-t-3xl p-5 space-y-3" onClick={(e) => e.stopPropagation()}
+      <div className="w-full max-w-md rounded-t-3xl p-5 space-y-3 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}
         style={{ background: "var(--pp-bg-surface)", color: "var(--pp-text-primary)", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 20px)" }}>
         <div className="flex items-center justify-between">
           <h2 className="text-base font-semibold flex items-center gap-2"><UserPlus className="w-4 h-4" /> Créer le client dans Maestro</h2>
           <button onClick={onClose} aria-label="Fermer" className="p-2 rounded-full" style={{ background: "var(--pp-bg-elevated)" }}><X className="w-4 h-4" /></button>
         </div>
         <input className={field} style={fieldStyle} placeholder="Prénom *" value={first} maxLength={80} onChange={(e) => setFirst(e.target.value)} />
-        <input className={field} style={fieldStyle} placeholder="Nom" value={last} maxLength={80} onChange={(e) => setLast(e.target.value)} />
+        <input className={field} style={fieldStyle} placeholder="Nom *" value={last} maxLength={80} onChange={(e) => setLast(e.target.value)} />
         <input className={field} style={fieldStyle} placeholder="Courriel (facultatif)" type="email" value={email} maxLength={255} onChange={(e) => setEmail(e.target.value)} />
+        <div className="grid grid-cols-3 gap-2">
+          <select className={field} style={fieldStyle} value={salutation} onChange={(e) => setSalutation(e.target.value)} aria-label="Salutation">
+            <option value="">Salutation *</option>
+            {MAESTRO_SALUTATIONS.map((o) => <option key={o.v} value={o.v}>{o.l}</option>)}
+          </select>
+          <select className={field} style={fieldStyle} value={sex} onChange={(e) => setSex(e.target.value)} aria-label="Sexe">
+            <option value="">Sexe *</option><option value="m">Homme</option><option value="f">Femme</option>
+          </select>
+          <select className={field} style={fieldStyle} value={language} onChange={(e) => setLanguage(e.target.value)} aria-label="Langue">
+            <option value="fr">Français</option><option value="en">English</option>
+          </select>
+        </div>
+        <p className="text-xs font-semibold pt-1" style={{ color: "var(--pp-text-secondary)" }}>Adresse (exigée par Maestro)</p>
+        <div className="grid grid-cols-3 gap-2">
+          <input className={field} style={fieldStyle} placeholder="No civique *" value={streetNumber} maxLength={20} onChange={(e) => setStreetNumber(e.target.value)} />
+          <select className={field + " col-span-2"} style={fieldStyle} value={streetType} onChange={(e) => setStreetType(e.target.value)} aria-label="Type de rue">
+            <option value="">Type de rue *</option>
+            {MAESTRO_STREET_TYPES.map((o) => <option key={o.v} value={o.v}>{o.l}</option>)}
+          </select>
+        </div>
+        <input className={field} style={fieldStyle} placeholder="Nom de la rue *" value={streetName} maxLength={120} onChange={(e) => setStreetName(e.target.value)} />
+        <div className="grid grid-cols-3 gap-2">
+          <input className={field} style={fieldStyle} placeholder="App." value={apartment} maxLength={20} onChange={(e) => setApartment(e.target.value)} />
+          <input className={field + " col-span-2"} style={fieldStyle} placeholder="Ville *" value={city} maxLength={120} onChange={(e) => setCity(e.target.value)} />
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <select className={field} style={fieldStyle} value={region} onChange={(e) => setRegion(e.target.value)} aria-label="Province">
+            {["QC","ON","NB","NS","PE","NL","MB","SK","AB","BC","YT","NT","NU"].map((r) => <option key={r} value={r}>{r}</option>)}
+          </select>
+          <input className={field} style={fieldStyle} placeholder="Code postal *" value={zip} maxLength={7} onChange={(e) => setZip(e.target.value.toUpperCase())} />
+        </div>
+        {zip.trim() && !zipOk && <p className="text-[11px]" style={{ color: "var(--pp-danger)" }}>Code postal invalide (ex. H2X 1Y4)</p>}
         {!emailOk && <p className="text-[11px]" style={{ color: "var(--pp-danger)" }}>Courriel invalide</p>}
         <input className={field} style={fieldStyle} placeholder="Téléphone *" inputMode="tel" value={phone} maxLength={30} onChange={(e) => setPhone(e.target.value)} />
         {webUrl && (

@@ -6,7 +6,7 @@
  * Presentation only: everything is read from the Maestro payload (`raw`) with
  * tolerant fallbacks, so a missing field renders as "-" like in Maestro.
  */
-import type { NormalizedTask } from "../../../supabase/functions/_shared/planipret-tasks";
+import type { NormalizedTask } from "@/lib/planipret/shared/planipretTasks";
 
 /** Defensive cleanup for tasks already cached by an older mobile release. */
 const plainText = (value: unknown): string => String(value ?? "")

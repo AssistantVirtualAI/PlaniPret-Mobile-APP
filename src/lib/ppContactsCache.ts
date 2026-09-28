@@ -87,15 +87,31 @@ function syncMaestroScope(id: string | null | undefined) {
 }
 
 /** Scott's new Maestro endpoints: /users/{id}/clients and /users/{id}/brokers. */
+// Same source as the broker portal (maestro-actions list_clients, scoped to
+// the signed-in broker). Pages through the full list so brokers with more
+// than one page see every client, exactly like the portal.
 async function fetchMaestroList(kind: "clients" | "brokers", limit: number, refresh = false): Promise<any[]> {
-  const { data, error } = await supabase.functions.invoke("maestro-actions", {
-    body: { action: kind === "clients" ? "list_clients" : "list_brokers", payload: { limit, refresh } },
-  });
-  const payload: any = data ?? {};
-  if (error && !payload?.success) throw new Error(payload?.error || error.message || kind);
-  syncMaestroScope(payload?.maestro_user_id);
-  const list = payload[kind];
-  return Array.isArray(list) ? list : [];
+  const pageSize = Math.max(1, Math.min(limit, 500));
+  const all: any[] = [];
+  const seen = new Set<string>();
+  for (let offset = 0, page = 0; page < 20; page++, offset += pageSize) {
+    const { data, error } = await supabase.functions.invoke("maestro-actions", {
+      body: { action: kind === "clients" ? "list_clients" : "list_brokers", payload: { limit: pageSize, offset, refresh: refresh && page === 0 } },
+    });
+    const payload: any = data ?? {};
+    if ((error && !payload?.success) || payload?.success === false) throw new Error(payload?.error || error?.message || kind);
+    if (page === 0) syncMaestroScope(payload?.maestro_user_id);
+    const list: any[] = Array.isArray(payload[kind]) ? payload[kind] : [];
+    let added = 0;
+    for (const row of list) {
+      const key = String(row?.maestro_client_id ?? row?.id ?? JSON.stringify(row));
+      if (seen.has(key)) continue;
+      seen.add(key); all.push(row); added++;
+    }
+    const total = Number(payload.total ?? payload.count ?? 0);
+    if (!added || list.length < pageSize || (total && all.length >= total) || kind === "brokers") break;
+  }
+  return all;
 }
 
 async function fetchNs(action: Exclude<Action, "maestro" | "maestro_clients" | "maestro_brokers">, limit: number): Promise<any[]> {

@@ -116,6 +116,25 @@ describe("native telephony safety invariants", () => {
     expect(nativeService).toContain("endCallKit(targetCallId)");
   });
 
+  it("retries only the same PJSIP dialog when a local hangup did not close the remote leg", () => {
+    const engine = read("ios/App/App/Plugins/PpPjsip/PpPjsipEngine.swift");
+
+    expect(engine).toContain('attemptHangup("primary")');
+    expect(engine).toContain('attemptHangup("retry")');
+    expect(engine).toContain("private var dialogGeneration: UInt64 = 0");
+    expect(engine).toContain("guard self.dialogGeneration == generation,");
+    expect(engine).toContain("self.activeCall == target || self.outgoingCall == target else { return }");
+    expect(engine).toContain("pjsua_call_hangup(target, UInt32(code), nil, nil)");
+  });
+
+  it("does not reopen CallKit for a retransmitted INVITE on the same dialog", () => {
+    const engine = read("ios/App/App/Plugins/PpPjsip/PpPjsipEngine.swift");
+
+    expect(engine).toContain("if activeCall == callId {");
+    expect(engine).toContain("duplicate incoming INVITE ignored");
+    expect(engine).toContain("if activeCall >= 0 {");
+  });
+
   it("refuses a JsSIP answer without a live microphone and cleans media", () => {
     const provider = read("src/lib/planipret/sip/ppSipProvider.ts");
 
