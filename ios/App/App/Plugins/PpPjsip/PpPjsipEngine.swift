@@ -64,8 +64,9 @@ private func ppPjsipOnCallState(_ callId: pjsua_call_id, _ event: UnsafeMutableP
     PjsipEngine.shared.handleCallState(
         callId: callId,
         state: info.state,
-        // pjsua_call_info.last_status est également importé comme entier.
-        lastCode: Int(info.last_status),
+        // pjsua_call_info.last_status est un pjsip_status_code, importé
+        // comme enum Swift avec rawValue (à la différence de rdata.code).
+        lastCode: Int(info.last_status.rawValue),
         remoteUri: ppPjStr(info.remote_info)
     )
 }

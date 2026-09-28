@@ -71,9 +71,8 @@ describe("native telephony safety invariants", () => {
     const generator = read("scripts/apply-native-config.mjs");
 
     expect(engine).toContain("Int(rdata.pointee.code)");
-    expect(engine).toContain("lastCode: Int(info.last_status)");
+    expect(engine).toContain("lastCode: Int(info.last_status.rawValue)");
     expect(engine).not.toContain("code.rawValue");
-    expect(engine).not.toContain("last_status.rawValue");
     expect(engine).toContain("acc.lock_codec = 0");
     expect(engine).toContain("acc.use_rfc5626 = 1");
     expect(engine).not.toContain("UnsafeMutablePointer<pj_thread_t>");
