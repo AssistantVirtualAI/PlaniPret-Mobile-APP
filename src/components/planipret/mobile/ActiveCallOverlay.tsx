@@ -8,6 +8,8 @@ import {
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { useMplanipretSoftphone } from "@/hooks/useMplanipretSoftphone";
 import { audioRouter } from "@/lib/planipret/audio/audioRouter";
+import { authorizeSpeakerRoute } from "@/lib/planipret/audio/audioRoutePermission";
+import { Capacitor } from "@capacitor/core";
 import NetworkQualityBadge from "@/components/planipret/mobile/NetworkQualityBadge";
 import HandoverIndicator from "@/components/planipret/mobile/HandoverIndicator";
 
@@ -111,8 +113,21 @@ export default function ActiveCallOverlay({ callId, onClosed }: { callId: string
   const toggleHold = async () => { const next = !held; setHeld(next); if (next) hold(); else unhold(); };
   const toggleSpeaker = async () => {
     const next = !speaker;
-    setSpeaker(next);
-    try { await audioRouter.setRoute(next ? "speaker" : "earpiece"); } catch {}
+    if (next) {
+      const authorization = await authorizeSpeakerRoute(Capacitor.isNativePlatform());
+      if (!authorization.allowed) {
+        toast.error("Autorisation du microphone requise", {
+          description: "Autorisez le microphone dans les réglages du téléphone pour utiliser le haut-parleur pendant l’appel.",
+        });
+        return;
+      }
+    }
+    try {
+      const applied = await audioRouter.setRoute(next ? "speaker" : "earpiece");
+      setSpeaker(applied.route === "speaker");
+    } catch {
+      toast.error("Changement de sortie audio impossible");
+    }
   };
   const sendDtmf = async (d: string) => { setDtmfBuffer((b) => (b + d).slice(-16)); await invoke("dtmf", { digit: d }); };
   const doTransfer = async () => {

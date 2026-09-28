@@ -15,6 +15,8 @@ import {
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import type { useMplanipretSoftphone } from "@/hooks/useMplanipretSoftphone";
 import { audioRouter } from "@/lib/planipret/audio/audioRouter";
+import { authorizeSpeakerRoute } from "@/lib/planipret/audio/audioRoutePermission";
+import { Capacitor } from "@capacitor/core";
 import { playRecordingNotice, resetRecordingNotice } from "@/lib/planipret/audio/recordingNotice";
 import { formatSipParty } from "@/lib/planipret/sip/formatSipParty";
 import { callUi, useCallUi } from "@/lib/planipret/callUiStore";
@@ -181,6 +183,15 @@ export default function PpActiveCallScreen({
     if (speakerBusy) return;
     setSpeakerBusy(true);
     try {
+      if (requested === "speaker") {
+        const authorization = await authorizeSpeakerRoute(Capacitor.isNativePlatform());
+        if (!authorization.allowed) {
+          toast.error("Autorisation du microphone requise", {
+            description: "Autorisez le microphone dans les réglages du téléphone pour utiliser le haut-parleur pendant l’appel.",
+          });
+          return;
+        }
+      }
       const applied = await audioRouter.setRoute(requested);
       setAudioDev(applied);
       setSpeakerOn(applied.route === "speaker");

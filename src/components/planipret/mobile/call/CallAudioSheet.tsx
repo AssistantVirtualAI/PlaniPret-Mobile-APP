@@ -2,11 +2,14 @@
 import { useEffect, useRef, useState } from "react";
 import { Mic, MicOff, Volume2, Bluetooth, Headphones, X } from "lucide-react";
 import { audioRouter, type AudioRoute } from "@/lib/planipret/audio/audioRouter";
+import { authorizeSpeakerRoute } from "@/lib/planipret/audio/audioRoutePermission";
 import { bluetoothManager, type BtDevice } from "@/lib/planipret/audio/bluetoothManager";
 import { NC_MODE_LABELS, type NCMode, getAudioConstraints } from "@/lib/planipret/audio/audioConstraints";
 import { startVad, type VadAutoMute, type VadHandle } from "@/lib/planipret/audio/vad";
 import { applyRnnoise } from "@/lib/planipret/audio/rnnoise";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import { Capacitor } from "@capacitor/core";
+import { toast } from "sonner";
 
 interface Props {
   open: boolean;
@@ -67,7 +70,21 @@ export default function CallAudioSheet({ open, onClose, stream, onMuteChange }: 
 
   useEffect(() => { vad.current?.setAutoMute(autoMute); }, [autoMute]);
 
-  const setRouteAnd = async (r: AudioRoute) => { await audioRouter.setRoute(r); setRoute(r); };
+  const setRouteAnd = async (r: AudioRoute) => {
+    if (r === "speaker") {
+      const authorization = await authorizeSpeakerRoute(Capacitor.isNativePlatform());
+      if (!authorization.allowed) {
+        toast.error(lang === "fr" ? "Autorisation du microphone requise" : "Microphone permission required", {
+          description: lang === "fr"
+            ? "Autorisez le microphone dans les réglages du téléphone pour utiliser le haut-parleur pendant l’appel."
+            : "Allow microphone access in your phone settings to use speakerphone during a call.",
+        });
+        return;
+      }
+    }
+    const applied = await audioRouter.setRoute(r);
+    setRoute(applied.route);
+  };
   const pickNc = (m: NCMode) => { localStorage.setItem("pp_nc_mode", m); setNcMode(m); };
   const pickAutoMute = (m: VadAutoMute) => { localStorage.setItem("pp_auto_mute", m); setAutoMute(m); };
 

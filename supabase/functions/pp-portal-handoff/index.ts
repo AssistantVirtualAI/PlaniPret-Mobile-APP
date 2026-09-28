@@ -7,6 +7,7 @@
 // pour un autre utilisateur : la cible est toujours `auth.uid()`.
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.39.7";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
+import { resolvePlanipretPortalTarget } from "../_shared/planipret-portal-target.mjs";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -54,9 +55,7 @@ Deno.serve(async (req) => {
     // Le lien mène directement au portail du courtier : /planipret/broker pour
     // un courtier, /planipret/admin pour un administrateur. Le garde du
     // portail consomme le jeton magique sur ces pages.
-    const home = isAdmin ? "/planipret/admin" : "/planipret/broker";
-    let target = typeof body?.path === "string" ? body.path : home;
-    if (!/^\/planipret\/(admin|broker)(\/|$)/.test(target)) target = home;
+    const target = resolvePlanipretPortalTarget(isAdmin, body?.path);
 
     // Le courtier est DÉJÀ authentifié dans l'app mobile : on estampille la
     // session comme « pont mobile vérifié » pour que le garde du portail
