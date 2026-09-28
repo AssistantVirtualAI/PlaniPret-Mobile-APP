@@ -525,7 +525,10 @@ export default function PlanipretMobile() {
   const [avaOpen, setAvaOpen] = useState(false);
   const [avaMode, setAvaMode] = useState<"voice" | "chat">("voice");
   const [activeCallId, setActiveCallId] = useState<string | null>(null);
+  // A provider Call-ID is unique. Keep a recently ended ID long enough for
+  // late realtime snapshots to settle, rather than recreating a false call UI.
   const endedCallIds = useRef<Map<string, number>>(new Map());
+  const DISMISSED_CALL_GRACE_MS = 10 * 60 * 1000;
   const openDialer = (n?: string, autoDial = false) => { setDialerInit(n); setDialerAutoDial(autoDial); setDialerOpen(true); };
   const openSmsComposer = useCallback((detail: { number?: string; body?: string; autoSend?: boolean } = {}) => {
     const qs = new URLSearchParams();
@@ -626,9 +629,41 @@ export default function PlanipretMobile() {
     if (!id) return false;
     const ts = endedCallIds.current.get(id);
     if (!ts) return false;
-    if (Date.now() - ts > 30_000) { endedCallIds.current.delete(id); return false; }
+    if (Date.now() - ts > DISMISSED_CALL_GRACE_MS) { endedCallIds.current.delete(id); return false; }
     return true;
   };
+
+  // PJSIP/CallKit knows first when the remote party hangs up. Persist that
+  // local truth immediately and clear the REST attachment before realtime/CDC
+  // can replay its previous active row. The server CDR pipeline remains the
+  // authority for Maestro synchronisation; this only prevents a stale UI.
+  useEffect(() => {
+    const onNativeEnded = (event: Event) => {
+      const providerCallId = String((event as CustomEvent<any>).detail?.providerCallId ?? "");
+      if (providerCallId) endedCallIds.current.set(providerCallId, Date.now());
+
+      // A delayed end event must not dismiss a different, replacement call.
+      const belongsToVisibleCall = !activeCallId || !providerCallId || activeCallId === providerCallId;
+      if (belongsToVisibleCall) {
+        setActiveCallId(null);
+        setInbound(null);
+        attachRestCall?.(null);
+      }
+
+      if (providerCallId) {
+        const endedAt = new Date().toISOString();
+        void supabase
+          .from("planipret_phone_calls")
+          .update({ status: "ended", ended_at: endedAt } as any)
+          .or(`id.eq.${providerCallId},ns_callid.eq.${providerCallId},ns_call_id.eq.${providerCallId}`)
+          .then(({ error }) => {
+            if (error) console.warn("[calls] local end persistence failed", error.message);
+          });
+      }
+    };
+    window.addEventListener("pp:call-ended", onNativeEnded as EventListener);
+    return () => window.removeEventListener("pp:call-ended", onNativeEnded as EventListener);
+  }, [activeCallId, attachRestCall]);
 
   const onInboundRinging = useCallback((row: any) => {
     const controlId = row.ns_callid ?? row.ns_call_id ?? row.call_id ?? row.id;

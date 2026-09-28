@@ -64,6 +64,25 @@ describe("native telephony safety invariants", () => {
     expect(keepAlive).toContain("audio reset skipped — PJSIP/CallKit owns session");
   });
 
+  it("closes a terminated native call without reviving a stale REST attachment", () => {
+    const callKit = read("ios/App/App/Plugins/PpVoipCall/PpVoipCall.swift");
+    const hook = read("src/hooks/useMplanipretSoftphone.ts");
+    const shell = read("src/pages/planipret/PlanipretMobile.tsx");
+    const nativeService = read("src/lib/planipret/sip/nativeSipService.ts");
+
+    expect(callKit).toContain("stale PJSIP end ignored");
+    expect(callKit).toContain("stale reportCallEnded ignored");
+    expect(callKit).toContain("Let the CXEndCallAction delegate own cleanup");
+    expect(hook).toContain("stale native end ignored");
+    expect(hook).toContain("A PJSIP/CallKit termination is authoritative for the visible call");
+    expect(hook).toContain("setRestCall((current) => current?.id === endedRestCallId ? null : current)");
+    expect(shell).toContain('window.addEventListener("pp:call-ended", onNativeEnded');
+    expect(shell).toContain("DISMISSED_CALL_GRACE_MS");
+    expect(shell).toContain('update({ status: "ended", ended_at: endedAt } as any)');
+    expect(nativeService).toContain("const targetCallId = this.currentCallId");
+    expect(nativeService).toContain("endCallKit(targetCallId)");
+  });
+
   it("refuses a JsSIP answer without a live microphone and cleans media", () => {
     const provider = read("src/lib/planipret/sip/ppSipProvider.ts");
 

@@ -159,6 +159,16 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         })
         pjsipObservers.append(nc.addObserver(forName: Notification.Name("PpPjsipCallEnded"), object: nil, queue: .main) { [weak self] note in
             guard let self = self, let uuid = self.activeCallUUID else { return }
+            let endedCallId = String(note.userInfo?["callId"] ?? "")
+            // PJSIP callbacks can arrive after CallKit has already moved to a
+            // newer call. Never let the old dialog close that newer UI.
+            if !endedCallId.isEmpty,
+               let activeCallId = self.activeCallId,
+               !activeCallId.isEmpty,
+               endedCallId != activeCallId {
+                NSLog("[PpVoipCall] stale PJSIP end ignored ended=%@ active=%@", endedCallId, activeCallId)
+                return
+            }
             let code = (note.userInfo?["code"] as? Int) ?? 0
             let reason: CXCallEndedReason = (code == 486 || code == 603) ? .declinedElsewhere
                 : (code >= 400 && code != 487) ? .failed : .remoteEnded
@@ -281,14 +291,44 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     }
 
     @objc func reportCallEnded(_ call: CAPPluginCall) {
-        if let uuid = activeCallUUID {
-            let end = CXEndCallAction(call: uuid)
-            callController.request(CXTransaction(action: end)) { _ in }
-            activeCallUUID = nil
-            activeCallId = nil
+        let requestedCallId = call.getString("callId") ?? ""
+        guard let uuid = activeCallUUID else {
+            endAnswerBackgroundTask()
+            call.resolve(["ok": true, "reason": "already_ended"])
+            return
         }
-        endAnswerBackgroundTask()
-        call.resolve(["ok": true])
+        if !requestedCallId.isEmpty,
+           let activeCallId = activeCallId,
+           !activeCallId.isEmpty,
+           requestedCallId != activeCallId {
+            // A delayed WebView callback must not end a replacement call.
+            NSLog("[PpVoipCall] stale reportCallEnded ignored requested=%@ active=%@", requestedCallId, activeCallId)
+            call.resolve(["ok": true, "reason": "stale_call_ignored"])
+            return
+        }
+
+        // Let the CXEndCallAction delegate own cleanup. Clearing the UUID here
+        // races that delegate and leaves CallKit without the correlation it
+        // needs to close the system UI and PJSIP dialog together.
+        let end = CXEndCallAction(call: uuid)
+        callController.request(CXTransaction(action: end)) { [weak self] error in
+            guard let self = self else { return }
+            if let error = error {
+                NSLog("[PpVoipCall] reportCallEnded transaction failed: %@", error.localizedDescription)
+                self.provider?.reportCall(with: uuid, endedAt: Date(), reason: .failed)
+                if self.activeCallUUID == uuid {
+                    self.pendingAnswerAction?.fail(); self.pendingAnswerAction = nil
+                    self.endAnswerBackgroundTask()
+                    self.activeCallUUID = nil; self.activeCallId = nil
+                    self.nativeEngineOwnsCall = false
+                    self.nativeOutgoingCall = false
+                    self.pendingOutgoingRequestId = nil
+                }
+                call.resolve(["ok": false, "reason": "callkit_end_transaction_failed"])
+                return
+            }
+            call.resolve(["ok": true])
+        }
     }
 
     /// Le bouton in-app demande la même transaction que le bouton système.

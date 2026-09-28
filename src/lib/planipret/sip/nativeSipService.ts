@@ -563,21 +563,23 @@ export class NativeSipService {
   async hangup(): Promise<boolean> {
     // CallKit doit être fermé même si PJSIP échoue, sinon l'UI système reste
     // affichée alors que l'appel est terminé.
-    const endCallKit = () => {
+    const endCallKit = (callId?: string | null) => {
       const voip = (window as any)?.Capacitor?.Plugins?.PpVoipCall;
       if (!voip) return;
-      if (voip.endCall) { void Promise.resolve(voip.endCall({})).catch(() => {}); }
-      else if (voip.reportCallEnded) { void Promise.resolve(voip.reportCallEnded({})).catch(() => {}); }
+      const payload = callId ? { callId } : {};
+      if (voip.endCall) { void Promise.resolve(voip.endCall(payload)).catch(() => {}); }
+      else if (voip.reportCallEnded) { void Promise.resolve(voip.reportCallEnded(payload)).catch(() => {}); }
     };
     const pjsip = getPjsip();
     if (!pjsip) { endCallKit(); releaseAorFromNative("hangup_plugin_absent"); return false; }
+    const targetCallId = this.currentCallId;
     try {
-      await pjsip.hangupCall({ callId: this.currentCallId ?? undefined });
+      await pjsip.hangupCall({ callId: targetCallId ?? undefined });
       this.currentCallId = null;
-      endCallKit();
+      endCallKit(targetCallId);
       return true;
     } catch (err: any) {
-      endCallKit();
+      endCallKit(targetCallId);
       if (this.isMissingBinary(err)) releaseAorFromNative("hangup_binary_missing");
       return false;
     }
