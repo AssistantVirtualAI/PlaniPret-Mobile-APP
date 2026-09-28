@@ -2,6 +2,7 @@
 // Récupère les interrupteurs, messages et mises à jour poussés depuis le portail admin.
 import { useCallback, useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
+import { nativeAppVersion } from "@/lib/native/otaUpdater";
 
 const APP_KEY = "planipret";
 const CHANNEL = "prod";
@@ -59,11 +60,21 @@ export function useRemoteConfig() {
   const [config, setConfig] = useState<RemoteConfig>(cached?.config ?? EMPTY);
   const [release, setRelease] = useState<RemoteRelease>(cached?.release ?? null);
   const [loading, setLoading] = useState(!cached);
+  // L'OTA active peut être plus ancienne que le binaire installé. Les écrans
+  // obligatoires doivent toujours se baser sur le binaire natif réel.
+  const [nativeVersion, setNativeVersion] = useState<string | null>(() => appVersion());
 
   const refresh = useCallback(async () => {
     try {
+      const native = await nativeAppVersion();
+      setNativeVersion(native);
       const { data, error } = await supabase.functions.invoke("mobile-config", {
-        body: { app_key: APP_KEY, channel: CHANNEL, version: appVersion() },
+        body: {
+          app_key: APP_KEY,
+          channel: CHANNEL,
+          version: appVersion(),
+          native_version: native,
+        },
       });
       if (error || (data as any)?.error) return;
       const cfg = (data as any).config as RemoteConfig;
@@ -101,6 +112,6 @@ export function useRemoteConfig() {
     setting,
     maintenance: config.maintenance_mode,
     maintenanceMessage: config.maintenance_message,
-    forceUpdate: isVersionLower(appVersion(), config.min_version),
+    forceUpdate: isVersionLower(nativeVersion, config.min_version),
   };
 }

@@ -19,6 +19,16 @@ type ReleaseInfo = {
   needs_update?: boolean;
 };
 
+type CurrentBundle = {
+  bundle?: { id?: string; version?: string | null };
+  native?: string | null;
+};
+
+export type OtaUpdateResult = {
+  status: "no-plugin" | "up-to-date" | "downloaded" | "reset-to-builtin" | "error";
+  version?: string;
+};
+
 function log(msg: string, detail?: unknown) {
   // eslint-disable-next-line no-console
   console.info(`[ota] ${msg}`, detail ?? "");
@@ -28,39 +38,91 @@ function bundledWebVersion(): string | null {
   try {
     return (import.meta as any).env?.VITE_APP_VERSION ?? null;
   } catch {
-    return (import.meta as any).env?.VITE_APP_VERSION ?? null;
+    return null;
   }
 }
 
-async function activeWebVersion(): Promise<string | null> {
-  try {
-    const current = await CapacitorUpdater.current();
-    const version = current?.bundle?.version;
-    if (version && version !== "builtin") {
-      try { localStorage.setItem(LAST_APPLIED_KEY, version); } catch { /* noop */ }
-      return version;
-    }
-  } catch {
-    // Le bundle natif demeure la source de repli.
+function versionParts(version: string | null | undefined): number[] {
+  return String(version ?? "")
+    .split(/[.\-+]/)
+    .slice(0, 3)
+    .map((part) => Number.parseInt(part, 10) || 0);
+}
+
+/** Renvoie true uniquement lorsque `candidate` est plus ancienne que `baseline`. */
+export function isVersionOlder(candidate: string | null | undefined, baseline: string | null | undefined): boolean {
+  if (!candidate || !baseline) return false;
+  const left = versionParts(candidate);
+  const right = versionParts(baseline);
+  for (let index = 0; index < 3; index += 1) {
+    if (left[index] !== right[index]) return left[index] < right[index];
   }
-  return bundledWebVersion();
+  return false;
+}
+
+async function updaterCurrent(): Promise<CurrentBundle | null> {
+  try {
+    return await CapacitorUpdater.current() as CurrentBundle;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Version native réellement installée, indépendamment de l'OTA actif.
+ * Cela évite qu'un ancien paquet web masque les écrans du nouveau binaire.
+ */
+export async function nativeAppVersion(): Promise<string | null> {
+  const current = await updaterCurrent();
+  return current?.native || bundledWebVersion();
+}
+
+async function activeWebVersion(): Promise<{ version: string | null; nativeVersion: string | null; staleOta: boolean }> {
+  const current = await updaterCurrent();
+  const nativeVersion = current?.native || bundledWebVersion();
+  const bundleVersion = current?.bundle?.version;
+  const hasOta = !!bundleVersion && bundleVersion !== "builtin";
+
+  if (hasOta) {
+    try { localStorage.setItem(LAST_APPLIED_KEY, bundleVersion); } catch { /* noop */ }
+  }
+
+  return {
+    version: hasOta ? bundleVersion : nativeVersion,
+    nativeVersion,
+    // Une OTA datée ne doit jamais primer sur un nouveau binaire App Store/Play.
+    staleOta: hasOta && isVersionOlder(bundleVersion, nativeVersion),
+  };
 }
 
 /**
  * À appeler une fois au démarrage de l'application native.
  * Sans plugin (web/preview) ou sans nouvelle version : ne fait rien.
  */
-export async function checkAndApplyOtaUpdate(): Promise<
-  { status: "no-plugin" | "up-to-date" | "downloaded" | "error"; version?: string }
-> {
+export async function checkAndApplyOtaUpdate(): Promise<OtaUpdateResult> {
   try {
     // Confirme le bundle courant pour éviter un rollback automatique.
     try { await CapacitorUpdater.notifyAppReady(); } catch { /* noop */ }
 
-    const currentVersion = await activeWebVersion();
+    const { version: currentVersion, nativeVersion, staleOta } = await activeWebVersion();
+
+    // Lorsqu'un binaire plus récent est installé alors qu'une OTA plus ancienne
+    // reste sélectionnée, revenir immédiatement au bundle embarqué. `reset`
+    // recharge l'application et ne résout normalement jamais sa promesse.
+    if (staleOta) {
+      log("OTA antérieure au binaire détectée, retour au bundle embarqué", { currentVersion, nativeVersion });
+      try { localStorage.removeItem(LAST_APPLIED_KEY); } catch { /* noop */ }
+      await CapacitorUpdater.reset();
+      return { status: "reset-to-builtin", version: nativeVersion ?? undefined };
+    }
 
     const { data, error } = await supabase.functions.invoke("mobile-config", {
-      body: { app_key: APP_KEY, channel: CHANNEL, version: currentVersion },
+      body: {
+        app_key: APP_KEY,
+        channel: CHANNEL,
+        version: currentVersion,
+        native_version: nativeVersion,
+      },
     });
     if (error || (data as any)?.error) {
       log("configuration indisponible", error ?? (data as any)?.error);
@@ -70,6 +132,10 @@ export async function checkAndApplyOtaUpdate(): Promise<
     const release = (data as any).release as ReleaseInfo | null;
     if (!release?.url || !release.version) return { status: "up-to-date" };
     if (release.version === currentVersion) return { status: "up-to-date" };
+    if (isVersionOlder(release.version, nativeVersion)) {
+      log("OTA distante antérieure au binaire ignorée", { release: release.version, nativeVersion });
+      return { status: "up-to-date" };
+    }
 
     log("téléchargement du paquet", release.version);
     const bundle = await CapacitorUpdater.download({
