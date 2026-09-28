@@ -149,9 +149,39 @@ if (wantAndroid) {
     } else passed.push("Android signing : aucun mot de passe keystore en clair");
 
     const keyProps = path.join(appDir, "android/keystore.properties");
-    if (!exists(keyProps)) {
-      notes.push("Android : android/keystore.properties absent (attendu — fourni localement / par le secret CI ANDROID_KEYSTORE).");
-    }
+    const requiredKeyProperties = ["storeFile", "storePassword", "keyAlias", "keyPassword"];
+    const properties = exists(keyProps)
+      ? Object.fromEntries(
+          read(keyProps)
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter((line) => line && !line.startsWith("#") && line.includes("="))
+            .map((line) => {
+              const separator = line.indexOf("=");
+              return [line.slice(0, separator).trim(), line.slice(separator + 1).trim()];
+            }),
+        )
+      : {};
+    const propertySigningReady = requiredKeyProperties.every((name) => typeof properties[name] === "string" && properties[name]);
+    const propertyStore = propertySigningReady
+      ? [
+          path.resolve(path.dirname(keyProps), properties.storeFile),
+          path.resolve(path.dirname(gradlePath), properties.storeFile),
+        ].find(exists) ?? ""
+      : "";
+    const environmentSigningReady = [
+      "ANDROID_KEYSTORE",
+      "ANDROID_KEYSTORE_PASSWORD",
+      "ANDROID_KEY_ALIAS",
+      "ANDROID_KEY_PASSWORD",
+    ].every((name) => Boolean(process.env[name]));
+    const environmentStore = environmentSigningReady ? process.env.ANDROID_KEYSTORE : "";
+    const signingStore = propertySigningReady ? propertyStore : environmentStore;
+    const signingReady = (propertySigningReady || environmentSigningReady) && !!signingStore && exists(signingStore);
+    check(
+      signingReady,
+      "Android release signing : keystore locale/CI absente ou incomplète — aucun AAB ne doit être téléversé avant une signature release valide",
+    );
     const gitignore = exists(path.join(appDir, "../../.gitignore")) ? read(path.join(appDir, "../../.gitignore")) : "";
     if (gitignore && !/keystore\.properties|\*\.jks|\*\.keystore/.test(gitignore)) {
       notes.push("Android : ajouter keystore.properties / *.jks au .gitignore pour éviter de committer la clé de signature.");
