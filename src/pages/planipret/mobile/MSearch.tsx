@@ -172,7 +172,7 @@ export default function MSearch() {
   const openDialer = outlet?.openDialer;
 
   const scopeChips: { id: Scope; label: string; count?: number }[] = data ? [
-    { id: "all", label: t("common.all") || "Tout", count: total },
+    { id: "all", label: lang === "en" ? "All" : "Tout", count: total },
     { id: "directory", label: t("contacts.directory") || "Annuaire", count: data.directory.length },
     { id: "calls", label: t("searchPage.calls"), count: data.calls.length + (data.has_more.calls ? 1 : 0) },
     { id: "messages", label: t("searchPage.messages"), count: data.messages.length + (data.has_more.messages ? 1 : 0) },
@@ -330,10 +330,19 @@ export default function MSearch() {
           {show("contacts") && (
             <Group icon={<User className="w-4 h-4" />} title={t("searchPage.maestroContacts")} count={data.contacts.length}>
               {data.contacts.map((c: any, i: number) => (
-                <div key={i} className="p-3 bg-white rounded-lg text-sm">
+                <button key={i} type="button"
+                  onClick={() => {
+                    const name = c.full_name ?? c.name ?? "";
+                    const key = String(name).trim().toLowerCase().replace(/\s+/g, " ");
+                    if (!key) return;
+                    const mid = c.id ?? c.client_id ?? c.maestro_client_id ?? null;
+                    const query = mid ? `?mid=${encodeURIComponent(String(mid))}` : "";
+                    navigate(`/mplanipret/clients-360/${encodeURIComponent(key)}${query}`);
+                  }}
+                  className="w-full text-left p-3 bg-white rounded-lg text-sm">
                   <div className="font-medium">{c.name ?? c.full_name ?? "Contact"}</div>
                   <div className="text-xs text-slate-400">{c.phone ?? c.email}</div>
-                </div>
+                </button>
               ))}
               {renderLoadMore("contacts", data.has_more.contacts)}
             </Group>
@@ -341,10 +350,11 @@ export default function MSearch() {
           {show("emails") && (
             <Group icon={<Mail className="w-4 h-4" />} title={t("searchPage.emails")} count={data.emails.length}>
               {data.emails.map((e: any, i: number) => (
-                <div key={i} className="p-3 bg-white rounded-lg text-sm">
+                <button key={i} type="button" onClick={() => { const url = e.webLink ?? e.web_link; if (url) window.open(url, "_blank", "noopener"); }}
+                  className="w-full text-left p-3 bg-white rounded-lg text-sm">
                   <div className="font-medium truncate">{e.subject ?? t("searchPage.noSubject")}</div>
                   <div className="text-xs text-slate-400 truncate">{emailSender(e)}</div>
-                </div>
+                </button>
               ))}
               {renderLoadMore("emails", data.has_more.emails)}
             </Group>

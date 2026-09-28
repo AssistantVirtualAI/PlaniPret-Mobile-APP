@@ -5,7 +5,10 @@ import { resolve } from "node:path";
 const root = resolve(import.meta.dirname, "../..");
 const source = readFileSync(resolve(root, "supabase/functions/call-center-sync/index.ts"), "utf8");
 const config = readFileSync(resolve(root, "supabase/config.toml"), "utf8");
-const iosSnippet = readFileSync(resolve(root, "apps/planipret-mobile/native-config/ios-Info.plist.snippet.xml"), "utf8");
+const iosSnippetPath = existsSync(resolve(root, "native-config/ios-Info.plist.snippet.xml"))
+  ? resolve(root, "native-config/ios-Info.plist.snippet.xml")
+  : resolve(root, "apps/planipret-mobile/native-config/ios-Info.plist.snippet.xml");
+const iosSnippet = readFileSync(iosSnippetPath, "utf8");
 
 describe("call-center-sync security", () => {
   it("requires an authenticated operator and derives the tenant server-side", () => {
@@ -34,9 +37,12 @@ describe("call-center-sync security", () => {
     expect(source).toContain("await callBelongsToOrganization(admin, actor.organizationId, callUuid)");
   });
 
-  it("keeps the Edge JWT gate and does not request photo-library write access", () => {
+  it("keeps the Edge JWT gate and declares the required Feedback photo permission", () => {
     expect(config).toMatch(/\[functions\.call-center-sync\]\s*\nverify_jwt\s*=\s*true/);
-    expect(iosSnippet).not.toContain("NSPhotoLibraryAddUsageDescription");
+    // Camera capture for a Feedback report returns an iOS asset URL. The
+    // Capacitor Camera plugin requires this exact key after the user grants
+    // camera access; without it iOS blocks the flow at runtime.
+    expect(iosSnippet).toContain("NSPhotoLibraryAddUsageDescription");
   });
 
   it("does not retain the duplicate feedback hardening migration", () => {

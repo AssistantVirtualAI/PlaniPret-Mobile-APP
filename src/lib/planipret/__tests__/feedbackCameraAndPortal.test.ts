@@ -17,9 +17,23 @@ describe("feedback camera media", () => {
 
 describe("AVA portal handoff URL", () => {
   const handoff = "https://avastatistic.ca/planipret/portal-handoff?th=one-time&em=broker%40example.ca&to=%2Fplanipret%2Fbroker%2Foverview";
+  const brokerDirect = "https://avastatistic.ca/planipret/broker?th=one-time&em=broker%40example.ca";
+  const adminDirect = "https://avastatistic.ca/planipret/admin?th=one-time&em=broker%40example.ca";
 
   it("accepts the production HTTPS handoff", () => {
     expect(validPortalHandoffUrl(handoff)).toBe(handoff);
+  });
+
+  it("accepts direct broker and admin portal handoffs", () => {
+    expect(validPortalHandoffUrl(brokerDirect)).toBe(brokerDirect);
+    expect(validPortalHandoffUrl(adminDirect)).toBe(adminDirect);
+  });
+
+  it("accepts the courtierai.planipret.com production origin", () => {
+    const broker = "https://courtierai.planipret.com/planipret/broker?th=one-time&em=broker%40example.ca";
+    const admin = "https://courtierai.planipret.com/planipret/admin?th=one-time&em=broker%40example.ca";
+    expect(validPortalHandoffUrl(broker)).toBe(broker);
+    expect(validPortalHandoffUrl(admin)).toBe(admin);
   });
 
   it("rejects invalid, foreign, or incomplete browser URLs", () => {

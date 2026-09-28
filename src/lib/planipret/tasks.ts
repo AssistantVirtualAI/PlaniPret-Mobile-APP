@@ -237,6 +237,9 @@ export async function createClientFollowUpTask(input: {
 export const updateTask = (task_id: string, changes: Record<string, unknown>, idempotency_key?: string) =>
   invoke({ action: "update", task_id, changes, idempotency_key });
 
+export const completeTask = (task_id: string, idempotency_key?: string) =>
+  invoke({ action: "complete", task_id, idempotency_key });
+
 export const deleteTask = (task_id: string, idempotency_key?: string) =>
   invoke({ action: "delete", task_id, idempotency_key });
 

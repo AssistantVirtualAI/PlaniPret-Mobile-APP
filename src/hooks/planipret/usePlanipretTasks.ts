@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import {
   bucketTasks,
+  completeTask as apiComplete,
   createTask as apiCreate,
   deleteTask as apiDelete,
   isTaskCacheFresh,
@@ -82,6 +83,7 @@ export interface UsePlanipretTasks {
   refresh: (options?: { force?: boolean }) => Promise<void>;
   create: (input: Record<string, unknown>) => Promise<any>;
   update: (taskId: string, changes: Record<string, unknown>) => Promise<any>;
+  complete: (taskId: string) => Promise<any>;
   remove: (taskId: string) => Promise<any>;
 }
 
@@ -357,8 +359,9 @@ export function usePlanipretTasks(
     };
     const result = await apiUpdate(taskId, changes);
     if (!result?.success) {
-      // A write can be accepted while Maestro's authoritative list is still
-      // catching up. Do not render the proposed value as confirmed.
+      // The server may have accepted the PUT while the Maestro read-back is
+      // still pending. Refresh the list for visibility, but never patch the UI
+      // optimistically or turn that into a confirmation claim.
       if (result?.pending_confirmation) [0, 2000, 5000, 10000, 20000].forEach((ms) => setTimeout(() => void refresh({ force: true }), ms));
       return result;
     }
@@ -398,6 +401,24 @@ export function usePlanipretTasks(
     return result;
   }, [tasks, refresh, userId]);
 
+  const complete = useCallback(async (taskId: string) => {
+    const previous = tasks;
+    const result = await apiComplete(taskId);
+    if (result?.success) {
+      pending.current.delete(String(taskId));
+      setTasks((current) => {
+        const next = current.filter((task) => String(task.id) !== String(taskId));
+        if (userId) saveTaskCache(userId, next);
+        return next;
+      });
+      void refresh({ force: true });
+    } else if (result?.pending_confirmation) {
+      setTasks(previous);
+      [0, 2000, 5000, 10000, 20000].forEach((ms) => setTimeout(() => void refresh({ force: true }), ms));
+    }
+    return result;
+  }, [tasks, refresh, userId]);
+
   const buckets = useMemo(() => bucketTasks(tasks), [tasks]);
   const openCount = counts.open || (buckets.overdue.length + buckets.today.length + buckets.upcoming.length);
   const visibleCounts = useMemo(() => ({
@@ -411,6 +432,6 @@ export function usePlanipretTasks(
   return {
     tasks, buckets, counts: visibleCounts, openCount, filter, setFilter, page, total, hasMore,
     loadMore, loadingMore, loading, refreshing, lastSyncAt, source, error, message,
-    refresh, create, update, remove,
+    refresh, create, update, complete, remove,
   };
 }

@@ -49,16 +49,22 @@ function breakdown(
     ...dealContracts(rows, w).map((r) => r[field]),
   ]);
   const totalVolume = periodVolume(rows, w);
+  const grouped = new Map<string, any[]>();
+  for (const r of rows) {
+    const g = (r as any)[field] ?? "";
+    const arr = grouped.get(g); if (arr) arr.push(r); else grouped.set(g, [r]);
+  }
   const list = keys.map((k) => {
     const c = { [field]: k } as Record<string, string>;
+    const kr = (grouped.get(k) ?? []) as typeof rows;
     const cyVolume = periodVolume(rows, w, c);
     const cyDeals = periodDeals(rows, w, c);
-    const cyCommission = rows
+    const cyCommission = kr
       .filter((r) => r.date_trans && r.date_trans >= w.start && r.date_trans <= w.end && !isInsurance(r) && (r[field] ?? "") === k)
       .reduce((s, r) => s + Number(r.amount ?? 0), 0);
     const pyVolume = periodVolume(rows, wPy, c);
     const pyDeals = periodDeals(rows, wPy, c);
-    const pyCommission = rows
+    const pyCommission = kr
       .filter((r) => r.date_trans && r.date_trans >= wPy.start && r.date_trans <= wPy.end && !isInsurance(r) && (r[field] ?? "") === k)
       .reduce((s, r) => s + Number(r.amount ?? 0), 0);
     return {
@@ -135,8 +141,10 @@ Deno.serve(async (req) => {
     let live: Awaited<ReturnType<typeof fetchLiveRegisterRows>> = {
       rows: [], coverage: { connected: 0, total: 0 }, failures: [], brokers: [],
     };
-    try {
-      live = await fetchLiveRegisterRows(admin, user.id, isAdmin && scope === "all", years, cid);
+    // Firm-wide view: broker tokens are owner-scoped (0 deposits) and 26 live
+    // calls push the worker over its CPU budget. The register is the source.
+    if (!(isAdmin && scope === "all")) try {
+      live = await fetchLiveRegisterRows(admin, user.id, false, years, cid);
     } catch (e) {
       console.warn("[pp-commission-stats] live merge failed", e);
     }
@@ -310,8 +318,14 @@ Deno.serve(async (req) => {
       new Set(scopedAll.map((r) => Number((r as any).fiscal_year)).filter((y) => Number.isFinite(y))),
     ).sort((a, b) => a - b);
     const yearlyBrokerKeys = uniq(scopedAll.map((r) => r.agent_name)).sort((a, b) => a.localeCompare(b));
+    const byBroker = new Map<string, typeof scopedAll>();
+    for (const r of scopedAll) {
+      const k = r.agent_name ?? "";
+      const arr = byBroker.get(k); if (arr) arr.push(r); else byBroker.set(k, [r]);
+    }
     const brokerYearly = yearlyBrokerKeys.map((name) => {
-      const idRow = scopedAll.find((x) => x.agent_name === name) as any;
+      const bRows = byBroker.get(name) ?? [];
+      const idRow = bRows[0] as any;
       const cells = yearsWithData.map((y) => {
         const m = metrics(scopedAll, yearWindow(y), { broker: name });
         return { year: y, volume: m.volume, deals: m.deals, commission: m.commission, bps: m.bps, avgDeal: m.avgDeal };
@@ -332,7 +346,7 @@ Deno.serve(async (req) => {
     // Brokers whose register rows are not attached to a portal account yet
     const unlinkedBrokers = uniq(scopedAll.filter((r: any) => !r.broker_user_id).map((r) => r.agent_name))
       .map((name) => {
-        const rows = scopedAll.filter((r) => r.agent_name === name);
+        const rows = byBroker.get(name) ?? [];
         return { broker: name, rows: rows.length, commission: rows.reduce((a, r) => a + (Number(r.amount) || 0), 0) };
       });
 

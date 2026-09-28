@@ -11,7 +11,7 @@
 // (`planipret_tasks_projection`) or `tasks_unavailable`.
 //
 // All business logic lives in ../_shared/planipret-task-handler.ts (unit tested).
-// Body: { action: "list" | "get" | "create" | "update" | "delete", ... }
+// Body: { action: "list" | "get" | "create" | "update" | "complete" | "delete", ... }
 import { authBroker, corsHeaders, jsonResponse, supaAdmin } from "../_shared/ns-broker.ts";
 import { getUserMaestroAccessToken } from "../_shared/maestro-oauth.ts";
 import { loadBrokerDirectory, resolveMaestroIdForUser, resolveTelecomUserId } from "../_shared/maestro-broker-directory.ts";
@@ -371,7 +371,7 @@ Deno.serve(async (req) => {
     // Toute mutation de tâche proposée par AVA (chat, voix, suivi post-appel)
     // exige confirmed=true, et ne s'exécute qu'une seule fois.
     const taskAction = String(body?.action ?? "");
-    const mutating = taskAction === "create" || taskAction === "update" || taskAction === "delete";
+    const mutating = taskAction === "create" || taskAction === "update" || taskAction === "complete" || taskAction === "delete";
     let taskClaimId: string | null = null;
     if (mutating && isAvaOriginated(body)) {
       if (!isConfirmed(body)) {

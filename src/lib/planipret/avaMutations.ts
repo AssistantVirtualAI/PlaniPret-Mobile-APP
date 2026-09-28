@@ -13,12 +13,14 @@ export const AVA_MUTATING_ACTIONS = new Set<string>([
   "create_task",
   "update_task",
   "delete_task",
+  "complete_task",
+  "reschedule_task",
 ]);
 
 /** Voice-side tools that require an explicit verbal confirmation. */
 export const AVA_CONFIRM_REQUIRED = new Set<string>([
   "make_call", "send_sms", "send_email",
-  "create_task", "update_task", "delete_task", "create_appointment", "generate_voicemail_greeting",
+  "create_task", "update_task", "delete_task", "complete_task", "reschedule_task", "create_appointment", "generate_voicemail_greeting",
   "update_client",
   "create_calendar_event", "move_calendar_event", "cancel_calendar_event",
 ]);

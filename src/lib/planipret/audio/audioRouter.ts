@@ -2,6 +2,8 @@
 // Uses the Capacitor SIP plugin when available (same bridge as Lemtel) and
 // falls back to no-ops in the web preview.
 
+import { nativeOwnsAor } from "../sip/aorArbitration";
+
 export type AudioRoute = "earpiece" | "speaker" | "bluetooth";
 
 export interface AudioDevices {
@@ -170,6 +172,14 @@ export const audioRouter = {
    * re-activates AVAudioSession in voiceChat mode, then re-applies the route.
    */
   async resetSession(): Promise<void> {
+    // PJSIP ouvre RemoteIO après CXProvider.didActivate. Une désactivation ou
+    // réactivation WebView ensuite retire l'entrée/sortie de l'appel natif et
+    // explique les appels connectés mais silencieux. Le moteur natif garde
+    // donc l'entière propriété de sa session CallKit.
+    if (nativeOwnsAor()) {
+      await audioRouter.refreshDevices();
+      return;
+    }
     const b = bridge();
     if (b?.resetAudioSession) {
       try { await b.resetAudioSession(); } catch {}
@@ -179,6 +189,14 @@ export const audioRouter = {
 
   async startCallAudio(): Promise<AudioRoute> {
     bindNativeEvents();
+    // Sur iOS PJSIP/CallKit, ne pas rejouer les deux resets et les réassertions
+    // de route prévus pour WebRTC. CallKit active le média et PJSIP raccorde
+    // RTP <-> périphérique dans son callback didActivate.
+    if (nativeOwnsAor()) {
+      const d = await audioRouter.refreshDevices();
+      currentRoute = d.route;
+      return d.route;
+    }
     await audioRouter.resetSession();
     const d = await audioRouter.refreshDevices();
     // Auto-detect: a connected Bluetooth headset always wins at call start.

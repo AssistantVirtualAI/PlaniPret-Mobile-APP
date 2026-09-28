@@ -11,19 +11,12 @@ import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const ANON = Deno.env.get("SUPABASE_ANON_KEY")!;
-const DEFAULT_PORTAL_ORIGIN = "https://avastatistic.ca";
+const DEFAULT_PORTAL_ORIGIN = "https://courtierai.planipret.com";
 
-function portalOrigin(value: string | undefined): string {
-  try {
-    const url = new URL(value ?? DEFAULT_PORTAL_ORIGIN);
-    if (url.protocol !== "https:" || !url.hostname) throw new Error("invalid portal URL");
-    return url.origin;
-  } catch {
-    return DEFAULT_PORTAL_ORIGIN;
-  }
-}
-
-const PORTAL_ORIGIN = portalOrigin(Deno.env.get("PP_PORTAL_URL"));
+// L'origine du portail est fixée en production : le lien magique doit toujours
+// mener à https://courtierai.planipret.com (proxifié vers avastatistic.ca,
+// le sous-chemin /planipret est inclus dans target), peu importe PP_PORTAL_URL.
+const PORTAL_ORIGIN = DEFAULT_PORTAL_ORIGIN;
 
 const json = (b: unknown, status = 200) =>
   new Response(JSON.stringify(b), { status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
@@ -58,13 +51,12 @@ Deno.serve(async (req) => {
 
     // Destination demandée (optionnelle) — toujours restreinte au portail.
     const body = await req.json().catch(() => ({}));
-    // Depuis l'app courtier, la destination par défaut reste toujours le portail
-    // courtier. Un administrateur peut demander explicitement une page admin,
-    // mais son rôle ne doit jamais le détourner automatiquement vers le tableau
-    // admin mobile (dont l'écran d'avertissement causait la page blanche signalée).
-    const home = "/planipret/broker/overview";
+    // Le lien mène directement au portail du courtier : /planipret/broker pour
+    // un courtier, /planipret/admin pour un administrateur. Le garde du
+    // portail consomme le jeton magique sur ces pages.
+    const home = isAdmin ? "/planipret/admin" : "/planipret/broker";
     let target = typeof body?.path === "string" ? body.path : home;
-    if (!/^\/planipret\/(admin|broker)\//.test(target)) target = home;
+    if (!/^\/planipret\/(admin|broker)(\/|$)/.test(target)) target = home;
 
     // Le courtier est DÉJÀ authentifié dans l'app mobile : on estampille la
     // session comme « pont mobile vérifié » pour que le garde du portail
@@ -93,12 +85,12 @@ Deno.serve(async (req) => {
 
     return json({
       ok: true,
-      portal: target.startsWith("/planipret/admin/") && isAdmin ? "admin" : "broker",
+      portal: /^\/planipret\/admin(\/|$)/.test(target) && isAdmin ? "admin" : "broker",
       email: user.email,
       // Capacitor's iOS in-app browser can discard URL fragments while opening
       // an external origin. Query parameters survive that handoff reliably;
       // the landing page removes them from browser history immediately.
-      url: `${PORTAL_ORIGIN}/planipret/portal-handoff?${handoffParams}`,
+      url: `${PORTAL_ORIGIN}${target}?${handoffParams}`,
       expires_in: 300,
     });
   } catch (e) {

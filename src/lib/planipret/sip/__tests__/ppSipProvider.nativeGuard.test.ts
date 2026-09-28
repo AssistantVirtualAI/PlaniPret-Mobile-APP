@@ -1,5 +1,7 @@
 /** @vitest-environment jsdom */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 /**
  * Invariant natif : sur Capacitor (iOS/Android), JsSIP ne doit JAMAIS être
@@ -119,5 +121,20 @@ describe("ppSipProvider — garde plateforme native", () => {
     expect(created.uas[0].config.uri).toContain("113W@");
     expect(created.sockets).toHaveLength(1);
     expect(provider.getSnapshot().errorCause).not.toBe("native_sip_unavailable");
+  });
+
+  it("laisse CallKit posséder l’audio PJSIP pour les appels entrants et sortants", () => {
+    const root = process.cwd();
+    const mobileRoot = existsSync(resolve(root, "ios/App/App")) ? root : resolve(root, "apps/planipret-mobile");
+    const keepAlive = readFileSync(resolve(mobileRoot, "ios/App/App/Plugins/PpSipKeepAlive/PpSipKeepAlive.swift"), "utf8");
+    const callKit = readFileSync(resolve(mobileRoot, "ios/App/App/Plugins/PpVoipCall/PpVoipCall.swift"), "utf8");
+    const router = readFileSync(resolve(root, "src/lib/planipret/audio/audioRouter.ts"), "utf8");
+
+    expect(keepAlive).toContain("pjsip_callkit_audio_owner");
+    expect(keepAlive).toContain("if callKitAudioActive {");
+    expect(keepAlive).toContain("CallKit vient d'activer le périphérique PJSIP");
+    expect(callKit.match(/prepareCallAudioSession\(\)/g)?.length).toBeGreaterThanOrEqual(3);
+    expect(router).toContain('import { nativeOwnsAor } from "../sip/aorArbitration"');
+    expect(router).toContain("if (nativeOwnsAor()) {");
   });
 });

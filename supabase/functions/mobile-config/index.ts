@@ -41,6 +41,26 @@ Deno.serve(async (req) => {
       bundleUrl = signed.data?.signedUrl ?? null;
     }
 
+    const parse = (v: string) => v.split(/[.\-+]/).slice(0, 3).map((n) => parseInt(n, 10) || 0);
+    const lower = (a: string, b: string) => {
+      const x = parse(a), y = parse(b);
+      for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] < y[i];
+      return false;
+    };
+    const nativeVersion = body?.native_version ? String(body.native_version) : null;
+    // Jamais de rétrogradation vers un paquet plus ancien que la version courante ou le binaire.
+    if (rel?.version && (
+      (currentVersion && /^\d/.test(currentVersion) && lower(rel.version, currentVersion)) ||
+      (nativeVersion && lower(rel.version, nativeVersion))
+    )) {
+      return mjson({ ok: true, app_key: appKey, channel, config: {
+        flags: cfg?.flags ?? {}, messages: cfg?.messages ?? {}, settings: cfg?.settings ?? {},
+        min_version: cfg?.min_version ?? null, recommended_version: cfg?.recommended_version ?? null,
+        maintenance_mode: cfg?.maintenance_mode ?? false, maintenance_message: cfg?.maintenance_message ?? null,
+        published_at: cfg?.published_at ?? null,
+      }, release: null });
+    }
+
     const needsUpdate =
       !!rel?.version && !!currentVersion && rel.version !== currentVersion;
 

@@ -185,6 +185,32 @@ async function taskApi(ctx: Ctx, body: Record<string, unknown>): Promise<ToolRes
   return data;
 }
 
+/** Resolve a task by id or by free text (task notes / client name) among open tasks. */
+async function resolveTaskRef(ctx: Ctx, p: any): Promise<{ task_id?: string; label?: string; result: ToolResult }> {
+  const id = String(p?.task_id ?? p?.id ?? "").trim();
+  if (id && /^\d+$/.test(id)) return { task_id: id, result: { success: true } };
+  const q = String(p?.search ?? p?.query ?? (id || "")).trim().toLowerCase();
+  if (!q) return { result: { success: false, error: "clarification_needed", message: "Quelle tâche ? Donne son titre ou le nom du client." } };
+  const list: any = await taskApi(ctx, { action: "list", status: "pending", filter: "open", page: 1, limit: 200 });
+  const tasks: any[] = Array.isArray(list?.tasks) ? list.tasks : [];
+  const norm = (s: unknown) => String(s ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  const words = norm(q).split(/\s+/).filter((w) => w.length > 1);
+  const matches = tasks.filter((t) => {
+    const hay = norm([t?.notes, t?.title, t?.description, t?.client_name, t?.target_name, t?.target?.name].join(" "));
+    return words.length > 0 && words.every((w) => hay.includes(w));
+  });
+  const label = (t: any) => String(t?.notes ?? t?.title ?? t?.description ?? `#${t?.id}`).slice(0, 80);
+  if (matches.length === 1) return { task_id: String(matches[0].id), label: label(matches[0]), result: { success: true } };
+  if (!matches.length) return { result: { success: false, error: "task_not_found", message: "Aucune tâche ouverte ne correspond. Précise le titre ou le nom du client." } };
+  return {
+    result: {
+      success: false, error: "multiple_tasks", needs_clarification: true,
+      message: "Plusieurs tâches correspondent. Laquelle ?",
+      candidates: matches.slice(0, 8).map((t) => ({ task_id: String(t.id), label: label(t), due_at: t?.due_at ?? null })),
+    },
+  };
+}
+
 
 // ─── helpers ────────────────────────────────────────────────────────────
 async function msAction(ctx: Ctx, action: string, payload: any) {
@@ -706,10 +732,11 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
       if (!query) return { success: false, error: "query_required" };
       // Cache first, but never cross a broker boundary. The cache is only an
       // acceleration of the live per-user Maestro lookup, not a shared directory.
+      const safe = query.replace(/[%,()*]/g, " ").trim();
       const { data: cached } = await ctx.admin.from("planipret_maestro_clients")
         .select("*")
         .eq("user_id", ctx.userId)
-        .or(`full_name.ilike.%${query}%,phone_e164.ilike.%${query}%,email.ilike.%${query}%`)
+        .or(`full_name.ilike.*${safe}*,phone_e164.ilike.*${safe}*,email.ilike.*${safe}*`)
         .limit(5);
       if (cached?.length) return { success: true, found: true, clients: cached, source: "cache" };
 
@@ -717,7 +744,19 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
       // The published per-user client directory supports the user-facing
       // search; avoid the private lookup-by-phone route even for numeric input.
       const r = await maestroActions(ctx, "list_clients", { search: query, limit: 5 });
-      const clients = r?.clients ?? [];
+      let clients = r?.clients ?? [];
+      if (!clients.length) {
+        // Same broker-scoped directory as global search: tolerant, token-based
+        // local match (e.g. "Time out" ↔ "time out Maestro").
+        const norm = (v: unknown) => String(v ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+        const tokens = norm(query).split(/\s+/).filter(Boolean);
+        const all = await maestroActions(ctx, "list_clients", { limit: 500 });
+        clients = (all?.clients ?? []).filter((c: any) => {
+          const hay = norm(`${c?.full_name ?? ""} ${c?.name ?? ""} ${c?.email ?? ""} ${c?.phone ?? ""} ${c?.cell_phone ?? ""}`);
+          return tokens.every((t) => hay.includes(t));
+        }).slice(0, 5);
+        if (clients.length) return { success: true, found: true, clients, source: "maestro" };
+      }
       return r?.success
         ? { success: true, found: clients.length > 0, clients, source: "maestro" }
         : { success: false, error: r?.error ?? "maestro_search_failed" };
@@ -727,11 +766,62 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
   },
 
   async get_client_profile(ctx, p) {
-    if (!p?.client_id) return { success: false, error: "client_id_required" };
-    const r = await maestroActions(ctx, "client_profile", { client_id: p.client_id });
+    let cid = firstText(p?.client_id, p?.id);
+    let searchHit: any = null;
+    // Maestro profile routes only accept the numeric Maestro client number.
+    // Older chat/tool calls sometimes put a name or email in `client_id`.
+    const suppliedLookup = cid && !/^\d+$/.test(cid) ? cid : "";
+    if (suppliedLookup) cid = "";
+    if (!cid) {
+      // Le bot vocal donne souvent un nom, courriel ou téléphone au lieu d'un ID.
+      const q = firstText(suppliedLookup, p?.query, p?.client_name, p?.name, p?.email, p?.phone, p?.phone_number);
+      if (!q) return { success: false, error: "client_id_or_query_required" };
+      const found: any = await (TOOLS as any).search_client(ctx, { query: q });
+      const list = found?.clients ?? [];
+      if (!list.length) return { success: false, error: "client_not_found", message: `Aucun client Maestro pour ${q}` };
+      if (list.length > 1) return { success: true, multiple: true, clients: list, message: "Plusieurs clients correspondent; demande lequel." };
+      searchHit = list[0];
+      const resolvedId = firstText(searchHit?.client_id, searchHit?.maestro_client_id, searchHit?.id);
+      cid = resolvedId && /^\d+$/.test(resolvedId) ? resolvedId : "";
+      // Some broker directories expose the contact details but not the numeric
+      // profile key. Return those real directory details instead of calling a
+      // profile URL with an email/name and surfacing a misleading HTTP 404.
+      if (!cid) return { success: true, profile: searchHit, source: "broker_directory" };
+    }
+    const r = await maestroActions(ctx, "client_profile", { client_id: cid });
     return r?.success
-      ? { success: true, profile: r.profile ?? r.raw ?? r.data ?? null }
-      : { success: false, error: r?.error ?? "maestro_client_profile_failed" };
+      ? {
+          success: true,
+          client_id: cid,
+          profile: r.profile ?? r.raw ?? r.data ?? null,
+          contracts: r.contracts ?? [],
+          contracts_count: (r.contracts ?? []).length,
+          contracts_error: r.contracts_error ?? null,
+        }
+      : searchHit
+        ? { success: true, profile: searchHit, source: "broker_directory", profile_unavailable: true }
+        : { success: false, error: r?.error ?? "maestro_client_profile_failed" };
+  },
+
+  /** Dossiers hypothécaires (contrats) documentés d'un client Maestro. */
+  async get_client_contracts(ctx, p) {
+    let cid = firstText(p?.client_id, p?.id);
+    if (cid && !/^\d+$/.test(cid)) cid = "";
+    if (!cid) {
+      const q = firstText(p?.client_id, p?.query, p?.client_name, p?.name, p?.email, p?.phone);
+      if (!q) return { success: false, error: "client_id_or_query_required" };
+      const found: any = await (TOOLS as any).search_client(ctx, { query: q });
+      const list = found?.clients ?? [];
+      if (!list.length) return { success: false, error: "client_not_found", message: `Aucun client Maestro pour ${q}` };
+      if (list.length > 1) return { success: true, multiple: true, clients: list, message: "Plusieurs clients correspondent; demande lequel." };
+      const resolved = firstText(list[0]?.client_id, list[0]?.maestro_client_id, list[0]?.id);
+      cid = resolved && /^\d+$/.test(resolved) ? resolved : "";
+      if (!cid) return { success: false, error: "client_id_unavailable", message: "Ce client n'a pas de numéro de dossier Maestro exploitable." };
+    }
+    const r = await maestroActions(ctx, "client_contracts", { client_id: cid });
+    return r?.success
+      ? { success: true, client_id: cid, contracts: r.contracts ?? [], count: r.count ?? (r.contracts ?? []).length }
+      : { success: false, error: r?.error ?? "maestro_contracts_failed" };
   },
 
   async get_client_history(ctx, p) {
@@ -769,18 +859,19 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
 
   // ===== MAESTRO — endpoints mobiles (/users/{id}/clients|brokers) =====
   async list_my_clients(ctx, p) {
-    // GET /api/main/clients is not documented and returns 405. Client listing
-    // therefore uses the live read-only broker directory endpoint.
-    const r = await maestroActions(ctx, "list_clients", { search: p?.search, limit: p?.limit ?? 25 });
+    const search = firstText(p?.search, p?.query, p?.name, p?.email, p?.phone);
+    if (search) {
+      const found: any = await (TOOLS as any).search_client(ctx, { query: search });
+      if (found?.success) return { ...found, count: (found.clients ?? []).length };
+    }
+    const r = await maestroActions(ctx, "list_clients", { search, limit: p?.limit ?? 25 });
     return r?.success
       ? { success: true, source: "broker_directory", clients: r.clients ?? [], count: (r.clients ?? []).length }
       : { success: false, error: r?.error ?? "maestro_list_clients_failed" };
   },
 
   async get_maestro_client_profile(ctx, p) {
-    if (!p?.client_id) return { success: false, error: "client_id_required" };
-    const r = await maestroActions(ctx, "client_profile", { client_id: p.client_id });
-    return r?.success ? { success: true, profile: r.profile ?? r.data ?? null } : { success: false, error: r?.error ?? "maestro_client_profile_failed" };
+    return (TOOLS as any).get_client_profile(ctx, p);
   },
 
   async list_my_brokers(ctx, p) {
@@ -874,6 +965,24 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
     const r = await taskApi(ctx, { action: "update", task_id: String(p.task_id), changes });
     if ((r as any)?.success) await broadcastTasks(ctx, "updated", String(p.task_id));
     return r;
+  },
+
+  async complete_task(ctx, p) {
+    const found = await resolveTaskRef(ctx, p);
+    if (!found.task_id) return found.result;
+    const r: any = await taskApi(ctx, { action: "complete", task_id: found.task_id });
+    if (r?.success) await broadcastTasks(ctx, "completed", found.task_id);
+    return { ...r, task_id: found.task_id, task_label: found.label ?? null };
+  },
+
+  async reschedule_task(ctx, p) {
+    const due = String(p?.due_at ?? p?.date ?? "").trim();
+    if (!due) return { success: false, error: "clarification_needed", message: "À quelle date et heure veux-tu reporter la tâche ?" };
+    const found = await resolveTaskRef(ctx, p);
+    if (!found.task_id) return found.result;
+    const r: any = await taskApi(ctx, { action: "update", task_id: found.task_id, changes: { date: due } });
+    if (r?.success) await broadcastTasks(ctx, "updated", found.task_id);
+    return { ...r, task_id: found.task_id, task_label: found.label ?? null, new_due_at: due };
   },
 
   async delete_task(ctx, p) {

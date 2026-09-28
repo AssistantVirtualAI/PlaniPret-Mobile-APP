@@ -157,7 +157,7 @@ function MobileOriginTasks({ tasks, lang }: { tasks: NormalizedTask[]; lang: "fr
 
 export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, brokerId, readOnly, showMobileOrigin }: Props) {
   const L = (fr: string, en: string) => (lang === "en" ? en : fr);
-  const { tasks, buckets, counts, openCount, filter, setFilter, hasMore, loadMore, loadingMore, total, loading, refreshing, lastSyncAt, source, error, message, refresh, create, update, remove } = usePlanipretTasks(userId, { brokerId });
+  const { tasks, buckets, counts, openCount, filter, setFilter, hasMore, loadMore, loadingMore, total, loading, refreshing, lastSyncAt, source, error, message, refresh, create, update, complete, remove } = usePlanipretTasks(userId, { brokerId });
   const [composer, setComposer] = useState<null | { initial?: any }>(null);
   const [busy, setBusy] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string> | null>(null);
@@ -276,9 +276,11 @@ export default function TasksSection({ userId, lang, defaultTarget, onSeeAll, br
   } });
 
   const completeTask = async (task: NormalizedTask) => {
-    const r = await update(task.id, { status: "complete" } as any);
+    const r = await complete(task.id);
     if (r?.success) toast.success(L("Tâche terminée", "Task completed"));
-    else if (r?.pending_confirmation) { /* list refreshes live */ }
+    else if (r?.pending_confirmation) toast.error(
+      r?.message ?? L("Maestro n’a pas confirmé la fermeture; la tâche reste ouverte.", "Maestro did not confirm completion; the task remains open."),
+    );
     else toast.error(r?.message ?? L("Clôture impossible", "Could not complete task"));
   };
 

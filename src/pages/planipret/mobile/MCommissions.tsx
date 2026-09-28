@@ -153,6 +153,7 @@ export default function MCommissions() {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [scopeNotice, setScopeNotice] = useState<string | null>(null);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [avaPref, setAvaPref] = useState<boolean | null>(null);
   const [chartRefreshToken, setChartRefreshToken] = useState(0);
@@ -213,6 +214,9 @@ export default function MCommissions() {
         call({ action: "summary", filters }),
         call({ action: "deposits", filters: { ...filters, page: 1, per_page: PER_PAGE } }),
       ]);
+      setScopeNotice(isAdmin && !agentId && s?.scope?.mode === "own"
+        ? "Accès Maestro administrateur manquant : seules vos commissions personnelles sont affichées, pas celles de tous les courtiers."
+        : null);
       setSummary(s.summary);
       setRows(d.rows ?? []);
       setTotal(d.pagination?.total ?? 0);
@@ -231,7 +235,7 @@ export default function MCommissions() {
     } finally {
       setLoading(false);
     }
-  }, [allowed, rangeReady, filters, call, reportCacheKey]);
+  }, [allowed, rangeReady, filters, call, reportCacheKey, isAdmin, agentId]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -360,6 +364,12 @@ export default function MCommissions() {
         <div className="flex gap-2 mb-3">
           <DateInput value={customFrom} onChange={setCustomFrom} label={fr ? "Du" : "From"} />
           <DateInput value={customTo} onChange={setCustomTo} label={fr ? "Au" : "To"} />
+        </div>
+      )}
+
+      {scopeNotice && !error && (
+        <div role="status" className="rounded-xl px-3 py-3 mb-3 text-[13px]" style={{ background: "rgba(245,166,35,0.12)", border: "1px solid rgba(245,166,35,0.4)", color: "#FFD89A" }}>
+          {scopeNotice}
         </div>
       )}
 

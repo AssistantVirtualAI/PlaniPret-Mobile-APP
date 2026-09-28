@@ -187,6 +187,13 @@ function updateReadBackMatches(task: NormalizedTask, payload: Record<string, unk
     && String(raw?.status_option_id ?? "") !== String(payload.status_option_id)) {
     issues.push("status_option_mismatch");
   }
+  // A successful PUT is not proof that Maestro applied a textual status. Its
+  // API may return 200 while silently keeping the task pending. The live GET is
+  // the source of truth, especially for the green completion button.
+  if (payload.status !== undefined
+    && String(task.status ?? "").trim().toLowerCase() !== String(payload.status).trim().toLowerCase()) {
+    issues.push("status_mismatch");
+  }
   // `update_status` is documented only in conjunction with the selected
   // `status_option_id`; Maestro does not document a textual "completed"
   // value or a global completion-option id. Never guess one.
@@ -453,6 +460,25 @@ async function findTaskInCallerScope(
       if (found) return { task: found, endpoint: upstream.endpoint };
     } catch { /* continue with another documented scoped identity */ }
   }
+
+  // Maestro does not always return a broker's own task through the documented
+  // filters. Fall back to the general lookup, but only accept the task when it
+  // is actually assigned to one of the caller's identities.
+  for (const candidate of candidates) {
+    try {
+      const upstream = await deps.listFetch(candidate, {
+        status: null, type: null, from: null, to: null, findTaskId: taskId,
+      });
+      if (!upstream.ok) continue;
+      const raw = (upstream.tasks ?? []).find((item: any) => String(normalizeTask(item).id) === taskId);
+      if (!raw) continue;
+      const assignment = readAssignment(raw);
+      const assigned = (assignment.ids ?? []).map((v: any) => String(v ?? "").trim()).filter(Boolean);
+      if (assigned.some((id) => candidates.includes(id))) {
+        return { task: normalizeTask(raw), endpoint: upstream.endpoint };
+      }
+    } catch { /* fail closed */ }
+  }
   return null;
 }
 
@@ -570,7 +596,17 @@ export async function handleTaskRequest(
 ): Promise<{ status: number; body: Record<string, unknown> }> {
   const { admin, userId, profile, token } = deps;
   const nowFn = deps.now ?? (() => new Date());
-  const action = String(body?.action ?? "list");
+  let action = String(body?.action ?? "list");
+  // Legacy clients send update { status: "complete" }, which Maestro ignores.
+  // Route it to the real completion path so the task actually closes.
+  {
+    const ch = body?.changes ?? {};
+    const st = String(ch?.status ?? "").toLowerCase();
+    if (action === "update" && ["complete", "completed", "done"].includes(st) && Object.keys(ch).length === 1) {
+      action = "complete";
+      body = { ...body, action: "complete", idempotency_key: undefined };
+    }
+  }
   const source = String(body?.source ?? "app");
   const sessionId = body?.session_id ?? null;
   const correlation_id = String(body?.correlation_id ?? newCorrelationId());
@@ -687,6 +723,27 @@ export async function handleTaskRequest(
         if (rows.length) { upstream = attempt; all = rows; break; }
       }
     }
+
+    // A task closed from one device is tombstoned (deleted_at) only after a
+    // confirmed Maestro read-back. Some Maestro filters keep returning the
+    // soft-closed task as pending, which re-opened it on the other device.
+    // Honour recent confirmed tombstones so portal and app stay in sync.
+    if (upstream.ok && all.length && !overrideBroker) {
+      try {
+        const since = new Date(nowFn().getTime() - 30 * 86400_000).toISOString();
+        const { data: closed } = await admin
+          .from("planipret_tasks_projection")
+          .select("task_id")
+          .eq("user_id", userId)
+          .not("deleted_at", "is", null)
+          .gte("deleted_at", since)
+          .in("task_id", all.map((t: any) => String(t.id)).slice(0, 1000));
+        const gone = new Set((closed ?? []).map((r: any) => String(r.task_id)));
+        if (gone.size) all = all.filter((t: any) => !gone.has(String(t.id)));
+      } catch { /* best effort */ }
+    }
+
+
 
     let src: "api" | "projection" | "unavailable";
     if (upstream.ok) {
@@ -1330,7 +1387,9 @@ export async function handleTaskRequest(
             visible_in_maestro: false,
             endpoint: readBackEndpoint,
             message: readBack
-              ? "Maestro affiche la tâche, mais les modifications demandées ne sont pas encore confirmées."
+              ? comparison.issues.includes("status_mismatch")
+                ? "Maestro n’a pas marqué la tâche terminée. Elle demeure ouverte."
+                : "Maestro affiche la tâche, mais les modifications demandées ne sont pas encore confirmées."
               : "Maestro a accepté la demande, mais la modification n’est pas encore relue dans sa liste.",
             diagnostics: { issues: comparison.issues, list_complete: readBackComplete, expected_assignee: expectedAssignee },
             correlation_id,
@@ -1344,6 +1403,80 @@ export async function handleTaskRequest(
         status: 200,
         body: { success: true, task: confirmed, task_id: taskId, read_back: true, visible_in_maestro: true, endpoint: readBackEndpoint, correlation_id },
       };
+    });
+    return { status: 200, body: out.body };
+  }
+
+  // ── COMPLETE ───────────────────────────────────────────────────────────────
+  // Maestro exposes no documented global completion status-option id. Its
+  // documented DELETE is a soft delete, i.e. the supported way to close a task.
+  // Keep this distinct from user-requested deletion in our audit trail/UI.
+  if (action === "complete") {
+    const taskId = String(body?.task_id ?? "").trim();
+    if (!taskId) {
+      return { status: 200, body: { success: false, error: "validation_failed", fields: { task_id: "task_id_required" }, correlation_id } };
+    }
+    if (!canDeleteTask(role)) {
+      await audit(admin, { action: "task_complete_denied", user_id: userId, task_id: taskId, source, session_id: sessionId, correlation_id, result: "role_forbidden" });
+      return { status: 200, body: { success: false, error: "role_forbidden", message: "Ton rôle ne permet pas de fermer une tâche.", correlation_id } };
+    }
+    const scopedTask = await findTaskInCallerScope(deps, profile, taskId);
+    if (!scopedTask) {
+      await audit(admin, { action: "task_complete_denied", user_id: userId, task_id: taskId, source, session_id: sessionId, correlation_id, result: "task_out_of_scope" });
+      return { status: 200, body: taskScopeDeniedBody(taskId, correlation_id) };
+    }
+    const key = String(body?.idempotency_key ?? idempotencyKey(["complete", userId, taskId]));
+    const out = await withIdempotency(admin, userId, key, "complete", async () => {
+      const res = await deps.apiFetch(`/api/main/tasks/${encodeURIComponent(taskId)}`, {
+        method: "DELETE", body: JSON.stringify({ task_id: Number.isNaN(Number(taskId)) ? taskId : Number(taskId) }),
+      });
+      if (!res.ok || res.data?.success === false) {
+        await audit(admin, { action: "task_complete_failed", user_id: userId, task_id: taskId, source, session_id: sessionId, status: res.status, correlation_id, result: "error" });
+        return { status: 200, body: { ...mapTaskApiError(res.status, res.data), correlation_id } };
+      }
+      const assigneeId = await withDeadline(
+        Promise.resolve(deps.resolveTaskAssigneeId?.()).catch(() => null),
+        5000,
+        null,
+      );
+      let closedReadBack = false;
+      let readBackEndpoint: string | null = null;
+      if (assigneeId) {
+        try {
+          const upstream = await deps.listFetch(String(assigneeId), {
+            status: null, type: null, from: null, to: null, findTaskId: taskId,
+          });
+          readBackEndpoint = upstream.endpoint;
+          const found = (upstream.tasks ?? []).map((item: any) => normalizeTask(item))
+            .find((item: NormalizedTask) => String(item.id) === taskId);
+          // Depending on the Maestro tenant, a soft-closed task is either
+          // returned as complete or omitted from a complete bounded scan.
+          closedReadBack = upstream.ok && upstream.complete === true
+            && (!found || String(found.status ?? "").trim().toLowerCase() === "complete");
+        } catch { /* DELETE acceptance alone is not confirmation */ }
+      }
+      if (!closedReadBack) {
+        await audit(admin, { action: "task_complete_pending_confirmation", user_id: userId, task_id: taskId, source, session_id: sessionId, status: res.status, correlation_id, result: "pending_confirmation" });
+        return {
+          status: 200,
+          body: {
+            success: false,
+            pending_confirmation: true,
+            error: "maestro_complete_readback_unconfirmed",
+            task_id: taskId,
+            completed: false,
+            read_back: false,
+            endpoint: readBackEndpoint,
+            message: "Maestro a reçu la fermeture, mais la tâche demeure ouverte lors de la relecture.",
+            correlation_id,
+          },
+        };
+      }
+      await admin.from("planipret_tasks_projection")
+        .update({ deleted_at: new Date().toISOString() })
+        .eq("user_id", userId).eq("task_id", taskId);
+      await audit(admin, { action: "task_completed", user_id: userId, task_id: taskId, source, session_id: sessionId, status: res.status, correlation_id, result: "confirmed" });
+      return { status: 200, body: { success: true, task_id: taskId, completed: true, read_back: true, correlation_id } };
     });
     return { status: 200, body: out.body };
   }

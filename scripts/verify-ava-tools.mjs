@@ -44,7 +44,7 @@ const voiceNames = new Set([...voiceBlock.matchAll(/"([a-z0-9_]+)"/g)].map((m) =
 const sensitiveBlock = confirmation.match(/AVA_SENSITIVE_TOOLS = new Set<string>\(\[([\s\S]*?)\]\)/)?.[1] ?? "";
 const sensitiveNames = unique([...sensitiveBlock.matchAll(/"([a-z0-9_]+)"/g)].map((m) => m[1]));
 
-check(specNames.length === 78, `Expected 78 AVA tool specs, found ${specNames.length}`);
+check(specNames.length === 81, `Expected 81 AVA tool specs, found ${specNames.length}`);
 check(expectedNames.length === specNames.length && specNames.every((n) => expectedNames.includes(n)), "EXPECTED_TOOL_NAMES must exactly cover all tool specs");
 check(specNames.every((n) => handlerNames.has(n)), `Missing executor handlers: ${specNames.filter((n) => !handlerNames.has(n)).join(", ")}`);
 check(specNames.every((n) => voiceNames.has(n)), `Missing voice client handlers: ${specNames.filter((n) => !voiceNames.has(n)).join(", ")}`);

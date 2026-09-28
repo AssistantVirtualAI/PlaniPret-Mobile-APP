@@ -190,7 +190,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             : CXHandle(type: .phoneNumber, value: callerNumber)
         update.localizedCallerName = callerName
         update.hasVideo = false
-        update.supportsHolding = true
+        update.supportsHolding = false
         update.supportsDTMF = true
 
         provider?.reportNewIncomingCall(with: uuid, update: update) { [weak self] error in
@@ -226,14 +226,27 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     }
 
     private func setupPushKit() {
-        guard pushRegistry == nil else {
-            pushRegistry?.desiredPushTypes = [.voIP]
+      guard pushRegistry == nil else {
+        pushRegistry?.desiredPushTypes = [.voIP]
             return
         }
         let registry = PKPushRegistry(queue: .main)
         registry.delegate = self
         registry.desiredPushTypes = [.voIP]
         self.pushRegistry = registry
+    }
+
+    /// Prépare la catégorie avant l'activation système. CallKit reste seul à
+    /// appeler setActive() dans didActivate. Cette préparation commune garantit
+    /// que les appels entrants ET sortants PJSIP utilisent une entrée/sortie
+    /// téléphonique, sans que le fallback WebView réinitialise RemoteIO.
+    private func prepareCallAudioSession() {
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(
+            .playAndRecord,
+            mode: .voiceChat,
+            options: [.allowBluetoothHFP, .allowBluetoothA2DP]
+        )
     }
 
     // MARK: - JS ↔ Native
@@ -290,22 +303,6 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         if ok { action.fulfill() } else { action.fail() }
         endAnswerBackgroundTask()
         call.resolve(["ok": true])
-    }
-
-    /// Appelé par le JS quand le courtier met en attente depuis l'app : garde
-    /// l'écran système et l'interface alignés.
-    @objc func setHeld(_ call: CAPPluginCall) {
-        let onHold = call.getBool("onHold") ?? false
-        guard let uuid = activeCallUUID else { call.resolve(["ok": false]); return }
-        let action = CXSetHeldCallAction(call: uuid, onHold: onHold)
-        callController.request(CXTransaction(action: action)) { error in
-            if let error = error {
-                NSLog("[PpVoipCall] setHeld failed: %@", error.localizedDescription)
-                call.resolve(["ok": false])
-            } else {
-                call.resolve(["ok": true])
-            }
-        }
     }
 
     // MARK: - PKPushRegistryDelegate
@@ -432,7 +429,8 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         action.fulfill()
     }
 
-    /// Mise en attente depuis l'écran d'appel système, y compris verrouillé.
+    /// Mise en attente depuis l'écran d'appel système (y compris écran
+    /// verrouillé) → re-INVITE sendonly côté PJSIP + état poussé vers JS.
     public func provider(_ provider: CXProvider, perform action: CXSetHeldCallAction) {
         NotificationCenter.default.post(
             name: Notification.Name("PpPjsipHoldRequested"), object: nil,
@@ -444,6 +442,22 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             "source": nativeEngineOwnsCall ? "pjsip" : "jssip"
         ], retainUntilConsumed: true)
         action.fulfill()
+    }
+
+    /// Appelé par le JS quand le courtier met en attente depuis l'app : garde
+    /// l'écran système et l'interface alignés.
+    @objc func setHeld(_ call: CAPPluginCall) {
+        let onHold = call.getBool("onHold") ?? false
+        guard let uuid = activeCallUUID else { call.resolve(["ok": false]); return }
+        let action = CXSetHeldCallAction(call: uuid, onHold: onHold)
+        callController.request(CXTransaction(action: action)) { error in
+            if let error = error {
+                NSLog("[PpVoipCall] setHeld failed: %@", error.localizedDescription)
+                call.resolve(["ok": false])
+            } else {
+                call.resolve(["ok": true])
+            }
+        }
     }
 
     /// Clavier CallKit → DTMF RFC 2833 côté PJSIP.
@@ -467,8 +481,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         }
         // Prepare the route but let CallKit own activation (didActivate:) —
         // activating here races the system session and yields a dead call.
-        let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .allowBluetoothA2DP])
+        prepareCallAudioSession()
 
         // Keep CallKit pending until pjsua_call_answer really accepts the 200 OK.
         if nativeEngineOwnsCall {
@@ -516,10 +529,16 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             action.fail()
             return
         }
+        // Le chemin sortant doit recevoir la même préparation que l'entrant;
+        // auparavant seule la réponse d'un appel entrant configurait l'entrée
+        // micro avant didActivate, ce qui pouvait laisser le média sortant muet.
+        prepareCallAudioSession()
         let update = CXCallUpdate()
         update.remoteHandle = action.handle
         update.hasVideo = false
         update.supportsDTMF = true
+        // L'écran d'appel système doit pouvoir mettre en attente un appel
+        // sortant comme un appel entrant (CXSetHeldCallAction ci-dessous).
         update.supportsHolding = true
         provider.reportCall(with: action.callUUID, updated: update)
         provider.reportOutgoingCall(with: action.callUUID, startedConnectingAt: Date())

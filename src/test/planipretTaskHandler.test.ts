@@ -243,6 +243,37 @@ describe("planipret task handler — update & delete", () => {
     expect((out.body as any).diagnostics.issues).toContain("status_unverifiable");
   });
 
+  it("closes a task through Maestro's documented soft-delete and confirms the read-back", async () => {
+    const admin = createMockAdmin({
+      planipret_tasks_projection: [{ user_id: USER, task_id: "946044", deleted_at: null, payload: { id: "946044" } }],
+    });
+    const { deps, calls } = makeDeps({
+      admin,
+      listFetch: async (_id: string, opts: any) => ({
+        ok: true,
+        tasks: opts.scopeOnly ? [{ id: 946044, users: [{ id: 93135 }], xid: 387460525, type: "user" }] : [],
+        endpoint: "/api/main/tasks", status: 200, complete: true,
+      }),
+    });
+    const out = await handleTaskRequest({ action: "complete", task_id: "946044" }, deps);
+    expect(out.body).toMatchObject({ success: true, completed: true, read_back: true });
+    expect(calls[0].init.method).toBe("DELETE");
+    expect(JSON.parse(calls[0].init.body)).toEqual({ task_id: 946044 });
+    expect(admin.db.planipret_tasks_projection[0].deleted_at).toBeTruthy();
+  });
+
+  it("keeps a task open when Maestro's soft-delete is not confirmed", async () => {
+    const { deps } = makeDeps({
+      listFetch: async (_id: string, opts: any) => ({
+        ok: true,
+        tasks: [{ id: 946044, status: "pending", users: [{ id: 93135 }], xid: 387460525, type: "user" }],
+        endpoint: "/api/main/tasks", status: 200, complete: true,
+      }),
+    });
+    const out = await handleTaskRequest({ action: "complete", task_id: "946044" }, deps);
+    expect(out.body).toMatchObject({ success: false, completed: false, pending_confirmation: true });
+  });
+
   it("rejects an update with no updatable field", async () => {
     const { deps } = makeDeps();
     const out = await handleTaskRequest({ action: "update", task_id: "1", changes: { foo: "bar" } }, deps);

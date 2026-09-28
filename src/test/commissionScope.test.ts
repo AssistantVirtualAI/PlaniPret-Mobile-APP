@@ -37,9 +37,19 @@ describe("commission report scope", () => {
     expect(resolveCommissionScope({
       role: "admin",
       action: "summary",
+      requestedUsersId: "456",
       ownUsersId: "123",
       ownToken: "own-token",
     })).toEqual({ ok: false, error: "admin_scope_unavailable" });
+  });
+
+  it("degrades an administrator firm view to their own data instead of an error", () => {
+    expect(resolveCommissionScope({
+      role: "admin",
+      action: "summary",
+      ownUsersId: "123",
+      ownToken: "own-token",
+    })).toEqual({ ok: true, usersId: "123", token: "own-token", mode: "own" });
   });
 
   it("keeps an administrator personal view on their own token", () => {

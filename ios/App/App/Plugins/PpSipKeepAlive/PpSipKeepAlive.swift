@@ -123,15 +123,34 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       }
       NotificationCenter.default.addObserver(forName: Notification.Name("PpCallKitAudioActivated"), object: nil, queue: .main) { [weak self] _ in
         self?.callKitAudioActive = true
-        self?.applyAudioRoute()
+        // CallKit vient d'activer le périphérique PJSIP. Ne pas reconfigurer
+        // ni réactiver la session ici : la couche WebView écrasait RemoteIO et
+        // causait des appels connectés mais muets dans les deux sens.
+        self?.notifyListeners("audioRouteChanged", data: [
+          "route": self?.currentAudioRoute() ?? "earpiece",
+          "bluetooth": self?.bluetoothAvailable() ?? false,
+          "bluetoothName": self?.bluetoothName() ?? "",
+          "wired": self?.wiredAvailable() ?? false
+        ])
       }
       NotificationCenter.default.addObserver(forName: Notification.Name("PpCallKitAudioDeactivated"), object: nil, queue: .main) { [weak self] _ in
         self?.callKitAudioActive = false
+      }
+      // Route ownership: PJSIP (and any other native module) must NOT touch the
+      // audio session directly — two modules doing overrideOutputAudioPort with
+      // different modes is what made the loudspeaker quiet/muffled. They post
+      // this notification instead and this plugin remains the single owner.
+      NotificationCenter.default.addObserver(forName: Notification.Name("PpAudioRouteRequest"), object: nil, queue: .main) { [weak self] note in
+        guard let self = self else { return }
+        let route = (note.userInfo?["route"] as? String) ?? "earpiece"
+        self.preferredRoute = route
+        self.applyAudioRoute()
       }
       UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
       // Auto-detect headsets: iOS posts a route change whenever a Bluetooth
       // HFP device, a wired headset or the speaker becomes (un)available.
       NotificationCenter.default.addObserver(self, selector: #selector(onAudioRouteChange(_:)), name: AVAudioSession.routeChangeNotification, object: nil)
+
     }
     deinit { NotificationCenter.default.removeObserver(self); timer?.invalidate(); socket?.cancel(with: .goingAway, reason: nil) }
 
@@ -174,6 +193,17 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       DispatchQueue.main.async { [weak self] in
         guard let self = self else { call.resolve(["ok": false]); return }
         self.callActive = active
+        // PJSIP/CallKit est une chaîne média native complète. La session audio
+        // ne doit pas être activée, réinitialisée ou maintenue par le fallback
+        // WSS/WebView : ces appels concurrents ré-arbitraient les entrées et
+        // sorties iOS. Le routage explicite reste traité plus bas.
+        if self.nativeEngineOwnsAor {
+          if !active { self.stopAudioKeepAlive() }
+          self.backgroundHandoffWorkItem?.cancel(); self.backgroundHandoffWorkItem = nil
+          self.setStatus("protected", active ? "pjsip_callkit_audio_owner" : "pjsip_call_ended")
+          call.resolve(self.snapshot(ok: true))
+          return
+        }
         if active {
           self.beginBackgroundTask()
           self.activateAudioSession()
@@ -279,8 +309,9 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       }
     }
 
-    /// Mode audio adapté à la sortie : voiceChat est calibré pour l'écouteur.
-    /// videoChat est le mode mains-libres et préserve le haut-parleur.
+    /// Mode audio adapté à la sortie : `.voiceChat` est calibré pour l'écouteur
+    /// (gain faible, filtrage agressif) et rend le haut-parleur sourd et bas.
+    /// `.videoChat` est le mode calibré haut-parleur mains-libres d'iOS.
     private func modeFor(_ route: String) -> AVAudioSession.Mode {
       return route == "speaker" ? .videoChat : .voiceChat
     }
@@ -293,6 +324,25 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private func applyAudioRoute(retries: Int) {
       let s = AVAudioSession.sharedInstance()
       let speaker = preferredRoute == "speaker"
+      // Après didActivate, CallKit est l'unique propriétaire de l'activation
+      // et de la catégorie AVAudioSession. Réactiver la session ou modifier sa
+      // catégorie depuis la couche WSS perturbe le périphérique PJSIP. Seul le
+      // choix explicite de sortie reste sûr à ce stade.
+      if callKitAudioActive {
+        switch preferredRoute {
+        case "speaker":
+          try? s.setPreferredInput(nil)
+          try? s.overrideOutputAudioPort(.speaker)
+        case "bluetooth":
+          try? s.overrideOutputAudioPort(.none)
+          if let bt = bluetoothInput() { try? s.setPreferredInput(bt) }
+        default:
+          try? s.overrideOutputAudioPort(.none)
+          if let bt = bluetoothInput() { try? s.setPreferredInput(bt) }
+        }
+        NSLog("[PpSipKeepAlive] CallKit route wanted=%@ effective=%@", preferredRoute, currentAudioRoute())
+        return
+      }
       var opts: AVAudioSession.CategoryOptions = [.allowBluetoothHFP, .allowBluetoothA2DP]
       if speaker { opts.insert(.defaultToSpeaker) }
       let wantedMode = modeFor(preferredRoute)
@@ -560,8 +610,10 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         if !self.callKitAudioActive {
           try? s.setActive(false, options: [.notifyOthersOnDeactivation])
         }
-        try? s.setCategory(.playAndRecord, mode: .voiceChat,
-                           options: [.allowBluetoothHFP, .allowBluetoothA2DP])
+        var resetOpts: AVAudioSession.CategoryOptions = [.allowBluetoothHFP, .allowBluetoothA2DP]
+        if self.preferredRoute == "speaker" { resetOpts.insert(.defaultToSpeaker) }
+        try? s.setCategory(.playAndRecord, mode: self.modeFor(self.preferredRoute), options: resetOpts)
+
         if !self.callKitAudioActive { try? s.setActive(true, options: []) }
         self.applyAudioRoute()
         // Deuxième passe : CallKit/PJSIP ré-arbitrent la route ~600 ms après
@@ -588,8 +640,10 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       // and over) makes iOS re-arbitrate the route and drop every output —
       // that is the measured 'hadOutputs=n' silence. Only re-assert the route.
       if callKitAudioActive {
-        if s.category != .playAndRecord || s.mode != .voiceChat {
-          try? s.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothHFP, .allowBluetoothA2DP])
+        if s.category != .playAndRecord || s.mode != modeFor(preferredRoute) {
+          var o: AVAudioSession.CategoryOptions = [.allowBluetoothHFP, .allowBluetoothA2DP]
+          if preferredRoute == "speaker" { o.insert(.defaultToSpeaker) }
+          try? s.setCategory(.playAndRecord, mode: modeFor(preferredRoute), options: o)
         }
         applyAudioRoute()
         NSLog("[PpSipKeepAlive] audio owned by CallKit outputs=%d", s.currentRoute.outputs.count)
@@ -597,10 +651,12 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       }
       // During a live call we must own the session exclusively: .mixWithOthers
       // lets WebKit interrupt it when the app goes background (no audio at all).
-      let opts: AVAudioSession.CategoryOptions = callActive
+      var opts: AVAudioSession.CategoryOptions = callActive
         ? [.allowBluetoothHFP, .allowBluetoothA2DP]
         : [.allowBluetoothHFP, .allowBluetoothA2DP, .mixWithOthers]
-      try? s.setCategory(.playAndRecord, mode: .voiceChat, options: opts)
+      if preferredRoute == "speaker" { opts.insert(.defaultToSpeaker) }
+      try? s.setCategory(.playAndRecord, mode: modeFor(preferredRoute), options: opts)
+
       // Foreground in-app calls do not pass through CXProvider.didActivate.
       if !callKitAudioActive { try? s.setActive(true, options: []) }
       // Re-assert the user's choice: activating the session resets the override

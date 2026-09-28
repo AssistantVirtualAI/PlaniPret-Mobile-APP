@@ -51,6 +51,11 @@ Deno.serve(async (req) => {
           body: JSON.stringify({ ms_message_id: messageId, broker_user_id: sub.broker_user_id }),
         });
         const analysisResp = await r.json().catch(() => ({}));
+        if (analysisResp?.error === "ai_consent_required") {
+          // No valid AI consent: analysis is intentionally skipped (privacy gate).
+          console.info("[mail-webhook-receiver] skipped: broker AI consent missing", sub.broker_user_id);
+          return;
+        }
         if (!analysisResp?.success) { console.warn("[mail-webhook-receiver] analyzer failed", analysisResp); return; }
 
         const analysis = analysisResp.analysis;

@@ -7,11 +7,12 @@ import {
 } from "../../../../supabase/functions/_shared/ava-tools";
 
 describe("contrat des outils AVA / ElevenLabs", () => {
-  it("expose exactement 78 outils uniques", () => {
+  it("expose exactement les 81 outils canoniques uniques", () => {
     const configs = buildAvaToolConfigs("https://example.supabase.co", "anon-test");
     const names = configs.map((entry: any) => entry.tool_config.name);
-    expect(configs).toHaveLength(78);
-    expect(new Set(names).size).toBe(78);
+    expect(EXPECTED_TOOL_NAMES).toHaveLength(81);
+    expect(configs).toHaveLength(81);
+    expect(new Set(names).size).toBe(81);
     expect(new Set(EXPECTED_TOOL_NAMES)).toEqual(new Set(names));
   });
 
