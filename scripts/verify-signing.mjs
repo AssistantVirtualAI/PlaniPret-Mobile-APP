@@ -165,17 +165,20 @@ if (wantAndroid) {
     const manifest = read(manifestPath);
     for (const perm of [
       "android.permission.RECORD_AUDIO",
-      "android.permission.WAKE_LOCK",
+      "android.permission.MODIFY_AUDIO_SETTINGS",
       "android.permission.POST_NOTIFICATIONS",
       "android.permission.USE_FULL_SCREEN_INTENT",
-      "android.permission.FOREGROUND_SERVICE_PHONE_CALL",
-      "android.permission.FOREGROUND_SERVICE_MICROPHONE",
-      "android.permission.RECEIVE_BOOT_COMPLETED",
+      "android.permission.FOREGROUND_SERVICE",
+      "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
     ]) {
       check(manifest.includes(perm), `AndroidManifest : permission ${perm} manquante`);
     }
-    check(manifest.includes('android:foregroundServiceType="phoneCall|microphone"'),
-      "AndroidManifest : PpSipKeepAliveService doit déclarer foregroundServiceType phoneCall|microphone");
+    check(manifest.includes('android:foregroundServiceType="dataSync"'),
+      "AndroidManifest : le service de réveil doit déclarer foregroundServiceType=dataSync");
+    check(!manifest.includes("android.permission.FOREGROUND_SERVICE_PHONE_CALL") && !manifest.includes("android.permission.FOREGROUND_SERVICE_MICROPHONE"),
+      "AndroidManifest : le service wake-only ne doit pas demander de permission média de service téléphonique");
+    check(!manifest.includes("android.permission.RECEIVE_BOOT_COMPLETED") && !manifest.includes("PpBootReceiver"),
+      "AndroidManifest : le service wake-only ne doit pas se réinscrire au boot");
     check(!/android:debuggable="true"/.test(manifest), "AndroidManifest : android:debuggable=\"true\" interdit en release");
     check(!/android:usesCleartextTraffic="true"/.test(manifest) || manifest.includes("networkSecurityConfig"),
       "AndroidManifest : cleartextTraffic autorisé sans networkSecurityConfig");

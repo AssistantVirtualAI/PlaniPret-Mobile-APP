@@ -94,12 +94,11 @@ const IOS_REQUIRED = [
 
 const ANDROID_REQUIRED = [
   "android.permission.RECORD_AUDIO",
-  "android.permission.WAKE_LOCK",
+  "android.permission.MODIFY_AUDIO_SETTINGS",
   "android.permission.POST_NOTIFICATIONS",
   "android.permission.USE_FULL_SCREEN_INTENT",
-  "android.permission.FOREGROUND_SERVICE_PHONE_CALL",
-  "android.permission.FOREGROUND_SERVICE_MICROPHONE",
-  "android.permission.RECEIVE_BOOT_COMPLETED",
+  "android.permission.FOREGROUND_SERVICE",
+  "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
 ];
 
 if (wantIos) {
