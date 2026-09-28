@@ -40,7 +40,60 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     private var nativeEngineOwnsCall = false
     private var nativeOutgoingCall = false
     private var pendingOutgoingRequestId: String?
+    private var outgoingActivationTimeout: DispatchWorkItem?
     private var pjsipObservers: [NSObjectProtocol] = []
+
+    /// Les postes PBX courts (par ex. 1136) ne sont pas des numéros E.164.
+    /// Les présenter comme `.phoneNumber` peut faire rejeter ou clore la
+    /// transaction CallKit avant didActivate. L'URI SIP reste inchangée.
+    private func outgoingHandle(for destination: String) -> CXHandle {
+        let value = destination.trimmingCharacters(in: .whitespacesAndNewlines)
+        let digits = value.filter { $0.isNumber }
+        let isInternalExtension = !value.hasPrefix("+")
+            && value == digits
+            && (2...6).contains(digits.count)
+        return CXHandle(type: isInternalExtension ? .generic : .phoneNumber, value: value)
+    }
+
+    private func cancelOutgoingActivationTimeout() {
+        outgoingActivationTimeout?.cancel()
+        outgoingActivationTimeout = nil
+    }
+
+    /// Aucun INVITE ne doit partir si CallKit ne fournit pas réellement sa
+    /// session audio. L'échec est propagé au bridge Capacitor plutôt que de
+    /// laisser l'interface donner l'impression d'un raccrochage silencieux.
+    private func failPendingOutgoingStart(requestId: String, reason: String) {
+        guard !requestId.isEmpty, pendingOutgoingRequestId == requestId else { return }
+        let uuid = activeCallUUID
+        cancelOutgoingActivationTimeout()
+        activeCallUUID = nil
+        activeCallId = nil
+        nativeEngineOwnsCall = false
+        nativeOutgoingCall = false
+        pendingOutgoingRequestId = nil
+        NotificationCenter.default.post(
+            name: .ppPjsipOutgoingStartFailed,
+            object: nil,
+            userInfo: ["requestId": requestId, "reason": reason]
+        )
+        if let uuid = uuid {
+            provider?.reportCall(with: uuid, endedAt: Date(), reason: .failed)
+        }
+        NSLog("[PpVoipCall] outgoing start failed before SIP INVITE: %@", reason)
+    }
+
+    private func armOutgoingActivationTimeout(requestId: String) {
+        cancelOutgoingActivationTimeout()
+        let timeout = DispatchWorkItem { [weak self] in
+            self?.failPendingOutgoingStart(
+                requestId: requestId,
+                reason: "CallKit audio activation timed out before SIP INVITE"
+            )
+        }
+        outgoingActivationTimeout = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8.0, execute: timeout)
+    }
 
     private func beginAnswerBackgroundTask() {
         endAnswerBackgroundTask()
@@ -119,27 +172,19 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             self.nativeEngineOwnsCall = true
             self.nativeOutgoingCall = true
             self.pendingOutgoingRequestId = requestId
-            let handle = CXHandle(type: .phoneNumber, value: destination)
+            let handle = self.outgoingHandle(for: destination)
             let action = CXStartCallAction(call: uuid, handle: handle)
             self.callController.request(CXTransaction(action: action)) { error in
                 if let error = error {
                     NSLog("[PpVoipCall] outgoing CallKit transaction failed: %@", error.localizedDescription)
-                    self.activeCallUUID = nil
-                    self.activeCallId = nil
-                    self.nativeEngineOwnsCall = false
-                    self.nativeOutgoingCall = false
-                    self.pendingOutgoingRequestId = nil
-                    NotificationCenter.default.post(
-                        name: .ppPjsipOutgoingStartFailed,
-                        object: nil,
-                        userInfo: ["requestId": requestId, "reason": error.localizedDescription]
-                    )
+                    self.failPendingOutgoingStart(requestId: requestId, reason: error.localizedDescription)
                 }
             }
         })
         pjsipObservers.append(nc.addObserver(forName: Notification.Name("PpPjsipOutgoingCall"), object: nil, queue: .main) { [weak self] note in
             guard let self = self else { return }
             let info = note.userInfo as? [String: Any] ?? [:]
+            self.cancelOutgoingActivationTimeout()
             self.activeCallId = (info["callId"] as? String) ?? self.activeCallId
             self.pendingOutgoingRequestId = nil
             self.nativeOutgoingCall = true
@@ -159,6 +204,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         })
         pjsipObservers.append(nc.addObserver(forName: Notification.Name("PpPjsipCallEnded"), object: nil, queue: .main) { [weak self] note in
             guard let self = self, let uuid = self.activeCallUUID else { return }
+            self.cancelOutgoingActivationTimeout()
             // `userInfo` est [AnyHashable: Any]. Un cast explicite évite une
             // résolution d'overload invalide de String(Any) sur Xcode récent.
             let endedCallId = (note.userInfo?["callId"] as? String) ?? ""
@@ -475,6 +521,10 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
 
     // MARK: - CXProviderDelegate
     public func providerDidReset(_ provider: CXProvider) {
+        if let requestId = pendingOutgoingRequestId {
+            failPendingOutgoingStart(requestId: requestId, reason: "CallKit provider reset")
+        }
+        cancelOutgoingActivationTimeout()
         pendingAnswerAction?.fail(); pendingAnswerAction = nil
         endAnswerBackgroundTask()
         if nativeEngineOwnsCall {
@@ -589,6 +639,9 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
 
     public func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
         guard activeCallUUID == action.callUUID else {
+            if let requestId = pendingOutgoingRequestId {
+                failPendingOutgoingStart(requestId: requestId, reason: "CallKit start action does not match the pending call")
+            }
             action.fail()
             return
         }
@@ -602,9 +655,18 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         provider.reportCall(with: action.callUUID, updated: update)
         provider.reportOutgoingCall(with: action.callUUID, startedConnectingAt: Date())
         action.fulfill()
+        if let requestId = pendingOutgoingRequestId {
+            armOutgoingActivationTimeout(requestId: requestId)
+        }
     }
 
     public func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
+        if let requestId = pendingOutgoingRequestId, nativeOutgoingCall {
+            failPendingOutgoingStart(requestId: requestId, reason: "CallKit ended before SIP INVITE")
+            action.fulfill()
+            return
+        }
+        cancelOutgoingActivationTimeout()
         pendingAnswerAction?.fail(); pendingAnswerAction = nil
         endAnswerBackgroundTask()
         if nativeEngineOwnsCall {
@@ -626,6 +688,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     public func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
         NotificationCenter.default.post(name: Notification.Name("PpCallKitAudioActivated"), object: audioSession)
         if nativeOutgoingCall, let requestId = pendingOutgoingRequestId {
+            cancelOutgoingActivationTimeout()
             NotificationCenter.default.post(
                 name: .ppPjsipOutgoingAudioReady,
                 object: nil,

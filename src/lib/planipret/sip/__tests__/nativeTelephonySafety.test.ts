@@ -39,6 +39,18 @@ describe("native telephony safety invariants", () => {
     expect(callKit).toContain("if nativeOutgoingCall, let requestId = pendingOutgoingRequestId");
   });
 
+  it("represents short internal extensions safely in CallKit and fails closed before INVITE", () => {
+    const callKit = read("ios/App/App/Plugins/PpVoipCall/PpVoipCall.swift");
+
+    expect(callKit).toContain("private func outgoingHandle(for destination: String) -> CXHandle");
+    expect(callKit).toContain("let isInternalExtension = !value.hasPrefix");
+    expect(callKit).toContain("isInternalExtension ? .generic : .phoneNumber");
+    expect(callKit).toContain("armOutgoingActivationTimeout");
+    expect(callKit).toContain("CallKit audio activation timed out before SIP INVITE");
+    expect(callKit).toContain("failPendingOutgoingStart");
+    expect(callKit).toContain("CallKit ended before SIP INVITE");
+  });
+
   it("uses CallKit as the only iOS answer path and releases media deterministically", () => {
     const engine = read("ios/App/App/Plugins/PpPjsip/PpPjsipEngine.swift");
     const bridge = read("ios/App/App/Plugins/PpPjsip/PpPjsip.swift");
