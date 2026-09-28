@@ -248,6 +248,33 @@ export default function ClientMaestroDetail({
         )}
       </section>
 
+      {profile?.raw && (() => {
+        const r: any = profile.raw;
+        const tels: any[] = Array.isArray(r.telephones) ? r.telephones : [];
+        const tel = (...t: string[]) => tels.find((x) => t.includes(String(x?.telephone_type ?? "").toLowerCase()))?.telephone_number;
+        const rows: [string, unknown][] = [
+          [L("No client Maestro", "Maestro client #"), profile.maestroClientId],
+          [L("Cellulaire", "Mobile"), r.cell_phone ?? r.mobile ?? tel("mobile", "cell")],
+          [L("Travail", "Work"), r.work_phone ?? tel("work", "office")],
+          [L("Domicile", "Home"), r.home_phone ?? tel("home")],
+          [L("Courriel", "Email"), r.email ?? r.email_address],
+          [L("Adresse", "Address"), r.address_line],
+          [L("Langue", "Language"), r.language ?? r.preferred_language],
+          [L("Date de naissance", "Birth date"), r.birth_date ? String(r.birth_date).slice(0, 10) : r.date_of_birth ? String(r.date_of_birth).slice(0, 10) : null],
+          [L("Employeur", "Employer"), r.company ?? r.employer],
+          [L("Occupation", "Occupation"), r.job_title ?? r.occupation],
+        ];
+        const shown = rows.filter(([, v]) => v !== null && v !== undefined && String(v).trim());
+        if (!shown.length) return null;
+        return (
+          <Card title={L("Coordonnées Maestro", "Maestro details")} surface={surface}>
+            <dl className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-1.5 text-[12px]">
+              {shown.flatMap(([k, v]) => [<dt key={`k${k}`} style={{ color: "var(--pp-text-muted)" }}>{k}</dt>, <dd key={`v${k}`} className="break-words" style={{ color: "var(--pp-text-primary)" }}>{String(v)}</dd>])}
+            </dl>
+          </Card>
+        );
+      })()}
+
       <section className="grid grid-cols-4 gap-2">
         <Metric icon={<ListIcon />} label={L("Tâches", "Tasks")} value={String(b.tasks.length)} tone={b.overdue ? "danger" : "blue"} />
         <Metric icon={<Phone className="w-4 h-4" />} label={L("Appels", "Calls")} value={String(b.calls.length)} tone="blue" />

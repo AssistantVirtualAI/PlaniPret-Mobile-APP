@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { buildClientBundles } from "@/lib/planipret/clientMaestro";
 import { shouldOfferMaestroClientCreation } from "@/lib/planipret/clientHistory";
+import { maestroClientProfileFromPayload } from "@/lib/planipret/clientProfile";
 
 describe("client call history", () => {
   it("attaches a call to a Maestro client by the verified client phone without requiring a contract", () => {
@@ -33,5 +34,20 @@ describe("client creation action", () => {
 
   it("never offers creation for an internal extension", () => {
     expect(shouldOfferMaestroClientCreation({ phone: "1136", maestroClientId: null })).toBe(false);
+  });
+});
+
+describe("Maestro client telephone profile", () => {
+  it("uses the confirmed nested mobile number when Maestro has no flat phone field", () => {
+    const profile = maestroClientProfileFromPayload({
+      profile: {
+        id: "511",
+        first_name: "Jane",
+        last_name: "Doe",
+        telephones: [{ telephone_type: "mobile", telephone_number: "5145550123" }],
+      },
+    });
+
+    expect(profile).toMatchObject({ maestroClientId: "511", phone: "5145550123" });
   });
 });

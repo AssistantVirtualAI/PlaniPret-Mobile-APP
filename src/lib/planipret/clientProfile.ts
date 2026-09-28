@@ -20,6 +20,10 @@ const text = (...values: unknown[]) => {
 export function maestroClientProfileFromPayload(payload: any): MaestroClientProfile | null {
   const source = payload?.profile ?? payload?.data ?? null;
   if (!source || typeof source !== "object") return null;
+  const telephones: any[] = Array.isArray(source.telephones) ? source.telephones : [];
+  const telephone = (...types: string[]) => text(
+    telephones.find((item) => types.includes(String(item?.telephone_type ?? "").toLowerCase()))?.telephone_number,
+  );
   const name = text(
     source.full_name,
     source.display_name,
@@ -31,7 +35,17 @@ export function maestroClientProfileFromPayload(payload: any): MaestroClientProf
   const address = Array.isArray(source.addresses) ? source.addresses[0] : source.address ?? {};
   return {
     name: name || "Client Maestro",
-    phone: text(source.phone, source.mobile, source.cell_phone, source.cellphone, source.phone_number) || null,
+    phone: text(
+      source.phone,
+      source.mobile,
+      source.cell_phone,
+      source.cellphone,
+      source.phone_number,
+      telephone("mobile", "cell"),
+      telephone("work", "office"),
+      telephone("home"),
+      telephones[0]?.telephone_number,
+    ) || null,
     email: text(source.email, source.email_address, source.mail) || null,
     maestroClientId: maestroClientId || null,
     city: text(source.city, address?.city) || null,
