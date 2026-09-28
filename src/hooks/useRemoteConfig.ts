@@ -1,5 +1,6 @@
 // Configuration distante de l'application mobile.
-// Récupère les interrupteurs, messages et mises à jour poussés depuis le portail admin.
+// Récupère les interrupteurs et messages du portail admin. Les mises à jour
+// de code sont uniquement distribuées par les stores, jamais par OTA.
 import { useCallback, useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { nativeAppVersion } from "@/lib/native/otaUpdater";
@@ -58,7 +59,7 @@ export function isVersionLower(a: string | null, b: string | null): boolean {
 export function useRemoteConfig() {
   const cached = readCache();
   const [config, setConfig] = useState<RemoteConfig>(cached?.config ?? EMPTY);
-  const [release, setRelease] = useState<RemoteRelease>(cached?.release ?? null);
+  const [release, setRelease] = useState<RemoteRelease>(null);
   const [loading, setLoading] = useState(!cached);
   // L'OTA active peut être plus ancienne que le binaire installé. Les écrans
   // obligatoires doivent toujours se baser sur le binaire natif réel.
@@ -78,10 +79,9 @@ export function useRemoteConfig() {
       });
       if (error || (data as any)?.error) return;
       const cfg = (data as any).config as RemoteConfig;
-      const rel = (data as any).release as RemoteRelease;
       setConfig(cfg ?? EMPTY);
-      setRelease(rel ?? null);
-      try { localStorage.setItem(CACHE_KEY, JSON.stringify({ config: cfg, release: rel })); } catch { /* noop */ }
+      setRelease(null);
+      try { localStorage.setItem(CACHE_KEY, JSON.stringify({ config: cfg, release: null })); } catch { /* noop */ }
     } finally {
       setLoading(false);
     }

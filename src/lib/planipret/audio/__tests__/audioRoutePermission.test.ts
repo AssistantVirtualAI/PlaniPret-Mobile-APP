@@ -20,6 +20,21 @@ describe("speaker route authorization", () => {
     expect(stop).toHaveBeenCalledOnce();
   });
 
+  it("uses the iOS PJSIP permission prompt without opening a competing WebView track", async () => {
+    const root = window as any;
+    const original = root.Capacitor;
+    const nativeRequest = vi.fn().mockResolvedValue({ granted: true, state: "granted" });
+    const fallback = vi.fn();
+    root.Capacitor = { ...(original ?? {}), Plugins: { ...(original?.Plugins ?? {}), PpPjsip: { requestMicrophonePermission: nativeRequest } } };
+    try {
+      await expect(authorizeSpeakerRoute(true, fallback)).resolves.toEqual({ allowed: true, state: "granted" });
+      expect(nativeRequest).toHaveBeenCalledOnce();
+      expect(fallback).not.toHaveBeenCalled();
+    } finally {
+      root.Capacitor = original;
+    }
+  });
+
   it("does not change the route when microphone authorization is denied", async () => {
     const request = vi.fn().mockResolvedValue({ state: "denied", error: "Microphone permission denied" });
     await expect(authorizeSpeakerRoute(true, request)).resolves.toEqual({ allowed: false, state: "denied" });

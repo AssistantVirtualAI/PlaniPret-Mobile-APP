@@ -28,6 +28,7 @@ public class PpPjsip: CAPPlugin, CAPBridgedPlugin {
     public let jsName = "PpPjsip"
     public let pluginMethods: [CAPPluginMethod] = [
         CAPPluginMethod(name: "isEngineLinked", returnType: CAPPluginReturnPromise),
+        CAPPluginMethod(name: "requestMicrophonePermission", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "registerTest", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "initialize", returnType: CAPPluginReturnPromise),
 
@@ -66,6 +67,34 @@ public class PpPjsip: CAPPlugin, CAPBridgedPlugin {
         NSLog("[PpPjsip] isEngineLinked=false — libpjsip.xcframework is not linked into the app")
         call.resolve(["linked": false])
         #endif
+    }
+
+    // MARK: - Permission microphone
+
+    /// iOS has no distinct loudspeaker permission.  CallKit/PJSIP may route to
+    /// the loudspeaker only after the app has microphone access.  Keeping this
+    /// native avoids acquiring a competing WebView getUserMedia track while a
+    /// CallKit call owns the audio session.
+    @objc func requestMicrophonePermission(_ call: CAPPluginCall) {
+        let session = AVAudioSession.sharedInstance()
+        let resolve: (Bool) -> Void = { granted in
+            DispatchQueue.main.async {
+                call.resolve([
+                    "granted": granted,
+                    "state": granted ? "granted" : "denied"
+                ])
+            }
+        }
+        switch session.recordPermission {
+        case .granted:
+            resolve(true)
+        case .denied:
+            resolve(false)
+        case .undetermined:
+            session.requestRecordPermission { granted in resolve(granted) }
+        @unknown default:
+            resolve(false)
+        }
     }
 
     // MARK: - Sonde TLS

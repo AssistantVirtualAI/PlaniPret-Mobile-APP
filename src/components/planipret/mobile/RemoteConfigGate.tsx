@@ -5,7 +5,6 @@ import { AlertTriangle, Download, Megaphone, X } from "lucide-react";
 import { useRemoteConfig } from "@/hooks/useRemoteConfig";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { checkAndApplyOtaUpdate } from "@/lib/native/otaUpdater";
-import { supabase } from "@/integrations/supabase/client";
 
 const BANNER_DISMISS_KEY = "pp.remoteBanner.dismissed";
 
@@ -37,23 +36,11 @@ export default function RemoteConfigGate({ children }: { children: ReactNode }) 
     catch { return false; }
   });
 
-  // Vérifie au démarrage, puis une seconde fois dès que la session restaurée
-  // est disponible. Cela évite qu'un démarrage natif rapide rate l'OTA sur 401.
+  // Ne télécharge jamais de mise à jour distante. Cette garde ne fait que
+  // réinitialiser un bundle OTA résiduel afin que la release Store embarquée
+  // devienne l'unique code exécuté sur iOS et Android.
   useEffect(() => {
-    let cancelled = false;
-    const check = () => {
-      if (!cancelled) void checkAndApplyOtaUpdate();
-    };
-
-    check();
-    const { data } = supabase.auth.onAuthStateChange((event, session) => {
-      if (session && (event === "INITIAL_SESSION" || event === "SIGNED_IN")) check();
-    });
-
-    return () => {
-      cancelled = true;
-      data.subscription.unsubscribe();
-    };
+    void checkAndApplyOtaUpdate();
   }, []);
 
   if (!loading && maintenance) {

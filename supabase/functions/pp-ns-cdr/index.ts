@@ -170,6 +170,45 @@ function toIso(v: unknown): string | null {
   return isNaN(d.getTime()) ? null : d.toISOString();
 }
 
+const CDR_IDENTITY_COLUMNS = ["ns_call_id", "ns_callid", "ns_orig_callid", "ns_term_callid", "ns_cdr_id"] as const;
+
+/**
+ * A live mobile row is created before NetSapiens publishes its final CDR.  The
+ * final CDR often receives a different primary id, but preserves one of these
+ * leg ids.  Reconcile only through that immutable SIP evidence: never guess
+ * from a phone number or a timestamp, which could merge two real calls.
+ */
+function cdrIdentityCandidates(cdr: ReturnType<typeof normalizeCdr>): string[] {
+  return [...new Set([
+    cdr.ns_call_id,
+    cdr.ns_callid,
+    cdr.ns_orig_callid,
+    cdr.ns_term_callid,
+    cdr.ns_cdr_id,
+  ].filter((value): value is string => typeof value === "string" && value.trim().length > 0))];
+}
+
+function queueBackground(label: string, task: Promise<unknown>) {
+  const guarded = task.catch((error) => {
+    console.warn(`[pp-ns-cdr] ${label} failed`, error instanceof Error ? error.message : error);
+  });
+  const runtime = (globalThis as any).EdgeRuntime;
+  if (typeof runtime?.waitUntil === "function") runtime.waitUntil(guarded);
+  else void guarded;
+}
+
+function queueApprovedPostCall(callId: string) {
+  const url = Deno.env.get("SUPABASE_URL")!;
+  const serviceRole = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+  queueBackground("approved post-call pipeline", fetch(`${url}/functions/v1/pp-auto-process-call`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${serviceRole}` },
+    body: JSON.stringify({ call_id: callId }),
+  }).then((response) => {
+    if (!response.ok) throw new Error(`pp-auto-process-call HTTP ${response.status}`);
+  }));
+}
+
 function isProfileFkError(error: { message?: string; code?: string; details?: string } | null) {
   if (!error) return false;
   const text = `${error.code ?? ""} ${error.message ?? ""} ${error.details ?? ""}`;
@@ -331,8 +370,78 @@ Deno.serve(async (req) => {
         metadata: it,
       }));
 
-      const withId = rows.filter((r) => r.ns_call_id);
-      const withoutId = rows.filter((r) => !r.ns_call_id);
+      // Resolve live rows before the generic CDR upsert.  A final NetSapiens
+      // CDR may carry a different primary id; keeping the live row preserves
+      // the call's consent and avoids showing a false "not synced" duplicate
+      // in the mobile history.  Every match is based on a SIP/CDR identifier,
+      // never a heuristic phone-number or time match.
+      const reconciledCallIds = new Set<string>();
+      const reconciledCdrIds = new Set<string>();
+      const approvedCallIds = new Set<string>();
+      for (let index = 0; index < rows.length; index++) {
+        const row = rows[index];
+        const identities = cdrIdentityCandidates(items[index]);
+        if (!row.ns_call_id || !identities.length) continue;
+
+        let existing: any = null;
+        for (const column of CDR_IDENTITY_COLUMNS) {
+          const { data, error } = await supabase
+            .from("planipret_phone_calls")
+            .select("id,user_id,extension,ns_call_id,ns_cdr_id,metadata,save_consent,direction,status,from_number,from_name,to_number,to_name")
+            .in(column, identities)
+            .or(`user_id.eq.${ctx.profileId},user_id.eq.${ctx.userId},extension.eq.${ctx.extension}`)
+            .order("created_at", { ascending: false })
+            .limit(10);
+          if (error) {
+            console.warn("[pp-ns-cdr] CDR reconciliation lookup failed", { column, code: error.code });
+            continue;
+          }
+          const candidates = data ?? [];
+          // Prefer the original live row (which has no completed CDR id yet),
+          // then an exact existing CDR row.  Both are safe id-based matches.
+          existing = candidates.find((candidate: any) => !candidate.ns_cdr_id)
+            ?? candidates.find((candidate: any) => String(candidate.ns_call_id ?? "") === String(row.ns_call_id))
+            ?? null;
+          if (existing) break;
+        }
+        if (!existing?.id) continue;
+
+        const { user_id: _userId, organization_id: _organizationId, metadata: _metadata, ...cdrPatch } = row as any;
+        const patch = {
+          ...cdrPatch,
+          direction: row.direction ?? existing.direction ?? null,
+          status: row.status ?? existing.status ?? null,
+          from_number: row.from_number ?? existing.from_number ?? null,
+          from_name: row.from_name ?? existing.from_name ?? null,
+          to_number: row.to_number ?? existing.to_number ?? null,
+          to_name: row.to_name ?? existing.to_name ?? null,
+          metadata: {
+            ...((existing.metadata && typeof existing.metadata === "object") ? existing.metadata : {}),
+            ns_cdr: items[index],
+            cdr_identities: identities,
+          },
+        };
+        const { data: updated, error: updateError } = await supabase
+          .from("planipret_phone_calls")
+          .update(patch)
+          .eq("id", existing.id)
+          .select("id,save_consent")
+          .maybeSingle();
+        if (updateError) {
+          console.warn("[pp-ns-cdr] CDR reconciliation update failed", { call_id: existing.id, code: updateError.code });
+          continue;
+        }
+        if (!updated?.id) continue;
+        reconciledCallIds.add(String(updated.id));
+        reconciledCdrIds.add(String(row.ns_call_id));
+        if (String(updated.save_consent ?? "") === "approved") approvedCallIds.add(String(updated.id));
+      }
+
+      // `rows` has no database id.  Reconciled CDRs are identified by their
+      // primary CDR id, which is unique in the CDR feed.
+      const rowsToUpsert = rows.filter((row: any) => !reconciledCdrIds.has(String(row.ns_call_id ?? "")));
+      const withId = rowsToUpsert.filter((r) => r.ns_call_id);
+      const withoutId = rowsToUpsert.filter((r) => !r.ns_call_id);
 
       const withoutUserId = (payload: any[]) => payload.map(({ user_id: _userId, ...r }) => r);
       const CHUNK = 50;
@@ -372,7 +481,19 @@ Deno.serve(async (req) => {
       }
 
 
-      const summary = { extension: ctx.extension, domain: ctx.nsDomain, start, end, fetched: items.length, upserted, inserted_no_id: withoutId.length };
+      for (const callId of approvedCallIds) queueApprovedPostCall(callId);
+
+      const summary = {
+        extension: ctx.extension,
+        domain: ctx.nsDomain,
+        start,
+        end,
+        fetched: items.length,
+        reconciled: reconciledCallIds.size,
+        post_call_queued: approvedCallIds.size,
+        upserted,
+        inserted_no_id: withoutId.length,
+      };
       if (runId) await supabase.from("planipret_edge_function_runs").update({ status: "success", finished_at: new Date().toISOString(), summary }).eq("id", runId);
 
       return jsonResponse({ ok: true, ...summary });

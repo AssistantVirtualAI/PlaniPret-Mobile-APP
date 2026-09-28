@@ -53,7 +53,7 @@ describe("otaUpdater — priorité au binaire natif", () => {
     await expect(nativeAppVersion()).resolves.toBe("1.5.8");
   });
 
-  it("revient immédiatement au bundle natif si l'OTA est plus ancienne", async () => {
+  it("revient immédiatement au bundle natif quelle que soit la version OTA", async () => {
     mocks.current.mockResolvedValue({
       bundle: { id: "old-bundle", version: "1.4.19" },
       native: "1.5.8",
@@ -67,20 +67,14 @@ describe("otaUpdater — priorité au binaire natif", () => {
     expect(mocks.invoke).not.toHaveBeenCalled();
   });
 
-  it("n'installe pas une release distante antérieure au binaire", async () => {
+  it("ne consulte ni ne télécharge de release distante", async () => {
     mocks.current.mockResolvedValue({
       bundle: { id: "builtin", version: "builtin" },
       native: "1.5.8",
     });
-    mocks.invoke.mockResolvedValue({
-      data: { release: { version: "1.4.19", url: "https://example.invalid/old.zip" } },
-      error: null,
-    });
 
-    await expect(checkAndApplyOtaUpdate()).resolves.toEqual({ status: "up-to-date" });
-    expect(mocks.invoke).toHaveBeenCalledWith("mobile-config", {
-      body: expect.objectContaining({ native_version: "1.5.8" }),
-    });
+    await expect(checkAndApplyOtaUpdate()).resolves.toEqual({ status: "up-to-date", version: "1.5.8" });
+    expect(mocks.invoke).not.toHaveBeenCalled();
     expect(mocks.download).not.toHaveBeenCalled();
     expect(mocks.next).not.toHaveBeenCalled();
   });

@@ -455,27 +455,10 @@ export default function MCalls() {
 
   const missedCount = useMemo(() => calls.filter(isMissed).length, [calls]);
 
-  // Appels enregistrés localement qui n'ont pas encore de CDR NetSapiens :
-  // ils restent visibles et peuvent être resynchronisés à la demande.
-  const unsynced = useMemo(
-    () => calls.filter((c) => !c.ns_call_id && !String(c.id ?? "").startsWith("ns-")),
-    [calls],
-  );
-  const [resyncing, setResyncing] = useState(false);
-  const resyncUnsynced = useCallback(async () => {
-    if (resyncing) return;
-    setResyncing(true);
-    try {
-      const end = new Date().toISOString();
-      const start = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-      await supabase.functions.invoke("pp-ns-cdr", { body: { action: "sync", start, end, limit: 50 } });
-      await load(true);
-    } catch (e: any) {
-      toast.error(lang === "en" ? "Resync failed" : "Échec de la resynchronisation", { description: e?.message });
-    } finally {
-      setResyncing(false);
-    }
-  }, [resyncing, load, lang]);
+  // The server reconciles a completed NetSapiens CDR with its live mobile row
+  // and starts the consent-aware Maestro pipeline automatically. Local rows
+  // remain visible during the short provider delay, but the app deliberately
+  // does not ask the broker to repair or reload call history manually.
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -642,52 +625,6 @@ export default function MCalls() {
                 <RefreshCw className={`w-3 h-3 ${refreshing ? "animate-spin" : ""}`} /> {t("common.refresh")}
               </button>
             </div>
-            {tab !== "missed" && unsynced.length > 0 && (
-              <div
-                className="mx-3 mt-2 rounded-xl px-3 py-2.5"
-                style={{
-                  background: "rgba(245, 158, 11, 0.10)",
-                  border: "1px solid rgba(245, 158, 11, 0.35)",
-                  color: "var(--pp-text-primary)",
-                }}
-                role="status"
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-xs font-semibold">
-                    {unsynced.length}{" "}
-                    {lang === "en"
-                      ? (unsynced.length > 1 ? "calls not synced" : "call not synced")
-                      : (unsynced.length > 1 ? "appels non synchronisés" : "appel non synchronisé")}
-                  </span>
-                  <button
-                    onClick={resyncUnsynced}
-                    disabled={resyncing}
-                    className="px-3 py-1 rounded-full text-[11px] font-semibold flex items-center gap-1 disabled:opacity-60"
-                    style={{ background: "var(--pp-primary)", color: "#fff" }}
-                  >
-                    <RefreshCw className={`w-3 h-3 ${resyncing ? "animate-spin" : ""}`} />
-                    {lang === "en" ? "Reload" : "Recharger"}
-                  </button>
-                </div>
-                <ul className="mt-2 space-y-1">
-                  {unsynced.slice(0, 5).map((c) => (
-                    <li key={`unsynced-${c.id}`} className="flex items-center justify-between gap-2 text-[11px]" style={{ color: "var(--pp-text-secondary)" }}>
-                      <button className="truncate text-left flex-1" onClick={() => setSelected(c)}>
-                        {displayLabelWith(c, undefined, lang as "fr" | "en")}
-                      </button>
-                      <span className="shrink-0">
-                        {localizedDateTime(c.started_at, lang as "fr" | "en", t("common.today"), t("common.yesterday"))}
-                      </span>
-                    </li>
-                  ))}
-                  {unsynced.length > 5 && (
-                    <li className="text-[11px]" style={{ color: "var(--pp-text-muted)" }}>
-                      +{unsynced.length - 5}
-                    </li>
-                  )}
-                </ul>
-              </div>
-            )}
             {loading ? (
               <ul className="px-3 pt-3 pb-4 space-y-1.5">
                 {Array.from({ length: 5 }).map((_, i) => (

@@ -4,7 +4,8 @@
  * Source de vérité : la build native (@capacitor/app → MARKETING_VERSION /
  * CURRENT_PROJECT_VERSION). Après une soumission App Store / Play, la nouvelle
  * version s'affiche automatiquement — plus rien n'est codé en dur.
- * Si un paquet OTA plus récent est actif, sa version est ajoutée.
+ * Les versions OTA ne sont jamais affichées ni appliquées : les mises à jour
+ * Planiprêt sont exclusivement distribuées par l'App Store et Google Play.
  */
 import { Capacitor } from "@capacitor/core";
 import { App } from "@capacitor/app";
@@ -36,23 +37,6 @@ export async function getAppVersionInfo(): Promise<AppVersionInfo> {
     native = bundledVersion;
   }
 
-  let ota: string | undefined;
-  try {
-    const mod = await import("@capgo/capacitor-updater");
-    const updater = mod.CapacitorUpdater;
-    if (updater) {
-      const current = await updater.current();
-      const v = current?.bundle?.version;
-      // On n'affiche l'OTA que si elle diffère de la version native
-      if (v && v !== "builtin" && v !== native) {
-        ota = v;
-      }
-    }
-  } catch (err) {
-    // Le plugin peut être absent ou le shim peut être actif
-    console.debug("[version] CapacitorUpdater not available or failed", err);
-  }
-
-  const label = `v${native} (build ${build})${ota ? ` · OTA ${ota}` : ""}`;
-  return { label, native, build, ota };
+  const label = `v${native} (build ${build})`;
+  return { label, native, build };
 }
