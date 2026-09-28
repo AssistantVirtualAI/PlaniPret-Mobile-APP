@@ -26,6 +26,19 @@ PJ_TAG="${PJSIP_TAG:-2.15.1}"
 OPENSSL_TAG="${OPENSSL_TAG:-openssl-3.0.15}"
 MIN_IOS="${MIN_IOS:-14.0}"
 PJSIP_RUN_SIMULATOR_SELFTEST="${PJSIP_RUN_SIMULATOR_SELFTEST:-0}"
+# Une archive App Store n'utilise que la tranche iPhoneOS. Les SDK Simulator
+# récents peuvent refuser l'autoconf historique de pjproject ; cette tranche
+# est donc un diagnostic local opt-in et ne doit jamais empêcher une archive
+# physique validée TLS. Pour un débogage Simulator explicite :
+# PJSIP_INCLUDE_SIMULATOR=1 bash scripts/build-pjsip-ios.sh
+PJSIP_INCLUDE_SIMULATOR="${PJSIP_INCLUDE_SIMULATOR:-0}"
+
+case "$PJSIP_INCLUDE_SIMULATOR" in 0|1) ;; *) echo "❌ PJSIP_INCLUDE_SIMULATOR doit valoir 0 ou 1"; exit 1 ;; esac
+case "$PJSIP_RUN_SIMULATOR_SELFTEST" in 0|1) ;; *) echo "❌ PJSIP_RUN_SIMULATOR_SELFTEST doit valoir 0 ou 1"; exit 1 ;; esac
+if [ "$PJSIP_RUN_SIMULATOR_SELFTEST" = "1" ] && [ "$PJSIP_INCLUDE_SIMULATOR" != "1" ]; then
+  echo "❌ PJSIP_RUN_SIMULATOR_SELFTEST=1 exige PJSIP_INCLUDE_SIMULATOR=1"
+  exit 1
+fi
 
 command -v xcodebuild >/dev/null || { echo "xcodebuild introuvable — ce script exige macOS + Xcode."; exit 1; }
 command -v xcrun >/dev/null || { echo "xcrun introuvable — installe Xcode et sélectionne-le avec xcode-select."; exit 1; }
@@ -39,16 +52,25 @@ mkdir -p "$WORK" "$OUT"
 # mais CROSS_TOP attend le nom de plateforme sans version (iPhoneOS/iPhoneSimulator)
 # ---------------------------------------------------------------------------
 IOS_SDK_PATH="$(xcrun --sdk iphoneos --show-sdk-path 2>/dev/null || true)"
-SIM_SDK_PATH="$(xcrun --sdk iphonesimulator --show-sdk-path 2>/dev/null || true)"
-if [ -z "$IOS_SDK_PATH" ] || [ -z "$SIM_SDK_PATH" ]; then
+SIM_SDK_PATH=""
+if [ "$PJSIP_INCLUDE_SIMULATOR" = "1" ]; then
+  SIM_SDK_PATH="$(xcrun --sdk iphonesimulator --show-sdk-path 2>/dev/null || true)"
+fi
+if [ -z "$IOS_SDK_PATH" ] || { [ "$PJSIP_INCLUDE_SIMULATOR" = "1" ] && [ -z "$SIM_SDK_PATH" ]; }; then
   echo "❌ SDK iOS introuvable. Vérifie: sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer"
   exit 1
 fi
 # Extraire le nom de plateforme sans version ni .sdk (ex: iPhoneOS)
 IOS_PLATFORM_NAME="$(basename "$IOS_SDK_PATH" | sed 's/[0-9][0-9.]*\.sdk$//' | sed 's/\.sdk$//')"
-SIM_PLATFORM_NAME="$(basename "$SIM_SDK_PATH" | sed 's/[0-9][0-9.]*\.sdk$//' | sed 's/\.sdk$//')"
-echo "▶ SDK détectés: device=$(basename "$IOS_SDK_PATH") simulator=$(basename "$SIM_SDK_PATH")"
-echo "▶ Plateformes: device=$IOS_PLATFORM_NAME simulator=$SIM_PLATFORM_NAME"
+if [ "$PJSIP_INCLUDE_SIMULATOR" = "1" ]; then
+  SIM_PLATFORM_NAME="$(basename "$SIM_SDK_PATH" | sed 's/[0-9][0-9.]*\.sdk$//' | sed 's/\.sdk$//')"
+  echo "▶ SDK détectés: device=$(basename "$IOS_SDK_PATH") simulator=$(basename "$SIM_SDK_PATH")"
+  echo "▶ Plateformes: device=$IOS_PLATFORM_NAME simulator=$SIM_PLATFORM_NAME"
+else
+  echo "▶ SDK détecté: device=$(basename "$IOS_SDK_PATH")"
+  echo "▶ Plateforme: device=$IOS_PLATFORM_NAME"
+  echo "↷ Tranche Simulator ignorée pour l'archive appareil (PJSIP_INCLUDE_SIMULATOR=0)"
+fi
 
 # ---------------------------------------------------------------------------
 # 1) OpenSSL pour iPhoneOS.sdk arm64 et iPhoneSimulator.sdk arm64
@@ -112,7 +134,9 @@ build_openssl () {
 # ios64-xcrun et iossimulator-xcrun sont les cibles modernes pour Xcode récent
 # (ios64-cross n'est plus reconnu depuis OpenSSL 3.x avec Xcode 15+)
 build_openssl device    iphoneos         ios64-xcrun
-build_openssl simulator iphonesimulator  iossimulator-xcrun
+if [ "$PJSIP_INCLUDE_SIMULATOR" = "1" ]; then
+  build_openssl simulator iphonesimulator iossimulator-xcrun
+fi
 
 # ---------------------------------------------------------------------------
 # 2) pjproject
@@ -198,7 +222,9 @@ build_arch () {
 # Utiliser les alias génériques xcrun (iphoneos/iphonesimulator) qui fonctionnent
 # avec toutes les versions de SDK (iphoneos26.5, iphoneos17.x, etc.)
 build_arch iphoneos arm64 device
-build_arch iphonesimulator arm64 simulator
+if [ "$PJSIP_INCLUDE_SIMULATOR" = "1" ]; then
+  build_arch iphonesimulator arm64 simulator
+fi
 
 # ---------------------------------------------------------------------------
 # 3) En-têtes + xcframework
@@ -219,10 +245,15 @@ module pjsua [system] {
 EOF
 
 rm -rf "$OUT/libpjsip.xcframework"
-xcodebuild -create-xcframework \
-  -library "$WORK/libs/device/libPJSIP.a" -headers "$WORK/headers" \
-  -library "$WORK/libs/simulator/libPJSIP.a" -headers "$WORK/headers" \
-  -output "$OUT/libpjsip.xcframework"
+XCF_ARGS=(
+  -library "$WORK/libs/device/libPJSIP.a" -headers "$WORK/headers"
+)
+if [ "$PJSIP_INCLUDE_SIMULATOR" = "1" ]; then
+  XCF_ARGS+=(
+    -library "$WORK/libs/simulator/libPJSIP.a" -headers "$WORK/headers"
+  )
+fi
+xcodebuild -create-xcframework "${XCF_ARGS[@]}" -output "$OUT/libpjsip.xcframework"
 
 # ---------------------------------------------------------------------------
 # 4) Vérification POST-xcodebuild des binaires livrés (bloquante)
@@ -242,5 +273,5 @@ else
 fi
 
 echo "✅ libpjsip.xcframework (TLS activé et vérifié) → $OUT"
-echo "   OpenSSL est inclus dans chaque tranche de l'archive. Ajoute le xcframework"
+echo "   OpenSSL est inclus dans la tranche iPhoneOS de l'archive. Ajoute le xcframework"
 echo "   à la cible App (Frameworks, Libraries and Embedded Content), puis: npx cap sync ios"
