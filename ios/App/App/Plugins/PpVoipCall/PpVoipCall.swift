@@ -12,6 +12,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
       CAPPluginMethod(name: "getVoipPushToken", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "refreshVoipPushToken", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "reportCallEnded", returnType: CAPPluginReturnPromise),
+      CAPPluginMethod(name: "requestAnswer", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "completeAnswer", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "setHeld", returnType: CAPPluginReturnPromise),
       CAPPluginMethod(name: "addListener", returnType: CAPPluginReturnCallback),
@@ -37,6 +38,8 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     /// true quand l'appel CallKit courant est piloté par le moteur PJSIP natif
     /// (INVITE reçu en TLS 5061) et non plus par le chemin JsSIP/WebView.
     private var nativeEngineOwnsCall = false
+    private var nativeOutgoingCall = false
+    private var pendingOutgoingRequestId: String?
     private var pjsipObservers: [NSObjectProtocol] = []
 
     private func beginAnswerBackgroundTask() {
@@ -94,26 +97,52 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             )
         })
         pjsipObservers.append(nc.addObserver(forName: Notification.Name("PpPjsipCallConnected"), object: nil, queue: .main) { [weak self] _ in
-            guard let self = self, let uuid = self.activeCallUUID else { return }
+            guard let self = self, self.nativeOutgoingCall, let uuid = self.activeCallUUID else { return }
             self.provider?.reportOutgoingCall(with: uuid, connectedAt: Date())
         })
-        pjsipObservers.append(nc.addObserver(forName: Notification.Name("PpPjsipOutgoingCall"), object: nil, queue: .main) { [weak self] note in
+        pjsipObservers.append(nc.addObserver(forName: Notification.Name("PpPjsipOutgoingStartRequested"), object: nil, queue: .main) { [weak self] note in
             guard let self = self else { return }
             let info = note.userInfo as? [String: Any] ?? [:]
-            let callId = (info["callId"] as? String) ?? UUID().uuidString
+            let requestId = (info["requestId"] as? String) ?? ""
             let destination = (info["destination"] as? String) ?? ""
+            guard !requestId.isEmpty, self.activeCallUUID == nil else {
+                NotificationCenter.default.post(
+                    name: .ppPjsipOutgoingStartFailed,
+                    object: nil,
+                    userInfo: ["requestId": requestId, "reason": "CallKit already has an active call"]
+                )
+                return
+            }
             let uuid = UUID()
             self.activeCallUUID = uuid
-            self.activeCallId = callId
+            self.activeCallId = nil
             self.nativeEngineOwnsCall = true
+            self.nativeOutgoingCall = true
+            self.pendingOutgoingRequestId = requestId
             let handle = CXHandle(type: .phoneNumber, value: destination)
             let action = CXStartCallAction(call: uuid, handle: handle)
             self.callController.request(CXTransaction(action: action)) { error in
                 if let error = error {
                     NSLog("[PpVoipCall] outgoing CallKit transaction failed: %@", error.localizedDescription)
-                    NotificationCenter.default.post(name: Notification.Name("PpPjsipEndRequested"), object: nil)
+                    self.activeCallUUID = nil
+                    self.activeCallId = nil
+                    self.nativeEngineOwnsCall = false
+                    self.nativeOutgoingCall = false
+                    self.pendingOutgoingRequestId = nil
+                    NotificationCenter.default.post(
+                        name: .ppPjsipOutgoingStartFailed,
+                        object: nil,
+                        userInfo: ["requestId": requestId, "reason": error.localizedDescription]
+                    )
                 }
             }
+        })
+        pjsipObservers.append(nc.addObserver(forName: Notification.Name("PpPjsipOutgoingCall"), object: nil, queue: .main) { [weak self] note in
+            guard let self = self else { return }
+            let info = note.userInfo as? [String: Any] ?? [:]
+            self.activeCallId = (info["callId"] as? String) ?? self.activeCallId
+            self.pendingOutgoingRequestId = nil
+            self.nativeOutgoingCall = true
         })
         pjsipObservers.append(nc.addObserver(forName: Notification.Name("PpPjsipOutgoingRinging"), object: nil, queue: .main) { [weak self] _ in
             guard let self = self, let uuid = self.activeCallUUID else { return }
@@ -138,6 +167,8 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             self.endAnswerBackgroundTask()
             self.activeCallUUID = nil; self.activeCallId = nil
             self.nativeEngineOwnsCall = false
+            self.nativeOutgoingCall = false
+            self.pendingOutgoingRequestId = nil
         })
     }
 
@@ -160,22 +191,9 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             // L'utilisateur a pu decrocher AVANT l'arrivee de l'INVITE (appel
             // presente par le push). L'action CallKit attendait alors JsSIP qui
             // ne repond plus : on la remplit maintenant via PJSIP.
-            if let pending = pendingAnswerAction {
-                pendingAnswerAction = nil
-                answerCompleted = true
-                endAnswerBackgroundTask()
-                // PpPjsipAnswerPending already armed the engine when CallKit
-                // was answered before this INVITE. handleIncomingCall() sends
-                // the 200 OK itself; posting AnswerRequested here would answer
-                // the same dialog twice and can leave the caller ringing.
-                notifyListeners("incomingCallAnswered", data: [
-                    "callUUID": uuid.uuidString,
-                    "callId": callId,
-                    "source": "pjsip"
-                ], retainUntilConsumed: true)
-                pending.fulfill()
-                NSLog("[PpVoipCall] pending answer fulfilled by native INVITE callId=%@", callId)
-            }
+            // Le CXAnswerCallAction reste en attente jusqu'au résultat atomique
+            // PJSIP. Le remplir à la réception d'INVITE autoriserait CallKit
+            // avant l'envoi réel du seul 200 OK.
             return
         }
 
@@ -236,19 +254,6 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         self.pushRegistry = registry
     }
 
-    /// Prépare la catégorie avant l'activation système. CallKit reste seul à
-    /// appeler setActive() dans didActivate. Cette préparation commune garantit
-    /// que les appels entrants ET sortants PJSIP utilisent une entrée/sortie
-    /// téléphonique, sans que le fallback WebView réinitialise RemoteIO.
-    private func prepareCallAudioSession() {
-        let session = AVAudioSession.sharedInstance()
-        try? session.setCategory(
-            .playAndRecord,
-            mode: .voiceChat,
-            options: [.allowBluetoothHFP, .allowBluetoothA2DP]
-        )
-    }
-
     // MARK: - JS ↔ Native
     @objc func getVoipPushToken(_ call: CAPPluginCall) {
         if pushRegistry == nil {
@@ -284,6 +289,24 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         }
         endAnswerBackgroundTask()
         call.resolve(["ok": true])
+    }
+
+    /// Le bouton in-app demande la même transaction que le bouton système.
+    /// Le delegate CallKit reste le seul chemin qui appelle PJSIP.
+    @objc func requestAnswer(_ call: CAPPluginCall) {
+        guard let uuid = activeCallUUID else {
+            call.reject("no_callkit_call", "No CallKit call is waiting for an answer")
+            return
+        }
+        let action = CXAnswerCallAction(call: uuid)
+        callController.request(CXTransaction(action: action)) { error in
+            if let error = error {
+                NSLog("[PpVoipCall] requestAnswer transaction failed: %@", error.localizedDescription)
+                call.reject("callkit_answer_failed", error.localizedDescription)
+            } else {
+                call.resolve(["ok": true])
+            }
+        }
     }
 
     @objc func completeAnswer(_ call: CAPPluginCall) {
@@ -416,6 +439,8 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             NotificationCenter.default.post(name: Notification.Name("PpPjsipEndRequested"), object: nil)
         }
         nativeEngineOwnsCall = false
+        nativeOutgoingCall = false
+        pendingOutgoingRequestId = nil
         activeCallUUID = nil; activeCallId = nil
     }
 
@@ -479,10 +504,6 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             action.fulfill()
             return
         }
-        // Prepare the route but let CallKit own activation (didActivate:) —
-        // activating here races the system session and yields a dead call.
-        prepareCallAudioSession()
-
         // Keep CallKit pending until pjsua_call_answer really accepts the 200 OK.
         if nativeEngineOwnsCall {
             pendingAnswerAction = action
@@ -529,10 +550,6 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             action.fail()
             return
         }
-        // Le chemin sortant doit recevoir la même préparation que l'entrant;
-        // auparavant seule la réponse d'un appel entrant configurait l'entrée
-        // micro avant didActivate, ce qui pouvait laisser le média sortant muet.
-        prepareCallAudioSession()
         let update = CXCallUpdate()
         update.remoteHandle = action.handle
         update.hasVideo = false
@@ -559,11 +576,20 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         ])
         activeCallUUID = nil; activeCallId = nil
         nativeEngineOwnsCall = false
+        nativeOutgoingCall = false
+        pendingOutgoingRequestId = nil
         action.fulfill()
     }
 
     public func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
         NotificationCenter.default.post(name: Notification.Name("PpCallKitAudioActivated"), object: audioSession)
+        if nativeOutgoingCall, let requestId = pendingOutgoingRequestId {
+            NotificationCenter.default.post(
+                name: .ppPjsipOutgoingAudioReady,
+                object: nil,
+                userInfo: ["requestId": requestId]
+            )
+        }
         // ring17: JS must only attach/enable the microphone track AFTER CallKit
         // owns the session, otherwise the outgoing direction stays silent.
         notifyListeners("audioSessionActivated", data: ["callId": activeCallId ?? ""], retainUntilConsumed: true)

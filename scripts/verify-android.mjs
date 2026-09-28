@@ -20,24 +20,20 @@ const check = (cond, msg) => { if (!cond) failures.push(msg); };
 const applyCfg = read(path.join(appDir, "scripts/apply-native-config.mjs"));
 for (const perm of [
   "android.permission.RECORD_AUDIO",
-  "android.permission.WAKE_LOCK",
   "android.permission.POST_NOTIFICATIONS",
   "android.permission.USE_FULL_SCREEN_INTENT",
-  "android.permission.FOREGROUND_SERVICE_PHONE_CALL",
-  "android.permission.FOREGROUND_SERVICE_MICROPHONE",
-  "android.permission.RECEIVE_BOOT_COMPLETED",
+  "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
 ]) {
   check(applyCfg.includes(perm), `apply-native-config.mjs must declare ${perm}`);
 }
 check(
-  applyCfg.includes('android:foregroundServiceType="phoneCall|microphone"'),
-  "PpSipKeepAliveService must declare foregroundServiceType phoneCall|microphone (Android 14 mic in background)",
+  applyCfg.includes('android:foregroundServiceType="dataSync"'),
+  "PpSipKeepAliveService must be a dataSync wake-only service, never a background media call service",
 );
 check(applyCfg.includes("PpSipKeepAliveService"), "Android SIP keep-alive service source is missing");
-check(applyCfg.includes("PpIncomingActionReceiver"), "Android incoming-call action receiver is missing");
-check(applyCfg.includes("PpFirebaseMessagingService"), "Android FCM wake-up service source is missing");
-check(applyCfg.includes("SSLSocketFactory.getDefault().createSocket(host, port)"), "WSS must use TLS on every configured port, including NetSapiens 9002");
-check(!applyCfg.includes("port == 443 ? SSLSocketFactory"), "WSS must never fall back to a plain Socket on non-443 ports");
+check(applyCfg.includes("PpFirebaseMessagingService"), "Android FCM wake-up service is missing");
+check(applyCfg.includes("wake_only_no_media_engine"), "Android service must state that it cannot consume SIP media dialogs");
+check(applyCfg.includes("ACTION_REREGISTER.equals(action)"), "ACTION_REREGISTER must be handled by the wake-only service");
 check(applyCfg.includes('android:scheme="planipret"'), "Android deep-link scheme planipret:// is missing");
 
 // ---- 2. Capacitor config ----
@@ -72,36 +68,33 @@ if (androidGenerated) {
       "android.permission.RECORD_AUDIO",
       "android.permission.POST_NOTIFICATIONS",
       "android.permission.USE_FULL_SCREEN_INTENT",
-      "android.permission.FOREGROUND_SERVICE_PHONE_CALL",
-      "android.permission.FOREGROUND_SERVICE_MICROPHONE",
+      "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
     ]) {
       check(manifest.includes(perm), `AndroidManifest.xml missing ${perm} — run node scripts/apply-native-config.mjs`);
     }
     check(manifest.includes("PpSipKeepAliveService"), "AndroidManifest.xml missing PpSipKeepAliveService");
     check(manifest.includes("PpFirebaseMessagingService"), "AndroidManifest.xml missing PpFirebaseMessagingService");
     check(manifest.includes('com.capacitorjs.plugins.pushnotifications.MessagingService') && manifest.includes('tools:node="remove"'), "Capacitor MessagingService must be replaced so only one FCM service consumes each push");
+    check(!manifest.includes('foregroundServiceType="phoneCall|microphone"'), "AndroidManifest.xml must not retain the obsolete media SIP foreground service");
+    check(!manifest.includes("PpBootReceiver") && !manifest.includes("android.permission.RECEIVE_BOOT_COMPLETED"), "AndroidManifest.xml must not retain boot-time SIP registration");
+    check(!manifest.includes("android.permission.FOREGROUND_SERVICE_PHONE_CALL") && !manifest.includes("android.permission.FOREGROUND_SERVICE_MICROPHONE"), "AndroidManifest.xml must not request media foreground-service permissions for wake-only SIP");
     check(!manifest.includes("android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"), "Do not request blanket battery-optimization exemption");
     check(!manifest.includes("android.permission.SCHEDULE_EXACT_ALARM"), "Do not request exact-alarm permission without an alarm feature");
-    check(
-      /android:foregroundServiceType="[^"]*phoneCall[^"]*\|[^"]*microphone|android:foregroundServiceType="[^"]*microphone[^"]*\|[^"]*phoneCall/.test(manifest),
-      'PpSipKeepAliveService must declare foregroundServiceType="phoneCall|microphone" (Android 14 mic requirement) — run node scripts/apply-native-config.mjs',
-    );
+    check(manifest.includes('android:foregroundServiceType="dataSync"'), 'PpSipKeepAliveService must declare foregroundServiceType="dataSync" — run node scripts/apply-native-config.mjs');
   } else {
     failures.push("android/app/src/main/AndroidManifest.xml not found");
   }
   const svc = path.join(androidDir, "app/src/main/java/com/planipret/mobile/PpSipKeepAliveService.java");
   if (fs.existsSync(svc)) {
     const java = read(svc);
-    check(
-      java.includes("FOREGROUND_SERVICE_TYPE_MICROPHONE"),
-      "PpSipKeepAliveService.java startForeground() is missing FOREGROUND_SERVICE_TYPE_MICROPHONE — run node scripts/apply-native-config.mjs",
-    );
-    check(java.includes("SSLSocket raw") && java.includes("raw.startHandshake()"), "Android native WSS service must perform a TLS handshake");
+    check(java.includes("FOREGROUND_SERVICE_TYPE_DATA_SYNC"), "PpSipKeepAliveService.java must start only as a dataSync wake service — run node scripts/apply-native-config.mjs");
+    check(java.includes("wake_only_no_media_engine"), "PpSipKeepAliveService.java must not claim to run a media-capable SIP UAS");
+    check(java.includes("ACTION_REREGISTER.equals(action)"), "PpSipKeepAliveService.java must handle ACTION_REREGISTER");
   }
   const boot = path.join(androidDir, "app/src/main/java/com/planipret/mobile/PpBootReceiver.java");
   if (fs.existsSync(boot)) {
     const java = read(boot);
-    check(java.includes('p.getString("host", "")') && java.includes('p.getString("password", "")'), "Boot receiver must not start SIP before authenticated configuration exists");
+    check(java.includes("Aucun REGISTER de fond au démarrage") && !java.includes("PpSipKeepAliveService.start(context)"), "Boot receiver must never start a competing SIP registration");
   }
   const gs = path.join(androidDir, "app/google-services.json");
   if (!fs.existsSync(gs)) {

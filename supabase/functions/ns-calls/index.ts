@@ -46,20 +46,33 @@ Deno.serve(async (req) => {
         if (res.ok) {
           const data = await res.clone().json().catch(() => ({}));
           const newCallId = data?.["call-id"] ?? data?.call_id ?? data?.id ?? clientCallId;
-          await admin.from("planipret_phone_calls").insert({
-            user_id: userId,
-            organization_id: profile.organization_id,
-            ns_call_id: newCallId,
-            ns_callid: newCallId,
-            ns_domain: env.domain,
-            extension: ext,
-            direction: "outbound",
-            from_number: String(body.caller_id_number ?? ext),
-            to_number: dest,
-            status: "outbound_ringing",
-            started_at: new Date().toISOString(),
-            metadata: { client_call_id: clientCallId, ns_response: data },
-          });
+          // Store the profile UUID used by planipret_phone_calls. `authBroker`
+          // returns both identities; inserting auth.users.id can violate the FK
+          // and must never be hidden as a successful post-call record.
+          const { data: ppProfile, error: profileError } = await admin
+            .from("planipret_profiles")
+            .select("id")
+            .eq("user_id", userId)
+            .maybeSingle();
+          if (profileError || !ppProfile?.id) {
+            console.error("[ns-calls] local call profile unresolved", { user_id: userId, ns_call_id: newCallId, code: profileError?.code ?? "profile_missing" });
+          } else {
+            const { error: insertError } = await admin.from("planipret_phone_calls").insert({
+              user_id: ppProfile.id,
+              organization_id: profile.organization_id,
+              ns_call_id: newCallId,
+              ns_callid: newCallId,
+              ns_domain: env.domain,
+              extension: ext,
+              direction: "outbound",
+              from_number: String(body.caller_id_number ?? ext),
+              to_number: dest,
+              status: "outbound_ringing",
+              started_at: new Date().toISOString(),
+              metadata: { client_call_id: clientCallId, ns_response: data },
+            });
+            if (insertError) console.error("[ns-calls] local call insert failed", { ns_call_id: newCallId, profile_id: ppProfile.id, code: insertError.code, message: insertError.message });
+          }
           await logAudit(admin, req, {
             user_id: profile.id, action: "CALL_START",
             resource_type: "call", resource_id: newCallId ? String(newCallId) : null,
@@ -69,8 +82,10 @@ Deno.serve(async (req) => {
         break;
       }
       case "answer":
-        res = await nsBrokerFetch(admin, profile, nsPath(env.domain, ext, `/calls/${encodeURIComponent(callId)}/answer`), { method: "PATCH" });
-        break;
+        // REST cannot answer the original SIP dialog and can create a second
+        // signaling path. Only CallKit/PJSIP or the live JsSIP session may send
+        // 200 OK for an incoming call.
+        return jsonResponse({ success: false, error: "answer_disabled_use_sip_dialog", code: 409 }, 409);
       case "hold":
         res = await nsBrokerFetch(admin, profile, nsPath(env.domain, ext, `/calls/${encodeURIComponent(callId)}/hold`), { method: "PATCH" });
         break;
@@ -86,7 +101,11 @@ Deno.serve(async (req) => {
       case "disconnect":
         res = await nsBrokerFetch(admin, profile, nsPath(env.domain, ext, `/calls/${encodeURIComponent(callId)}`), { method: "DELETE" });
         if (res.ok && callId) {
-          await admin.from("planipret_phone_calls").update({ status: "completed" }).eq("call_id", callId);
+          const { error: updateError } = await admin
+            .from("planipret_phone_calls")
+            .update({ status: "completed", ended_at: new Date().toISOString() })
+            .or(`id.eq.${callId},ns_call_id.eq.${callId},ns_callid.eq.${callId}`);
+          if (updateError) console.error("[ns-calls] local call close failed", { call_id: callId, code: updateError.code, message: updateError.message });
         }
         break;
       case "reject":

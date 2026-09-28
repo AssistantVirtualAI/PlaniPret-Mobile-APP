@@ -203,6 +203,8 @@ class PpSipProvider {
   };
 
   audioEl: HTMLAudioElement | null = null;
+  /** Microphones fournis aux sessions locales, arrêtés systématiquement à la fin. */
+  private localMediaStreams = new Set<MediaStream>();
   private callKitAudioHookInstalled = false;
   private lastSig = "";
   private lastStartAt = 0;
@@ -904,9 +906,30 @@ class PpSipProvider {
     }
   }
 
+  private retainLocalMedia(stream: MediaStream): MediaStream {
+    this.localMediaStreams.add(stream);
+    return stream;
+  }
+
+  private releaseLocalMedia(stream?: MediaStream | null) {
+    if (!stream) return;
+    try { stream.getTracks().forEach((track) => track.stop()); } catch {}
+    this.localMediaStreams.delete(stream);
+  }
+
+  /** Libère tous les microphones et sinks attachés à l'appel terminé. */
+  private cleanupCallMedia() {
+    for (const stream of this.localMediaStreams) this.releaseLocalMedia(stream);
+    this.localMediaStreams.clear();
+    if (this.audioEl) {
+      try { this.audioEl.pause(); this.audioEl.srcObject = null; } catch {}
+    }
+  }
+
 
   private resetCall() {
     this.session = null;
+    this.cleanupCallMedia();
     // An answer/decline intent only lives as long as the call it targets:
     // keeping it after the call ends blocks every later REGISTER refresh.
     this.pendingAnswer = null;
@@ -969,6 +992,7 @@ class PpSipProvider {
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
         video: false,
       });
+      this.retainLocalMedia(mediaStream);
 
       const target = `sip:${number}@${this.cfg.sipDomain}`;
       const session = this.ua.call(target, {
@@ -978,6 +1002,7 @@ class PpSipProvider {
       });
       if (!session) throw new Error("call_session_not_created");
     } catch (err: any) {
+      this.cleanupCallMedia();
       const msg = String(err?.message || err);
       this.log("error", `call failed: ${msg}`);
       this.update({ callState: "ended", errorCause: msg });
@@ -1028,20 +1053,26 @@ class PpSipProvider {
     // Never reject on a Call-ID mismatch: the VoIP push id and the SIP Call-ID
     // belong to different identifier spaces on NetSapiens.
 
-    let mediaStream: MediaStream | undefined;
+    let mediaStream: MediaStream;
     try {
       mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
         video: false,
       });
+      const liveAudio = mediaStream.getAudioTracks().some((track) => track.readyState === "live" && track.enabled);
+      if (!liveAudio) throw new Error("microphone_track_unavailable");
+      this.retainLocalMedia(mediaStream);
     } catch (e: any) {
       this.log("error", `answer: microphone unavailable (${e?.name || e?.message || e})`);
-      mediaStream = undefined;
+      try { session.terminate({ status_code: 480, reason_phrase: "Microphone unavailable" }); } catch {}
+      this.pendingAnswer = null;
+      this.update({ callState: "ended", errorCause: "microphone_unavailable" });
+      return false;
     }
 
     try {
       session.answer({
-        ...(mediaStream ? { mediaStream } : {}),
+        mediaStream,
         mediaConstraints: { audio: true, video: false },
         rtcAnswerConstraints: { offerToReceiveAudio: true, offerToReceiveVideo: false },
       });
@@ -1049,6 +1080,7 @@ class PpSipProvider {
       this.log("info", "200 OK sent (answer)", { withStream: !!mediaStream });
       return true;
     } catch (error) {
+      this.releaseLocalMedia(mediaStream);
       this.log("error", "answer failed", error);
       return false;
     }
@@ -1060,6 +1092,7 @@ class PpSipProvider {
     this.secondSession = null;
     this.teardownConferenceMix();
     try { this.session?.terminate(); } catch {}
+    this.cleanupCallMedia();
   }
   mute() { this.session?.mute({ audio: true }); this.update({ muted: true }); }
   unmute() { this.session?.unmute({ audio: true }); this.update({ muted: false }); }
@@ -1096,6 +1129,7 @@ class PpSipProvider {
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       video: false,
     });
+    this.retainLocalMedia(mediaStream);
     this.expectingSecond = true;
     this.update({ second: { state: "ringing-out", number, name: number, startedAt: null } });
     try {
@@ -1108,6 +1142,7 @@ class PpSipProvider {
       if (!session) throw new Error("call_session_not_created");
     } catch (err: any) {
       this.expectingSecond = false;
+      this.releaseLocalMedia(mediaStream);
       this.update({ second: null });
       try { this.session?.unhold(); } catch {}
       this.log("error", `second call failed: ${err?.message || err}`);
@@ -1304,18 +1339,24 @@ class PpSipProvider {
     const second = this.secondSession;
     if (!second || this.snap.second?.state !== "ringing-in") return false;
     try { if (!this.snap.onHold) this.session?.hold(); } catch {}
-    let mediaStream: MediaStream | undefined;
+    let mediaStream: MediaStream;
     try {
       mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
         video: false,
       });
+      const liveAudio = mediaStream.getAudioTracks().some((track) => track.readyState === "live" && track.enabled);
+      if (!liveAudio) throw new Error("microphone_track_unavailable");
+      this.retainLocalMedia(mediaStream);
     } catch (e: any) {
-      this.log("warn", `answerSecond: mic unavailable (${e?.name || e})`);
+      this.log("warn", `answerSecond: mic unavailable (${e?.name || e?.message || e})`);
+      try { second.terminate({ status_code: 480, reason_phrase: "Microphone unavailable" }); } catch {}
+      try { this.session?.unhold(); } catch {}
+      return false;
     }
     try {
       second.answer({
-        ...(mediaStream ? { mediaStream } : {}),
+        mediaStream,
         mediaConstraints: { audio: true, video: false },
         rtcAnswerConstraints: { offerToReceiveAudio: true, offerToReceiveVideo: false },
       });
@@ -1323,6 +1364,7 @@ class PpSipProvider {
       this.log("info", "call waiting answered on line 2");
       return true;
     } catch (e: any) {
+      this.releaseLocalMedia(mediaStream);
       this.log("error", `answerSecond failed: ${e?.message || e}`);
       try { this.session?.unhold(); } catch {}
       return false;

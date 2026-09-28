@@ -12,6 +12,7 @@ import {
 } from "./aorArbitration";
 import { pinnedCoreHost } from "./sipEdgePolicy";
 import { trackRegisterAttempt, logRegisterMetricsSummary, type RegisterTracker } from "./registerMetrics";
+import { requestPlanipretCallKitAnswer } from "./nativePpSipService";
 
 
 
@@ -54,7 +55,6 @@ interface PjsipPlugin {
   register(): Promise<{ ok: boolean }>;
   unregister(): Promise<{ ok: boolean }>;
   makeCall(opts: { destination: string }): Promise<{ callId: string }>;
-  answerCall(opts: { callId?: string }): Promise<{ callId: string }>;
   hangupCall(opts: { callId?: string }): Promise<{ ok: boolean }>;
   setMute(opts: { muted: boolean }): Promise<{ ok: boolean }>;
   setHold(opts: { onHold: boolean }): Promise<{ ok: boolean }>;
@@ -553,20 +553,10 @@ export class NativeSipService {
   }
 
   async answer(): Promise<boolean> {
-    const pjsip = getPjsip();
-    if (!pjsip) { releaseAorFromNative("answer_plugin_absent"); return false; }
-    try {
-      const res = await pjsip.answerCall({ callId: this.currentCallId ?? undefined });
-      this.currentCallId = res?.callId ?? this.currentCallId;
-      return true;
-    } catch (err: any) {
-      console.error("[SIP] answer échoué:", err);
-      if (this.isMissingBinary(err)) {
-        releaseAorFromNative("answer_binary_missing");
-        void import("./nativePpSipService").then((m) => m.declarePlanipretNativeEngineOwnsAor(false)).catch(() => undefined);
-      }
-      return false;
-    }
+    // Le bouton in-app ne peut pas appeler answerCall() : CallKit doit être le
+    // seul propriétaire de la transition et PJSIP le seul émetteur du 200 OK.
+    // La transaction reste valable même si le push a précédé l'INVITE TLS.
+    return requestPlanipretCallKitAnswer();
   }
 
 

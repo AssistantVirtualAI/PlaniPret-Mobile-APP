@@ -47,6 +47,7 @@ type PpVoipCallPlugin = {
   getVoipPushToken?: () => Promise<{ token: string | null; platform: string; bundleId?: string; environment?: string }>;
   refreshVoipPushToken?: () => Promise<{ ok: boolean; token?: string }>;
   reportCallEnded?: (opts: { callId?: string; reason?: string }) => Promise<{ ok: boolean }>;
+  requestAnswer?: () => Promise<{ ok: boolean }>;
   completeAnswer?: (opts: { callId?: string; ok: boolean }) => Promise<{ ok: boolean; reason?: string }>;
   setHeld?: (opts: { onHold: boolean }) => Promise<{ ok: boolean }>;
   addListener?: (
@@ -190,6 +191,16 @@ export async function reportPlanipretCallEnded(callId?: string, reason?: string)
   if (platform() !== "ios") return;
   try { await NativePpVoipCall.reportCallEnded?.({ callId, reason }); }
   catch { /* noop */ }
+}
+
+/** Demande une CXAnswerCallAction. Le delegate CallKit exécute ensuite le seul 200 PJSIP autorisé. */
+export async function requestPlanipretCallKitAnswer(): Promise<boolean> {
+  if (platform() !== "ios") return false;
+  try { return !!(await NativePpVoipCall.requestAnswer?.())?.ok; }
+  catch (error) {
+    console.warn("[pp-voip-call] requestAnswer failed", error);
+    return false;
+  }
 }
 
 /**

@@ -36,6 +36,26 @@ async function stableWebhookId(prefix: string, data: any, explicit: unknown): Pr
 
 const ok = () => new Response(JSON.stringify({ received: true }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
+/** Background work must never turn a correctly acknowledged webhook into a
+ * failed incoming call. Log failures, but do not propagate them through the
+ * Webhook execution chain. */
+function runBackground(label: string, task: Promise<unknown>) {
+  const guarded = task.catch((error) => console.warn(`[ns-webhook] ${label} failed`, error));
+  if (typeof EdgeRuntime !== "undefined" && typeof EdgeRuntime.waitUntil === "function") {
+    EdgeRuntime.waitUntil(guarded);
+  }
+}
+
+/** NetSapiens CDR direction varies by tenant. Never write an unchecked value
+ * into the constrained local direction column. */
+function normalizeCallDirection(value: unknown): "inbound" | "outbound" | null {
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (!raw) return null;
+  if (["in", "inbound", "incoming", "terminating", "term", "callee"].includes(raw)) return "inbound";
+  if (["out", "outbound", "outgoing", "originating", "orig", "caller"].includes(raw)) return "outbound";
+  return null;
+}
+
 function b64url(input: ArrayBuffer | string) {
   const bytes = typeof input === "string" ? new TextEncoder().encode(input) : new Uint8Array(input);
   let binary = "";
@@ -273,9 +293,9 @@ async function processEvent(event: any) {
     if (!sent) console.warn("[ns-webhook] APNs VoIP delivered to 0 tokens", { user_id: uid, call_id: payload?.call_id, token_count: tokens.length });
   };
 
-  // Android counterpart of sendVoipPush: a high-priority FCM data message wakes
-  // PpSipKeepAliveService, which re-registers SIP and raises the full-screen
-  // incoming-call notification. No-op (with a log) when FCM is not configured.
+  // Android receives a high-priority FCM wake/notification signal only. The
+  // foreground JsSIP/WSS client is the sole media-capable UAS; no background
+  // service may REGISTER, consume an INVITE or pretend to answer a dialog.
   const sendAndroidCallPush = async (uid: string, payload: Record<string, unknown>) => {
     const { data: tokens } = await admin
       .from("mobile_push_tokens")
@@ -353,7 +373,7 @@ async function processEvent(event: any) {
     for (const column of ["ns_call_id", "ns_callid", "ns_orig_callid", "ns_term_callid", "ns_cdr_id"]) {
       const { data: rows, error } = await admin
         .from("planipret_phone_calls")
-        .select("id,user_id,ns_call_id,ns_callid,ns_orig_callid,ns_term_callid,ns_cdr_id,metadata")
+        .select("id,user_id,direction,ns_call_id,ns_callid,ns_orig_callid,ns_term_callid,ns_cdr_id,metadata")
         .in(column, identities)
         .order("created_at", { ascending: false })
         .limit(2);
@@ -397,7 +417,7 @@ async function processEvent(event: any) {
         ns_callid: parentCallId ?? origCallId ?? termCallId,
         ns_orig_callid: origCallId,
         ns_term_callid: termCallId,
-        direction: data.direction ?? data["call-direction"] ?? null,
+        direction: normalizeCallDirection(data.direction ?? data["call-direction"]) ?? existing?.direction ?? null,
         from_number: data.from_number ?? data.caller_number ?? data.from ?? data["call-orig-from-user"] ?? null,
         to_number: data.to_number ?? data.callee_number ?? data.to ?? data["call-term-user"] ?? null,
         duration_seconds: data.duration ?? data.duration_seconds ?? data["call-talking-duration-seconds"] ?? null,
@@ -439,10 +459,12 @@ async function processEvent(event: any) {
       // It returns `consent_pending` without fetching audio, invoking AI or
       // writing Maestro until pp-call-consent records an explicit approval.
       if (localCallId) {
-        void fetch(`${SUPABASE_URL}/functions/v1/pp-auto-process-call`, {
+        runBackground("post-call orchestrator", fetch(`${SUPABASE_URL}/functions/v1/pp-auto-process-call`, {
           method: "POST", headers: { Authorization: authH, "Content-Type": "application/json" },
           body: JSON.stringify({ call_id: localCallId }),
-        }).catch(() => {});
+        }).then((res) => {
+          if (!res.ok) console.warn("[ns-webhook] post-call orchestrator rejected", { call_id: localCallId, status: res.status });
+        }));
       }
     }
   } else if (type === "call.inbound") {
@@ -489,10 +511,6 @@ async function processEvent(event: any) {
     }
 
     if (userId && !dndActive) {
-      await admin.channel(`call-events:${userId}`).send({
-        type: "broadcast", event: "inbound_call",
-        payload: { type: "inbound_call", call_id: callId, from_number: extractCaller(data), to_number: data.to_number ?? data.to },
-      });
       if (brokerProfile?.notif_calls !== false) {
         const inboundCallId = callId ? String(callId) : crypto.randomUUID();
         const callerNum = extractCaller(data);
@@ -507,14 +525,24 @@ async function processEvent(event: any) {
           to_number: data.to_number ?? data.to ?? ext,
           type: "incoming_call",
         };
-        await sendVoipPush(userId, inboundPushPayload);
-        await sendAndroidCallPush(userId, inboundPushPayload);
+        // Kick urgent device deliveries before optional Realtime work. APNs/FCM
+        // failures are isolated from each other and must not prevent ringing.
+        runBackground("iOS VoIP push", sendVoipPush(userId, inboundPushPayload));
+        runBackground("Android incoming-call push", sendAndroidCallPush(userId, inboundPushPayload));
         sendPush(userId, {
           title: "📞 Appel entrant",
           body: data.from_number ?? data.from ?? "Inconnu",
           data: { url: "/mplanipret/calls", call_id: callId },
           actions: [{ action: "answer", title: "Répondre" }],
         });
+      }
+      try {
+        await admin.channel(`call-events:${userId}`).send({
+          type: "broadcast", event: "inbound_call",
+          payload: { type: "inbound_call", call_id: callId, from_number: extractCaller(data), to_number: data.to_number ?? data.to },
+        });
+      } catch (error) {
+        console.warn("[ns-webhook] inbound call Realtime broadcast failed", error);
       }
     } else if (userId && dndActive) {
       await admin.channel(`call-events:${userId}`).send({

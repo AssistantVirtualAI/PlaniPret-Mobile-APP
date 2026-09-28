@@ -11,11 +11,11 @@ import pjsua
  *
  * Deux périmètres dans le MÊME plugin (une seule pile pjsua par process) :
  *  1. `registerTest` — sonde de validation TLS 5061 sur une AOR `<ext>PROBE`.
- *  2. Moteur d'appel complet — `initialize/register/makeCall/answerCall/
- *     hangupCall/setMute/setSpeaker/sendDTMF` sur l'AOR de production `<ext>M`.
+ *  2. Moteur d'appel complet — `initialize/register/makeCall/hangupCall/
+ *     setMute/setSpeaker/sendDTMF` sur l'AOR de production `<ext>M`.
  *
  * Contraintes :
- *  - Transports SIP natifs : TCP 5060 (défaut) / TLS 5061 (PJSIP n'a pas de SIP/WebSocket).
+ *  - Transport SIP natif : TLS 5061 uniquement (PJSIP n'a pas de SIP/WebSocket).
  *  - CallKit (PpVoipCall) reste seul maître de l'AVAudioSession : le moteur
  *    n'active jamais la session, il attend `PpCallKitAudioActivated`.
  *  - Les événements d'appel sont diffusés à la fois vers JS (notifyListeners)
@@ -34,7 +34,6 @@ public class PpPjsip: CAPPlugin, CAPBridgedPlugin {
         CAPPluginMethod(name: "register", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "unregister", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "makeCall", returnType: CAPPluginReturnPromise),
-        CAPPluginMethod(name: "answerCall", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "hangupCall", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setMute", returnType: CAPPluginReturnPromise),
         CAPPluginMethod(name: "setHold", returnType: CAPPluginReturnPromise),
@@ -90,6 +89,10 @@ public class PpPjsip: CAPPlugin, CAPBridgedPlugin {
             call.reject("unsupported_transport", "This probe only supports TLS (PJSIP has no SIP/WSS transport).")
             return
         }
+        guard port == 5061 else {
+            call.reject("unsupported_port", "This probe only supports TLS port 5061.")
+            return
+        }
 
         call.keepAlive = true
         PjsipEngine.shared.registerTest(
@@ -120,16 +123,20 @@ public class PpPjsip: CAPPlugin, CAPBridgedPlugin {
         let password = call.getString("password") ?? ""
         let domain = call.getString("domain") ?? ""
         let proxy = call.getString("proxy") ?? ""
-        let transport = (call.getString("transport") ?? "TCP").uppercased()
-        let port = call.getInt("port") ?? (transport == "TLS" ? 5061 : 5060)
+        let transport = (call.getString("transport") ?? "TLS").uppercased()
+        let port = call.getInt("port") ?? 5061
         let displayName = call.getString("displayName") ?? "Planiprêt"
 
         guard !username.isEmpty, !password.isEmpty, !domain.isEmpty else {
             call.reject("missing_credentials", "username/password/domain are required")
             return
         }
-        guard transport == "TLS" || transport == "TCP" || transport == "UDP" else {
-            call.reject("unsupported_transport", "PJSIP natif : TCP 5060 / TLS 5061 / UDP (pas de SIP/WebSocket).")
+        guard transport == "TLS" else {
+            call.reject("unsupported_transport", "PJSIP natif : TLS 5061 uniquement (pas de SIP/WebSocket, TCP ni UDP).")
+            return
+        }
+        guard port == 5061 else {
+            call.reject("unsupported_port", "PJSIP natif : TLS utilise obligatoirement le port 5061.")
             return
         }
 
@@ -184,17 +191,6 @@ public class PpPjsip: CAPPlugin, CAPBridgedPlugin {
             case .success(let id): call.resolve(["callId": id])
             case .failure(let err): call.reject("pjsip_error", (err as NSError).localizedDescription)
             }
-        }
-        #else
-        rejectMissingBinary(call)
-        #endif
-    }
-
-    @objc func answerCall(_ call: CAPPluginCall) {
-        #if canImport(pjsua)
-        PjsipEngine.shared.answer(callId: call.getString("callId")) { ok in
-            if ok { call.resolve(["callId": PjsipEngine.shared.currentCallIdString]) }
-            else { call.reject("no_active_call", "Aucun appel entrant à décrocher") }
         }
         #else
         rejectMissingBinary(call)

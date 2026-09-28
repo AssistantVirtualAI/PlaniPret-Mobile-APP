@@ -234,6 +234,14 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       DispatchQueue.main.async { [weak self] in
         guard let self = self else { call.resolve(["ok": false]); return }
         self.preferredRoute = route
+        if nativeEngineOwnsAor {
+          // PJSIP/CallKit possèdent activation, catégorie et mode. Avant
+          // didActivate, cette préférence est seulement mémorisée; après, le
+          // plugin peut uniquement demander la sortie explicite.
+          if self.callKitAudioActive { self.applyAudioRoute() }
+          call.resolve(["ok": true, "route": self.preferredRoute, "owner": "callkit"])
+          return
+        }
         self.activateAudioSession()
         self.applyAudioRoute()
         call.resolve(["ok": true, "route": self.preferredRoute])
@@ -324,6 +332,10 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     private func applyAudioRoute(retries: Int) {
       let s = AVAudioSession.sharedInstance()
       let speaker = preferredRoute == "speaker"
+      if nativeEngineOwnsAor && !callKitAudioActive {
+        NSLog("[PpSipKeepAlive] route deferred — awaiting CallKit activation")
+        return
+      }
       // Après didActivate, CallKit est l'unique propriétaire de l'activation
       // et de la catégorie AVAudioSession. Réactiver la session ou modifier sa
       // catégorie depuis la couche WSS perturbe le périphérique PJSIP. Seul le
@@ -562,6 +574,15 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
 
     @objc private func onBackground() {
       appActive = false
+      // Le moteur PJSIP et CallKit sont les seuls propriétaires de la session
+      // native. Un passage en arrière-plan ne peut donc ni l'activer ni
+      // modifier sa catégorie, son mode ou ses périphériques.
+      if nativeEngineOwnsAor || callKitAudioActive {
+        backgroundHandoffWorkItem?.cancel(); backgroundHandoffWorkItem = nil
+        stopAudioKeepAlive()
+        setStatus("protected", "pjsip_callkit_audio_owner")
+        return
+      }
       beginBackgroundTask()
       activateAudioSession()
       // During an active call the WebView keeps the media: only keep the audio
@@ -606,6 +627,12 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     @objc func resetAudioSession(_ call: CAPPluginCall) {
       DispatchQueue.main.async { [weak self] in
         guard let self = self else { call.resolve(["ok": false]); return }
+        if nativeEngineOwnsAor || self.callKitAudioActive {
+          if self.callKitAudioActive { self.applyAudioRoute() }
+          NSLog("[PpSipKeepAlive] audio reset skipped — PJSIP/CallKit owns session")
+          call.resolve(["ok": true, "route": self.currentAudioRoute(), "owner": "callkit"])
+          return
+        }
         let s = AVAudioSession.sharedInstance()
         if !self.callKitAudioActive {
           try? s.setActive(false, options: [.notifyOthersOnDeactivation])
@@ -635,16 +662,15 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
 
     private func activateAudioSession() {
       let s = AVAudioSession.sharedInstance()
+      if nativeEngineOwnsAor && !callKitAudioActive {
+        NSLog("[PpSipKeepAlive] activation skipped — PJSIP awaits CallKit")
+        return
+      }
       // ring16: once CallKit has activated the session it owns category, mode
       // and activation. Re-applying setCategory (the 2s keep-alive did it over
       // and over) makes iOS re-arbitrate the route and drop every output —
       // that is the measured 'hadOutputs=n' silence. Only re-assert the route.
       if callKitAudioActive {
-        if s.category != .playAndRecord || s.mode != modeFor(preferredRoute) {
-          var o: AVAudioSession.CategoryOptions = [.allowBluetoothHFP, .allowBluetoothA2DP]
-          if preferredRoute == "speaker" { o.insert(.defaultToSpeaker) }
-          try? s.setCategory(.playAndRecord, mode: modeFor(preferredRoute), options: o)
-        }
         applyAudioRoute()
         NSLog("[PpSipKeepAlive] audio owned by CallKit outputs=%d", s.currentRoute.outputs.count)
         return

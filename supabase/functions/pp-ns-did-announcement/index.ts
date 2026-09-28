@@ -175,32 +175,8 @@ async function autoheal(domain: string, targets: { ext: string }[], apply: boole
   return { checked: checks.length, broken_count: broken.length, broken, fixed, checks };
 }
 
-/** Auto-réparation au démarrage (cold start) — une seule fois par instance. */
-let bootHealDone = false;
-async function bootSelfHeal() {
-  if (bootHealDone || !NS_API_KEY || !SERVICE_KEY) return;
-  bootHealDone = true;
-  try {
-    const db = createClient(Deno.env.get("SUPABASE_URL")!, SERVICE_KEY);
-    const { data: rows } = await db
-      .from("planipret_did_assignments")
-      .select("extension");
-    const targets = (rows ?? [])
-      .map((r: any) => ({ ext: String(r.extension ?? "").trim() }))
-      .filter((r) => /^[0-9]{2,10}$/.test(r.ext));
-    if (!targets.length) return;
-    const res = await autoheal(NS_DEFAULT_DOMAIN, targets, true);
-    console.log(`[boot-selfheal] files vérifiées=${res.checked} réparées=${res.broken_count}`);
-  } catch (e) {
-    console.error("[boot-selfheal] échec", String(e));
-  }
-}
-
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
-  // Self-heal au démarrage : uniquement sur demande explicite (cron/admin),
-  // sinon il monopolise le worker et fait expirer les requêtes de lecture.
-  if (req.headers.get("x-selfheal") === "1") queueMicrotask(() => { void bootSelfHeal(); });
   try {
     const authHeader = req.headers.get("Authorization") ?? "";
     const cronHeader = req.headers.get("x-cron-secret") ?? "";
@@ -264,10 +240,19 @@ Deno.serve(async (req) => {
       });
     }
 
-    // Répare les files existantes (coupe l'intro bloquante) sans toucher aux DID.
+    // Ne modifie rien automatiquement. Le contrôle retourne seulement ce qui
+    // serait réparé : l'écriture demande une commande admin confirmée séparée.
     if (action === "diagnose" || action === "autoheal") {
-      const res = await autoheal(domain, targets, action === "autoheal");
-      return json({ success: true, action, domain, ...res });
+      const res = await autoheal(domain, targets, false);
+      return json({
+        success: true,
+        action,
+        domain,
+        ...res,
+        writes_applied: false,
+        confirmation_required: action === "autoheal" && res.broken_count > 0,
+        confirmation: "REPAIR_DID_QUEUES",
+      });
     }
 
     // Lecture brute (GET only) pour mise au point.
@@ -278,22 +263,26 @@ Deno.serve(async (req) => {
       return json({ success: true, status: r.status, data: r.data });
     }
 
-    // Outil de mise au point : PUT arbitraire sur une file + relecture.
+    // Les PUT arbitraires de mise au point sont incompatibles avec le gel de
+    // configuration téléphonique. Conserver l'action visible, mais inerte.
     if (action === "probe_queue") {
-      const q = queueExt(String(body?.extension ?? "111"));
-      const base = `/domains/${encodeURIComponent(domain)}/callqueues/${encodeURIComponent(q)}`;
-      const put = await ns(base, { method: "PUT", body: JSON.stringify({ synchronous: "yes", queue: q, ...(body?.payload ?? {}) }) });
-      const back = await ns(base);
-      return json({ success: true, put: { status: put.status, data: put.data }, read: one(back.data) });
+      return json({ success: false, error: "probe_queue_disabled_configuration_locked" }, 409);
     }
 
     if (action === "repair_queues") {
+      if (body?.confirmation !== "REPAIR_DID_QUEUES") {
+        return json({ success: false, error: "confirmation_required", confirmation: "REPAIR_DID_QUEUES" }, 409);
+      }
       const fixed = [];
       for (const { ext } of targets) fixed.push(await ensureQueue(domain, ext));
       return json({ success: true, action, domain, note: "Intro de file désactivée; avis joué en musique d'attente (coupe au décrochage).", fixed });
     }
 
     if (action === "enable" || action === "disable") {
+      const confirmation = action === "enable" ? "ENABLE_DID_ANNOUNCEMENT" : "DISABLE_DID_ANNOUNCEMENT";
+      if (body?.confirmation !== confirmation) {
+        return json({ success: false, error: "confirmation_required", confirmation }, 409);
+      }
 
       const results = [];
       for (const { pn, ext } of targets) {

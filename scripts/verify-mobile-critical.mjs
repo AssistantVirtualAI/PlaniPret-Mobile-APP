@@ -37,8 +37,9 @@ check(backendHealth.includes('from("mobile_push_tokens")') && backendHealth.incl
 const androidService = readOptional("android/app/src/main/java/com/planipret/mobile/PpSipKeepAliveService.java");
 const androidPlugin = readOptional("android/app/src/main/java/com/planipret/mobile/PpSipKeepAlivePlugin.java");
 if (androidService && androidPlugin) {
-  check(androidService.includes("SSLSocket raw") && androidService.includes("raw.startHandshake()"), "Android WSS must negotiate TLS on port 9002");
-  check(androidPlugin.includes("if (owns) PpSipKeepAliveService.stop"), "Android JsSIP ownership must stop the competing native WSS registration");
+  check(androidService.includes("wake_only_no_media_engine") && androidService.includes("FOREGROUND_SERVICE_TYPE_DATA_SYNC"), "Android background service must be wake-only and never claim SIP media ownership");
+  check(!androidService.includes("SSLSocket raw") && !androidService.includes("raw.startHandshake()"), "Android background service must not REGISTER or consume a WSS SIP dialog");
+  check(androidPlugin.includes("requestReregister"), "Android wake bridge must wake the foreground JsSIP client without creating another UA");
 } else {
   console.warn("Mobile critical-flow: native Android sources absent from this monorepo checkout; validated in standalone release repository.");
 }
@@ -64,7 +65,7 @@ const inboundWebhook = inboundWebhookStart >= 0 && inboundWebhookEnd > inboundWe
   ? webhook.slice(inboundWebhookStart, inboundWebhookEnd)
   : "";
 check(inboundWebhook.includes('metadata: dndActive') && inboundWebhook.includes(': {},'), "Incoming call persistence must write an empty metadata object instead of null");
-check(inboundWebhook.includes('if (!insertedCall && !insertCallError)') && inboundWebhook.includes('await sendVoipPush(userId, inboundPushPayload)'), "An incoming-call persistence error must not suppress the broker VoIP ring");
+check(inboundWebhook.includes('if (!insertedCall && !insertCallError)') && inboundWebhook.includes('runBackground("iOS VoIP push", sendVoipPush(userId, inboundPushPayload))'), "An incoming-call persistence error must not suppress the broker VoIP ring");
 check(postCallSweeper.includes("maestro-cdr-retry-job") && postCallSweeper.includes("skip_cdr_retry"), "The scheduled Maestro sweeper must also drain consented CDR retries");
 check(cdrRetryJob.includes('.eq("save_consent", "approved")') && cdrRetryJob.includes('.is("deleted_at", null)'), "CDR retry sweeps must process only approved, undeleted calls");
 check(webhook.includes('stableWebhookId("sms"') && webhook.includes('duplicate SMS ignored') && webhook.includes('stableWebhookId("voicemail"') && webhook.includes('duplicate voicemail ignored'), "SMS and voicemail webhooks must be idempotent before broadcast/push");

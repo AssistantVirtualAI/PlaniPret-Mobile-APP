@@ -132,8 +132,10 @@ describe("ppSipProvider — garde plateforme native", () => {
 
     expect(keepAlive).toContain("pjsip_callkit_audio_owner");
     expect(keepAlive).toContain("if callKitAudioActive {");
-    expect(keepAlive).toContain("CallKit vient d'activer le périphérique PJSIP");
-    expect(callKit.match(/prepareCallAudioSession\(\)/g)?.length).toBeGreaterThanOrEqual(3);
+    expect(keepAlive).toContain("audio reset skipped — PJSIP/CallKit owns session");
+    expect(callKit).toContain("ppPjsipOutgoingAudioReady");
+    expect(callKit).toContain("requestAnswer");
+    expect(callKit).not.toContain("prepareCallAudioSession");
     expect(router).toContain('import { nativeOwnsAor } from "../sip/aorArbitration"');
     expect(router).toContain("if (nativeOwnsAor()) {");
   });

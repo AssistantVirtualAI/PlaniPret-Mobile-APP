@@ -638,7 +638,9 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     onPlanipretIncomingInvite((invite) => {
       if (isIosNativePlatform() && !usingWebFallback) {
         if (invite?.action === "answer") {
-          void nativeSip.answer().then((ok) => completePlanipretCallKitAnswer(invite?.callId, ok));
+          // La réponse passe par CXAnswerCallAction; PpVoipCall déclenche le
+          // seul pjsua_call_answer et confirme lui-même son résultat à CallKit.
+          void nativeSip.answer();
         } else if (invite?.action === "decline" || invite?.action === "cancelled") {
           void nativeSip.hangup();
         } else {

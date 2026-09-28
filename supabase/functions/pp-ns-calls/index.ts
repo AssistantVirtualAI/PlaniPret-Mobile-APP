@@ -188,10 +188,23 @@ Deno.serve(async (req) => {
       const ok = res.ok || res.status === 202;
       if (ok) {
         const nsCallId = parsed?.["call-id"] ?? parsed?.call_id ?? parsed?.id ?? clientCallId;
-
-        try {
-          await guard.supabase.from("planipret_phone_calls").insert({
+        // `planipret_phone_calls.user_id` is a planipret_profiles.id, never an
+        // auth.users UUID. The old silent insert failure severed post-call work.
+        const { data: profile, error: profileError } = await guard.supabase
+          .from("planipret_profiles")
+          .select("id")
+          .eq("user_id", ctx.userId)
+          .maybeSingle();
+        let localPersistence: "stored" | "profile_unresolved" | "insert_failed" = "profile_unresolved";
+        if (profileError || !profile?.id) {
+          console.error("[pp-ns-calls] local call profile unresolved", {
             user_id: ctx.userId,
+            ns_call_id: nsCallId,
+            code: profileError?.code ?? "profile_missing",
+          });
+        } else {
+          const { error: insertError } = await guard.supabase.from("planipret_phone_calls").insert({
+            user_id: profile.id,
             ns_call_id: nsCallId,
             ns_callid: nsCallId,
             ns_domain: ctx.nsDomain,
@@ -206,9 +219,18 @@ Deno.serve(async (req) => {
             maestro_call_id: null,
             metadata: { rest_originated: true, requested_client_type: requestedClientType, forced_client_type: clientType, client_call_id: clientCallId, call_orig_user: callOrigUser, device_name: deviceName },
           });
-        } catch { /* non-fatal */ }
-
-
+          if (insertError) {
+            console.error("[pp-ns-calls] local call insert failed", {
+              ns_call_id: nsCallId,
+              profile_id: profile.id,
+              code: insertError.code,
+              message: insertError.message,
+            });
+            localPersistence = "insert_failed";
+          } else {
+            localPersistence = "stored";
+          }
+        }
 
         return jsonResponse({
           success: true,
@@ -224,6 +246,7 @@ Deno.serve(async (req) => {
           device_state: deviceState,
           orig_fallback: origFallback,
           caller_id_number: callerId || null,
+          local_persistence: localPersistence,
           message: "Appel en cours — le numéro composé sonne",
         }, 200);
       }
