@@ -1098,11 +1098,29 @@ final class PjsipEngine {
         try check(tlsStatus, "pjsua_transport_create(TLS)")
 
         try check(pjsua_start(), "pjsua_start")
+        applyCodecPriorities()
         // Périphérique nul par défaut : CallKit décidera quand ouvrir l'audio.
         try check(pjsua_set_null_snd_dev(), "pjsua_set_null_snd_dev(startup)")
 
         started = true
         NSLog("[PpPjsip] stack started (TLS 5061 transport id=%d)", transportId)
+    }
+
+    /// Par défaut PJSIP propose Speex en premier : entre deux postes de l'app,
+    /// NetSapiens négociait Speex (CDR 28 sept., raccroché 1 s après décroché).
+    /// On impose G.711 (PCMU/PCMA) puis Opus/G.722, Speex/iLBC/GSM désactivés.
+    private func applyCodecPriorities() {
+        let prio: [(String, UInt8)] = [
+            ("PCMU/8000", 255), ("PCMA/8000", 254), ("opus/48000", 200), ("G722/16000", 180),
+            ("speex/32000", 0), ("speex/16000", 0), ("speex/8000", 0), ("iLBC/8000", 0), ("GSM/8000", 0),
+        ]
+        for (id, p) in prio {
+            id.withCString { cstr in
+                var s = pj_str_t(ptr: UnsafeMutablePointer(mutating: cstr), slen: pj_ssize_t(strlen(cstr)))
+                let st = pjsua_codec_set_priority(&s, p)
+                if st != pj_status_t(0) { NSLog("[PpPjsip] codec %@ absent (status=%d)", id, st) }
+            }
+        }
     }
 
     // MARK: Contexte PJSIP

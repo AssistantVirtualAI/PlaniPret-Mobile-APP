@@ -51,6 +51,25 @@ describe("native telephony safety invariants", () => {
     expect(callKit).toContain("CallKit ended before SIP INVITE");
   });
 
+  it("offers G.711 before optional codecs for iOS extension-to-extension calls", () => {
+    const engine = read("ios/App/App/Plugins/PpPjsip/PpPjsipEngine.swift");
+
+    // PJSIP matches codec identifiers by prefix. These priorities therefore
+    // cover IDs with channel-count suffixes as well (for example PCMU/8000/1).
+    expect(engine).toContain('("PCMU/8000", 255)');
+    expect(engine).toContain('("PCMA/8000", 254)');
+    expect(engine).toContain('("opus/48000", 200)');
+    expect(engine).toContain('("G722/16000", 180)');
+    expect(engine).toContain('("speex/32000", 0)');
+    expect(engine).toContain('("speex/16000", 0)');
+    expect(engine).toContain('("speex/8000", 0)');
+    expect(engine).toContain('("iLBC/8000", 0)');
+    expect(engine).toContain('("GSM/8000", 0)');
+    expect(engine.indexOf("try check(pjsua_start()", engine.indexOf("ensureStackStarted"))).toBeLessThan(
+      engine.indexOf("applyCodecPriorities()", engine.indexOf("ensureStackStarted")),
+    );
+  });
+
   it("uses CallKit as the only iOS answer path and releases media deterministically", () => {
     const engine = read("ios/App/App/Plugins/PpPjsip/PpPjsipEngine.swift");
     const bridge = read("ios/App/App/Plugins/PpPjsip/PpPjsip.swift");
