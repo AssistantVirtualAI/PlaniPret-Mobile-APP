@@ -57,7 +57,8 @@ Deno.serve(async (req) => {
     if (!cached) return json({ found: false, phone, source: "broker_cache" });
 
     const client = cached;
-    const clientId = client?.id ?? client?.client_id;
+    // The Maestro id — never the local cache row uuid.
+    const clientId = client?.maestro_client_id ?? client?.client_id ?? null;
 
     if (callId && clientId) {
       await admin

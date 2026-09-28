@@ -12,6 +12,8 @@ import type { PlanipretMobileContext } from "../PlanipretMobile";
 import { TEMP_COLORS, TEMP_EMOJI, TEMP_LABEL, tempBorder, callbackDelayToDate, delayLabel, type LeadTemp } from "@/components/planipret/leadHelpers";
 import ContactTimeline from "@/components/planipret/ContactTimeline";
 import RecordingsList from "@/components/planipret/mobile/recordings/RecordingsList";
+import { UserPlus as UserPlusIcon } from "lucide-react";
+import CreateMaestroClientSheet, { type CreateClientTarget } from "@/components/planipret/mobile/CreateMaestroClientSheet";
 import { CallRecordingPlayer } from "@/components/planipret/mobile/call/CallRecordingPlayer";
 import MaestroTab from "@/components/planipret/mobile/call/MaestroTab";
 import GreetingStudio from "@/components/planipret/mobile/voicemail/GreetingStudio";
@@ -20,6 +22,7 @@ import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { useCallerNames } from "@/lib/planipret/callerLookup";
 import { createClientFollowUpTask } from "@/lib/planipret/tasks";
 import { presentCallParty } from "@/lib/planipret/callPresentation";
+import { shouldOfferMaestroClientCreation } from "@/lib/planipret/clientHistory";
 import { peekScreenCache, readScreenCache, writeScreenCache, invalidateScreenCache, TTL } from "@/lib/planipret/screenCache";
 
 
@@ -59,6 +62,7 @@ type Call = {
   // Maestro / AI pipeline (optional)
   maestro_synced?: boolean | null;
   maestro_client_id?: string | null;
+  maestro_client_name?: string | null;
   transcript_segments?: any;
   transcript_language?: string | null;
   ai_coaching?: any;
@@ -171,6 +175,7 @@ export default function MCalls() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [selected, setSelected] = useState<Call | null>(null);
+  const [createTarget, setCreateTarget] = useState<CreateClientTarget | null>(null);
   const [visibleCount, setVisibleCount] = useState(25);
   const [degraded, setDegraded] = useState<{ active: boolean; reason?: string; reopens_at?: number | null }>({ active: false });
   const recordingsSyncingRef = useRef(false);
@@ -661,7 +666,7 @@ export default function MCalls() {
                             {header}
                           </div>
                         )}
-                        <CallRow call={c} onTap={() => setSelected(c)} onCall={() => openDialer(otherNumber(c), true)} showCallBtn={tab === "missed"} />
+                        <CallRow call={c} onTap={() => setSelected(c)} onCall={() => openDialer(otherNumber(c), true)} showCallBtn={tab === "missed"} onCreateClient={(phone, name) => setCreateTarget({ phone, name, callId: c.id })} />
                       </div>
                     );
                   })}
@@ -688,6 +693,19 @@ export default function MCalls() {
       </div>
 
 
+      <CreateMaestroClientSheet
+        target={createTarget}
+        onClose={() => setCreateTarget(null)}
+        onCreated={({ maestroClientId, name }) => {
+          const callId = createTarget?.callId;
+          if (callId) {
+            setCalls((rows) => rows.map((call) => call.id === callId
+              ? { ...call, maestro_client_id: maestroClientId, maestro_client_name: name }
+              : call));
+          }
+          setCreateTarget(null);
+        }}
+      />
       {selected && (
         <CallDetailSheet
           call={selected}
@@ -705,7 +723,7 @@ export default function MCalls() {
 }
 
 // ---------- row ----------
-function CallRow({ call, onTap, onCall, showCallBtn }: { call: Call; onTap: () => void; onCall: () => void; showCallBtn?: boolean }) {
+function CallRow({ call, onTap, onCall, showCallBtn, onCreateClient }: { call: Call; onTap: () => void; onCall: () => void; showCallBtn?: boolean; onCreateClient?: (phone: string, name?: string | null) => void }) {
   const { t, lang } = useMplanipretLang();
   const missed = isMissed(call);
   const out = isOutbound(call);
@@ -767,6 +785,19 @@ function CallRow({ call, onTap, onCall, showCallBtn }: { call: Call; onTap: () =
           </div>
         </button>
         <div className="flex items-center gap-1.5 shrink-0">
+          {onCreateClient && shouldOfferMaestroClientCreation({
+            phone: party.phone,
+            maestroClientId: call.maestro_client_id,
+          }) && party.phone && (
+            <button
+              onClick={() => onCreateClient(String(party.phone), call.from_name)}
+              aria-label={lang === "en" ? "Create Maestro client" : "Créer le client Maestro"}
+              className="rounded-full px-2 py-1.5 flex items-center gap-1 text-[10px] font-semibold"
+              style={{ background: "rgba(46,155,220,0.12)", color: "var(--pp-brand-accent)" }}
+            >
+              <UserPlusIcon className="w-3.5 h-3.5" /> Client
+            </button>
+          )}
           {hasAi && (
             <span
               className="rounded-full p-1.5 flex items-center justify-center"

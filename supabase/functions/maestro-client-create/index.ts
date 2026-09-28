@@ -10,8 +10,73 @@ import {
   normalizePhone,
 } from "../_shared/maestro.ts";
 import { guardPlanipret } from "../_shared/planipret-guard.ts";
-import { createClient_ } from "../_shared/maestro-scribe.ts";
+import { createClient_, getClient } from "../_shared/maestro-scribe.ts";
 import { getUserMaestroAccessToken } from "../_shared/maestro-oauth.ts";
+
+function clientName(client: any, fallbackFirst: string, fallbackLast: string): string {
+  const values = [
+    client?.full_name,
+    client?.display_name,
+    client?.name,
+    [client?.first_name, client?.last_name].filter(Boolean).join(" "),
+    [fallbackFirst, fallbackLast].filter(Boolean).join(" "),
+  ];
+  return values.map((value) => String(value ?? "").trim()).find(Boolean) || "Client Maestro";
+}
+
+async function linkCallToClient(
+  admin: ReturnType<typeof adminClient>,
+  userId: string,
+  callId: unknown,
+  maestroClientId: string,
+  name: string,
+) {
+  const id = String(callId ?? "").trim();
+  if (!id || !maestroClientId) return;
+  await admin
+    .from("planipret_phone_calls")
+    .update({ maestro_client_id: maestroClientId, maestro_client_name: name })
+    .eq("id", id)
+    .eq("user_id", userId);
+}
+
+async function cacheConfirmedClient(
+  admin: ReturnType<typeof adminClient>,
+  userId: string,
+  phone: string | null,
+  clientId: string,
+  client: any,
+  fallbackFirst: string,
+  fallbackLast: string,
+) {
+  if (!phone || !clientId) return;
+  const name = clientName(client, fallbackFirst, fallbackLast);
+  const [firstName, ...rest] = name.split(/\s+/);
+  const row = {
+    maestro_client_id: clientId,
+    first_name: String(client?.first_name ?? firstName ?? "") || null,
+    last_name: String(client?.last_name ?? rest.join(" ") ?? "") || null,
+    full_name: name,
+    email: client?.email ? String(client.email) : null,
+    company: client?.company ? String(client.company) : null,
+    cached_at: new Date().toISOString(),
+  };
+  const update = await admin.from("planipret_maestro_clients")
+    .update(row)
+    .eq("user_id", userId)
+    .eq("phone_e164", phone)
+    .select("id");
+  if (update.error || (update.data?.length ?? 0) > 0) return;
+
+  // The phone index is unique per broker. A simultaneous tap may win this
+  // insert; in that case the next lookup resolves the existing row instead of
+  // issuing another Maestro POST.
+  await admin.from("planipret_maestro_clients").insert({
+    user_id: userId,
+    phone_e164: phone,
+    ...row,
+  });
+}
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -42,6 +107,27 @@ Deno.serve(async (req) => {
     }
     const token = ownToken;
     const tokenSource = "broker_oauth";
+
+    // A directory cache entry is a broker-scoped, previously verified Maestro
+    // identity. Never create a second record for the same broker/phone; link
+    // the current call to the existing ID instead.
+    if (phone) {
+      const { data: cached } = await admin
+        .from("planipret_maestro_clients")
+        .select("maestro_client_id, full_name, first_name, last_name")
+        .eq("user_id", guard.user.id)
+        .eq("phone_e164", phone)
+        .order("cached_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      const cachedId = String(cached?.maestro_client_id ?? "").trim();
+      if (cachedId) {
+        const name = clientName(cached, firstName, lastName);
+        await linkCallToClient(admin, guard.user.id, body?.call_id, cachedId, name);
+        await maestroAudit(admin, "client_create_reused", { client_id: cachedId, token_source: tokenSource });
+        return json({ success: true, existing: true, client_id: cachedId, client: cached, source: "broker_cache" });
+      }
+    }
 
     const payload: Record<string, unknown> = {
       first_name: firstName,
@@ -87,17 +173,31 @@ Deno.serve(async (req) => {
     }
 
     const client = res.data as any;
-    const clientId = client?.id ?? client?.client_id ?? null;
-    if (body?.call_id && clientId) {
-      await admin
-        .from("planipret_phone_calls")
-        .update({ maestro_client_id: String(clientId) })
-        .eq("id", body.call_id)
-        .eq("user_id", guard.user.id);
+    const clientId = String(client?.id ?? client?.client_id ?? "").trim();
+    if (!clientId) {
+      await maestroAudit(admin, "client_create_unconfirmed", { token_source: tokenSource, reason: "missing_client_id" });
+      return json({ success: false, error: "maestro_readback_unconfirmed", message: "Maestro n’a pas retourné l’identifiant du client créé." }, 200);
     }
 
-    await maestroAudit(admin, "client_created", { client_id: clientId, token_source: tokenSource });
-    return json({ success: true, client_id: clientId, client, endpoint: res.endpoint }, 201);
+    // POST acknowledgement alone is not a creation proof. Re-read the exact
+    // documented client resource before linking a call or reporting success.
+    const readBack = await getClient(cfg, clientId, { token });
+    if (!readBack.ok || !readBack.data) {
+      await maestroAudit(admin, "client_create_unconfirmed", {
+        client_id: clientId,
+        token_source: tokenSource,
+        status: readBack.status,
+        error: readBack.error,
+      });
+      return json({ success: false, error: "maestro_readback_unconfirmed", message: "Création envoyée; confirmation Maestro en attente." }, 200);
+    }
+
+    const confirmed = readBack.data as any;
+    const name = clientName(confirmed, firstName, lastName);
+    await linkCallToClient(admin, guard.user.id, body?.call_id, clientId, name);
+    await cacheConfirmedClient(admin, guard.user.id, phone, clientId, confirmed, firstName, lastName);
+    await maestroAudit(admin, "client_created", { client_id: clientId, token_source: tokenSource, read_back: true });
+    return json({ success: true, client_id: clientId, client: confirmed, endpoint: res.endpoint, read_back: true }, 201);
   } catch (e: any) {
     console.error("maestro-client-create error", e);
     return json({ success: false, error: e?.message ?? "server_error" }, 500);

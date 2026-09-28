@@ -197,7 +197,20 @@ Deno.serve(async (req) => {
     const access = await authorizeCallAccess(req, admin, row);
     if (!access.ok) return json({ success: false, error: access.error }, access.status);
     const consent = requireApprovedCallConsent(row);
-    if (!consent.ok) return json({ success: false, error: consent.error }, consent.status);
+    if (!consent.ok) {
+      // Privacy gate, not a failure: answer 200 so the app shows a clear message
+      // instead of "Edge Function returned a non-2xx status code".
+      const deleted = consent.error === "call_deleted";
+      return json({
+        success: false,
+        available: false,
+        reason: consent.error,
+        error: deleted ? "Appel supprimé" : "Consentement requis",
+        hint: deleted
+          ? "Cet appel a été supprimé."
+          : "Approuvez la sauvegarde de cet appel pour obtenir sa transcription.",
+      }, 200);
+    }
     domain = row?.ns_domain || row?.metadata?.domain || domain;
     ns_callid = ns_callid || row?.ns_callid || row?.ns_orig_callid || row?.ns_term_callid || row?.metadata?.["call-parent-cdr-id"] || null;
     ns_extension = ns_extension || row?.extension || null;
