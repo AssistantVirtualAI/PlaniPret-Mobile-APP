@@ -16,14 +16,40 @@ const TTL_MISS = 60_000;
 
 const last10 = (v: unknown) => String(v ?? "").replace(/\D/g, "").slice(-10);
 
+/**
+ * The lookup result is personal Maestro data. A phone number alone must never
+ * be an in-memory cache key: a fast sign-out/sign-in on the same device could
+ * otherwise return the preceding broker's client before a server request.
+ */
+async function currentBrokerScope(): Promise<string | null> {
+  const { data } = await supabase.auth.getSession();
+  return data.session?.user?.id ?? null;
+}
+
+function cacheKey(brokerId: string, phone: string) {
+  return `${brokerId}:${phone}`;
+}
+
 export function invalidateCallerClient(phone?: string | null) {
-  if (phone) cache.delete(last10(phone)); else cache.clear();
+  if (!phone) {
+    cache.clear();
+    return;
+  }
+  const suffix = `:${last10(phone)}`;
+  for (const key of cache.keys()) if (key.endsWith(suffix)) cache.delete(key);
 }
 
 export async function resolveCallerClient(phone: string | null | undefined): Promise<CallerClient> {
   const key = last10(phone);
   if (key.length < 10) return NOT_FOUND;
-  const hit = cache.get(key);
+
+  const brokerId = await currentBrokerScope();
+  // Never return a cached client until an authenticated broker scope has been
+  // established. Edge functions independently enforce the same scope.
+  if (!brokerId) return NOT_FOUND;
+
+  const scopedKey = cacheKey(brokerId, key);
+  const hit = cache.get(scopedKey);
   if (hit && Date.now() - hit.at < (hit.v.found ? TTL_FOUND : TTL_MISS)) return hit.v;
 
   let result: CallerClient = NOT_FOUND;
@@ -53,7 +79,7 @@ export async function resolveCallerClient(phone: string | null | undefined): Pro
     } catch { /* not found */ }
   }
 
-  cache.set(key, { at: Date.now(), v: result });
+  cache.set(scopedKey, { at: Date.now(), v: result });
   return result;
 }
 
