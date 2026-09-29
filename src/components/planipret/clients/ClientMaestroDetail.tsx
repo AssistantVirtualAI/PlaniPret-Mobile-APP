@@ -13,6 +13,7 @@ import {
   clientProfileErrorMessage, maestroClientProfileFromPayload, mergeClientProfile,
   type MaestroClientProfile,
 } from "@/lib/planipret/clientProfile";
+import { hasApprovedRecordingConsent } from "@/lib/planipret/recordingConsent";
 import { supabase } from "@/integrations/supabase/client";
 import { CallRecordingPlayer } from "@/components/planipret/mobile/call/CallRecordingPlayer";
 
@@ -323,7 +324,13 @@ export default function ClientMaestroDetail({
 
       {(tab === "all" || tab === "sms") && (
         <Card title={L("Textos", "Texts")} surface={surface}>
-          {b.messages.length === 0 ? <Empty text={L("Aucun texto lié à ce client.", "No text linked to this client.")} /> : <ul className="space-y-1.5">{(tab === "all" ? b.messages.slice(0, 5) : b.messages).map((message) => <li key={message.id} className="rounded-xl px-3 py-2 text-[11.5px]" style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-muted)" }}><span className="flex gap-2"><MessageSquare className="w-3.5 h-3.5 shrink-0" style={{ color: message.direction === "outbound" ? "var(--pp-brand-accent)" : "#10B981" }} /><span className="flex-1">{message.body || "—"}</span></span>{message.created_at && <span className="block text-[10px] mt-1" style={{ color: "var(--pp-text-faint)" }}>{fmtDate(message.created_at, lang)}</span>}</li>)}</ul>}
+          {b.messages.length === 0 ? <Empty text={L("Aucun texto lié à ce client.", "No text linked to this client.")} /> : (
+            <div className="space-y-2">
+              {(tab === "all" ? b.messages.slice(0, 5) : b.messages).map((message) => (
+                <SmsBubble key={message.id} message={message} lang={lang} />
+              ))}
+            </div>
+          )}
         </Card>
       )}
 
@@ -349,6 +356,30 @@ export default function ClientMaestroDetail({
   );
 }
 
+/** Bulle de texto : envoyé par le courtier à droite (bleu), reçu à gauche (vert). */
+export function SmsBubble({ message, lang }: { message: ClientMessage; lang: "fr" | "en" }) {
+  const out = message.direction === "outbound";
+  return (
+    <div className={`flex ${out ? "justify-end" : "justify-start"}`} data-testid={out ? "sms-outbound" : "sms-inbound"}>
+      <div className="max-w-[80%]">
+        <div
+          data-testid="sms-bubble"
+          className="rounded-2xl px-3 py-2 text-[12px] leading-snug"
+          style={out
+            ? { background: "linear-gradient(135deg, #1A4A8A, #2E9BDC)", color: "#fff", borderBottomRightRadius: 6 }
+            : { background: "rgba(16,185,129,0.14)", color: "var(--pp-text-primary)", border: "1px solid rgba(16,185,129,0.35)", borderBottomLeftRadius: 6 }}
+        >
+          <p className="whitespace-pre-wrap break-words">{message.body || "—"}</p>
+        </div>
+        <p className={`text-[10px] mt-0.5 ${out ? "text-right" : "text-left"}`} style={{ color: "var(--pp-text-faint)" }}>
+          {out ? (lang === "en" ? "Sent" : "Envoyé") : (lang === "en" ? "Received" : "Reçu")}
+          {message.created_at ? ` · ${fmtDate(message.created_at, lang)}` : ""}
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function ListIcon() { return <CalendarClock className="w-4 h-4" />; }
 function HeroChip({ icon, text }: { icon: React.ReactNode; text: string }) { return <span className="inline-flex max-w-full items-center gap-1 rounded-full px-2 py-1 text-[10px] bg-white/15 border border-white/15 truncate">{icon}<span className="truncate">{text}</span></span>; }
 function Metric({ icon, label, value, tone }: { icon: React.ReactNode; label: string; value: string; tone: "blue" | "danger" }) { return <div className="rounded-2xl p-2.5" style={{ background: tone === "danger" ? "rgba(239,68,68,.09)" : "var(--pp-bg-surface)", border: `1px solid ${tone === "danger" ? "rgba(239,68,68,.22)" : "var(--pp-bg-border)"}` }}><div className="flex items-center gap-1.5" style={{ color: tone === "danger" ? "#EF4444" : "var(--pp-brand-accent)" }}>{icon}<span className="text-lg font-bold">{value}</span></div><p className="text-[10px] mt-1" style={{ color: "var(--pp-text-muted)" }}>{label}</p></div>; }
@@ -360,7 +391,7 @@ function CallRow({ call, lang }: { call: ClientCall; lang: "fr" | "en" }) {
   const missed = call.direction === "missed" || call.status === "missed" || call.status === "no-answer";
   const outgoing = call.direction === "outbound";
   const Icon = missed ? PhoneMissed : outgoing ? PhoneOutgoing : PhoneIncoming;
-  const consentOk = !call.save_consent || call.save_consent === "approved";
+  const consentOk = hasApprovedRecordingConsent(call.save_consent);
   const canListen = consentOk && (!!call.has_recording || !!call.recording_url);
   return (
     <li className="rounded-xl px-3 py-2 text-[11.5px]" style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-muted)" }}>

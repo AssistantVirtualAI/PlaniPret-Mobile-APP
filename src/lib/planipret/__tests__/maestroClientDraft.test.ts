@@ -31,4 +31,11 @@ describe("Maestro client creation draft", () => {
     expect(hasRequiredMaestroClientFields({ ...complete, lastName: "" })).toBe(false);
     expect(hasRequiredMaestroClientFields({ ...complete, phone: "1136" })).toBe(false);
   });
+
+  it("keeps submit disabled for every mandatory Maestro classification field", () => {
+    expect(hasRequiredMaestroClientFields({ ...complete, salutation: "" })).toBe(false);
+    expect(hasRequiredMaestroClientFields({ ...complete, sex: "" })).toBe(false);
+    expect(hasRequiredMaestroClientFields({ ...complete, language: "" })).toBe(false);
+    expect(hasRequiredMaestroClientFields({ ...complete, region: "" })).toBe(false);
+  });
 });

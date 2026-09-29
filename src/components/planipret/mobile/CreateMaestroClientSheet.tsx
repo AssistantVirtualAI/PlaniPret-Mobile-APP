@@ -161,6 +161,9 @@ export default function CreateMaestroClientSheet({
           <h2 className="text-base font-semibold flex items-center gap-2"><UserPlus className="w-4 h-4" /> Créer le client dans Maestro</h2>
           <button onClick={onClose} aria-label="Fermer" className="p-2 rounded-full" style={{ background: "var(--pp-bg-elevated)" }}><X className="w-4 h-4" /></button>
         </div>
+        <p className="text-[11px]" style={{ color: "var(--pp-text-muted)" }}>
+          <span style={{ color: "var(--pp-danger)" }}>*</span> Champs obligatoires exigés par Maestro — sans eux, Maestro refuse la création.
+        </p>
         <input className={field} style={fieldStyle} placeholder="Prénom *" value={first} maxLength={80} onChange={(e) => setFirst(e.target.value)} />
         <input className={field} style={fieldStyle} placeholder="Nom *" value={last} maxLength={80} onChange={(e) => setLast(e.target.value)} />
         <input className={field} style={fieldStyle} placeholder="Courriel (facultatif)" type="email" value={email} maxLength={255} onChange={(e) => setEmail(e.target.value)} />
@@ -173,7 +176,7 @@ export default function CreateMaestroClientSheet({
             <option value="">Sexe *</option><option value="m">Homme</option><option value="f">Femme</option>
           </select>
           <select className={field} style={fieldStyle} value={language} onChange={(e) => setLanguage(e.target.value)} aria-label="Langue">
-            <option value="fr">Français</option><option value="en">English</option>
+            <option value="fr">Français *</option><option value="en">English *</option>
           </select>
         </div>
         <p className="text-xs font-semibold pt-1" style={{ color: "var(--pp-text-secondary)" }}>Adresse (exigée par Maestro)</p>
@@ -191,7 +194,7 @@ export default function CreateMaestroClientSheet({
         </div>
         <div className="grid grid-cols-2 gap-2">
           <select className={field} style={fieldStyle} value={region} onChange={(e) => setRegion(e.target.value)} aria-label="Province">
-            {["QC","ON","NB","NS","PE","NL","MB","SK","AB","BC","YT","NT","NU"].map((r) => <option key={r} value={r}>{r}</option>)}
+            {["QC","ON","NB","NS","PE","NL","MB","SK","AB","BC","YT","NT","NU"].map((r) => <option key={r} value={r}>{r} *</option>)}
           </select>
           <input className={field} style={fieldStyle} placeholder="Code postal *" value={zip} maxLength={7} onChange={(e) => setZip(e.target.value.toUpperCase())} />
         </div>
