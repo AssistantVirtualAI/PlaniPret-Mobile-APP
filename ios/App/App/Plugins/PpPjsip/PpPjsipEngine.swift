@@ -634,7 +634,9 @@ final class PjsipEngine {
                 var info = pjsua_call_info()
                 pjsua_call_get_info(self.activeCall, &info)
                 guard info.conf_slot >= 0 else { return }
-                // Coupe le flux micro → conférence (direction sortante).
+                // Coupe le flux bridge → appel, donc microphone local →
+                // correspondant. Le niveau TX du port 0 couperait au contraire
+                // la lecture distante dans le haut-parleur.
                 let status = pjsua_conf_adjust_tx_level(info.conf_slot, on ? 0.0 : 1.0)
                 if status != pj_status_t(0) {
                     NSLog("[PpPjsip] setMute tx level failed callId=%d slot=%d status=%d", self.activeCall, info.conf_slot, status)
@@ -902,7 +904,11 @@ final class PjsipEngine {
             if muted { _ = pjsua_conf_adjust_tx_level(slot, 0.0) }
             return
         }
-        detachAudioMedia(reason: "reattach")
+        // A reattach changes only conference links. Calling
+        // pjsua_set_null_snd_dev() here closes the CallKit-owned RemoteIO
+        // device just after didActivate, which leaves a connected call with no
+        // capture or playback on both legs.
+        detachAudioMedia(reason: "reattach", releaseSoundDevice: false)
         let remoteToDevice = pjsua_conf_connect(slot, 0)
         guard remoteToDevice == pj_status_t(0) else {
             NSLog("[PpPjsip] conf connect remote→device failed callId=%d slot=%d status=%d", callId, slot, remoteToDevice)
@@ -925,15 +931,18 @@ final class PjsipEngine {
         emit("callState", ["callId": String(callId), "state": "media"])
     }
 
-    /// Détache le média CallKit avant de remettre PJSIP sur périphérique nul.
+    /// Détache les liens du média CallKit. Le périphérique reste ouvert lors
+    /// d'un simple rebind; il ne passe au périphérique nul qu'à la désactivation
+    /// CallKit ou à la fin effective de l'appel.
     /// Cette méthode est idempotente et doit s'exécuter sur le worker PJSIP.
-    private func detachAudioMedia(reason: String) {
+    private func detachAudioMedia(reason: String, releaseSoundDevice: Bool = true) {
         if attachedAudioSlot >= 0 {
             let first = pjsua_conf_disconnect(attachedAudioSlot, 0)
             let second = pjsua_conf_disconnect(0, attachedAudioSlot)
             NSLog("[PpPjsip] media detached slot=%d reason=%@ status=%d/%d", attachedAudioSlot, reason, first, second)
             attachedAudioSlot = pjsua_conf_port_id(-1)
         }
+        guard releaseSoundDevice else { return }
         let nullStatus = pjsua_set_null_snd_dev()
         if nullStatus != pj_status_t(0) {
             NSLog("[PpPjsip] pjsua_set_null_snd_dev failed reason=%@ status=%d", reason, nullStatus)

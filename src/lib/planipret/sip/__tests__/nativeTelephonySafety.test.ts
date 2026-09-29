@@ -95,6 +95,20 @@ describe("native telephony safety invariants", () => {
     expect(keepAlive).toContain("audio reset skipped — PJSIP/CallKit owns session");
   });
 
+  it("keeps the CallKit sound device open while linking bidirectional PJSIP media", () => {
+    const engine = read("ios/App/App/Plugins/PpPjsip/PpPjsipEngine.swift");
+
+    // PJSIP conference links are directional: both edges are required. A media
+    // reattach may remove only those links, never the CallKit-owned device.
+    expect(engine).toContain("pjsua_conf_connect(slot, 0)");
+    expect(engine).toContain("pjsua_conf_connect(0, slot)");
+    expect(engine).toContain('detachAudioMedia(reason: "reattach", releaseSoundDevice: false)');
+    expect(engine).toContain("private func detachAudioMedia(reason: String, releaseSoundDevice: Bool = true)");
+    expect(engine).toContain("guard releaseSoundDevice else { return }");
+    expect(engine).toContain("pjsua_conf_adjust_tx_level(info.conf_slot, on ? 0.0 : 1.0)");
+    expect(engine).toContain("pjsua_conf_adjust_tx_level(slot, muted ? 0.0 : 1.0)");
+  });
+
   it("uses Swift-compatible PJSIP import types", () => {
     const engine = read("ios/App/App/Plugins/PpPjsip/PpPjsipEngine.swift");
     const keepAlive = read("ios/App/App/Plugins/PpSipKeepAlive/PpSipKeepAlive.swift");
