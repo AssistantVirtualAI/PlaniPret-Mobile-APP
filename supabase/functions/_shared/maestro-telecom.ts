@@ -325,6 +325,13 @@ export function mirrorCallAnalysisToMaestro(
 ): void {
   void (async () => {
     try {
+      // Local transcription and AI may be available while the broker is still
+      // deciding.  Nothing derived from that call is allowed to leave
+      // Planiprêt until the explicit post-call approval is recorded.
+      if (ppCall?.deleted_at || String(ppCall?.save_consent ?? "pending") !== "approved") {
+        console.info(`[maestro-telecom.analysis] skip pp_call=${ppCall?.id} — consent_not_approved`);
+        return;
+      }
       const maestroCallId = ppCall?.maestro_call_id ? String(ppCall.maestro_call_id) : null;
       const brokerId = await getMaestroBrokerId(admin, userId);
       const payload = {

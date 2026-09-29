@@ -4,7 +4,7 @@
 
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { authorizeCallAccess, requireApprovedCallConsent } from "../_shared/planipret-call-access.ts";
+import { authorizeCallAccess, allowCallViewing } from "../_shared/planipret-call-access.ts";
 
 const FALLBACK_NS_API_BASE_URL = (Deno.env.get("NS_API_BASE_URL") ?? "https://voice.ava-telecom.ca/ns-api/v2").replace(/\/$/, "");
 const FALLBACK_NS_DOMAIN = Deno.env.get("NS_DEFAULT_DOMAIN") ?? Deno.env.get("NS_API_DOMAIN") ?? "planipret.ca";
@@ -196,7 +196,9 @@ Deno.serve(async (req) => {
     if (!row) return json({ success: false, error: "call_not_found" }, 404);
     const access = await authorizeCallAccess(req, admin, row);
     if (!access.ok) return json({ success: false, error: access.error }, access.status);
-    const consent = requireApprovedCallConsent(row);
+    // Local transcript preparation is available until the broker explicitly
+    // deletes the call. Maestro delivery remains independently approval-gated.
+    const consent = allowCallViewing(row);
     if (!consent.ok) {
       // Privacy gate, not a failure: answer 200 so the app shows a clear message
       // instead of "Edge Function returned a non-2xx status code".
@@ -208,7 +210,7 @@ Deno.serve(async (req) => {
         error: deleted ? "Appel supprimé" : "Consentement requis",
         hint: deleted
           ? "Cet appel a été supprimé."
-          : "Approuvez la sauvegarde de cet appel pour obtenir sa transcription.",
+          : "La transcription est indisponible parce que cet appel a été refusé.",
       }, 200);
     }
     domain = row?.ns_domain || row?.metadata?.domain || domain;

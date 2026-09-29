@@ -564,7 +564,7 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
       .select("recording_url, duration_seconds, save_consent").eq("id", p.call_id)
       .in("user_id", ownerIds(ctx)).maybeSingle();
     if (!data) return { success: false, error: "call_not_found_or_forbidden" };
-    if (String(data.save_consent ?? "pending") !== "approved") {
+    if (String(data.save_consent ?? "pending") === "declined") {
       return { success: false, error: "call_consent_required" };
     }
     return { success: !!data?.recording_url, audio_url: data?.recording_url, duration: data?.duration_seconds };
@@ -576,7 +576,7 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
       .select("transcript_segments, save_consent").eq("id", p.call_id)
       .in("user_id", ownerIds(ctx)).maybeSingle();
     if (!data) return { success: false, error: "call_not_found_or_forbidden" };
-    if (String(data.save_consent ?? "pending") !== "approved") {
+    if (String(data.save_consent ?? "pending") === "declined") {
       return { success: false, error: "call_consent_required" };
     }
     const seg = data?.transcript_segments;
@@ -691,7 +691,7 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
     const { data: ownedCall } = await ctx.admin.from("planipret_phone_calls")
       .select("id, save_consent").eq("id", p.call_id).in("user_id", ownerIds(ctx)).maybeSingle();
     if (!ownedCall) return { success: false, error: "call_not_found_or_forbidden" };
-    if (String(ownedCall.save_consent ?? "pending") !== "approved") {
+    if (String(ownedCall.save_consent ?? "pending") === "declined") {
       return { success: false, error: "call_consent_required" };
     }
     const r = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/maestro-ai-analysis`, {
@@ -1682,7 +1682,7 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
     const { data: call } = await ctx.admin.from("planipret_phone_calls")
       .select("*").eq("id", p.call_id).in("user_id", ownerIds(ctx)).maybeSingle();
     if (!call) return { success: false, error: "call_not_found_or_forbidden" };
-    if (String(call.save_consent ?? "pending") !== "approved") {
+    if (String(call.save_consent ?? "pending") === "declined") {
       return { success: false, error: "call_consent_required" };
     }
     const clientId = call.maestro_client_id ?? p.client_id;

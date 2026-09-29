@@ -3,26 +3,30 @@
 // courriel de suivi qu'il doit relire et confirmer avant l'envoi.
 //
 // Règles appliquées ici (et revalidées côté serveur) :
-//  • rien n'est transcrit, analysé ni poussé vers Maestro avant un « Oui » ;
+//  • l'envoi vers Maestro exige toujours « Enregistrer » ;
 //  • la question est liée au seul appel qui vient de se terminer ;
-//  • fermer, revenir en arrière ou perdre la connexion = annulation ;
+//  • la décision survit à une fermeture ou un redémarrage de l'app ;
 //  • un double tap n'envoie jamais deux fois (clé d'idempotence serveur).
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { Save, Trash2 } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
+import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 import {
   canSendFollowup,
   clientNameOf,
   clientNumberOf,
   followupIdempotencyKey,
-  needsClientSelection,
   pickEndedCall,
   type ConsentCall,
   type EndedDetail,
 } from "@/lib/planipret/postCallConsent";
 
 const SELECT =
-  "id, user_id, from_number, to_number, direction, maestro_client_id, maestro_client_name, from_name, to_name, duration_seconds, save_consent";
+  "id, user_id, from_number, to_number, direction, maestro_client_id, maestro_client_name, from_name, to_name, duration_seconds, save_consent, answered_at, status, created_at";
+const PENDING_KEY = "pp.pending-post-call-decision.v2";
+const RETRY_DELAYS = [0, 500, 1_000, 2_000, 4_000, 8_000];
 
 const wrap: React.CSSProperties = {
   position: "fixed", inset: 0, zIndex: 9000, background: "rgba(4,10,20,0.72)",
@@ -63,102 +67,109 @@ export default function PostCallConsentSheet() {
   const [subject, setSubject] = useState("Suivi de notre appel");
   const [confirmed, setConfirmed] = useState(false);
   const [recipient, setRecipient] = useState("");
-  const [clientChoice, setClientChoice] = useState("");
   const [userId, setUserId] = useState<string | null>(null);
   const spokenFor = useRef<string | null>(null);
   // Heure exacte où l'appel s'est terminé (moment de l'événement, pas de la réponse).
   const endedAt = useRef<string | null>(null);
   const sending = useRef(false);
   const handled = useRef<Set<string>>(new Set());
+  const loadingFor = useRef<Set<string>>(new Set());
 
   const reset = useCallback(() => {
     setStep("consent"); setKind(null); setDraft(""); setConfirmed(false);
-    setRecipient(""); setClientChoice(""); setSubject("Suivi de notre appel");
+    setRecipient(""); setSubject("Suivi de notre appel");
     sending.current = false;
   }, []);
 
-  useEffect(() => {
-    const onEnded = async (e: Event) => {
-      const detail = ((e as CustomEvent).detail ?? {}) as EndedDetail;
-      const endedIso = new Date().toISOString();
+  const loadEndedCall = useCallback(async (detail: EndedDetail, persistedEndedAt?: string | null) => {
+      if (detail.answered === false) return;
+      const lookupKey = detail.providerCallId || detail.number || "unknown";
+      if (loadingFor.current.has(lookupKey)) return;
+      loadingFor.current.add(lookupKey);
+      const endedIso = persistedEndedAt || new Date().toISOString();
       const { data: auth } = await supabase.auth.getUser();
       const uid = auth?.user?.id;
-      if (!uid) return;
+      if (!uid) { loadingFor.current.delete(lookupKey); return; }
       setUserId(uid);
 
       const { data: prof } = await supabase
         .from("planipret_profiles").select("id").eq("user_id", uid).maybeSingle();
       const owners = [uid, (prof as any)?.id].filter(Boolean).map(String);
 
-      const since = new Date(Date.now() - 10 * 60_000).toISOString();
-      let rows: ConsentCall[] = [];
-      let source: "provider" | "recent" = "recent";
-      if (detail.providerCallId) {
-        const pid = detail.providerCallId;
-        const { data } = await supabase
-          .from("planipret_phone_calls").select(SELECT)
-          .or(`id.eq.${pid},ns_callid.eq.${pid},ns_call_id.eq.${pid}`).limit(3);
-        rows = (data as any as ConsentCall[]) ?? [];
-        if (rows.length) source = "provider";
+      let picked: ConsentCall | null = null;
+      for (const delay of RETRY_DELAYS) {
+        if (delay) await new Promise((resolve) => window.setTimeout(resolve, delay));
+        let rows: ConsentCall[] = [];
+        let source: "provider" | "recent" = "recent";
+        if (detail.providerCallId) {
+          const pid = detail.providerCallId;
+          const { data } = await supabase
+            .from("planipret_phone_calls").select(SELECT)
+            .or(`id.eq.${pid},ns_callid.eq.${pid},ns_call_id.eq.${pid}`).limit(3);
+          rows = (data as any as ConsentCall[]) ?? [];
+          if (rows.length) source = "provider";
+        } else if (detail.number) {
+          const since = new Date(Date.now() - 10 * 60_000).toISOString();
+          const { data } = await supabase
+            .from("planipret_phone_calls").select(SELECT)
+            .in("user_id", owners)
+            .gte("created_at", since)
+            .order("created_at", { ascending: false }).limit(10);
+          rows = (data as any as ConsentCall[]) ?? [];
+        }
+        picked = pickEndedCall(rows, { ...detail, source }, owners);
+        if (picked) break;
       }
-      if (!rows.length) {
-        const { data } = await supabase
-          .from("planipret_phone_calls").select(SELECT)
-          .in("user_id", owners)
-          .gte("created_at", since)
-          .order("created_at", { ascending: false }).limit(5);
-        rows = (data as any as ConsentCall[]) ?? [];
-      }
-      const picked = pickEndedCall(rows, { ...detail, source }, owners);
       // Une réponse déjà donnée ne vaut jamais pour un nouvel appel, et un même
       // appel ne repose jamais deux fois la question.
+      loadingFor.current.delete(lookupKey);
       if (!picked || handled.current.has(picked.id)) return;
       handled.current.add(picked.id);
       endedAt.current = endedIso;
       setCall(picked);
       reset();
-    };
-    window.addEventListener("pp:call-ended", onEnded as EventListener);
-    return () => window.removeEventListener("pp:call-ended", onEnded as EventListener);
   }, [reset]);
 
+  useEffect(() => {
+    const onEnded = (e: Event) => {
+      const detail = ((e as CustomEvent).detail ?? {}) as EndedDetail;
+      void loadEndedCall(detail);
+    };
+    window.addEventListener("pp:call-ended", onEnded as EventListener);
+    try {
+      const raw = localStorage.getItem(PENDING_KEY);
+      if (raw) {
+        const pending = JSON.parse(raw) as EndedDetail & { endedAt?: string };
+        void loadEndedCall(pending, pending.endedAt);
+      }
+    } catch { /* invalid local recovery state is ignored */ }
+    return () => window.removeEventListener("pp:call-ended", onEnded as EventListener);
+  }, [loadEndedCall]);
+
   const clientNumber = useMemo(() => (call ? clientNumberOf(call) : ""), [call]);
-  const clientName = useMemo(
-    () => (call ? (clientChoice.trim() || clientNameOf(call)) : ""),
-    [call, clientChoice],
-  );
-  const mustPickClient = !!call && needsClientSelection(call) && !clientChoice.trim();
+  const clientName = useMemo(() => (call ? clientNameOf(call) : ""), [call]);
 
   useEffect(() => {
     if (!call || spokenFor.current === call.id) return;
     spokenFor.current = call.id;
-    speak(`Voulez-vous sauvegarder cet appel dans Maestro et préparer le suivi ?`);
+    speak("Désirez-vous enregistrer cet appel ou le supprimer ?");
   }, [call]);
 
-  const close = useCallback(() => {
+  const close = useCallback((resolved = false) => {
+    if (resolved) {
+      try { localStorage.removeItem(PENDING_KEY); } catch { /* ignore */ }
+    }
     setCall(null);
     reset();
     try { window.speechSynthesis?.cancel?.(); } catch { /* ignore */ }
   }, [reset]);
 
-  // Retour arrière Android / geste iOS = annulation, jamais une confirmation.
-  useEffect(() => {
-    if (!call) return;
-    const onPop = () => close();
-    window.addEventListener("popstate", onPop);
-    return () => window.removeEventListener("popstate", onPop);
-  }, [call, close]);
-
   useEffect(() => { if (kind === "sms") setRecipient(clientNumber); }, [kind, clientNumber]);
 
   if (!call) return null;
 
-  const consent = async (action: "approve" | "decline" | "delete") => {
+  const consent = async (action: "approve" | "delete") => {
     if (busy) return;
-    if (action === "approve" && mustPickClient) {
-      toast.error("Choisissez le client associé avant de sauvegarder.");
-      return;
-    }
     setBusy(true);
     try {
       const { data, error } = await supabase.functions.invoke("pp-call-consent", {
@@ -167,12 +178,12 @@ export default function PostCallConsentSheet() {
           action,
           channel: "screen",
           ended_at: endedAt.current,
-          client_name: clientChoice.trim() || undefined,
         },
       });
       if (error) throw error;
       if ((data as any)?.error) throw new Error(String((data as any).error));
       if (action === "approve") {
+        try { localStorage.removeItem(PENDING_KEY); } catch { /* ignore */ }
         const started = (data as any)?.ok === true && (data as any)?.processing !== "retryable";
         if (started) {
           toast.success("Consentement enregistré. Synchronisation avec Maestro en cours.");
@@ -180,13 +191,10 @@ export default function PostCallConsentSheet() {
           toast.message("Consentement enregistré. La synchronisation sera relancée automatiquement.");
         }
         setStep("followup");
-      } else if (action === "decline") {
-        toast.success("Appel non sauvegardé. Rien n'a été envoyé.");
-        close();
       } else {
         const m = (data as any)?.maestro;
         toast.success(m?.ok ? "Appel supprimé partout, y compris Maestro." : `Supprimé localement. Maestro : ${m?.detail ?? "échec"}`);
-        close();
+        close(true);
       }
     } catch (e: any) {
       toast.error(e?.message ?? "Action impossible — rien n'a été envoyé.");
@@ -220,7 +228,7 @@ export default function PostCallConsentSheet() {
       if (error) throw error;
       if (!(data as any)?.ok) throw new Error(String((data as any)?.error ?? "Envoi refusé par le serveur."));
       toast.success((data as any)?.idempotent_replay ? "Déjà envoyé — aucun deuxième envoi." : "Suivi envoyé.");
-      close();
+      close(true);
     } catch (e: any) {
       toast.error(e?.message ?? "Envoi impossible. Rien n'a été envoyé.");
       sending.current = false;
@@ -229,49 +237,35 @@ export default function PostCallConsentSheet() {
     }
   };
 
-  return (
-    <div style={wrap} onClick={(e) => { if (e.target === e.currentTarget) close(); }}>
-      <div style={card} role="dialog" aria-label="Fin d'appel">
+  return createPortal(
+    <div style={wrap}>
+      <div style={card} role="dialog" aria-modal="true" aria-label="Décision après l'appel">
         <div style={{ fontSize: 12, opacity: 0.7 }}>Fin d'appel</div>
         <div style={{ fontSize: 18, fontWeight: 800, marginBottom: 4 }}>{clientName || "Client inconnu"}</div>
         <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 14 }}>
-          {clientNumber} · {call.duration_seconds ?? 0} s
+          {call.direction === "in" || call.direction === "inbound" ? "Appel entrant" : "Appel sortant"} · {clientNumber} · {call.duration_seconds ?? 0} s
         </div>
 
         {step === "consent" && (
           <>
             <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>
-              Voulez-vous sauvegarder cet appel dans Maestro et préparer le suivi ?
+              Que voulez-vous faire avec cet appel ?
             </div>
             <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 12 }}>
-              Tant que vous n'avez pas dit oui, rien n'est transcrit, analysé ni envoyé à Maestro.
+              Enregistrer conserve l'appel et l'envoie dans Maestro. Supprimer efface l'enregistrement, la transcription et le sommaire.
             </div>
-            {needsClientSelection(call) && (
-              <>
-                <div style={{ fontSize: 12, color: "#FBBF24", marginBottom: 6 }}>
-                  Client non identifié — indiquez à quel client rattacher cet appel.
-                </div>
-                <input
-                  value={clientChoice}
-                  onChange={(e) => setClientChoice(e.target.value)}
-                  placeholder="Nom du client"
-                  style={{ ...input, minHeight: 0, marginBottom: 10 }}
-                />
-              </>
-            )}
-            <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-              <button
-                disabled={busy || mustPickClient}
-                style={{ ...btn("#16A34A"), opacity: busy || mustPickClient ? 0.6 : 1 }}
+            <div style={{ display: "grid", gap: 10 }}>
+              <Button
+                disabled={busy}
+                className="h-12 w-full gap-2"
                 onClick={() => consent("approve")}
               >
-                Oui, sauvegarder
-              </button>
-              <button disabled={busy} style={btn("rgba(255,255,255,0.14)")} onClick={() => consent("decline")}>Non</button>
+                <Save size={18} /> Enregistrer l'appel
+              </Button>
+              <Button disabled={busy} variant="destructive" className="h-12 w-full gap-2" onClick={() => consent("delete")}>
+                <Trash2 size={18} /> Supprimer l'appel
+              </Button>
             </div>
-            <button disabled={busy} style={{ ...btn("#B91C1C"), width: "100%" }} onClick={() => consent("delete")}>
-              Supprimer l'audio et le sommaire partout
-            </button>
           </>
         )}
 
@@ -281,7 +275,7 @@ export default function PostCallConsentSheet() {
             <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
               <button style={btn(kind === "sms" ? "#2E9BDC" : "rgba(255,255,255,0.14)")} onClick={() => { setKind("sms"); setConfirmed(false); }}>Texto</button>
               <button style={btn(kind === "email" ? "#2E9BDC" : "rgba(255,255,255,0.14)")} onClick={() => { setKind("email"); setConfirmed(false); setRecipient(""); }}>Courriel</button>
-              <button style={btn("rgba(255,255,255,0.14)")} onClick={close}>Aucun</button>
+               <button style={btn("rgba(255,255,255,0.14)")} onClick={() => close(true)}>Aucun</button>
             </div>
 
             {kind && (
@@ -325,6 +319,7 @@ export default function PostCallConsentSheet() {
           </>
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

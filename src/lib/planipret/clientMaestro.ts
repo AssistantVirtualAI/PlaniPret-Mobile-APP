@@ -250,9 +250,33 @@ export async function fetchClientDeposits(months = 24): Promise<ClientDeposit[]>
   }
 }
 
+/**
+ * Appels/textos sont enregistrés sous l'id de profil Planiprêt du courtier,
+ * pas sous l'id de connexion : on résout tous les alias (mis en cache).
+ */
+const brokerIdCache = new Map<string, Promise<string[]>>();
+export async function expandBrokerIds(userIds: string[]): Promise<string[]> {
+  const base = [...new Set(userIds.filter(Boolean).map(String))];
+  const lists = await Promise.all(base.map((id) => {
+    let p = brokerIdCache.get(id);
+    if (!p) {
+      p = (async () => {
+        try {
+          const { data } = await supabase.rpc("planipret_broker_ids", { _uid: id });
+          const out = ((data ?? []) as any[]).map((v) => String(typeof v === "string" ? v : v?.planipret_broker_ids ?? "")).filter(Boolean);
+          return out.length ? out : [id];
+        } catch { brokerIdCache.delete(id); return [id]; }
+      })();
+      brokerIdCache.set(id, p);
+    }
+    return p;
+  }));
+  return [...new Set([...base, ...lists.flat()])];
+}
+
 /** Dossiers locaux (pipeline) pour un ou plusieurs propriétaires. */
 export async function fetchClientDeals(userIds: string[]): Promise<ClientDeal[]> {
-  const ids = userIds.filter(Boolean);
+  const ids = await expandBrokerIds(userIds);
   if (!ids.length) return [];
   const { data } = await supabase
     .from("planipret_pipeline")
@@ -265,7 +289,7 @@ export async function fetchClientDeals(userIds: string[]): Promise<ClientDeal[]>
 
 /** Historique d'appels local pour un ou plusieurs propriétaires. */
 export async function fetchClientCalls(userIds: string[], limit = 500): Promise<ClientCall[]> {
-  const ids = userIds.filter(Boolean);
+  const ids = await expandBrokerIds(userIds);
   if (!ids.length) return [];
   const { data } = await supabase
     .from("planipret_phone_calls")
@@ -278,7 +302,7 @@ export async function fetchClientCalls(userIds: string[], limit = 500): Promise<
 
 /** Textos locaux pour un ou plusieurs propriétaires. */
 export async function fetchClientMessages(userIds: string[], limit = 500): Promise<ClientMessage[]> {
-  const ids = userIds.filter(Boolean);
+  const ids = await expandBrokerIds(userIds);
   if (!ids.length) return [];
   const { data } = await supabase
     .from("planipret_phone_messages")
@@ -322,7 +346,7 @@ export async function fetchClientContacts(
   userIds: string[],
   opts: { search?: string; limit?: number } = {},
 ): Promise<ClientContact[]> {
-  const ids = userIds.filter(Boolean);
+  const ids = await expandBrokerIds(userIds);
   const term = String(opts.search ?? "").trim();
   let local: ClientContact[] = [];
   if (ids.length) {

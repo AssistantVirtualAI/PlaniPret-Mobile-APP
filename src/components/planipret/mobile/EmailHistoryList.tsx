@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
-import { Search, Mail, Send, Inbox } from "lucide-react";
+import { Search, Mail, Send, Inbox, AlertTriangle, RefreshCw } from "lucide-react";
 
 type Row = {
   id: string;
@@ -38,6 +38,7 @@ export default function EmailHistoryList() {
   const [filter, setFilter] = useState<Filter>("all");
   const [loading, setLoading] = useState(true);
   const [userId, setUserId] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -57,6 +58,7 @@ export default function EmailHistoryList() {
     }
     if (!force && cached && Date.now() - cached.at < EMAIL_SYNC_INTERVAL_MS) return;
     if (!cached) setLoading(true);
+    setLoadError(null);
 
     const pending = emailInFlight.get(key);
     const request = pending ?? (async () => {
@@ -67,23 +69,66 @@ export default function EmailHistoryList() {
         .limit(200);
       if (filter === "sent") query = query.eq("is_sent_by_me", true);
       else if (filter === "inbox") query = query.eq("is_sent_by_me", false);
-      const { data, error } = await query;
-      if (error) throw error;
-      return (data ?? []) as Row[];
+      const outlook = async (folder: "inbox" | "sent"): Promise<Row[]> => {
+        const { data, error } = await supabase.functions.invoke("ms365-actions", {
+          body: { action: "read_emails", payload: { top: 50, skip: 0, folder } },
+        });
+        if (error || !(data as any)?.success) {
+          throw new Error(String((data as any)?.error ?? error?.message ?? "Microsoft 365 ne répond pas"));
+        }
+        return (((data as any).emails ?? []) as any[]).map((m) => ({
+          id: `graph:${m.id}`,
+          graph_id: m.id ?? null,
+          subject: m.subject ?? null,
+          from_email: m.from?.emailAddress?.address ?? null,
+          from_name: m.from?.emailAddress?.name ?? null,
+          to_recipients: (m.toRecipients ?? []).map((r: any) => ({ address: r?.emailAddress?.address, name: r?.emailAddress?.name })),
+          body_preview: m.bodyPreview ?? null,
+          sent_at: m.sentDateTime ?? m.receivedDateTime ?? null,
+          received_at: m.receivedDateTime ?? null,
+          is_sent_by_me: folder === "sent",
+          folder,
+          locally_saved: false,
+        }));
+      };
+      const [dbRes, inRes, sentRes] = await Promise.allSettled([
+        query,
+        filter === "sent" ? Promise.resolve([]) : outlook("inbox"),
+        filter === "inbox" ? Promise.resolve([]) : outlook("sent"),
+      ]);
+      const dbRows = dbRes.status === "fulfilled" && !(dbRes.value as any).error ? (((dbRes.value as any).data ?? []) as Row[]) : [];
+      const graphRows = [
+        ...(inRes.status === "fulfilled" ? inRes.value : []),
+        ...(sentRes.status === "fulfilled" ? sentRes.value : []),
+      ];
+      const seen = new Set(dbRows.map((r) => r.graph_id).filter(Boolean));
+      const merged = [...dbRows, ...graphRows.filter((r) => !r.graph_id || !seen.has(r.graph_id))];
+      // A blank view must not conceal a disconnected/failed M365 bridge. A
+      // cached local list remains usable, but when no source succeeded we show
+      // an explicit recovery message instead of "Aucun courriel".
+      if (!merged.length && dbRes.status === "rejected" && inRes.status === "rejected" && sentRes.status === "rejected") {
+        throw dbRes.reason;
+      }
+      if (!merged.length && inRes.status === "rejected" && sentRes.status === "rejected") {
+        throw inRes.reason;
+      }
+      const ts = (r: Row) => new Date(r.sent_at ?? r.received_at ?? 0).getTime();
+      return merged.sort((a, b) => ts(b) - ts(a)).slice(0, 200);
     })();
     if (!pending) emailInFlight.set(key, request);
     try {
       const next = await request;
       emailCache.set(key, { at: Date.now(), rows: next });
       setRows(next);
-    } catch {
+    } catch (error: any) {
       // Keep the existing list visible while the device radio or M365 bridge
       // recovers; a navigation event must not blank the inbox.
+      setLoadError(error?.message || (lang === "fr" ? "Impossible de charger les courriels Microsoft 365." : "Unable to load Microsoft 365 email."));
     } finally {
       if (emailInFlight.get(key) === request) emailInFlight.delete(key);
       setLoading(false);
     }
-  }, [filter, userId]);
+  }, [filter, lang, userId]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -143,7 +188,21 @@ export default function EmailHistoryList() {
 
       <div className="flex-1 overflow-y-auto">
         {loading && <div className="p-4 text-sm text-center" style={{ color: "var(--pp-text-secondary)" }}>…</div>}
-        {!loading && filtered.length === 0 && (
+        {!loading && loadError && filtered.length === 0 && (
+          <div className="mx-3 mt-3 p-3 rounded-lg text-sm" role="alert" style={{ background: "rgba(245,158,11,0.14)", color: "var(--pp-text-primary)", border: "1px solid rgba(245,158,11,0.35)" }}>
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" style={{ color: "#FBBF24" }} />
+              <div className="min-w-0 flex-1">
+                <div className="font-semibold">{lang === "fr" ? "Historique courriel indisponible" : "Email history unavailable"}</div>
+                <div className="text-xs mt-1 opacity-80">{loadError}</div>
+              </div>
+              <button aria-label={lang === "fr" ? "Réessayer les courriels" : "Retry email history"} onClick={() => void load(true)} className="p-1 rounded" title={lang === "fr" ? "Réessayer" : "Retry"}>
+                <RefreshCw className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
+        {!loading && !loadError && filtered.length === 0 && (
           <div className="p-6 text-sm text-center" style={{ color: "var(--pp-text-secondary)" }}>
             {lang === "fr" ? "Aucun courriel dans l'historique." : "No emails in history yet."}
           </div>

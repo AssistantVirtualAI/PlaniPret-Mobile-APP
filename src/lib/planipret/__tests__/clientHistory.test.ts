@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { buildClientBundles } from "@/lib/planipret/clientMaestro";
 import { shouldOfferMaestroClientCreation } from "@/lib/planipret/clientHistory";
 import { maestroClientProfileFromPayload } from "@/lib/planipret/clientProfile";
+import { clientHistoryOwnerIds } from "@/lib/planipret/clientHistoryScope";
 
 describe("client call history", () => {
   it("attaches a call to a Maestro client by the verified client phone without requiring a contract", () => {
@@ -49,5 +50,30 @@ describe("Maestro client telephone profile", () => {
     });
 
     expect(profile).toMatchObject({ maestroClientId: "511", phone: "5145550123" });
+  });
+
+  it("retains every verified Maestro telephone so the complete history can be queried", () => {
+    const profile = maestroClientProfileFromPayload({
+      profile: {
+        id: "511",
+        first_name: "Jane",
+        last_name: "Doe",
+        telephones: [
+          { telephone_type: "mobile", telephone_number: "5145550123" },
+          { telephone_type: "work", telephone_number: "4385550456" },
+          { telephone_type: "home", telephone_number: "4505550789" },
+        ],
+      },
+    });
+
+    expect(profile?.phones).toEqual(["5145550123", "4385550456", "4505550789"]);
+  });
+});
+
+describe("client history owner scope", () => {
+  it("queries both durable broker identities without accepting duplicate or blank values", () => {
+    expect(clientHistoryOwnerIds("auth-1", "profile-1")).toEqual(["profile-1", "auth-1"]);
+    expect(clientHistoryOwnerIds("auth-1", "auth-1")).toEqual(["auth-1"]);
+    expect(clientHistoryOwnerIds(null, "profile-1")).toEqual(["profile-1"]);
   });
 });

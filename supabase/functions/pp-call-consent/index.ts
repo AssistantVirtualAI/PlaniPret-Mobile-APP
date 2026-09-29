@@ -7,6 +7,8 @@
 //
 // Body: { call_id, action: "approve" | "decline" | "delete" | "status",
 //         channel?: "voice" | "screen", reason?: string }
+// `decline` is retained for old clients and executes the same full cleanup as
+// `delete`; it never leaves a locally accessible recording behind.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { corsHeaders, guardPlanipret } from "../_shared/planipret-guard.ts";
@@ -109,7 +111,11 @@ Deno.serve(async (req) => {
   let body: any = {};
   try { body = await req.json(); } catch { /* empty */ }
   const callId = String(body?.call_id ?? "");
-  const action = String(body?.action ?? "status");
+  // The product offers exactly two outcomes for an answered call: Save or
+  // Delete. Preserve `decline` as an API alias, but make it execute the same
+  // destructive cleanup as Delete rather than leaving local media behind.
+  const requestedAction = String(body?.action ?? "status");
+  const action = requestedAction === "decline" ? "delete" : requestedAction;
   const channel = body?.channel === "voice" ? "voice" : "screen";
   // Heure exacte de fin d'appel telle que mesurée par le téléphone.
   const endedAtRaw = String(body?.ended_at ?? "");
@@ -142,21 +148,12 @@ Deno.serve(async (req) => {
         processing_error: pipeline.error ?? null,
       }, pipeline.started ? 200 : 202);
     }
-    // Client ambigu ou introuvable : le courtier doit le désigner, jamais l'app.
-    const clientName = String(body?.client_name ?? "").trim().slice(0, 200);
-    if (!call.maestro_client_id && !String((call as any).maestro_client_name ?? "").trim() && !clientName) {
-      return json({ error: "client_selection_required", needs_client_selection: true }, 409);
-    }
-
     const { data: approved, error: approveError } = await admin.from("planipret_phone_calls").update({
       save_consent: "approved",
       ...endedPatch,
       save_consent_at: new Date().toISOString(),
       save_consent_by: user.id,
       save_consent_channel: channel,
-      ...(clientName && !String((call as any).maestro_client_name ?? "").trim()
-        ? { maestro_client_name: clientName }
-        : {}),
     }).eq("id", callId)
       .or("save_consent.is.null,save_consent.neq.approved")
       .select("id")
@@ -175,33 +172,37 @@ Deno.serve(async (req) => {
     }, pipeline.started ? 200 : 202);
   }
 
-  if (action === "decline") {
-    if (String(call.save_consent ?? "") === "declined") {
-      return json({ ok: true, save_consent: "declined", already_declined: true, pushed_to_maestro: false });
-    }
-    const { data: declined, error: declineError } = await admin.from("planipret_phone_calls").update({
-      save_consent: "declined",
-      ...endedPatch,
-      save_consent_at: new Date().toISOString(),
-      save_consent_by: user.id,
-      save_consent_channel: channel,
-    }).eq("id", callId)
-      .or("save_consent.is.null,save_consent.neq.declined")
-      .select("id")
-      .maybeSingle();
-    if (declineError) return json({ error: "consent_update_failed" }, 500);
-    if (!declined) return json({ ok: true, save_consent: "declined", already_declined: true, pushed_to_maestro: false });
-    return json({ ok: true, save_consent: "declined", pushed_to_maestro: false });
-  }
-
   if (action === "delete") {
-    const purge = await purgeFromMaestro(admin, call);
     const now = new Date().toISOString();
+    // Tombstone first: any in-flight processor sees the deletion before it can
+    // create or send further derived data.
     await admin.from("planipret_phone_calls").update({
       save_consent: "declined",
       deleted_at: now,
       deleted_by: user.id,
       delete_reason: String(body?.reason ?? "").slice(0, 500) || null,
+    }).eq("id", callId);
+
+    // The cached recording is the only audio object stored by this pipeline.
+    // Remove it before clearing the path from the call row.
+    let localAudio = { ok: true, detail: "not_cached" };
+    if (call.recording_storage_path) {
+      const { error } = await admin.storage.from("call-recordings").remove([String(call.recording_storage_path)]);
+      localAudio = error ? { ok: false, detail: `storage_remove_failed:${error.message}` } : { ok: true, detail: "deleted" };
+    }
+
+    // Delete local derived records as well as the primary-row fields. These
+    // records can contain a copy of the summary or coaching generated before
+    // the broker chose Delete.
+    const cleanup = await Promise.allSettled([
+      admin.from("planipret_ai_insights").delete().eq("call_id", callId),
+      admin.from("planipret_pipeline_logs").delete().eq("call_id", callId),
+      admin.from("planipret_recording_uploads").delete().eq("call_id", callId),
+    ]);
+    const localDerived = cleanup.every((result) => result.status === "fulfilled" && !(result.value as any)?.error);
+
+    const purge = await purgeFromMaestro(admin, call);
+    await admin.from("planipret_phone_calls").update({
       recording_url: null,
       ns_recording_url: null,
       recording_storage_path: null,
@@ -215,11 +216,12 @@ Deno.serve(async (req) => {
       ai_key_points: null,
       ai_action_items: null,
       ai_client_insights: null,
+      metadata: { consent_deleted_at: now },
       maestro_purged_at: purge.ok ? now : null,
       maestro_purge_error: purge.ok ? null : purge.detail,
     }).eq("id", callId);
 
-    return json({ ok: true, deleted: true, maestro: purge });
+    return json({ ok: true, deleted: true, local_audio: localAudio, local_derived: localDerived, maestro: purge });
   }
 
   return json({ error: "unknown_action" }, 400);

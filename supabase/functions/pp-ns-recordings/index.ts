@@ -80,8 +80,8 @@ Deno.serve(async (req) => {
       }
       if (!approvedCall) return jsonResponse({ error: "call_not_found" }, 404);
       if (approvedCall.deleted_at) return jsonResponse({ error: "call_deleted" }, 410);
-      if (String(approvedCall.save_consent ?? "pending") !== "approved") {
-        return jsonResponse({ error: "call_consent_required" }, 409);
+      if (String(approvedCall.save_consent ?? "pending") === "declined") {
+        return jsonResponse({ error: "call_consent_declined" }, 409);
       }
       // NS-API v2: GET /domains/{domain}/users/{user}/recordings/{call_id}
       const res = await nsFetch(
@@ -153,7 +153,7 @@ Deno.serve(async (req) => {
         .from("planipret_phone_calls")
         .select("id, user_id, ns_call_id, ns_callid, ns_orig_callid, ns_term_callid, extension, direction, status, from_number, from_name, to_number, to_name, started_at, duration_seconds, recording_url, has_recording, ai_summary, transcript, transcript_segments, transcript_language, ai_coaching, ai_key_points, ai_client_insights, maestro_synced, maestro_client_id, pipeline_state, save_consent, deleted_at")
         .or(`user_id.eq.${ctx.userId},user_id.eq.${ctx.profileId},extension.eq.${ctx.extension}`)
-        .eq("save_consent", "approved")
+        .or("save_consent.is.null,save_consent.neq.declined")
         .is("deleted_at", null)
         .gte("started_at", start)
         .lte("started_at", end)

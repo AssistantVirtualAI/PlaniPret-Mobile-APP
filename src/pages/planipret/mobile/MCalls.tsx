@@ -216,8 +216,13 @@ export default function MCalls() {
         .limit(200);
       if (phoneCallScopeFilter) localQuery = localQuery.or(phoneCallScopeFilter);
       const { data: local } = await localQuery;
+      const deletedLocalIds = new Set((local ?? []).filter((row: any) => row.deleted_at).map((row: any) => String(row.id)));
+      const deletedNsIds = new Set((local ?? []).filter((row: any) => row.deleted_at).flatMap((row: any) => [
+        row.ns_call_id, row.ns_callid, row.ns_orig_callid, row.ns_term_callid,
+      ]).filter(Boolean).map(String));
+      const visibleLocal = (local ?? []).filter((row: any) => !row.deleted_at);
       const byNsId = new Map<string, any>();
-      (local ?? []).forEach((r: any) => { if (r.ns_call_id) byNsId.set(r.ns_call_id, r); });
+      visibleLocal.forEach((r: any) => { if (r.ns_call_id) byNsId.set(r.ns_call_id, r); });
 
       const merged: Call[] = items.map((it, i) => {
         const nsId = pick(it, ["ns_call_id", "call-parent-cdr-id", "cdr-id", "id", "uuid", "call_id", "call-id"]);
@@ -259,18 +264,20 @@ export default function MCalls() {
           // captured the broker extension instead of the external caller.
           metadata: { ...(enriched?.metadata ?? {}), netSapiens: it },
         } as Call;
-      });
+      }).filter((call: any) => !deletedLocalIds.has(String(call.id)) && ![
+        call.ns_call_id, call.ns_callid, call.ns_orig_callid, call.ns_term_callid,
+      ].filter(Boolean).some((id) => deletedNsIds.has(String(id))));
 
       // Les appels locaux sans CDR NS (ex. manqués PJSIP, délai NS 30-60 s)
       // doivent rester visibles : on les fusionne au lieu de les ignorer.
       const mergedIds = new Set(merged.map((m: any) => m.id));
-      const localOnly = (local ?? []).filter((r: any) => !r.ns_call_id && !mergedIds.has(r.id)) as Call[];
+      const localOnly = visibleLocal.filter((r: any) => !r.ns_call_id && !mergedIds.has(r.id)) as Call[];
       const all = [...merged, ...localOnly].sort(
         (a: any, b: any) => new Date(b.started_at ?? 0).getTime() - new Date(a.started_at ?? 0).getTime()
       );
 
       // Fallback : si NS ne renvoie rien, montrer le cache local
-      const next = (all.length ? all : ((local ?? []) as Call[])) as Call[];
+      const next = (all.length ? all : (visibleLocal as Call[])) as Call[];
       setCalls(next);
       writeScreenCache(`calls:list:${userId}`, next);
 
@@ -284,6 +291,7 @@ export default function MCalls() {
         let fallbackQuery: any = supabase
           .from("planipret_phone_calls")
           .select("*")
+          .is("deleted_at", null)
           .order("started_at", { ascending: false })
           .limit(100);
         if (phoneCallScopeFilter) fallbackQuery = fallbackQuery.or(phoneCallScopeFilter);
@@ -314,7 +322,8 @@ export default function MCalls() {
         let localQuery: any = supabase
           .from("planipret_phone_calls")
           .select("*")
-          .eq("save_consent", "approved")
+          .or("save_consent.is.null,save_consent.eq.pending,save_consent.eq.approved")
+          .is("deleted_at", null)
           .not("to_number", "ilike", "%vmail%")
           .not("to_number", "ilike", "%voicemail%")
           .not("to_number", "ilike", "%vm@%")

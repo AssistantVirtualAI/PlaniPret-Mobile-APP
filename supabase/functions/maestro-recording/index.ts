@@ -8,7 +8,7 @@ import {
   json,
   maestroFetch,
 } from "../_shared/maestro.ts";
-import { authorizeCallAccess, requireApprovedCallConsent } from "../_shared/planipret-call-access.ts";
+import { authorizeCallAccess, allowCallViewing, requireApprovedCallConsent } from "../_shared/planipret-call-access.ts";
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
@@ -38,7 +38,7 @@ Deno.serve(async (req) => {
     }
     const access = await authorizeCallAccess(req, admin, call);
     if (!access.ok) return json({ available: false, reason: access.error, url: null, recording_url: null }, access.status);
-    const consent = requireApprovedCallConsent(call);
+    const consent = allowCallViewing(call);
     if (!consent.ok) return json({ available: false, reason: consent.error, url: null, recording_url: null }, consent.status);
 
     // Cached URL check
@@ -55,6 +55,16 @@ Deno.serve(async (req) => {
         duration_sec: cached.maestro_recording_duration_sec ?? null,
         cached: true,
       });
+    }
+
+    // A pending decision may use the recording fetched from NetSapiens and
+    // cached locally. Do not query Maestro for an unapproved call.
+    if (call.recording_url) {
+      return json({ available: true, reason: "local_or_ns", url: call.recording_url, recording_url: call.recording_url, expires_at: null, source: "local" });
+    }
+    const remoteConsent = requireApprovedCallConsent(call);
+    if (!remoteConsent.ok) {
+      return json({ available: false, reason: "local_recording_not_ready", url: null, recording_url: null, deferred: "consent_not_approved" });
     }
 
     const cfg = await getMaestroConfig(admin);

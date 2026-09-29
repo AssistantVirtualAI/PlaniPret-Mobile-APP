@@ -23,8 +23,8 @@ check(cdr.includes('String(updated.save_consent ?? "") === "approved"'), "Automa
 check(cdr.includes("EdgeRuntime"), "Background post-call work must be retained by the Edge runtime");
 check(!cdr.includes("maestro-sync-call", cdr.indexOf("queueApprovedPostCall")), "CDR pull must delegate through the consent-aware post-call orchestrator");
 
-check(autoProcess.includes("requireApprovedCallConsent"), "Post-call processing must require approved consent");
-check(autoProcess.includes("maestro-sync-call"), "Approved calls must still enter Maestro synchronization");
+check(autoProcess.includes("allowCallViewing"), "Post-call processing must keep local media and analysis available until explicit deletion");
+check(autoProcess.includes('save_consent ?? "pending") !== "approved"') && autoProcess.includes("maestro-sync-call"), "Only approved calls may enter Maestro synchronization");
 
 check(!callsPage.includes("calls not synced"), "The mobile page must not display a manual call-sync failure banner");
 check(!callsPage.includes("appels non synchronisés"), "The mobile page must not display a manual French call-sync failure banner");

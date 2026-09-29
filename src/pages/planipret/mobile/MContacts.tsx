@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { ensureAiConsent } from "@/components/planipret/mobile/AiConsentHost";
 import { useOutletContext, useNavigate } from "react-router-dom";
 import { clientDetailPath } from "@/lib/planipret/callerClient";
+import { maestroClientUrl } from "@/lib/planipret/maestroLinks";
 import { Search, Phone, MessageSquare, Mail, Users, UserCog, BookUser, X, Calendar, ListChecks, Loader2, ExternalLink, Sparkles, Plus, Star, Copy, Send, Filter, Briefcase, Check, AlertTriangle, History } from "lucide-react";
 import { saveAppointment, loadAppointments, subscribeAppointments, type ApptHistoryEntry } from "@/lib/appointmentHistory";
 import AvaSummarizeSheet from "@/components/planipret/ava/AvaSummarizeSheet";
@@ -155,6 +156,7 @@ export default function MContacts() {
     "favorites",
     ...(peekPpContacts("directory") ? (["directory"] as Tab[]) : []),
     ...(peekPpContacts("list") ? (["personal"] as Tab[]) : []),
+    ...(peekPpContacts("maestro_clients") ? (["clients"] as Tab[]) : []),
   ]));
 
   useEffect(() => {
@@ -246,7 +248,7 @@ export default function MContacts() {
 
   useEffect(() => {
     if (tab === "favorites") return;
-    void load(tab, { limit: 120 });
+    void load(tab, { limit: 500 });
   }, [tab, load]);
 
   useEffect(() => {
@@ -264,7 +266,11 @@ export default function MContacts() {
   // second Maestro request after every navigation.
   useEffect(() => {
     prefetchPpContacts(["list", "directory", "maestro_clients", "maestro_brokers"], 500);
-    const quick = window.setTimeout(() => { void load("directory", { limit: 120, background: true }); }, 250);
+    const quick = window.setTimeout(() => {
+      void load("directory", { limit: 500, background: true });
+      void load("clients", { limit: 500, background: true });
+      void load("personal", { limit: 500, background: true });
+    }, 150);
     return () => { window.clearTimeout(quick); };
   }, [load]);
 
@@ -1176,6 +1182,17 @@ function ContactDetailSheet({
           >
             <ExternalLink className="w-3 h-3" /> Historique complet
           </button>
+        )}
+        {maestroId && (
+          <a
+            href={maestroClientUrl(String(maestroId))}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="w-full mt-2 py-2 rounded-lg text-[11px] font-medium flex items-center justify-center gap-1.5"
+            style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
+          >
+            <ExternalLink className="w-3 h-3" /> Voir dans Maestro
+          </a>
         )}
       </div>
 

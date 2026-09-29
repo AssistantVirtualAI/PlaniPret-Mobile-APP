@@ -54,7 +54,7 @@ const postCallSweeper = read("supabase/functions/pp-maestro-push-sweeper/index.t
 const cdrRetryJob = read("supabase/functions/maestro-cdr-retry-job/index.ts");
 check(webhook.includes('got !== expected'), "NetSapiens webhook must validate its shared secret");
 check(webhook.includes('functions/v1/pp-auto-process-call'), "CDR webhook must enter the consent-aware post-call orchestrator");
-check(!webhook.includes('functions/v1/ai-analyze-call'), "CDR webhook must not invoke AI before consent");
+check(!webhook.includes('functions/v1/ai-analyze-call'), "CDR webhook must enter the consent-aware local analysis orchestrator rather than invoke AI directly");
 check(!webhook.includes('functions/v1/maestro-sync-call'), "CDR webhook must not push Maestro before consent");
 check(webhook.includes("CDR reconciled to existing call") && webhook.includes("findExistingCdrCall") && webhook.includes("ns_orig_callid"), "CDR webhook must reconcile the final CDR to the original owned call before post-call processing");
 check(nsEvents.includes('if (looksLikeCdr(item))') && nsEvents.indexOf('if (looksLikeCdr(item))') < nsEvents.indexOf('if (looksLikeCall(item))'), "NetSapiens CDRs must be classified before call-leg events so post-call processing is not skipped");
@@ -106,13 +106,46 @@ for (const file of [
 ]) {
   const source = read(file);
   check(source.includes("authorizeCallAccess"), `${file} must enforce call ownership/service identity`);
-  check(source.includes("requireApprovedCallConsent"), `${file} must enforce approved post-call consent`);
 }
+for (const file of [
+  "supabase/functions/ns-get-recording/index.ts",
+  "supabase/functions/ns-get-transcription/index.ts",
+  "supabase/functions/pp-admin-transcribe/index.ts",
+  "supabase/functions/pp-coach-call/index.ts",
+  "supabase/functions/pp-auto-process-call/index.ts",
+  "supabase/functions/maestro-transcript/index.ts",
+  "supabase/functions/maestro-ai-analysis/index.ts",
+  "supabase/functions/maestro-recording/index.ts",
+  "supabase/functions/ai-analyze-call/index.ts",
+]) {
+  check(read(file).includes("allowCallViewing"), `${file} must permit owned local media/analysis until an explicit delete`);
+}
+for (const file of [
+  "supabase/functions/maestro-cdr/index.ts",
+  "supabase/functions/maestro-sync-call/index.ts",
+  "supabase/functions/maestro-transcript/index.ts",
+  "supabase/functions/maestro-ai-analysis/index.ts",
+  "supabase/functions/maestro-recording/index.ts",
+]) {
+  check(read(file).includes("requireApprovedCallConsent"), `${file} must enforce approval before a Maestro write`);
+}
+const analysisMirror = read("supabase/functions/_shared/maestro-telecom.ts");
+check(analysisMirror.includes('save_consent ?? "pending") !== "approved"'), "Shared AI mirroring must reject pending or declined calls before Maestro");
 const recordingsList = read("supabase/functions/pp-ns-recordings/index.ts");
-check(recordingsList.includes('eq("save_consent", "approved")') && recordingsList.includes("user_id.eq.${ctx.userId}") && recordingsList.includes("ownerScope") && recordingsList.includes("call_consent_required"), "pp-ns-recordings must return only owned, approved calls");
+check(recordingsList.includes('save_consent.neq.declined') && recordingsList.includes("user_id.eq.${ctx.userId}") && recordingsList.includes("ownerScope") && recordingsList.includes("call_consent_declined"), "pp-ns-recordings must expose only owned, non-deleted calls until an explicit delete");
+const localMediaPolicy = read("src/lib/planipret/recordingConsent.ts");
+check(localMediaPolicy.includes('saveConsent !== "declined"'), "Mobile client history must keep local media available until explicit deletion");
+const mobileCalls = read("src/pages/planipret/mobile/MCalls.tsx");
+check(mobileCalls.includes('save_consent.eq.pending') && mobileCalls.includes('.is("deleted_at", null)') && mobileCalls.includes("deletedNsIds"), "Mobile history must include pending calls and hide explicit deletions even when NetSapiens still returns a CDR");
+check(consent.includes('storage.from("call-recordings").remove') && consent.includes('planipret_ai_insights").delete') && consent.includes('planipret_pipeline_logs").delete'), "Delete must purge locally cached audio and derived call analysis");
 
 const mobileShell = read("src/pages/planipret/PlanipretMobile.tsx");
 check(mobileShell.includes("<PostCallConsentSheet"), "The shipped mobile shell must mount PostCallConsentSheet");
+check(hook.includes('localStorage.setItem("pp.pending-post-call-decision.v2"') && hook.includes('window.dispatchEvent(new CustomEvent("pp:call-ended"'), "Every answered native call must persist and emit a post-call Save/Delete decision");
+const consentSheet = read("src/components/planipret/mobile/PostCallConsentSheet.tsx");
+check(consentSheet.includes('localStorage.getItem(PENDING_KEY)') && consentSheet.includes('Supprimer l\'appel') && consentSheet.includes('Enregistrer l\'appel') && !consentSheet.includes('mustPickClient'), "The post-call sheet must restore after restart and present only Save or Delete");
+check(consent.includes('requestedAction === "decline" ? "delete"') && consent.includes('storage.from("call-recordings").remove'), "A declined/removed call must use the same full local deletion path");
+check(!consent.includes('client_selection_required'), "Saving an unknown caller must not add a third post-call decision");
 const calls = read("src/pages/planipret/mobile/MCalls.tsx");
 check(!calls.includes('functions.invoke("maestro-actions"'), "MCalls must not use legacy Maestro mutations");
 check(calls.includes("createClientFollowUpTask") && calls.includes('functions.invoke("ms365-actions"'), "Post-call task/event actions must use the official Task API and Microsoft gateway");

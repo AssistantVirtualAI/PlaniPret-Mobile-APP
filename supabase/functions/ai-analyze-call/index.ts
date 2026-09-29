@@ -3,7 +3,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { mirrorCallAnalysisToMaestro } from "../_shared/maestro-telecom.ts";
 import { callAnthropic } from "../_shared/anthropic.ts";
-import { authorizeCallAccess, requireApprovedCallConsent } from "../_shared/planipret-call-access.ts";
+import { authorizeCallAccess, allowCallViewing } from "../_shared/planipret-call-access.ts";
 
 
 const SYSTEM_PROMPT = `Tu es un analyste IA spécialisé en appels téléphoniques et coaching d'agents.
@@ -212,7 +212,7 @@ Deno.serve(async (req) => {
     if (!access.ok) {
       return new Response(JSON.stringify({ success: false, error: access.error }), { status: access.status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }
-    const consent = requireApprovedCallConsent(ppCall);
+    const consent = allowCallViewing(ppCall);
     if (!consent.ok) {
       return new Response(JSON.stringify({ success: false, error: consent.error }), { status: consent.status, headers: { ...corsHeaders, "Content-Type": "application/json" } });
     }

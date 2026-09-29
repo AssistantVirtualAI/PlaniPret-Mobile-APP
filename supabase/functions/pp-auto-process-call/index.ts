@@ -13,7 +13,7 @@
 
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { authorizeCallAccess, requireApprovedCallConsent } from "../_shared/planipret-call-access.ts";
+import { authorizeCallAccess, allowCallViewing } from "../_shared/planipret-call-access.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_ROLE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -43,22 +43,26 @@ Deno.serve(async (req) => {
   const access = await authorizeCallAccess(req, admin, row);
   if (!access.ok) return json({ error: access.error }, access.status);
 
-  // Consentement obligatoire : aucun traitement (transcription, IA, Maestro)
-  // tant que le courtier n'a pas accepté de sauvegarder l'appel.
-  const consent = requireApprovedCallConsent(row);
+  // Audio, transcription and AI remain local while the broker decides. A
+  // refusal/deletion stops the pipeline; Maestro remains gated separately.
+  const consent = allowCallViewing(row);
   if (!consent.ok) return json({ ok: true, skipped: consent.error });
 
 
   // Idempotency short-circuits — cheap and avoids any downstream cost.
   const hasCompleteAnalysis = !!row.analyzed_at && !!row.ai_summary && !!row.ai_coaching && row.coaching_score != null;
   if (hasCompleteAnalysis) {
-    // Analysis already done — still make sure Maestro has it (idempotent).
-    fetch(`${SUPABASE_URL}/functions/v1/maestro-sync-call`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${SERVICE_ROLE}` },
-      body: JSON.stringify({ call_id: callId }),
-    }).catch(() => {});
-    return json({ ok: true, skipped: "already_analyzed", maestro_sync: "queued" });
+    // Analysis already done. Only an approved call may schedule its Maestro
+    // delivery; a pending one stays local until the post-call decision.
+    const approved = String(row.save_consent ?? "pending") === "approved" && !row.deleted_at;
+    if (approved) {
+      fetch(`${SUPABASE_URL}/functions/v1/maestro-sync-call`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${SERVICE_ROLE}` },
+        body: JSON.stringify({ call_id: callId }),
+      }).catch(() => {});
+    }
+    return json({ ok: true, skipped: "already_analyzed", maestro_sync: approved ? "queued" : "deferred_pending_approval" });
   }
   if (row.analysis_in_progress) {
     const lockedAt = new Date(row.analysis_locked_at || 0).getTime();
@@ -83,8 +87,9 @@ Deno.serve(async (req) => {
   const authHeader = `Bearer ${SERVICE_ROLE}`;
 
   // Fire-and-forget: push everything we know about this call into Maestro.
-  // Idempotent on the Maestro side, so it's safe to call on every pass.
+  // This hand-off is deliberately unavailable until an explicit approval.
   const syncMaestro = () => {
+    if (String(row.save_consent ?? "pending") !== "approved" || row.deleted_at) return;
     try {
       fetch(`${SUPABASE_URL}/functions/v1/maestro-sync-call`, {
         method: "POST",

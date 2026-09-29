@@ -5,8 +5,8 @@ import {
   clientNameOf,
   followupIdempotencyKey,
   clientNumberOf,
-  needsClientSelection,
   pickEndedCall,
+  requiresPostCallDecision,
   type ConsentCall,
 } from "../postCallConsent";
 
@@ -22,7 +22,22 @@ const base = (over: Partial<ConsentCall> = {}): ConsentCall => ({
   to_name: null,
   duration_seconds: 42,
   save_consent: null,
+  answered_at: "2026-09-29T19:00:00.000Z",
+  status: "ended",
   ...over,
+});
+
+describe("décision après appel répondu", () => {
+  it("demande une décision pour les appels entrants et sortants répondus", () => {
+    expect(requiresPostCallDecision(base({ direction: "inbound" }))).toBe(true);
+    expect(requiresPostCallDecision(base({ direction: "outbound" }))).toBe(true);
+  });
+
+  it("ignore les appels manqués, refusés ou jamais connectés", () => {
+    expect(requiresPostCallDecision(base({ answered_at: null, duration_seconds: 0, status: "missed" }))).toBe(false);
+    expect(requiresPostCallDecision(base({ answered_at: null, duration_seconds: 0, status: "declined" }))).toBe(false);
+    expect(requiresPostCallDecision(base({ answered_at: null, duration_seconds: 0, status: "no_answer" }))).toBe(false);
+  });
 });
 
 describe("sélection de l'appel terminé", () => {
@@ -54,10 +69,10 @@ describe("sélection de l'appel terminé", () => {
   });
 });
 
-describe("client ambigu", () => {
-  it("exige une sélection manuelle sans client identifié", () => {
-    expect(needsClientSelection(base({ maestro_client_id: null, maestro_client_name: null }))).toBe(true);
-    expect(needsClientSelection(base())).toBe(false);
+describe("client inconnu", () => {
+  it("laisse le courtier enregistrer l'appel sans troisième décision", () => {
+    const unknown = base({ maestro_client_id: null, maestro_client_name: null, from_name: null, to_name: null });
+    expect(clientNameOf(unknown)).toBe("+15550002222");
   });
 
   it("affiche le nom du client connu", () => {

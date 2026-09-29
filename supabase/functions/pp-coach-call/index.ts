@@ -6,7 +6,7 @@ import { aiFetch } from "../_shared/claude-compat.ts";
 import { corsHeaders } from "npm:@supabase/supabase-js@2/cors";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { callAnthropic } from "../_shared/anthropic.ts";
-import { authorizeCallAccess, requireApprovedCallConsent } from "../_shared/planipret-call-access.ts";
+import { authorizeCallAccess, allowCallViewing } from "../_shared/planipret-call-access.ts";
 
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -70,7 +70,7 @@ Deno.serve(async (req) => {
   if (error || !row) return json({ error: "call not found", details: error?.message }, 404);
   const access = await authorizeCallAccess(req, admin, row);
   if (!access.ok) return json({ error: access.error }, access.status);
-  const consent = requireApprovedCallConsent(row);
+  const consent = allowCallViewing(row);
   if (!consent.ok) return json({ error: consent.error }, consent.status);
 
   // ── A: cache déjà analysé ────────────────────────────────
@@ -104,7 +104,7 @@ Deno.serve(async (req) => {
     analysis_locked_at: new Date().toISOString(),
     analysis_locked_by: lockId,
   }).eq("id", call_id)
-    .eq("save_consent", "approved")
+    .or("save_consent.is.null,save_consent.neq.declined")
     .is("deleted_at", null)
     .or(`analysis_in_progress.eq.false,analysis_in_progress.is.null,analysis_locked_at.is.null,analysis_locked_at.lt.${staleBefore}`)
     .select("id")
@@ -453,14 +453,16 @@ Direction: ${row.direction ?? "?"} · Durée: ${row.duration_seconds ?? "?"}s`;
       });
     } catch (_) { /* best-effort */ }
 
-    // ── H2: push the whole call (recording + transcript + AI) to Maestro ──
-    try {
-      fetch(`${SUPABASE_URL}/functions/v1/maestro-sync-call`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${SERVICE_ROLE}` },
-        body: JSON.stringify({ call_id }),
-      }).catch(() => {});
-    } catch (_) { /* best-effort */ }
+    // ── H2: approval is the only hand-off point to Maestro ───────────────
+    if (String(row.save_consent ?? "pending") === "approved" && !row.deleted_at) {
+      try {
+        fetch(`${SUPABASE_URL}/functions/v1/maestro-sync-call`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${SERVICE_ROLE}` },
+          body: JSON.stringify({ call_id }),
+        }).catch(() => {});
+      } catch (_) { /* best-effort */ }
+    }
 
 
     return json({

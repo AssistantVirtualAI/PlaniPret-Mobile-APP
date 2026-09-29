@@ -91,7 +91,9 @@ export default function MMessages() {
     const q = searchParams.get("tab");
     return (q === "sms" || q === "team" || q === "teams365" || q === "emails" || q === "roster") ? q : "sms";
   })();
-  const [sub, setSub] = useState<SubTab>(initialTab);
+  const [sub, setSubRaw] = useState<SubTab>(initialTab);
+  const [visited, setVisited] = useState<Set<SubTab>>(() => new Set([initialTab]));
+  const setSub = (k: SubTab) => { setVisited((v) => (v.has(k) ? v : new Set(v).add(k))); setSubRaw(k); };
   const qTo = searchParams.get("to") ?? "";
   const qName = searchParams.get("name") ?? "";
 
@@ -159,11 +161,11 @@ export default function MMessages() {
       </div>
 
       <div className="flex-1 overflow-hidden">
-        {sub === "sms" && <SmsList profile={profile} openDialer={openDialer} registerRefresh={registerRefresh} initialTo={qTo} />}
-        {sub === "team" && <TeamChat profile={profile} />}
-        {sub === "teams365" && <Teams365Panel profile={profile} />}
-        {sub === "emails" && <EmailsList profile={profile} initialTo={qTo} initialName={qName} />}
-        {sub === "history" && <EmailHistoryList />}
+        {visited.has("sms") && <div className="h-full" hidden={sub !== "sms"}><SmsList profile={profile} openDialer={openDialer} registerRefresh={registerRefresh} initialTo={qTo} /></div>}
+        {visited.has("team") && <div className="h-full" hidden={sub !== "team"}><TeamChat profile={profile} /></div>}
+        {visited.has("teams365") && <div className="h-full" hidden={sub !== "teams365"}><Teams365Panel profile={profile} /></div>}
+        {visited.has("emails") && <div className="h-full" hidden={sub !== "emails"}><EmailsList profile={profile} initialTo={qTo} initialName={qName} /></div>}
+        {visited.has("history") && <div className="h-full" hidden={sub !== "history"}><EmailHistoryList /></div>}
       </div>
     </div>
   );
@@ -231,14 +233,36 @@ const msgTime = (m: any) => {
   if (typeof raw === "string" && !raw.includes("T")) return raw.replace(" ", "T") + "Z";
   return raw;
 };
-const msgIsOut = (m: any, myExt: string) => {
+const last10 = (v: unknown) => String(v ?? "").replace(/\D/g, "").slice(-10);
+/**
+ * Sens d'un texto. Priorité aux numéros (le champ `direction` de NetSapiens
+ * est ambigu : orig/term varient selon la copie). Si l'expéditeur est le
+ * correspondant → reçu; si le destinataire est le correspondant → envoyé.
+ */
+const msgIsOut = (m: any, myExt: string, peer?: string) => {
   const dir = (m.direction ?? "").toLowerCase();
+  if (m.source === "local" || String(m.id ?? "").startsWith("tmp-")) {
+    if (dir === "outbound" || dir === "out" || dir === "sent") return true;
+    if (dir === "inbound" || dir === "in" || dir === "received") return false;
+  }
+  const peerKey = last10(peer);
+  if (peerKey.length >= 7) {
+    const fromKey = last10(m["from-number"] ?? m.from ?? m.source_number);
+    if (fromKey && fromKey === peerKey) return false;
+    const toKeys = String(m["terminating-number"] ?? m.dialed ?? m.to ?? m.destination ?? "")
+      .split(",").map(last10).filter(Boolean);
+    if (toKeys.includes(peerKey)) return true;
+  }
+  const fromUser = String(m["from-user-id"] ?? "");
+  if (fromUser && myExt && (fromUser === myExt || fromUser.startsWith(`${myExt}@`))) return true;
+  const termUser = String(m["terminating-user-id"] ?? "");
+  if (termUser && myExt && (termUser === myExt || termUser.startsWith(`${myExt}@`))) return false;
   // NS-API: "orig" = originating (outbound from user), "term" = terminating (inbound to user)
   if (dir === "outbound" || dir === "out" || dir === "sent" || dir === "orig") return true;
   if (dir === "inbound" || dir === "in" || dir === "received" || dir === "term") return false;
   const from = m.from ?? m.source ?? m["from-user-id"] ?? m["from-number"] ?? "";
   const fromStr = String(from);
-  return fromStr === myExt || fromStr.startsWith(`${myExt}@`);
+  return !!myExt && (fromStr === myExt || fromStr.startsWith(`${myExt}@`));
 };
 
 /**
@@ -246,7 +270,7 @@ const msgIsOut = (m: any, myExt: string) => {
  * (copie « orig » + écho « term »). On dédoublonne sur corps + fenêtre de 2 min,
  * en gardant la copie sortante.
  */
-const dedupeMessages = (list: any[], myExt: string) => {
+const dedupeMessages = (list: any[], myExt: string, peer?: string) => {
   const kept: any[] = [];
   for (const m of list) {
     const body = String(msgBody(m) ?? "").trim();
@@ -258,7 +282,7 @@ const dedupeMessages = (list: any[], myExt: string) => {
     });
     if (idx === -1) { kept.push(m); continue; }
     // conserve la version sortante si l'une des deux l'est
-    if (!msgIsOut(kept[idx], myExt) && msgIsOut(m, myExt)) kept[idx] = m;
+    if (!msgIsOut(kept[idx], myExt, peer) && msgIsOut(m, myExt, peer)) kept[idx] = m;
   }
   return kept;
 };
@@ -729,7 +753,7 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
       if (err) throw err;
       const list: NsMessage[] = (data as any)?.messages ?? [];
       list.sort((a, b) => +new Date(msgTime(a)) - +new Date(msgTime(b)));
-      setMessages(dedupeMessages(list, myExt));
+      setMessages(dedupeMessages(list, myExt, number));
     } catch (e: any) {
       console.error("[pp-ns-sms] messages", e);
       setError(e?.message ?? t("messages.sendFailed"));
@@ -780,7 +804,7 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
       timestamp: new Date().toISOString(),
     };
     atBottomRef.current = true;
-    setMessages((prev) => dedupeMessages([...prev, optimistic], myExt));
+    setMessages((prev) => dedupeMessages([...prev, optimistic], myExt, number));
     setText("");
     try {
       const payload = { action: "send", to: number, message: body, idempotency_key: submission.idempotencyKey, ...(currentThreadId ? { thread_id: currentThreadId } : {}) };
@@ -923,7 +947,7 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
             </div>
           )}
           {visibleMessages.map((m, i) => {
-            const out = msgIsOut(m, myExt);
+            const out = msgIsOut(m, myExt, number);
             const body = msgBody(m);
             return (
               <div key={msgId(m, i)} className={`flex ${out ? "justify-end" : "justify-start"}`}>
@@ -975,7 +999,7 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
         open={sumOpen}
         source="sms"
         title={`${t("messages.smsWith")} ${number}`}
-        content={messages.map((m) => `${msgIsOut(m, myExt) ? t("common.me") : number}: ${msgBody(m)}`).join("\n")}
+        content={messages.map((m) => `${msgIsOut(m, myExt, number) ? t("common.me") : number}: ${msgBody(m)}`).join("\n")}
         onClose={() => setSumOpen(false)}
         onInsert={(t) => setText((cur) => cur ? `${cur} ${t}` : t)}
       />

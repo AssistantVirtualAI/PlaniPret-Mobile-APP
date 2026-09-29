@@ -5,26 +5,38 @@ import { supabase } from "@/integrations/supabase/client";
 import { usePlanipretTasks } from "@/hooks/planipret/usePlanipretTasks";
 import ClientMaestroDetail from "@/components/planipret/clients/ClientMaestroDetail";
 import SmsDraftSheet, { type SmsDraftTarget } from "@/components/planipret/mobile/SmsDraftSheet";
+import { clientHistoryOwnerIds } from "@/lib/planipret/clientHistoryScope";
 
 /** Fiche d'un client : appels, tâches, dossiers et commissions. */
 export default function MClientDetail() {
   const navigate = useNavigate();
   const { clientKey = "" } = useParams();
   const [searchParams] = useSearchParams();
-  const [userId, setUserId] = useState<string | null>(null);
+  const [authUserId, setAuthUserId] = useState<string | null>(null);
+  const [profileId, setProfileId] = useState<string | null>(null);
   const lang = (localStorage.getItem("pp_lang") === "en" ? "en" : "fr") as "fr" | "en";
 
   useEffect(() => {
     let alive = true;
     void (async () => {
       const { data } = await supabase.auth.getUser();
-      if (alive) setUserId(data.user?.id ?? null);
+      const nextAuthUserId = data.user?.id ?? null;
+      if (!alive) return;
+      setAuthUserId(nextAuthUserId);
+      if (!nextAuthUserId) { setProfileId(null); return; }
+      const { data: profile } = await supabase
+        .from("planipret_profiles")
+        .select("id")
+        .eq("user_id", nextAuthUserId)
+        .maybeSingle();
+      if (alive) setProfileId((profile as any)?.id ?? null);
     })();
     return () => { alive = false; };
   }, []);
 
   const [smsTarget, setSmsTarget] = useState<SmsDraftTarget | null>(null);
-  const { tasks, loading, lastSyncAt, setFilter } = usePlanipretTasks(userId);
+  const historyOwnerIds = clientHistoryOwnerIds(authUserId, profileId);
+  const { tasks, loading, lastSyncAt, setFilter } = usePlanipretTasks(profileId ?? authUserId);
   useEffect(() => { setFilter("all"); }, [setFilter]);
 
   return (
@@ -44,7 +56,7 @@ export default function MClientDetail() {
         clientKey={clientKey}
         maestroClientId={searchParams.get("mid")}
         tasks={tasks}
-        userIds={userId ? [userId] : []}
+        userIds={historyOwnerIds}
         lang={lang}
         lastSyncAt={lastSyncAt}
         loading={loading}

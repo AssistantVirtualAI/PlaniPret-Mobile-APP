@@ -13,11 +13,16 @@ export type ConsentCall = {
   to_name: string | null;
   duration_seconds: number | null;
   save_consent: string | null;
+  answered_at?: string | null;
+  status?: string | null;
+  created_at?: string | null;
 };
 
 export type EndedDetail = {
   providerCallId?: string | null;
   number?: string | null;
+  direction?: "in" | "out" | null;
+  answered?: boolean;
   /**
    * D'où viennent les lignes fournies :
    *  • "provider" : requête ciblée sur l'identifiant fournisseur (id / ns_callid
@@ -32,6 +37,15 @@ export function alreadyDecided(call: Pick<ConsentCall, "save_consent">): boolean
   return call.save_consent === "approved" || call.save_consent === "declined";
 }
 
+/** Only a connected call requires a save/delete decision. */
+export function requiresPostCallDecision(call: ConsentCall): boolean {
+  if (alreadyDecided(call)) return false;
+  if (call.answered_at) return true;
+  const status = String(call.status ?? "").toLowerCase();
+  const duration = Number(call.duration_seconds ?? 0);
+  return duration > 0 && !["missed", "no_answer", "declined", "rejected", "cancelled", "failed"].some((value) => status.includes(value));
+}
+
 /**
  * Choisit l'appel qui vient de se terminer. On n'accepte QUE l'appel désigné
  * par l'événement, ou — à défaut d'identifiant fournisseur — un appel très
@@ -44,7 +58,7 @@ export function pickEndedCall(
 ): ConsentCall | null {
   const digits = (v: unknown) => String(v ?? "").replace(/\D/g, "").slice(-10);
   const owned = rows.filter((r) => !r.user_id || ownerIds.includes(String(r.user_id)));
-  const usable = owned.filter((r) => !alreadyDecided(r));
+  const usable = owned.filter(requiresPostCallDecision);
   if (!usable.length) return null;
   if (detail.providerCallId) {
     const match = usable.find((r) => r.id === detail.providerCallId);

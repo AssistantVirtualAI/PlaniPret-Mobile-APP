@@ -221,7 +221,7 @@ export default function RecordingsList({
   // transcriptions. Deux travailleurs évitent de surcharger le réseau mobile.
   useEffect(() => {
     const eligible = withRec.filter((c) =>
-      c.save_consent === "approved" &&
+      c.save_consent !== "declined" &&
       hasResolvableAudio(c) &&
       !isVoicemailCall(c)
     );

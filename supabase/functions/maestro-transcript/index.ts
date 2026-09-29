@@ -16,7 +16,7 @@ import {
   telecomAuth,
   updateCallPipeline,
 } from "../_shared/maestro.ts";
-import { authorizeCallAccess, requireApprovedCallConsent } from "../_shared/planipret-call-access.ts";
+import { authorizeCallAccess, allowCallViewing, requireApprovedCallConsent } from "../_shared/planipret-call-access.ts";
 
 // Un WAV « en-tête seulement » (~1,3 Ko) ne contient aucun son : le fournisseur STT
 // le refuse systématiquement en HTTP 400. On n'envoie rien en dessous de ce seuil.
@@ -97,8 +97,9 @@ Deno.serve(async (req) => {
     if (!call) return json({ success: false, error: "call_not_found" }, 404);
     const access = await authorizeCallAccess(req, admin, call);
     if (!access.ok) return json({ success: false, error: access.error }, access.status);
-    const consent = requireApprovedCallConsent(call);
+    const consent = allowCallViewing(call);
     if (!consent.ok) return json({ success: false, error: consent.error }, consent.status);
+    const remoteConsent = requireApprovedCallConsent(call);
 
     if (call.transcript && !force) {
       // Still trigger AI in case it wasn't done
@@ -132,7 +133,7 @@ Deno.serve(async (req) => {
     const dueForPoll = !lastPollAt || Date.now() - lastPollAt >= nextDelayMs;
     const correlation_id = `call_${call_id}`;
 
-    if (call.maestro_call_id && (force || (polls < MAX_POLLS && dueForPoll))) {
+    if (remoteConsent.ok && call.maestro_call_id && (force || (polls < MAX_POLLS && dueForPoll))) {
       try {
 
         const cfg = await getMaestroConfig(admin);
@@ -221,8 +222,9 @@ Deno.serve(async (req) => {
       source = result ? "lovable" as any : null;
     }
 
-    // 4. Try fetching recording URL from Maestro if still nothing
-    if (!result) {
+    // 4. An unapproved call never queries Maestro as a fallback. Its local
+    // NetSapiens audio remains the sole source until the broker saves it.
+    if (!result && remoteConsent.ok) {
       const cfg = await getMaestroConfig(admin);
       if (cfg.url && cfg.key) {
         const auth = await getBrokerAuth(admin, call.user_id);
@@ -257,9 +259,9 @@ Deno.serve(async (req) => {
       })
       .eq("id", call.id);
 
-    // 4. Push to Maestro through the supported call update contract. Maestro
+    // 4. Push to Maestro only after the broker's explicit decision. Maestro
     // has no dedicated transcript upload endpoint.
-    try {
+    if (remoteConsent.ok) try {
       const cfg = await getMaestroConfig(admin);
       if (cfg.url && cfg.key && call.maestro_call_id) {
         const auth = await telecomAuth(admin, call.user_id, false);
@@ -281,6 +283,8 @@ Deno.serve(async (req) => {
       }
     } catch (e) {
       console.warn("push transcript to maestro failed", e);
+    } else {
+      console.info(`[maestro-transcript] local-only call=${call_id} — consent_not_approved`);
     }
 
     await setPipelineStep(admin, call_id, "transcript", "done", { source });

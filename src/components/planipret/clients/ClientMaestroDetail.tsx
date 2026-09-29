@@ -13,7 +13,7 @@ import {
   clientProfileErrorMessage, maestroClientProfileFromPayload, mergeClientProfile,
   type MaestroClientProfile,
 } from "@/lib/planipret/clientProfile";
-import { hasApprovedRecordingConsent } from "@/lib/planipret/recordingConsent";
+import { canViewLocalCallMedia } from "@/lib/planipret/recordingConsent";
 import { supabase } from "@/integrations/supabase/client";
 import { CallRecordingPlayer } from "@/components/planipret/mobile/call/CallRecordingPlayer";
 
@@ -153,7 +153,22 @@ export default function ClientMaestroDetail({
     return () => { if (timer) clearTimeout(timer); void supabase.removeChannel(ch); };
   }, [loadActivity, idsKey]);
 
-  const b = localBundle ?? (profile ? {
+  // The verified Maestro profile is the authoritative identity: its phone
+  // numbers attach calls and texts even when no local contact row exists.
+  const profileBundle: ClientBundle | undefined = useMemo(() => {
+    if (!profile) return undefined;
+    const phones = [profile.phone, ...(((profile as any).phones ?? []) as string[]), localBundle?.phone]
+      .filter((v, i, a) => !!v && a.indexOf(v) === i) as string[];
+    const extra: ClientContact[] = (phones.length ? phones : [null]).map((ph) => ({
+      name: profile.name, phone: ph, email: profile.email, maestroClientId: profile.maestroClientId,
+    }));
+    const key = makeKey(profile.name);
+    return buildClientBundles(tasks, deals, deposits, calls, messages, [...contacts, ...extra]).find((x) =>
+      x.key === key || (!!profile.maestroClientId && x.maestroClientId === String(profile.maestroClientId)),
+    );
+  }, [profile, localBundle?.phone, tasks, deals, deposits, calls, messages, contacts]);
+
+  const b = profileBundle ?? localBundle ?? (profile ? {
     key: makeKey(profile.name), name: profile.name, maestroClientId: profile.maestroClientId,
     phone: profile.phone, email: profile.email,
     tasks: [], overdue: 0, today: 0, upcoming: 0, nextDue: null,
@@ -175,17 +190,83 @@ export default function ClientMaestroDetail({
     return () => { alive = false; };
   }, [contractClientId]);
 
+  // Targeted per-client fetch: guarantees full history (calls, recordings,
+  // transcripts, texts) beyond the global 500-row window, by every verified
+  // phone number and by explicit Maestro link.
+  const phoneKeys = useMemo(() => {
+    const raw = [profile?.phone, ...(((profile as any)?.phones ?? []) as string[]), localBundle?.phone];
+    return [...new Set(raw.map((p) => String(p ?? "").replace(/\D/g, "").slice(-10)).filter((p) => p.length === 10))].join(",");
+  }, [profile, localBundle?.phone]);
+  useEffect(() => {
+    const ids = idsKey ? idsKey.split(",") : [];
+    const mid = contractClientId ? String(contractClientId) : "";
+    if (!ids.length || (!phoneKeys && !mid)) return;
+    let alive = true;
+    const phones = phoneKeys ? phoneKeys.split(",") : [];
+    const callOr = [...phones.flatMap((p) => [`from_number.ilike.%${p}`, `to_number.ilike.%${p}`]), ...(mid ? [`maestro_client_id.eq.${mid}`] : [])].join(",");
+    const msgOr = phones.flatMap((p) => [`from_number.ilike.%${p}`, `to_number.ilike.%${p}`]).join(",");
+    void (async () => {
+      const [cRes, mRes] = await Promise.all([
+        supabase.from("planipret_phone_calls")
+          .select("id, user_id, direction, status, started_at, ended_at, duration_seconds, save_consent, save_consent_at, save_consent_channel, from_number, to_number, from_name, to_name, ai_summary, recording_url, transcript, has_recording, maestro_client_name, maestro_client_id")
+          .in("user_id", ids).or(callOr).order("started_at", { ascending: false }).limit(1000),
+        msgOr ? supabase.from("planipret_phone_messages")
+          .select("id, user_id, direction, body, created_at, from_number, to_number")
+          .in("user_id", ids).or(msgOr).order("created_at", { ascending: false }).limit(1000) : Promise.resolve({ data: [] as any[] }),
+      ]);
+      if (!alive) return;
+      const mergeById = <T extends { id: any }>(a: T[], extra: T[]) => {
+        const seen = new Set(a.map((x) => String(x.id)));
+        const add = extra.filter((x) => !seen.has(String(x.id)));
+        return add.length ? [...a, ...add] : a;
+      };
+      const ec = ((cRes as any).data ?? []) as ClientCall[];
+      const em = ((mRes as any).data ?? []) as ClientMessage[];
+      // Explicitly linked calls with a different number: tag with the client name so they attach.
+      const tagged = ec.map((c) => (mid && String(c.maestro_client_id ?? "") === mid && !c.maestro_client_name && profile?.name) ? { ...c, maestro_client_name: profile.name } : c);
+      setCalls((prev) => mergeById(prev, tagged));
+      setMessages((prev) => mergeById(prev, em));
+    })();
+    return () => { alive = false; };
+  }, [phoneKeys, contractClientId, idsKey, profile?.name]);
+
   const clientEmail = String(profile?.email ?? b?.email ?? "").trim().toLowerCase();
   useEffect(() => {
     if (!clientEmail || !/^[^\s@,()]+@[^\s@,()]+$/.test(clientEmail) || !idsKey) { setEmails([]); return; }
     let alive = true;
-    void supabase.from("planipret_email_messages")
-      .select("id, subject, from_email, from_name, body_preview, is_sent_by_me, sent_at, received_at")
-      .in("user_id", idsKey.split(","))
-      .or(`from_email.ilike.${clientEmail},to_recipients.ilike.%${clientEmail}%`)
-      .order("received_at", { ascending: false })
-      .limit(100)
-      .then(({ data }) => { if (alive) setEmails(data ?? []); });
+    void (async () => {
+      const { data } = await supabase.from("planipret_email_messages")
+        .select("id, subject, from_email, from_name, body_preview, is_sent_by_me, sent_at, received_at")
+        .in("user_id", idsKey.split(","))
+        .or(`from_email.ilike.${clientEmail},to_recipients.ilike.%${clientEmail}%`)
+        .order("received_at", { ascending: false })
+        .limit(100);
+      const local = (data ?? []) as any[];
+      // Outlook fallback: courriels reçus/envoyés avec ce client.
+      let outlook: any[] = [];
+      try {
+        const pull = async (folder: "inbox" | "sent") => {
+          const { data: r } = await supabase.functions.invoke("ms365-actions", { body: { action: "read_emails", payload: { top: 100, folder } } });
+          const list = ((r as any)?.emails ?? (r as any)?.messages ?? (r as any)?.data?.emails ?? (r as any)?.value ?? []) as any[];
+          return list.map((m) => ({ ...m, _folder: folder }));
+        };
+        const all = [...(await pull("inbox")), ...(await pull("sent"))];
+        outlook = all.filter((m) => JSON.stringify([m.from, m.from_email, m.fromEmail, m.to, m.to_recipients, m.toRecipients]).toLowerCase().includes(clientEmail))
+          .map((m) => ({
+            id: `o-${m.id ?? m.message_id ?? Math.random()}`,
+            subject: m.subject ?? null,
+            body_preview: m.body_preview ?? m.bodyPreview ?? m.preview ?? null,
+            is_sent_by_me: m._folder === "sent",
+            received_at: m.received_at ?? m.receivedDateTime ?? m.sent_at ?? m.sentDateTime ?? m.date ?? null,
+            sent_at: m.sent_at ?? m.sentDateTime ?? null,
+          }));
+      } catch { /* Outlook non connecté */ }
+      if (!alive) return;
+      const seen = new Set(local.map((m) => String(m.subject ?? "") + String(m.received_at ?? m.sent_at ?? "").slice(0, 16)));
+      const merged = [...local, ...outlook.filter((m) => !seen.has(String(m.subject ?? "") + String(m.received_at ?? m.sent_at ?? "").slice(0, 16)))]
+        .sort((a, z) => new Date(z.received_at ?? z.sent_at ?? 0).getTime() - new Date(a.received_at ?? a.sent_at ?? 0).getTime());
+      setEmails(merged);
+    })();
     return () => { alive = false; };
   }, [clientEmail, idsKey]);
 
@@ -391,8 +472,8 @@ function CallRow({ call, lang }: { call: ClientCall; lang: "fr" | "en" }) {
   const missed = call.direction === "missed" || call.status === "missed" || call.status === "no-answer";
   const outgoing = call.direction === "outbound";
   const Icon = missed ? PhoneMissed : outgoing ? PhoneOutgoing : PhoneIncoming;
-  const consentOk = hasApprovedRecordingConsent(call.save_consent);
-  const canListen = consentOk && (!!call.has_recording || !!call.recording_url);
+  const canViewMedia = canViewLocalCallMedia(call.save_consent);
+  const canListen = canViewMedia && (!!call.has_recording || !!call.recording_url);
   return (
     <li className="rounded-xl px-3 py-2 text-[11.5px]" style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-muted)" }}>
       <span className="flex flex-wrap items-center gap-2">
@@ -404,8 +485,8 @@ function CallRow({ call, lang }: { call: ClientCall; lang: "fr" | "en" }) {
       {call.ai_summary && <p className="mt-1 break-words">{call.ai_summary}</p>}
       <span className="mt-1.5 flex flex-wrap gap-1.5">
         {canListen && <button onClick={() => setListen((v) => !v)} className="rounded-full px-2 py-1 text-[10px] font-semibold" style={{ background: "rgba(46,155,220,.12)", color: "var(--pp-brand-accent)" }}>{listen ? (en ? "Hide recording" : "Masquer l’enregistrement") : (en ? "Listen" : "Écouter")}</button>}
-        {consentOk && call.transcript && <button onClick={() => setShowTx((v) => !v)} className="rounded-full px-2 py-1 text-[10px] font-semibold" style={{ background: "rgba(46,155,220,.12)", color: "var(--pp-brand-accent)" }}>{showTx ? (en ? "Hide transcript" : "Masquer la transcription") : (en ? "Transcript" : "Transcription")}</button>}
-        {!consentOk && <span className="text-[10px]">{en ? "Recording consent pending" : "Consentement d’enregistrement en attente"}</span>}
+        {canViewMedia && call.transcript && <button onClick={() => setShowTx((v) => !v)} className="rounded-full px-2 py-1 text-[10px] font-semibold" style={{ background: "rgba(46,155,220,.12)", color: "var(--pp-brand-accent)" }}>{showTx ? (en ? "Hide transcript" : "Masquer la transcription") : (en ? "Transcript" : "Transcription")}</button>}
+        {!canViewMedia && <span className="text-[10px]">{en ? "Call deleted" : "Appel supprimé"}</span>}
       </span>
       {listen && <div className="mt-2"><CallRecordingPlayer callId={call.id} duration={call.duration_seconds ?? 0} /></div>}
       {showTx && call.transcript && <p className="mt-2 whitespace-pre-wrap break-words max-h-64 overflow-y-auto">{call.transcript}</p>}

@@ -17,7 +17,7 @@ import {
 import { callAnthropic } from "../_shared/anthropic.ts";
 import { callCorrelationId, ensureMaestroCall } from "../_shared/maestro-guard.ts";
 import { recordingPermalink } from "../_shared/recording-link.ts";
-import { authorizeCallAccess, requireApprovedCallConsent } from "../_shared/planipret-call-access.ts";
+import { authorizeCallAccess, allowCallViewing, requireApprovedCallConsent } from "../_shared/planipret-call-access.ts";
 
 
 
@@ -92,7 +92,7 @@ Deno.serve(async (req) => {
     if (!call) return json({ success: false, error: "call_not_found" }, 404);
     const access = await authorizeCallAccess(req, admin, call);
     if (!access.ok) return json({ success: false, error: access.error }, access.status);
-    const consent = requireApprovedCallConsent(call);
+    const consent = allowCallViewing(call);
     if (!consent.ok) return json({ success: false, error: consent.error }, consent.status);
     if (!call.transcript) return json({ success: false, error: "no_transcript" }, 200);
     if (call.ai_summary && !force) return json({ success: true, cached: true });
@@ -132,7 +132,8 @@ Deno.serve(async (req) => {
     // Push through the supported broker-scoped call update. Keep the local AI
     // stage separate from the remote Maestro delivery status.
     let maestroPushed = false;
-    try {
+    const remoteConsent = requireApprovedCallConsent(call);
+    if (remoteConsent.ok) try {
       const cfg = await getMaestroConfig(admin);
       // Garde-fou: ne jamais pousser un résumé sur un maestro_call_id périmé.
       const guard = await ensureMaestroCall(admin, { callId: String(call_id), step: "ai_summary_push" });
@@ -178,6 +179,8 @@ Deno.serve(async (req) => {
       }
     } catch (e) {
       console.warn("push ai_summary to maestro failed", e);
+    } else {
+      console.info(`[maestro-ai-analysis] local-only call=${call_id} — consent_not_approved`);
     }
 
     // `next_actions` are suggestions only. AVA must present them to the broker;

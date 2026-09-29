@@ -52,3 +52,15 @@ export function requireApprovedCallConsent(call: {
   }
   return { ok: true };
 }
+
+/** Consultation (écoute, transcription, résumé, coaching) : autorisée sauf refus explicite ou suppression. */
+export function allowCallViewing(call: {
+  save_consent?: string | null;
+  deleted_at?: string | null;
+}): { ok: true } | { ok: false; status: number; error: string } {
+  if (call?.deleted_at) return { ok: false, status: 410, error: "call_deleted" };
+  if (String(call?.save_consent ?? "pending") === "declined") {
+    return { ok: false, status: 409, error: "call_consent_declined" };
+  }
+  return { ok: true };
+}

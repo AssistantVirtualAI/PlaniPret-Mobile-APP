@@ -1,15 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { hasApprovedRecordingConsent } from "../recordingConsent";
+import { canViewLocalCallMedia } from "../recordingConsent";
 
 describe("recording consent gate", () => {
-  it("exposes client recordings only after an explicit approval", () => {
-    expect(hasApprovedRecordingConsent("approved")).toBe(true);
+  it("keeps locally retained media visible while the broker decides", () => {
+    expect(canViewLocalCallMedia("approved")).toBe(true);
+    expect(canViewLocalCallMedia(undefined)).toBe(true);
+    expect(canViewLocalCallMedia(null)).toBe(true);
+    expect(canViewLocalCallMedia("pending")).toBe(true);
   });
 
-  it("treats a missing, pending, or declined decision as not approved", () => {
-    expect(hasApprovedRecordingConsent(undefined)).toBe(false);
-    expect(hasApprovedRecordingConsent(null)).toBe(false);
-    expect(hasApprovedRecordingConsent("pending")).toBe(false);
-    expect(hasApprovedRecordingConsent("declined")).toBe(false);
+  it("hides media after the broker chooses delete", () => {
+    expect(canViewLocalCallMedia("declined")).toBe(false);
   });
 });
