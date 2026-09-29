@@ -289,6 +289,16 @@ public class PpSipKeepAlivePlugin extends Plugin {
       call.resolve(new JSObject().put("ok", true).put("ignored", ignored).put("requested", !ignored));
     } catch (Exception e) { call.reject(e.getMessage()); }
   }
+  /** Opens this application's Android settings page without navigating the WebView. */
+  @PluginMethod public void openAppSettings(PluginCall call) {
+    try {
+      Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+        .setData(Uri.fromParts("package", getContext().getPackageName(), null))
+        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+      getContext().startActivity(intent);
+      call.resolve(new JSObject().put("ok", true));
+    } catch (Exception e) { call.reject(e.getMessage()); }
+  }
   private JSObject statusFromIntent(Intent i) { return new JSObject().put("status", i.getStringExtra("status")).put("reason", i.getStringExtra("reason")).put("updatedAt", i.getLongExtra("updatedAt", 0)).put("wakeLockHeld", i.getBooleanExtra("wakeLockHeld", false)).put("wifiLockHeld", i.getBooleanExtra("wifiLockHeld", false)).put("loggedIn", i.getBooleanExtra("loggedIn", false)); }
   private JSObject readStatus() { android.content.SharedPreferences p = getContext().getSharedPreferences(PpSipKeepAliveService.PREFS_NAME, Context.MODE_PRIVATE); return new JSObject().put("status", p.getString(PpSipKeepAliveService.KEY_STATUS, "unknown")).put("reason", p.getString(PpSipKeepAliveService.KEY_REASON, "")).put("updatedAt", p.getLong(PpSipKeepAliveService.KEY_UPDATED_AT, 0)).put("wakeLockHeld", p.getBoolean(PpSipKeepAliveService.KEY_WAKE_HELD, false)).put("wifiLockHeld", p.getBoolean(PpSipKeepAliveService.KEY_WIFI_HELD, false)).put("loggedIn", p.getBoolean(PpSipKeepAliveService.KEY_LOGGED_IN, false)); }
 }

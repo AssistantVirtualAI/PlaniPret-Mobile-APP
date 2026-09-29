@@ -35,6 +35,9 @@ check(applyCfg.includes("PpFirebaseMessagingService"), "Android FCM wake-up serv
 check(applyCfg.includes("wake_only_no_media_engine"), "Android service must state that it cannot consume SIP media dialogs");
 check(applyCfg.includes("ACTION_REREGISTER.equals(action)"), "ACTION_REREGISTER must be handled by the wake-only service");
 check(applyCfg.includes('android:scheme="planipret"'), "Android deep-link scheme planipret:// is missing");
+check(applyCfg.includes("void openAppSettings(PluginCall call)"), "Android native bridge must expose openAppSettings");
+check(applyCfg.includes("Settings.ACTION_APPLICATION_DETAILS_SETTINGS"), "Android app settings must use ACTION_APPLICATION_DETAILS_SETTINGS");
+check(applyCfg.includes('Uri.fromParts("package", getContext().getPackageName(), null)'), "Android app settings must target this package");
 
 // ---- 2. Capacitor config ----
 const capCfg = read(path.join(appDir, "capacitor.config.ts"));
@@ -52,6 +55,10 @@ check(
 const notif = read(path.join(appDir, "src/lib/native/permissions/notifications.ts"));
 check(notif.includes("wakePlanipretNativeSipForIncomingCall"), "Android FCM data push must wake the native SIP service");
 check(notif.includes("mobile-register-push"), "Push token registration must post to mobile-register-push");
+const platformPermissions = read(path.join(appDir, "src/lib/native/permissions/platform.ts"));
+check(platformPermissions.includes('registerPlugin<{\n        openAppSettings'), "Android permission settings must invoke the native plugin");
+check(!platformPermissions.includes("android.settings.APPLICATION_DETAILS_SETTINGS?package="), "Android app settings must never be represented as a WebView URL");
+check(!platformPermissions.includes("window.open(`package:"), "Android app settings must never use a package pseudo-URL");
 
 // ---- 4. Local native project (optional) ----
 const androidDir = path.join(appDir, "android");
