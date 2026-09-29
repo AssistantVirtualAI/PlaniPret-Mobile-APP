@@ -9,13 +9,13 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
-const { openDialer, toastError } = vi.hoisted(() => ({ openDialer: vi.fn(), toastError: vi.fn() }));
+const { openDialer, toastError, navigate } = vi.hoisted(() => ({ openDialer: vi.fn(), toastError: vi.fn(), navigate: vi.fn() }));
 
 vi.mock("react-router-dom", async () => {
   const actual = await vi.importActual<any>("react-router-dom");
   return {
     ...actual,
-    useNavigate: () => vi.fn(),
+    useNavigate: () => navigate,
     useOutletContext: () => ({ openDialer, profile: {}, registerRefresh: vi.fn() }),
   };
 });
@@ -39,12 +39,13 @@ vi.mock("@/lib/appointmentHistory", () => ({
 
 const personal = [{ id: "p1", first_name: "Marc", last_name: "Client", phone: "5145551234" }];
 const directory = [{ id: "d1", first_name: "Sandra", last_name: "Allard", extension: "1037", email: "sandra@planipret.com" }];
+const maestroClients = [{ id: "98765", maestro_client_id: "98765", first_name: "Jeanne", last_name: "Maestro", phone: "5145559999" }];
 
 vi.mock("@/lib/ppContactsCache", () => ({
   peekPpContacts: (action: string) =>
-    action === "list" ? personal : action === "directory" ? directory : [],
+    action === "list" ? personal : action === "directory" ? directory : action === "maestro_clients" ? maestroClients : [],
   getPpContacts: async (action: string) =>
-    action === "list" ? personal : action === "directory" ? directory : [],
+    action === "list" ? personal : action === "directory" ? directory : action === "maestro_clients" ? maestroClients : [],
   prefetchPpContacts: vi.fn(),
 }));
 
@@ -53,7 +54,7 @@ import MContacts from "../MContacts";
 const setup = () => render(<MemoryRouter><MContacts /></MemoryRouter>);
 
 describe("MContacts — basic call + search", () => {
-  beforeEach(() => { openDialer.mockClear(); toastError.mockClear(); });
+  beforeEach(() => { openDialer.mockClear(); toastError.mockClear(); navigate.mockClear(); });
 
   it("places the call directly from a personal contact row", async () => {
     setup();
@@ -68,5 +69,13 @@ describe("MContacts — basic call + search", () => {
     await waitFor(() => expect(screen.getByText(/Sandra Allard/)).toBeInTheDocument());
     fireEvent.click(screen.getAllByLabelText("common.call")[0]);
     expect(openDialer).toHaveBeenCalledWith("1037", true);
+  });
+
+  it("opens a Maestro client directly in the complete client history", async () => {
+    setup();
+    fireEvent.click(await screen.findByText("Clients"));
+    const row = await screen.findByText("Jeanne Maestro");
+    fireEvent.click(row.closest(".pp-card")!);
+    expect(navigate).toHaveBeenCalledWith("/mplanipret/clients-360/jeanne%20maestro?mid=98765");
   });
 });

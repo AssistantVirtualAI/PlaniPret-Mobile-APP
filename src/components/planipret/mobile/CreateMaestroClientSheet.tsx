@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { X, UserPlus, Loader2, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
@@ -153,10 +154,10 @@ export default function CreateMaestroClientSheet({
   const field = "w-full rounded-xl px-3 py-2.5 text-sm outline-none";
   const fieldStyle: React.CSSProperties = { background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border)", color: "var(--pp-text-primary)" };
 
-  return (
-    <div className="fixed inset-0 z-[95] flex items-end justify-center" style={{ background: "rgba(0,0,0,.5)" }} onClick={onClose}>
-      <div className="w-full max-w-md rounded-t-3xl p-5 space-y-3 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}
-        style={{ background: "var(--pp-bg-surface)", color: "var(--pp-text-primary)", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 20px)" }}>
+  return createPortal(
+    <div data-client-create-overlay className="fixed inset-0 z-[1000] flex items-end justify-center" style={{ background: "rgba(0,0,0,.5)" }} onClick={onClose}>
+      <div className="w-full max-w-md rounded-t-3xl p-5 space-y-3 max-h-[85dvh] overflow-y-auto overscroll-contain" onClick={(e) => e.stopPropagation()}
+        style={{ background: "var(--pp-bg-surface)", color: "var(--pp-text-primary)", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 120px)", WebkitOverflowScrolling: "touch", touchAction: "pan-y" }}>
         <div className="flex items-center justify-between">
           <h2 className="text-base font-semibold flex items-center gap-2"><UserPlus className="w-4 h-4" /> Créer le client dans Maestro</h2>
           <button onClick={onClose} aria-label="Fermer" className="p-2 rounded-full" style={{ background: "var(--pp-bg-elevated)" }}><X className="w-4 h-4" /></button>
@@ -213,6 +214,7 @@ export default function CreateMaestroClientSheet({
           {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <UserPlus className="w-4 h-4" />} Créer le client
         </button>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

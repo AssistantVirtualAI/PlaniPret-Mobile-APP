@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { ensureAiConsent } from "@/components/planipret/mobile/AiConsentHost";
 import { useOutletContext, useNavigate } from "react-router-dom";
+import { clientDetailPath } from "@/lib/planipret/callerClient";
 import { Search, Phone, MessageSquare, Mail, Users, UserCog, BookUser, X, Calendar, ListChecks, Loader2, ExternalLink, Sparkles, Plus, Star, Copy, Send, Filter, Briefcase, Check, AlertTriangle, History } from "lucide-react";
 import { saveAppointment, loadAppointments, subscribeAppointments, type ApptHistoryEntry } from "@/lib/appointmentHistory";
 import AvaSummarizeSheet from "@/components/planipret/ava/AvaSummarizeSheet";
@@ -674,7 +675,14 @@ export default function MContacts() {
             return (
               <div
                 key={favEntry.key}
-                onClick={() => setSelected(c)}
+                onClick={() => {
+                  if (c.__maestro_kind === "client") {
+                    const mid = String(c.maestro_client_id || c.external_id || c.id || "");
+                    const nm = `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || c.name || c.full_name || null;
+                    if (mid) { navigate(clientDetailPath({ maestroClientId: mid, name: nm })); return; }
+                  }
+                  setSelected(c);
+                }}
                 className="pp-card flex items-center gap-3 cursor-pointer"
                 style={{ padding: 12 }}
               >
@@ -1162,11 +1170,11 @@ function ContactDetailSheet({
 
         {maestroId && (
           <button
-            onClick={() => toast.info("Lien Maestro à configurer")}
+            onClick={() => { onClose(); navigate(clientDetailPath({ maestroClientId: String(maestroId), name })); }}
             className="w-full mt-3 py-2 rounded-lg text-[11px] font-medium flex items-center justify-center gap-1.5"
             style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
           >
-            <ExternalLink className="w-3 h-3" /> Voir dans Maestro
+            <ExternalLink className="w-3 h-3" /> Historique complet
           </button>
         )}
       </div>
