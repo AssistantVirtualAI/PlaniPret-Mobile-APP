@@ -2,8 +2,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const invoke = vi.fn();
+const getSession = vi.fn();
+const onAuthStateChange = vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } }));
 vi.mock("@/integrations/supabase/client", () => ({
-  supabase: { functions: { invoke: (...a: any[]) => invoke(...a) } },
+  supabase: {
+    functions: { invoke: (...a: any[]) => invoke(...a) },
+    auth: {
+      getSession: (...a: any[]) => getSession(...a),
+      onAuthStateChange: (...a: any[]) => onAuthStateChange(...a),
+    },
+  },
 }));
 
 /**
@@ -17,6 +25,9 @@ describe("ppContactsCache — TTL et anti-concurrence", () => {
   beforeEach(async () => {
     vi.resetModules();
     invoke.mockReset();
+    getSession.mockReset();
+    onAuthStateChange.mockClear();
+    getSession.mockResolvedValue({ data: { session: { user: { id: "broker-a" } } } });
     invoke.mockResolvedValue({ data: { directory: [{ id: "1" }] }, error: null });
     localStorage.clear();
     vi.useFakeTimers();
@@ -57,11 +68,17 @@ describe("ppContactsCache — TTL et anti-concurrence", () => {
     await expect(mod.getPpContacts("directory")).resolves.toEqual([{ id: "2" }]);
   });
 
-  it("peek synchrone lit le cache disque sans requête", async () => {
+  it("ne sert pas le cache Maestro persistant avant vérification de la session", async () => {
     await mod.getPpContacts("directory");
     vi.resetModules();
     const fresh = await import("../ppContactsCache");
-    expect(fresh.peekPpContacts("directory")).toEqual([{ id: "1" }]);
+    expect(fresh.peekPpContacts("maestro_clients")).toBeNull();
+
+    invoke.mockResolvedValue({
+      data: { success: true, maestro_user_id: "maestro-broker-1", clients: [{ maestro_client_id: "client-1" }], total: 1 },
+      error: null,
+    });
+    await expect(fresh.getPpContacts("maestro_clients")).resolves.toEqual([{ maestro_client_id: "client-1" }]);
   });
 
   it("charge toutes les pages Maestro sans limiter la liste à 500 clients", async () => {
@@ -96,5 +113,24 @@ describe("ppContactsCache — TTL et anti-concurrence", () => {
     invoke.mockResolvedValue({ data: { success: false, error: "maestro_unavailable" }, error: null });
 
     await expect(mod.getPpContacts("maestro_clients", { force: true })).rejects.toThrow("maestro_unavailable");
+  });
+
+  it("ne réutilise jamais le cache Maestro d’un autre courtier sur un téléphone partagé", async () => {
+    invoke.mockResolvedValueOnce({
+      data: { success: true, maestro_user_id: "maestro-a", clients: [{ maestro_client_id: "client-a" }], total: 1 },
+      error: null,
+    });
+    await expect(mod.getPpContacts("maestro_clients", { force: true })).resolves.toEqual([{ maestro_client_id: "client-a" }]);
+
+    getSession.mockResolvedValue({ data: { session: { user: { id: "broker-b" } } } });
+    invoke.mockResolvedValue({
+      data: { success: true, maestro_user_id: "maestro-b", clients: [{ maestro_client_id: "client-b" }], total: 1 },
+      error: null,
+    });
+
+    await expect(mod.getPpContacts("maestro_clients")).resolves.toEqual([{ maestro_client_id: "client-b" }]);
+    expect(invoke).toHaveBeenCalledWith("maestro-actions", expect.objectContaining({
+      body: expect.objectContaining({ action: "list_clients" }),
+    }));
   });
 });

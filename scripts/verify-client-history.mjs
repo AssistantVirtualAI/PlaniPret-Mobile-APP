@@ -19,6 +19,11 @@ const requireText = (file, expected, label) => {
   if (!source.includes(expected)) throw new Error(`${label}: missing ${JSON.stringify(expected)} in ${file}`);
   checks.push(label);
 };
+const requireAbsent = (file, forbidden, label) => {
+  const source = read(file);
+  if (source.includes(forbidden)) throw new Error(`${label}: found unsafe ${JSON.stringify(forbidden)} in ${file}`);
+  checks.push(label);
+};
 
 requireText(
   "supabase/functions/maestro-client-create/index.ts",
@@ -54,6 +59,21 @@ requireText(
   "apps/planipret-mobile/src/components/planipret/mobile/CreateMaestroClientSheet.tsx",
   "const existing = await resolveCallerClient(phone);",
   "Client creation sheet resolves an existing client immediately before POST",
+);
+requireText(
+  "apps/planipret-mobile/src/pages/planipret/mobile/MCalls.tsx",
+  "const [createTarget, setCreateTarget] = useState<CreateClientTarget | null>(null);",
+  "Active inbound calls use the complete client-creation workflow",
+);
+requireText(
+  "apps/planipret-mobile/src/pages/planipret/mobile/MCalls.tsx",
+  "<CreateMaestroClientSheet",
+  "Active inbound calls render the complete Maestro client form",
+);
+requireAbsent(
+  "apps/planipret-mobile/src/pages/planipret/mobile/MCalls.tsx",
+  'supabase.functions.invoke("maestro-client-create"',
+  "Active inbound calls never bypass required Maestro client fields",
 );
 
 console.log(`Client-history verification passed (${checks.length} invariants).`);

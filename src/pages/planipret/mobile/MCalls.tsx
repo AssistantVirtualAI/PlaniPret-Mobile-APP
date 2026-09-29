@@ -1828,6 +1828,7 @@ function ActiveCallsTab({ userId, openDialer }: { userId: string; openDialer: (n
   const [incoming, setIncoming] = useState<ActiveCall | null>(null);
   const [incomingMaestro, setIncomingMaestro] = useState<any>(null);
   const [maestroLoading, setMaestroLoading] = useState(false);
+  const [createTarget, setCreateTarget] = useState<CreateClientTarget | null>(null);
 
   // Maestro lookup on incoming
   useEffect(() => {
@@ -1964,31 +1965,17 @@ function ActiveCallsTab({ userId, openDialer }: { userId: string; openDialer: (n
                 <div className="mt-4">
                   <div className="text-xs opacity-90 mb-2">👤 Nouveau contact</div>
                   <button
-                    onClick={async () => {
-                      try {
-                        const parts = String(incoming.name ?? "").trim().split(/\s+/).filter(Boolean);
-                        if (!parts.length) {
-                          toast.error("Nom requis", { description: "Ajoutez le contact depuis la page Contacts pour créer sa fiche Maestro." });
-                          return;
-                        }
-                        const { data, error } = await supabase.functions.invoke("maestro-client-create", {
-                          body: {
-                            phone: incoming.number,
-                            first_name: parts[0],
-                            last_name: parts.slice(1).join(" "),
-                            source: "inbound_call",
-                          },
-                        });
-                        if (error) throw error;
-                        if (!(data as any)?.success) throw new Error((data as any)?.error ?? "create_failed");
-                        toast.success("Créé dans Maestro");
-                      } catch (e: any) {
-                        toast.error("Échec création", { description: e?.message });
-                      }
-                    }}
+                    onClick={() => setCreateTarget({
+                      phone: incoming.number,
+                      name: incoming.name,
+                      // The event can contain either the local UUID or a PBX
+                      // Call-ID. The server links only an owned local UUID and
+                      // safely ignores an unmatched PBX identifier.
+                      callId: incoming.id,
+                    })}
                     className="text-[11px] font-semibold px-3 py-1.5 rounded-full bg-white/20 backdrop-blur"
                   >
-                    + Créer dans Maestro
+                    + Créer le client
                   </button>
                 </div>
               )}
@@ -2005,6 +1992,17 @@ function ActiveCallsTab({ userId, openDialer }: { userId: string; openDialer: (n
         );
       })()}
 
+      <CreateMaestroClientSheet
+        target={createTarget}
+        onClose={() => setCreateTarget(null)}
+        onCreated={({ maestroClientId, name }) => {
+          setIncomingMaestro({
+            client_id: maestroClientId,
+            client: { id: maestroClientId, name },
+          });
+          setCreateTarget(null);
+        }}
+      />
     </div>
   );
 }

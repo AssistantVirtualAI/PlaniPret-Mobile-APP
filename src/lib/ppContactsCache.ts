@@ -9,7 +9,7 @@ import { supabase } from "@/integrations/supabase/client";
 
 type Action = "list" | "shared" | "directory" | "maestro" | "maestro_clients" | "maestro_brokers";
 const ALL_ACTIONS: Action[] = ["list", "shared", "directory", "maestro", "maestro_clients", "maestro_brokers"];
-type Entry = { at: number; value: any[]; scope?: string | null };
+type Entry = { at: number; value: any[]; scope?: string | null; authScope?: string | null };
 
 /** Maestro-scoped lists must never be reused across Maestro accounts. */
 const MAESTRO_SCOPED: Action[] = ["maestro", "maestro_clients", "maestro_brokers"];
@@ -21,6 +21,9 @@ const LS_TTL_MS = 24 * 60 * 60 * 1000; // keep stale copy up to 24h
 const cache = new Map<Action, Entry>();
 const inflight = new Map<Action, Promise<any[]>>();
 let cacheGeneration = 0;
+// A persisted Maestro cache is private data. It must not render until the
+// WebView has confirmed whose Supabase session is active on this device.
+let authScopeVerified = false;
 
 function lsKey(action: Action) { return `${LS_PREFIX}${action}`; }
 
@@ -28,14 +31,21 @@ function currentScope(): string | null {
   try { return localStorage.getItem("pp:contacts:maestro_user_id"); } catch { return null; }
 }
 
+const LS_AUTH_USER_ID = "pp:contacts:auth_user_id";
+
+function currentAuthScope(): string | null {
+  try { return localStorage.getItem(LS_AUTH_USER_ID); } catch { return null; }
+}
+
 /** A Maestro-scoped entry is only valid for the currently linked Maestro id. */
 function scopeValid(action: Action, entry: Entry | null | undefined): boolean {
   if (!entry) return false;
   if (!MAESTRO_SCOPED.includes(action)) return true;
   const scope = currentScope();
+  const authScope = currentAuthScope();
   // Unknown scope, or an entry written before scoping existed → do not trust it.
-  if (!scope || !entry.scope) return false;
-  return String(entry.scope) === String(scope);
+  if (!authScopeVerified || !scope || !entry.scope || !authScope || !entry.authScope) return false;
+  return String(entry.scope) === String(scope) && String(entry.authScope) === String(authScope);
 }
 
 function loadFromDisk(action: Action): Entry | null {
@@ -68,6 +78,24 @@ const isTransient = (msg: string) =>
   /failed to send a request|failed to fetch|networkerror|aborted|load failed/i.test(msg);
 
 const LS_MAESTRO_ID = "pp:contacts:maestro_user_id";
+
+/**
+ * A shared phone can change the signed-in Planiprêt user before its WebView is
+ * restarted. Never expose the previous broker's persisted Maestro contacts in
+ * that window: establish the current Supabase session before serving a cache.
+ */
+async function ensureAuthenticatedCacheScope(): Promise<void> {
+  const { data } = await supabase.auth.getSession();
+  const current = data.session?.user?.id ?? null;
+  const previous = currentAuthScope();
+  authScopeVerified = true;
+  if (previous === current) return;
+  try {
+    if (current) localStorage.setItem(LS_AUTH_USER_ID, current);
+    else localStorage.removeItem(LS_AUTH_USER_ID);
+  } catch { /* storage disabled */ }
+  invalidatePpContacts();
+}
 
 /**
  * The Maestro list is scoped to the broker's Maestro user id. If that id
@@ -162,6 +190,7 @@ export async function getPpContacts(
   action: Action,
   opts: { limit?: number; force?: boolean } = {},
 ): Promise<any[]> {
+  await ensureAuthenticatedCacheScope();
   const now = Date.now();
   if (!opts.force) {
     const hit = cache.get(action);
@@ -183,7 +212,7 @@ export async function getPpContacts(
     if (generation !== cacheGeneration) {
       return getPpContacts(action, { ...opts, force: true });
     }
-    const entry: Entry = { at: Date.now(), value, scope: currentScope() };
+    const entry: Entry = { at: Date.now(), value, scope: currentScope(), authScope: currentAuthScope() };
     cache.set(action, entry);
     saveToDisk(action, entry);
     return value;
@@ -239,4 +268,15 @@ export function prefetchPpContacts(
 // cached contacts list so the next read hits the new account.
 if (typeof window !== "undefined") {
   window.addEventListener("maestro:connected", () => invalidatePpContacts());
+  supabase.auth.onAuthStateChange((_event, session) => {
+    const next = session?.user?.id ?? null;
+    authScopeVerified = true;
+    if (currentAuthScope() !== next) {
+      try {
+        if (next) localStorage.setItem(LS_AUTH_USER_ID, next);
+        else localStorage.removeItem(LS_AUTH_USER_ID);
+      } catch { /* storage disabled */ }
+      invalidatePpContacts();
+    }
+  });
 }
