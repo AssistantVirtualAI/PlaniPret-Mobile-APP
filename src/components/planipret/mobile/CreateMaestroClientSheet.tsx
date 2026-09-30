@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { invalidateCallerClient, resolveCallerClient } from "@/lib/planipret/callerClient";
 import { hasRequiredMaestroClientFields } from "@/lib/planipret/maestroClientDraft";
+import AddressAutocomplete, { splitRoute } from "./AddressAutocomplete";
 
 /** Codes numériques des listes Maestro (salutation, type de rue). */
 const MAESTRO_SALUTATIONS = [{ v: "1", l: "M." }, { v: "2", l: "Mme" }];
@@ -167,7 +168,7 @@ export default function CreateMaestroClientSheet({
         </p>
         <input className={field} style={fieldStyle} placeholder="Prénom *" value={first} maxLength={80} onChange={(e) => setFirst(e.target.value)} />
         <input className={field} style={fieldStyle} placeholder="Nom *" value={last} maxLength={80} onChange={(e) => setLast(e.target.value)} />
-        <input className={field} style={fieldStyle} placeholder="Courriel (facultatif)" type="email" value={email} maxLength={255} onChange={(e) => setEmail(e.target.value)} />
+        <input className={field} style={fieldStyle} placeholder="Courriel" type="email" value={email} maxLength={255} onChange={(e) => setEmail(e.target.value)} />
         <div className="grid grid-cols-3 gap-2">
           <select className={field} style={fieldStyle} value={salutation} onChange={(e) => setSalutation(e.target.value)} aria-label="Salutation">
             <option value="">Salutation *</option>
@@ -181,6 +182,15 @@ export default function CreateMaestroClientSheet({
           </select>
         </div>
         <p className="text-xs font-semibold pt-1" style={{ color: "var(--pp-text-secondary)" }}>Adresse (exigée par Maestro)</p>
+        <AddressAutocomplete className={field} style={fieldStyle} onSelect={(ad) => {
+          const r = splitRoute(ad.route);
+          if (ad.streetNumber) setStreetNumber(ad.streetNumber);
+          if (r.streetName) setStreetName(r.streetName);
+          if (r.streetType) setStreetType(r.streetType);
+          if (ad.city) setCity(ad.city);
+          if (/^[A-Z]{2}$/.test(ad.region)) setRegion(ad.region);
+          if (ad.zip) setZip(ad.zip.toUpperCase());
+        }} />
         <div className="grid grid-cols-3 gap-2">
           <input className={field} style={fieldStyle} placeholder="No civique *" value={streetNumber} maxLength={20} onChange={(e) => setStreetNumber(e.target.value)} />
           <select className={field + " col-span-2"} style={fieldStyle} value={streetType} onChange={(e) => setStreetType(e.target.value)} aria-label="Type de rue">

@@ -1,0 +1,1 @@
+CREATE POLICY own_notifs_delete ON public.planipret_ava_notifications FOR DELETE TO authenticated USING (user_id = auth.uid());

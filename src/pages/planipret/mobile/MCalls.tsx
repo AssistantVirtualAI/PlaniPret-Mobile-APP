@@ -799,7 +799,7 @@ function CallRow({ call, onTap, onCall, showCallBtn, onCreateClient }: { call: C
             maestroClientId: call.maestro_client_id,
           }) && party.phone && (
             <button
-              onClick={() => onCreateClient(String(party.phone), call.from_name)}
+              onClick={() => onCreateClient(String(party.phone), partyWithName.name || party.name || call.from_name)}
               aria-label={lang === "en" ? "Create Maestro client" : "Créer le client Maestro"}
               className="rounded-full px-2 py-1.5 flex items-center gap-1 text-[10px] font-semibold"
               style={{ background: "rgba(46,155,220,0.12)", color: "var(--pp-brand-accent)" }}

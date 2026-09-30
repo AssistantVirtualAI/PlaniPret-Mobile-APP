@@ -4,6 +4,10 @@ import { supabase } from "@/integrations/supabase/client";
 import { ArrowLeft, Bell, Mail, PhoneCall, Sparkles, Calendar, Voicemail, RefreshCw, CheckCheck, Trash2, Check, Circle } from "lucide-react";
 import { toast } from "sonner";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 type Notif = {
   id: string;
@@ -44,6 +48,8 @@ export default function MAvaNotifications() {
   const [items, setItems] = useState<Notif[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<"all" | "unread">("all");
+  const [clearOpen, setClearOpen] = useState(false);
+  const [clearing, setClearing] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -112,13 +118,21 @@ export default function MAvaNotifications() {
   };
 
   const clearAll = async () => {
-    if (!confirm(t("avaNotifications.confirmClearAll"))) return;
+    if (clearing) return;
     const { data: u } = await supabase.auth.getUser();
     if (!u.user) return;
+    setClearing(true);
     const sb: any = supabase;
-    const { error } = await sb.from("planipret_ava_notifications").delete().eq("user_id", u.user.id);
-    if (error) { toast.error(error.message); return; }
-    setItems([]);
+    try {
+      const { error } = await sb.from("planipret_ava_notifications").delete().eq("user_id", u.user.id);
+      if (error) { toast.error("Impossible de vider les notifications."); return; }
+      const { count, error: readError } = await sb.from("planipret_ava_notifications").select("id", { count: "exact", head: true }).eq("user_id", u.user.id);
+      if (readError || (count ?? 0) > 0) { toast.error("Certaines notifications n'ont pas pu être supprimées."); return; }
+      setItems([]);
+      toast.success("Notifications vidées");
+    } finally {
+      setClearing(false);
+    }
   };
 
   const open = async (n: Notif) => {
@@ -156,7 +170,7 @@ export default function MAvaNotifications() {
           </button>
         )}
         {items.length > 0 && (
-          <button onClick={clearAll} className="text-xs px-2 py-1 rounded-full flex items-center gap-1" style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-muted)" }}>
+          <button onClick={() => setClearOpen(true)} className="text-xs px-2 py-1 rounded-full flex items-center gap-1" style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-muted)" }}>
             <Trash2 className="w-3 h-3" /> {t("avaNotifications.clearAll")}
           </button>
         )}
@@ -214,6 +228,23 @@ export default function MAvaNotifications() {
           </div>
         )}
       </div>
+      <AlertDialog open={clearOpen} onOpenChange={setClearOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Vider les notifications ?</AlertDialogTitle>
+            <AlertDialogDescription>{t("avaNotifications.confirmClearAll")}</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={clearing}>Annuler</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={clearing}
+              onClick={(event) => { event.preventDefault(); void clearAll().then(() => setClearOpen(false)); }}
+            >
+              {clearing ? "Suppression…" : "Vider"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
