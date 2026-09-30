@@ -34,6 +34,8 @@ check(applyCfg.includes("PpSipKeepAliveService"), "Android SIP keep-alive servic
 check(applyCfg.includes("PpFirebaseMessagingService"), "Android FCM wake-up service is missing");
 check(applyCfg.includes("wake_only_no_media_engine"), "Android service must state that it cannot consume SIP media dialogs");
 check(applyCfg.includes("ACTION_REREGISTER.equals(action)"), "ACTION_REREGISTER must be handled by the wake-only service");
+check(!applyCfg.includes("activeInviteCallId"), "Android generator must not retain obsolete background SIP dialog state");
+check(!applyCfg.includes("private void sendDecline("), "Android generator must not emit a background SIP decline response");
 check(applyCfg.includes('android:scheme="planipret"'), "Android deep-link scheme planipret:// is missing");
 check(applyCfg.includes("void openAppSettings(PluginCall call)"), "Android native bridge must expose openAppSettings");
 check(applyCfg.includes("Settings.ACTION_APPLICATION_DETAILS_SETTINGS"), "Android app settings must use ACTION_APPLICATION_DETAILS_SETTINGS");
@@ -97,6 +99,9 @@ if (androidGenerated) {
     check(java.includes("FOREGROUND_SERVICE_TYPE_DATA_SYNC"), "PpSipKeepAliveService.java must start only as a dataSync wake service — run node scripts/apply-native-config.mjs");
     check(java.includes("wake_only_no_media_engine"), "PpSipKeepAliveService.java must not claim to run a media-capable SIP UAS");
     check(java.includes("ACTION_REREGISTER.equals(action)"), "PpSipKeepAliveService.java must handle ACTION_REREGISTER");
+    check(!java.includes("activeInviteCallId"), "PpSipKeepAliveService.java retains obsolete background SIP dialog state — rerun node scripts/apply-native-config.mjs");
+    check(!java.includes("private void sendDecline("), "PpSipKeepAliveService.java retains obsolete SIP decline handling — rerun node scripts/apply-native-config.mjs");
+    check(!java.includes("DatagramSocket"), "PpSipKeepAliveService.java must not create a background SIP socket — rerun node scripts/apply-native-config.mjs");
   }
   const boot = path.join(androidDir, "app/src/main/java/com/planipret/mobile/PpBootReceiver.java");
   if (fs.existsSync(boot)) {
