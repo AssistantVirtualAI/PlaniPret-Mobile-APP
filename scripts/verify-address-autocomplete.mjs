@@ -29,7 +29,15 @@ const portalNotifications = monorepo ? read(portalNotificationsPath) : mobileNot
 
 check(!monorepo || mobileAddress === portalAddress, "Autocomplete Google identique dans le portail et l’application mobile");
 check(mobileAddress.includes("sessionToken") && mobileAddress.includes("Recherche Google indisponible"), "L’interface transmet une session Google et garde un repli manuel visible");
+const usesLovableGateway = edge.includes("https://connector-gateway.lovable.dev/google_maps");
+const usesDirectGoogle = edge.includes("https://places.googleapis.com/v1");
 check(edge.includes('Deno.env.get("GOOGLE_MAPS_API_KEY")') && !edge.includes("VITE_GOOGLE"), "La clé Google reste uniquement côté serveur");
+check(usesLovableGateway || usesDirectGoogle, "L’autocomplétion cible une passerelle Google serveur reconnue");
+check(!usesLovableGateway || (
+  edge.includes('Deno.env.get("LOVABLE_API_KEY")')
+  && edge.includes("Authorization: `Bearer ${lovableKey}`")
+  && edge.includes('"X-Connection-Api-Key": key')
+), "La passerelle Lovable exige ses deux secrets côté Edge");
 check(edge.includes('includedRegionCodes: ["ca"]') && edge.includes('"X-Goog-FieldMask": "addressComponents"') && edge.includes('suggestions.placePrediction.placeId,suggestions.placePrediction.text.text'), "Les requêtes Google restent canadiennes et limitent les champs retournés");
 check(edge.includes("getUser()") && config.includes("[functions.pp-address-autocomplete]\nverify_jwt = true"), "L’autocomplétion exige une session authentifiée");
 check(migration.includes("FOR DELETE TO authenticated") && migration.includes("user_id = auth.uid()"), "La suppression de notifications reste limitée à leur propriétaire");

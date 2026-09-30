@@ -16,7 +16,10 @@ Deno.serve(async (req) => {
   const { data: u } = await sb.auth.getUser();
   if (!u?.user) return json({ error: "unauthorized" }, 401);
   const key = Deno.env.get("GOOGLE_MAPS_API_KEY");
-  if (!key) return json({ error: "not_configured", suggestions: [] });
+  const lovableKey = Deno.env.get("LOVABLE_API_KEY");
+  if (!key || !lovableKey) return json({ error: "not_configured", suggestions: [] });
+  const G = "https://connector-gateway.lovable.dev/google_maps";
+  const gh = { Authorization: `Bearer ${lovableKey}`, "X-Connection-Api-Key": key };
 
   const body = await req.json().catch(() => ({}));
   const lang = body.language === "en" ? "en" : "fr";
@@ -28,11 +31,11 @@ Deno.serve(async (req) => {
       const placeId = body.placeId.trim().slice(0, 256);
       if (!placeId) return json({ error: "invalid_place" }, 400);
       const session = sessionToken ? `&sessionToken=${encodeURIComponent(sessionToken)}` : "";
-      const r = await fetch(`https://places.googleapis.com/v1/places/${encodeURIComponent(placeId)}?languageCode=${lang}${session}`, {
-        headers: { "X-Goog-Api-Key": key, "X-Goog-FieldMask": "addressComponents" },
+      const r = await fetch(`${G}/places/v1/places/${encodeURIComponent(placeId)}?languageCode=${lang}${session}`, {
+        headers: { ...gh, "X-Goog-FieldMask": "addressComponents" },
       });
       const d = await r.json();
-      if (!r.ok) return json({ error: "google_error" }, 502);
+      if (!r.ok) { console.error("details failed", r.status, d?.error?.status); return json({ error: "google_error" }, 502); }
       const get = (t: string, short = false) => {
         const c = (d.addressComponents ?? []).find((x: any) => x.types?.includes(t));
         return c ? (short ? c.shortText : c.longText) : "";
@@ -47,17 +50,17 @@ Deno.serve(async (req) => {
     }
     const input = String(body.input ?? "").trim().slice(0, 200);
     if (input.length < 3) return json({ suggestions: [] });
-    const r = await fetch("https://places.googleapis.com/v1/places:autocomplete", {
+    const r = await fetch(`${G}/places/v1/places:autocomplete`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Goog-Api-Key": key,
+        ...gh,
         "X-Goog-FieldMask": "suggestions.placePrediction.placeId,suggestions.placePrediction.text.text",
       },
       body: JSON.stringify({ input, includedRegionCodes: ["ca"], languageCode: lang, includedPrimaryTypes: ["street_address", "premise", "subpremise"], ...(sessionToken ? { sessionToken } : {}) }),
     });
     const d = await r.json();
-    if (!r.ok) return json({ error: "google_error", suggestions: [] }, 502);
+    if (!r.ok) { console.error("autocomplete failed", r.status, d?.error?.status); return json({ error: "google_error", suggestions: [] }, 502); }
     return json({
       suggestions: (d.suggestions ?? []).filter((s: any) => s.placePrediction).slice(0, 5).map((s: any) => ({
         placeId: s.placePrediction.placeId,
