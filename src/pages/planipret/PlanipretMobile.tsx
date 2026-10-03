@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useRef, useState, useCallback, lazy, Suspense } from "react";
 import AiConsentHost from "@/components/planipret/mobile/AiConsentHost";
+import { createRefreshRegistry } from "@/lib/planipret/refreshRegistry";
 import { useNavigate, NavLink, Outlet, useLocation } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { supabase } from "@/integrations/supabase/client";
@@ -96,7 +97,7 @@ const PlanipretBadge = () => (
   </div>
 );
 
-export type PlanipretMobileContext = { profile: any; reloadProfile: () => Promise<void>; openDialer: (number?: string, autoDial?: boolean) => void; openAva: () => void; registerRefresh: (fn: (() => Promise<void> | void) | null) => void; softphone: ReturnType<typeof useMplanipretSoftphone> };
+export type PlanipretMobileContext = { profile: any; reloadProfile: () => Promise<void>; openDialer: (number?: string, autoDial?: boolean) => void; openAva: () => void; registerRefresh: (fn: (() => Promise<void> | void) | null) => () => void; softphone: ReturnType<typeof useMplanipretSoftphone> };
 
 const TABS = [
   { to: "/mplanipret/home", labelKey: "tabs.home", Icon: Home, flag: null },
@@ -545,10 +546,20 @@ export default function PlanipretMobile() {
     setAvaMode("voice");
     setAvaOpen(true);
   };
-  const refreshFn = useRef<(() => Promise<void> | void) | null>(null);
-  const registerRefresh = (fn: (() => Promise<void> | void) | null) => { refreshFn.current = fn; };
-  const handlePull = async () => { if (refreshFn.current) await refreshFn.current(); };
-  const { ref: scrollRef, pullDist, refreshing, threshold } = usePullToRefresh(handlePull);
+  const refreshRegistry = useRef(createRefreshRegistry()).current;
+  const registerRefresh = useCallback((fn: (() => Promise<void> | void) | null) => refreshRegistry.register(fn), [refreshRegistry]);
+  const pullGen = useRef(0);
+  useEffect(() => { pullGen.current += 1; }, [location.pathname]);
+  const handlePull = async () => {
+    const fn = refreshRegistry.current(); if (!fn) return;
+    const gen = pullGen.current;
+    const regGen = refreshRegistry.generation;
+    await new Promise<void>((resolve) => {
+      const iv = setInterval(() => { if (pullGen.current !== gen || refreshRegistry.generation !== regGen) { clearInterval(iv); resolve(); } }, 100);
+      Promise.resolve().then(fn).catch(() => {}).finally(() => { clearInterval(iv); resolve(); });
+    });
+  };
+  const { ref: scrollRef, pullDist, refreshing, threshold } = usePullToRefresh(handlePull, 70, () => refreshRegistry.current() != null);
 
   // Remember each page's scroll position so returning to a tab reopens it
   // where the broker left it instead of jumping back to the top.

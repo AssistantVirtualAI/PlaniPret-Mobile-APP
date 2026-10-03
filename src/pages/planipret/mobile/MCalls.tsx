@@ -457,9 +457,10 @@ export default function MCalls() {
   useEffect(() => { setVisibleCount(25); }, [tab, search]);
 
   useEffect(() => {
-    registerRefresh(() => { load(true); loadRecordings(false, true); });
-    return () => registerRefresh(null);
-  }, [load, loadRecordings, registerRefresh]);
+    // Voicemails tab registers its own owner; recordings only refresh on their tab.
+    if (tab === "voicemails") return;
+    return registerRefresh(tab === "recordings" ? () => loadRecordings(false, true) : () => load(true));
+  }, [tab, load, loadRecordings, registerRefresh]);
 
 
   // Auto-refresh on phone_calls changes is intentionally disabled so the
@@ -1550,7 +1551,7 @@ function CallDetailSheet({
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+        <div key={activeTab} className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 py-4 space-y-4" style={{ WebkitOverflowScrolling: "touch" }}>
 
           {/* ===== TAB AUDIO ===== */}
           {activeTab === "audio" && (
@@ -2119,8 +2120,7 @@ function VoicemailsTab({
 
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
-    registerRefresh(() => load());
-    return () => registerRefresh(null);
+    return registerRefresh(() => load());
   }, [load, registerRefresh]);
 
   useEffect(() => {

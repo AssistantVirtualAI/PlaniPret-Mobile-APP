@@ -52,8 +52,13 @@ export default function MVoicemail() {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [forwardFor, setForwardFor] = useState<VM | null>(null);
 
+  // Latest-wins: every tab/user change makes older list responses stale.
+  const vmGen = useRef(0);
   const load = async () => {
     if (!profile?.id && !profile?.user_id) return;
+    if (tab === "greeting") return; // Greeting never loads the Inbox list.
+    const my = ++vmGen.current;
+    const live = () => my === vmGen.current;
     setLoading(true);
     try {
       // 1) NS-API live via pp-ns-voicemail (segmenté par extension côté serveur)
@@ -96,8 +101,10 @@ export default function MVoicemail() {
           })
         : (local ?? []) as VM[];
 
+      if (!live()) return;
       setItems(merged);
     } catch (e: any) {
+      if (!live()) return;
       console.error("[pp-ns-voicemail] list failed", e);
       toast.error(t("voicemail.loadFailed") || "Échec chargement voicemails", { description: e?.message });
       const { data } = await supabase
@@ -105,14 +112,17 @@ export default function MVoicemail() {
         .select("*")
         .eq("user_id", profile.id ?? profile.user_id)
         .order("created_at", { ascending: false });
-      setItems((data ?? []) as VM[]);
+      if (live()) setItems((data ?? []) as VM[]);
     } finally {
-      setLoading(false);
+      if (live()) setLoading(false);
     }
   };
 
-  useEffect(() => { load(); }, [profile?.user_id, tab]);
-  useEffect(() => { registerRefresh(load); return () => registerRefresh(null); }, [profile?.user_id]);
+  useEffect(() => { vmGen.current += 1; if (tab === "greeting") setLoading(false); load(); /* eslint-disable-next-line */ }, [profile?.user_id, tab]);
+  useEffect(() => () => { vmGen.current += 1; }, []);
+  const vmLoadRef = useRef(load); vmLoadRef.current = load;
+  // Greeting: no list refresh owner. Inbox/Saved: own folder only.
+  useEffect(() => tab === "greeting" ? undefined : registerRefresh(() => vmLoadRef.current()), [profile?.user_id, tab, registerRefresh]);
 
   useEffect(() => {
     if (!profile?.id && !profile?.user_id) return;

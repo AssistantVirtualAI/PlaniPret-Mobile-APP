@@ -161,7 +161,7 @@ export default function MMessages() {
       </div>
 
       <div className="flex-1 overflow-hidden">
-        {visited.has("sms") && <div className="h-full" hidden={sub !== "sms"}><SmsList profile={profile} openDialer={openDialer} registerRefresh={registerRefresh} initialTo={qTo} /></div>}
+        {visited.has("sms") && <div className="h-full" hidden={sub !== "sms"}><SmsList profile={profile} openDialer={openDialer} registerRefresh={registerRefresh} active={sub === "sms"} initialTo={qTo} /></div>}
         {visited.has("team") && <div className="h-full" hidden={sub !== "team"}><TeamChat profile={profile} /></div>}
         {visited.has("teams365") && <div className="h-full" hidden={sub !== "teams365"}><Teams365Panel profile={profile} /></div>}
         {visited.has("emails") && <div className="h-full" hidden={sub !== "emails"}><EmailsList profile={profile} initialTo={qTo} initialName={qName} /></div>}
@@ -325,7 +325,7 @@ const recipientFromRow = (c: any, source: SmsRecipient["source"], index: number)
 const recipientHay = (r: SmsRecipient) => `${r.name} ${r.phone} ${r.email ?? ""} ${r.extension ?? ""} ${r.department ?? ""}`.toLowerCase();
 const looksLikePhone = (value: string) => /^[+]?[-() .\d]{3,}$/.test(value.trim());
 
-function SmsList({ profile, openDialer, registerRefresh, initialTo }: any) {
+function SmsList({ profile, openDialer, registerRefresh, active = true, initialTo }: any) {
   const { t } = useMplanipretLang();
   const [searchParams, setSearchParams] = useSearchParams();
   const myExt = profile?.extension ?? "";
@@ -414,7 +414,9 @@ function SmsList({ profile, openDialer, registerRefresh, initialTo }: any) {
   };
 
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [profile?.user_id]);
-  useEffect(() => { registerRefresh(load); return () => registerRefresh(null); /* eslint-disable-next-line */ }, [profile?.user_id]);
+  // Only the visible sub-tab owns pull-to-refresh; hidden panels unregister.
+  const smsLoadRef = useRef(load); smsLoadRef.current = load;
+  useEffect(() => { if (!active) return; return registerRefresh(() => smsLoadRef.current()); /* eslint-disable-next-line */ }, [active, profile?.user_id, registerRefresh]);
   useEffect(() => {
     const to = searchParams.get("to")?.trim();
     const body = searchParams.get("body")?.trim() ?? "";
@@ -447,7 +449,7 @@ function SmsList({ profile, openDialer, registerRefresh, initialTo }: any) {
   }
 
   return (
-    <div className="h-full overflow-y-auto p-3">
+    <div className="p-3">
       <div className="flex justify-end mb-2 gap-2">
         <button
           onClick={() => void load(true)}
@@ -2232,7 +2234,7 @@ function TeamRoster({ profile, openDialer, onSwitchTab }: { profile: any; openDi
   };
 
   return (
-    <div className="h-full overflow-y-auto p-3">
+    <div className="p-3">
       {loading ? (
         <div className="space-y-2">
           {Array.from({ length: 5 }).map((_, i) => (
@@ -2461,7 +2463,7 @@ function Teams365Panel({ profile }: { profile: any }) {
   ];
 
   return (
-    <div className="h-full overflow-y-auto px-4 py-3 space-y-3">
+    <div className="h-full min-h-0 overflow-y-auto overscroll-contain px-4 py-3 pb-[calc(1.5rem+env(safe-area-inset-bottom))] space-y-3" style={{ WebkitOverflowScrolling: "touch" }}>
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold" style={{ color: "var(--pp-text-primary)" }}>Microsoft Teams</h2>
         <button onClick={load} className="text-xs px-2 py-1 rounded-full flex items-center gap-1"

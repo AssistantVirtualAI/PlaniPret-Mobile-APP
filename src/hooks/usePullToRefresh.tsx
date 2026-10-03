@@ -1,55 +1,107 @@
 import { useEffect, useRef, useState } from "react";
 
 /**
- * Pull-to-refresh hook for mobile scrollable views.
- * Returns `ref` to attach to the scroll container, current `pullDist`, and `refreshing` flag.
+ * Pull-to-refresh for the single active vertical scroll owner.
+ *
+ * - startY, distance, busy flag and callbacks live in refs: listeners are attached
+ *   once per element/threshold, never per pixel of drag.
+ * - Multi-touch is ignored; touchcancel resets without refreshing.
+ * - Armed only when the owner is at scrollTop 0, a refresh is registered
+ *   (`canRefresh()`), and the gesture did not start inside a nested scrollable
+ *   descendant or an open sheet/dialog.
+ * - Visual state is throttled to one update per animation frame.
  */
-export function usePullToRefresh(onRefresh: () => void | Promise<void>, threshold = 70) {
+export function usePullToRefresh(
+  onRefresh: () => void | Promise<void>,
+  threshold = 70,
+  canRefresh: () => boolean = () => true,
+) {
   const ref = useRef<HTMLDivElement>(null!);
   const [pullDist, setPullDist] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   const startY = useRef<number | null>(null);
+  const dist = useRef(0);
   const busy = useRef(false);
+  const frame = useRef<number | null>(null);
+  const mounted = useRef(true);
+  const onRefreshRef = useRef(onRefresh);
+  const canRefreshRef = useRef(canRefresh);
+  onRefreshRef.current = onRefresh;
+  canRefreshRef.current = canRefresh;
 
   useEffect(() => {
+    mounted.current = true;
     const el = ref.current;
     if (!el) return;
 
+    const raf = typeof requestAnimationFrame === "function" ? requestAnimationFrame : (cb: FrameRequestCallback) => setTimeout(() => cb(0), 16) as unknown as number;
+    const caf = typeof cancelAnimationFrame === "function" ? cancelAnimationFrame : (id: number) => clearTimeout(id);
+    const paint = () => {
+      if (frame.current != null) return;
+      frame.current = raf(() => { frame.current = null; if (mounted.current) setPullDist(dist.current); });
+    };
+    const reset = () => {
+      startY.current = null;
+      dist.current = 0;
+      if (frame.current != null) { caf(frame.current); frame.current = null; }
+      if (mounted.current) setPullDist(0);
+    };
+
+    const startedInNonOwner = (target: EventTarget | null) => {
+      let n = target instanceof Element ? target : null;
+      while (n && n !== el) {
+        if (n.closest?.('[role="dialog"],[data-pp-sheet]') && el.contains(n)) return true;
+        const h = n as HTMLElement;
+        if (h.scrollHeight > h.clientHeight + 1) {
+          const oy = typeof getComputedStyle === "function" ? getComputedStyle(h).overflowY : "";
+          if (oy === "auto" || oy === "scroll") return true;
+        }
+        n = n.parentElement;
+      }
+      return false;
+    };
+
     const onStart = (e: TouchEvent) => {
-      if (el.scrollTop > 0 || busy.current) return;
+      if (e.touches.length !== 1) { if (startY.current != null) reset(); return; }
+      if (busy.current || el.scrollTop > 0 || !canRefreshRef.current()) return;
+      if (startedInNonOwner(e.target)) return;
       startY.current = e.touches[0].clientY;
+      dist.current = 0;
     };
     const onMove = (e: TouchEvent) => {
       if (startY.current == null) return;
+      if (e.touches.length !== 1) { reset(); return; }
       const dy = e.touches[0].clientY - startY.current;
-      if (dy > 0) setPullDist(Math.min(dy, threshold * 1.5));
+      dist.current = dy > 0 ? Math.min(dy, threshold * 1.5) : 0;
+      paint();
     };
     const onEnd = async () => {
       if (startY.current == null) return;
-      const dy = pullDist;
-      startY.current = null;
-      if (dy >= threshold && !busy.current) {
-        busy.current = true;
-        setRefreshing(true);
-        try { await onRefresh(); } finally {
-          busy.current = false;
-          setRefreshing(false);
-          setPullDist(0);
-        }
-      } else {
-        setPullDist(0);
+      const dy = dist.current;
+      reset();
+      if (dy < threshold || busy.current || !canRefreshRef.current()) return;
+      busy.current = true;
+      if (mounted.current) setRefreshing(true);
+      try { await onRefreshRef.current(); } finally {
+        busy.current = false;
+        if (mounted.current) setRefreshing(false);
       }
     };
 
     el.addEventListener("touchstart", onStart, { passive: true });
     el.addEventListener("touchmove", onMove, { passive: true });
     el.addEventListener("touchend", onEnd);
+    el.addEventListener("touchcancel", reset);
     return () => {
+      mounted.current = false;
+      if (frame.current != null) { caf(frame.current); frame.current = null; }
+      startY.current = null;
       el.removeEventListener("touchstart", onStart);
       el.removeEventListener("touchmove", onMove);
       el.removeEventListener("touchend", onEnd);
+      el.removeEventListener("touchcancel", reset);
     };
-  }, [onRefresh, threshold, pullDist]);
+  }, [threshold]);
 
   return { ref, pullDist, refreshing, threshold };
 }
