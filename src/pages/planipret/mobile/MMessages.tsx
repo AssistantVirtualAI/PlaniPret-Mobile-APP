@@ -578,7 +578,7 @@ function NewSmsSheet({ onClose, onStart }: { onClose: () => void; onStart: (numb
   const manual = query.trim();
 
   return (
-    <div className="fixed inset-0 z-40 flex items-end md:items-center md:justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+    <div role="dialog" aria-modal="true" data-pp-sheet aria-label="Nouveau SMS" data-testid="new-sms-sheet" className="fixed inset-0 z-40 flex items-end md:items-center md:justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
       <div
         className="w-full md:w-[390px] rounded-t-3xl md:rounded-2xl flex flex-col"
         style={{ background: "var(--pp-bg-base)", border: "1px solid var(--pp-bg-border-2)", maxHeight: "86dvh" }}
@@ -619,7 +619,7 @@ function NewSmsSheet({ onClose, onStart }: { onClose: () => void; onStart: (numb
             </button>
           )}
         </div>
-        <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-1.5">
+        <div data-scroll-owner="new-sms" className="flex-1 overflow-y-auto overscroll-contain px-4 pb-4 space-y-1.5" style={{ minHeight: 0, WebkitOverflowScrolling: "touch" }}>
           {loading ? (
             Array.from({ length: 5 }).map((_, i) => (
               <div key={i} className="h-14 rounded-2xl animate-pulse" style={{ background: "var(--pp-bg-surface)" }} />
@@ -718,6 +718,7 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollBoxRef = useRef<HTMLDivElement>(null);
   const atBottomRef = useRef(true);
+  const loadingOlderRef = useRef(false);
   const [visibleCount, setVisibleCount] = useState(40);
   const [showJump, setShowJump] = useState(false);
   const [newCount, setNewCount] = useState(0);
@@ -913,13 +914,22 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
         onScroll={(e) => {
           const el = e.currentTarget;
           const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-          atBottomRef.current = atBottom;
-          setShowJump(!atBottom);
-          if (atBottom) setNewCount(0);
-          // Chargement progressif de l'historique plus ancien.
-          if (el.scrollTop < 60 && messages.length > visibleCount) loadOlder();
+          if (atBottomRef.current !== atBottom) {
+            atBottomRef.current = atBottom;
+            setShowJump(!atBottom);
+            if (atBottom) setNewCount(0);
+          }
+          // Chargement progressif — une seule tranche à la fois, jamais
+          // pendant l'inertie (sinon le fil saute et se bloque sur iOS).
+          if (el.scrollTop < 60 && messages.length > visibleCount && !loadingOlderRef.current) {
+            loadingOlderRef.current = true;
+            window.setTimeout(() => {
+              loadOlder();
+              window.setTimeout(() => { loadingOlderRef.current = false; }, 400);
+            }, 120);
+          }
         }}
-        className="flex-1 min-h-0 overflow-y-auto px-3 py-4 space-y-2"
+        className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 py-4 space-y-2"
         style={{
           background: "var(--pp-bg-base)",
           WebkitOverflowScrolling: "touch",
@@ -1104,7 +1114,7 @@ function TeamChat({ profile }: { profile: any }) {
           <Sparkles className="w-3 h-3" /> {t("messages.summarize")}
         </button>
       </div>
-      <div className="flex-1 overflow-y-auto px-3 py-3 space-y-2">
+      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 py-3 space-y-2" style={{ WebkitOverflowScrolling: "touch" }}>
         {loading ? (
           <div className="text-center py-8" style={{ color: "var(--pp-text-muted)" }}>
             <Loader2 className="w-5 h-5 animate-spin mx-auto" />
@@ -1316,7 +1326,7 @@ export function EmailsList({ profile, initialTo, initialName }: { profile: any; 
 
 
   return (
-    <div className="relative flex flex-col overflow-y-auto p-3" style={{ height: "calc(100dvh - 242px)", minHeight: 400 }}>
+    <div data-scroll-owner="emails" className="relative flex flex-col h-full min-h-0 overflow-y-auto overscroll-contain p-3 pb-[calc(1rem+env(safe-area-inset-bottom))]" style={{ WebkitOverflowScrolling: "touch" }}>
       <div className="flex items-center justify-between mb-2">
         <button
           onClick={() => { setComposeInit({}); setComposeOpen(true); }}
@@ -1641,13 +1651,13 @@ function EmailDetailSheet({ email, cacheIdentity, onClose, onCompose, onChanged,
   });
 
   return (
-    <div className="fixed inset-0 z-[9999] flex items-end" style={{ background: "rgba(0,0,0,0.5)" }} onClick={onClose}>
+    <div role="dialog" aria-modal="true" data-pp-sheet data-testid="email-detail-sheet" className="fixed inset-0 z-[9999] flex items-end" style={{ background: "rgba(0,0,0,0.5)" }} onClick={onClose}>
       <div
         className="w-full rounded-t-3xl flex flex-col shadow-2xl"
         style={{
           background: "var(--pp-bg-base)",
           border: "1px solid var(--pp-bg-border-2)",
-          height: "calc(100vh - env(safe-area-inset-top) - 24px)",
+          height: "calc(100dvh - env(safe-area-inset-top) - 24px)",
           maxHeight: "calc(100dvh - 24px)",
         }}
         onClick={(e) => e.stopPropagation()}
@@ -1677,7 +1687,8 @@ function EmailDetailSheet({ email, cacheIdentity, onClose, onCompose, onChanged,
         </div>
 
         <div
-          className="flex-1 overflow-y-auto px-4 py-3 space-y-3"
+          data-scroll-owner="email-detail"
+          className="flex-1 overflow-y-auto overscroll-contain px-4 py-3 space-y-3"
           style={{ WebkitOverflowScrolling: "touch", minHeight: 0, overflowX: "hidden", maxWidth: "100vw" }}
         >
           <div className="rounded-xl p-3.5" style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)" }}>
@@ -1893,13 +1904,13 @@ function EmailComposeSheet({ init, onClose, onSent }: { init: ComposeInit; onClo
   const title = mode === "reply" ? "Répondre" : mode === "reply_all" ? "Répondre à tous" : mode === "forward" ? "Transférer" : t("messages.newEmail");
 
   return (
-    <div className="fixed inset-0 z-[9999] flex flex-col" style={{ paddingTop: "env(safe-area-inset-top,0px)", paddingBottom: "env(safe-area-inset-bottom,0px)", background: "rgba(0,0,0,0.5)" }} onClick={onClose}>
+    <div role="dialog" aria-modal="true" data-pp-sheet data-testid="email-compose-sheet" className="fixed inset-0 z-[9999] flex flex-col" style={{ paddingTop: "env(safe-area-inset-top,0px)", paddingBottom: "env(safe-area-inset-bottom,0px)", background: "rgba(0,0,0,0.5)" }} onClick={onClose}>
       <div
         className="w-full rounded-t-3xl flex flex-col shadow-2xl"
         style={{
           background: "var(--pp-bg-base)",
           border: "1px solid var(--pp-bg-border-2)",
-          height: "calc(100vh - env(safe-area-inset-top) - 24px)",
+          height: "calc(100dvh - env(safe-area-inset-top) - 24px)",
           maxHeight: "calc(100dvh - 24px)",
           paddingBottom: "env(safe-area-inset-bottom)",
         }}
@@ -1920,7 +1931,7 @@ function EmailComposeSheet({ init, onClose, onSent }: { init: ComposeInit; onClo
             {t("common.send")}
           </button>
         </div>
-        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
+        <div data-scroll-owner="email-compose" className="flex-1 overflow-y-auto overscroll-contain px-4 py-3 space-y-2" style={{ minHeight: 0, WebkitOverflowScrolling: "touch" }}>
           {(mode === "new" || mode === "forward") && (
             <>
               <div className="flex items-start gap-2">
@@ -2800,7 +2811,7 @@ function TeamsThreadView({ target, onClose }: {
           {target.kind === "chat" ? "Chat" : "Canal"}
         </span>
       </div>
-      <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-2">
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 py-3 space-y-2" style={{ WebkitOverflowScrolling: "touch" }}>
         {loading && messages.length === 0 ? <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>Chargement…</div> :
           messages.length === 0 ? <div className="text-xs text-center py-8" style={{ color: "var(--pp-text-muted)" }}>Aucun message. Envoyez le premier !</div> :
           messages.map((m) => {

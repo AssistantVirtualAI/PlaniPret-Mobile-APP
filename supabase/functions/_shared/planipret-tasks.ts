@@ -25,6 +25,7 @@ export interface NormalizedTask {
   target_name: string | null;
   is_recurring: boolean;
   recurring_pattern: string | null;
+  recurring_value?: number | null;
   created_by_ava: boolean;
   /** Maestro user ids this task is assigned to (from `users`, `users_id`, …). */
   assignee_ids: string[];
@@ -403,6 +404,23 @@ export function idempotencyKey(parts: Array<string | number | null | undefined>)
 const truthy = (v: unknown) => v === true || v === 1 || v === "1" || v === "true";
 
 /**
+ * Read-only recurrence representation from a Maestro task. Prefers
+ * `recurring_value` / `recurring_pattern`, falls back to `recurrence.{value,pattern}`.
+ * Never guesses: missing, zero, negative or non-integer value, or unknown
+ * pattern → null (no frequency badge).
+ */
+export function normalizeRecurrence(raw: any): { is_recurring: boolean; recurring_value: number | null; recurring_pattern: string | null } {
+  const rec = raw?.recurrence && typeof raw.recurrence === "object" ? raw.recurrence : null;
+  const rv = raw?.recurring_value ?? rec?.value;
+  const n = rv === null || rv === undefined || (typeof rv === "string" && !rv.trim()) ? NaN : Number(rv);
+  const recurring_value = Number.isFinite(n) && Number.isInteger(n) && n >= 1 ? n : null;
+  const p = String(raw?.recurring_pattern ?? rec?.pattern ?? "").trim().toLowerCase();
+  const recurring_pattern = PATTERNS.has(p) ? p : null;
+  const nestedValid = !!rec && recurring_value !== null && recurring_pattern !== null;
+  return { is_recurring: truthy(raw?.is_recurring) || nestedValid, recurring_value, recurring_pattern };
+}
+
+/**
  * Maestro returns the assignment in several shapes and sometimes returns an
  * EMPTY `users: []` right after a create even though `users_id` was accepted.
  * Read every known source so the app never loses the assignment.
@@ -484,8 +502,7 @@ export function normalizeTask(input: any): NormalizedTask {
     xid: raw?.xid != null ? String(raw.xid) : null,
     target_name: raw?.client_name ?? raw?.contact_name ?? raw?.user_name ?? raw?.target_name
       ?? ([raw?.client_first_name, raw?.client_last_name].filter(Boolean).join(" ").trim() || null),
-    is_recurring: truthy(raw?.is_recurring),
-    recurring_pattern: raw?.recurring_pattern ? String(raw.recurring_pattern) : null,
+    ...normalizeRecurrence(raw),
     created_by_ava: truthy(raw?.created_by_ava) || String(raw?.source ?? "").toLowerCase().includes("ava"),
     assignee_ids: assignment.ids,
     assignment_source: assignment.source,

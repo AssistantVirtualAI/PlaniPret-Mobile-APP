@@ -1,6 +1,7 @@
 import { ChevronDown, Clock, Repeat, Sparkles } from "lucide-react";
 import { formatTaskDue, type NormalizedTask } from "@/lib/planipret/tasks";
 import { maestroTaskView, formatMaestroCreated } from "@/lib/planipret/taskMaestroView";
+import { recurrenceLabel } from "@/lib/planipret/recurrenceLabel";
 import { taskLifecycleBadge, taskOrigin, describeTaskOrigin, taskCreatedAt, formatTaskTimestamp } from "@/lib/planipret/taskLifecycle";
 
 /** Pastille de cycle de vie : créée → confirmée → clôturée. */
@@ -64,7 +65,15 @@ export default function MaestroTaskRow({ task, lang, actions, extra, syncedAt, e
           <div className="flex items-center gap-1.5 min-w-0">
             <TaskLifecycleChip task={task} lang={lang} />
             <span className="pp-task-status shrink-0">{v.statusLabel}</span>
-            {task.is_recurring && <Repeat className="w-3 h-3 shrink-0" aria-label={L("Récurrente", "Recurring")} />}
+            {task.is_recurring && (() => {
+              const freq = recurrenceLabel(task, lang);
+              return freq ? (
+                <span data-testid={`task-recurrence-${task.id}`} aria-label={`${L("Récurrente", "Recurring")} : ${freq}`}
+                  className="pp-task-status shrink-0 inline-flex items-center gap-1">
+                  <Repeat className="w-3 h-3" aria-hidden /> {freq}
+                </span>
+              ) : <Repeat className="w-3 h-3 shrink-0" aria-label={L("Récurrente", "Recurring")} />;
+            })()}
             {task.created_by_ava && <span className="pp-task-ava"><Sparkles className="w-2.5 h-2.5" /> AVA</span>}
           </div>
           <p className="pp-task-client mt-1 truncate">{v.clientName}</p>

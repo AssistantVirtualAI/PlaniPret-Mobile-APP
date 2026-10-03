@@ -11,6 +11,9 @@ import {
   LogOut, Trash2, ChevronRight, Bot, Sparkles, X, Download, Shield, BellOff, Settings as SettingsIcon, BarChart3, Voicemail, Edit3, Languages, ExternalLink, Database,
 } from "lucide-react";
 import { openBrokerPortal } from "@/lib/planipret/openBrokerPortal";
+import { useDndToggle } from "@/lib/planipret/useDndToggle";
+
+export const MARKETING_PORTAL_PATH = "/planipret/broker/marketing";
 import { getAppVersionInfo } from "@/lib/planipret/appVersion";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
 import { usePlanipretPush } from "@/hooks/usePlanipretPush";
@@ -28,7 +31,7 @@ import Ms365StatusBadge from "@/components/planipret/Ms365StatusBadge";
 import { openMs365Authorize } from "@/lib/ms365OAuth";
 import { useMplanipretSoftphone } from "@/hooks/useMplanipretSoftphone";
 import { checkSipBackendRegistration, getLastSipBackendCheck, type SipBackendCheck } from "@/lib/planipret/sip/sipBackendCheck";
-import { Radio, Wallet, Users as UsersIcon, ListChecks } from "lucide-react";
+import { Radio, Wallet, Users as UsersIcon, ListChecks, Megaphone } from "lucide-react";
 import { ms365Connected } from "@/lib/planipret/ms365Connected";
 
 const initials = (name?: string) =>
@@ -42,6 +45,12 @@ export default function MMore() {
   const [params] = useSearchParams();
   const [editOpen, setEditOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  // DND: only the confirmed profile value is the source of truth; no optimistic success.
+  const { busy: dndBusy, pending: dndPending, toggle: toggleDnd } = useDndToggle(profile, reloadProfile, {
+    onSuccess: (v) => toast.success(v ? t("more.dndEnabled") : t("home.dndDisabled")),
+    onError: () => toast.error(t("common.failed")),
+  });
+  const dndShown = dndPending ?? !!profile?.dnd_enabled;
   const [customizeOpen, setCustomizeOpen] = useState(false);
   const [dndOpen, setDndOpen] = useState(false);
   const [taskDiagOpen, setTaskDiagOpen] = useState(false);
@@ -290,11 +299,29 @@ export default function MMore() {
           onClick={async () => {
             if (openingPortal) return;
             setOpeningPortal(true);
-            const res = await openBrokerPortal();
-            setOpeningPortal(false);
-            if (res.ok === false) toast.error(res.error);
+            toast.message("Ouverture du portail…");
+            try {
+              const res = await openBrokerPortal();
+              if (res.ok === false) toast.error(res.error);
+            } finally {
+              setOpeningPortal(false);
+            }
           }}
           right={openingPortal ? <span style={{ fontSize: 12, color: "var(--pp-text-muted)" }}>…</span> : undefined}
+          chevron />
+        {/* Marketing lives only in the broker portal: open it there via the approved handoff. */}
+        <Row icon={<Megaphone className="w-4 h-4" />} label="Marketing"
+          sub={lang === "en" ? "Opens in your broker portal" : "S'ouvre dans votre portail courtier"}
+          onClick={async () => {
+            if (openingPortal) return;
+            setOpeningPortal(true);
+            try {
+              const res = await openBrokerPortal(MARKETING_PORTAL_PATH);
+              if (res.ok === false) toast.error(res.error);
+            } finally {
+              setOpeningPortal(false);
+            }
+          }}
           chevron />
         <Row icon={<User className="w-4 h-4" />} label={t("more.myProfile")} onClick={() => setEditOpen(true)} chevron />
         <Row icon={<Lock className="w-4 h-4" />} label={t("more.changePassword")} onClick={() => navigate("/mplanipret/change-password")} chevron />
@@ -344,11 +371,7 @@ export default function MMore() {
           icon={<BellOff className="w-4 h-4" style={profile?.dnd_enabled ? { color: "var(--pp-color-danger)" } : undefined} />}
           label={t("more.dnd")}
           sub={profile?.dnd_enabled ? t("more.dndActiveSub") : t("more.inactive")}
-          right={<Toggle on={!!profile?.dnd_enabled} onChange={async (v) => {
-            await supabase.from("planipret_profiles").update({ dnd_enabled: v }).eq("user_id", profile.user_id);
-            await reloadProfile();
-            toast.success(v ? t("more.dndEnabled") : t("home.dndDisabled"));
-          }} />}
+          right={<Toggle testId="dnd-toggle" on={dndShown} busy={dndBusy} onChange={toggleDnd} />}
         />
         <Row icon={<SettingsIcon className="w-4 h-4" />} label={t("more.configureDnd")} onClick={() => setDndOpen(true)} chevron />
       </Section>
@@ -687,10 +710,16 @@ function Row({
   );
 }
 
-function Toggle({ on, onChange }: { on: boolean; onChange: (v: boolean) => void }) {
+function Toggle({ on, onChange, busy = false, testId }: { on: boolean; onChange: (v: boolean) => void; busy?: boolean; testId?: string }) {
   return (
     <button
-      onClick={(e) => { e.stopPropagation(); onChange(!on); }}
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-busy={busy || undefined}
+      disabled={busy}
+      data-testid={testId}
+      onClick={(e) => { e.stopPropagation(); if (!busy) onChange(!on); }}
       className="rounded-full p-0.5 transition"
       style={{
         width: 40, height: 24,
@@ -743,33 +772,51 @@ function NotificationsSection({ profile, reloadProfile }: { profile: any; reload
 /* =================== Sheets (dark) =================== */
 
 function Sheet({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = previousOverflow; };
+  }, []);
+
   return (
     <div
-      className="absolute inset-0 z-40 flex items-end"
-      style={{ background: "rgba(4,11,22,0.7)", backdropFilter: "blur(6px)" }}
+      data-pp-sheet
+      className="fixed inset-0 z-[100] flex items-end md:absolute"
+      style={{ background: "rgba(4,11,22,0.7)", backdropFilter: "blur(6px)", touchAction: "none" }}
       onClick={onClose}
+      role="presentation"
     >
       <div
-        className="w-full p-4 max-h-[80%] overflow-y-auto"
+        className="flex w-full min-h-0 max-h-[calc(100dvh-env(safe-area-inset-top)-1rem)] flex-col"
         onClick={(e) => e.stopPropagation()}
         style={{
           background: "var(--pp-bg-surface)",
           borderTop: "1px solid var(--pp-bg-border-2)",
           borderTopLeftRadius: 20, borderTopRightRadius: 20,
           boxShadow: "0 -20px 40px -10px rgba(0,0,0,0.5)",
+          touchAction: "pan-y",
         }}
+        role="dialog"
+        aria-modal="true"
+        aria-label={title}
       >
-        <div className="flex items-center justify-between mb-3">
+        <div className="flex shrink-0 items-center justify-between px-4 pb-3 pt-4">
           <h2 style={{ fontFamily: "Inter,sans-serif", fontWeight: 700, fontSize: 16, color: "var(--pp-text-primary)" }}>{title}</h2>
           <button
             onClick={onClose}
             className="flex items-center justify-center active:scale-95"
             style={{ width: 28, height: 28, borderRadius: "50%", background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
+            aria-label={title}
           >
             <X className="w-3.5 h-3.5" />
           </button>
         </div>
-        {children}
+        <div
+          className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4"
+          style={{ paddingBottom: "calc(1rem + env(safe-area-inset-bottom))", WebkitOverflowScrolling: "touch" }}
+        >
+          {children}
+        </div>
       </div>
     </div>
   );

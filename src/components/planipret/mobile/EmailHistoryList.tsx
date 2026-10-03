@@ -186,7 +186,7 @@ export default function EmailHistoryList() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto">
+      <div data-scroll-owner="email-history" className="flex-1 min-h-0 overflow-y-auto overscroll-contain pb-[env(safe-area-inset-bottom)]" style={{ WebkitOverflowScrolling: "touch" }}>
         {loading && <div className="p-4 text-sm text-center" style={{ color: "var(--pp-text-secondary)" }}>…</div>}
         {!loading && loadError && filtered.length === 0 && (
           <div className="mx-3 mt-3 p-3 rounded-lg text-sm" role="alert" style={{ background: "rgba(245,158,11,0.14)", color: "var(--pp-text-primary)", border: "1px solid rgba(245,158,11,0.35)" }}>

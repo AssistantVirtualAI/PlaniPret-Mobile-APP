@@ -431,6 +431,31 @@ export default function RecordingsList({
     audioBlobCacheRef.current.clear();
   }, []);
 
+  // One bounded list-level channel for row updates (instead of one per card);
+  // updates are routed locally to the matching visible call.
+  const rowsRef = useRef<Map<string, RecordingCall>>(new Map());
+  rowsRef.current = new Map(withRec.map((c) => [c.id, c]));
+  const onUpdatedRef = useRef(onUpdated);
+  onUpdatedRef.current = onUpdated;
+  useEffect(() => {
+    if (!userId) return;
+    recordingsRealtimeStats.created += 1;
+    const ch = supabase
+      .channel(`pp-mobile-calls-list:${userId}:${Math.random().toString(36).slice(2, 8)}`)
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "planipret_phone_calls", filter: `user_id=eq.${userId}` },
+        (payload: any) => {
+          const n = payload?.new;
+          const call = n?.id ? rowsRef.current.get(n.id) : undefined;
+          if (!call) return;
+          onUpdatedRef.current(mergeRecordingUpdate(call, n));
+        },
+      )
+      .subscribe();
+    return () => { recordingsRealtimeStats.removed += 1; supabase.removeChannel(ch); };
+  }, [userId]);
+
   // Realtime AI insights broadcast
   useEffect(() => {
     if (!userId) return;
@@ -543,6 +568,29 @@ export default function RecordingsList({
 
 }
 
+
+/** Non-sensitive counters for tests (channel budget). */
+export const recordingsRealtimeStats = { created: 0, removed: 0 };
+
+export function mergeRecordingUpdate(call: RecordingCall, n: any): RecordingCall {
+  return {
+    ...call,
+    transcript: n.transcript ?? call.transcript,
+    transcript_segments: n.transcript_segments ?? call.transcript_segments,
+    transcript_language: n.transcript_language ?? call.transcript_language,
+    ai_summary: n.ai_summary ?? call.ai_summary,
+    ai_coaching: n.ai_coaching ?? call.ai_coaching,
+    ai_key_points: n.ai_key_points ?? call.ai_key_points,
+    ai_client_insights: n.ai_client_insights ?? call.ai_client_insights,
+    ai_tasks: n.ai_tasks ?? call.ai_tasks,
+    lead_score: n.lead_score ?? call.lead_score,
+    coaching_score: n.coaching_score ?? call.coaching_score,
+    lead_temperature: n.lead_temperature ?? call.lead_temperature,
+    maestro_synced: n.maestro_synced ?? call.maestro_synced,
+    maestro_client_id: n.maestro_client_id ?? call.maestro_client_id,
+  };
+}
+
 // ===================== Card =====================
 function RecordingCard({
   call, onUpdated, audioStatus, ledgerStatus, cachedAudioUrl, cacheKey, onRetryAudio,
@@ -558,39 +606,7 @@ function RecordingCard({
   const [open, setOpen] = useState<"rec" | "txt" | "ai" | "crm" | null>(null);
   const temp = tempIcon(call.lead_temperature);
 
-  // Realtime: reflect any DB write (pp-admin-transcribe, pp-coach-call, etc.)
-  // sur la MÊME ligne que la carte, comme le portail admin (`pa-call-${id}`).
-  useEffect(() => {
-    const ch = supabase
-      .channel(`pp-mobile-call-${call.id}-${Math.random().toString(36).slice(2, 8)}`)
-      .on(
-        "postgres_changes",
-        { event: "UPDATE", schema: "public", table: "planipret_phone_calls", filter: `id=eq.${call.id}` },
-        (payload: any) => {
-          const n = payload?.new;
-          if (!n) return;
-          onUpdated({
-            ...call,
-            transcript: n.transcript ?? call.transcript,
-            transcript_segments: n.transcript_segments ?? call.transcript_segments,
-            transcript_language: n.transcript_language ?? call.transcript_language,
-            ai_summary: n.ai_summary ?? call.ai_summary,
-            ai_coaching: n.ai_coaching ?? call.ai_coaching,
-            ai_key_points: n.ai_key_points ?? call.ai_key_points,
-            ai_client_insights: n.ai_client_insights ?? call.ai_client_insights,
-            ai_tasks: n.ai_tasks ?? call.ai_tasks,
-            lead_score: n.lead_score ?? call.lead_score,
-            coaching_score: n.coaching_score ?? call.coaching_score,
-            lead_temperature: n.lead_temperature ?? call.lead_temperature,
-            maestro_synced: n.maestro_synced ?? call.maestro_synced,
-            maestro_client_id: n.maestro_client_id ?? call.maestro_client_id,
-          });
-        }
-      )
-      .subscribe();
-    return () => { supabase.removeChannel(ch); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [call.id]);
+  // Realtime updates arrive through ONE list-level channel (see RecordingsList).
 
 
 
@@ -1027,7 +1043,7 @@ function TranscriptSection({ call, onUpdated }: { call: RecordingCall; onUpdated
               {copied ? "Copié" : "Copier"}
             </button>
           </div>
-          <div className="space-y-1.5 max-h-72 overflow-y-auto pr-1">
+          <div className="space-y-1.5 max-h-72 overflow-y-auto overscroll-contain pr-1">
             {segments.filter((s) => !q || s.text.toLowerCase().includes(q.toLowerCase())).map((s, i) => {
               const isAgent = (s.speaker || "").toLowerCase().includes("agent") || (s.speaker || "").toLowerCase().includes("courtier") || s.speaker === "A";
               return (
