@@ -8,11 +8,15 @@ import { resolve } from "node:path";
 const h = vi.hoisted(() => ({
   invoke: vi.fn(),
   getSession: vi.fn(async () => ({ data: { session: { access_token: "tok" } } })),
+  native: false,
+  browserClose: vi.fn(),
+  browserOpen: vi.fn(),
 }));
 vi.mock("@/integrations/supabase/client", () => ({
   supabase: { auth: { getSession: h.getSession, refreshSession: vi.fn() }, functions: { invoke: h.invoke } },
 }));
-vi.mock("@capacitor/core", () => ({ Capacitor: { isNativePlatform: () => false } }));
+vi.mock("@capacitor/core", () => ({ Capacitor: { isNativePlatform: () => h.native } }));
+vi.mock("@capacitor/browser", () => ({ Browser: { close: h.browserClose, open: h.browserOpen } }));
 
 import { validPortalHandoffUrl } from "@/lib/planipret/portalHandoffUrl";
 import { openBrokerPortal } from "@/lib/planipret/openBrokerPortal";
@@ -25,7 +29,12 @@ const P = "https://courtierai.planipret.com";
 const src = (p: string) => readFileSync(resolve(__dirname, "../..", p), "utf8");
 
 describe("A — Plus → Marketing portal handoff", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    h.native = false;
+    h.browserClose.mockResolvedValue({});
+    h.browserOpen.mockResolvedValue({});
+  });
   it("accepts broker root, broker sub-paths incl. marketing, admin and legacy", () => {
     for (const p of ["/planipret/broker", "/planipret/broker/marketing", "/planipret/admin", "/planipret/admin/overview", "/planipret/portal-handoff"]) {
       const u = `${P}${p}?th=x&em=y`;
@@ -56,6 +65,18 @@ describe("A — Plus → Marketing portal handoff", () => {
     expect(h.invoke).toHaveBeenCalledWith("pp-portal-handoff", expect.objectContaining({ body: { path: "/planipret/broker/marketing" } }));
     expect(open).toHaveBeenCalledWith(url, "_blank", "noopener,noreferrer");
     open.mockRestore();
+  });
+  it("native iOS closes the old Browser sheet, waits, then opens fullscreen", async () => {
+    const url = `${P}/planipret/broker/marketing?th=abc&em=b%40x.ca`;
+    h.native = true;
+    h.invoke.mockResolvedValueOnce({ data: { ok: true, url, portal: "broker" }, error: null });
+
+    const r = await openBrokerPortal("/planipret/broker/marketing");
+
+    expect(r).toEqual({ ok: true, portal: "broker" });
+    expect(h.browserClose).toHaveBeenCalledTimes(1);
+    expect(h.browserOpen).toHaveBeenCalledWith({ url, presentationStyle: "fullscreen" });
+    expect(h.browserClose.mock.invocationCallOrder[0]).toBeLessThan(h.browserOpen.mock.invocationCallOrder[0]);
   });
   it("invalid returned URL is refused and nothing is opened", async () => {
     h.invoke.mockResolvedValueOnce({ data: { ok: true, url: "https://evil.example/planipret/broker?th=x&em=y" }, error: null });

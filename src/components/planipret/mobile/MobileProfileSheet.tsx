@@ -79,9 +79,9 @@ export default function MobileProfileSheet({
   const setStatus = async (s: string) => {
     if (!profile?.user_id) return;
     setSavingStatus(s);
-    const { error } = await supabase.from("planipret_profiles").update({ status: s }).eq("user_id", profile.user_id);
+    const { error } = await supabase.rpc("set_my_planipret_status" as never, { _status: s } as never);
     setSavingStatus(null);
-    if (error) { toast.error(error.message); return; }
+    if (error) { toast.error(lang === "fr" ? "Impossible de changer le statut. Réessayez." : "Could not update status. Try again."); return; }
     toast.success(t("profile.statusUpdated"));
     await reloadProfile();
   };

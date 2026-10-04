@@ -160,6 +160,18 @@ const networkMonitor = read("src/lib/planipret/network/networkMonitor.ts");
 const callerLookup = read("src/lib/planipret/callerLookup.ts");
 const nsTranscription = read("supabase/functions/ns-get-transcription/index.ts");
 const adminTranscription = read("supabase/functions/pp-admin-transcribe/index.ts");
+const portalOpener = read("src/lib/planipret/openBrokerPortal.ts");
+check(
+  portalOpener.includes('import("@capacitor/browser")')
+    && portalOpener.includes("Browser.open({")
+    && portalOpener.includes('presentationStyle: "fullscreen"')
+    && portalOpener.includes("Browser.close()"),
+  "Native portal handoff must use Capacitor Browser in fullscreen mode",
+);
+const iosPlugins = readOptional("ios/App/App/capacitor.config.json");
+if (iosPlugins) check(iosPlugins.includes("CAPBrowserPlugin"), "iOS native bundle must register CAPBrowserPlugin for portal handoff");
+const androidPlugins = readOptional("android/app/src/main/assets/capacitor.plugins.json");
+if (androidPlugins) check(androidPlugins.includes('"@capacitor/browser"'), "Android native bundle must register @capacitor/browser for portal handoff");
 check(!more.includes("setInterval(() => run(true)") && !sipDebug.includes("setInterval(() => run(false)"), "PBX diagnostics must run on demand or on foreground resume");
 check(!connections.includes("setInterval(() => load()") && !messages.includes("setInterval(() => { load(); }"), "Integration and Microsoft views must not poll APIs continuously");
 check(!networkMonitor.includes("setInterval(() => this.checkSignalQuality()") && !callerLookup.includes("window.setInterval"), "Calls must not generate periodic network probes or caller lookups");
