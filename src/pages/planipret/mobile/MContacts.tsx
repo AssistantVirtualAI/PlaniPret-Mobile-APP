@@ -120,7 +120,7 @@ function presenceMeta(raw: string | undefined | null, t: (k: string) => string):
 }
 
 export default function MContacts() {
-  const { t } = useMplanipretLang();
+  const { t, lang } = useMplanipretLang();
   /** t() renvoie la clé si la traduction manque — ce helper garantit un libellé lisible. */
   const tr = (k: string, fallback: string) => {
     const v = t(k);
@@ -151,6 +151,9 @@ export default function MContacts() {
   const [filterDept, setFilterDept] = useState<string>("");
   const [filterTeam, setFilterTeam] = useState<string>("");
   const [sortBy, setSortBy] = useState<"relevance" | "name" | "team" | "department">("relevance");
+  const [clientActivity, setClientActivity] = useState<"" | "active" | "recent" | "dormant">("");
+  const [clientAdded, setClientAdded] = useState<"" | "7" | "30" | "90" | "365">("");
+  const [clientSort, setClientSort] = useState<"name" | "newest" | "oldest" | "activity">("name");
   const [dialingContactKey, setDialingContactKey] = useState<string | null>(null);
   const loadedTabsRef = useRef<Set<Tab>>(new Set<Tab>([
     "favorites",
@@ -321,13 +324,37 @@ export default function MContacts() {
       if (filterDept) out = out.filter((c: any) => (c.department ?? "") === filterDept);
       if (filterTeam) out = out.filter((c: any) => (c.team ?? c.group ?? c.site ?? "") === filterTeam);
     }
+    if (tab === "clients") {
+      const now = Date.now();
+      const ts = (v: any) => { const n = v ? Date.parse(String(v)) : NaN; return Number.isFinite(n) ? n : 0; };
+      const actAt = (c: any) => Math.max(ts(c.last_activity_at), ts(c.updated_at), ts(c.created_at));
+      const DAY = 86400000;
+      if (clientActivity) {
+        out = out.filter((c: any) => {
+          const st = String(c.status ?? "").toLowerCase();
+          const a = actAt(c);
+          if (clientActivity === "active") return /activ|actif|open|ouvert/.test(st) || (a > 0 && now - a <= 90 * DAY);
+          if (clientActivity === "recent") return a > 0 && now - a <= 30 * DAY;
+          return !(/activ|actif/.test(st) && !/inactiv/.test(st)) && (a === 0 || now - a > 90 * DAY);
+        });
+      }
+      if (clientAdded) {
+        const lim = Number(clientAdded) * DAY;
+        out = out.filter((c: any) => { const t0 = ts(c.created_at); return t0 > 0 && now - t0 <= lim; });
+      }
+      const nm = (c: any) => (c.name || c.display_name || `${c.first_name ?? ""} ${c.last_name ?? ""}`).trim().toLowerCase();
+      out = [...out].sort((a, b) => clientSort === "newest" ? ts(b.created_at) - ts(a.created_at) || nm(a).localeCompare(nm(b))
+        : clientSort === "oldest" ? (ts(a.created_at) || Infinity) - (ts(b.created_at) || Infinity) || nm(a).localeCompare(nm(b))
+        : clientSort === "activity" ? actAt(b) - actAt(a) || nm(a).localeCompare(nm(b))
+        : nm(a).localeCompare(nm(b), "fr"));
+    }
     if (tokens.length) {
       out = out.filter((c: any) => {
         const hay = tab === "directory"
           ? `${c.first_name ?? ""} ${c.last_name ?? ""} ${c.name ?? ""} ${c.display_name ?? ""} ${c.extension ?? ""} ${c.email ?? ""} ${c.department ?? ""} ${c.position ?? ""} ${c.job_title ?? ""} ${c.team ?? ""}`
           : tab === "favorites"
           ? `${c.name ?? ""} ${c.phone ?? ""} ${c.extension ?? ""} ${c.email ?? ""} ${c.company ?? ""}`
-          : `${c.first_name ?? ""} ${c.last_name ?? ""} ${c.display_name ?? ""} ${c.phone ?? ""} ${c.email ?? ""} ${c.company ?? ""}`;
+          : `${c.first_name ?? ""} ${c.last_name ?? ""} ${c.name ?? ""} ${c.display_name ?? ""} ${c.phone ?? ""} ${c.cell_phone ?? ""} ${c.email ?? ""} ${c.company ?? ""}`;
         return matchAllTokens(hay, tokens);
       });
     }
@@ -380,7 +407,7 @@ export default function MContacts() {
       out = [...out, ...extra];
     }
     return out;
-  }, [tab, personal, favorites, directory, clients, q, filterDept, filterTeam, sortBy]);
+  }, [tab, personal, favorites, directory, clients, q, filterDept, filterTeam, sortBy, clientActivity, clientAdded, clientSort]);
 
   const deptOptions = useMemo(() => {
     const s = new Set<string>();
@@ -570,6 +597,48 @@ export default function MContacts() {
           );
         })}
       </div>
+
+      {tab === "clients" && (() => {
+        const en = lang === "en";
+        const sel = (on: boolean) => ({ background: on ? "var(--pp-brand-accent-2)" : "var(--pp-bg-surface)", color: on ? "#fff" : "var(--pp-text-secondary)", border: `1px solid ${on ? "var(--pp-brand-accent)" : "var(--pp-bg-border-2)"}` });
+        const filtered = !!(clientActivity || clientAdded || q.trim());
+        return (
+          <div className="mb-3">
+            <div className="text-xs font-semibold mb-2" style={{ color: "var(--pp-text-secondary)" }} data-testid="clients-count">
+              {filtered
+                ? (en ? `${list.length} of ${clients.length} clients` : `${list.length} sur ${clients.length} clients`)
+                : (en ? `${clients.length} clients loaded` : `${clients.length} clients chargés`)}
+            </div>
+            <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
+              <Filter className="w-3.5 h-3.5 shrink-0" style={{ color: "var(--pp-text-muted)" }} />
+              <select aria-label={en ? "Activity" : "Activité"} value={clientActivity} onChange={(e) => setClientActivity(e.target.value as any)} className="text-xs px-2 py-1.5 rounded-full outline-none shrink-0" style={sel(!!clientActivity)}>
+                <option value="">{en ? "Activity: all" : "Activité : toutes"}</option>
+                <option value="recent">{en ? "Active < 30 days" : "Actif < 30 jours"}</option>
+                <option value="active">{en ? "Active < 90 days" : "Actif < 90 jours"}</option>
+                <option value="dormant">{en ? "Inactive > 90 days" : "Inactif > 90 jours"}</option>
+              </select>
+              <select aria-label={en ? "Date added" : "Date d'ajout"} value={clientAdded} onChange={(e) => setClientAdded(e.target.value as any)} className="text-xs px-2 py-1.5 rounded-full outline-none shrink-0" style={sel(!!clientAdded)}>
+                <option value="">{en ? "Added: any time" : "Ajouté : toujours"}</option>
+                <option value="7">{en ? "Last 7 days" : "7 derniers jours"}</option>
+                <option value="30">{en ? "Last 30 days" : "30 derniers jours"}</option>
+                <option value="90">{en ? "Last 90 days" : "90 derniers jours"}</option>
+                <option value="365">{en ? "Last 12 months" : "12 derniers mois"}</option>
+              </select>
+              <select aria-label={en ? "Sort" : "Trier"} value={clientSort} onChange={(e) => setClientSort(e.target.value as any)} className="text-xs px-2 py-1.5 rounded-full outline-none shrink-0" style={sel(false)}>
+                <option value="name">{en ? "Sort: Name" : "Trier : Nom"}</option>
+                <option value="activity">{en ? "Sort: Recent activity" : "Trier : Activité récente"}</option>
+                <option value="newest">{en ? "Sort: Newest" : "Trier : Plus récents"}</option>
+                <option value="oldest">{en ? "Sort: Oldest" : "Trier : Plus anciens"}</option>
+              </select>
+              {(clientActivity || clientAdded) && (
+                <button onClick={() => { setClientActivity(""); setClientAdded(""); }} className="text-[11px] px-2 py-1 rounded-full font-semibold shrink-0" style={sel(false)}>
+                  {en ? "Clear" : "Effacer"}
+                </button>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {tab === "directory" && (
         <div className="flex items-center gap-2 mb-3 overflow-x-auto no-scrollbar">
