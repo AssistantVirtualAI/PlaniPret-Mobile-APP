@@ -38,6 +38,11 @@ const require_ = (cond, msg) => { if (!cond) (postSync ? failures : notes).push(
 const capCfg = read(path.join(appDir, "capacitor.config.ts"));
 const appId = (capCfg.match(/appId:\s*['"]([^'"]+)['"]/) ?? [])[1] ?? "";
 const pkg = JSON.parse(read(path.join(appDir, "package.json")));
+// Apple peut exiger une version marketing distincte de la version Android.
+// `apply-version.mjs` utilise déjà ce même repli : ne jamais comparer iOS
+// exclusivement à `pkg.version` lorsque `iosMarketingVersion` est renseignée.
+const expectedIosMarketingVersion = String(pkg.iosMarketingVersion || pkg.version);
+const expectedIosBuildNumber = Number(pkg.iosBuildNumber || pkg.androidVersionCode || 1);
 
 check(!!appId, "capacitor.config.ts doit déclarer un appId");
 
@@ -82,9 +87,13 @@ if (wantIos) {
       );
     }
     const marketing = pbx.match(/MARKETING_VERSION = ([^;]+);/)?.[1]?.trim();
-    if (marketing && marketing !== pkg.version) {
-      failures.push(`iOS : MARKETING_VERSION (${marketing}) ≠ package.json version (${pkg.version})`);
+    if (marketing && marketing !== expectedIosMarketingVersion) {
+      failures.push(`iOS : MARKETING_VERSION (${marketing}) ≠ version marketing attendue (${expectedIosMarketingVersion})`);
     } else if (marketing) passed.push("iOS : MARKETING_VERSION alignée sur package.json");
+    const buildNumber = pbx.match(/CURRENT_PROJECT_VERSION = ([^;]+);/)?.[1]?.trim();
+    if (buildNumber && Number(buildNumber) !== expectedIosBuildNumber) {
+      failures.push(`iOS : CURRENT_PROJECT_VERSION (${buildNumber}) ≠ build attendu (${expectedIosBuildNumber})`);
+    } else if (buildNumber) passed.push("iOS : CURRENT_PROJECT_VERSION aligné sur package.json");
   } else {
     require_(false, "iOS : ios/App/App.xcodeproj absent — exécuter `npx cap add ios` puis `npm run ios:build-sync`");
   }
@@ -98,8 +107,8 @@ if (wantIos) {
     check(plist.includes("ITSAppUsesNonExemptEncryption"), "iOS Info.plist : ITSAppUsesNonExemptEncryption manquant (blocage TestFlight)");
     check(plist.includes("NSPhotoLibraryAddUsageDescription"), "iOS Info.plist : NSPhotoLibraryAddUsageDescription manquant (caméra Feedback)");
     const shortVersion = plist.match(/<key>CFBundleShortVersionString<\/key>\s*<string>([^<]+)<\/string>/)?.[1];
-    if (shortVersion && !shortVersion.includes("$(") && shortVersion !== pkg.version) {
-      failures.push(`iOS : CFBundleShortVersionString (${shortVersion}) ≠ package.json version (${pkg.version})`);
+    if (shortVersion && !shortVersion.includes("$(") && shortVersion !== expectedIosMarketingVersion) {
+      failures.push(`iOS : CFBundleShortVersionString (${shortVersion}) ≠ version marketing attendue (${expectedIosMarketingVersion})`);
     }
   } else {
     require_(false, "iOS : ios/App/App/Info.plist absent — généré par `npx cap add ios`");
