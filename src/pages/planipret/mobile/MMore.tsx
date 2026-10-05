@@ -1,3 +1,4 @@
+import { createPortal } from "react-dom";
 import { useEffect, useState } from "react";
 import TaskAssignmentDiagnostic from "@/components/planipret/mobile/TaskAssignmentDiagnostic";
 import { ensureAiConsent } from "@/components/planipret/mobile/AiConsentHost";
@@ -560,16 +561,8 @@ export default function MMore() {
       </button>
 
       {deleteOpen && (
-        <div
-          className="fixed inset-0 z-[100] flex items-end justify-center"
-          style={{ background: "rgba(0,0,0,0.55)" }}
-          onClick={() => !deleting && setDeleteOpen(false)}
-        >
-          <div
-            className="w-full pp-card"
-            style={{ margin: 12, padding: 18, maxWidth: 520 }}
-            onClick={(e) => e.stopPropagation()}
-          >
+        <MMoreSheet title={t("more.deleteAccount")} onClose={() => !deleting && setDeleteOpen(false)}>
+          <div style={{ paddingBottom: 12 }}>
             <h3 style={{ fontWeight: 700, fontSize: 16, marginBottom: 6 }}>{t("more.deleteAccount")}</h3>
             <p style={{ fontSize: 13, color: "var(--pp-text-faint)", marginBottom: 16 }}>
               {t("more.deleteAccountWarning")}
@@ -604,7 +597,7 @@ export default function MMore() {
               </button>
             </div>
           </div>
-        </div>
+        </MMoreSheet>
       )}
 
       <div style={{ height: 16 }} />
@@ -771,17 +764,17 @@ function NotificationsSection({ profile, reloadProfile }: { profile: any; reload
 
 /* =================== Sheets (dark) =================== */
 
-function Sheet({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+export function MMoreSheet({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     return () => { document.body.style.overflow = previousOverflow; };
   }, []);
 
-  return (
+  return createPortal(
     <div
       data-pp-sheet
-      className="fixed inset-0 z-[100] flex items-end md:absolute"
+      className="fixed inset-0 z-[1000] flex items-end"
       style={{ background: "rgba(4,11,22,0.7)", backdropFilter: "blur(6px)", touchAction: "none" }}
       onClick={onClose}
       role="presentation"
@@ -818,7 +811,8 @@ function Sheet({ title, onClose, children }: { title: string; onClose: () => voi
           {children}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -859,7 +853,7 @@ function EditProfileSheet({ profile, onClose, onSaved }: { profile: any; onClose
     onClose();
   };
   return (
-    <Sheet title={t("more.myProfile")} onClose={onClose}>
+    <MMoreSheet title={t("more.myProfile")} onClose={onClose}>
       <label style={labelStyle}>{t("more.fullName")}</label>
       <input value={name} onChange={(e) => setName(e.target.value)} style={fieldStyle} />
       <label style={labelStyle}>{t("more.email")}</label>
@@ -871,7 +865,7 @@ function EditProfileSheet({ profile, onClose, onSaved }: { profile: any; onClose
       <button onClick={save} disabled={busy} style={{ ...primaryBtn, opacity: busy ? 0.5 : 1 }}>
         {busy ? t("common.saving") : t("common.save")}
       </button>
-    </Sheet>
+    </MMoreSheet>
   );
 }
 
@@ -883,7 +877,7 @@ function HelpSheet({ onClose }: { onClose: () => void }) {
     { q: t("more.helpFaqCallsQ"), a: t("more.helpFaqCallsA") },
   ];
   return (
-    <Sheet title={t("more.helpCenter")} onClose={onClose}>
+    <MMoreSheet title={t("more.helpCenter")} onClose={onClose}>
       <div className="space-y-3">
         {faq.map((f, i) => (
           <div key={i} className="pb-3" style={{ borderBottom: "1px solid var(--pp-bg-border)" }}>
@@ -892,7 +886,7 @@ function HelpSheet({ onClose }: { onClose: () => void }) {
           </div>
         ))}
       </div>
-    </Sheet>
+    </MMoreSheet>
   );
 }
 
@@ -909,7 +903,7 @@ function CustomizeSheet({ profile, onClose, onSaved }: { profile: any; onClose: 
     onClose();
   };
   return (
-    <Sheet title={t("more.customizeAva")} onClose={onClose}>
+    <MMoreSheet title={t("more.customizeAva")} onClose={onClose}>
       <p style={{ ...labelStyle, marginTop: 0 }}>{t("more.avaRespondsIn")}</p>
       <div className="flex gap-2">
         {(["fr", "en"] as const).map((l) => {
@@ -934,7 +928,7 @@ function CustomizeSheet({ profile, onClose, onSaved }: { profile: any; onClose: 
       <button onClick={save} disabled={busy} style={{ ...primaryBtn, opacity: busy ? 0.5 : 1 }}>
         {busy ? "…" : t("common.save")}
       </button>
-    </Sheet>
+    </MMoreSheet>
   );
 }
 
@@ -962,7 +956,7 @@ function DndSheet({ profile, onClose, onSaved }: { profile: any; onClose: () => 
     onClose();
   };
   return (
-    <Sheet title={t("more.dnd")} onClose={onClose}>
+    <MMoreSheet title={t("more.dnd")} onClose={onClose}>
       <div className="flex items-center justify-between py-2" style={{ borderBottom: "1px solid var(--pp-bg-border)" }}>
         <span style={{ fontSize: 13, color: "var(--pp-text-primary)" }}>{t("more.enableDnd")}</span>
         <Toggle on={enabled} onChange={setEnabled} />
@@ -988,6 +982,6 @@ function DndSheet({ profile, onClose, onSaved }: { profile: any; onClose: () => 
       <button onClick={save} disabled={busy} style={{ ...primaryBtn, opacity: busy ? 0.5 : 1 }}>
         {busy ? "…" : t("common.save")}
       </button>
-    </Sheet>
+    </MMoreSheet>
   );
 }

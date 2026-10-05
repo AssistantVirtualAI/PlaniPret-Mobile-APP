@@ -2666,12 +2666,14 @@ class AppBridgeViewController: CAPBridgeViewController {
     private static let pjsipPlugin = PpPjsip()
     private static let voipPlugin = PpVoipCall()
     private static let authPlugin = PpAuthSession()
+    private static let portalExternalPlugin = PpPortalExternal()
 
     override func capacitorDidLoad() {
         bridge?.registerPluginInstance(Self.sipPlugin)
         bridge?.registerPluginInstance(Self.pjsipPlugin)
         bridge?.registerPluginInstance(Self.voipPlugin)
         bridge?.registerPluginInstance(Self.authPlugin)
+        bridge?.registerPluginInstance(Self.portalExternalPlugin)
     }
 
     override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
@@ -3058,6 +3060,7 @@ function patchAndroidNativeFiles() {
     if (fs.existsSync(staleFile)) fs.rmSync(staleFile);
   }
   const pluginAlreadyRegistered = mainText.includes("PpSipKeepAlivePlugin::class.java") || mainText.includes("PpSipKeepAlivePlugin.class");
+  const portalPluginAlreadyRegistered = mainText.includes("PpPortalExternalPlugin::class.java") || mainText.includes("PpPortalExternalPlugin.class");
   if (mainActivity && !pluginAlreadyRegistered) {
     let next = mainText;
     if (mainActivity.endsWith(".java")) {
@@ -3073,7 +3076,22 @@ function patchAndroidNativeFiles() {
     }
     writeIfChanged(mainActivity, next);
   }
-  console.log("[native-config] Android PpSipKeepAlive plugin applied.");
+  if (mainActivity && !portalPluginAlreadyRegistered) {
+    let next = fs.readFileSync(mainActivity, "utf8");
+    if (mainActivity.endsWith(".java")) {
+      if (next.includes("registerPlugin(PpSipKeepAlivePlugin.class);")) {
+        next = next.replace("registerPlugin(PpSipKeepAlivePlugin.class);", "registerPlugin(PpSipKeepAlivePlugin.class);\n        registerPlugin(PpPortalExternalPlugin.class);");
+      } else if (next.includes("super.onCreate(savedInstanceState);")) {
+        next = next.replace("super.onCreate(savedInstanceState);", "registerPlugin(PpPortalExternalPlugin.class);\n        super.onCreate(savedInstanceState);");
+      }
+    } else if (next.includes("registerPlugin(PpSipKeepAlivePlugin::class.java)")) {
+      next = next.replace("registerPlugin(PpSipKeepAlivePlugin::class.java)", "registerPlugin(PpSipKeepAlivePlugin::class.java)\n        registerPlugin(PpPortalExternalPlugin::class.java)");
+    } else if (next.includes("super.onCreate(savedInstanceState)")) {
+      next = next.replace("super.onCreate(savedInstanceState)", "registerPlugin(PpPortalExternalPlugin::class.java)\n        super.onCreate(savedInstanceState)");
+    }
+    writeIfChanged(mainActivity, next);
+  }
+  console.log("[native-config] Android PpSipKeepAlive + PpPortalExternal plugins applied.");
 }
 
 function patchIosNativeFiles() {
@@ -3110,6 +3128,7 @@ function patchIosNativeFiles() {
     "App/Plugins/PpVoipCall/PpVoipCall.m",
     "App/Plugins/PpAuthSession/PpAuthSession.swift",
     "App/Plugins/PpAuthSession/PpAuthSession.m",
+    "App/Plugins/PpPortalExternal/PpPortalExternal.swift",
     ...(hasPjsip
       ? [
           "App/Plugins/PpPjsip/PpPjsip.swift",
@@ -3141,14 +3160,14 @@ function patchIosNativeFiles() {
   const storyboard = path.join(iosApp, "Base.lproj", "Main.storyboard");
   const storyboardText = fs.existsSync(storyboard) ? fs.readFileSync(storyboard, "utf8") : "";
   const bridgeText = fs.existsSync(bridge) ? fs.readFileSync(bridge, "utf8") : "";
-  if (!bridgeText.includes("PpSipKeepAlive()") || !bridgeText.includes("PpVoipCall()") || !bridgeText.includes("PpAuthSession()") || !storyboardText.includes('customClass="AppBridgeViewController"')) {
+  if (!bridgeText.includes("PpSipKeepAlive()") || !bridgeText.includes("PpVoipCall()") || !bridgeText.includes("PpAuthSession()") || !bridgeText.includes("PpPortalExternal()") || !storyboardText.includes('customClass="AppBridgeViewController"')) {
     throw new Error("[native-config] iOS native plugins are not wired into the launch ViewController; aborting sync so SIP/VoIP/OAuth cannot ship UNIMPLEMENTED.");
   }
   if (hasPjsip && !bridgeText.includes("PpPjsip()")) {
     throw new Error("[native-config] PpPjsip sources present but not registered in AppBridgeViewController.");
   }
   console.log(
-    `[native-config] iOS PpSipKeepAlive + PpVoipCall + PpAuthSession${hasPjsip ? " + PpPjsip" : ""} plugins applied.`
+    `[native-config] iOS PpSipKeepAlive + PpVoipCall + PpAuthSession + PpPortalExternal${hasPjsip ? " + PpPjsip" : ""} plugins applied.`
   );
 }
 

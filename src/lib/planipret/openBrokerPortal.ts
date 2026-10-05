@@ -6,12 +6,21 @@
  * (admin ou courtier). Le lien s'ouvre dans le navigateur système, la session
  * y est établie automatiquement — aucune ressaisie Microsoft.
  */
-import { Capacitor } from "@capacitor/core";
+import { Capacitor, registerPlugin } from "@capacitor/core";
 import { supabase } from "@/integrations/supabase/client";
 import { validPortalHandoffUrl } from "@/lib/planipret/portalHandoffUrl";
 import { tr } from "@/lib/i18n/tr";
 
 export type OpenPortalResult = { ok: true; portal: "admin" | "broker" } | { ok: false; error: string };
+
+type PortalExternalPlugin = {
+  open(options: { url: string }): Promise<{ ok: boolean }>;
+};
+
+// Le Browser Capacitor confirme parfois l'appel sans présenter sa feuille sur
+// certains iPhone/Android. Le plugin Planiprêt utilise donc directement le
+// navigateur système, après la même validation stricte effectuée ci-dessous.
+const PortalExternal = registerPlugin<PortalExternalPlugin>("PpPortalExternal");
 
 const errorText = (code: string): string | undefined => ({
   not_authenticated: tr("Session expirée. Reconnectez-vous à l'application.", "Session expired. Sign in to the app again."),
@@ -40,6 +49,25 @@ function withTimeout<T>(p: Promise<T>, ms: number, code: string): Promise<T> {
   });
 }
 
+async function openNativePortal(url: string): Promise<void> {
+  const isNativeExternalPluginAvailable = (Capacitor as typeof Capacitor & {
+    isPluginAvailable?: (name: string) => boolean;
+  }).isPluginAvailable?.("PpPortalExternal") === true;
+
+  if (isNativeExternalPluginAvailable) {
+    const result = await withTimeout(PortalExternal.open({ url }), 8000, "timeout");
+    if (!result?.ok) throw new Error("system_browser_unavailable");
+    return;
+  }
+
+  // Compatibilité avec un ancien binaire sans le plugin dédié : ce chemin
+  // reste volontairement secondaire; il ne masque jamais un échec du plugin.
+  const { Browser } = await import("@capacitor/browser");
+  await withTimeout(Browser.close(), 800, "timeout").catch(() => undefined);
+  await new Promise((r) => setTimeout(r, 700));
+  await withTimeout(Browser.open({ url, presentationStyle: "fullscreen" }), 8000, "timeout");
+}
+
 export async function openBrokerPortal(path?: string): Promise<OpenPortalResult> {
   try {
     let session = (await withTimeout(supabase.auth.getSession(), 4000, "timeout").catch(() => ({ data: { session: null } }))).data.session;
@@ -60,22 +88,7 @@ export async function openBrokerPortal(path?: string): Promise<OpenPortalResult>
     }
 
     if (Capacitor.isNativePlatform()) {
-      // iOS rend parfois la présentation « popover » comme une feuille blanche.
-      // Une vue plein écran garantit que le portail et sa redirection de session
-      // disposent d'une vraie surface de navigation.
-      const { Browser } = await import("@capacitor/browser");
-      // Safari may still be retained by a previous external flow (OAuth, help,
-      // or a former portal opening). Close it first; Browser.open otherwise
-      // rejects a valid HTTPS URL with “Unable to display URL” on iOS.
-      await withTimeout(Browser.close(), 800, "timeout").catch(() => undefined);
-      // iOS silently ignores a presentation started while the previous Safari
-      // sheet is still dismissing (open() resolves but nothing appears).
-      await new Promise((r) => setTimeout(r, 700));
-      try {
-        await withTimeout(Browser.open({ url, presentationStyle: "fullscreen" }), 8000, "timeout");
-      } catch {
-        window.open(url, "_system");
-      }
+      await openNativePortal(url);
     } else {
       window.open(url, "_blank", "noopener,noreferrer");
     }

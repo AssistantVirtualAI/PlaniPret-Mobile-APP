@@ -31,6 +31,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         registerPlugin(PpSipKeepAlivePlugin.class);
+        registerPlugin(PpPortalExternalPlugin.class);
 
         // ── Recommandation Google Play #1 : Edge-to-edge (API 35+) ───────────
         // EdgeToEdge.enable() remplace windowTranslucentStatus/Navigation (dépréciés).

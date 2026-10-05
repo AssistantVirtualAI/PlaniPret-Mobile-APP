@@ -7,12 +7,14 @@ class AppBridgeViewController: CAPBridgeViewController {
     private static let pjsipPlugin = PpPjsip()
     private static let voipPlugin = PpVoipCall()
     private static let authPlugin = PpAuthSession()
+    private static let portalExternalPlugin = PpPortalExternal()
 
     override func capacitorDidLoad() {
         bridge?.registerPluginInstance(Self.sipPlugin)
         bridge?.registerPluginInstance(Self.pjsipPlugin)
         bridge?.registerPluginInstance(Self.voipPlugin)
         bridge?.registerPluginInstance(Self.authPlugin)
+        bridge?.registerPluginInstance(Self.portalExternalPlugin)
     }
 
     override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
