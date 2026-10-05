@@ -1,8 +1,10 @@
 // Aligne la version affichée / le build number sur les deux plateformes.
 //
 // Source de vérité : `package.json`
-//   - `version`      -> versionName (Android) / MARKETING_VERSION (iOS)
-//   - `androidVersionCode` -> versionCode (Android) / CURRENT_PROJECT_VERSION (iOS)
+//   - `version`            -> Android versionName
+//   - `androidVersionCode` -> Android versionCode
+//   - `iosMarketingVersion` -> iOS MARKETING_VERSION (defaults to `version`)
+//   - `iosBuildNumber`      -> iOS CURRENT_PROJECT_VERSION (defaults to Android code)
 //
 // Les projets natifs sont générés par `npx cap add`, donc ce script est
 // rejoué après chaque `cap sync` via apply-native-config.mjs.
@@ -15,6 +17,8 @@ const pkg = JSON.parse(fs.readFileSync(path.join(appDir, "package.json"), "utf8"
 
 export const VERSION_NAME = String(pkg.version || "1.0.0");
 export const VERSION_CODE = Number(pkg.androidVersionCode || 1);
+export const IOS_MARKETING_VERSION = String(pkg.iosMarketingVersion || VERSION_NAME);
+export const IOS_BUILD_NUMBER = Number(pkg.iosBuildNumber || VERSION_CODE);
 
 function writeIfChanged(file, next) {
   const prev = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null;
@@ -44,10 +48,10 @@ function patchIos() {
     return;
   }
   let text = fs.readFileSync(file, "utf8");
-  text = text.replace(/MARKETING_VERSION = [^;]+;/g, `MARKETING_VERSION = ${VERSION_NAME};`);
-  text = text.replace(/CURRENT_PROJECT_VERSION = [^;]+;/g, `CURRENT_PROJECT_VERSION = ${VERSION_CODE};`);
+  text = text.replace(/MARKETING_VERSION = [^;]+;/g, `MARKETING_VERSION = ${IOS_MARKETING_VERSION};`);
+  text = text.replace(/CURRENT_PROJECT_VERSION = [^;]+;/g, `CURRENT_PROJECT_VERSION = ${IOS_BUILD_NUMBER};`);
   if (writeIfChanged(file, text)) {
-    console.log(`[version] iOS -> MARKETING_VERSION ${VERSION_NAME}, build ${VERSION_CODE}`);
+    console.log(`[version] iOS -> MARKETING_VERSION ${IOS_MARKETING_VERSION}, build ${IOS_BUILD_NUMBER}`);
   }
 }
 

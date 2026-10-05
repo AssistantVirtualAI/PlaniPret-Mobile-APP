@@ -114,5 +114,6 @@
     "vite": "^5.4.10",
     "vitest": "^2.1.5"
   },
-  "iosBuildNumber": 44
+  "iosBuildNumber": 45,
+  "iosMarketingVersion": "1.6.1"
 }
