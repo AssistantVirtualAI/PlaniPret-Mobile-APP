@@ -16,6 +16,7 @@ export type ConsentCall = {
   answered_at?: string | null;
   status?: string | null;
   created_at?: string | null;
+  ended_at?: string | null;
 };
 
 export type EndedDetail = {
@@ -23,6 +24,8 @@ export type EndedDetail = {
   number?: string | null;
   direction?: "in" | "out" | null;
   answered?: boolean;
+  /** Heure de fin d'appel vue par l'app (ISO). */
+  endedAt?: string | null;
   /**
    * D'où viennent les lignes fournies :
    *  • "provider" : requête ciblée sur l'identifiant fournisseur (id / ns_callid
@@ -68,12 +71,43 @@ export function pickEndedCall(
     if (detail.source === "provider") return usable[0];
   }
   const wanted = digits(detail.number);
-  if (wanted) {
-    return usable.find((r) => digits(r.from_number) === wanted || digits(r.to_number) === wanted) ?? null;
-  }
+  if (wanted) return pickByNumber(usable, detail, wanted);
   // Repli : appel très récent du courtier, sans identifiant ni numéro.
   if (!detail.providerCallId && detail.source === "recent") return usable[0];
   return null;
+}
+
+/** Fenêtre max entre la fin vue par l'app et le `ended_at` du serveur. */
+export const ENDED_MATCH_WINDOW_MS = 3 * 60_000;
+
+function dirOf(v: unknown): "in" | "out" | null {
+  const s = String(v ?? "").toLowerCase();
+  if (!s) return null;
+  return s === "in" || s === "inbound" || s === "missed" ? "in" : "out";
+}
+
+/**
+ * Repli par numéro : numéro identique (10 chiffres), même sens si connu, et
+ * `ended_at` proche de la fin vue par l'app. Une ligne sans `ended_at` n'est
+ * retenue que si elle est la seule candidate et commencée avant la fin.
+ * Jamais « le dernier appel » sans correspondance vérifiée.
+ */
+function pickByNumber(rows: ConsentCall[], detail: EndedDetail, wanted: string): ConsentCall | null {
+  const digits = (v: unknown) => String(v ?? "").replace(/\D/g, "").slice(-10);
+  const endMs = detail.endedAt ? Date.parse(detail.endedAt) : NaN;
+  let cands = rows.filter((r) => digits(clientNumberOf(r)) === wanted
+    || digits(r.from_number) === wanted || digits(r.to_number) === wanted);
+  if (detail.direction) cands = cands.filter((r) => dirOf(r.direction) === detail.direction);
+  if (!cands.length) return null;
+  if (Number.isNaN(endMs)) return cands.length === 1 ? cands[0] : null;
+  const ended = cands
+    .filter((r) => r.ended_at)
+    .map((r) => ({ r, gap: Math.abs(Date.parse(String(r.ended_at)) - endMs) }))
+    .filter((x) => Number.isFinite(x.gap) && x.gap <= ENDED_MATCH_WINDOW_MS)
+    .sort((a, b) => a.gap - b.gap);
+  if (ended.length) return ended[0].r;
+  const open = cands.filter((r) => !r.ended_at && (!r.created_at || Date.parse(r.created_at) <= endMs + 5_000));
+  return open.length === 1 ? open[0] : null;
 }
 
 export function clientNumberOf(call: ConsentCall): string {

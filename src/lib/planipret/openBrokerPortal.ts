@@ -9,14 +9,29 @@
 import { Capacitor } from "@capacitor/core";
 import { supabase } from "@/integrations/supabase/client";
 import { validPortalHandoffUrl } from "@/lib/planipret/portalHandoffUrl";
+import { tr } from "@/lib/i18n/tr";
 
 export type OpenPortalResult = { ok: true; portal: "admin" | "broker" } | { ok: false; error: string };
 
-const ERRORS: Record<string, string> = {
-  not_authenticated: "Session expirée. Reconnectez-vous à l'application.",
-  no_planipret_profile: "Aucun profil Planiprêt associé à ce compte.",
-  handoff_stamp_failed: "Connexion directe temporairement indisponible. Réessayez.",
-};
+const errorText = (code: string): string | undefined => ({
+  not_authenticated: tr("Session expirée. Reconnectez-vous à l'application.", "Session expired. Sign in to the app again."),
+  no_planipret_profile: tr("Aucun profil Planiprêt associé à ce compte.", "No Planiprêt profile is linked to this account."),
+  handoff_stamp_failed: tr("Connexion directe temporairement indisponible. Réessayez.", "Direct sign-in temporarily unavailable. Try again."),
+  link_failed: tr("Le lien de connexion n'a pas pu être créé. Réessayez.", "The sign-in link could not be created. Try again."),
+  handoff_failed: tr("Ouverture du portail impossible pour le moment. Réessayez.", "Unable to open the portal right now. Try again."),
+} as Record<string, string>)[code];
+
+const SAFE_CODE = /^[a-z_]{1,40}$/;
+const SAFE_ID = /^[0-9a-f-]{8,64}$/i;
+
+/** User-facing failure text: known message + normalized code + tracking id. Never raw provider text. */
+export function portalFailureMessage(code: string | undefined, correlationId?: string): string {
+  const c = code && SAFE_CODE.test(code) ? code : "unknown";
+  const base = errorText(c) ?? tr("Lien du portail invalide. Réessayez.", "Invalid portal link. Try again.");
+  const parts = [c === "unknown" ? base : `${base} (${c})`];
+  if (correlationId && SAFE_ID.test(correlationId)) parts.push(tr(`No de suivi : ${correlationId}`, `Tracking no: ${correlationId}`));
+  return parts.join(" — ");
+}
 
 function withTimeout<T>(p: Promise<T>, ms: number, code: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -32,17 +47,16 @@ export async function openBrokerPortal(path?: string): Promise<OpenPortalResult>
       const refreshed = await withTimeout(supabase.auth.refreshSession(), 6000, "timeout").catch(() => ({ data: { session: null } }));
       session = refreshed.data.session;
     }
-    if (!session?.access_token) return { ok: false, error: ERRORS.not_authenticated };
+    if (!session?.access_token) return { ok: false, error: portalFailureMessage("not_authenticated") };
 
     const { data, error } = await withTimeout(supabase.functions.invoke("pp-portal-handoff", {
       body: path ? { path } : {},
       headers: { Authorization: `Bearer ${session.access_token}` },
     }), 15000, "timeout");
-    const out = data as { ok?: boolean; url?: string; portal?: "admin" | "broker"; error?: string } | null;
+    const out = data as { ok?: boolean; url?: string; portal?: "admin" | "broker"; error?: string; correlation_id?: string } | null;
     const url = validPortalHandoffUrl(out?.url);
     if (error || !out?.ok || !url) {
-      const code = out?.error ?? error?.message ?? "unknown";
-      return { ok: false, error: ERRORS[code] ?? "Lien du portail invalide. Réessayez." };
+      return { ok: false, error: portalFailureMessage(out?.error, out?.correlation_id) };
     }
 
     if (Capacitor.isNativePlatform()) {
@@ -68,6 +82,6 @@ export async function openBrokerPortal(path?: string): Promise<OpenPortalResult>
     return { ok: true, portal: out.portal ?? "broker" };
   } catch (e) {
     const m = (e as Error)?.message;
-    return { ok: false, error: m === "timeout" ? "Le portail ne répond pas. Réessayez." : m ?? "Ouverture du portail impossible." };
+    return { ok: false, error: m === "timeout" ? tr("Le portail ne répond pas. Réessayez.", "The portal is not responding. Try again.") : tr("Ouverture du portail impossible.", "Unable to open the portal.") };
   }
 }

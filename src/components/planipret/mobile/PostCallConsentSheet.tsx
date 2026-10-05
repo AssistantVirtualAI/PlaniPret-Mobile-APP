@@ -24,7 +24,7 @@ import {
 } from "@/lib/planipret/postCallConsent";
 
 const SELECT =
-  "id, user_id, from_number, to_number, direction, maestro_client_id, maestro_client_name, from_name, to_name, duration_seconds, save_consent, answered_at, status, created_at";
+  "id, user_id, from_number, to_number, direction, maestro_client_id, maestro_client_name, from_name, to_name, duration_seconds, save_consent, answered_at, status, created_at, ended_at";
 const PENDING_KEY = "pp.pending-post-call-decision.v2";
 const RETRY_DELAYS = [0, 500, 1_000, 2_000, 4_000, 8_000];
 
@@ -108,16 +108,22 @@ export default function PostCallConsentSheet() {
             .or(`id.eq.${pid},ns_callid.eq.${pid},ns_call_id.eq.${pid}`).limit(3);
           rows = (data as any as ConsentCall[]) ?? [];
           if (rows.length) source = "provider";
-        } else if (detail.number) {
-          const since = new Date(Date.now() - 10 * 60_000).toISOString();
+        }
+        // Si l'identifiant SIP local ne correspond pas au PBX, on retrouve le
+        // seul appel compatible du courtier par numéro, sens et heure de fin.
+        // La durée de l'appel n'est jamais une limite de recherche.
+        if (!rows.length && detail.number) {
+          const endMs = Date.parse(endedIso);
+          const openSince = new Date(endMs - 12 * 3_600_000).toISOString();
           const { data } = await supabase
             .from("planipret_phone_calls").select(SELECT)
             .in("user_id", owners)
-            .gte("created_at", since)
-            .order("created_at", { ascending: false }).limit(10);
+            .or(`ended_at.gte.${openSince},and(ended_at.is.null,created_at.gte.${openSince})`)
+            .order("created_at", { ascending: false }).limit(50);
           rows = (data as any as ConsentCall[]) ?? [];
+          source = "recent";
         }
-        picked = pickEndedCall(rows, { ...detail, source }, owners);
+        picked = pickEndedCall(rows, { ...detail, endedAt: endedIso, source }, owners);
         if (picked) break;
       }
       // Une réponse déjà donnée ne vaut jamais pour un nouvel appel, et un même
