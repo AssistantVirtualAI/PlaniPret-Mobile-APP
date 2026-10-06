@@ -1,10 +1,11 @@
+import { tr } from "@/lib/i18n/tr";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { X, UserPlus, Loader2, ExternalLink } from "lucide-react";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { invalidateCallerClient, resolveCallerClient } from "@/lib/planipret/callerClient";
-import { hasRequiredMaestroClientFields } from "@/lib/planipret/maestroClientDraft";
+import { formatMaestroPhone, hasRequiredMaestroClientFields, maestroPhoneDigits } from "@/lib/planipret/maestroClientDraft";
 import AddressAutocomplete, { splitRoute } from "./AddressAutocomplete";
 
 /** Codes numériques des listes Maestro (salutation, type de rue). */
@@ -54,7 +55,7 @@ export default function CreateMaestroClientSheet({
     setFirst(parts[0] ?? "");
     setLast(parts.slice(1).join(" "));
     setEmail("");
-    setPhone(target.phone ?? "");
+    setPhone(formatMaestroPhone(target.phone ?? ""));
     setSalutation(""); setSex(""); setLanguage("fr");
     setStreetNumber(""); setStreetName(""); setStreetType(""); setApartment("");
     setCity(""); setRegion("QC"); setZip("");
@@ -114,7 +115,7 @@ export default function CreateMaestroClientSheet({
             zip: zip.trim().toUpperCase().replace(/\s/g, ""),
           },
           email: email.trim() || undefined,
-          phone: phone.trim(),
+          phone: maestroPhoneDigits(phone),
           call_id: target.callId ?? undefined,
         },
       });
@@ -160,28 +161,26 @@ export default function CreateMaestroClientSheet({
       <div className="w-full max-w-md rounded-t-3xl p-5 space-y-3 max-h-[85dvh] overflow-y-auto overscroll-contain" onClick={(e) => e.stopPropagation()}
         style={{ background: "var(--pp-bg-surface)", color: "var(--pp-text-primary)", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 120px)", WebkitOverflowScrolling: "touch", touchAction: "pan-y" }}>
         <div className="flex items-center justify-between">
-          <h2 className="text-base font-semibold flex items-center gap-2"><UserPlus className="w-4 h-4" /> Créer le client dans Maestro</h2>
-          <button onClick={onClose} aria-label="Fermer" className="p-2 rounded-full" style={{ background: "var(--pp-bg-elevated)" }}><X className="w-4 h-4" /></button>
+          <h2 className="text-base font-semibold flex items-center gap-2"><UserPlus className="w-4 h-4" /> {tr("Créer le client dans Maestro", "Create client in Maestro")}</h2>
+          <button onClick={onClose} aria-label={tr("Fermer", "Close")} className="p-2 rounded-full" style={{ background: "var(--pp-bg-elevated)" }}><X className="w-4 h-4" /></button>
         </div>
-        <p className="text-[11px]" style={{ color: "var(--pp-text-muted)" }}>
-          <span style={{ color: "var(--pp-danger)" }}>*</span> Champs obligatoires exigés par Maestro — sans eux, Maestro refuse la création.
+        <p className="text-xs leading-5" style={{ color: "var(--pp-text-muted)" }}>
+          {tr("Ce formulaire crée directement une fiche client complète dans Maestro.", "This form creates a complete client profile directly in Maestro.")} <span style={{ color: "var(--pp-danger)" }}>*</span> {tr("Obligatoire", "Required")}
         </p>
-        <input className={field} style={fieldStyle} placeholder="Prénom *" value={first} maxLength={80} onChange={(e) => setFirst(e.target.value)} />
-        <input className={field} style={fieldStyle} placeholder="Nom *" value={last} maxLength={80} onChange={(e) => setLast(e.target.value)} />
-        <input className={field} style={fieldStyle} placeholder="Courriel" type="email" value={email} maxLength={255} onChange={(e) => setEmail(e.target.value)} />
-        <div className="grid grid-cols-3 gap-2">
-          <select className={field} style={fieldStyle} value={salutation} onChange={(e) => setSalutation(e.target.value)} aria-label="Salutation">
-            <option value="">Salutation *</option>
-            {MAESTRO_SALUTATIONS.map((o) => <option key={o.v} value={o.v}>{o.l}</option>)}
-          </select>
-          <select className={field} style={fieldStyle} value={sex} onChange={(e) => setSex(e.target.value)} aria-label="Sexe">
-            <option value="">Sexe *</option><option value="m">Homme</option><option value="f">Femme</option>
-          </select>
-          <select className={field} style={fieldStyle} value={language} onChange={(e) => setLanguage(e.target.value)} aria-label="Langue">
-            <option value="fr">Français *</option><option value="en">English *</option>
-          </select>
+        <p className="text-xs font-semibold pt-1" style={{ color: "var(--pp-brand-accent)" }}>{tr("Identité", "Identity")}</p>
+        <div className="grid grid-cols-2 gap-2">
+          <label className="space-y-1 text-[11px]" style={{ color: "var(--pp-text-muted)" }}><span>{tr("Prénom", "First name")} *</span><input className={field} style={fieldStyle} value={first} maxLength={80} onChange={(e) => setFirst(e.target.value)} /></label>
+          <label className="space-y-1 text-[11px]" style={{ color: "var(--pp-text-muted)" }}><span>{tr("Nom", "Last name")} *</span><input className={field} style={fieldStyle} value={last} maxLength={80} onChange={(e) => setLast(e.target.value)} /></label>
         </div>
-        <p className="text-xs font-semibold pt-1" style={{ color: "var(--pp-text-secondary)" }}>Adresse (exigée par Maestro)</p>
+        <div className="grid grid-cols-3 gap-2">
+          <label className="space-y-1 text-[11px]" style={{ color: "var(--pp-text-muted)" }}><span>{tr("Titre", "Title")} *</span><select className={field} style={fieldStyle} value={salutation} onChange={(e) => setSalutation(e.target.value)}><option value="">—</option>{MAESTRO_SALUTATIONS.map((o) => <option key={o.v} value={o.v}>{o.l}</option>)}</select></label>
+          <label className="space-y-1 text-[11px]" style={{ color: "var(--pp-text-muted)" }}><span>{tr("Sexe", "Gender")} *</span><select className={field} style={fieldStyle} value={sex} onChange={(e) => setSex(e.target.value)}><option value="">—</option><option value="m">{tr("Homme", "Male")}</option><option value="f">{tr("Femme", "Female")}</option></select></label>
+          <label className="space-y-1 text-[11px]" style={{ color: "var(--pp-text-muted)" }}><span>{tr("Langue", "Language")} *</span><select className={field} style={fieldStyle} value={language} onChange={(e) => setLanguage(e.target.value)}><option value="fr">Français</option><option value="en">English</option></select></label>
+        </div>
+        <p className="text-xs font-semibold pt-1" style={{ color: "var(--pp-brand-accent)" }}>{tr("Coordonnées", "Contact details")}</p>
+        <label className="block space-y-1 text-[11px]" style={{ color: "var(--pp-text-muted)" }}><span>{tr("Téléphone", "Phone")} *</span><input className={field} style={fieldStyle} placeholder="(514) 555-1234" inputMode="tel" value={phone} maxLength={20} onChange={(e) => setPhone(e.target.value)} onBlur={(e) => setPhone(formatMaestroPhone(e.target.value))} /></label>
+        <label className="block space-y-1 text-[11px]" style={{ color: "var(--pp-text-muted)" }}><span>{tr("Courriel", "Email")}</span><input className={field} style={fieldStyle} type="email" value={email} maxLength={255} onChange={(e) => setEmail(e.target.value)} /></label>
+        <p className="text-xs font-semibold pt-1" style={{ color: "var(--pp-brand-accent)" }}>{tr("Adresse Maestro", "Maestro address")}</p>
         <AddressAutocomplete className={field} style={fieldStyle} onSelect={(ad) => {
           const r = splitRoute(ad.route);
           if (ad.streetNumber) setStreetNumber(ad.streetNumber);
@@ -194,7 +193,7 @@ export default function CreateMaestroClientSheet({
         <div className="grid grid-cols-3 gap-2">
           <input className={field} style={fieldStyle} placeholder="No civique *" value={streetNumber} maxLength={20} onChange={(e) => setStreetNumber(e.target.value)} />
           <select className={field + " col-span-2"} style={fieldStyle} value={streetType} onChange={(e) => setStreetType(e.target.value)} aria-label="Type de rue">
-            <option value="">Type de rue *</option>
+            <option value="">{tr("Type de rue *", "Street type *")}</option>
             {MAESTRO_STREET_TYPES.map((o) => <option key={o.v} value={o.v}>{o.l}</option>)}
           </select>
         </div>
@@ -209,9 +208,8 @@ export default function CreateMaestroClientSheet({
           </select>
           <input className={field} style={fieldStyle} placeholder="Code postal *" value={zip} maxLength={7} onChange={(e) => setZip(e.target.value.toUpperCase())} />
         </div>
-        {zip.trim() && !zipOk && <p className="text-[11px]" style={{ color: "var(--pp-danger)" }}>Code postal invalide (ex. H2X 1Y4)</p>}
-        {!emailOk && <p className="text-[11px]" style={{ color: "var(--pp-danger)" }}>Courriel invalide</p>}
-        <input className={field} style={fieldStyle} placeholder="Téléphone *" inputMode="tel" value={phone} maxLength={30} onChange={(e) => setPhone(e.target.value)} />
+        {zip.trim() && !zipOk && <p className="text-[11px]" style={{ color: "var(--pp-danger)" }}>{tr("Code postal invalide (ex. H2X 1Y4)", "Invalid postal code (e.g. H2X 1Y4)")}</p>}
+        {!emailOk && <p className="text-[11px]" style={{ color: "var(--pp-danger)" }}>{tr("Courriel invalide", "Invalid email")}</p>}
         {webUrl && (
           <a href={webUrl} target="_blank" rel="noreferrer" className="flex items-center justify-center gap-2 rounded-xl px-3 py-2.5 text-sm font-semibold"
             style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-brand-accent)" }}>
@@ -219,7 +217,7 @@ export default function CreateMaestroClientSheet({
           </a>
         )}
         <button onClick={() => void submit()} disabled={!canSubmit}
-          className="w-full rounded-xl px-3 py-3 text-sm font-semibold flex items-center justify-center gap-2 disabled:opacity-50"
+          className="sticky bottom-0 w-full rounded-xl px-3 py-3 text-sm font-semibold flex items-center justify-center gap-2 disabled:opacity-50"
           style={{ background: "var(--pp-brand-accent)", color: "#fff" }}>
           {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <UserPlus className="w-4 h-4" />} Créer le client
         </button>

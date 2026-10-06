@@ -13,6 +13,18 @@ export type MaestroClientDraft = {
   zip: string;
 };
 
+export function maestroPhoneDigits(value: string): string {
+  const digits = value.replace(/\D/g, "");
+  return digits.length === 11 && digits.startsWith("1") ? digits.slice(1) : digits;
+}
+
+export function formatMaestroPhone(value: string): string {
+  const digits = maestroPhoneDigits(value);
+  if (digits.length <= 3) return digits;
+  if (digits.length <= 6) return `(${digits.slice(0, 3)}) ${digits.slice(3)}`;
+  return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;
+}
+
 /**
  * Matches the documented mandatory Maestro creation contract. Keeping this
  * pure prevents the mobile UI from offering a submit action that the server
@@ -23,7 +35,7 @@ export function hasRequiredMaestroClientFields(draft: MaestroClientDraft): boole
     && draft.firstName.length <= 80
     && draft.lastName.trim().length > 0
     && draft.lastName.length <= 80
-    && draft.phone.replace(/\D/g, "").length >= 10
+    && maestroPhoneDigits(draft.phone).length === 10
     && /^\d+$/.test(draft.salutation)
     && (draft.sex === "m" || draft.sex === "f")
     && (draft.language === "fr" || draft.language === "en")

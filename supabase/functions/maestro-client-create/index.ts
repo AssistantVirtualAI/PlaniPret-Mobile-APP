@@ -10,7 +10,6 @@ import {
   normalizePhone,
 } from "../_shared/maestro.ts";
 import { guardPlanipret } from "../_shared/planipret-guard.ts";
-import { maestroClientHasTelephone } from "../_shared/maestro-client-telephone.ts";
 import { createClient_, getClient } from "../_shared/maestro-scribe.ts";
 import { ensureClientTelephone } from "../_shared/maestro-client-telephone.ts";
 import { getUserMaestroAccessToken } from "../_shared/maestro-oauth.ts";
