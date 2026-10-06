@@ -1559,6 +1559,7 @@ function CallDetailSheet({
               <CallRecordingPlayer
                 callId={call.id}
                 duration={call.duration_seconds ?? 0}
+                onDismiss={onClose}
               />
             ) : (
               <div className="pp-card p-4 text-xs" style={{ color: "var(--pp-text-secondary)" }}>

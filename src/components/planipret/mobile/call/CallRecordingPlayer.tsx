@@ -6,6 +6,8 @@ import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 interface Props {
   callId: string;
   duration?: number;
+  /** Ferme la fiche d'appel parente sans relancer la recherche audio. */
+  onDismiss?: () => void;
 }
 
 /**
@@ -13,7 +15,7 @@ interface Props {
  * The proxy sends the NS Bearer token server-side; we get audio bytes back and
  * render them as a blob URL so the <audio> element can play them.
  */
-export function CallRecordingPlayer({ callId, duration = 0 }: Props) {
+export function CallRecordingPlayer({ callId, duration = 0, onDismiss }: Props) {
   const { t } = useMplanipretLang();
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
@@ -108,13 +110,26 @@ export function CallRecordingPlayer({ callId, duration = 0 }: Props) {
             💡 {errHint}
           </div>
         )}
-        <button
-          onClick={load}
-          className="w-full py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-2"
-          style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
-        >
-          <RotateCw className="w-3.5 h-3.5" /> {t("common.retry") || "Réessayer"}
-        </button>
+        <div className={onDismiss ? "grid grid-cols-2 gap-2" : undefined}>
+          <button
+            type="button"
+            onClick={load}
+            className="w-full py-2 rounded-lg text-xs font-semibold flex items-center justify-center gap-2"
+            style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
+          >
+            <RotateCw className="w-3.5 h-3.5" /> {t("common.retry") || "Réessayer"}
+          </button>
+          {onDismiss && (
+            <button
+              type="button"
+              onClick={onDismiss}
+              className="w-full py-2 rounded-lg text-xs font-semibold"
+              style={{ background: "transparent", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
+            >
+              {t("common.close") || "Fermer"}
+            </button>
+          )}
+        </div>
       </div>
     );
   }
