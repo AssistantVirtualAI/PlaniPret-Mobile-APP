@@ -1,5 +1,5 @@
 // Graphiques de commissions mobiles — parité avec le portail (RegisterCommissions).
-// Les données proviennent uniquement de l'action `deposits` de
+// Les données proviennent uniquement de l'action `analytics` de
 // `planipret-commission-reports` (année courante + même fenêtre l'an dernier).
 import { useEffect, useMemo, useRef, useState } from "react";
 import { isStatsCacheFresh, readStatsCache, statsCacheKey, writeStatsCache } from "@/lib/planipret/commissionsCache";
@@ -8,8 +8,7 @@ import {
   BarChart, Bar, ComposedChart, Line, AreaChart, Area, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from "recharts";
-
-const CHART_ROWS = 250;
+import { Button } from "@/components/ui/button";
 
 const COLORS = ["#5B8FF9", "#9B7FE8", "#2E9BDC", "#F0B429", "#70AD47", "#ED7D31", "#A5A5A5", "#8B5CF6"];
 
@@ -24,6 +23,7 @@ const numOf = (v: unknown) => {
 };
 
 type Row = {
+  number?: string | null;
   amount?: string | number | null;
   loan_amt?: string | number | null;
   date_trans?: string | null;
@@ -86,12 +86,13 @@ export default function MCommissionCharts({
   const [cy, setCy] = useState<Row[] | null>(null);
   const [py, setPy] = useState<Row[]>([]);
   const [failed, setFailed] = useState(false);
+  const [report, setReport] = useState<"overview" | "monthly" | "quarterly">("overview");
   const appliedRefreshToken = useRef(refreshToken);
 
   const from = String((filters as any).date_from ?? "");
   const to = String((filters as any).date_to ?? "");
   const key = JSON.stringify(filters);
-  const cacheKey = statsCacheKey("broker", [cacheScope, "charts", key]);
+  const cacheKey = statsCacheKey("broker", [cacheScope, "charts-fundings-v4", key]);
 
   useEffect(() => {
     if (!from || !to) return;
@@ -111,9 +112,9 @@ export default function MCommissionCharts({
 
     const call = (f: Record<string, unknown>) =>
       ppEdgeInvoke("planipret-commission-reports", {
-        action: "deposits",
-        filters: { ...f, page: 1, per_page: CHART_ROWS },
-      }, { retries: 1, timeoutMs: 12_000 });
+        action: "analytics",
+        filters: f,
+      }, { retries: 1, timeoutMs: 30_000 });
 
     (async () => {
       const [a, b] = await Promise.all([
@@ -121,10 +122,15 @@ export default function MCommissionCharts({
         call({ ...filters, date_from: shiftYear(from, -1), date_to: shiftYear(to, -1) }),
       ]);
       if (cancelled) return;
-      if (a.error || (a.data as any)?.error || (a.data as any)?.success === false) { setFailed(true); return; }
+      if (a.error || b.error || (a.data as any)?.error || (b.data as any)?.error || (a.data as any)?.success === false || (b.data as any)?.success === false || (a.data as any)?.truncated || (b.data as any)?.truncated) { setFailed(true); return; }
+      const expand = (data: any): Row[] => data?.analytics ? [
+        ...data.analytics.months.map((m: any) => ({ date_trans: `${m.key}-01`, loan_amt: m.volume, amount: m.commission, deals: m.deals, kind: "month" })),
+        ...data.analytics.lenders.map((l: any) => ({ institution: l.key, loan_amt: l.volume, kind: "lender" })),
+        ...data.analytics.types.map((t: any) => ({ commission_type: t.type, amount: t.amount, kind: "type" })),
+      ] : data?.rows ?? [];
       const next = {
-        cy: ((a.data as any)?.rows ?? []) as Row[],
-        py: ((!b.error && !(b.data as any)?.error && ((b.data as any)?.rows ?? [])) || []) as Row[],
+        cy: expand(a.data),
+        py: expand(b.data),
       };
       setCy(next.cy);
       setPy(next.py);
@@ -159,7 +165,7 @@ export default function MCommissionCharts({
       const r = touch(k);
       r.cyVolume += numOf(row.loan_amt);
       r.cyCommission += numOf(row.amount);
-      r.deals += 1;
+      r.deals += Number((row as any).deals ?? 0);
     }
     for (const row of py) {
       const raw = String(row.date_trans ?? "").slice(0, 7);
@@ -190,8 +196,8 @@ export default function MCommissionCharts({
       const r = map.get(k) ?? { key: k, cyVolume: 0, pyVolume: 0 };
       r[field] += v; map.set(k, r);
     };
-    for (const r of cy) bump(String(r.institution ?? ""), "cyVolume", numOf(r.loan_amt));
-    for (const r of py) bump(String(r.institution ?? ""), "pyVolume", numOf(r.loan_amt));
+    for (const r of cy) if ((r as any).kind === "lender") bump(String(r.institution ?? ""), "cyVolume", numOf(r.loan_amt));
+    for (const r of py) if ((r as any).kind === "lender") bump(String(r.institution ?? ""), "pyVolume", numOf(r.loan_amt));
     return [...map.values()].sort((a, b) => b.cyVolume - a.cyVolume).slice(0, 8);
   }, [cy, py]);
 
@@ -199,11 +205,33 @@ export default function MCommissionCharts({
     if (!cy) return [];
     const map = new Map<string, number>();
     for (const r of cy) {
+      if ((r as any).kind !== "type") continue;
       const k = String(r.commission_type ?? "base");
       map.set(k, (map.get(k) ?? 0) + numOf(r.amount));
     }
     return [...map.entries()].map(([type, amount]) => ({ type, amount })).filter((d) => d.amount > 0);
   }, [cy]);
+  const monthRows = useMemo(() => {
+    let cumulative = 0;
+    return months.map((month, index) => {
+      cumulative += month.cyCommission;
+      const previous = index > 0 ? months[index - 1].cyCommission : 0;
+      return { ...month, cumulative, change: previous ? (month.cyCommission - previous) / previous : null };
+    });
+  }, [months]);
+  const quarters = useMemo(() => {
+    const values = new Map<string, { amount: number; deals: number }>();
+    for (const month of months) {
+      const key = `${month.key.slice(0, 4)}-Q${Math.floor((Number(month.key.slice(5, 7)) - 1) / 3) + 1}`;
+      const current = values.get(key) ?? { amount: 0, deals: 0 };
+      current.amount += month.cyCommission;
+      current.deals += month.deals;
+      values.set(key, current);
+    }
+    const rows = [...values.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([key, value]) => ({ key, label: key.slice(5), ...value }));
+    return rows.map((row, index) => ({ ...row, average: row.deals ? row.amount / row.deals : 0, change: index > 0 && rows[index - 1].amount ? (row.amount - rows[index - 1].amount) / rows[index - 1].amount : null }));
+  }, [months]);
+  const pct = (value: number | null) => value == null ? "—" : `${value >= 0 ? "▲" : "▼"} ${(Math.abs(value) * 100).toFixed(1)} %`;
 
   if (failed) {
     return (
@@ -225,19 +253,18 @@ export default function MCommissionCharts({
 
   if (months.length === 0) return null;
 
-  const truncated = cy.length >= CHART_ROWS;
-
   return (
     <div data-testid="commission-charts">
-      {truncated && (
-        <p className="text-[11px] mb-2" style={{ color: "#F0B429" }}>
-          {fr
-            ? `Graphiques basés sur les ${CHART_ROWS} dépôts les plus récents de la période.`
-            : `Charts based on the ${CHART_ROWS} most recent deposits of the period.`}
-        </p>
-      )}
 
-      <ChartCard title={fr ? "Volume mensuel — année courante vs précédente" : "Monthly volume — CY vs PY"} height={210}>
+      <div role="tablist" aria-label={fr ? "Rapports déboursés" : "Paid reports"} className="grid grid-cols-3 gap-1 mb-3">
+        {([[
+          "overview", fr ? "Vue d’ensemble" : "Overview",
+        ], ["monthly", fr ? "Mensuel" : "Monthly"], ["quarterly", fr ? "Trimestriel" : "Quarterly"]] as const).map(([key, label]) => (
+          <Button key={key} role="tab" aria-selected={report === key} variant={report === key ? "secondary" : "ghost"} size="sm" className="min-w-0 px-2 text-[11px]" onClick={() => setReport(key)}>{label}</Button>
+        ))}
+      </div>
+
+      {report === "overview" && <><ChartCard title={fr ? "Volume mensuel — année courante vs précédente" : "Monthly volume — CY vs PY"} height={210}>
         <BarChart data={months} margin={{ top: 4, right: 4, left: -14, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="rgba(155,127,232,0.15)" vertical={false} />
           <XAxis dataKey="label" tick={axisTick} axisLine={false} tickLine={false} />
@@ -249,7 +276,7 @@ export default function MCommissionCharts({
         </BarChart>
       </ChartCard>
 
-      <ChartCard title={fr ? "Commission mensuelle — CY vs PY" : "Monthly commission — CY vs PY"} height={210}>
+      <ChartCard title={fr ? "Commission mensuelle — année courante vs précédente" : "Monthly commission — CY vs PY"} height={210}>
         <BarChart data={months} margin={{ top: 4, right: 4, left: -14, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="rgba(155,127,232,0.15)" vertical={false} />
           <XAxis dataKey="label" tick={axisTick} axisLine={false} tickLine={false} />
@@ -283,7 +310,7 @@ export default function MCommissionCharts({
         </AreaChart>
       </ChartCard>
 
-      <ChartCard title={fr ? "Dossiers vs commission par dossier" : "Deals vs commission per deal"} height={200}>
+      <ChartCard title={fr ? "Dossiers et commission par dossier" : "Deals and commission per deal"} height={200}>
         <ComposedChart data={months} margin={{ top: 4, right: 4, left: -14, bottom: 0 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="rgba(155,127,232,0.15)" vertical={false} />
           <XAxis dataKey="label" tick={axisTick} axisLine={false} tickLine={false} />
@@ -337,6 +364,18 @@ export default function MCommissionCharts({
           <Area name="BPS" dataKey="bps" stroke={COLORS[7]} fill="url(#mgBps)" strokeWidth={2} />
         </AreaChart>
       </ChartCard>
+      </>}
+
+      {report === "monthly" && <div className="rounded-2xl p-3 mb-3" style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border)" }}>
+        <h3 className="text-[13px] font-semibold mb-3">{fr ? "Rapport déboursé mensuel" : "Monthly paid report"}</h3>
+        <div className="overflow-x-auto"><table className="w-full min-w-[620px] text-[11px]"><thead><tr><th className="text-left p-2">{fr ? "Mois" : "Month"}</th><th className="text-right p-2">{fr ? "Déboursé" : "Paid"}</th><th className="text-right p-2">{fr ? "Dossiers" : "Deals"}</th><th className="text-right p-2">{fr ? "Moyenne" : "Average"}</th><th className="text-right p-2">{fr ? "Variation" : "Change"}</th><th className="text-right p-2">{fr ? "Cumul" : "Cumulative"}</th></tr></thead><tbody>{monthRows.map((month) => <tr key={month.key} style={{ borderTop: "1px solid var(--pp-bg-border)" }}><td className="p-2 capitalize">{month.label} {month.key.slice(0, 4)}</td><td className="p-2 text-right">{cad(month.cyCommission)}</td><td className="p-2 text-right">{month.deals}</td><td className="p-2 text-right">{cad(month.commPerDeal)}</td><td className="p-2 text-right">{pct(month.change)}</td><td className="p-2 text-right">{cad(month.cumulative)}</td></tr>)}</tbody></table></div>
+      </div>}
+
+      {report === "quarterly" && <div className="rounded-2xl p-3 mb-3" style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border)" }}>
+        <h3 className="text-[13px] font-semibold mb-3">{fr ? "Rapport déboursé trimestriel" : "Quarterly paid report"}</h3>
+        <div className="h-[210px]"><ResponsiveContainer width="100%" height="100%"><BarChart data={quarters}><CartesianGrid strokeDasharray="3 3" stroke="var(--pp-bg-border)" /><XAxis dataKey="label" tick={axisTick} /><YAxis tick={axisTick} tickFormatter={(value) => compact(Number(value))} /><Tooltip contentStyle={tooltipStyle} formatter={(value: any) => cad(Number(value))} /><Bar dataKey="amount" name={fr ? "Déboursé" : "Paid"} fill={COLORS[2]} radius={[4, 4, 0, 0]} /></BarChart></ResponsiveContainer></div>
+        <div className="overflow-x-auto"><table className="w-full min-w-[520px] text-[11px]"><thead><tr><th className="text-left p-2">{fr ? "Trimestre" : "Quarter"}</th><th className="text-right p-2">{fr ? "Déboursé" : "Paid"}</th><th className="text-right p-2">{fr ? "Dossiers" : "Deals"}</th><th className="text-right p-2">{fr ? "Moyenne" : "Average"}</th><th className="text-right p-2">{fr ? "Variation" : "Change"}</th></tr></thead><tbody>{quarters.map((quarter) => <tr key={quarter.key} style={{ borderTop: "1px solid var(--pp-bg-border)" }}><td className="p-2">{quarter.label} {quarter.key.slice(0, 4)}</td><td className="p-2 text-right">{cad(quarter.amount)}</td><td className="p-2 text-right">{quarter.deals}</td><td className="p-2 text-right">{cad(quarter.average)}</td><td className="p-2 text-right">{pct(quarter.change)}</td></tr>)}</tbody></table></div>
+      </div>}
     </div>
   );
 }

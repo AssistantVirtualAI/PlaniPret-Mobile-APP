@@ -4,6 +4,7 @@
 //   GET /api/main/financial-institutions
 //
 // Read-only. Never mutates a commission. The Bearer token stays server-side.
+import { helperFlags, type RegisterRow } from "./commission-engine.ts";
 
 export const COMMISSION_API_BASE = (
   (globalThis as any).Deno?.env?.get("PLANIPRET_API_BASE_URL") ?? "https://client.planipret.com"
@@ -11,6 +12,8 @@ export const COMMISSION_API_BASE = (
 
 
 export const COMMISSION_TYPES = ["base", "bonus", "bonus2", "perform"] as const;
+export const PAID_COMMISSION_PATH = "/api/main/commissions/reports/deposits";
+export const PENDING_COMMISSION_PATH = "/api/main/commissions/reports/pending-commissions";
 export const SPLIT_TYPES = ["planipret", "planipret_override", "planipret_external"] as const;
 export const ORDER_BY = [
   "number", "loan_amt", "institution", "points", "amount", "date_trans",
@@ -227,7 +230,32 @@ export async function commissionGet(path: string, token: string, correlationId: 
     }
     if (attempt === 0) await new Promise((r) => setTimeout(r, 400));
   }
-  return last!;
+  return last ?? { ok: false, status: 502, data: { message: "network_error" }, durationMs: Date.now() - started };
+}
+
+/** Paid deposits only: never substitutes pending rows or treats a failed bucket as zero. */
+export async function collectPaidDeposits(token: string, filters: NormalizedFilters, cid: string) {
+  const rows: CommissionDepositRow[] = [];
+  let truncated = false;
+  const types = filters.commission_type ? [filters.commission_type] : [...COMMISSION_TYPES];
+  for (const type of types) {
+    for (let page = 1; page <= 100; page++) {
+      const qs = buildDepositQuery({ ...filters, order_by: "number", sort: "asc", commission_type: type, page, per_page: 200 });
+      const result = await commissionGet(`${PAID_COMMISSION_PATH}?${qs}`, token, cid);
+      if (!result.ok) return { rows: [], truncated: false, total: 0, fatal: result };
+      if (!Array.isArray(result.data?.data)) {
+        return { rows: [], truncated: false, total: 0, fatal: { ...result, ok: false, status: 502, data: { message: "maestro_contract_error" } } };
+      }
+      const batch: CommissionDepositRow[] = result.data.data;
+      rows.push(...batch.map((row) => ({
+        ...row, commission_type: row.commission_type ?? type,
+      })));
+      const lastPage = Number(result.data?.meta?.last_page ?? 1);
+      if (page >= lastPage || batch.length === 0) break;
+      if (page === 100) truncated = true;
+    }
+  }
+  return { rows, truncated, total: rows.length, fatal: null };
 }
 
 export const num = (v: unknown): number => {
@@ -251,8 +279,49 @@ export interface CommissionSummary {
   truncated: boolean;
 }
 
-const hasDate = (r: CommissionDepositRow) =>
+const hasDate = (r: { date_trans?: string | null }) =>
   /^\d{4}-\d{2}-\d{2}/.test(String((r as any).date_trans ?? "").trim());
+
+/** Same funded-tranche and calendar-period unit rules as the portal engine. */
+export function paidFlags(allRows: CommissionDepositRow[]) {
+  const rows: RegisterRow[] = allRows.map((r, source_row) => ({
+    ...r, loan_amt: num(r.loan_amt), amount: num(r.amount),
+    term: r.term == null ? null : String(r.term),
+    date_trans: r.date_trans?.trim().slice(0, 10) ?? null,
+    commission_type: r.commission_type ?? "base", source_row,
+    // Identity scoping: unique Maestro broker id, never the display name.
+    broker_user_id: (r as any).broker_user_id ?? (r.agent_name_id != null ? String(r.agent_name_id) : null),
+  }));
+  return helperFlags(rows, { start: "0000-01-01", end: "9999-12-31" });
+}
+
+export function paidAnalytics(allRows: CommissionDepositRow[]) {
+  const flags = paidFlags(allRows);
+  const months = new Map<string, { key: string; volume: number; commission: number; deals: number }>();
+  const lenders = new Map<string, { key: string; volume: number; deals: number }>();
+  let volume = 0, deals = 0;
+  for (const { row, unique_volume, unique_deal } of flags) {
+    if (!hasDate(row)) continue;
+    const key = String(row.date_trans).slice(0, 7);
+    const m = months.get(key) ?? { key, volume: 0, commission: 0, deals: 0 };
+    const loan = unique_volume ? num(row.loan_amt) : 0;
+    m.volume += loan; m.commission += num(row.amount); m.deals += unique_deal;
+    months.set(key, m); volume += loan; deals += unique_deal;
+    if (unique_volume) {
+      const name = row.institution?.trim() || "—";
+      const lender = lenders.get(name) ?? { key: name, volume: 0, deals: 0 };
+      lender.volume += loan; lender.deals += unique_deal; lenders.set(name, lender);
+    }
+  }
+  const types = new Map<string, number>();
+  for (const r of allRows.filter(hasDate)) {
+    const type = r.commission_type ?? "base";
+    types.set(type, (types.get(type) ?? 0) + num(r.amount));
+  }
+  return { volume, deals, months: [...months.values()].sort((a, b) => a.key.localeCompare(b.key)),
+    lenders: [...lenders.values()].sort((a, b) => b.volume - a.volume),
+    types: [...types].map(([type, amount]) => ({ type, amount })) };
+}
 
 export function summarize(allRows: CommissionDepositRow[], truncated = false): CommissionSummary {
   // Undated rows are excluded from every metric and reported separately.
@@ -263,16 +332,13 @@ export function summarize(allRows: CommissionDepositRow[], truncated = false): C
     amount: Math.round(undatedRows.reduce((s, r) => s + num(r.amount), 0) * 100) / 100,
     loan_amt: Math.round(undatedRows.reduce((s, r) => s + num(r.loan_amt), 0) * 100) / 100,
   };
-  let total = 0, volume = 0, adjustments = 0;
-  const deals = new Set<string>();
+  let total = 0, adjustments = 0;
+  const analytics = paidAnalytics(rows);
   const inst = new Map<string, { amount: number; count: number }>();
   const byDate = new Map<string, { amount: number; count: number }>();
   for (const r of rows) {
     const amt = num(r.amount);
     total += amt;
-    volume += num(r.loan_amt);
-    const ctype = String((r as any).commission_type ?? "base").trim().toLowerCase() || "base";
-    if (ctype === "base" && (r as any).number) deals.add(String((r as any).number));
     if (Number(r.is_adjustment) === 1) adjustments += 1;
     const key = String(r.institution ?? "—").trim() || "—";
     const i = inst.get(key) ?? { amount: 0, count: 0 };
@@ -285,8 +351,8 @@ export function summarize(allRows: CommissionDepositRow[], truncated = false): C
     total_commission: Math.round(total * 100) / 100,
     deposit_count: rows.length,
     average_commission: rows.length ? Math.round((total / rows.length) * 100) / 100 : 0,
-    total_loan_volume: Math.round(volume * 100) / 100,
-    deal_count: deals.size,
+    total_loan_volume: Math.round(analytics.volume * 100) / 100,
+    deal_count: analytics.deals,
     adjustments,
     undated,
     top_institutions: [...inst.entries()]
@@ -304,4 +370,19 @@ export function summarize(allRows: CommissionDepositRow[], truncated = false): C
 /** Institution display label — French first, per the product spec. */
 export function institutionLabel(i: any): string {
   return String(i?.company_fr ?? i?.company ?? i?.name ?? "—").trim() || "—";
+}
+
+/** Pending-commission rows mapped onto the deposit shape (tolerant field names). */
+export function normalizePendingRow(r: any): CommissionDepositRow {
+  const pick = (...k: string[]) => { for (const x of k) if (r?.[x] != null && r[x] !== "") return r[x]; return null; };
+  return {
+    ...r,
+    institution: pick("institution", "financial_institution", "lender"),
+    amount: pick("commission_amount", "amount", "pending_amount", "commission"),
+    date_trans: pick("date_trans", "date_closing", "closing_date", "date", "funding_date", "created_at"),
+    commission_type: String(pick("commission_type") ?? "base").toLowerCase(),
+    // Volume counted once per contract (base row only) to avoid 4x duplication.
+    loan_amt: String(pick("commission_type") ?? "base").toLowerCase() === "base" ? pick("loan_amt", "loan_amount") : 0,
+    number: pick("number", "filogix", "contract_id", "file_number"),
+  } as CommissionDepositRow;
 }

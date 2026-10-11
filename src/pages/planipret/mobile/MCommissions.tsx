@@ -1,7 +1,11 @@
 // MCommissions — rapports de commissions Planiprêt (API officielle Maestro).
 // Données financières sensibles : lecture seule, aucune donnée mise en cache
 // hors de la session, aucun jeton Maestro côté client.
-import { useCallback, useEffect, useMemo, useState } from "react";
+import PendingCommissionsCard, { TeamSplitPanel } from "@/components/planipret/commissions/PendingCommissionsCard";
+import PaidDepositsCard from "@/components/planipret/commissions/PaidDepositsCard";
+import RegisterCommissions from "@/components/planipret/commissions/RegisterCommissions";
+import { useCommissionLive } from "@/hooks/useCommissionLive";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useOutletContext, useNavigate, useSearchParams } from "react-router-dom";
 import {
   ArrowLeft, RefreshCw, SlidersHorizontal, TrendingUp, Wallet,
@@ -11,14 +15,18 @@ import { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, CartesianGri
 import MCommissionCharts from "@/components/planipret/mobile/MCommissionCharts";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import { tr } from "@/lib/i18n/tr";
 import { isStatsCacheFresh, readStatsCache, statsCacheKey, writeStatsCache } from "@/lib/planipret/commissionsCache";
 import { ppEdgeInvoke } from "@/lib/planipret/ppEdge";
+import { Button } from "@/components/ui/button";
 
 type Period = "month" | "quarter" | "year" | "ytd" | "custom";
+type Validation = { status: "MATCH" | "WARNING" | "BLOCKED"; checked_at: string; summary?: string };
 
 type Summary = {
   total_commission: number;
   deposit_count: number;
+  deal_count: number;
   average_commission: number;
   total_loan_volume: number;
   adjustments: number;
@@ -70,16 +78,16 @@ const numOf = (v: unknown) => {
   return Number.isFinite(n) ? n : 0;
 };
 
-function commissionErrorMessage(error: unknown, payload?: any) {
+function commissionErrorMessage(error: unknown, payload: any, fr: boolean) {
   const code = String(payload?.error ?? error ?? "").trim();
   const message = String(payload?.message ?? error ?? "").trim();
   if (code === "admin_scope_unavailable") {
-    return "La vue « Tous les courtiers » requiert un accès Maestro administrateur. Vos commissions personnelles restent disponibles.";
+    return fr ? "La vue « Tous les courtiers » requiert un accès Maestro administrateur. Vos commissions personnelles restent disponibles." : "The All brokers view requires Maestro administrator access. Your personal commissions remain available.";
   }
   if (/failed to send|failed to fetch|networkerror|load failed/i.test(message)) {
-    return "La connexion aux commissions est temporairement indisponible. Réessayez dans un instant.";
+    return fr ? "La connexion aux commissions est temporairement indisponible. Réessayez dans un instant." : "The commission connection is temporarily unavailable. Try again shortly.";
   }
-  return message || "Les commissions sont temporairement indisponibles.";
+  return message || (fr ? "Les commissions sont temporairement indisponibles." : "Commissions are temporarily unavailable.");
 }
 /** Masque raisonnable des noms de clients dans les aperçus de liste. */
 const mask = (name: string | null | undefined) => {
@@ -95,7 +103,7 @@ function rangeFor(period: Period, customFrom: string, customTo: string) {
   const iso = (d: Date) =>
     `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   if (period === "custom") return { from: customFrom, to: customTo };
-  if (period === "year") return { from: `${now.getFullYear()}-01-01`, to: `${now.getFullYear()}-12-31` };
+  if (period === "year") return { from: `${now.getFullYear()}-01-01`, to: iso(now) };
   if (period === "ytd") return { from: `${now.getFullYear()}-01-01`, to: iso(now) };
   if (period === "quarter") {
     const q = Math.floor(now.getMonth() / 3);
@@ -114,6 +122,7 @@ export default function MCommissions() {
   const { profile } = useOutletContext<PlanipretMobileContext>();
   const role = String(profile?.role ?? "");
   const allowed = role === "broker" || role === "admin";
+  const [section, setSection] = useState<"pending" | "paid">("paid");
 
   // Deep-link AVA : /mplanipret/commissions?period=…&commission_type=…
   const [sp] = useSearchParams();
@@ -124,7 +133,7 @@ export default function MCommissions() {
   const [customFrom, setCustomFrom] = useState(sp.get("date_from") ?? "");
   const [customTo, setCustomTo] = useState(sp.get("date_to") ?? "");
   const [commissionType, setCommissionType] = useState<string>(
-    (COMMISSION_TYPES as readonly string[]).includes(String(sp.get("commission_type"))) ? String(sp.get("commission_type")) : "base",
+    (COMMISSION_TYPES as readonly string[]).includes(String(sp.get("commission_type"))) ? String(sp.get("commission_type")) : "",
   );
   const [splitType, setSplitType] = useState<string>("");
   const [numberPrefix, setNumberPrefix] = useState<string>("");
@@ -147,6 +156,9 @@ export default function MCommissions() {
   const [detail, setDetail] = useState<DepositRow | null>(null);
 
   const [summary, setSummary] = useState<Summary | null>(null);
+
+  const [paidSplit, setPaidSplit] = useState<any>(null);
+  const [paidValidation, setPaidValidation] = useState<Validation | null>(null);
   const [rows, setRows] = useState<DepositRow[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -155,6 +167,9 @@ export default function MCommissions() {
   const [error, setError] = useState<string | null>(null);
   const [scopeNotice, setScopeNotice] = useState<string | null>(null);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  // Sheet edits a draft; reports reload only on « Appliquer ».
+  type Draft = { commissionType: string; institutionId: string; agentId: string; splitType: string; numberPrefix: string; orderBy: string; sortDir: "asc" | "desc" };
+  const [draft, setDraft] = useState<Draft>({ commissionType: "", institutionId: "", agentId: "", splitType: "", numberPrefix: "", orderBy: "date_trans", sortDir: "desc" });
   const [avaPref, setAvaPref] = useState<boolean | null>(null);
   const [chartRefreshToken, setChartRefreshToken] = useState(0);
 
@@ -164,7 +179,7 @@ export default function MCommissions() {
   const filters = useMemo(() => ({
     date_from: range.from,
     date_to: range.to,
-    commission_type: commissionType,
+    ...(commissionType ? { commission_type: commissionType } : {}),
     order_by: orderBy,
     sort: sortDir,
     ...(institutionId ? { financial_inst_id: institutionId } : {}),
@@ -177,7 +192,7 @@ export default function MCommissions() {
   // rows are never shared across brokers on a device.
   const cacheScope = String(profile?.user_id ?? profile?.id ?? "anonymous");
   const reportCacheKey = useMemo(
-    () => statsCacheKey(isAdmin ? "admin" : "broker", [cacheScope, "report", JSON.stringify(filters)]),
+    () => statsCacheKey(isAdmin ? "admin" : "broker", [cacheScope, "paid-fundings-v4", JSON.stringify(filters)]),
     [isAdmin, cacheScope, filters],
   );
   const metadataCacheKey = useMemo(
@@ -188,18 +203,27 @@ export default function MCommissions() {
 
   const call = useCallback(async (body: Record<string, unknown>) => {
     const { data, error: fnErr } = await ppEdgeInvoke<any>("planipret-commission-reports", body, { retries: 1 });
-    if (fnErr) throw new Error(commissionErrorMessage(fnErr.message, data));
+    if (fnErr) throw new Error(commissionErrorMessage(fnErr.message, data, fr));
     if (data?.error || data?.success === false || data?.ok === false) {
-      throw new Error(commissionErrorMessage(data?.error, data));
+      throw new Error(commissionErrorMessage(data?.error, data, fr));
     }
     return data;
-  }, []);
+  }, [fr]);
 
+  // Latest request wins: a response for an older filter key is never published.
+  const loadGen = useRef(0);
+  const moreInflight = useRef<string | null>(null);
+  useEffect(() => () => { loadGen.current += 1; }, []);
   const load = useCallback(async (force = false) => {
-    if (!allowed || !rangeReady) return;
+    if (!allowed || !rangeReady || section !== "paid") return;
+    const gen = ++loadGen.current;
+    const stale = () => gen !== loadGen.current;
+    moreInflight.current = null; setLoadingMore(false);
     const cached = readStatsCache(reportCacheKey);
     const cachedReport = cached?.value as { summary?: Summary; rows?: DepositRow[]; total?: number } | undefined;
     if (cachedReport) {
+      setPaidValidation((cachedReport as any).validation ?? null);
+      setPaidSplit((cachedReport as any).paid_split ?? null);
       setSummary(cachedReport.summary ?? null);
       setRows(cachedReport.rows ?? []);
       setTotal(cachedReport.total ?? 0);
@@ -214,33 +238,43 @@ export default function MCommissions() {
         call({ action: "summary", filters }),
         call({ action: "deposits", filters: { ...filters, page: 1, per_page: PER_PAGE } }),
       ]);
+      if (stale()) return;
       setScopeNotice(isAdmin && !agentId && s?.scope?.mode === "own"
         ? "Accès Maestro administrateur manquant : seules vos commissions personnelles sont affichées, pas celles de tous les courtiers."
         : null);
+      setPaidSplit(s?.paid_split ?? null);
+      setPaidValidation(s?.validation ?? null);
       setSummary(s.summary);
       setRows(d.rows ?? []);
       setTotal(d.pagination?.total ?? 0);
       setPage(1);
       writeStatsCache(reportCacheKey, {
         summary: s.summary ?? null,
+        paid_split: s?.paid_split ?? null,
+        validation: s?.validation ?? null,
         rows: d.rows ?? [],
         total: d.pagination?.total ?? 0,
       });
       if (force) setChartRefreshToken((value) => value + 1);
     } catch (e) {
+      if (stale()) return;
       setError((e as Error).message);
       // Keep the last known report on screen. A temporary Maestro outage must
       // never turn a populated commissions page into an empty error screen.
       if (!cachedReport) { setSummary(null); setRows([]); setTotal(0); }
     } finally {
-      setLoading(false);
+      if (!stale()) setLoading(false);
     }
-  }, [allowed, rangeReady, filters, call, reportCacheKey, isAdmin, agentId]);
+  }, [allowed, rangeReady, section, filters, call, reportCacheKey, isAdmin, agentId]);
 
   useEffect(() => { load(); }, [load]);
+  // Near real-time: the server announces new figures; re-read the scoped snapshot.
+  const loadRef = useRef(load);
+  loadRef.current = load;
+  useCommissionLive(() => { void loadRef.current(true); });
 
   useEffect(() => {
-    if (!allowed) return;
+    if (!allowed || section !== "paid") return;
     const cached = readStatsCache(metadataCacheKey);
     const cachedMetadata = cached?.value as { avaPref?: boolean | null; institutions?: { id: number; label: string }[]; agents?: { users_id: number; name: string }[] } | undefined;
     if (cachedMetadata) {
@@ -266,20 +300,35 @@ export default function MCommissions() {
     }).catch(() => {
       if (!cachedMetadata) { setAvaPref(null); setInstitutions([]); setAgents([]); }
     });
-  }, [allowed, call, metadataCacheKey]);
+  }, [allowed, section, call, metadataCacheKey]);
 
+
+  const openFilters = () => {
+    setDraft({ commissionType, institutionId, agentId, splitType, numberPrefix, orderBy, sortDir });
+    setFiltersOpen(true);
+  };
+  const applyDraft = () => {
+    setCommissionType(draft.commissionType); setInstitutionId(draft.institutionId); setAgentId(draft.agentId);
+    setSplitType(draft.splitType); setNumberPrefix(draft.numberPrefix); setOrderBy(draft.orderBy); setSortDir(draft.sortDir);
+    setFiltersOpen(false);
+  };
 
   const loadMore = async () => {
-    if (loadingMore || rows.length >= total) return;
+    const key = `${reportCacheKey}|${page + 1}`;
+    if (moreInflight.current === key || rows.length >= total) return;
+    moreInflight.current = key;
+    const gen = loadGen.current;
     setLoadingMore(true);
     try {
       const d = await call({ action: "deposits", filters: { ...filters, page: page + 1, per_page: PER_PAGE } });
+      if (gen !== loadGen.current) return;
       setRows((prev) => [...prev, ...(d.rows ?? [])]);
       setPage((p) => p + 1);
     } catch (e) {
-      setError((e as Error).message);
+      if (gen === loadGen.current) setError((e as Error).message);
     } finally {
-      setLoadingMore(false);
+      if (moreInflight.current === key) moreInflight.current = null;
+      if (gen === loadGen.current) setLoadingMore(false);
     }
   };
 
@@ -309,7 +358,7 @@ export default function MCommissions() {
       onBack={() => navigate(-1)}
       right={
         <div className="flex items-center gap-1">
-          <button onClick={() => setFiltersOpen(true)} aria-label={fr ? "Filtres" : "Filters"} className="p-2 rounded-lg" style={{ color: "var(--pp-text-secondary, #B4C6D8)" }}>
+          <button onClick={openFilters} aria-label={fr ? "Filtres" : "Filters"} className="p-2 rounded-lg" style={{ color: "var(--pp-text-secondary, #B4C6D8)" }}>
             <SlidersHorizontal className="w-4 h-4" />
           </button>
           <button onClick={() => load(true)} aria-label={fr ? "Rafraîchir" : "Refresh"} className="p-2 rounded-lg" style={{ color: "var(--pp-text-secondary, #B4C6D8)" }}>
@@ -318,6 +367,15 @@ export default function MCommissions() {
         </div>
       }
     >
+      <div role="tablist" aria-label={fr ? "Statut des commissions" : "Commission status"} className="grid grid-cols-2 gap-2 mb-3 sticky top-0 z-20 py-2" style={{ background: "var(--pp-bg-deep, #07111f)" }}>
+        <Button role="tab" aria-selected={section === "pending"} variant={section === "pending" ? "default" : "outline"} onClick={() => setSection("pending")} className="min-h-11">
+          {fr ? "En attente" : "Pending"}
+        </Button>
+        <Button role="tab" aria-selected={section === "paid"} variant={section === "paid" ? "default" : "outline"} onClick={() => setSection("paid")} className="min-h-11">
+          {fr ? "Déboursées" : "Paid"}
+        </Button>
+      </div>
+
       {/* Périodes */}
       <div className="flex gap-2 overflow-x-auto pb-1 mb-3">
         {(["month", "quarter", "ytd", "year", "custom"] as Period[]).map((p) => (
@@ -367,27 +425,39 @@ export default function MCommissions() {
         </div>
       )}
 
-      {scopeNotice && !error && (
+      {section === "paid" && scopeNotice && !error && (
         <div role="status" className="rounded-xl px-3 py-3 mb-3 text-[13px]" style={{ background: "rgba(245,166,35,0.12)", border: "1px solid rgba(245,166,35,0.4)", color: "#FFD89A" }}>
           {scopeNotice}
         </div>
       )}
 
-      {error && (
+      {section === "paid" && error && (
         <div className="rounded-xl px-3 py-3 mb-3 text-[13px]" style={{ background: "rgba(232,76,76,0.12)", border: "1px solid rgba(232,76,76,0.4)", color: "#FFB4B4" }}>
           {error}
         </div>
       )}
 
-      {loading ? (
+      {section === "paid" && (
+        <div className="mb-4">
+          <PaidDepositsCard lang={fr ? "fr" : "en"} scope={isAdmin ? "admin" : "broker"} />
+          <h2 className="flex items-center gap-2 text-base font-bold mt-5 mb-3">{fr ? "Analyse détaillée" : "Detailed analysis"}</h2>
+          <RegisterCommissions lang={fr ? "fr" : "en"} scope={isAdmin ? "admin" : "broker"} />
+          <Button variant="outline" className="w-full min-h-11 mt-3" onClick={() => navigate("tableaux")}>
+            {fr ? "Graphiques par courtier" : "Broker charts"}
+          </Button>
+        </div>
+      )}
+      {section === "paid" && (loading ? (
         <div className="space-y-2">
           {[0, 1, 2].map((i) => <div key={i} className="h-20 rounded-xl animate-pulse" style={{ background: "var(--pp-bg-surface, #0A1628)" }} />)}
         </div>
       ) : summary ? (
         <>
+          <SectionTitle color="var(--pp-success, #34D399)" title={fr ? "Commissions déboursées" : "Paid commissions"} sub={fr ? "Déjà versées par Maestro" : "Already paid by Maestro"} />
+          {paidValidation && <ValidationPill validation={paidValidation} fr={fr} />}
           <div className="grid grid-cols-2 gap-2 mb-3">
             <Kpi icon={<Wallet className="w-4 h-4" />} label={fr ? "Commissions" : "Commissions"} value={cad(summary.total_commission)} />
-            <Kpi icon={<Receipt className="w-4 h-4" />} label={fr ? "Dépôts" : "Deposits"} value={String(summary.deposit_count)} />
+            <Kpi icon={<Receipt className="w-4 h-4" />} label={fr ? "Unités uniques" : "Unique units"} value={String(summary.deal_count)} />
             <Kpi icon={<TrendingUp className="w-4 h-4" />} label={fr ? "Moyenne" : "Average"} value={cad(summary.average_commission)} />
             <Kpi icon={<Building2 className="w-4 h-4" />} label={fr ? "Volume de prêts" : "Loan volume"} value={cad(summary.total_loan_volume)} />
           </div>
@@ -398,6 +468,7 @@ export default function MCommissions() {
             </p>
           )}
 
+          {paidSplit && <div className="mb-4"><TeamSplitPanel split={paidSplit} fr={fr} title={fr ? "Déboursé — moi et mon équipe" : "Paid — me and my team"} /></div>}
               <MCommissionCharts filters={filters} lang={lang} cacheScope={cacheScope} refreshToken={chartRefreshToken} />
 
           {chartData.length > 0 && (
@@ -496,13 +567,18 @@ export default function MCommissions() {
         </>
       ) : !error ? (
         <Empty icon={<Receipt className="w-5 h-5" />} text={fr ? "Aucune donnée de commission." : "No commission data."} />
-      ) : null}
+      ) : null)}
+
+      {section === "pending" && <>
+        <SectionTitle color="var(--pp-warning, #F0B429)" title={fr ? "Commissions en attente" : "Pending commissions"} sub={fr ? "À recevoir" : "To be received"} />
+        <PendingCommissionsCard filters={filters} lang={lang === "en" ? "en" : "fr"} cacheScope={cacheScope} refreshToken={chartRefreshToken} />
+      </>}
 
       {/* Filtres */}
       {filtersOpen && (
         <div className="fixed inset-0 z-[70] flex items-end" style={{ background: "rgba(4,11,22,0.7)" }} onClick={() => setFiltersOpen(false)}>
-          <div className="w-full rounded-t-2xl p-5 pb-8" onClick={(e) => e.stopPropagation()}
-            style={{ background: "var(--pp-bg-surface, #0A1628)", border: "1px solid var(--pp-bg-border, rgba(155,127,232,0.28))" }}>
+          <div data-pp-sheet role="dialog" aria-modal="true" className="w-full rounded-t-2xl p-5 min-h-0 overflow-y-auto overscroll-contain" onClick={(e) => e.stopPropagation()}
+            style={{ maxHeight: "calc(100dvh - env(safe-area-inset-top, 0px) - 16px)", paddingBottom: "calc(2rem + env(safe-area-inset-bottom, 0px))", background: "var(--pp-bg-surface, #0A1628)", border: "1px solid var(--pp-bg-border, rgba(155,127,232,0.28))" }}>
             <div className="flex justify-between items-center mb-4">
               <span className="text-[15px] font-bold" style={{ color: "var(--pp-text-primary, #E8EDF5)" }}>{fr ? "Filtres" : "Filters"}</span>
               <button onClick={() => setFiltersOpen(false)} aria-label={fr ? "Fermer" : "Close"}><X className="w-4 h-4" style={{ color: "var(--pp-text-secondary, #B4C6D8)" }} /></button>
@@ -511,12 +587,15 @@ export default function MCommissions() {
             <div className="mb-4">
               <div className="text-[12px] mb-2" style={{ color: "var(--pp-text-secondary, #B4C6D8)" }}>{fr ? "Type de commission" : "Commission type"}</div>
               <div className="flex flex-wrap gap-2">
+                <Button variant={commissionType === "" ? "default" : "outline"} size="sm" onClick={() => setCommissionType("")}>
+                  {fr ? "Tous les types" : "All types"}
+                </Button>
                 {COMMISSION_TYPES.map((t) => (
-                  <button key={t} onClick={() => setCommissionType(t)}
+                  <button key={t} onClick={() => setDraft((d) => ({ ...d, commissionType: t }))}
                     className="px-3 py-1.5 rounded-full text-[12px] font-semibold"
                     style={{
-                      background: commissionType === t ? "var(--pp-brand-accent, #9B7FE8)" : "transparent",
-                      color: commissionType === t ? "#0A1628" : "var(--pp-text-secondary, #B4C6D8)",
+                      background: draft.commissionType === t ? "var(--pp-brand-accent, #9B7FE8)" : "transparent",
+                      color: draft.commissionType === t ? "#0A1628" : "var(--pp-text-secondary, #B4C6D8)",
                       border: "1px solid var(--pp-bg-border, rgba(155,127,232,0.28))",
                     }}>{t}</button>
                 ))}
@@ -525,7 +604,7 @@ export default function MCommissions() {
 
             <div className="mb-4">
               <div className="text-[12px] mb-2" style={{ color: "var(--pp-text-secondary, #B4C6D8)" }}>{fr ? "Institution" : "Lender"}</div>
-              <select value={institutionId} onChange={(e) => setInstitutionId(e.target.value)}
+              <select value={draft.institutionId} onChange={(e) => setDraft((d) => ({ ...d, institutionId: e.target.value }))}
                 className="w-full rounded-xl px-3 py-2.5 text-[13px]" style={selStyle}>
                 <option value="">{fr ? "Toutes" : "All"}</option>
                 {institutions.map((i) => <option key={i.id} value={String(i.id)}>{i.label}</option>)}
@@ -535,7 +614,7 @@ export default function MCommissions() {
             {agents.length > 1 && (
               <div className="mb-4">
                 <div className="text-[12px] mb-2" style={{ color: "var(--pp-text-secondary, #B4C6D8)" }}>{fr ? "Courtier" : "Broker"}</div>
-                <select value={agentId} onChange={(e) => setAgentId(e.target.value)}
+                <select value={draft.agentId} onChange={(e) => setDraft((d) => ({ ...d, agentId: e.target.value }))}
                   className="w-full rounded-xl px-3 py-2.5 text-[13px]" style={selStyle}>
                   <option value="">{fr ? "Tous les courtiers" : "All brokers"}</option>
                   {agents.map((a) => <option key={a.users_id} value={String(a.users_id)}>{a.name}</option>)}
@@ -545,7 +624,7 @@ export default function MCommissions() {
 
             <div className="mb-4">
               <div className="text-[12px] mb-2" style={{ color: "var(--pp-text-secondary, #B4C6D8)" }}>{fr ? "Type de partage" : "Split type"}</div>
-              <select value={splitType} onChange={(e) => setSplitType(e.target.value)}
+              <select value={draft.splitType} onChange={(e) => setDraft((d) => ({ ...d, splitType: e.target.value }))}
                 className="w-full rounded-xl px-3 py-2.5 text-[13px]" style={selStyle}>
                 <option value="">{fr ? "Tous" : "All"}</option>
                 {SPLIT_TYPES.map((s) => <option key={s} value={s}>{s}</option>)}
@@ -554,7 +633,7 @@ export default function MCommissions() {
 
             <div className="mb-4">
               <div className="text-[12px] mb-2" style={{ color: "var(--pp-text-secondary, #B4C6D8)" }}>{fr ? "Préfixe de contrat" : "Contract prefix"}</div>
-              <input value={numberPrefix} onChange={(e) => setNumberPrefix(e.target.value)} inputMode="text"
+              <input value={draft.numberPrefix} onChange={(e) => setDraft((d) => ({ ...d, numberPrefix: e.target.value }))} inputMode="text"
                 placeholder={fr ? "ex. 2026" : "e.g. 2026"}
                 className="w-full rounded-xl px-3 py-2.5 text-[13px]" style={selStyle} />
             </div>
@@ -562,14 +641,14 @@ export default function MCommissions() {
             <div className="mb-5 flex gap-2">
               <div className="flex-1">
                 <div className="text-[12px] mb-2" style={{ color: "var(--pp-text-secondary, #B4C6D8)" }}>{fr ? "Trier par" : "Order by"}</div>
-                <select value={orderBy} onChange={(e) => setOrderBy(e.target.value)}
+                <select value={draft.orderBy} onChange={(e) => setDraft((d) => ({ ...d, orderBy: e.target.value }))}
                   className="w-full rounded-xl px-3 py-2.5 text-[13px]" style={selStyle}>
                   {ORDER_BY.map((o) => <option key={o} value={o}>{o}</option>)}
                 </select>
               </div>
               <div style={{ width: 110 }}>
                 <div className="text-[12px] mb-2" style={{ color: "var(--pp-text-secondary, #B4C6D8)" }}>{fr ? "Sens" : "Sort"}</div>
-                <select value={sortDir} onChange={(e) => setSortDir(e.target.value as "asc" | "desc")}
+                <select value={draft.sortDir} onChange={(e) => setDraft((d) => ({ ...d, sortDir: e.target.value as "asc" | "desc" }))}
                   className="w-full rounded-xl px-3 py-2.5 text-[13px]" style={selStyle}>
                   <option value="desc">desc</option>
                   <option value="asc">asc</option>
@@ -577,7 +656,7 @@ export default function MCommissions() {
               </div>
             </div>
 
-            <button onClick={() => { setFiltersOpen(false); }}
+            <button onClick={applyDraft}
               className="w-full py-3 rounded-xl text-[14px] font-bold" style={{ minHeight: 44, background: "var(--pp-brand-accent, #9B7FE8)", color: "#0A1628" }}>
               {fr ? "Appliquer" : "Apply"}
             </button>
@@ -631,11 +710,16 @@ export default function MCommissions() {
   );
 }
 
+function ValidationPill({ validation, fr }: { validation: Validation; fr: boolean }) {
+  const warning = validation.status === "WARNING";
+  return <div title={validation.summary} className="inline-flex rounded-full px-2.5 py-1 mb-2 text-[10.5px] font-bold" style={{ color: warning ? "var(--pp-warning, #F0B429)" : "var(--pp-success, #34D399)", background: warning ? "rgba(240,180,41,.10)" : "rgba(52,211,153,.10)", border: `1px solid ${warning ? "rgba(240,180,41,.35)" : "rgba(52,211,153,.35)"}` }}>{warning ? (fr ? "Contrôlé avec réserve" : "Checked with warning") : (fr ? "Maestro contrôlé" : "Maestro checked")}</div>;
+}
+
 function Shell({ title, onBack, right, children }: { title: string; onBack: () => void; right?: React.ReactNode; children: React.ReactNode }) {
   return (
     <div className="min-h-full px-4 pt-3 pb-24">
       <div className="flex items-center justify-between mb-4">
-        <button onClick={onBack} aria-label="Retour" className="p-2 -ml-2 rounded-lg" style={{ color: "var(--pp-text-secondary, #B4C6D8)" }}>
+        <button onClick={onBack} aria-label={tr("Retour", "Back")} className="p-2 -ml-2 rounded-lg" style={{ color: "var(--pp-text-secondary, #B4C6D8)" }}>
           <ArrowLeft className="w-5 h-5" />
         </button>
         <h1 className="text-[16px] font-bold" style={{ color: "var(--pp-text-primary, #E8EDF5)" }}>{title}</h1>
@@ -682,6 +766,18 @@ function Empty({ icon, text }: { icon: React.ReactNode; text: string }) {
     <div className="rounded-2xl p-6 text-center" style={{ background: "var(--pp-bg-surface, #0A1628)", border: "1px solid var(--pp-bg-border, rgba(155,127,232,0.22))" }}>
       <div className="flex justify-center mb-2" style={{ color: "var(--pp-text-secondary, #B4C6D8)" }}>{icon}</div>
       <p className="text-[13px]" style={{ color: "var(--pp-text-secondary, #B4C6D8)" }}>{text}</p>
+    </div>
+  );
+}
+
+function SectionTitle({ title, sub, color }: { title: string; sub: string; color: string }) {
+  return (
+    <div className="flex items-center gap-2 mt-2 mb-2.5">
+      <span className="w-1.5 h-6 rounded-full" style={{ background: color }} />
+      <div className="min-w-0">
+        <div className="text-[15px] font-bold leading-tight" style={{ color: "var(--pp-text-primary, #E8EDF5)" }}>{title}</div>
+        <div className="text-[11px]" style={{ color: "var(--pp-text-muted, #8597AD)" }}>{sub}</div>
+      </div>
     </div>
   );
 }

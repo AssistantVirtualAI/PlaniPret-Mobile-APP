@@ -13,11 +13,30 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 
 const invokeMock = vi.fn();
+// Chainable Realtime channel mock (channel().on().on().subscribe(), removeChannel).
+const channels: { name: string; handlers: Array<() => void>; removed: boolean }[] = [];
+const makeChannel = (name: string) => {
+  const entry = { name, handlers: [] as Array<() => void>, removed: false };
+  channels.push(entry);
+  const ch: any = {
+    on: (_t: string, _f: unknown, cb: () => void) => { entry.handlers.push(cb); return ch; },
+    subscribe: () => ch,
+    __entry: entry,
+  };
+  return ch;
+};
 let outletProfile: any = { role: "broker" };
+let currentLang: "fr" | "en" = "fr";
+
+vi.mock("@/lib/planipret/ppEdge", () => ({
+  ppEdgeInvoke: (fn: string, body: any, o?: any) => invokeMock(fn, { body, edgeOpts: o }),
+}));
 
 vi.mock("@/integrations/supabase/client", () => ({
   supabase: {
     functions: { invoke: (fn: string, opts: any) => invokeMock(fn, opts) },
+    channel: (name: string) => makeChannel(name),
+    removeChannel: (ch: any) => { if (ch?.__entry) ch.__entry.removed = true; return Promise.resolve("ok"); },
     auth: {
       getUser: () => Promise.resolve({ data: { user: { id: "u1" } } }),
       getSession: () => Promise.resolve({ data: { session: { access_token: "t" } } }),
@@ -36,7 +55,7 @@ vi.mock("react-router-dom", async () => {
 });
 
 vi.mock("@/hooks/useMplanipretLang", () => ({
-  useMplanipretLang: () => ({ lang: "fr", t: (k: string) => k }),
+  useMplanipretLang: () => ({ lang: currentLang, t: (k: string) => k }),
 }));
 
 // Recharts ne se rend pas dans jsdom (pas de layout) — on neutralise le conteneur.
@@ -57,6 +76,7 @@ import MCommissions from "../MCommissions";
 const SUMMARY = {
   total_commission: 156282.05,
   deposit_count: 75,
+  deal_count: 30,
   average_commission: 2083.76,
   total_loan_volume: 19277881,
   adjustments: 0,
@@ -104,22 +124,46 @@ const money = (expected: string) =>
 
 beforeEach(() => {
   localStorage.clear();
+  sessionStorage.clear();
+  channels.length = 0;
   invokeMock.mockReset();
   invokeMock.mockImplementation(respond);
   outletProfile = { role: "broker" };
+  currentLang = "fr";
 });
 
 describe("MCommissions (mobile)", () => {
+  it("sépare les rapports déboursés et en attente", async () => {
+    render(<MCommissions />);
+    await waitFor(() => expect(money("156 282 $")).toBeInTheDocument());
+    expect(screen.getByRole("tab", { name: "Déboursées" })).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(screen.getByRole("tab", { name: "En attente" }));
+    expect(screen.getByRole("tab", { name: "En attente" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByText("Unités uniques")).not.toBeInTheDocument();
+  });
+
+  it("affiche les onglets et rapports en anglais", async () => {
+    currentLang = "en";
+    render(<MCommissions />);
+    await waitFor(() => expect(screen.getByText("Unique units")).toBeInTheDocument());
+    expect(screen.getByRole("tab", { name: "Paid" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "Pending" }));
+    expect(screen.getAllByText("Pending commissions").length).toBeGreaterThan(0);
+  });
+
   it("charge le résumé et affiche les KPIs", async () => {
     render(<MCommissions />);
     await waitFor(() => expect(money("156 282 $")).toBeInTheDocument());
-    expect(screen.getByText("Dépôts")).toBeInTheDocument();
-    expect(screen.getByText("75")).toBeInTheDocument();
+    expect(screen.getByText("Unités uniques")).toBeInTheDocument();
+    expect(screen.getByText("30")).toBeInTheDocument();
     expect(money("19 277 881 $")).toBeInTheDocument();
     expect(invokeMock).toHaveBeenCalledWith(
       "planipret-commission-reports",
       expect.objectContaining({ body: expect.objectContaining({ action: "summary" }) }),
     );
+    const paidCall = invokeMock.mock.calls.find((c) => c[1]?.body?.action === "summary");
+    expect(paidCall?.[1].body.filters.commission_type).toBeUndefined();
+    expect(invokeMock.mock.calls.some((c) => c[1]?.body?.action === "pending")).toBe(false);
   });
 
   it("bloque l'accès pour un rôle non autorisé", async () => {
@@ -139,17 +183,24 @@ describe("MCommissions (mobile)", () => {
     );
     render(<MCommissions />);
     expect(await screen.findByText("maestro_not_configured")).toBeInTheDocument();
+    // An error never becomes a zero total in the paid panel.
+    expect(screen.queryByText((_, el) => !!el && el.children.length === 0 && norm(el.textContent ?? "") === "0$")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "En attente" }));
+    expect(screen.getAllByText("Commissions en attente").length).toBeGreaterThan(0);
+    await waitFor(() => expect(invokeMock.mock.calls.some((c) => c[1]?.body?.action === "pending")).toBe(true));
   });
 
   it("recharge avec une nouvelle fenêtre quand la période change", async () => {
     render(<MCommissions />);
     await waitFor(() => expect(money("156 282 $")).toBeInTheDocument());
-    const firstFrom = invokeMock.mock.calls.find((c) => c[1]?.body?.action === "summary")?.[1].body.filters.date_from;
+    // The paid panel (PaidDepositsCard) has its own 90 s summary call; track only the screen's.
+    const screenSummary = (c: any[]) => c[1]?.body?.action === "summary" && c[1]?.edgeOpts?.timeoutMs !== 90_000;
+    const firstFrom = invokeMock.mock.calls.find(screenSummary)?.[1].body.filters.date_from;
 
     fireEvent.click(screen.getByText("Année en cours"));
 
     await waitFor(() => {
-      const calls = invokeMock.mock.calls.filter((c) => c[1]?.body?.action === "summary");
+      const calls = invokeMock.mock.calls.filter(screenSummary);
       const lastFrom = calls[calls.length - 1][1].body.filters.date_from;
       expect(lastFrom).not.toBe(firstFrom);
       expect(lastFrom).toMatch(/^\d{4}-01-01/);

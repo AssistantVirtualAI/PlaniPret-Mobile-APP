@@ -74,6 +74,31 @@ export async function fetchCommissionRows(scope?: { brokerUserId?: string | null
   }) as CommissionRow[];
 }
 
+/**
+ * Live commissions from Maestro for the signed-in broker.
+ * Falls back to an explicit code so the UI can invite the broker to connect.
+ */
+export async function fetchMaestroCommissionRows(fiscalYear?: number): Promise<{
+  ok: boolean; rows: CommissionRow[]; code?: string; error?: string; dealCount?: number; path?: string;
+}> {
+  const { data: { session } } = await supabase.auth.getSession();
+  const { data, error } = await supabase.functions.invoke("pp-maestro-commissions", {
+    body: { fiscal_year: fiscalYear ?? new Date().getFullYear() },
+    headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : undefined,
+  });
+  if (error) return { ok: false, rows: [], code: "invoke_failed", error: error.message };
+  const res = (data ?? {}) as any;
+  const rows = Array.isArray(res.rows) ? (res.rows as CommissionRow[]) : [];
+  return {
+    ok: Boolean(res.success),
+    rows,
+    code: res.code,
+    error: res.error,
+    dealCount: res.deal_count,
+    path: res.path,
+  };
+}
+
 /* ---------- formatting ---------- */
 const nfMoney = new Intl.NumberFormat("fr-CA", { style: "currency", currency: "CAD", maximumFractionDigits: 0 });
 const nfNum = new Intl.NumberFormat("fr-CA", { maximumFractionDigits: 0 });
@@ -286,3 +311,72 @@ export async function isCommissionEditor(): Promise<boolean> {
   return Boolean(admin || sa);
 }
 
+
+/* ---------- AI insights (Claude) ---------- */
+export type CommissionInsight = {
+  category: "growth" | "lenders" | "products" | "risk" | "seasonality";
+  title: string;
+  finding: string;
+  action: string;
+  severity: "positive" | "neutral" | "warning";
+  metric?: string | null;
+};
+
+/** Compact, PII-free metric payload sent to the AI. */
+export function buildInsightMetrics(rows: CommissionRow[]) {
+  const t = globalTotals(rows);
+  const top = (section: string, n = 8) =>
+    aggregate(rows, section)
+      .sort((a, b) => b.cy_volume - a.cy_volume)
+      .slice(0, n)
+      .map((r) => ({
+        name: r.dimension ?? "—",
+        volume: Math.round(r.cy_volume),
+        py_volume: Math.round(r.py_volume),
+        deals: r.cy_deals,
+        commission: Math.round(r.cy_commission),
+      }));
+  return {
+    totals: {
+      volume: Math.round(t.volume), py_volume: Math.round(t.py_volume),
+      deals: t.deals, py_deals: t.py_deals,
+      commission: Math.round(t.commission), py_commission: Math.round(t.py_commission),
+      avg_deal: Math.round(t.avgDeal), avg_commission: Math.round(t.avgCommission),
+      bps: Number(t.bps.toFixed(1)), py_bps: Number(t.pyBps.toFixed(1)),
+      brokers: t.brokers,
+    },
+    lenders: top("lender"),
+    products: top("product_mix"),
+    terms: top("term_mix"),
+    quarters: top("quarter", 4),
+    months: aggregate(rows, "month")
+      .sort((a, b) => String(a.dimension).localeCompare(String(b.dimension)))
+      .map((r) => ({ month: r.dimension, volume: Math.round(r.cy_volume), py_volume: Math.round(r.py_volume), deals: r.cy_deals })),
+  };
+}
+
+export async function fetchCommissionInsights(opts: {
+  rows: CommissionRow[];
+  lang: "fr" | "en";
+  scope: "admin" | "broker";
+  source: "internal" | "maestro";
+}): Promise<{ ok: boolean; summary: string; insights: CommissionInsight[]; error?: string }> {
+  const { data: { session } } = await supabase.auth.getSession();
+  const { data, error } = await supabase.functions.invoke("pp-commissions-insights", {
+    body: {
+      lang: opts.lang,
+      scope: opts.scope,
+      source: opts.source,
+      metrics: buildInsightMetrics(opts.rows),
+    },
+    headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : undefined,
+  });
+  if (error) return { ok: false, summary: "", insights: [], error: error.message };
+  const res = (data ?? {}) as any;
+  return {
+    ok: Boolean(res.success),
+    summary: String(res.summary ?? ""),
+    insights: Array.isArray(res.insights) ? (res.insights as CommissionInsight[]) : [],
+    error: res.error,
+  };
+}

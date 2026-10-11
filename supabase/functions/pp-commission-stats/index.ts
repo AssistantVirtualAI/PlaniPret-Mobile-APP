@@ -4,6 +4,7 @@ import {
   type RegisterRow,
   type Window,
   metrics,
+  brokerMetrics,
   periodVolume,
   periodDeals,
   periodCommission,
@@ -19,11 +20,17 @@ import {
   isoWeeksInYear,
   resolveWindow,
   isInsurance,
+  brokerId,
+  isLinkedBrokerKey,
+  resolveDetailBrokerKey,
   type Granularity,
   yoy,
 } from "../_shared/commission-engine.ts";
 import { agentKey } from "../_shared/broker-identity.ts";
 import { fetchLiveRegisterRows, dedupeKey } from "../_shared/commission-live.ts";
+import { collectPaidDeposits, summarize, type CommissionDepositRow } from "../_shared/commission-reports.ts";
+import { getUserMaestroAccessToken } from "../_shared/maestro-oauth.ts";
+import { validateCommissionOutput } from "../_shared/commission-validation.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -43,30 +50,34 @@ function breakdown(
   wPy: Window,
   field: "institution" | "mortgage_type" | "term",
 ) {
-  const keys = uniq([
-    ...volumeTranches(rows, w).map((r) => r[field]),
-    ...volumeTranches(rows, wPy).map((r) => r[field]),
-    ...dealContracts(rows, w).map((r) => r[field]),
-  ]);
+  const cyVol = volumeTranches(rows, w);
+  const pyVol = volumeTranches(rows, wPy);
+  const cyDl = dealContracts(rows, w);
+  const pyDl = dealContracts(rows, wPy);
+  const keys = uniq([...cyVol.map((r) => r[field]), ...pyVol.map((r) => r[field]), ...cyDl.map((r) => r[field])]);
+  const keyOf = (r: RegisterRow) => ((r as any)[field] ?? "") as string;
+  const sumBy = (list: RegisterRow[], val: (r: RegisterRow) => number) => {
+    const m = new Map<string, number>();
+    for (const r of list) { const k = keyOf(r); m.set(k, (m.get(k) ?? 0) + val(r)); }
+    return m;
+  };
+  const loan = (r: RegisterRow) => Number(r.loan_amt ?? 0) || 0;
+  const one = () => 1;
+  const commissionIn = (win: Window) => sumBy(
+    rows.filter((r) => r.date_trans && r.date_trans >= win.start && r.date_trans <= win.end && !isInsurance(r)),
+    (r) => Number(r.amount ?? 0),
+  );
+  const cyVolM = sumBy(cyVol, loan), pyVolM = sumBy(pyVol, loan);
+  const cyDlM = sumBy(cyDl, one), pyDlM = sumBy(pyDl, one);
+  const cyComM = commissionIn(w), pyComM = commissionIn(wPy);
   const totalVolume = periodVolume(rows, w);
-  const grouped = new Map<string, any[]>();
-  for (const r of rows) {
-    const g = (r as any)[field] ?? "";
-    const arr = grouped.get(g); if (arr) arr.push(r); else grouped.set(g, [r]);
-  }
   const list = keys.map((k) => {
-    const c = { [field]: k } as Record<string, string>;
-    const kr = (grouped.get(k) ?? []) as typeof rows;
-    const cyVolume = periodVolume(rows, w, c);
-    const cyDeals = periodDeals(rows, w, c);
-    const cyCommission = kr
-      .filter((r) => r.date_trans && r.date_trans >= w.start && r.date_trans <= w.end && !isInsurance(r) && (r[field] ?? "") === k)
-      .reduce((s, r) => s + Number(r.amount ?? 0), 0);
-    const pyVolume = periodVolume(rows, wPy, c);
-    const pyDeals = periodDeals(rows, wPy, c);
-    const pyCommission = kr
-      .filter((r) => r.date_trans && r.date_trans >= wPy.start && r.date_trans <= wPy.end && !isInsurance(r) && (r[field] ?? "") === k)
-      .reduce((s, r) => s + Number(r.amount ?? 0), 0);
+    const cyVolume = cyVolM.get(k) ?? 0;
+    const cyDeals = cyDlM.get(k) ?? 0;
+    const cyCommission = cyComM.get(k) ?? 0;
+    const pyVolume = pyVolM.get(k) ?? 0;
+    const pyDeals = pyDlM.get(k) ?? 0;
+    const pyCommission = pyComM.get(k) ?? 0;
     return {
       key: k,
       cyVolume,
@@ -141,10 +152,10 @@ Deno.serve(async (req) => {
     let live: Awaited<ReturnType<typeof fetchLiveRegisterRows>> = {
       rows: [], coverage: { connected: 0, total: 0 }, failures: [], brokers: [],
     };
-    // Firm-wide view: broker tokens are owner-scoped (0 deposits) and 26 live
-    // calls push the worker over its CPU budget. The register is the source.
-    if (!(isAdmin && scope === "all")) try {
-      live = await fetchLiveRegisterRows(admin, user.id, false, years, cid);
+    // This reads the persisted cache, not broker API fan-out. Admin views must
+    // include it too, otherwise current-year updates never reach the portal.
+    try {
+      live = await fetchLiveRegisterRows(admin, user.id, isAdmin && scope === "all", years, cid, agent);
     } catch (e) {
       console.warn("[pp-commission-stats] live merge failed", e);
     }
@@ -156,7 +167,36 @@ Deno.serve(async (req) => {
       seenDeals.add(k);
       return true;
     });
-    const allRows = [...registerRows, ...(liveMerged as unknown as RegisterRow[])];
+    let allRows = [...registerRows, ...(liveMerged as unknown as RegisterRow[])];
+    // A selected broker's CY/PY view must use the same complete paid source
+    // as mobile, not mix an older workbook with a more recent cache.
+    const selectedQuery = admin.from("planipret_profiles")
+      .select("user_id,full_name,maestro_broker_id");
+    const { data: selectedProfile } = isAdmin && scope === "all" && agent
+      ? await selectedQuery.ilike("full_name", agent).limit(1).maybeSingle()
+      : scope === "self" ? await selectedQuery.eq("user_id", user.id).maybeSingle() : { data: null };
+    if (selectedProfile?.user_id && selectedProfile?.maestro_broker_id) {
+      const brokerToken = await getUserMaestroAccessToken(admin, String(selectedProfile.user_id));
+      if (!brokerToken) return json({ error: "Votre compte Maestro doit être reconnecté pour consulter les chiffres actuels." }, 200);
+      const paid = await collectPaidDeposits(brokerToken, {
+        users_id: String(selectedProfile.maestro_broker_id),
+        date_from: `${year - 1}-01-01 00:00:00`, date_to: `${year}-12-31 23:59:59`,
+      }, cid);
+      if (paid.fatal || paid.truncated) return json({ error: "Les commissions Maestro sont temporairement indisponibles. Réessayez." }, 200);
+      const target = agentKey(selectedProfile.full_name);
+      allRows = allRows.filter((r) => {
+        const y = Number(r.date_trans?.slice(0, 4));
+        const selected = agentKey(r.agent_name) === target || r.broker_user_id === selectedProfile.user_id;
+        return !selected || (y !== year && y !== year - 1);
+      });
+      allRows.push(...paid.rows.map((r, i) => ({
+        ...r, loan_amt: Number(r.loan_amt ?? 0), amount: Number(r.amount ?? 0),
+        term: r.term == null ? null : String(r.term), date_trans: r.date_trans?.slice(0, 10) ?? null,
+        agent_name: r.agent_name ?? selectedProfile.full_name,
+        broker_user_id: selectedProfile.user_id, source_row: -1000000 - i,
+        fiscal_year: Number(r.date_trans?.slice(0, 4)),
+      })));
+    }
 
     const { data: prof } = await admin
       .from("planipret_profiles")
@@ -197,6 +237,9 @@ Deno.serve(async (req) => {
     const scopedAll = agent ? scopedBase.filter(matchesAgent) : scopedBase;
     const mine = scopedAll;
 
+    const firstRowByAgent = new Map<string, RegisterRow>();
+    for (const r of scopedAll) { const id = brokerId(r); if (id && !firstRowByAgent.has(id)) firstRowByAgent.set(id, r); }
+
     const resolved = resolveWindow(granularity, year, periodIndex);
     const cyYtd = resolved.window;
     const pyYtd = resolved.priorWindow;
@@ -209,7 +252,7 @@ Deno.serve(async (req) => {
       month: metrics(mine, cyMonth),
       monthPy: metrics(mine, pyMonth),
       activeLenders: uniq(volumeTranches(mine, cyYtd).map((r) => r.institution)).length,
-      activeBrokers: uniq(volumeTranches(scopedAll, cyYtd).map((r) => r.agent_name)).length,
+      activeBrokers: uniq(volumeTranches(scopedAll, cyYtd).map((r) => brokerId(r))).length,
     };
 
     // Trend series adapted to the granularity (weeks when granularity=week, otherwise months)
@@ -234,22 +277,25 @@ Deno.serve(async (req) => {
 
     // Per-broker leaderboard on the selected window (admin global view)
     const brokerKeys = uniq([
-      ...volumeTranches(scopedAll, cyYtd).map((r) => r.agent_name),
-      ...volumeTranches(scopedAll, pyYtd).map((r) => r.agent_name),
+      ...volumeTranches(scopedAll, cyYtd).map((r) => brokerId(r)),
+      ...volumeTranches(scopedAll, pyYtd).map((r) => brokerId(r)),
     ]);
     const brokerTotalVolume = periodVolume(scopedAll, cyYtd);
     const brokers = brokerKeys
-      .map((name) => {
-        const c = metrics(scopedAll, cyYtd, { broker: name });
-        const p = metrics(scopedAll, pyYtd, { broker: name });
-        const idRow = scopedAll.find((x) => x.agent_name === name) as any;
+      .map((id) => {
+        const c = brokerMetrics(scopedAll, cyYtd, id);
+        const p = brokerMetrics(scopedAll, pyYtd, id);
+        const idRow = firstRowByAgent.get(id) as any;
+        const name = idRow?.agent_name ?? id;
         return {
           broker: name,
+          brokerKey: id,
+          linked: isLinkedBrokerKey(id),
           firstName: idRow?.first_name ?? null,
           lastName: idRow?.last_name ?? null,
           maestroBrokerId: idRow?.maestro_broker_id ?? null,
           brokerUserId: idRow?.broker_user_id ?? null,
-          isMe: !!myName && name.trim().toLowerCase() === myName.trim().toLowerCase(),
+          isMe: !!idRow?.broker_user_id && idRow.broker_user_id === user.id,
           volume: c.volume, deals: c.deals, commission: c.commission,
           avgDeal: c.avgDeal, bps: c.bps, commissionPerDeal: c.commissionPerDeal,
           pyVolume: p.volume, pyDeals: p.deals, pyCommission: p.commission,
@@ -262,7 +308,7 @@ Deno.serve(async (req) => {
       .sort((a, b) => b.volume - a.volume)
       .map((x, i) => ({ rank: i + 1, ...x }));
 
-    const agentsWithData = uniq(scopedAll.map((r) => r.agent_name));
+    const agentsWithData = uniq(scopedAll.map((r) => brokerId(r)));
 
     // Firm-wide broker directory: in the admin global view the filter must list
     // every broker of the firm, not just those already present in the imported
@@ -317,21 +363,24 @@ Deno.serve(async (req) => {
     const yearsWithData = Array.from(
       new Set(scopedAll.map((r) => Number((r as any).fiscal_year)).filter((y) => Number.isFinite(y))),
     ).sort((a, b) => a - b);
-    const yearlyBrokerKeys = uniq(scopedAll.map((r) => r.agent_name)).sort((a, b) => a.localeCompare(b));
+    const yearlyBrokerKeys = uniq(scopedAll.map((r) => brokerId(r))).sort((a, b) => a.localeCompare(b));
     const byBroker = new Map<string, typeof scopedAll>();
     for (const r of scopedAll) {
-      const k = r.agent_name ?? "";
+      const k = brokerId(r);
       const arr = byBroker.get(k); if (arr) arr.push(r); else byBroker.set(k, [r]);
     }
-    const brokerYearly = yearlyBrokerKeys.map((name) => {
-      const bRows = byBroker.get(name) ?? [];
+    const brokerYearly = yearlyBrokerKeys.map((id) => {
+      const bRows = byBroker.get(id) ?? [];
       const idRow = bRows[0] as any;
+      const name = idRow?.agent_name ?? id;
       const cells = yearsWithData.map((y) => {
-        const m = metrics(scopedAll, yearWindow(y), { broker: name });
+        const m = brokerMetrics(scopedAll, yearWindow(y), id);
         return { year: y, volume: m.volume, deals: m.deals, commission: m.commission, bps: m.bps, avgDeal: m.avgDeal };
       });
       return {
         broker: name,
+        brokerKey: id,
+        linked: isLinkedBrokerKey(id),
         firstName: idRow?.first_name ?? null,
         lastName: idRow?.last_name ?? null,
         brokerUserId: idRow?.broker_user_id ?? null,
@@ -344,10 +393,10 @@ Deno.serve(async (req) => {
     }).sort((a, b) => b.totalVolume - a.totalVolume);
 
     // Brokers whose register rows are not attached to a portal account yet
-    const unlinkedBrokers = uniq(scopedAll.filter((r: any) => !r.broker_user_id).map((r) => r.agent_name))
-      .map((name) => {
-        const rows = byBroker.get(name) ?? [];
-        return { broker: name, rows: rows.length, commission: rows.reduce((a, r) => a + (Number(r.amount) || 0), 0) };
+    const unlinkedBrokers = uniq(scopedAll.filter((r: any) => !r.broker_user_id).map((r) => brokerId(r)))
+      .map((id) => {
+        const rows = byBroker.get(id) ?? [];
+        return { broker: (rows[0] as any)?.agent_name ?? id, brokerKey: id, linked: isLinkedBrokerKey(id), rows: rows.length, commission: rows.reduce((a, r) => a + (Number(r.amount) || 0), 0) };
       });
 
     const monthly = Array.from({ length: 12 }, (_, i) => {
@@ -418,19 +467,22 @@ Deno.serve(async (req) => {
     // a broker only ever gets his own line (with his rank inside the standings).
     const seasonCur = seasonWindow(year - (month >= 8 ? 0 : 1));
     const seasonPrev = seasonWindow(year - (month >= 8 ? 1 : 2));
-    const brokerNames = uniq(volumeTranches(allRows, seasonCur).map((r) => r.agent_name));
+    const brokerNames = uniq(volumeTranches(allRows, seasonCur).map((r) => brokerId(r)));
     const clubFull = brokerNames
-      .map((name) => {
-        const c = metrics(allRows, seasonCur, { broker: name });
-        const p = metrics(allRows, seasonPrev, { broker: name });
-        const idRow = scopedAll.find((x) => x.agent_name === name) as any;
+      .map((id) => {
+        const c = brokerMetrics(allRows, seasonCur, id);
+        const p = brokerMetrics(allRows, seasonPrev, id);
+        const idRow = firstRowByAgent.get(id) as any;
+        const name = idRow?.agent_name ?? id;
         return {
           broker: name,
+          brokerKey: id,
+          linked: isLinkedBrokerKey(id),
           firstName: idRow?.first_name ?? null,
           lastName: idRow?.last_name ?? null,
           maestroBrokerId: idRow?.maestro_broker_id ?? null,
           brokerUserId: idRow?.broker_user_id ?? null,
-          isMe: !!myName && name.trim().toLowerCase() === myName.trim().toLowerCase(),
+          isMe: !!idRow?.broker_user_id && idRow.broker_user_id === user.id,
           volume: c.volume,
           deals: c.deals,
           commission: c.commission,
@@ -514,11 +566,12 @@ Deno.serve(async (req) => {
 
     // Broker Monthly vs Lender Monthly independent MATCH/MISMATCH (v3 §11)
     const brokerScope = agent ? mine : scopedAll;
-    const brokerBreak = uniq(brokerScope.map((r) => r.agent_name)).map((name) => ({
-      broker: name,
-      volume: periodVolume(brokerScope, cyYtd, { broker: name }),
-      deals: periodDeals(brokerScope, cyYtd, { broker: name }),
-      commission: periodCommission(brokerScope, cyYtd, { broker: name }),
+    const brokerBreak = uniq(brokerScope.map((r) => brokerId(r))).map((id) => ({
+      broker: (byBroker.get(id)?.[0] as any)?.agent_name ?? id,
+      brokerKey: id,
+      volume: brokerMetrics(brokerScope, cyYtd, id).volume,
+      deals: brokerMetrics(brokerScope, cyYtd, id).deals,
+      commission: brokerMetrics(brokerScope, cyYtd, id).commission,
     }));
     const brokerVolume = brokerBreak.reduce((s2, b) => s2 + b.volume, 0);
     const brokerDeals = brokerBreak.reduce((s2, b) => s2 + b.deals, 0);
@@ -664,20 +717,22 @@ Deno.serve(async (req) => {
     };
 
     // ---- Drill-down: one broker, selected window, commissions by type + deal lines ----
-    const detailAgent: string | null =
-      typeof body?.detailAgent === "string" && body.detailAgent.trim() ? body.detailAgent.trim() : null;
+    // Drill-down is selected ONLY by the stable key (brokerId). `detailAgent` is
+    // accepted for backward compatibility but treated as a key, never a name.
+    const detailBrokerKey: string | null = resolveDetailBrokerKey(body);
     let detail: any = null;
-    if (detailAgent) {
+    if (detailBrokerKey) {
+      const isDetailRow = (r: any) => brokerId(r) === detailBrokerKey;
       const dRows = scopedAll
-        .filter((r) => (r.agent_name ?? "").trim().toLowerCase() === detailAgent.toLowerCase())
+        .filter(isDetailRow)
         .filter(inWin)
         .sort((a, b) => (a.date_trans ?? "").localeCompare(b.date_trans ?? "") || a.source_row - b.source_row);
       const dVolRows = new Set(
-        volumeTranches(scopedAll.filter((r) => (r.agent_name ?? "").trim().toLowerCase() === detailAgent.toLowerCase()), cyYtd)
+        volumeTranches(scopedAll.filter(isDetailRow), cyYtd)
           .map((r) => r.source_row),
       );
       const dDealRows = new Set(
-        dealContracts(scopedAll.filter((r) => (r.agent_name ?? "").trim().toLowerCase() === detailAgent.toLowerCase()), cyYtd)
+        dealContracts(scopedAll.filter(isDetailRow), cyYtd)
           .map((r) => r.source_row),
       );
       const idRow = dRows[0] as any;
@@ -709,14 +764,15 @@ Deno.serve(async (req) => {
       ).sort((a: any, b: any) => a.period.localeCompare(b.period));
 
       detail = {
-        agent: detailAgent,
+        agent: detailBrokerKey,
+        brokerKey: detailBrokerKey,
         firstName: idRow?.first_name ?? null,
         lastName: idRow?.last_name ?? null,
         maestroBrokerId: idRow?.maestro_broker_id ?? null,
         window: cyYtd,
         periodLabel: resolved.label,
-        kpi: metrics(scopedAll, cyYtd, { broker: detailAgent }),
-        kpiPy: metrics(scopedAll, pyYtd, { broker: detailAgent }),
+        kpi: metrics(scopedAll, cyYtd, { brokerKey: detailBrokerKey }),
+        kpiPy: metrics(scopedAll, pyYtd, { brokerKey: detailBrokerKey }),
         byType,
         byPeriod,
         lines: dRows.slice(0, 2000).map((r) => ({
@@ -906,6 +962,17 @@ Deno.serve(async (req) => {
         broker: r.agent_name,
       }));
 
+    const validationRows = mine.map((row) => ({ ...row }) as unknown as CommissionDepositRow);
+    const validationSummary = summarize(validationRows);
+    const validation = await validateCommissionOutput({
+      source: "paid_deposits",
+      rows: validationRows,
+      truncated: false,
+      summary: validationSummary,
+      scope: { role: isAdmin ? "admin" : "broker", mode: isAdmin && scope === "all" ? (agent ? "selected_broker" : "all_brokers") : "own", users_id: myMaestroId },
+    });
+    if (!validation.validated) return json({ error: "Les commissions déboursées n'ont pas passé le contrôle final. La dernière version validée reste affichée.", validation }, 200);
+
     return json({
 
       ok: true,
@@ -962,6 +1029,8 @@ Deno.serve(async (req) => {
         failures: live.failures.slice(0, 10),
       },
       syncedAt: new Date().toISOString(),
+      validation,
+      sourceIdentity: { source: "paid_deposits", endpoint: "/api/main/commissions/reports/deposits", generatedAt: validation.checked_at },
 
 
     });

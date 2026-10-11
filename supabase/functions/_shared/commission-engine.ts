@@ -18,6 +18,8 @@ export interface RegisterRow {
   commission_type: string | null;
   source_row: number;
   broker_user_id?: string | null;
+  maestro_broker_id?: string | null;
+  agent_key?: string | null;
   is_adjustment?: unknown;
 }
 
@@ -58,7 +60,8 @@ export function inWindow(r: RegisterRow, w: Window): boolean {
   if (!hasTransactionDate(r)) return false;
   const d = r.date_trans;
   if (!d) return false;
-  return d >= w.start && d <= w.end;
+  const day = d.trim().slice(0, 10);
+  return day >= w.start && day <= w.end;
 }
 
 export function sortSource<T extends { source_row: number }>(rows: T[]): T[] {
@@ -76,7 +79,8 @@ export interface Criteria {
   institution?: string;
   mortgage_type?: string;
   term?: string;
-  broker?: string; // agent_name
+  broker?: string; // agent_name (display only — never used for drill-down)
+  brokerKey?: string; // stable identity from brokerId(row)
 }
 
 function matches(r: RegisterRow, c: Criteria): boolean {
@@ -84,19 +88,40 @@ function matches(r: RegisterRow, c: Criteria): boolean {
   if (c.mortgage_type !== undefined && (r.mortgage_type ?? "") !== c.mortgage_type) return false;
   if (c.term !== undefined && (r.term ?? "") !== c.term) return false;
   if (c.broker !== undefined && (r.agent_name ?? "") !== c.broker) return false;
+  if (c.brokerKey !== undefined && brokerId(r) !== c.brokerKey) return false;
   return true;
 }
 
-const normalizedKeyPart = (value: string | null | undefined) => (value ?? "").trim().toLocaleLowerCase("fr-CA");
+const normalizedKeyPart = (value: unknown) => (value == null ? "" : String(value)).trim().toLocaleLowerCase("fr-CA");
+/** Unique broker identity for keys (never the display name). */
+const brokerKey = (r: RegisterRow) => brokerId(r);
 
-/** Volume uniqueness key: contract + lender + mortgage type + loan amount (absolute). */
-const volumeKey = (r: RegisterRow) =>
-  [
-    normalizedKeyPart(r.number),
-    normalizedKeyPart(r.institution),
-    normalizedKeyPart(r.mortgage_type),
-    Math.abs(n(r.loan_amt)).toFixed(2),
-  ].join("|");
+/**
+ * Stable broker identity for grouping: portal user id first, then the Maestro
+ * broker id, then the normalized agent key, and only as a last resort the
+ * display name. Two brokers sharing a display name never merge.
+ */
+export function brokerId(r: RegisterRow): string {
+  const u = normalizedKeyPart(r.broker_user_id);
+  if (u) return `user:${u}`;
+  const m = normalizedKeyPart(r.maestro_broker_id);
+  if (m) return `maestro:${m}`;
+  // Unlinked: isolated namespace, never equal to a linked broker's key.
+  const a = normalizedKeyPart(r.agent_key) || normalizedKeyPart(r.agent_name);
+  return a ? `unlinked:${a}` : "unlinked:";
+}
+
+/** Drill-down key from a request body: only a linked stable key, never a display name. */
+export function resolveDetailBrokerKey(body: any): string | null {
+  const raw = typeof body?.detailBrokerKey === "string" ? body.detailBrokerKey
+    : typeof body?.detailAgent === "string" ? body.detailAgent : "";
+  const k = raw.trim();
+  return k && isLinkedBrokerKey(k) ? k : null;
+}
+
+/** True when the key comes from a stable identity (portal user or Maestro id). */
+export const isLinkedBrokerKey = (key: string | null | undefined) =>
+  !!key && (key.startsWith("user:") || key.startsWith("maestro:"));
 
 /**
  * A `base` row without a loan amount is never a mortgage file: Maestro uses it for
@@ -106,7 +131,7 @@ const volumeKey = (r: RegisterRow) =>
 const isReferralPayout = (r: RegisterRow) => isBase(r) && n(r.loan_amt) === 0;
 
 /** Per-row classification memo (regex + string work done once per row, not per period). */
-interface RowFlags { base: boolean; adjustment: boolean; insurance: boolean; referral: boolean; loan: number; vKey: string; dKey: string }
+interface RowFlags { base: boolean; adjustment: boolean; insurance: boolean; referral: boolean; loan: number; dKey: string }
 const flagCache = new WeakMap<RegisterRow, RowFlags>();
 function flags(r: RegisterRow): RowFlags {
   let f = flagCache.get(r);
@@ -117,7 +142,6 @@ function flags(r: RegisterRow): RowFlags {
       insurance: isInsurance(r),
       referral: isReferralPayout(r),
       loan: n(r.loan_amt),
-      vKey: volumeKey(r),
       dKey: normalizedKeyPart(r.number),
     };
     flagCache.set(r, f);
@@ -178,22 +202,24 @@ function computeWindow(rows: RegisterRow[], w: Window): WindowComputation {
 
   // Negative base rows are commission clawbacks: they never remove the funded
   // volume of their positive twin, they simply do not add volume themselves.
-  const seen = new Set<string>();
+  // Validated rule (same as portal/mobile/AVA): volume = one loan per
+  // broker+contract+loan amount; units = unique broker+contract. Every key is
+  // scoped by the unique broker identity, never by a display name.
   const volume: RegisterRow[] = [];
+  const seenVol = new Set<string>();
   for (const r of candidates) {
     const f = flags(r);
     if (f.loan < 0) { excluded.push({ row: r, reason: "reversal_row" }); continue; }
-    if (seen.has(f.vKey)) { excluded.push({ row: r, reason: "duplicate_amount" }); continue; }
-    seen.add(f.vKey);
+    const vk = `${brokerKey(r)}|${f.dKey}|${f.loan}`;
+    if (seenVol.has(vk)) { excluded.push({ row: r, reason: "duplicate_amount" }); continue; }
+    seenVol.add(vk);
     volume.push(r);
   }
 
-  // Deals = distinct contract numbers among the retained base rows of the period
-  // (calendar-year rule: a contract counts once per period, never twice).
   const seenDeal = new Set<string>();
   const deals: RegisterRow[] = [];
   for (const r of volume) {
-    const k = flags(r).dKey;
+    const k = `${brokerKey(r)}|${flags(r).dKey}`;
     if (seenDeal.has(k)) continue;
     seenDeal.add(k);
     deals.push(r);
@@ -208,9 +234,9 @@ function computeWindow(rows: RegisterRow[], w: Window): WindowComputation {
 
 /**
  * VOLUME rows = base rows, in window, no adjustments, no insurance, positive loan amounts.
- * Uniqueness = contract + lender + mortgage type + loan amount:
- *   - exact repeated amounts count once,
- *   - a negative reversal cancels its matching positive row.
+ * Each positive, non-adjustment base entry contributes its funded amount.
+ * Repeated loan amounts are not duplicate fundings; contract uniqueness applies
+ * only to units. Negative clawbacks never subtract funded volume.
  */
 export function volumeTranches(rows: RegisterRow[], w: Window): RegisterRow[] {
   return computeWindow(rows, w).volume;
@@ -249,9 +275,8 @@ export function helperFlags(
 
 /**
  * DEALS = count of base rows flagged unique_deal = 1, keyed on the contract number only.
- * Base rows in window (no adjustments, no insurance); rows cancelled by a negative
- * reversal or exact repeats never create a deal. Zero-amount base rows still count
- * as a contract, per the workbook definition (deals key = contract number only).
+ * Positive base rows in window (no adjustments, insurance or referral payouts);
+ * repeated fundings of the same contract never create a second unit.
  */
 export function dealContracts(rows: RegisterRow[], w: Window): RegisterRow[] {
   return computeWindow(rows, w).deals;
@@ -305,6 +330,49 @@ export function metrics(rows: RegisterRow[], w: Window, c: Criteria = {}): Metri
     bps: volume ? (commission / volume) * 10000 : 0,
     commissionPerDeal: deals ? commission / deals : 0,
   };
+}
+
+/**
+ * Same result as `metrics(rows, w, { broker })` for every broker, in one pass.
+ * Avoids O(brokers × rows) scans that exhaust the server CPU budget.
+ */
+const brokerMetricsCache = new WeakMap<RegisterRow[], Map<string, Map<string, Metrics>>>();
+export function metricsByBroker(rows: RegisterRow[], w: Window): Map<string, Metrics> {
+  let byWindow = brokerMetricsCache.get(rows);
+  if (!byWindow) { byWindow = new Map(); brokerMetricsCache.set(rows, byWindow); }
+  const wk = `${w.start}..${w.end}`;
+  const hit = byWindow.get(wk);
+  if (hit) return hit;
+  const acc = new Map<string, { volume: number; deals: number; commission: number }>();
+  const get = (r: RegisterRow) => {
+    const k = brokerId(r);
+    let a = acc.get(k);
+    if (!a) { a = { volume: 0, deals: 0, commission: 0 }; acc.set(k, a); }
+    return a;
+  };
+  for (const r of volumeTranches(rows, w)) get(r).volume += flags(r).loan;
+  for (const r of dealContracts(rows, w)) get(r).deals += 1;
+  for (const r of windowRows(rows, w)) {
+    const f = flags(r);
+    if (f.insurance || f.referral) continue;
+    get(r).commission += n(r.amount);
+  }
+  const out = new Map<string, Metrics>();
+  for (const [k, { volume, deals, commission }] of acc) {
+    out.set(k, {
+      volume, deals, commission,
+      avgDeal: deals ? volume / deals : 0,
+      bps: volume ? (commission / volume) * 10000 : 0,
+      commissionPerDeal: deals ? commission / deals : 0,
+    });
+  }
+  byWindow.set(wk, out);
+  return out;
+}
+
+const EMPTY_METRICS: Metrics = { volume: 0, deals: 0, commission: 0, avgDeal: 0, bps: 0, commissionPerDeal: 0 };
+export function brokerMetrics(rows: RegisterRow[], w: Window, broker: string): Metrics {
+  return metricsByBroker(rows, w).get(broker) ?? EMPTY_METRICS;
 }
 
 export function yoy(cy: number, py: number): number | "—" | "New" {
@@ -384,14 +452,14 @@ export function resolveWindow(
       // "Same period last year": for the year in progress, the prior-year twin stops
       // at the same calendar day, otherwise the comparison mixes a partial year with
       // a full one (that is what produced the wrong negative deltas).
-      const today = new Date();
-      const cy = today.getUTCFullYear();
+      const today = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Toronto" }));
+      const cy = today.getFullYear();
       const priorEnd = year === cy
-        ? dstr(year - 1, today.getUTCMonth() + 1, monthEndDay(year - 1, today.getUTCMonth() + 1))
+        ? dstr(year - 1, today.getMonth() + 1, Math.min(today.getDate(), monthEndDay(year - 1, today.getMonth() + 1)))
         : dstr(year - 1, 12, 31);
       return {
         window: year === cy
-          ? { start: dstr(year, 1, 1), end: dstr(year, today.getUTCMonth() + 1, monthEndDay(year, today.getUTCMonth() + 1)) }
+          ? { start: dstr(year, 1, 1), end: dstr(year, today.getMonth() + 1, today.getDate()) }
           : yearWindow(year),
         priorWindow: { start: dstr(year - 1, 1, 1), end: priorEnd },
         label: String(year),
@@ -401,11 +469,16 @@ export function resolveWindow(
     default: {
       // For the year in progress, YTD never runs past the current month: comparing
       // Jan→Dec of a partial year with a full prior year produced wrong PY figures.
-      const today = new Date();
-      const cap = year === today.getUTCFullYear() ? today.getUTCMonth() + 1 : 12;
+      const today = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Toronto" }));
+      const cap = year === today.getFullYear() ? today.getMonth() + 1 : 12;
       const m = Math.min(cap, Math.max(1, index || cap));
       // Same period last year, month-end aligned: 2026-01-01→2026-08-31 vs 2025-01-01→2025-08-31.
-      return { window: ytdWindow(year, m), priorWindow: ytdWindow(year - 1, m), label: `YTD ${m}` };
+      const currentMonth = year === today.getFullYear() && m === cap;
+      return {
+        window: currentMonth ? { start: dstr(year, 1, 1), end: dstr(year, m, today.getDate()) } : ytdWindow(year, m),
+        priorWindow: currentMonth ? { start: dstr(year - 1, 1, 1), end: dstr(year - 1, m, Math.min(today.getDate(), monthEndDay(year - 1, m))) } : ytdWindow(year - 1, m),
+        label: `YTD ${m}`,
+      };
     }
   }
 }
