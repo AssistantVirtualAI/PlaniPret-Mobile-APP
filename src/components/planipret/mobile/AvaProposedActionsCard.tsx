@@ -1,3 +1,4 @@
+import { tr } from "@/lib/i18n/tr";
 import { useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
@@ -273,7 +274,7 @@ export default function AvaProposedActionsCard({ analysis, onDismiss }: { analys
 
               {isDone && !st?.result?.skipped && (
                 <div className="mt-2 pt-2 flex items-center gap-2" style={{ borderTop: "1px solid rgba(255,255,255,0.08)" }}>
-                  <span className="text-[10px]" style={{ color: "rgba(255,255,255,0.55)" }}>AVA a-t-elle bien fait ?</span>
+                  <span className="text-[10px]" style={{ color: "rgba(255,255,255,0.55)" }}>{tr("AVA a-t-elle bien fait ?", "Did AVA do well?")}</span>
                   <button
                     onClick={() => sendFeedback(a, "up")}
                     disabled={!!feedback[a.id]}
@@ -287,7 +288,7 @@ export default function AvaProposedActionsCard({ analysis, onDismiss }: { analys
                     style={{ background: feedback[a.id] === "down" ? "rgba(248,113,113,0.25)" : "rgba(255,255,255,0.06)", color: feedback[a.id] === "down" ? "#f87171" : "rgba(255,255,255,0.75)" }}
                   ><ThumbsDown className="w-3 h-3" /></button>
                   {feedback[a.id] && (
-                    <span className="text-[10px]" style={{ color: "rgba(255,255,255,0.5)" }}>merci</span>
+                    <span className="text-[10px]" style={{ color: "rgba(255,255,255,0.5)" }}>{tr("merci", "thanks")}</span>
                   )}
                 </div>
               )}
@@ -306,12 +307,12 @@ export default function AvaProposedActionsCard({ analysis, onDismiss }: { analys
                       onClick={() => { sendFeedback(a, "down", comments[a.id]); setShowComment((c) => ({ ...c, [a.id]: false })); }}
                       className="flex-1 py-1 rounded-full text-[10px] font-semibold"
                       style={{ background: "rgba(248,113,113,0.25)", color: "#f87171" }}
-                    >Envoyer</button>
+                    >{tr("Envoyer", "Send")}</button>
                     <button
                       onClick={() => setShowComment((c) => ({ ...c, [a.id]: false }))}
                       className="px-2 py-1 rounded-full text-[10px]"
                       style={{ background: "rgba(255,255,255,0.06)", color: "rgba(255,255,255,0.6)" }}
-                    >Annuler</button>
+                    >{tr("Annuler", "Cancel")}</button>
                   </div>
                 </div>
               )}

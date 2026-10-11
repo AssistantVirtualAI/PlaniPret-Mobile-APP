@@ -7,6 +7,7 @@ import ReactMarkdown from "react-markdown";
 import avaLogo from "@/assets/ava-statistics-logo.png.asset.json";
 import { useAvaContext } from "@/hooks/useAvaContext";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import { tr } from "@/lib/i18n/tr";
 import ReconnectStatus from "@/components/planipret/mobile/ReconnectStatus";
 
 type Msg = { role: "user" | "assistant"; content: string };
@@ -166,7 +167,7 @@ export default function AvaChatSheet({ userId, onClose }: { userId: string; onCl
           onClick={onClose}
           className="ml-auto flex items-center justify-center active:scale-95 transition shrink-0"
           style={{ width: 32, height: 32, borderRadius: 10, background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}
-          aria-label="Fermer"
+          aria-label={tr("Fermer", "Close")}
         >
           <X className="w-4 h-4" />
         </button>
@@ -250,7 +251,7 @@ export default function AvaChatSheet({ userId, onClose }: { userId: string; onCl
               background: "linear-gradient(135deg, var(--pp-brand-accent2), var(--pp-agent))",
               boxShadow: "0 4px 12px rgba(108,92,231,0.35)",
             }}
-            aria-label="Envoyer"
+            aria-label={tr("Envoyer", "Send")}
           >
             <Send className="w-4 h-4" />
           </button>

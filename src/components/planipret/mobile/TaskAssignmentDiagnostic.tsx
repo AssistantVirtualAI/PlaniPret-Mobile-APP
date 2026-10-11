@@ -1,3 +1,4 @@
+import { tr } from "@/lib/i18n/tr";
 import { useState } from "react";
 import { createPortal } from "react-dom";
 import { X, CheckCircle2, XCircle, Loader2, ExternalLink } from "lucide-react";
@@ -66,7 +67,7 @@ export default function TaskAssignmentDiagnostic({ onClose }: { onClose: () => v
       >
         <div className="sticky top-0 z-10 flex items-center justify-between px-4 pt-4 pb-3" style={{ background: "var(--pp-bg-base, #fff)" }}>
           <h2 className="text-base font-semibold pp-heading">Diagnostic — assignation de tâche</h2>
-          <button type="button" onClick={onClose} aria-label="Fermer" className="w-10 h-10 rounded-xl flex items-center justify-center" style={card}>
+          <button type="button" onClick={onClose} aria-label={tr("Fermer", "Close")} className="w-10 h-10 rounded-xl flex items-center justify-center" style={card}>
             <X className="w-4 h-4" />
           </button>
         </div>

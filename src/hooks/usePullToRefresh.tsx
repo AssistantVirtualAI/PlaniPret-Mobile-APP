@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 /**
  * Pull-to-refresh for the single active vertical scroll owner.
@@ -16,7 +16,13 @@ export function usePullToRefresh(
   threshold = 70,
   canRefresh: () => boolean = () => true,
 ) {
-  const ref = useRef<HTMLDivElement>(null!);
+  const [el, setEl] = useState<HTMLDivElement | null>(null);
+  // Function ref that also exposes `.current` for legacy callers.
+  const ref = useMemo(() => {
+    const f = ((node: HTMLDivElement | null) => { f.current = node as HTMLDivElement; setEl(node); }) as ((node: HTMLDivElement | null) => void) & { current: HTMLDivElement };
+    f.current = null as unknown as HTMLDivElement;
+    return f;
+  }, []);
   const [pullDist, setPullDist] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
   const startY = useRef<number | null>(null);
@@ -31,7 +37,6 @@ export function usePullToRefresh(
 
   useEffect(() => {
     mounted.current = true;
-    const el = ref.current;
     if (!el) return;
 
     const raf = typeof requestAnimationFrame === "function" ? requestAnimationFrame : (cb: FrameRequestCallback) => setTimeout(() => cb(0), 16) as unknown as number;
@@ -101,7 +106,7 @@ export function usePullToRefresh(
       el.removeEventListener("touchend", onEnd);
       el.removeEventListener("touchcancel", reset);
     };
-  }, [threshold]);
+  }, [threshold, el]);
 
   return { ref, pullDist, refreshing, threshold };
 }

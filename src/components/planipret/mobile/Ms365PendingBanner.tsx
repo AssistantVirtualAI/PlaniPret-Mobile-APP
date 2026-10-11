@@ -1,3 +1,4 @@
+import { tr } from "@/lib/i18n/tr";
 import { useEffect, useState, useCallback } from "react";
 import { Capacitor } from "@capacitor/core";
 import { AlertTriangle, RotateCw, X } from "lucide-react";
@@ -73,10 +74,10 @@ export function Ms365PendingBanner({ onRetry }: { onRetry: () => void | Promise<
           background: "#2E9BDC", color: "white", fontSize: 12,
         }}
       >
-        <RotateCw size={13} /> Réessayer
+        <RotateCw size={13} /> {tr("Réessayer", "Retry")}
       </button>
       <button
-        aria-label="Fermer"
+        aria-label={tr("Fermer", "Close")}
         onClick={() => { clearMs365Pending(); setVisible(false); }}
         style={{ padding: 4, color: "var(--pp-text-muted, #94a3b8)" }}
       >
