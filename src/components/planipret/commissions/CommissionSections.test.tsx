@@ -13,13 +13,15 @@ describe("Commission status sections", () => {
     expect(screen.queryByText("paid-admin-all-portal")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: "Déboursées" }));
     expect(screen.getByText("paid-admin-all-portal")).toBeVisible();
-    expect(screen.getByText("pending-admin-all-portal")).not.toBeVisible();
+    expect(screen.queryByText("pending-admin-all-portal")).not.toBeInTheDocument();
   });
 
   it("applique exactement la même portée personnelle aux deux sources", () => {
     render(<CommissionSections lang="fr" scope="broker" personalUsersId="93135" cacheScope="mobile:u1:personal" presentation="mobile" defaultSection="paid" />);
     expect(screen.getByText("register-broker-mobile:u1:personal-mobile")).toBeVisible();
+    expect(screen.queryByText("pending-mobile:u1:personal-93135-mobile")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: "En attente" }));
     expect(screen.getByText("pending-mobile:u1:personal-93135-mobile")).toBeVisible();
+    expect(screen.queryByText("register-broker-mobile:u1:personal-mobile")).not.toBeInTheDocument();
   });
 });

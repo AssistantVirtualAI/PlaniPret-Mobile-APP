@@ -33,6 +33,8 @@ import UndatedTransactionsPanel from "./UndatedTransactionsPanel";
 import { loadBrokerCoverage, causeLabel, coverageFor, type CoverageMap, type CoverageCause } from "@/lib/planipret/brokerCoverage";
 import MaestroStatusBadge from "./ui/MaestroStatusBadge";
 import { statsCacheKey, readStatsCache, readAnyStatsCache, writeStatsCache, isStatsCacheFresh, type StatsCacheEntry } from "@/lib/planipret/commissionsCache";
+import { ppEdgeInvoke } from "@/lib/planipret/ppEdge";
+import { commissionLoadMessage } from "@/lib/planipret/commissionLoadError";
 import {
   CHART_COLORS, CommissionsGradients, axisProps, gridProps, legendProps, tipProps,
 } from "./ui/chartTheme";
@@ -256,7 +258,10 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
   const [coverageMeta, setCoverageMeta] = useState<{ adminScopeConfigured: boolean; counts: Record<CoverageCause, number> } | null>(null);
 
   useEffect(() => {
-    if (!isAdminView) return;
+    // The coverage inventory is an admin-only portal diagnostic. It does not
+    // render on a phone and previously added two unnecessary database reads to
+    // every mobile opening of Commissions.
+    if (!isAdminView || isMobilePresentation) return;
     let cancelled = false;
     (async () => {
       try {
@@ -294,20 +299,16 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
       if (refreshKey === 0 && fresh) { setLoading(false); return; }
       setLoading(!cached?.value);
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        const { data: res, error: err } = await supabase.functions.invoke("pp-commission-stats", {
-          body: {
+        const request = {
             year,
             month: granularity === "ytd" || granularity === "month" ? periodIndex : month,
             granularity,
             periodIndex,
             scope: isAdminView ? "all" : "self",
             agent: isAdminView && agent ? agent : null,
-          },
-          headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : undefined,
-        });
-        if (err) throw err;
-        if ((res as any)?.error) throw new Error((res as any).error);
+        };
+        const { data: res, error: edgeError } = await ppEdgeInvoke("pp-commission-stats", request, { retries: 1, timeoutMs: 45_000 });
+        if (edgeError || (res as any)?.error) throw new Error(commissionLoadMessage((res as any)?.error ?? edgeError?.message, isFr));
         if (!cancelled) {
           setData(res); setStale(false); setCachedAt(null); setError(null);
           writeStatsCache(cacheKey, res);
@@ -316,7 +317,7 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
         if (cancelled) return;
         const fallback = readStatsCache(cacheKey) ?? readAnyStatsCache(scopeKey, cachePartition);
         if (fallback) { setData(fallback.value); setStale(true); setCachedAt(new Date(fallback.ts).toISOString()); }
-        setError(e?.message ?? "error");
+        setError(commissionLoadMessage(e?.message, isFr));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -333,9 +334,7 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
     (async () => {
       setDrillLoading(true); setDrillError(null);
       try {
-        const { data: { session } } = await supabase.auth.getSession();
-        const { data: res, error: err } = await supabase.functions.invoke("pp-commission-stats", {
-          body: {
+        const request = {
             year,
             month: granularity === "ytd" || granularity === "month" ? periodIndex : month,
             granularity,
@@ -343,14 +342,12 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
             scope: "all",
             agent: null,
             detailBrokerKey: drillAgent,
-          },
-          headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : undefined,
-        });
-        if (err) throw err;
-        if ((res as any)?.error) throw new Error((res as any).error);
+        };
+        const { data: res, error: edgeError } = await ppEdgeInvoke("pp-commission-stats", request, { retries: 1, timeoutMs: 45_000 });
+        if (edgeError || (res as any)?.error) throw new Error(commissionLoadMessage((res as any)?.error ?? edgeError?.message, isFr));
         if (!cancelled) setDrillData((res as any)?.detail ?? null);
       } catch (e: any) {
-        if (!cancelled) setDrillError(e?.message ?? "error");
+        if (!cancelled) setDrillError(commissionLoadMessage(e?.message, isFr));
       } finally {
         if (!cancelled) setDrillLoading(false);
       }
@@ -515,12 +512,14 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
   };
 
   // Auto-run: regenerates whenever the visible slice or the underlying
-  // Maestro data changes (signature), never waiting for a manual click.
+  // Maestro data changes (signature). On mobile it is deliberately manual:
+  // the dashboard must render its commission figures before starting a second
+  // expensive Edge request for prose insights.
   useEffect(() => {
     setAi(null);
-    if (data && data.rowCount > 0) void generateInsights(false);
+    if (!isMobilePresentation && data && data.rowCount > 0) void generateInsights(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dataSignature, year, granularity, periodIndex, agent, tab]);
+  }, [dataSignature, year, granularity, periodIndex, agent, tab, isMobilePresentation]);
 
   const tabs: { key: TabKey; label: string; count?: number | null; tone?: "gold" | "warn" }[] = [
     { key: "overview", label: isFr ? "Vue d'ensemble" : "Overview" },
