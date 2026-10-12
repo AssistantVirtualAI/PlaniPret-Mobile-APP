@@ -36,6 +36,15 @@ import { statsCacheKey, readStatsCache, readAnyStatsCache, writeStatsCache, isSt
 import { ppEdgeInvoke } from "@/lib/planipret/ppEdge";
 import { commissionLoadMessage } from "@/lib/planipret/commissionLoadError";
 import {
+  insightCacheKey,
+  needsCommissionInsightRefresh,
+  readCommissionInsightCadence,
+  readCommissionInsights,
+  writeCommissionInsightCadence,
+  writeCommissionInsights,
+  type CommissionInsightCadence,
+} from "@/lib/planipret/commissionInsightsCache";
+import {
   CHART_COLORS, CommissionsGradients, axisProps, gridProps, legendProps, tipProps,
 } from "./ui/chartTheme";
 
@@ -448,30 +457,39 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
     ].join("|");
   }, [data]);
 
-  // ---- AI insights (Claude), auto-refreshed on every new Maestro payload ----
+  // ---- AI insights (Claude) -------------------------------------------------
+  // The default is manual. A broker can opt in to one automatic generation per
+  // calendar day/week/month/quarter/year for this exact secure account/view and
+  // financial period. Switching dashboard tabs never creates another request.
   const [ai, setAi] = useState<{ summary: string; insights: any[] } | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
+  const [aiGeneratedAt, setAiGeneratedAt] = useState<number | null>(null);
+  const [aiCadence, setAiCadence] = useState<CommissionInsightCadence>(() => readCommissionInsightCadence(cachePartition));
+  const aiCacheKey = useMemo(() => insightCacheKey({
+    partition: cachePartition,
+    year,
+    granularity,
+    periodIndex,
+    lang,
+  }), [cachePartition, year, granularity, periodIndex, lang]);
 
   const generateInsights = async (force = false) => {
     if (!data || data.rowCount === 0) return;
-    const cacheKey = `pp-register-insights:${isAdminView ? "admin" : (data.brokerName ?? "me")}:${agent || "all"}:${year}:${granularity}:${periodIndex}:${lang}:${tab}:${dataSignature}`;
-    if (!force) {
-      try {
-        const raw = localStorage.getItem(cacheKey);
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          if (Date.now() - parsed.ts < 24 * 3600 * 1000) { setAi(parsed.value); return; }
-        }
-      } catch { /* ignore */ }
+    const cached = readCommissionInsights(aiCacheKey);
+    if (!force && cached) {
+      setAi(cached.value);
+      setAiGeneratedAt(cached.generatedAt);
+      if (!needsCommissionInsightRefresh(cached, aiCadence)) return;
     }
+    if (!force && aiCadence === "manual") return;
     if (!(await ensureAiConsent())) return;
     setAiLoading(true); setAiError(null);
     try {
       const { data: { session } } = await supabase.auth.getSession();
       const payload = {
         lang, scope: isAdminView && !agent ? "admin" : "broker", source: "maestro",
-        focus: tab, focusLabel: tabLabel,
+        focus: "overview", focusLabel: isFr ? "Vue globale" : "Overall view",
         metrics: {
           year, period: data.periodLabel, granularity, window: data.window,
           agent: agent || (isAdminView ? "all brokers" : data.brokerName),
@@ -488,7 +506,7 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
           filteredTotals: lender ? filteredTotals : undefined,
           unmappedRows: allDeals.filter((d: any) => d?.mapStatus === "unmapped").length,
           // Raw deal lines (already scoped to this broker or to the firm view).
-          deals: filteredDeals.slice(0, 300).map((d: any) => ({
+          deals: filteredDeals.slice(0, 120).map((d: any) => ({
             n: d.number, date: d.date ?? d.dateTrans, agent: d.agentName,
             lender: d.institution, product: d.mortgageType, term: d.term,
             loan: d.loanAmt, commission: d.amount, type: d.commissionType,
@@ -503,7 +521,9 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
       if (err) throw err;
       const value = { summary: (res as any)?.summary ?? "", insights: (res as any)?.insights ?? [] };
       setAi(value);
-      try { localStorage.setItem(cacheKey, JSON.stringify({ ts: Date.now(), value })); } catch { /* ignore */ }
+      const generatedAt = Date.now();
+      setAiGeneratedAt(generatedAt);
+      writeCommissionInsights(aiCacheKey, aiCadence, value, new Date(generatedAt));
     } catch (e: any) {
       setAiError(e?.message ?? "AI error");
     } finally {
@@ -511,15 +531,15 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
     }
   };
 
-  // Auto-run: regenerates whenever the visible slice or the underlying
-  // Maestro data changes (signature). On mobile it is deliberately manual:
-  // the dashboard must render its commission figures before starting a second
-  // expensive Edge request for prose insights.
+  // A saved result is shown immediately. The only automatic call is an opted-in
+  // cadence boundary; data refreshes, tab changes, and page opens reuse cache.
   useEffect(() => {
-    setAi(null);
-    if (!isMobilePresentation && data && data.rowCount > 0) void generateInsights(false);
+    const cached = readCommissionInsights(aiCacheKey);
+    setAi(cached?.value ?? null);
+    setAiGeneratedAt(cached?.generatedAt ?? null);
+    if (data && data.rowCount > 0 && needsCommissionInsightRefresh(cached, aiCadence)) void generateInsights(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dataSignature, year, granularity, periodIndex, agent, tab, isMobilePresentation]);
+  }, [aiCacheKey, aiCadence, dataSignature]);
 
   const tabs: { key: TabKey; label: string; count?: number | null; tone?: "gold" | "warn" }[] = [
     { key: "overview", label: isFr ? "Vue d'ensemble" : "Overview" },
@@ -780,12 +800,18 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
           <div className="mb-3">
             <CommissionInsights
               lang={lang}
-              context={tabLabel}
+              context={isFr ? "Vue globale" : "Overall view"}
               summary={ai?.summary ?? ""}
               insights={(ai?.insights ?? []) as any}
               loading={aiLoading}
               error={aiError}
               generated={!!ai}
+              cadence={aiCadence}
+              generatedAt={aiGeneratedAt}
+              onCadenceChange={(nextCadence) => {
+                writeCommissionInsightCadence(cachePartition, nextCadence);
+                setAiCadence(nextCadence);
+              }}
               onGenerate={() => void generateInsights(true)}
             />
           </div>

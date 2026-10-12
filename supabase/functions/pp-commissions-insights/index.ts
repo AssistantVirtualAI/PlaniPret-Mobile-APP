@@ -29,7 +29,7 @@ RÈGLES:
 - Réponds UNIQUEMENT avec du JSON valide, sans texte autour, sans bloc de code.
 - Structure exacte:
 {"summary":"...","insights":[{"category":"growth|lenders|products|risk|seasonality","title":"...","finding":"...","action":"...","severity":"positive|neutral|warning","metric":"..."}]}
-- 3 à 5 insights maximum, chacun basé sur les chiffres fournis (cite des montants ou %).
+- 3 insights maximum, chacun basé sur les chiffres fournis (cite des montants ou %).
 - "summary": 1 à 2 phrases, ton exécutif.
 - "title": max 6 mots. "finding": max 220 caractères. "action": recommandation concrète, max 180 caractères.
 - "metric": une valeur courte à afficher en badge (ex: "+18,4 %", "142 BPS", "3 prêteurs = 71 %").
@@ -68,12 +68,12 @@ Deno.serve(async (req) => {
         ? `Onglet affiché à l'utilisateur: ${body.focusLabel} (clé: ${body?.focus ?? ""}). Concentre l'analyse sur ce qui est visible dans cet onglet et explique comment lire ces chiffres.`
         : "",
       "Métriques (JSON):",
-      JSON.stringify(metrics).slice(0, 18000),
+      JSON.stringify(metrics).slice(0, 9000),
     ].join("\n");
 
     const text = await claudeText(SYSTEM, userText, {
       model: "claude-sonnet-4-5-20250929",
-      max_tokens: 1400,
+      max_tokens: 850,
       temperature: 0.3,
       label: "commissions-insights",
     });
@@ -82,7 +82,7 @@ Deno.serve(async (req) => {
     const parsed = extractJson(text);
     if (!parsed) return j({ success: false, error: "Réponse IA illisible" }, 502);
 
-    const insights = Array.isArray(parsed.insights) ? parsed.insights.slice(0, 5).map((i: any) => ({
+    const insights = Array.isArray(parsed.insights) ? parsed.insights.slice(0, 3).map((i: any) => ({
       category: ["growth", "lenders", "products", "risk", "seasonality"].includes(String(i?.category)) ? String(i.category) : "growth",
       title: String(i?.title ?? "").slice(0, 80),
       finding: String(i?.finding ?? "").slice(0, 400),

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Sparkles, RefreshCw, TrendingUp, Building2, PieChart, AlertTriangle, CalendarDays } from "lucide-react";
 import type { CommissionInsight } from "@/lib/planipret/commissionStats";
+import { commissionInsightCadenceLabel, type CommissionInsightCadence } from "@/lib/planipret/commissionInsightsCache";
 import imgGrowth from "@/assets/commissions/insight-growth.jpg";
 import imgLenders from "@/assets/commissions/insight-lenders.jpg";
 import imgProducts from "@/assets/commissions/insight-products.jpg";
@@ -17,7 +18,7 @@ const ART: Record<string, { img: string; accent: string; Icon: any }> = {
 const SEV: Record<string, string> = { positive: "#00D4AA", neutral: "#2E9BDC", warning: "#E8A33C" };
 
 export default function CommissionInsights({
-  lang, summary, insights, loading, error, onGenerate, generated, context,
+  lang, summary, insights, loading, error, onGenerate, generated, context, cadence = "manual", generatedAt = null, onCadenceChange,
 }: {
   lang: "fr" | "en";
   /** Label of the tab currently displayed — the analysis is contextual. */
@@ -28,9 +29,15 @@ export default function CommissionInsights({
   error?: string | null;
   generated: boolean;
   onGenerate: () => void;
+  cadence?: CommissionInsightCadence;
+  generatedAt?: number | null;
+  onCadenceChange?: (cadence: CommissionInsightCadence) => void;
 }) {
   const [flipped, setFlipped] = useState<number | null>(null);
   const T = (fr: string, en: string) => (lang === "en" ? en : fr);
+  const generatedLabel = generatedAt
+    ? new Date(generatedAt).toLocaleString(lang === "en" ? "en-CA" : "fr-CA", { dateStyle: "medium", timeStyle: "short" })
+    : null;
 
   return (
     <div
@@ -56,19 +63,39 @@ export default function CommissionInsights({
               {T("Insights IA", "AI insights")}{context ? ` — ${context}` : ""}
             </h3>
             <p style={{ fontSize: 10.5, color: "var(--pp-text-faint)" }}>
-              {T("Analyse générée automatiquement par Claude à partir de vos données Maestro", "Generated automatically by Claude from your Maestro data")}
+              {cadence === "manual"
+                ? T("Générée seulement avec le bouton ci-dessous — aucun jeton consommé à l'ouverture.", "Generated only with the button below — no tokens are used when opening this page.")
+                : T(`Fréquence : ${commissionInsightCadenceLabel(cadence, "fr")}.`, `Schedule: ${commissionInsightCadenceLabel(cadence, "en")}.`)}
             </p>
+            {generatedLabel && <p style={{ fontSize: 10.5, color: "var(--pp-text-faint)", marginTop: 2 }}>
+              {T("Dernière génération : ", "Last generated: ")}{generatedLabel}
+            </p>}
           </div>
         </div>
-        <button
-          onClick={onGenerate}
-          disabled={loading}
-          className="px-3 py-1.5 rounded-lg text-[12px] flex items-center gap-1.5 text-white disabled:opacity-60"
-          style={{ background: "linear-gradient(120deg,#2E9BDC,#9B7FE8)" }}
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
-          {loading ? T("Analyse…", "Analyzing…") : T("Actualiser", "Refresh")}
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          {onCadenceChange && (
+            <select
+              aria-label={T("Fréquence des insights IA", "AI insights schedule")}
+              value={cadence}
+              onChange={(event) => onCadenceChange(event.target.value as CommissionInsightCadence)}
+              className="rounded-lg px-2 py-1.5 text-[12px]"
+              style={{ color: "var(--pp-text-primary)", background: "var(--pp-bg-deep)", border: "1px solid var(--pp-bg-border-2)" }}
+            >
+              {(["manual", "daily", "weekly", "monthly", "quarterly", "yearly"] as CommissionInsightCadence[]).map((value) => (
+                <option key={value} value={value}>{commissionInsightCadenceLabel(value, lang)}</option>
+              ))}
+            </select>
+          )}
+          <button
+            onClick={onGenerate}
+            disabled={loading}
+            className="px-3 py-1.5 rounded-lg text-[12px] flex items-center gap-1.5 text-white disabled:opacity-60"
+            style={{ background: "linear-gradient(120deg,#2E9BDC,#9B7FE8)" }}
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`} />
+            {loading ? T("Analyse…", "Analyzing…") : T("Générer maintenant", "Generate now")}
+          </button>
+        </div>
       </div>
 
       {error && (

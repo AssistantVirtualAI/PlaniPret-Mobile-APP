@@ -23,18 +23,21 @@ export default function Ms365StatsCard({ days }: { days: number }) {
   const [data, setData] = useState<Payload | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
+  const [insightRequest, setInsightRequest] = useState(0);
 
   useEffect(() => {
     let alive = true;
     setLoading(true); setErr(null);
-    supabase.functions.invoke("ms365-stats", { body: { days, insights: true } })
+    // Loading email and calendar statistics must never spend AI tokens. Claude
+    // is requested only after the broker explicitly presses the insight button.
+    supabase.functions.invoke("ms365-stats", { body: { days, insights: insightRequest > 0 } })
       .then(({ data: res, error }) => {
         if (!alive) return;
         if (error) { setErr(error.message); setLoading(false); return; }
         setData(res as Payload); setLoading(false);
       });
     return () => { alive = false; };
-  }, [days]);
+  }, [days, insightRequest]);
 
   if (loading) {
     return (
@@ -146,6 +149,17 @@ export default function Ms365StatsCard({ days }: { days: number }) {
           </ul>
         </div>
       )}
+
+      <button
+        type="button"
+        onClick={() => setInsightRequest((n) => n + 1)}
+        disabled={loading}
+        className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-semibold disabled:opacity-60"
+        style={{ background: "#EEF2FF", color: "#6D28D9", border: "1px solid #DDD6FE" }}
+      >
+        <Sparkles className="w-3.5 h-3.5" />
+        {data.insights?.length ? "Actualiser les insights AVA" : "Générer les insights AVA"}
+      </button>
     </div>
   );
 }
