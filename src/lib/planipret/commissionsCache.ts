@@ -48,12 +48,18 @@ export function isStatsCacheFresh(entry: StatsCacheEntry | null, now = Date.now(
 }
 
 /** Most recent cached payload for a scope, whatever the filters were. */
-export function readAnyStatsCache(scope: "admin" | "broker"): StatsCacheEntry | null {
+/**
+ * Returns the newest snapshot for a scope. When `partition` is supplied, only
+ * snapshots written for that exact signed-in account/view are considered.
+ * This prevents a shared phone from briefly painting another broker's data.
+ */
+export function readAnyStatsCache(scope: "admin" | "broker", partition?: string): StatsCacheEntry | null {
   let best: StatsCacheEntry | null = null;
+  const prefix = `${STATS_PREFIX}${scope}:${partition ? `${partition}|` : ""}`;
   try {
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
-      if (!k || !k.startsWith(`${STATS_PREFIX}${scope}:`)) continue;
+      if (!k || !k.startsWith(prefix)) continue;
       const entry = readStatsCache(k);
       if (entry && (!best || entry.ts > best.ts)) best = entry;
     }

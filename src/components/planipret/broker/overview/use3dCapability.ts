@@ -50,6 +50,10 @@ export function useInViewOnce<T extends HTMLElement = HTMLDivElement>(rootMargin
     const el = ref.current;
     if (!el || visible) return;
     if (typeof IntersectionObserver === "undefined") { setVisible(true); return; }
+    // Planiprêt Mobile scrolls inside `.pp-mobile-scroll`, not the browser
+    // viewport. Supplying that root lets charts reliably leave their skeleton
+    // state after an in-app scroll on iPhone and Android.
+    const scrollRoot = el.closest(".pp-mobile-scroll") as Element | null;
     const io = new IntersectionObserver(
       (entries) => {
         if (entries.some((e) => e.isIntersecting)) {
@@ -57,7 +61,7 @@ export function useInViewOnce<T extends HTMLElement = HTMLDivElement>(rootMargin
           io.disconnect();
         }
       },
-      { rootMargin },
+      { root: scrollRoot, rootMargin },
     );
     io.observe(el);
     return () => io.disconnect();

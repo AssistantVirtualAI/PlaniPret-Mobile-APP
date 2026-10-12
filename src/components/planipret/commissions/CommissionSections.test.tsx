@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import CommissionSections from "./CommissionSections";
 
 vi.mock("./PendingCommissionsCard", () => ({ default: ({ cacheScope, filters, presentation }: any) => <p>pending-{cacheScope}-{filters?.users_id ?? "all"}-{presentation}</p> }));
-vi.mock("./RegisterCommissions", () => ({ default: ({ scope, presentation }: any) => <p>register-{scope}-{presentation}</p> }));
+vi.mock("./RegisterCommissions", () => ({ default: ({ scope, presentation, cacheScope }: any) => <p>register-{scope}-{cacheScope ?? "none"}-{presentation}</p> }));
 vi.mock("./PaidDepositsCard", () => ({ default: ({ scope, forcedUsersId, presentation }: any) => <p>paid-{scope}-{forcedUsersId ?? "all"}-{presentation}</p> }));
 
 describe("Commission status sections", () => {
@@ -18,7 +18,7 @@ describe("Commission status sections", () => {
 
   it("applique exactement la même portée personnelle aux deux sources", () => {
     render(<CommissionSections lang="fr" scope="broker" personalUsersId="93135" cacheScope="mobile:u1:personal" presentation="mobile" defaultSection="paid" />);
-    expect(screen.getByText("register-broker-mobile")).toBeVisible();
+    expect(screen.getByText("register-broker-mobile:u1:personal-mobile")).toBeVisible();
     fireEvent.click(screen.getByRole("tab", { name: "En attente" }));
     expect(screen.getByText("pending-mobile:u1:personal-93135-mobile")).toBeVisible();
   });

@@ -41,7 +41,7 @@ export default function CommissionSections({
             This intentionally avoids a second Maestro direct call that can fail when
             the firm credential is not configured, while preserving the safe pending
             endpoint and every server-side role check. */}
-        <RegisterCommissions lang={lang} scope={scope} presentation={presentation} />
+        <RegisterCommissions lang={lang} scope={scope} presentation={presentation} cacheScope={cacheScope} />
       </div>
     </div>
   );

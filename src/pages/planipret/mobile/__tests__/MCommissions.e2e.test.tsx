@@ -37,6 +37,7 @@ describe("MCommissions — même architecture que le portail", () => {
     expect(screen.getByTestId("sections")).toHaveTextContent('"scope":"broker"');
     expect(screen.getByTestId("sections")).toHaveTextContent('"defaultSection":"paid"');
     expect(screen.getByTestId("sections")).toHaveTextContent('"presentation":"mobile"');
+    expect(screen.getByTestId("sections")).toHaveTextContent('"cacheScope":"mobile:broker-1:personal"');
     expect(screen.queryByRole("button", { name: "Tous les courtiers" })).not.toBeInTheDocument();
   });
 
@@ -45,9 +46,11 @@ describe("MCommissions — même architecture que le portail", () => {
     render(<MCommissions />);
     expect(screen.getByTestId("sections")).toHaveTextContent('"scope":"admin"');
     expect(screen.getByTestId("sections")).toHaveTextContent('"personalUsersId":null');
+    expect(screen.getByTestId("sections")).toHaveTextContent('"cacheScope":"mobile:admin-1:global"');
     fireEvent.click(screen.getByRole("button", { name: "Mes commissions" }));
     expect(screen.getByTestId("sections")).toHaveTextContent('"scope":"broker"');
     expect(screen.getByTestId("sections")).toHaveTextContent('"personalUsersId":"456"');
+    expect(screen.getByTestId("sections")).toHaveTextContent('"cacheScope":"mobile:admin-1:personal"');
     expect(screen.getByRole("button", { name: "Mes commissions" })).toHaveAttribute("aria-pressed", "true");
   });
 

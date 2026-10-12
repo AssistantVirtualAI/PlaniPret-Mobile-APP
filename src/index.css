@@ -1502,3 +1502,48 @@ All colors MUST be HSL.
   outline: 2px solid var(--pp-brand-accent-2, #2E9BDC);
   outline-offset: 2px;
 }
+
+
+/* Commissions on phone: charts must stay inside the card, keep a useful plot
+   area and wrap legends instead of forcing horizontal scroll. */
+@media (max-width: 767px) {
+  .pp-commissions-mobile .ov3d-chart {
+    width: 100%;
+    min-width: 0;
+    overflow: hidden;
+    contain: layout paint;
+  }
+  .pp-commissions-mobile .recharts-responsive-container,
+  .pp-commissions-mobile .recharts-wrapper,
+  .pp-commissions-mobile .recharts-surface {
+    min-width: 0 !important;
+    max-width: 100% !important;
+  }
+  .pp-commissions-mobile .recharts-legend-wrapper {
+    left: 0 !important;
+    right: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+  .pp-commissions-mobile .recharts-default-legend {
+    display: flex !important;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 2px 8px;
+    padding-inline: 2px !important;
+    white-space: normal !important;
+  }
+  .pp-commissions-mobile .recharts-legend-item {
+    margin-right: 0 !important;
+    white-space: nowrap;
+  }
+  .pp-commissions-mobile .recharts-legend-item-text,
+  .pp-commissions-mobile .recharts-cartesian-axis-tick text,
+  .pending-commissions .recharts-cartesian-axis-tick text { font-size: 10px !important; }
+  .pending-commissions .recharts-responsive-container,
+  .pending-commissions .recharts-wrapper,
+  .pending-commissions .recharts-surface { min-width: 0 !important; max-width: 100% !important; }
+  .pending-commissions .recharts-legend-wrapper { width: 100% !important; max-width: 100% !important; }
+  .pending-commissions .recharts-default-legend { display: flex !important; flex-wrap: wrap; justify-content: center; gap: 2px 8px; white-space: normal !important; }
+  .pending-commissions .recharts-legend-item { margin-right: 0 !important; white-space: nowrap; }
+}
