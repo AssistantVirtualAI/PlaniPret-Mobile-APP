@@ -75,14 +75,16 @@ function PendingTooltip({ active, payload, label, fr }: any) {
   );
 }
 
-export default function PendingCommissionsCard({ lang = "fr", filters, cacheScope = "default", refreshToken = 0 }: {
+export default function PendingCommissionsCard({ lang = "fr", filters, cacheScope = "default", refreshToken = 0, presentation = "portal" }: {
   lang?: "fr" | "en";
   filters?: { date_from?: string; date_to?: string; users_id?: string; financial_inst_id?: string };
   cacheScope?: string;
   refreshToken?: number;
+  presentation?: "portal" | "mobile";
 }) {
   const fr = lang !== "en";
   const [agent, setAgent] = useState("");
+  const forcedPersonal = Boolean(filters?.users_id);
   const [tab, setTab] = useState<"overview" | "brokers" | "monthly" | "types">("overview");
   const [reload, setReload] = useState(0);
   // Near real-time: refetch the scoped snapshot when the server reports new figures.
@@ -123,7 +125,7 @@ export default function PendingCommissionsCard({ lang = "fr", filters, cacheScop
     if (cached?.value) {
       setSummary((cached.value as any).summary ?? null);
       setValidation((cached.value as any).validation ?? null);
-      if (!agent) setBrokers((cached.value as any).brokers ?? null);
+      if (!forcedPersonal && !agent) setBrokers((cached.value as any).brokers ?? null);
     } else {
       // Never show the previous scope's numbers under another broker's name.
       setSummary(null);
@@ -142,7 +144,7 @@ export default function PendingCommissionsCard({ lang = "fr", filters, cacheScop
       }
       setSummary(d.summary);
       setValidation(d.validation ?? null);
-      if (!agent) setBrokers(Array.isArray(d.brokers) ? d.brokers : null);
+      if (!forcedPersonal && !agent) setBrokers(Array.isArray(d.brokers) ? d.brokers : null);
       writeStatsCache(key, { summary: d.summary, brokers: d.brokers ?? null, validation: d.validation ?? null });
     })()
       .catch(() => { if (!cancelled) setError(fr ? "Commissions en attente indisponibles pour le moment." : "Pending commissions unavailable right now."); })
@@ -167,7 +169,7 @@ export default function PendingCommissionsCard({ lang = "fr", filters, cacheScop
   const officialTotal = Number(summary?.official_total ?? summary?.total_commission ?? 0);
   const dealCount = Number(summary?.deal_count ?? summary?.deposit_count ?? 0);
   const selectedBroker = brokers?.find((broker) => String(broker.users_id) === agent) ?? null;
-  const isAdminView = Boolean(brokers?.length);
+  const isAdminView = !forcedPersonal && Boolean(brokers?.length);
   const filteredBrokers = useMemo(() => {
     const query = search.trim().toLocaleLowerCase(fr ? "fr-CA" : "en-CA");
     const pick = (b: BrokerRow) => view === "personal" ? (b.personal?.amount ?? 0) : view === "team" ? (b.team?.amount ?? 0) : b.amount;
@@ -203,7 +205,7 @@ export default function PendingCommissionsCard({ lang = "fr", filters, cacheScop
         </div>
       </header>
       <div className="pending-toolbar" aria-label={fr ? "Filtres commissions en attente" : "Pending commission filters"}>
-        {isAdminView && <>
+        {isAdminView && !forcedPersonal && <>
           <label className="flex items-center gap-2"><Search className="h-4 w-4 text-muted-foreground" /><input aria-label={fr ? "Rechercher un courtier en attente" : "Search pending broker"} placeholder={fr ? "Rechercher par nom" : "Search by name"} value={brokerSearch} onChange={e => setBrokerSearch(e.target.value)} className="w-44" /></label>
           <label className="flex flex-wrap items-center gap-2 text-xs"><Users className="h-4 w-4" />{fr ? "Courtier" : "Broker"}<select aria-label={fr ? "Courtier en attente" : "Pending broker"} value={agent} onChange={e => { setAgent(e.target.value); setTab("overview"); }}><option value="">{fr ? "Vue globale — tous les courtiers" : "Global view — all brokers"}</option>{brokers?.filter(b => String(b.users_id) === agent || b.name.toLocaleLowerCase().includes(brokerSearch.trim().toLocaleLowerCase())).map(b => <option key={b.users_id} value={b.users_id}>{b.name}</option>)}</select></label>
         </>}

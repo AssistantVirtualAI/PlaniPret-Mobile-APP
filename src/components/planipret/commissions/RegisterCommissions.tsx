@@ -172,14 +172,17 @@ function Table({ head, rows }: { head: string[]; rows: (string | number | JSX.El
   );
 }
 
-export default function RegisterCommissions({ lang, scope = "broker", forcedAgent = null }: {
+export default function RegisterCommissions({ lang, scope = "broker", forcedAgent = null, presentation = "portal" }: {
   lang: Lang;
   scope?: "broker" | "admin";
   /** Admin per-broker view: lock the agent filter on this broker name. */
   forcedAgent?: string | null;
+  /** Mobile hides diagnostic inventory and mutating maintenance controls. */
+  presentation?: "portal" | "mobile";
 }) {
   const isFr = lang === "fr";
   const isAdminView = scope === "admin";
+  const isMobilePresentation = presentation === "mobile";
   const MONTHS = isFr ? MONTHS_FR : MONTHS_EN;
   const now = new Date();
   const scopeKey: "admin" | "broker" = isAdminView ? "admin" : "broker";
@@ -642,9 +645,11 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
               style={{ fontSize: 12, fontWeight: 700, opacity: data ? 1 : .5, background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border)", color: "var(--pp-text-secondary)" }}>
               <FileDown className="w-3.5 h-3.5" />{isFr ? "Rapport détaillé" : "Detailed report"}
             </button>}
-            <MaestroSyncButton lang={lang} scope={isAdminView ? "admin" : "broker"} onDone={() => setRefreshKey((k) => k + 1)} />
-            {isAdminView && <CommissionSyncNowButton lang={lang} onDone={() => setRefreshKey((k) => k + 1)} />}
-            <CommissionRecalcButton lang={lang} scope={isAdminView ? "admin" : "broker"} onDone={() => setRefreshKey((k) => k + 1)} />
+            {!isMobilePresentation && <>
+              <MaestroSyncButton lang={lang} scope={isAdminView ? "admin" : "broker"} onDone={() => setRefreshKey((k) => k + 1)} />
+              {isAdminView && <CommissionSyncNowButton lang={lang} onDone={() => setRefreshKey((k) => k + 1)} />}
+              <CommissionRecalcButton lang={lang} scope={isAdminView ? "admin" : "broker"} onDone={() => setRefreshKey((k) => k + 1)} />
+            </>}
             <button onClick={resetFilters} className="pp-toolbar-btn inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg"
               style={{ fontSize: 12, fontWeight: 700, background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border)", color: "var(--pp-text-secondary)" }}>
               <RotateCcw className="w-3.5 h-3.5" />{isFr ? "Réinitialiser" : "Reset"}
@@ -679,7 +684,7 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
 
       <CommissionsTabs tabs={tabs} value={tab as TabKey} onChange={(k) => setTab(k as Tab)} />
 
-      <div className="pp-hide-export">
+      {!isMobilePresentation && <div className="pp-hide-export">
         <MaestroStatusBadge
           lang={lang}
           scope={scopeKey}
@@ -689,9 +694,9 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
           rowCount={data?.rowCount ?? null}
           dataSyncedAt={data?.syncedAt ?? cachedAt}
         />
-      </div>
+      </div>}
 
-      {data?.liveMerge && (
+      {!isMobilePresentation && data?.liveMerge && (
         <div className="pp-hide-export mb-2 rounded-xl" style={{ padding: "8px 10px", border: "1px solid var(--pp-bg-border)", background: "var(--pp-bg-elevated)" }}>
           <span style={{ fontSize: 11.5, color: "var(--pp-text-secondary)" }}>
             {isFr
@@ -958,7 +963,7 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
 
           {tab === "brokers" && (
             <>
-              <div
+              {!isMobilePresentation && <div
                 className="mb-3 rounded-xl px-3 py-2.5"
                 style={{
                   background: "var(--pp-bg-elevated)",
@@ -1019,8 +1024,8 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
                 })()}
 
 
-              </div>
-              {(data.unlinkedBrokers ?? []).length > 0 && (
+              </div>}
+              {!isMobilePresentation && (data.unlinkedBrokers ?? []).length > 0 && (
                 <div className="mb-3 rounded-xl px-3 py-2.5"
                   style={{ background: "rgba(245,158,11,.10)", border: "1px solid rgba(245,158,11,.45)", fontSize: 12.5, color: "var(--pp-text-secondary)" }}>
                   <div style={{ fontWeight: 800, color: "var(--pp-text-primary)", marginBottom: 3 }}>

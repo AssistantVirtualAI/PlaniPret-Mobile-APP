@@ -23,14 +23,26 @@ const cad = (n: number) => new Intl.NumberFormat("fr-CA", { style: "currency", c
 const exactCad = (n: number) => new Intl.NumberFormat("fr-CA", { style: "currency", currency: "CAD", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n || 0);
 const compact = (n: number) => new Intl.NumberFormat("fr-CA", { style: "currency", currency: "CAD", notation: "compact", maximumFractionDigits: 1 }).format(n || 0);
 
-export default function PaidDepositsCard({ lang = "fr", scope }: { lang?: "fr" | "en"; scope: "admin" | "broker" }) {
+export default function PaidDepositsCard({
+  lang = "fr",
+  scope,
+  forcedUsersId,
+  presentation = "portal",
+}: {
+  lang?: "fr" | "en";
+  scope: "admin" | "broker";
+  /** Administrator personal view: must be their own verified Maestro identifier. */
+  forcedUsersId?: string;
+  presentation?: "portal" | "mobile";
+}) {
   const fr = lang !== "en";
   const isAdmin = scope === "admin";
   const nowY = new Date().getFullYear();
   const [year, setYear] = useState(nowY);
   const [gran, setGran] = useState<"year" | "quarter" | "month">("year");
   const [idx, setIdx] = useState(1);
-  const [agent, setAgent] = useState("");
+  const [agent, setAgent] = useState(forcedUsersId ?? "");
+  const allowAgentPicker = isAdmin && !forcedUsersId;
   const [search, setSearch] = useState("");
   const [tab, setTab] = useState<"overview" | "brokers" | "monthly" | "quarterly">("overview");
   const [reload, setReload] = useState(0);
@@ -48,7 +60,7 @@ export default function PaidDepositsCard({ lang = "fr", scope }: { lang?: "fr" |
     return r;
   }, [year, gran, idx]);
 
-  const key = statsCacheKey(isAdmin ? "admin" : "broker", ["paid-overview-v1", scope, range.date_from, range.date_to, agent]);
+  const key = statsCacheKey(isAdmin ? "admin" : "broker", ["paid-overview-v1", scope, forcedUsersId ?? "", range.date_from, range.date_to, agent]);
   const cached = readStatsCache(key)?.value as { summary?: Summary; agents?: Agent[] } | undefined;
   const [summary, setSummary] = useState<Summary | null>(cached?.summary ?? null);
   const [agents, setAgents] = useState<Agent[] | null>(cached?.agents ?? null);
@@ -68,7 +80,7 @@ export default function PaidDepositsCard({ lang = "fr", scope }: { lang?: "fr" |
         const filters = { ...range, ...(agent ? { users_id: agent } : {}) };
         const [s, a] = await Promise.all([
           ppEdgeInvoke("planipret-commission-reports", { action: "summary", filters }, { retries: 1, timeoutMs: 90_000 }),
-          isAdmin && !agent ? ppEdgeInvoke("planipret-commission-reports", { action: "by_agent", filters: range }, { retries: 1, timeoutMs: 90_000 }) : Promise.resolve(null),
+          allowAgentPicker && !agent ? ppEdgeInvoke("planipret-commission-reports", { action: "by_agent", filters: range }, { retries: 1, timeoutMs: 90_000 }) : Promise.resolve(null),
         ]);
         const sd = (s as any)?.data ?? s;
         if ((s as any)?.error || !sd?.ok) {
@@ -91,9 +103,10 @@ export default function PaidDepositsCard({ lang = "fr", scope }: { lang?: "fr" |
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, reload]);
+  }, [key, reload, allowAgentPicker]);
 
   const selected = agents?.find((x) => String(x.users_id) === agent) ?? null;
+  const isGlobalAdminView = allowAgentPicker && !agent;
   const total = summary?.total_commission ?? 0;
   const list = (agents ?? []).filter((x) => x.name.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()));
   const months = useMemo(() => {
@@ -144,7 +157,7 @@ export default function PaidDepositsCard({ lang = "fr", scope }: { lang?: "fr" |
       </header>
 
       <div className="pending-toolbar">
-        {isAdmin && <>
+        {allowAgentPicker && <>
           <label className="flex items-center gap-2"><Search className="h-4 w-4 text-muted-foreground" /><input aria-label={fr ? "Rechercher un courtier déboursé" : "Search paid broker"} placeholder={fr ? "Rechercher par nom" : "Search by name"} value={search} onChange={(e) => setSearch(e.target.value)} className="w-44" /></label>
           <label className="flex flex-wrap items-center gap-2 text-xs"><Users className="h-4 w-4" />{fr ? "Courtier" : "Broker"}
             <select aria-label={fr ? "Courtier déboursé" : "Paid broker"} value={agent} onChange={(e) => { setAgent(e.target.value); setTab("overview"); }}>

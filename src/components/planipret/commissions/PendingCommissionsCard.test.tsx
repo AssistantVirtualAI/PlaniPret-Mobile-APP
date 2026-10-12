@@ -70,3 +70,13 @@ describe("Official pending commission totals", () => {
     expect(screen.getByRole("table")).toHaveTextContent("Total ventilé");
   });
 });
+it("keeps an administrator personal filter on every pending request", async () => {
+  render(<PendingCommissionsCard cacheScope="admin-personal" filters={{ users_id: "93135", date_from: "2026-01-01", date_to: "2026-12-31" }} />);
+  await screen.findByLabelText("Totaux officiels Maestro");
+  expect(invoke).toHaveBeenCalledWith(
+    "planipret-commission-reports",
+    expect.objectContaining({ action: "pending", filters: expect.objectContaining({ users_id: "93135" }) }),
+    expect.anything(),
+  );
+  expect(screen.queryByLabelText("Courtier en attente")).not.toBeInTheDocument();
+});
