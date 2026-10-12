@@ -43,13 +43,13 @@ describe("commission report scope", () => {
     })).toEqual({ ok: false, error: "admin_scope_unavailable" });
   });
 
-  it("degrades an administrator firm view to their own data instead of an error", () => {
+  it("never substitutes personal commissions for an administrator firm view", () => {
     expect(resolveCommissionScope({
       role: "admin",
       action: "summary",
       ownUsersId: "123",
       ownToken: "own-token",
-    })).toEqual({ ok: true, usersId: "123", token: "own-token", mode: "own" });
+    })).toEqual({ ok: false, error: "admin_scope_unavailable" });
   });
 
   it("keeps an administrator personal view on their own token", () => {

@@ -44,6 +44,8 @@ const maestroClients = [{ id: "98765", maestro_client_id: "98765", first_name: "
 vi.mock("@/lib/ppContactsCache", () => ({
   peekPpContacts: (action: string) =>
     action === "list" ? personal : action === "directory" ? directory : action === "maestro_clients" ? maestroClients : [],
+  peekPpContactsVerified: async (action: string) =>
+    action === "maestro_clients" ? maestroClients : [],
   getPpContacts: async (action: string) =>
     action === "list" ? personal : action === "directory" ? directory : action === "maestro_clients" ? maestroClients : [],
   prefetchPpContacts: vi.fn(),

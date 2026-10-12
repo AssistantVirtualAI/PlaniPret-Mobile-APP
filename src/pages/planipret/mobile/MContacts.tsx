@@ -14,7 +14,7 @@ import { ensureContacts, getContactsPermissionStatus, listDeviceContacts } from 
 import { loadCachedDeviceContacts } from "@/lib/native/deviceContactsCache";
 import { openAppSettings, type PermStatus } from "@/lib/native/permissions/platform";
 import { tokenize, matchAllTokens } from "@/lib/textNormalize";
-import { peekPpContacts, prefetchPpContacts } from "@/lib/ppContactsCache";
+import { peekPpContacts, peekPpContactsVerified, prefetchPpContacts } from "@/lib/ppContactsCache";
 import { callEdge, toE164 } from "@/lib/callEdge";
 import { createTask as apiCreateTask, listClientTargets } from "@/lib/planipret/tasks";
 import TaskComposerSheet, { type TaskComposerValue } from "@/components/planipret/mobile/TaskComposerSheet";
@@ -45,6 +45,7 @@ type Tab = "personal" | "favorites" | "directory" | "clients";
 
 // ---- Favorites (local, per-device) ----
 const FAV_KEY = "planipret.contacts.favorites.v1";
+const EMPTY_CLIENT_TARGET = { phone: "" };
 type FavEntry = {
   key: string;                 // unique id (source:id/ext/phone)
   source: "personal" | "shared" | "directory" | "maestro" | "native";
@@ -131,7 +132,6 @@ export default function MContacts() {
   const { openDialer } = useOutletContext<PlanipretMobileContext>();
   const navigate = useNavigate();
   const [tab, setTab] = useState<Tab>("personal");
-  const [syncingM365, setSyncingM365] = useState(false);
 
   const [q, setQ] = useState("");
   const [personal, setPersonal] = useState<any[]>(() => {
@@ -163,6 +163,9 @@ export default function MContacts() {
     ...(peekPpContacts("list") ? (["personal"] as Tab[]) : []),
     ...(peekPpContacts("maestro_clients") ? (["clients"] as Tab[]) : []),
   ]));
+  // Retains the last permission across effect re-renders so an initial granted
+  // result triggers exactly one automatic native contact load.
+  const lastContactsPermissionRef = useRef<PermStatus | null>(null);
 
   useEffect(() => {
     const onChange = () => setFavorites(loadFavs());
@@ -270,6 +273,11 @@ export default function MContacts() {
   // tab switches render from memory. The five-minute cache avoids an immediate
   // second Maestro request after every navigation.
   useEffect(() => {
+    // A persisted Maestro client list is private: hydrate it only after validating
+    // the active signed-in Planiprêt user, then refresh silently in the background.
+    void peekPpContactsVerified("maestro_clients").then((rows) => {
+      if (rows?.length) setClients((current) => current.length ? current : rows.map((contact) => ({ ...contact, __maestro_kind: "client" })));
+    }).catch(() => {});
     prefetchPpContacts(["list", "directory", "maestro_clients", "maestro_brokers"], 500);
     const quick = window.setTimeout(() => {
       void load("directory", { limit: 500, background: true });
@@ -283,16 +291,17 @@ export default function MContacts() {
   // native prompt from an explicit tap. If denied, keep a clear recovery path.
   useEffect(() => {
     let cancelled = false;
-    let previous: PermStatus | null = null;
     const refresh = () => void getContactsPermissionStatus().then((status) => {
       if (cancelled) return;
+      const previous = lastContactsPermissionRef.current;
+      lastContactsPermissionRef.current = status;
       setContactsPerm(status);
-      // A return from the background should not reread the whole address book.
-      if (status === "granted" && previous !== null && previous !== "granted") {
+      // Initial permission and a newly granted permission both load the native
+      // address book automatically. The shared five-minute cache keeps switches fast.
+      if (status === "granted" && previous !== "granted") {
         loadedTabsRef.current.delete("personal");
         void load("personal", { force: true, background: true });
       }
-      previous = status;
     });
     refresh();
     const onVisible = () => { if (document.visibilityState === "visible") refresh(); };
@@ -306,6 +315,7 @@ export default function MContacts() {
       const status = await ensureContacts();
       setContactsPerm(status);
       if (status === "granted") {
+        lastContactsPermissionRef.current = "granted";
         loadedTabsRef.current.delete("personal");
         await load("personal", { force: true });
         toast.success("Contacts autorisés");
@@ -477,35 +487,11 @@ export default function MContacts() {
         <h1 style={{ fontFamily: "Inter,sans-serif", fontWeight: 700, fontSize: 22, color: "var(--pp-text-primary)" }}>
           {t("contacts.title")}
         </h1>
-        {tab === "personal" && (
+        {(tab === "personal" || tab === "clients") && (
           <button onClick={() => setCreateOpen(true)}
             className="flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-semibold active:scale-95 transition"
             style={{ background: "var(--pp-brand-accent-2)", border: "1px solid var(--pp-brand-accent)", color: "#fff" }}>
-            <Plus className="w-3.5 h-3.5" /> {t("common.new") || "Nouveau"}
-          </button>
-        )}
-        {tab === "clients" && (
-          <button
-            disabled={syncingM365}
-            onClick={async () => {
-              setSyncingM365(true);
-              try {
-                const { data, error } = await supabase.functions.invoke("maestro-m365-contact-sync", { body: { limit: 200 } });
-                if (error) throw new Error(error.message);
-                if (!data?.success) throw new Error(data?.error || "Échec de la synchronisation");
-                toast.success(`${data.synced} client(s) synchronisé(s) vers Outlook`, {
-                  description: data.failed ? `${data.failed} échec(s)` : undefined,
-                });
-              } catch (e: any) {
-                toast.error("Synchronisation Outlook impossible", { description: e?.message });
-              } finally {
-                setSyncingM365(false);
-              }
-            }}
-            className="flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-semibold active:scale-95 transition disabled:opacity-60"
-            style={{ background: "var(--pp-brand-accent-2)", border: "1px solid var(--pp-brand-accent)", color: "#fff" }}>
-            {syncingM365 ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Mail className="w-3.5 h-3.5" />}
-            Outlook
+            <Plus className="w-3.5 h-3.5" /> {tab === "clients" ? (lang === "en" ? "New client" : "Nouveau client") : (t("common.new") || "Nouveau")}
           </button>
         )}
 
@@ -868,7 +854,7 @@ export default function MContacts() {
 
       {createOpen && (
         <CreateMaestroClientSheet
-          target={{ phone: "" }}
+          target={EMPTY_CLIENT_TARGET}
           onClose={() => setCreateOpen(false)}
           onCreated={() => {
             setCreateOpen(false);

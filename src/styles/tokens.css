@@ -1214,3 +1214,10 @@
 }
 .flex-1.overflow-y-auto,
 .flex-1.overflow-auto { min-height: 0; }
+
+/* iOS: momentum scrolling otherwise creates a stacking context trapping overlays. */
+.pp-mobile-scroll { position: relative; }
+.pp-mobile-scroll:has(.fixed.inset-0, [aria-modal="true"], [role="dialog"]) {
+  z-index: 10000;
+  -webkit-overflow-scrolling: auto;
+}

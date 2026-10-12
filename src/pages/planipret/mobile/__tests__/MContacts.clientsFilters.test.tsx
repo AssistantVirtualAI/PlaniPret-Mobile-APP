@@ -19,7 +19,15 @@ vi.mock("@/lib/native/permissions/contacts", () => ({
 }));
 vi.mock("@/lib/native/permissions/platform", () => ({ openAppSettings: vi.fn() }));
 vi.mock("@/integrations/supabase/client", () => ({
-  supabase: { functions: { invoke: vi.fn(async () => ({ data: { success: true }, error: null })) } },
+  supabase: {
+    functions: { invoke: vi.fn(async (_fn: string, options: any) => {
+      const action = options?.body?.action;
+      if (action === "list_clients") return { data: { success: true, maestro_user_id: "test-broker", clients: [], total: 0 }, error: null };
+      if (action === "list_brokers") return { data: { success: true, maestro_user_id: "test-broker", brokers: [], total: 0 }, error: null };
+      return { data: {}, error: null };
+    }) },
+    auth: { getSession: vi.fn(async () => ({ data: { session: null } })), onAuthStateChange: vi.fn(() => ({ data: { subscription: { unsubscribe: vi.fn() } } })) },
+  },
 }));
 vi.mock("@/lib/callEdge", () => ({ callEdge: vi.fn(async () => ({ numbers: [] })), toE164: (v: string) => v }));
 vi.mock("@/components/planipret/ava/AvaSummarizeSheet", () => ({ default: () => null }));
@@ -36,6 +44,7 @@ const clients = [
   { id: "3", name: "Chloe Soixante", phone: "5145550003", created_at: ago(60), last_activity_at: ago(60) },
 ];
 vi.mock("@/lib/ppContactsCache", () => ({
+  peekPpContactsVerified: vi.fn(async () => []),
   peekPpContacts: (a: string) => (a === "maestro_clients" ? clients : []),
   getPpContacts: async (a: string) => (a === "maestro_clients" ? clients : []),
   prefetchPpContacts: vi.fn(),

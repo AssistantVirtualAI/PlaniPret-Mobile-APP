@@ -84,7 +84,8 @@ export default function PABrokerCommissions({ selfOnly = false }: { selfOnly?: b
 
   useEffect(() => {
     let cancelled = false;
-    setLoading(true); setError(null);
+    // Never show the previous broker/kind figures under the new heading.
+    setLoading(true); setError(null); setRows(null); setDetail(null); setDetailPy(null);
     const f = force; setForce(false);
     (async () => {
       try {
@@ -121,7 +122,7 @@ export default function PABrokerCommissions({ selfOnly = false }: { selfOnly?: b
         }
         setRows(null);
       } catch (e: any) {
-        if (!cancelled) setError(fr ? "Chiffres indisponibles pour le moment. Les derniers chiffres valides restent affichés." : "Figures unavailable right now. The last valid figures stay on screen.");
+        if (!cancelled) setError(fr ? "Chiffres indisponibles pour le moment." : "Figures unavailable right now.");
       } finally {
         if (!cancelled) setLoading(false);
       }

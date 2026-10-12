@@ -55,7 +55,7 @@ function loadFromDisk(action: Action): Entry | null {
     const parsed = JSON.parse(raw) as Entry;
     if (!parsed || !Array.isArray(parsed.value)) return null;
     if (Date.now() - parsed.at > LS_TTL_MS) return null;
-    if (!scopeValid(action, parsed)) { localStorage.removeItem(lsKey(action)); return null; }
+    if (!scopeValid(action, parsed)) { if (authScopeVerified) localStorage.removeItem(lsKey(action)); return null; }
     return parsed;
   } catch { return null; }
 }
@@ -238,6 +238,12 @@ export function invalidatePpContacts(action?: Action) {
 }
 
 /** Synchronous peek — returns a cached value if it exists, even if it's stale (< 24h). */
+/** Verifies the signed-in user, then returns the persisted copy for an instant safe render. */
+export async function peekPpContactsVerified(action: Action): Promise<any[] | null> {
+  await ensureAuthenticatedCacheScope();
+  return peekPpContacts(action);
+}
+
 export function peekPpContacts(action: Action): any[] | null {
   const hit = cache.get(action);
   if (hit && scopeValid(action, hit)) return hit.value;

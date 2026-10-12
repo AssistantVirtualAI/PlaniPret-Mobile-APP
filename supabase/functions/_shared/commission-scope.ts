@@ -67,10 +67,8 @@ export function resolveCommissionScope(input: CommissionScopeInput): CommissionS
     if (input.action === "agents") {
       return { ok: true, usersId: null, token: ownToken, mode: "metadata" };
     }
-    if (requestedUsersId === null) {
-      if (!ownUsersId) return { ok: false, error: "admin_scope_unavailable" };
-      return { ok: true, usersId: ownUsersId, token: ownToken, mode: "own" };
-    }
+    // A personal token can never widen scope. Returning it here would label personal
+    // figures as an all-brokers dashboard, so the client must receive an explicit error.
     return { ok: false, error: "admin_scope_unavailable" };
   }
   return {

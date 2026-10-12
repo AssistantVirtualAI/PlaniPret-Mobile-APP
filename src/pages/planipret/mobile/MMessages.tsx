@@ -18,6 +18,7 @@ import AvaSummarizeSheet from "@/components/planipret/ava/AvaSummarizeSheet";
 import AvaProposedActionsCard from "@/components/planipret/mobile/AvaProposedActionsCard";
 import { callAva, type AvaSuggestion } from "@/services/avaProactive";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import { tr } from "@/lib/i18n/tr";
 import { useCallerNames } from "@/lib/planipret/callerLookup";
 import { connectMs365 } from "@/lib/ms365Connect";
 import { getPpContacts } from "@/lib/ppContactsCache";
@@ -578,15 +579,15 @@ function NewSmsSheet({ onClose, onStart }: { onClose: () => void; onStart: (numb
   const manual = query.trim();
 
   return (
-    <div role="dialog" aria-modal="true" data-pp-sheet aria-label="Nouveau SMS" data-testid="new-sms-sheet" className="fixed inset-0 z-40 flex items-end md:items-center md:justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+    <div role="dialog" aria-modal="true" data-pp-sheet aria-label={tr("Nouveau SMS", "New SMS")} data-testid="new-sms-sheet" className="fixed inset-0 z-40 flex items-end md:items-center md:justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
       <div
         className="w-full md:w-[390px] rounded-t-3xl md:rounded-2xl flex flex-col"
         style={{ background: "var(--pp-bg-base)", border: "1px solid var(--pp-bg-border-2)", maxHeight: "86dvh" }}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between px-4 py-3" style={{ borderBottom: "1px solid var(--pp-bg-border)" }}>
-          <h2 className="font-semibold" style={{ color: "var(--pp-text-primary)" }}>Nouveau SMS</h2>
-          <button onClick={onClose} className="p-1 rounded-full" style={{ color: "var(--pp-text-muted)" }} aria-label="Fermer">
+          <h2 className="font-semibold" style={{ color: "var(--pp-text-primary)" }}>{tr("Nouveau SMS", "New SMS")}</h2>
+          <button onClick={onClose} className="p-1 rounded-full" style={{ color: "var(--pp-text-muted)" }} aria-label={tr("Fermer", "Close")}>
             <X className="w-4 h-4" />
           </button>
         </div>
@@ -601,7 +602,7 @@ function NewSmsSheet({ onClose, onStart }: { onClose: () => void; onStart: (numb
               onKeyDown={(e) => {
                 if (e.key === "Enter" && manual) onStart(manual);
               }}
-              placeholder="Nom, numéro ou courriel"
+              placeholder={tr("Nom, numéro ou courriel", "Name, number or email")}
               inputMode="search"
               className="flex-1 bg-transparent outline-none text-base"
               style={{ color: "var(--pp-text-primary)" }}
@@ -1400,7 +1401,7 @@ export function EmailsList({ profile, initialTo, initialName }: { profile: any; 
                   >
                     <div className="flex items-start justify-between gap-3 mb-1.5">
                       <p className={`${unread ? "font-extrabold" : "font-bold"} text-base leading-5 truncate flex items-center gap-1.5`} style={{ color: "var(--pp-text-primary)" }}>
-                        {unread && <span className="w-2 h-2 rounded-full shrink-0" style={{ background: "var(--pp-brand-accent)" }} aria-label="Non lu" />}
+                        {unread && <span className="w-2 h-2 rounded-full shrink-0" style={{ background: "var(--pp-brand-accent)" }} aria-label={tr("Non lu", "Unread")} />}
                         {from}
                         {e.hasAttachments && <Paperclip className="w-3 h-3" style={{ color: "var(--pp-text-muted)" }} />}
                         {flagged && <Flag className="w-3 h-3" style={{ color: "#f59e0b", fill: "#f59e0b" }} />}
@@ -1674,13 +1675,13 @@ function EmailDetailSheet({ email, cacheIdentity, onClose, onCompose, onChanged,
             <IconAction onClick={onToggleFlag} title={flagged ? "Retirer drapeau" : "Marquer"} busy={busy === "flag_email"}>
               <Flag className="w-4 h-4" style={{ color: flagged ? "#f59e0b" : "var(--pp-text-secondary)", fill: flagged ? "#f59e0b" : "none" }} />
             </IconAction>
-            <IconAction onClick={onArchive} title="Archiver" busy={busy === "archive_email"}>
+            <IconAction onClick={onArchive} title={tr("Archiver", "Archive")} busy={busy === "archive_email"}>
               <Archive className="w-4 h-4" />
             </IconAction>
-            <IconAction onClick={onMarkUnread} title="Marquer non lu" busy={busy === "mark_read_email"}>
+            <IconAction onClick={onMarkUnread} title={tr("Marquer non lu", "Mark unread")} busy={busy === "mark_read_email"}>
               <Circle className="w-4 h-4" />
             </IconAction>
-            <IconAction onClick={onDelete} title="Supprimer" busy={busy === "delete_email"}>
+            <IconAction onClick={onDelete} title={tr("Supprimer", "Delete")} busy={busy === "delete_email"}>
               <Trash2 className="w-4 h-4" style={{ color: "#ef4444" }} />
             </IconAction>
           </div>
@@ -1772,9 +1773,9 @@ function EmailDetailSheet({ email, cacheIdentity, onClose, onCompose, onChanged,
           className="px-3 py-2 grid grid-cols-3 gap-2"
           style={{ borderTop: "1px solid var(--pp-bg-border)", paddingBottom: "calc(env(safe-area-inset-bottom, 0px) + 8px)", flexShrink: 0 }}
         >
-          <ToolbarBtn onClick={openReply} icon={<Reply className="w-4 h-4" />} label="Répondre" />
-          <ToolbarBtn onClick={openReplyAll} icon={<UsersRound className="w-4 h-4" />} label="Rép. tous" />
-          <ToolbarBtn onClick={openForward} icon={<Forward className="w-4 h-4" />} label="Transférer" />
+          <ToolbarBtn onClick={openReply} icon={<Reply className="w-4 h-4" />} label={tr("Répondre", "Reply")} />
+          <ToolbarBtn onClick={openReplyAll} icon={<UsersRound className="w-4 h-4" />} label={tr("Rép. tous", "Reply all")} />
+          <ToolbarBtn onClick={openForward} icon={<Forward className="w-4 h-4" />} label={tr("Transférer", "Transfer")} />
         </div>
       </div>
 
@@ -1979,7 +1980,7 @@ function EmailComposeSheet({ init, onClose, onSent }: { init: ComposeInit; onClo
                 <li key={i} className="flex items-center justify-between text-xs px-3 py-2 rounded-lg"
                     style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-secondary)" }}>
                   <span className="truncate flex items-center gap-2"><Paperclip className="w-3 h-3" /> {a.name} <span style={{ color: "var(--pp-text-muted)" }}>({Math.round(a.size / 1024)} Ko)</span></span>
-                  <button onClick={() => removeAttachment(i)} style={{ color: "var(--pp-text-muted)" }} aria-label="Retirer">
+                  <button onClick={() => removeAttachment(i)} style={{ color: "var(--pp-text-muted)" }} aria-label={tr("Retirer", "Remove")}>
                     <X className="w-3.5 h-3.5" />
                   </button>
                 </li>
@@ -1996,7 +1997,7 @@ function EmailComposeSheet({ init, onClose, onSent }: { init: ComposeInit; onClo
             <Paperclip className="w-3.5 h-3.5" /> Joindre
           </button>
           <AiImproveMenu text={body} mode="email" onResult={setBody} />
-          <span className="text-[10px]" style={{ color: "var(--pp-text-muted)" }}>Max 3 Mo par fichier</span>
+          <span className="text-[10px]" style={{ color: "var(--pp-text-muted)" }}>{tr("Max 3 Mo par fichier", "Max 3 MB per file")}</span>
         </div>
       </div>
     </div>
@@ -2119,8 +2120,8 @@ function AiImproveMenu({ text, mode, onResult }: { text: string; mode: "sms" | "
         disabled={disabled}
         className="w-9 h-9 rounded-full flex items-center justify-center text-white disabled:opacity-40 shrink-0"
         style={{ background: "linear-gradient(135deg, #7C3AED, #A855F7)", boxShadow: "0 2px 12px rgba(124,58,237,0.4)" }}
-        aria-label="Améliorer avec l'IA"
-        title="Améliorer avec l'IA"
+        aria-label={tr("Améliorer avec l'IA", "Improve with AI")}
+        title={tr("Améliorer avec l'IA", "Improve with AI")}
       >
         {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
       </button>
@@ -2253,7 +2254,7 @@ function TeamRoster({ profile, openDialer, onSwitchTab }: { profile: any; openDi
           ))}
         </div>
       ) : members.length === 0 ? (
-        <EmptyState Icon={Users} title="Annuaire vide" sub="Aucun autre membre dans votre organisation." />
+        <EmptyState Icon={Users} title={tr("Annuaire vide", "Directory empty")} sub={tr("Aucun autre membre dans votre organisation.", "No other members in your organization.")} />
       ) : (
         <ul className="space-y-1.5">
           {members.map((m) => {
@@ -2525,11 +2526,11 @@ function Teams365Panel({ profile }: { profile: any }) {
                 className="w-full text-xs px-3 py-2 rounded-lg outline-none"
                 style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-primary)", border: "1px solid var(--pp-bg-border-2)" }} />
               {loading && !chats.length ? (
-                <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>Chargement…</div>
+                <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>{tr("Chargement…", "Loading…")}</div>
               ) : filteredChats.length === 0 ? (
                 <div className="rounded-xl p-6 text-center" style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)" }}>
                   <MessageSquare className="w-8 h-8 mx-auto mb-2" style={{ color: "var(--pp-text-muted)" }} />
-                  <p className="text-xs" style={{ color: "var(--pp-text-muted)" }}>Aucune discussion active. Ouvrez l'onglet « Nouveau » pour démarrer.</p>
+                  <p className="text-xs" style={{ color: "var(--pp-text-muted)" }}>{tr("Aucune discussion active. Ouvrez l'onglet « Nouveau » pour démarrer.", "No active chats. Open the “New” tab to start.")}</p>
                 </div>
               ) : (
                 <div className="space-y-1">
@@ -2572,7 +2573,7 @@ function Teams365Panel({ profile }: { profile: any }) {
                 <button onClick={() => { setGroupMode((v) => !v); setSelectedIds(new Set()); }}
                   className="text-xs px-2.5 py-1 rounded-full flex items-center gap-1 text-white"
                   style={{ background: groupMode ? "var(--pp-danger)" : "linear-gradient(135deg, var(--pp-brand-accent), var(--pp-brand-accent-2))" }}>
-                  {groupMode ? <><X className="w-3 h-3" /> Annuler groupe</> : <><Plus className="w-3 h-3" /> Chat de groupe</>}
+                  {groupMode ? <><X className="w-3 h-3" /> {tr("Annuler groupe", "Cancel group")}</> : <><Plus className="w-3 h-3" /> {tr("Chat de groupe", "Group chat")}</>}
                 </button>
               </div>
               {groupMode && (
@@ -2601,9 +2602,9 @@ function Teams365Panel({ profile }: { profile: any }) {
                 className="w-full text-xs px-3 py-2 rounded-lg outline-none"
                 style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-primary)", border: "1px solid var(--pp-bg-border-2)" }} />
               {loading && !people.length ? (
-                <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>Chargement…</div>
+                <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>{tr("Chargement…", "Loading…")}</div>
               ) : filteredPeople.length === 0 ? (
-                <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>Aucun coéquipier trouvé.</div>
+                <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>{tr("Aucun coéquipier trouvé.", "No teammates found.")}</div>
               ) : (
                 <div className="space-y-1">
                   {filteredPeople.map((p) => {
@@ -2657,7 +2658,7 @@ function Teams365Panel({ profile }: { profile: any }) {
                 {diag.teams_error && <span style={{ color: "#dc2626" }}>Err: {String(diag.teams_error).slice(0, 40)}</span>}
               </div>
               {teams.length === 0 ? (
-                <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>Aucune équipe.</div>
+                <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>{tr("Aucune équipe.", "No teams.")}</div>
               ) : (
                 <div className="space-y-2">
                   {teams.map((tm) => (
@@ -2812,8 +2813,8 @@ function TeamsThreadView({ target, onClose }: {
         </span>
       </div>
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 py-3 space-y-2" style={{ WebkitOverflowScrolling: "touch" }}>
-        {loading && messages.length === 0 ? <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>Chargement…</div> :
-          messages.length === 0 ? <div className="text-xs text-center py-8" style={{ color: "var(--pp-text-muted)" }}>Aucun message. Envoyez le premier !</div> :
+        {loading && messages.length === 0 ? <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>{tr("Chargement…", "Loading…")}</div> :
+          messages.length === 0 ? <div className="text-xs text-center py-8" style={{ color: "var(--pp-text-muted)" }}>{tr("Aucun message. Envoyez le premier !", "No messages. Send the first one!")}</div> :
           messages.map((m) => {
             const own = !!m.isMe || (meId && m.fromId === meId);
             return (
@@ -2865,7 +2866,7 @@ function TeamsThreadView({ target, onClose }: {
           <span className="flex-1 truncate">{sendStatus.message}</span>
           {sendStatus.kind === "err" && sendStatus.lastText && (
             <button onClick={retry} disabled={sending} className="px-2 py-0.5 rounded-full flex items-center gap-1" style={{ background: "rgba(239,68,68,0.2)", color: "#ef4444" }}>
-              <RotateCw className="w-3 h-3" /> Réessayer
+              <RotateCw className="w-3 h-3" /> {tr("Réessayer", "Retry")}
             </button>
           )}
         </div>

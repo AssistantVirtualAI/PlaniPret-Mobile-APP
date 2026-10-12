@@ -1214,7 +1214,7 @@ export default function PlanipretMobile() {
         </header>
 
         <UniversalSearchBar />
-        <div ref={scrollRef} className="flex-1 overflow-y-auto pb-[130px]">
+        <div ref={scrollRef} className="pp-mobile-scroll flex-1 overflow-y-auto pb-[130px]">
           <PullIndicator pullDist={pullDist} refreshing={refreshing} threshold={threshold} color={ACCENT} />
           <PlanipretErrorBoundary key={location.pathname}>
             <Suspense fallback={<MobileScreenSkeleton />}>

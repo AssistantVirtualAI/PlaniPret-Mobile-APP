@@ -30,6 +30,13 @@ export function useAvaNavigation(userId: string | undefined | null) {
         if (payload.open_email_composer) {
           window.dispatchEvent(new CustomEvent("ava:open-email-composer", { detail: payload.open_email_composer }));
         }
+        if (payload.settings_changed) {
+          const { setting, value } = payload.settings_changed as { setting: string; value: unknown };
+          const keys: Record<string, string> = { dark_mode: "planipret_dark", notifications: "planipret_notif", voice_assistant: "planipret_agent_on" };
+          if (keys[setting]) localStorage.setItem(keys[setting], value ? "1" : "0");
+          if (setting === "language" && (value === "fr" || value === "en")) localStorage.setItem("mplanipret-lang", value);
+          window.dispatchEvent(new CustomEvent("ava:settings-changed", { detail: payload.settings_changed }));
+        }
         if (payload.client_id || payload.call_id) {
           window.dispatchEvent(new CustomEvent("ava:open", { detail: payload }));
         }

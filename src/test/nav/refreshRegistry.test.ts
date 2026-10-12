@@ -50,6 +50,12 @@ describe("refreshRegistry — rafraîchissement contextuel", () => {
     expect(registry.current()).toBeNull();
   });
 
+  it("register(null) laisse le geste sans propriétaire ni indicateur", () => {
+    const registry = createRefreshRegistry();
+    registry.register(null)();
+    expect(registry.current()).toBeNull();
+    expect(registry.size).toBe(0);
+  });
   it("tout changement de propriétaire incrémente la génération pour libérer le spinner", () => {
     const registry = createRefreshRegistry();
     const initial = registry.generation;

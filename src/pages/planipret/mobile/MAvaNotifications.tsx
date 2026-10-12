@@ -74,10 +74,12 @@ export default function MAvaNotifications() {
   useEffect(() => {
     let userId: string | null = null;
     let channel: any = null;
+    let cancelled = false;
     (async () => {
       const { data: u } = await supabase.auth.getUser();
       userId = u.user?.id ?? null;
-      if (!userId) return;
+      // Unmounted before auth resolved: never open a channel.
+      if (cancelled || !userId) return;
       channel = supabase
         .channel(`ava-notif-${userId}-${Math.random().toString(36).slice(2, 8)}`)
         .on("postgres_changes", { event: "INSERT", schema: "public", table: "planipret_ava_notifications", filter: `user_id=eq.${userId}` }, (payload: any) => {
@@ -91,7 +93,7 @@ export default function MAvaNotifications() {
         })
         .subscribe();
     })();
-    return () => { if (channel) supabase.removeChannel(channel); };
+    return () => { cancelled = true; if (channel) { supabase.removeChannel(channel); channel = null; } };
   }, []);
 
   const markRead = async (id: string) => {

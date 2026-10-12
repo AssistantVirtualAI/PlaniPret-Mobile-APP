@@ -37,7 +37,10 @@ const DEFAULT_PERIOD: Period = "month";
 const HOME_SYNC_INTERVAL_MS = 5 * 60 * 1000;
 
 // Courtiers au Québec : l'agenda Microsoft est toujours affiché en heure de Toronto.
-const PP_TZ = "America/Toronto";
+const PP_TZ = "America/Toronto"; // heure de Montréal
+/** Microsoft Graph renvoie parfois l'heure UTC sans suffixe « Z ». */
+const graphDate = (t: { dateTime: string; timeZone?: string }) =>
+  new Date(/(Z|[+-]\d{2}:?\d{2})$/.test(t.dateTime) || (t.timeZone && t.timeZone !== "UTC") ? t.dateTime : t.dateTime + "Z");
 const ppDayKey = (d: Date) => {
   const p: Record<string, string> = {};
   for (const part of new Intl.DateTimeFormat("en-CA", {
@@ -375,8 +378,7 @@ export default function MHome() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lang]);
   useEffect(() => {
-    registerRefresh(async () => { await Promise.all([loadStats(true), loadBrief(true)]); });
-    return () => registerRefresh(null);
+    return registerRefresh(async () => { await Promise.all([loadStats(true), loadBrief(true)]); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile?.user_id, period]);
 
@@ -971,8 +973,8 @@ function MsCalendarSection({ profile, events, loading, error, lang }: {
             ) : (
               <ul className="space-y-1.5">
                 {selectedEvents.map((m) => {
-                  const start = m.start?.dateTime ? new Date(m.start.dateTime) : null;
-                  const end = m.end?.dateTime ? new Date(m.end.dateTime) : null;
+                  const start = m.start?.dateTime ? graphDate(m.start) : null;
+                  const end = m.end?.dateTime ? graphDate(m.end) : null;
                   const join = m.onlineMeeting?.joinUrl ?? m.webLink;
                   const isTeams = !!m.onlineMeeting?.joinUrl;
                   return (
