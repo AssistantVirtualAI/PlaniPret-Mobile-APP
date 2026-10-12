@@ -37,10 +37,10 @@ describe("commissionInsightsCache", () => {
   });
 
   it("persiste le choix de fréquence par compte et vue", () => {
-    expect(readCommissionInsightCadence("mobile:admin-a:global")).toBe("manual");
+    expect(readCommissionInsightCadence("mobile:admin-a:global")).toBe("daily");
     writeCommissionInsightCadence("mobile:admin-a:global", "quarterly");
     expect(readCommissionInsightCadence("mobile:admin-a:global")).toBe("quarterly");
-    expect(readCommissionInsightCadence("mobile:admin-a:personal")).toBe("manual");
+    expect(readCommissionInsightCadence("mobile:admin-a:personal")).toBe("daily");
   });
 
   it("calcule des créneaux calendaires distincts", () => {

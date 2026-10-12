@@ -458,9 +458,10 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
   }, [data]);
 
   // ---- AI insights (Claude) -------------------------------------------------
-  // The default is manual. A broker can opt in to one automatic generation per
-  // calendar day/week/month/quarter/year for this exact secure account/view and
-  // financial period. Switching dashboard tabs never creates another request.
+  // The default is one automatic generation per calendar day. A broker can make
+  // this stricter (week/month/quarter/year/manual) for this exact secure
+  // account/view and financial period. Switching dashboard tabs never creates
+  // another request.
   const [ai, setAi] = useState<{ summary: string; insights: any[] } | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);

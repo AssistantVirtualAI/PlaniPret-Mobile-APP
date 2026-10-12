@@ -49,9 +49,9 @@ export function readCommissionInsightCadence(partition: string): CommissionInsig
     const value = localStorage.getItem(`${CADENCE_PREFIX}:${partition}`);
     return ["manual", "daily", "weekly", "monthly", "quarterly", "yearly"].includes(String(value))
       ? value as CommissionInsightCadence
-      : "manual";
+      : "daily";
   } catch {
-    return "manual";
+    return "daily";
   }
 }
 
