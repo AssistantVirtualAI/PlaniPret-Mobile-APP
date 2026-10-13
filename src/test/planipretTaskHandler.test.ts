@@ -156,6 +156,36 @@ describe("planipret task handler — list scope", () => {
     await handleTaskRequest({ action: "list", filter: "all" }, deps);
     expect(listFetch).toHaveBeenCalledWith("93135", expect.any(Object));
   });
+
+  it("uses the selected broker's stored Maestro telecom id for an admin read", async () => {
+    const admin = createMockAdmin({
+      planipret_profiles: [{
+        id: "alex-profile",
+        user_id: OTHER,
+        maestro_broker_id: "126307",
+        maestro_telecom_user_id: "712345",
+      }],
+    });
+    const listFetch = vi.fn(async (id: string) => ({
+      ok: true as const,
+      tasks: id === "712345" ? [{ id: "alex-task", users: [{ id: "712345" }], notes: "Tâche Alexandre", status: "pending" }] : [],
+      endpoint: `/api/main/users/${id}/tasks`,
+      status: 200,
+    }));
+    const { deps } = makeDeps({
+      admin,
+      profile: { id: "admin-profile", role: "admin", maestro_broker_id: "387460525" },
+      listFetch,
+    });
+
+    const out = await handleTaskRequest({ action: "list", broker_id: "126307", filter: "all" }, deps);
+
+    expect(listFetch).toHaveBeenCalledTimes(1);
+    expect(listFetch).toHaveBeenCalledWith("712345", expect.any(Object));
+    expect(out.body).toMatchObject({ success: true, source: "api", scoped_broker_id: "126307", telecom_user_id: "712345" });
+    expect((out.body as any).tasks).toHaveLength(1);
+    expect((out.body as any).tasks[0].id).toBe("alex-task");
+  });
 });
 
 describe("planipret task handler — idempotency", () => {
@@ -365,6 +395,28 @@ describe("planipret task handler — list & isolation", () => {
     });
   });
 
+  it("shows a broker's verified projection immediately before querying Maestro", async () => {
+    const cachedAdmin = createMockAdmin({
+      planipret_tasks_projection: [{
+        user_id: USER,
+        task_id: "alex-visible-task",
+        deleted_at: null,
+        due_at: "2026-10-14T15:00:00.000Z",
+        status: "pending",
+        payload: { id: "alex-visible-task", notes: "Suivi dossier", date: "2026-10-14 11:00:00", status: "pending" },
+      }],
+    });
+    const listFetch = vi.fn(async () => ({ ok: true as const, tasks: [], endpoint: "/api/main/tasks", status: 200 }));
+    const { deps } = makeDeps({ admin: cachedAdmin, listFetch });
+
+    const out = await handleTaskRequest({ action: "list", filter: "all" }, deps);
+
+    expect(out.body).toMatchObject({ success: true, source: "projection" });
+    expect((out.body as any).tasks).toHaveLength(1);
+    expect((out.body as any).tasks[0].id).toBe("alex-visible-task");
+    expect(listFetch).not.toHaveBeenCalled();
+  });
+
   it("falls back to the projection when the upstream list is unavailable", async () => {
     const { deps } = makeDeps({
       admin,
@@ -387,9 +439,9 @@ describe("planipret task handler — list & isolation", () => {
     expect(out.body.error).toBe("tasks_unavailable");
   });
 
-  it("uses the API and mirrors it into the projection when the list works", async () => {
+  it("uses the API and mirrors it into the projection when no verified cache exists", async () => {
     const { deps } = makeDeps({
-      admin,
+      admin: createMockAdmin(),
       listFetch: async () => ({
         ok: true,
         endpoint: "/telecom/api/v1/users/387460525/tasks",
@@ -402,9 +454,10 @@ describe("planipret task handler — list & isolation", () => {
     expect((out.body as any).tasks[0].id).toBe("9");
   });
 
-  it("buckets and paginates", async () => {
+  it("buckets and paginates a live list when no verified cache exists", async () => {
     const now = new Date("2026-09-02T15:00:00Z");
     const { deps } = makeDeps({
+      admin: createMockAdmin(),
       now: () => now,
       listFetch: async () => ({
         ok: true, endpoint: "x", status: 200,

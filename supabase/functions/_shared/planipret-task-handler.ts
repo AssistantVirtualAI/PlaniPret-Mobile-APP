@@ -671,7 +671,20 @@ export async function handleTaskRequest(
     let telecomId: string | null = null;
     if (overrideBroker) {
       maestroId = overrideBroker;
+      // An admin chooses the broker's CRM/OAuth id, but Maestro Tasks may be
+      // indexed by that broker's distinct internal Telecom id. Resolve the
+      // TARGET profile here — never the admin's own cached telecom id — then
+      // retain both IDs for the documented list and assignment filter.
       telecomId = overrideBroker;
+      try {
+        const { data: targets } = await admin
+          .from("planipret_profiles")
+          .select("maestro_telecom_user_id")
+          .eq("maestro_broker_id", overrideBroker)
+          .limit(1);
+        const stored = String(targets?.[0]?.maestro_telecom_user_id ?? "").trim();
+        if (/^\d+$/.test(stored)) telecomId = stored;
+      } catch { /* retain the requested id as a safe read-only fallback */ }
     } else {
       try {
         telecomId = await deps.resolveTelecomUserId(maestroId);
@@ -700,18 +713,25 @@ export async function handleTaskRequest(
         );
     const ownerCandidates = [...new Set(
       (overrideBroker
-        ? [overrideBroker]
+        ? [telecomId, overrideBroker]
         : [internalAssigneeId, telecomId, maestroId, profile?.maestro_telecom_user_id, profile?.maestro_broker_id])
         .map((v) => String(v ?? "").trim())
         .filter(Boolean),
     )];
     const assigneeIds = overrideBroker
-      ? [maestroId, telecomId]
+      ? [telecomId, maestroId]
       : [internalAssigneeId, maestroId, telecomId, profile?.maestro_telecom_user_id, profile?.maestro_broker_id];
 
     let upstream: UpstreamList = { ok: false, tasks: [], endpoint: null, status: 0 };
     let all: any[] = [];
-    if (token) {
+    // The scheduled synchronizer maintains this owner-scoped projection. Paint
+    // it first so every broker sees the last verified task list immediately,
+    // instead of waiting for Maestro's large collection to paginate. A manual
+    // refresh still reaches Maestro when no verified local list exists.
+    const projected = overrideBroker ? [] : await loadProjection(admin, userId).catch(() => []);
+    if (projected.length) {
+      all = projected;
+    } else if (token) {
       for (const candidate of ownerCandidates) {
         const attempt = await deps.listFetch(candidate, { status, from, to });
         if (!attempt.ok) continue;
@@ -746,7 +766,9 @@ export async function handleTaskRequest(
 
 
     let src: "api" | "projection" | "unavailable";
-    if (upstream.ok) {
+    if (projected.length) {
+      src = "projection";
+    } else if (upstream.ok) {
       src = "api";
       // Never write another broker's tasks into the caller's local projection.
       // When an admin inspects a broker, mirror them under THAT broker's own
