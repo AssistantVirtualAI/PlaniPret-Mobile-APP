@@ -395,6 +395,45 @@ describe("planipret task handler — list & isolation", () => {
     });
   });
 
+  it("uses the bounded task scan for an interactive broker list", async () => {
+    const listFetch = vi.fn(async () => ({ ok: true as const, tasks: [], endpoint: "/api/main/tasks", status: 200 }));
+    const { deps } = makeDeps({ admin: createMockAdmin(), listFetch });
+
+    await handleTaskRequest({ action: "list", filter: "all" }, deps);
+
+    expect(listFetch).toHaveBeenCalledWith("93135", expect.objectContaining({ fullSync: false }));
+  });
+
+  it("reserves the broader bounded scan for the scheduled task synchronizer", async () => {
+    const listFetch = vi.fn(async () => ({ ok: true as const, tasks: [], endpoint: "/api/main/tasks", status: 200 }));
+    const { deps } = makeDeps({ admin: createMockAdmin(), listFetch, allowFullSync: true });
+
+    await handleTaskRequest({ action: "list", filter: "all", source: "tasks_sweeper" }, deps);
+
+    expect(listFetch).toHaveBeenCalledWith("93135", expect.objectContaining({ fullSync: true }));
+  });
+
+  it("does not let an interactive caller request the broader task scan", async () => {
+    const listFetch = vi.fn(async () => ({ ok: true as const, tasks: [], endpoint: "/api/main/tasks", status: 200 }));
+    const { deps } = makeDeps({ admin: createMockAdmin(), listFetch });
+
+    await handleTaskRequest({ action: "list", filter: "all", source: "tasks_sweeper" }, deps);
+
+    expect(listFetch).toHaveBeenCalledWith("93135", expect.objectContaining({ fullSync: false }));
+  });
+
+  it("does not repeat expensive live scans after the interactive budget is exhausted", async () => {
+    const listFetch = vi.fn(async () => ({
+      ok: false as const, tasks: [], endpoint: null, status: 408, truncated: true,
+    }));
+    const { deps } = makeDeps({ admin: createMockAdmin(), listFetch });
+
+    const out = await handleTaskRequest({ action: "list", filter: "all" }, deps);
+
+    expect(listFetch).toHaveBeenCalledTimes(1);
+    expect(out.body).toMatchObject({ source: "unavailable", error: "tasks_unavailable" });
+  });
+
   it("shows a broker's verified projection immediately before querying Maestro", async () => {
     const cachedAdmin = createMockAdmin({
       planipret_tasks_projection: [{

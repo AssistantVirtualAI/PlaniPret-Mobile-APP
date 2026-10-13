@@ -50,7 +50,7 @@ export interface TaskDeps {
   /** Documented GET /api/main/tasks read-back. */
   listFetch: (
     telecomId: string,
-    opts: { status?: string | null; from?: string | null; to?: string | null; type?: "user" | "contract" | null; findTaskId?: string | null; scopeOnly?: boolean },
+    opts: { status?: string | null; from?: string | null; to?: string | null; type?: "user" | "contract" | null; findTaskId?: string | null; scopeOnly?: boolean; fullSync?: boolean },
   ) => Promise<UpstreamList>;
   /**
    * Client List API (`GET /users/{telecomId}/clients`). Each row may carry a
@@ -71,6 +71,8 @@ export interface TaskDeps {
   /** Ids this broker may assign a task to: self + authorized team assistants. */
   listAllowedAssignees?: () => Promise<string[]>;
   now?: () => Date;
+  /** True only for the service-role task synchronizer, never for an app request. */
+  allowFullSync?: boolean;
 }
 
 export function newCorrelationId() {
@@ -630,6 +632,9 @@ export async function handleTaskRequest(
     const status = body?.status ? String(body.status) : null;
     const from = body?.from ? String(body.from) : null;
     const to = body?.to ? String(body.to) : null;
+    // Only the protected scheduled synchronizer may use the broader bounded
+    // scan. Interactive mobile and portal lists stay inside a small Edge budget.
+    const fullSync = deps.allowFullSync === true && String(body?.source ?? "") === "tasks_sweeper";
 
     // Admins may inspect another broker's tasks (portal broker toggle).
     // Brokers are always locked to their own Maestro id.
@@ -733,14 +738,20 @@ export async function handleTaskRequest(
       all = projected;
     } else if (token) {
       for (const candidate of ownerCandidates) {
-        const attempt = await deps.listFetch(candidate, { status, from, to });
-        if (!attempt.ok) continue;
+        const attempt = await deps.listFetch(candidate, { status, from, to, fullSync });
+        if (!attempt.ok) {
+          // The list layer spent its interactive budget. Trying another
+          // identity would repeat the same expensive scan and can exhaust the
+          // entire Edge invocation before a useful response reaches the phone.
+          if (attempt.truncated) { upstream = attempt; break; }
+          continue;
+        }
         const rows = filterByAssignee(
           (attempt.tasks ?? []).map((t: any) => normalizeTask(t)),
           assigneeIds,
         );
         if (!upstream.ok) { upstream = attempt; all = rows; }
-        if (rows.length) { upstream = attempt; all = rows; break; }
+        if (rows.length || attempt.truncated) { upstream = attempt; all = rows; break; }
       }
     }
 

@@ -118,7 +118,7 @@ const LIST_STATUSES = new Set(["pending", "open", "complete"]);
 function makeListFetch(token: string | null) {
   return async (
     maestroId: string,
-    opts: { status?: string | null; from?: string | null; to?: string | null; type?: "user" | "contract" | null; findTaskId?: string | null; scopeOnly?: boolean },
+    opts: { status?: string | null; from?: string | null; to?: string | null; type?: "user" | "contract" | null; findTaskId?: string | null; scopeOnly?: boolean; fullSync?: boolean },
   ): Promise<UpstreamList> => {
     // Documented list endpoint (Scribe docs 2026-09-09):
     //   GET /api/main/tasks?status=&delegate_users_id=&date_from=&date_to=&per_page=
@@ -143,12 +143,13 @@ function makeListFetch(token: string | null) {
       return `${API_BASE}/api/main/tasks?${qs.toString()}`;
     };
 
+    // An unfiltered task collection can contain every broker's historical
+    // work. Interactive screens never make that request. The protected
+    // background synchronizer alone may use it to refresh a full projection.
     const candidates: Array<{ filter: "delegate_users_id" | "target_id" | null; value?: string }> = [
       { filter: "delegate_users_id", value: maestroId },
       { filter: "target_id", value: maestroId },
-      // Scope checks for PUT/DELETE must never fall back to an unfiltered list:
-      // knowing another broker's task id is not authority to mutate it.
-      ...(opts.scopeOnly ? [] : [{ filter: null }]),
+      ...(opts.fullSync && !opts.scopeOnly ? [{ filter: null }] : []),
     ];
 
     // Read-back of a precise task: keep probing the documented filters until
@@ -158,12 +159,22 @@ function makeListFetch(token: string | null) {
     const statuses = opts.status && LIST_STATUSES.has(opts.status)
       ? [opts.status]
       : ["pending", "open", "complete"];
-    const maxPages = 20;
+    // Phone/portal lists must return before the Edge CPU budget is exhausted.
+    // The hourly synchronizer is the sole caller allowed a broader bounded
+    // scan; interactive requests receive the latest page quickly, then their
+    // verified projection paints subsequent opens immediately.
+    const fullSync = opts.fullSync === true;
+    const maxPages = fullSync ? 20 : 2;
+    const requestTimeoutMs = fullSync ? TIMEOUT_MS : 4_000;
+    const budgetMs = fullSync ? 45_000 : 10_000;
+    const startedAt = Date.now();
+    let budgetExceeded = false;
     let lastStatus = 0;
     let emptyOk: UpstreamList | null = null;
     let firstOk: UpstreamList | null = null;
 
     for (const candidate of candidates) {
+      if (Date.now() - startedAt >= budgetMs) { budgetExceeded = true; break; }
       const combined: any[] = [];
       const seen = new Set<string>();
       let pagesRead = 0;
@@ -174,11 +185,12 @@ function makeListFetch(token: string | null) {
 
       for (const status of statuses) {
         for (let page = 1; page <= maxPages; page += 1) {
+          if (Date.now() - startedAt >= budgetMs) { budgetExceeded = true; candidateTruncated = true; break; }
           const url = candidate.filter
             ? withParam(candidate.filter, candidate.value!, page, status)
             : `${API_BASE}/api/main/tasks?${(() => { const qs = new URLSearchParams(base); qs.set("status", status); qs.set("page", String(page)); return qs.toString(); })()}`;
           const ctrl = new AbortController();
-          const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+          const timer = setTimeout(() => ctrl.abort(), requestTimeoutMs);
           try {
             const res = await fetch(url, {
               headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
@@ -222,6 +234,7 @@ function makeListFetch(token: string | null) {
             clearTimeout(timer);
           }
         }
+        if (budgetExceeded) break;
       }
 
       if (!candidateOk) continue;
@@ -230,9 +243,9 @@ function makeListFetch(token: string | null) {
         tasks: combined,
         endpoint: `${API_BASE}/api/main/tasks`,
         status: candidateStatus || lastStatus,
-        complete: !candidateTruncated && !candidateIncomplete,
+        complete: !candidateTruncated && !candidateIncomplete && !budgetExceeded,
         pages_read: pagesRead,
-        truncated: candidateTruncated || candidateIncomplete,
+        truncated: candidateTruncated || candidateIncomplete || budgetExceeded,
       };
       // During a creation read-back, an assignee can already have other
       // pending tasks.  Those rows are not proof that the newly created id is
@@ -244,10 +257,11 @@ function makeListFetch(token: string | null) {
       }
       if (combined.length) return out;
       emptyOk = emptyOk ?? out;
+      if (budgetExceeded) return out;
       firstOk = firstOk ?? out;
     }
-    if (firstOk) return firstOk;
-    if (emptyOk) return emptyOk;
+    if (firstOk) return { ...firstOk, complete: firstOk.complete && !budgetExceeded, truncated: Boolean(firstOk.truncated || budgetExceeded) };
+    if (emptyOk) return { ...emptyOk, complete: emptyOk.complete && !budgetExceeded, truncated: Boolean(emptyOk.truncated || budgetExceeded) };
     return { ok: false, tasks: [], endpoint: null, status: lastStatus, complete: false };
 
   };
@@ -302,7 +316,9 @@ Deno.serve(async (req) => {
 
   const auth = await authBroker(req);
   if ("error" in auth) return auth.error;
-  const { admin, userId, profile } = auth as { admin: Admin; userId: string; profile: any };
+  const { admin, userId, profile, authMode } = auth as {
+    admin: Admin; userId: string; profile: any; authMode: "jwt" | "ava_session" | "service_role";
+  };
 
   // GET is the read-only listing surface:
   //   GET ?maestro_id=387460525&filter=today&page=1&limit=20&status=pending
@@ -409,6 +425,9 @@ Deno.serve(async (req) => {
       userId,
       profile,
       token,
+      // The request body is untrusted: only a service-role invocation from the
+      // server-side sweeper may request the larger bounded synchronization scan.
+      allowFullSync: authMode === "service_role",
       apiFetch: makeApiFetch(token),
       listFetch: makeListFetch(token),
       clientTargetsFetch: makeClientTargetsFetch(token),
