@@ -9,6 +9,8 @@ import {
   Check, Sparkles, RefreshCw, Voicemail as VmIcon, Save, Trash2, FileText, Download,
 } from "lucide-react";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
+import { TranscriptDiagnosticNotice } from "@/components/planipret/mobile/call/TranscriptDiagnosticNotice";
+import { resolveTranscriptDiagnostic, transcriptDiagnosticLabel, type TranscriptDiagnostic } from "@/lib/planipret/transcriptDiagnostic";
 import { TEMP_COLORS, TEMP_EMOJI, TEMP_LABEL, tempBorder, callbackDelayToDate, delayLabel, type LeadTemp } from "@/components/planipret/leadHelpers";
 import ContactTimeline from "@/components/planipret/ContactTimeline";
 import RecordingsList from "@/components/planipret/mobile/recordings/RecordingsList";
@@ -869,7 +871,7 @@ type TxStatus = {
   fetchedAt?: string | null;
   lastAttemptAt?: string | null;
 };
-function TranscriptStatusBanner({ s, has }: { s?: TxStatus; has: boolean }) {
+function TranscriptStatusBanner({ s, has, diagnostic, lang }: { s?: TxStatus; has: boolean; diagnostic?: TranscriptDiagnostic; lang: string }) {
   if (!s) return null;
   const src = (s.source || "").toLowerCase();
   const label = src.includes("netsapiens")
@@ -877,7 +879,7 @@ function TranscriptStatusBanner({ s, has }: { s?: TxStatus; has: boolean }) {
     : src.includes("whisper") || src.includes("stt") || src.includes("audio")
       ? "audio_stt_fallback"
       : has ? (s.source || "source inconnue") : "en attente";
-  const isPending = !has || s.pending || label === "en attente";
+  const isPending = !has && (diagnostic?.processing ?? !!s.pending);
   const fmt = (v?: string | null) => (v ? new Date(v).toLocaleString("fr-CA") : null);
   const history = [
     fmt(s.fetchedAt) ? `Transcrit le ${fmt(s.fetchedAt)}` : null,
@@ -896,7 +898,7 @@ function TranscriptStatusBanner({ s, has }: { s?: TxStatus; has: boolean }) {
             color: isPending ? "var(--pp-warning, #F5A623)" : "var(--pp-brand-accent)",
           }}
         >
-          {isPending ? "⏳ en attente" : `✅ ${label}`}
+          {has ? `✅ ${label}` : `${isPending ? "⏳" : "⚠️"} ${transcriptDiagnosticLabel(diagnostic?.code ?? "unknown", lang)}`}
         </span>
         <span style={{ color: "var(--pp-text-secondary)" }}>Source de transcription</span>
       </div>
@@ -909,7 +911,7 @@ function TranscriptStatusBanner({ s, has }: { s?: TxStatus; has: boolean }) {
   );
 }
 function TranscriptView({
-  segments, transcript, loading, preparing = false, attempt = 0, onFetch, onAnalyze, aiLoading, analyzed, t, filenameHint, status,
+  segments, transcript, loading, preparing = false, attempt = 0, onFetch, onAnalyze, aiLoading, analyzed, t, filenameHint, status, diagnostic, lang,
 }: {
   segments: Seg[] | null;
   transcript: string | null;
@@ -923,6 +925,8 @@ function TranscriptView({
   t: (k: string) => string;
   filenameHint?: string;
   status?: TxStatus;
+  diagnostic: TranscriptDiagnostic;
+  lang: string;
 }) {
   const has = (segments && segments.length > 0) || !!(transcript && transcript.trim());
   const fetchedRef = useRef(false);
@@ -940,57 +944,14 @@ function TranscriptView({
     return s.includes("courtier") || s.startsWith("agent") || s.startsWith("broker") || s === "speaker 1" || s === "1";
   };
 
-  if ((loading || preparing) && !has) {
-    return (
-      <div className="space-y-3">
-      <TranscriptStatusBanner s={status} has={false} />
-      <div className="pp-card p-4 space-y-3">
-
-        <div className="flex items-center gap-2 text-xs" style={{ color: "var(--pp-text-primary)" }}>
-          <Loader2 className="w-4 h-4 animate-spin" style={{ color: "var(--pp-brand-accent)" }} />
-          {preparing
-            ? `⏳ Transcription en cours de préparation${attempt > 0 ? ` (tentative ${attempt + 1})` : ""}…`
-            : "Chargement de la transcription…"}
-        </div>
-        {preparing && (
-          <div className="text-[11px]" style={{ color: "var(--pp-text-secondary)" }}>
-            NetSapiens génère la transcription. Nouvelle vérification automatique dans quelques secondes.
-          </div>
-        )}
-        <div className="space-y-2 pt-1">
-          {[0, 1, 2, 3].map((i) => (
-            <div key={i} className={`flex ${i % 2 === 0 ? "justify-start" : "justify-end"}`}>
-              <div className="h-10 rounded-2xl animate-pulse" style={{ width: "60%", background: "var(--pp-bg-surface)" }} />
-            </div>
-          ))}
-        </div>
-      </div>
-      </div>
-    );
-  }
-
   if (!has) {
     return (
       <div className="space-y-3">
-      <TranscriptStatusBanner s={status} has={false} />
-      <div className="pp-card p-4 space-y-3">
-
-        <div className="text-xs" style={{ color: "var(--pp-warning, #F5A623)" }}>
-          ⚠️ {t("calls.transcriptUnavailable") || "Transcription non disponible."}
-        </div>
-        <div className="text-[11px]" style={{ color: "var(--pp-text-secondary)" }}>
-          Vérifiez que <code>PORTAL_VOICE_TRANSCRIPTION_SENTIMENT = yes</code> est activé pour votre domaine dans NetSapiens.
-        </div>
-        <button onClick={() => onFetch()} className="w-full py-2 rounded-lg text-xs font-semibold"
-          style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}>
-          <RefreshCw className="w-3.5 h-3.5 inline mr-1" /> Réessayer
-        </button>
-      </div>
+        <TranscriptStatusBanner s={status} has={false} diagnostic={diagnostic} lang={lang} />
+        <TranscriptDiagnosticNotice diagnostic={diagnostic} lang={lang} busy={loading || preparing} onRetry={() => void onFetch()} />
       </div>
     );
-
   }
-
   const segs: Seg[] = segments && segments.length > 0
     ? segments
     : (transcript ?? "").split("\n").filter(Boolean).map((line) => {
@@ -1037,7 +998,7 @@ function TranscriptView({
 
   return (
     <div className="space-y-3">
-      <TranscriptStatusBanner s={status} has={true} />
+      <TranscriptStatusBanner s={status} has={true} lang={lang} />
 
       <div className="flex items-center justify-between gap-2 sticky top-0 z-10 py-1"
         style={{ background: "var(--pp-bg-base)" }}>
@@ -1215,6 +1176,7 @@ function CallDetailSheet({
   const [txLoading, setTxLoading] = useState(false);
   const [txPreparing, setTxPreparing] = useState(false);
   const [txAttempt, setTxAttempt] = useState(0);
+  const [txReason, setTxReason] = useState<TranscriptDiagnostic | null>(null);
   const txRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (txRetryTimerRef.current) clearTimeout(txRetryTimerRef.current); }, []);
   const [aiLoading, setAiLoading] = useState(false);
@@ -1318,35 +1280,33 @@ function CallDetailSheet({
   // Retry backoff (ms) for transient transcription failures (still being generated NS-side)
   const TX_BACKOFF = [4000, 10000, 25000, 60000];
 
-  const isTransientTxError = (res: any): boolean => {
-    if (!res) return true;
-    const attempts: Array<{ status: number }> = Array.isArray(res.attempts) ? res.attempts : [];
-    // Retry when NS returned 404/202/425 or nothing usable yet — the CDR exists but transcript not ready.
-    if (attempts.length && attempts.every((a) => [0, 202, 404, 425, 408, 500, 502, 503, 504].includes(a.status))) return true;
-    // Explicit hints from the edge function
-    const hay = `${res.error ?? ""} ${res.hint ?? ""}`.toLowerCase();
-    if (hay.includes("en cours") || hay.includes("prépar") || hay.includes("processing")) return true;
-    return false;
-  };
-
   const runTranscriptOnce = async () => {
-    const { data, error } = await supabase.functions.invoke("ns-get-transcription", {
-      body: { call_db_id: call.id, ns_callid: call.ns_callid ?? call.ns_call_id },
-    });
-    const res = (data ?? {}) as any;
-    const ok = !error && res.success !== false && (res.transcript || (Array.isArray(res.segments) && res.segments.length));
-    return { ok, res, error };
+    try {
+      const { data, error } = await supabase.functions.invoke("ns-get-transcription", {
+        body: { call_db_id: call.id, ns_callid: call.ns_callid ?? call.ns_call_id },
+      });
+      // Non-2xx responses carry structured evidence. Read it instead of
+      // showing an unconditional NetSapiens configuration hint.
+      const context = (error as any)?.context;
+      const detail = typeof Response !== "undefined" && context instanceof Response
+        ? await context.clone().json().catch(() => ({})) : {};
+      const res = (data ?? detail ?? {}) as any;
+      const ok = !error && res.success !== false && (res.transcript || (Array.isArray(res.segments) && res.segments.length));
+      return { ok, res };
+    } catch {
+      return { ok: false, res: {} };
+    }
   };
-
   const fetchTranscript = async (attempt = 0): Promise<void> => {
     if (txRetryTimerRef.current) { clearTimeout(txRetryTimerRef.current); txRetryTimerRef.current = null; }
     setTxAttempt(attempt);
-    if (attempt === 0) setTxLoading(true); else setTxPreparing(true);
-
-    const { ok, res, error } = await runTranscriptOnce();
-
+    if (attempt === 0) {
+      setTxLoading(true); setTxPreparing(false);
+      setTxReason({ code: "processing", processing: true, retryable: true });
+    } else setTxPreparing(true);
+    const { ok, res } = await runTranscriptOnce();
     if (ok) {
-      setTxLoading(false); setTxPreparing(false); setTxAttempt(0);
+      setTxLoading(false); setTxPreparing(false); setTxAttempt(0); setTxReason(null);
       const transcript = res.transcript ?? (Array.isArray(res.segments) ? res.segments.map((s: any) => `${s.speaker ?? "Speaker"}: ${s.text}`).join("\n") : call.transcript);
       onUpdated({ ...call, transcript, transcript_segments: res.segments ?? call.transcript_segments });
       await refreshCall();
@@ -1359,25 +1319,17 @@ function CallDetailSheet({
       toast.success(t("calls.transcriptFetched"));
       return;
     }
-
-    if (Array.isArray(res.attempts)) console.warn("ns-get-transcription attempts:", res.attempts);
-
-    const transient = isTransientTxError(res);
-    if (transient && attempt < TX_BACKOFF.length) {
-      setTxLoading(false);
-      setTxPreparing(true);
+    const diagnostic = resolveTranscriptDiagnostic(res, call);
+    setTxReason(diagnostic);
+    if (diagnostic.processing && attempt < TX_BACKOFF.length) {
+      setTxLoading(false); setTxPreparing(true);
       const delay = TX_BACKOFF[attempt];
       txRetryTimerRef.current = setTimeout(() => { void fetchTranscript(attempt + 1); }, delay);
       return;
     }
-
-    // Give up — show real error
     setTxLoading(false); setTxPreparing(false); setTxAttempt(0);
-    const msg = res.error ?? error?.message ?? t("calls.transcriptUnavailable");
-    const hint = res.hint ?? res.action_required ?? "";
-    toast.error(hint ? `${msg} — ${hint}` : msg);
+    if (!diagnostic.processing) toast.error(transcriptDiagnosticLabel(diagnostic.code, lang));
   };
-
   const analyzeAI = async () => {
     const segments = Array.isArray(call.transcript_segments) ? call.transcript_segments : null;
     if (!call.transcript && !segments) return;
@@ -1590,6 +1542,8 @@ function CallDetailSheet({
                 lastAttemptAt: (call as any).transcript_last_attempt_at ?? null,
               }}
               filenameHint={`transcript_${displayLabel(call)}_${(call.started_at || "").slice(0,10)}`}
+              diagnostic={txReason ?? resolveTranscriptDiagnostic({}, call)}
+              lang={lang}
             />
           )}
 
