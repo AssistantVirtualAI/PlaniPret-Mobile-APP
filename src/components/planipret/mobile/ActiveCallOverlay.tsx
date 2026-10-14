@@ -123,7 +123,7 @@ export default function ActiveCallOverlay({ callId, onClosed }: { callId: string
       }
     }
     try {
-      const applied = await audioRouter.setRoute(next ? "speaker" : "earpiece");
+      const applied = await audioRouter.chooseRoute(next ? "speaker" : "earpiece");
       setSpeaker(applied.route === "speaker");
     } catch {
       toast.error("Changement de sortie audio impossible");

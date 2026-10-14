@@ -4,6 +4,7 @@
 // Fallback: re-read every 60 s while the screen is visible.
 import { useEffect, useRef } from "react";
 import { supabase } from "@/integrations/supabase/client";
+import { invalidateCommissionCache } from "@/lib/planipret/commissionClientCache";
 
 const THROTTLE_MS = 20_000;
 const POLL_MS = 60_000;
@@ -16,7 +17,11 @@ function ensureChannel() {
   try {
     channel = supabase
       .channel("pp-commissions-updates")
-      .on("broadcast", { event: "updated" }, () => listeners.forEach((l) => l()))
+      .on("broadcast", { event: "updated" }, () => {
+        // New server snapshot: drop the device copy so screens re-read it.
+        invalidateCommissionCache();
+        listeners.forEach((l) => l());
+      })
       .subscribe();
   } catch { channel = null; /* polling fallback still runs */ }
 }

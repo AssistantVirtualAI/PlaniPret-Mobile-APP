@@ -82,7 +82,7 @@ export default function CallAudioSheet({ open, onClose, stream, onMuteChange }: 
         return;
       }
     }
-    const applied = await audioRouter.setRoute(r);
+    const applied = await audioRouter.chooseRoute(r);
     setRoute(applied.route);
   };
   const pickNc = (m: NCMode) => { localStorage.setItem("pp_nc_mode", m); setNcMode(m); };

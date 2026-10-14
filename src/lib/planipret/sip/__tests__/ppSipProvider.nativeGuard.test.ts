@@ -132,7 +132,10 @@ describe("ppSipProvider — garde plateforme native", () => {
 
     expect(keepAlive).toContain("pjsip_callkit_audio_owner");
     expect(keepAlive).toContain("if callKitAudioActive {");
-    expect(keepAlive).toContain("CallKit vient d'activer le périphérique PJSIP");
+    // CallKit remains the sole session owner; only the selected output is
+    // reasserted after didActivate so PJSIP cannot reset the loudspeaker.
+    expect(keepAlive).toContain("reassertCallKitRouteAfterActivation()");
+    expect(keepAlive).toContain("CallKit route wanted=%@ effective=%@");
     // CallKit is now the sole activator. PJSIP starts outgoing media only after
     // `didActivate`; incoming calls receive the same session callback.
     expect(callKit).toContain("public func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession)");

@@ -221,7 +221,7 @@ export default function PpActiveCallScreen({
           return;
         }
       }
-      const applied = await audioRouter.setRoute(requested);
+      const applied = await audioRouter.chooseRoute(requested);
       setAudioDev(applied);
       setSpeakerOn(applied.route === "speaker");
       if (applied.route !== requested) {

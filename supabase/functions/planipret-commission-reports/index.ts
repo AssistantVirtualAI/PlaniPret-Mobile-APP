@@ -822,7 +822,7 @@ function baseMonths(rows: any[], opts: { receiver: (r: any) => string; owner: (r
   }));
 }
 // ---- Server-side snapshot cache (fresh 5 min, stale served instantly) ----
-const FRESH_MS = 5 * 60_000;
+const FRESH_MS = 15 * 60_000;
 const FORCE_MIN_MS = 60_000;
 const CACHEABLE = new Set(["summary", "pending", "analytics", "deposits", "by_agent", "agents", "institutions"]);
 
@@ -869,10 +869,10 @@ Deno.serve(async (req) => {
   const admin = createClient(Deno.env.get("SUPABASE_URL")!, SERVICE_KEY, { auth: { persistSession: false } });
   const jwt = (req.headers.get("Authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
 
-  // Hourly warm-up (service key only): refresh snapshots used in the last 24h.
+  // Fifteen-minute warm-up (service key only): refresh recently used snapshots.
   if (action === "warm_snapshots") {
     // Safe to trigger from the scheduler: it only refreshes existing, already
-    // authorized snapshots older than ~55 min, bounded to 25 per run.
+    // authorized snapshots older than ~14 min, bounded to 12 per run.
     const cutoff = new Date(Date.now() - FRESH_MS + 60_000).toISOString();
     const { data: rows } = await admin.from("planipret_commission_snapshots").select("cache_key,user_id,request_body")
       .lt("fetched_at", cutoff).gt("last_accessed_at", new Date(Date.now() - 2 * 3_600_000).toISOString())

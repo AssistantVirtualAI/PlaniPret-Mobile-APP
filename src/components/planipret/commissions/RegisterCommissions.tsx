@@ -35,6 +35,7 @@ import { loadBrokerCoverage, causeLabel, coverageFor, type CoverageMap, type Cov
 import MaestroStatusBadge from "./ui/MaestroStatusBadge";
 import { statsCacheKey, readStatsCache, readAnyStatsCache, writeStatsCache, isStatsCacheFresh, type StatsCacheEntry } from "@/lib/planipret/commissionsCache";
 import { ppEdgeInvoke } from "@/lib/planipret/ppEdge";
+import { invalidateCommissionCache } from "@/lib/planipret/commissionClientCache";
 import { commissionLoadMessage } from "@/lib/planipret/commissionLoadError";
 import {
   insightCacheKey,
@@ -248,6 +249,8 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
 
   // Bumped after a Maestro sync to refetch the stats.
   const [refreshKey, setRefreshKey] = useState(0);
+  // A sync / live change must bypass the 15-minute device cache before refetching.
+  useEffect(() => { if (refreshKey) invalidateCommissionCache(); }, [refreshKey]);
 
   // Live: any new commission row (import or Maestro sync) refetches the stats.
   useEffect(() => {

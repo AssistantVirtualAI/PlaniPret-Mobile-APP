@@ -356,3 +356,7 @@ verify_jwt = true
 
 [functions.pp-address-autocomplete]
 verify_jwt = true
+
+# Déclenché par la base avec la clé de service : relit la ligne côté serveur.
+[functions.pp-row-push]
+verify_jwt = true

@@ -9,6 +9,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { supabase } from "@/integrations/supabase/client";
+import { ppEdgeInvoke } from "@/lib/planipret/ppEdge";
 import { fmtMoney, fmtNum, CHART_COLORS } from "@/lib/planipret/commissionStats";
 
 type MonthRow = {
@@ -53,16 +54,12 @@ export default function PACommissionsMonthly() {
 
   const load = useCallback(async () => {
     setLoading(true); setError(null);
-    const { data: { session } } = await supabase.auth.getSession();
-    const { data: res, error: err } = await supabase.functions.invoke("pp-commission-stats", {
-      body: {
-        year, month: 12, scope: "all", granularity: "ytd", periodIndex: 12,
-        // Isolation courtier : identique au reste des rapports, le serveur
-        // ne renvoie que les lignes de ce courtier.
-        agent: agent === "all" ? null : agent,
-      },
-      headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : undefined,
-    });
+    // Isolation courtier : le serveur ne renvoie que les lignes de ce courtier.
+    // Copie validée < 15 min servie instantanément (cache partagé).
+    const { data: res, error: err } = await ppEdgeInvoke("pp-commission-stats", {
+      year, month: 12, scope: "all", granularity: "ytd", periodIndex: 12,
+      agent: agent === "all" ? null : agent,
+    }, { retries: 1, timeoutMs: 90_000 });
     if (err) { setError(err.message); setLoading(false); return; }
     if ((res as any)?.error) { setError(String((res as any).error)); setLoading(false); return; }
     setData(res);

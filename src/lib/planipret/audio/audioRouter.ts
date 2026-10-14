@@ -28,6 +28,44 @@ let reassertTimer: ReturnType<typeof setTimeout> | null = null;
 let routeGeneration = 0;
 const listeners = new Set<(d: AudioDevices) => void>();
 let bound = false;
+// Route explicitly chosen by the user for the current call (null = automatic).
+let userRoute: AudioRoute | null = null;
+let callKitBound = false;
+let enforceTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * iOS CallKit: a speaker tap made before `didActivate` is only memorised by
+ * the native layer and was never re-applied, and CallKit can restore the
+ * earpiece right after activation. Re-send the user's choice once the audio
+ * session is live, and keep checking for a few seconds until iOS reports it.
+ */
+function enforceUserRoute(attempts = 8) {
+  if (enforceTimer) { clearTimeout(enforceTimer); enforceTimer = null; }
+  const wanted = userRoute;
+  if (!wanted) return;
+  const b = bridge();
+  if (!b?.setAudioRoute) return;
+  const generation = routeGeneration;
+  const step = async (left: number) => {
+    enforceTimer = null;
+    if (generation !== routeGeneration || userRoute !== wanted) return;
+    try { await b.setAudioRoute({ route: wanted }); } catch { /* ignore */ }
+    await pause(250);
+    const d = await audioRouter.refreshDevices();
+    if (d.route === wanted || left <= 0) return;
+    enforceTimer = setTimeout(() => { void step(left - 1); }, 500);
+  };
+  void step(attempts);
+}
+
+function bindCallKitActivation() {
+  if (callKitBound || typeof window === "undefined") return;
+  callKitBound = true;
+  window.addEventListener("pp:callkit-audio-active", () => {
+    // Laisser CallKit/PJSIP terminer l'ouverture du périphérique.
+    setTimeout(() => enforceUserRoute(), 200);
+  });
+}
 
 const pause = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
 
@@ -94,6 +132,7 @@ export const audioRouter = {
    * from displaying “haut-parleur” while sound is still in the earpiece.
    */
   async setRoute(route: AudioRoute): Promise<AudioDevices> {
+    bindCallKitActivation();
     routeGeneration += 1;
     if (reassertTimer) { clearTimeout(reassertTimer); reassertTimer = null; }
     currentRoute = route;
@@ -149,6 +188,19 @@ export const audioRouter = {
     return audioRouter.refreshDevices();
   },
 
+  /** User tap on speaker / earpiece / Bluetooth: remembered for the call and
+   *  re-applied when CallKit activates or restores its own route. */
+  async chooseRoute(route: AudioRoute): Promise<AudioDevices> {
+    userRoute = route;
+    let applied = await audioRouter.setRoute(route);
+    if (applied.route !== route && nativeOwnsAor()) {
+      enforceUserRoute();
+      await pause(900);
+      applied = await audioRouter.refreshDevices();
+    }
+    return applied;
+  },
+
   async getCurrentRoute(): Promise<AudioRoute> {
     const b = bridge();
     if (b?.getAudioRoute) {
@@ -189,6 +241,7 @@ export const audioRouter = {
 
   async startCallAudio(): Promise<AudioRoute> {
     bindNativeEvents();
+    bindCallKitActivation();
     // Sur iOS PJSIP/CallKit, ne pas rejouer les deux resets et les réassertions
     // de route prévus pour WebRTC. CallKit active le média et PJSIP raccorde
     // RTP <-> périphérique dans son callback didActivate.
@@ -225,6 +278,8 @@ export const audioRouter = {
 
   stopCallAudio(): void {
     routeGeneration += 1;
+    userRoute = null;
+    if (enforceTimer) { clearTimeout(enforceTimer); enforceTimer = null; }
     if (reassertTimer) { clearTimeout(reassertTimer); reassertTimer = null; }
   },
 };

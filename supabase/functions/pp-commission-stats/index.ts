@@ -126,7 +126,7 @@ Deno.serve(async (req) => {
     // never be replayed after a role change. Only validated `ok: true` results
     // are saved; Maestro or validation failures are never cached.
     const cacheKey = `paid-stats:v2:${user.id}:${isAdmin ? "admin" : "broker"}:${year}:${month}:${scope}:${granularity}:${periodIndex}:${agent ?? ""}`;
-    const FRESH_MS = 5 * 60_000;
+    const FRESH_MS = 15 * 60_000;
     const { data: snapshot } = await admin
       .from("planipret_commission_snapshots")
       .select("payload,fetched_at")

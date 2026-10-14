@@ -7,6 +7,10 @@
 // plain fetch (explicit URL + Authorization header + timeout) so a single
 // transient network hiccup no longer kills the action.
 import { supabase } from "@/integrations/supabase/client";
+import {
+  COMMISSION_CACHE_FNS, commissionCacheKey, dedupeCommission, isCommissionCacheable, isGoodCommissionPayload,
+  readCommissionCache, writeCommissionCache,
+} from "./commissionClientCache";
 
 const FUNCTIONS_BASE = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 const ANON = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY as string;
@@ -50,6 +54,43 @@ async function rawInvoke<T>(fn: string, body: any, token: string | null, timeout
  * Business errors (non-2xx from the function) are returned, not retried.
  */
 export async function ppEdgeInvoke<T = any>(
+  fn: string,
+  body: any,
+  opts: { retries?: number; timeoutMs?: number } = {},
+): Promise<PpEdgeResult<T>> {
+  // Commission figures (paid + pending): serve a validated copy < 15 min old
+  // instantly; only good answers are cached, per signed-in user.
+  if (isCommissionCacheable(fn, body)) {
+    let uid = "";
+    try { uid = (await supabase.auth.getSession()).data.session?.user?.id ?? ""; } catch { /* anonymous */ }
+    if (uid) {
+      const key = commissionCacheKey(uid, fn, body);
+      const hit = readCommissionCache(key, uid);
+      if (hit) return { data: hit as T, error: null };
+      return dedupeCommission(key, async () => {
+        const r = await ppEdgeInvokeRaw<T>(fn, body, opts);
+        if (!r.error && isGoodCommissionPayload(r.data)) writeCommissionCache(key, uid, r.data);
+        return r;
+      });
+    }
+  }
+  // Explicit refresh: bypass the copy, then store the fresh answer under the
+  // normal (non-forced) key so the next open is instant.
+  if (COMMISSION_CACHE_FNS.has(fn) && (body?.force === true || body?.refresh === true)) {
+    const r = await ppEdgeInvokeRaw<T>(fn, body, opts);
+    try {
+      const uid = (await supabase.auth.getSession()).data.session?.user?.id ?? "";
+      const { force: _f, refresh: _r, ...plain } = body ?? {};
+      if (uid && !r.error && isGoodCommissionPayload(r.data) && isCommissionCacheable(fn, plain)) {
+        writeCommissionCache(commissionCacheKey(uid, fn, plain), uid, r.data);
+      }
+    } catch { /* cache is best effort */ }
+    return r;
+  }
+  return ppEdgeInvokeRaw<T>(fn, body, opts);
+}
+
+async function ppEdgeInvokeRaw<T = any>(
   fn: string,
   body: any,
   opts: { retries?: number; timeoutMs?: number } = {},
