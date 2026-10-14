@@ -122,15 +122,17 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
         self.beginBackgroundTask()
       }
       NotificationCenter.default.addObserver(forName: Notification.Name("PpCallKitAudioActivated"), object: nil, queue: .main) { [weak self] _ in
-        self?.callKitAudioActive = true
-        // CallKit vient d'activer le périphérique PJSIP. Ne pas reconfigurer
-        // ni réactiver la session ici : la couche WebView écrasait RemoteIO et
-        // causait des appels connectés mais muets dans les deux sens.
-        self?.notifyListeners("audioRouteChanged", data: [
-          "route": self?.currentAudioRoute() ?? "earpiece",
-          "bluetooth": self?.bluetoothAvailable() ?? false,
-          "bluetoothName": self?.bluetoothName() ?? "",
-          "wired": self?.wiredAvailable() ?? false
+        guard let self = self else { return }
+        self.callKitAudioActive = true
+        // CallKit owns activation/category. The explicit route is nevertheless
+        // reset while PJSIP opens RemoteIO immediately after didActivate; only
+        // reassert the selected output (never reactivate or change category).
+        self.reassertCallKitRouteAfterActivation()
+        self.notifyListeners("audioRouteChanged", data: [
+          "route": self.currentAudioRoute(),
+          "bluetooth": self.bluetoothAvailable(),
+          "bluetoothName": self.bluetoothName() ?? "",
+          "wired": self.wiredAvailable()
         ])
       }
       NotificationCenter.default.addObserver(forName: Notification.Name("PpCallKitAudioDeactivated"), object: nil, queue: .main) { [weak self] _ in
@@ -328,6 +330,27 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
     }
 
     private func applyAudioRoute() { applyAudioRoute(retries: 4) }
+
+    /// PJSIP opens RemoteIO shortly after CallKit's didActivate callback and
+    /// may restore the receiver at that point. Keep CallKit as the sole audio
+    /// session owner and repeat only the requested output while the same call
+    /// session remains active. No SIP registration, codec or media bridge is
+    /// changed here.
+    private func reassertCallKitRouteAfterActivation() {
+      applyAudioRoute(retries: 0)
+      for delay in [0.35, 0.9] as [TimeInterval] {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+          guard let self = self, self.callKitAudioActive else { return }
+          self.applyAudioRoute(retries: 0)
+          self.notifyListeners("audioRouteChanged", data: [
+            "route": self.currentAudioRoute(),
+            "bluetooth": self.bluetoothAvailable(),
+            "bluetoothName": self.bluetoothName() ?? "",
+            "wired": self.wiredAvailable()
+          ])
+        }
+      }
+    }
 
     /// iOS (CallKit, PJSIP, WebKit) réapplique sa propre route juste après
     /// l'activation du média : un simple override est souvent écrasé. On
