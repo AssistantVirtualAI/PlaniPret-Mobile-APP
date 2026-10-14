@@ -456,6 +456,35 @@ describe("planipret task handler — list & isolation", () => {
     expect(listFetch).not.toHaveBeenCalled();
   });
 
+  it("refreshes a populated projection only for the protected scheduled synchronizer", async () => {
+    const cachedAdmin = createMockAdmin({
+      planipret_tasks_projection: [{
+        user_id: USER,
+        task_id: "stale-task",
+        deleted_at: null,
+        due_at: "2026-10-01T15:00:00.000Z",
+        status: "pending",
+        payload: { id: "stale-task", notes: "Ancien état", date: "2026-10-01 11:00:00", status: "pending" },
+      }],
+    });
+    const listFetch = vi.fn(async () => ({
+      ok: true as const,
+      endpoint: "/api/main/tasks",
+      status: 200,
+      complete: false,
+      tasks: [{ id: "fresh-task", notes: "État Maestro récent", date: "2026-10-14 11:00:00", status: "pending", users: [{ id: 93135 }] }],
+    }));
+    const { deps } = makeDeps({ admin: cachedAdmin, listFetch, allowFullSync: true });
+
+    const out = await handleTaskRequest({ action: "list", filter: "all", source: "tasks_sweeper" }, deps);
+
+    expect(out.body).toMatchObject({ success: true, source: "api" });
+    expect((out.body as any).tasks).toHaveLength(1);
+    expect((out.body as any).tasks[0].id).toBe("fresh-task");
+    expect(listFetch).toHaveBeenCalledWith("93135", expect.objectContaining({ fullSync: true }));
+    expect(cachedAdmin.db.planipret_tasks_projection.some((row: any) => row.task_id === "fresh-task")).toBe(true);
+  });
+
   it("falls back to the projection when the upstream list is unavailable", async () => {
     const { deps } = makeDeps({
       admin,

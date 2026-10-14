@@ -3,7 +3,6 @@ import { Hourglass, WalletCards } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import PendingCommissionsCard from "./PendingCommissionsCard";
 import RegisterCommissions from "./RegisterCommissions";
-import PaidDepositsCard from "./PaidDepositsCard";
 
 export default function CommissionSections({
   lang,
@@ -38,12 +37,9 @@ export default function CommissionSections({
       </div>
       <div role="tabpanel" id="commission-paid-panel" aria-labelledby="commission-paid-tab" hidden={section !== "paid"}>
         {section === "paid" && <>
-          {presentation === "portal" && <PaidDepositsCard lang={lang} scope={scope} forcedUsersId={personalUsersId} presentation={presentation} />}
-          {presentation === "portal" && <h2 className="flex items-center gap-2 text-xl font-bold mt-6 mb-4"><WalletCards className="h-5 w-5 text-primary" />{fr ? "Analyse détaillée" : "Detailed analysis"}</h2>}
-          {/* Mobile reads the exact synced register shown in the portal’s global report.
-              This intentionally avoids a second Maestro direct call that can fail when
-              the firm credential is not configured, while preserving the safe pending
-              endpoint and every server-side role check. */}
+          {/* One canonical paid-commission source for portal and mobile: the
+              verified register. The historical paid summary used a different
+              aggregation and is deliberately not rendered. */}
           <RegisterCommissions lang={lang} scope={scope} presentation={presentation} cacheScope={cacheScope} />
         </>}
       </div>

@@ -729,12 +729,13 @@ export async function handleTaskRequest(
 
     let upstream: UpstreamList = { ok: false, tasks: [], endpoint: null, status: 0 };
     let all: any[] = [];
-    // The scheduled synchronizer maintains this owner-scoped projection. Paint
-    // it first so every broker sees the last verified task list immediately,
-    // instead of waiting for Maestro's large collection to paginate. A manual
-    // refresh still reaches Maestro when no verified local list exists.
+    // The scheduled synchronizer must still reach Maestro when a local
+    // projection exists, otherwise the projection can never receive new or
+    // edited tasks after its first successful run. Interactive app/portal
+    // requests paint the last verified list immediately and stay bounded.
     const projected = overrideBroker ? [] : await loadProjection(admin, userId).catch(() => []);
-    if (projected.length) {
+    const refreshProjection = fullSync && !overrideBroker;
+    if (projected.length && !refreshProjection) {
       all = projected;
     } else if (token) {
       for (const candidate of ownerCandidates) {
@@ -777,26 +778,27 @@ export async function handleTaskRequest(
 
 
     let src: "api" | "projection" | "unavailable";
-    if (projected.length) {
+    if (projected.length && !refreshProjection) {
       src = "projection";
     } else if (upstream.ok) {
       src = "api";
       // Never write another broker's tasks into the caller's local projection.
-      // When an admin inspects a broker, mirror them under THAT broker's own
-      // local user id so the admin task board reflects the real Maestro data.
-      // Large accounts (4 000+ tasks) exceeded the edge CPU budget when the
-      // whole list was diffed and mirrored inline. The hourly sweeper owns the
-      // full mirror; the interactive list only refreshes open tasks (capped).
-      const openOnly = all.filter((t: any) => String(t?.status ?? "").toLowerCase() !== "complete").slice(0, 500);
+      // Large accounts must not be diffed/destructively tombstoned inline: the
+      // upstream pagination contract does not yet prove a complete mirror.
+      // The protected sweeper may upsert its broader verified scan; interactive
+      // requests only refresh a bounded open-task slice.
+      const tasksToProject = fullSync
+        ? all
+        : all.filter((t: any) => String(t?.status ?? "").toLowerCase() !== "complete").slice(0, 500);
       if (!overrideBroker) {
-        await syncProjection(admin, userId, openOnly, { full: false }).catch(() => {});
+        await syncProjection(admin, userId, tasksToProject, { full: false }).catch(() => {});
       } else {
         try {
           const { data: owner } = await admin
             .from("planipret_profiles").select("user_id")
             .eq("maestro_broker_id", overrideBroker).not("user_id", "is", null).limit(1);
           const ownerId = owner?.[0]?.user_id ? String(owner[0].user_id) : null;
-          if (ownerId) await syncProjection(admin, ownerId, openOnly, { full: false });
+          if (ownerId) await syncProjection(admin, ownerId, tasksToProject, { full: false });
         } catch { /* mirroring is best effort */ }
       }
     } else if (overrideBroker) {

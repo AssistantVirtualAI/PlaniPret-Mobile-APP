@@ -12,6 +12,7 @@ import RegisterFilters, { type Granularity } from "./RegisterFilters";
 import BrokerLeaderboard from "./BrokerLeaderboard";
 import BrokerTopSellers from "./BrokerTopSellers";
 import BrokerYearMatrix from "./BrokerYearMatrix";
+import BrokerVisualSummary from "./BrokerVisualSummary";
 import BrokerDrilldown from "./BrokerDrilldown";
 import { downloadCommissionsPdf } from "@/lib/planipret/commissionsPdf";
 import { exportNodePng, exportDashboardPdf } from "@/lib/planipret/exportVisuals";
@@ -1108,6 +1109,12 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
                 lang={lang}
                 brokerYearly={(data.brokerYearly ?? []) as any}
                 years={(data.brokerYears ?? []) as number[]}
+                onSelect={(b) => { setDrillData(null); setDrillAgent(b); }}
+              />
+
+              <BrokerVisualSummary
+                lang={lang}
+                brokers={data.brokers ?? []}
                 onSelect={(b) => { setDrillData(null); setDrillAgent(b); }}
               />
 

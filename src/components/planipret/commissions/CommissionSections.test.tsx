@@ -4,15 +4,14 @@ import CommissionSections from "./CommissionSections";
 
 vi.mock("./PendingCommissionsCard", () => ({ default: ({ cacheScope, filters, presentation }: any) => <p>pending-{cacheScope}-{filters?.users_id ?? "all"}-{presentation}</p> }));
 vi.mock("./RegisterCommissions", () => ({ default: ({ scope, presentation, cacheScope }: any) => <p>register-{scope}-{cacheScope ?? "none"}-{presentation}</p> }));
-vi.mock("./PaidDepositsCard", () => ({ default: ({ scope, forcedUsersId, presentation }: any) => <p>paid-{scope}-{forcedUsersId ?? "all"}-{presentation}</p> }));
 
 describe("Commission status sections", () => {
   it("sépare les rapports en attente et déboursés", () => {
     render(<CommissionSections lang="fr" scope="admin" />);
     expect(screen.getByText("pending-admin-all-portal")).toBeVisible();
-    expect(screen.queryByText("paid-admin-all-portal")).not.toBeInTheDocument();
+    expect(screen.queryByText("register-admin-none-portal")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: "Déboursées" }));
-    expect(screen.getByText("paid-admin-all-portal")).toBeVisible();
+    expect(screen.getByText("register-admin-none-portal")).toBeVisible();
     expect(screen.queryByText("pending-admin-all-portal")).not.toBeInTheDocument();
   });
 
