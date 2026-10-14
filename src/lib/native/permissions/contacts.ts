@@ -136,9 +136,6 @@ async function runDeviceContactSync(force: boolean): Promise<number> {
       const last = Number(localStorage.getItem(SYNC_KEY) ?? 0);
       if (last && Date.now() - last < SYNC_TTL_MS) return 0;
     }
-    // Marque la tentative immédiatement : sans cela, un échec (0 contact,
-    // erreur réseau) relançait la synchro en boucle à chaque vérification.
-    try { localStorage.setItem(SYNC_KEY, String(Date.now())); } catch { /* ignore */ }
     const entries = await listDeviceContacts();
     const contacts = entries
       .filter((c) => c.phone)
@@ -149,7 +146,12 @@ async function runDeviceContactSync(force: boolean): Promise<number> {
         email: c.email || null,
         company: c.company || null,
       }));
-    if (!contacts.length) return 0;
+    // Un carnet vide est un état valide : il avance le TTL, sans masquer
+    // une erreur de réseau ou de permission qui doit pouvoir être réessayée.
+    if (!contacts.length) {
+      try { localStorage.setItem(SYNC_KEY, String(Date.now())); } catch { /* ignore */ }
+      return 0;
+    }
     const { supabase } = await import("@/integrations/supabase/client");
     const { error } = await supabase.functions.invoke("pp-contacts-upsert", {
       body: { contacts, source: "device" },

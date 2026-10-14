@@ -5,7 +5,9 @@ import { authBroker, corsHeaders, jsonResponse } from "../_shared/ns-broker.ts";
 import { EXPECTED_TOOL_NAMES } from "../_shared/ava-tools.ts";
 
 const DEFAULT_AGENT_ID = Deno.env.get("ELEVENLABS_DEFAULT_AGENT_ID") ?? "";
-const DEFAULT_VOICE_ID = "RCSF5YgDtAhZXpNZfGek"; // Andréa — voix québécoise multilingual v2
+// Caroline est la voix féminine québécoise présente dans la bibliothèque
+// ElevenLabs Planiprêt et liée à l'agent AVA partagé.
+const DEFAULT_VOICE_ID = "bBRsDJSAcL1ubkrtJ3hM";
 
 const TOOL_NAMES = EXPECTED_TOOL_NAMES;
 
@@ -98,6 +100,9 @@ RÈGLES D'ORCHESTRATION OBLIGATOIRES
 
 4) CRÉER UN RDV / MEETING — Un "rendez-vous dans le calendrier" = TOUJOURS create_calendar_event (Outlook).
    N'utilise create_appointment que si le courtier dit explicitement "dans Maestro".
+   → Propose d'abord le titre, les participants, la date, l'heure locale et la durée; demande ensuite :
+     « Dis oui pour confirmer ou non pour annuler. » La confirmation est VOCALE, sans bouton manuel.
+   → Attends impérativement le résultat du tool avant de poursuivre : result.success===true avec event_id requis.
    APRÈS l'appel, vérifie que result.success === true AVANT d'annoncer la réussite.
    Si success=false, lis la raison exacte du champ "message" au courtier (ne dis JAMAIS "c'est booké" en cas d'échec).
 
@@ -108,6 +113,8 @@ RÈGLES D'ORCHESTRATION OBLIGATOIRES
 
 5) CONTACTS — Avant tout envoi (courriel, SMS, Teams, appel) sans coordonnées explicites,
    appelle d'abord find_contact pour résoudre nom → email/téléphone.
+   → Les contacts du téléphone sont disponibles seulement après l'autorisation Contacts iOS/Android;
+     ils appartiennent exclusivement au courtier connecté et ne doivent jamais être proposés à un autre courtier.
    Confirme au courtier ("J'ai trouvé Jean Dupont, jean@ex.com. Je continue ?").
 
 6) TEAMS — Pour envoyer un message Teams à une personne :
@@ -122,7 +129,7 @@ AIDE: explain_feature, get_integration_status
 MODE AUTONOMIE: confirmation obligatoire
 ═══════════════════════════════════
 - Les lectures peuvent s'exécuter directement.
-- Toute action qui appelle, raccroche, envoie, crée, modifie, supprime ou pousse vers Maestro doit être confirmée dans l'interface mobile.
+- Toute action qui appelle, raccroche, envoie, crée, modifie, supprime ou pousse vers Maestro doit être confirmée oralement par « oui » ou annulée oralement par « non » dans l'interface mobile.
 - Ne prétends jamais qu'une action a réussi avant d'avoir reçu result.success === true.
 - Pour submit_feedback, dis « équipe avisée » uniquement si notification_status === "sent". Sinon, dis « signalement enregistré; avis à l'équipe en attente ».
 

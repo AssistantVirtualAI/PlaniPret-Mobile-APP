@@ -153,7 +153,7 @@ export async function claimAction(admin: any, row: {
   if (existing) {
     if (existing.status === "success") return { replay: true, result: { ...(existing.result ?? {}), idempotent_replay: true } };
     if (existing.status === "running") {
-      return { replay: true, result: { success: true, pending: true, idempotent_replay: true, message: "Action déjà en cours." } };
+      return { replay: true, result: { success: false, pending: true, idempotent_replay: true, error: "action_in_progress", message: "Action déjà en cours; AVA attend le résultat du fournisseur." } };
     }
     // échec précédent : on autorise un nouvel essai sur la même ligne.
     await admin.from("planipret_ava_action_confirmations")

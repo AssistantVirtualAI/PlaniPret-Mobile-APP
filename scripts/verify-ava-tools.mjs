@@ -63,7 +63,14 @@ check(sendSmsBlock.includes("resolveSmsContact(ctx, name)") && executor.includes
 check(!chat.includes("sp.placeCall") && !chat.includes('functions.invoke("pp-ns-sms"'), "Chat suggestions must have one call owner and one SMS owner");
 check(chat.includes('functions.invoke("ava-tool-executor"') && chat.includes('tool_name: "send_sms"'), "Confirmed chat SMS must execute once through ava-tool-executor");
 check(chat.includes("normalizeAvaSmsRecipient") && chat.includes("contact_name: recipient.contactName"), "Confirmed chat SMS must pass a contact name to the server instead of discarding it");
-check(voice.includes('callServerTool(tool, { ...params, ...patched, confirmed: true })') && voice.includes('callServerTool(tool, { ...params, ...patched })'), "Voice confirmation must preserve standard confirmation and the Feedback token flow");
+check(
+  voice.includes('confirmation_mode: "voice_transcript"')
+  && voice.includes('voiceConfirmationDecision(text)')
+  && voice.includes('confirmed: true')
+  && voice.includes('tool === "submit_feedback"')
+  && voice.includes('callServerTool(tool, { ...params, ...patched })'),
+  "Voice confirmation must require an explicit spoken decision and preserve the Feedback token flow",
+);
 check(voice.includes('tool === "make_call"') && voice.includes('owner: "mobile_softphone"'), "Confirmed voice calls must remain owned by the local mobile softphone");
 check(voice.includes('functions.invoke("pp-ava-chat"') && !voice.includes('functions.invoke("ava-assistant"'), "Voice text fallback must use the canonical Planiprêt chatbot");
 check(!softphone.includes("restAnswerLiveCall"), "Incoming SIP answer must never fall back to a REST-created call leg");

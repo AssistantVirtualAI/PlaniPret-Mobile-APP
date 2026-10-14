@@ -121,6 +121,15 @@ describe("idempotence serveur", () => {
     expect(admin.rows).toHaveLength(1);
   });
 
+  it("ne présente jamais une action Microsoft encore en cours comme réussie", async () => {
+    const admin = fakeAdmin();
+    const key = await buildIdempotencyKey({ ...args, action: "create_calendar_event", callId: "calendar-running" });
+    await claimAction(admin as any, { userId: "u1", action: "create_calendar_event", surface: "ava_tool", idempotencyKey: key });
+    const replay = await claimAction(admin as any, { userId: "u1", action: "create_calendar_event", surface: "ava_tool", idempotencyKey: key });
+    expect(replay.replay).toBe(true);
+    expect((replay as any).result).toMatchObject({ success: false, pending: true, error: "action_in_progress" });
+  });
+
   it("un échec réel n'est jamais présenté comme un succès et autorise un nouvel essai", async () => {
     const admin = fakeAdmin();
     const key = await buildIdempotencyKey({ ...args, callId: "c3" });

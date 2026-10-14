@@ -31,6 +31,8 @@ import {
   institutionLabel,
   num,
 } from "../_shared/commission-reports.ts";
+import { addWallMinutes, graphWallTime } from "./calendarWallTime.ts";
+import { ms365ActionResult } from "./ms365ActionResult.ts";
 
 
 
@@ -212,7 +214,6 @@ async function resolveTaskRef(ctx: Ctx, p: any): Promise<{ task_id?: string; lab
 }
 
 
-// ─── helpers ────────────────────────────────────────────────────────────
 async function msAction(ctx: Ctx, action: string, payload: any) {
   const r = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/ms365-actions`, {
     method: "POST",
@@ -1023,6 +1024,17 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
       }),
     });
     const j = await r.json().catch(() => ({}));
+    const appointmentId = j?.appointment_id ?? j?.id ?? null;
+    const appointmentCreated = r.ok && j?.success !== false && !!appointmentId;
+
+    if (!appointmentCreated) {
+      const reason = j?.error ?? j?.details?.message ?? `HTTP ${r.status}`;
+      return {
+        success: false,
+        error: String(reason),
+        message: `Le rendez-vous "${p.title}" n'a PAS été créé dans Maestro. Raison : ${reason}.`,
+      };
+    }
 
     // Miroir Outlook si MS365 connecté (sauf explicitement désactivé)
     let outlook_synced = false;
@@ -1049,8 +1061,8 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
       }
     }
     return {
-      success: r.ok,
-      appointment_id: j.appointment_id,
+      success: true,
+      appointment_id: appointmentId,
       outlook_synced,
       outlook_event_id,
       outlook_error,
@@ -1135,7 +1147,12 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
       payload.to = hit.value; payload.to_name = hit.name;
     }
     const j = await msAction(ctx, "send_email", payload);
-    return { success: !!j?.success, message: `Courriel envoyé à ${payload.to_name ?? payload.to ?? payload.to_email}`, ...j };
+    const destination = payload.to_name ?? payload.to ?? payload.to_email ?? "le destinataire demandé";
+    const result = ms365ActionResult(j, {
+      action: "email",
+      successMessage: `Courriel envoyé à ${destination}`,
+    });
+    return { ...j, ...result };
   },
 
   async propose_email_reply(ctx, p) {
@@ -1223,10 +1240,11 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
     }
     attendees = Array.from(new Set(attendees.filter(Boolean)));
 
-    const startAt = new Date(p.start_datetime ?? p.start);
-    const endAt = p.end_datetime
-      ? new Date(p.end_datetime)
-      : new Date(startAt.getTime() + (Number(p.duration_minutes ?? 30)) * 60000);
+    const timezone = p.timezone ?? "America/Toronto";
+    const startWall = graphWallTime(p.start_datetime ?? p.start, timezone);
+    if (!startWall) return { success: false, error: "invalid_start_datetime", message: "Date ou heure de rendez-vous invalide." };
+    const endWall = graphWallTime(p.end_datetime, timezone)
+      ?? addWallMinutes(startWall, Number(p.duration_minutes ?? 30));
     const subject = p.subject ?? p.title ?? "Rendez-vous";
     const r = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/ms365-actions`, {
       method: "POST",
@@ -1236,8 +1254,8 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
         _user_id: ctx.userId,
         payload: {
           subject,
-          start: { dateTime: startAt.toISOString(), timeZone: p.timezone ?? "America/Toronto" },
-          end: { dateTime: endAt.toISOString(), timeZone: p.timezone ?? "America/Toronto" },
+          start: { dateTime: startWall, timeZone: timezone },
+          end: { dateTime: endWall, timeZone: timezone },
           body: p.body ?? p.notes,
           attendees,
           isOnlineMeeting: p.is_online ?? true,
@@ -1245,8 +1263,13 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
       }),
     });
     const j = await r.json().catch(() => ({}));
-    if (!j?.success) {
-      const reason = j?.error || j?.details?.message || `HTTP ${j?.code ?? r.status}`;
+    const result = ms365ActionResult(j, {
+      action: "calendar",
+      successMessage: `RDV "${subject}" créé dans Outlook${attendees.length ? ` avec ${attendees.join(", ")}` : ""}.`,
+      requiredId: j?.event_id ?? j?.event?.id ?? null,
+    });
+    if (!result.success) {
+      const reason = result.error ?? `HTTP ${j?.code ?? r.status}`;
       return {
         success: false,
         error: reason,
@@ -1255,11 +1278,10 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
       };
     }
     return {
-      success: true,
-      event_id: j?.event_id,
+      ...result,
+      event_id: result.id,
       web_link: j?.event?.webLink,
       attendees,
-      message: `RDV "${subject}" créé dans Outlook${attendees.length ? ` avec ${attendees.join(", ")}` : ""}.`,
     };
   },
 
@@ -1288,14 +1310,14 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
         message: "Reformule au courtier puis rappelle move_calendar_event avec confirmed=true.",
       };
     }
-    const startAt = new Date(p.new_start);
-    const endAt = p.new_end
-      ? new Date(p.new_end)
-      : new Date(startAt.getTime() + Number(p.duration_minutes ?? 30) * 60000);
+    const startWall = graphWallTime(p.new_start, p.timezone);
+    if (!startWall) return { success: false, error: "invalid_start_datetime", message: "Date ou heure de déplacement invalide." };
+    const endWall = graphWallTime(p.new_end, p.timezone)
+      ?? addWallMinutes(startWall, Number(p.duration_minutes ?? 30));
     const patch: any = {
       event_id: p.event_id,
-      start: { dateTime: startAt.toISOString(), timeZone: p.timezone },
-      end: { dateTime: endAt.toISOString(), timeZone: p.timezone },
+      start: { dateTime: startWall, timeZone: p.timezone },
+      end: { dateTime: endWall, timeZone: p.timezone },
     };
     if (p.subject) patch.subject = p.subject;
     const r = await fetch(`${Deno.env.get("SUPABASE_URL")}/functions/v1/ms365-actions`, {
@@ -1304,7 +1326,7 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
       body: JSON.stringify({ action: "update_calendar_event", _user_id: ctx.userId, payload: patch }),
     });
     const j = await r.json().catch(() => ({}));
-    return { success: !!j?.success, message: "RDV déplacé", raw: j };
+    return { ...j, ...ms365ActionResult(j, { action: "calendar", successMessage: "RDV déplacé" }) };
   },
 
   async cancel_calendar_event(ctx, p) {
@@ -1315,7 +1337,7 @@ const TOOLS: Record<string, (ctx: Ctx, params: any) => Promise<ToolResult>> = {
       body: JSON.stringify({ action: "delete_calendar_event", _user_id: ctx.userId, payload: { event_id: p.event_id } }),
     });
     const j = await r.json().catch(() => ({}));
-    return { success: !!j?.success, message: "RDV annulé", raw: j };
+    return { ...j, ...ms365ActionResult(j, { action: "calendar", successMessage: "RDV annulé" }) };
   },
 
   // ===== EMAIL DISCOVERY (précède summarize_email) =====

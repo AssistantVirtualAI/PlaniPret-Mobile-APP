@@ -15,6 +15,7 @@ import ReconnectStatus from "@/components/planipret/mobile/ReconnectStatus";
 import VoiceSettingsSheet from "@/components/planipret/mobile/VoiceSettingsSheet";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { getAvaToolLabel } from "@/lib/i18n/avaToolLabels";
+import { voiceConfirmationDecision } from "@/lib/planipret/avaVoiceConfirmation";
 
 type AgentState = "idle" | "connecting" | "listening" | "speaking" | "processing" | "tool_running" | "error";
 interface Props {
@@ -104,6 +105,10 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat, onPla
   const [transcript, setTranscript] = useState<TranscriptEntry[]>([]);
   const [toolNotif, setToolNotif] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingTool | null>(null);
+  // Référence stable pour le callback asynchrone de transcription ElevenLabs.
+  const pendingRef = useRef<PendingTool | null>(null);
+  useEffect(() => { pendingRef.current = pending; }, [pending]);
+  const confirmActionRef = useRef<(ok: boolean, patched?: Record<string, any>) => void>(() => undefined);
   const [textInput, setTextInput] = useState("");
   const [micError, setMicError] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -119,6 +124,17 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat, onPla
 
 
   const sessionId = sessionIdRef.current;
+
+  // Si l'autorisation système est déjà accordée, AVA synchronise seulement le
+  // carnet du courtier connecté. Aucun prompt supplémentaire, aucun partage
+  // avec un autre courtier et aucun accès si l'option locale est désactivée.
+  useEffect(() => {
+    void import("@/lib/native/permissions/contacts")
+      .then(async ({ getContactsPermissionStatus, syncDeviceContactsToServer }) => {
+        if ((await getContactsPermissionStatus()) === "granted") await syncDeviceContactsToServer();
+      })
+      .catch(() => null);
+  }, []);
 
   const appendTranscript = (entry: Omit<TranscriptEntry, "id">) =>
     setTranscript((p) => [...p.slice(-30), { ...entry, id: `${Date.now()}-${Math.random()}` }]);
@@ -455,6 +471,14 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat, onPla
               message: text,
               session_id: sessionId,
             }).then(() => null);
+            // Le oui/non est audible dans la conversation : aucun deuxième tap.
+            if (source === "user" && pendingRef.current) {
+              const decision = voiceConfirmationDecision(text);
+              if (decision === "confirm") confirmActionRef.current(true, {
+                confirmation_mode: "voice_transcript", confirmed_at: new Date().toISOString(),
+              });
+              else if (decision === "cancel") confirmActionRef.current(false);
+            }
           },
         };
         if (hasOverrides) commonOptions.overrides = overrides;
@@ -625,13 +649,16 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat, onPla
   };
 
   const confirmAction = (ok: boolean, patched: Record<string, any> = {}) => {
-    if (!pending) return;
+    const active = pendingRef.current;
+    if (!active) return;
     if (!ok) {
-      pending.resolve({ success: false, error: "user_cancelled" });
+      active.resolve({ success: false, error: "user_cancelled" });
+      pendingRef.current = null;
       setPending(null);
       return;
     }
-    const { tool, params, resolve } = pending;
+    const { tool, params, resolve } = active;
+    pendingRef.current = null;
     setPending(null);
     if (tool === "make_call") {
       const number = String(params?.to_number ?? params?.to ?? params?.destination ?? params?.number ?? params?.phone ?? "").trim();
@@ -658,8 +685,14 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat, onPla
       callServerTool(tool, { ...params, ...patched }).then(resolve);
       return;
     }
-    callServerTool(tool, { ...params, ...patched, confirmed: true }).then(resolve);
+    const calendarPatch = CALENDAR_TOOLS.has(tool)
+      ? { timezone: params?.timezone ?? "America/Toronto" }
+      : {};
+    callServerTool(tool, { ...params, ...calendarPatch, ...patched, confirmed: true }).then(resolve);
   };
+
+  // Rend la dernière fonction disponible au callback de transcription ElevenLabs.
+  confirmActionRef.current = confirmAction;
 
   // ─── render ────────────────────────────────────────────────────
   const ToolIcon = currentTool ? TOOL_ICONS[currentTool] ?? Sparkles : null;
@@ -803,16 +836,13 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat, onPla
         </button>
       </div>
 
-      {/* Confirmation modal */}
+      {/* Confirmation orale explicite — le bouton ne sert qu'à annuler. */}
       {pending && (
-        <CalendarAwareConfirm
-          pending={pending}
-          toolLabel={toolLabel}
-          onCancel={() => confirmAction(false)}
-          onConfirm={(patchedParams) => {
-            confirmAction(true, patchedParams);
-          }}
-        />
+        <div className="absolute inset-x-4 bottom-24 z-10 rounded-2xl px-4 py-3 text-[13px]" style={{ background: "#0A1628", border: "1px solid rgba(46,155,220,0.55)", color: "#E8EDF5" }}>
+          <div className="font-semibold">{toolLabel(pending.tool)}</div>
+          <div className="mt-1" style={{ color: "#B4C6D8" }}>{L("Dites « oui » pour confirmer ou « non » pour annuler.", "Say “yes” to confirm or “no” to cancel.")}</div>
+          <button onClick={() => confirmAction(false)} className="mt-2 text-[12px] underline" style={{ color: "#8FA8C0" }}>{L("Annuler", "Cancel")}</button>
+        </div>
       )}
 
       {/* Settings bottom sheet */}
