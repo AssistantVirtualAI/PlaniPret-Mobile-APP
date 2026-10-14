@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import { callAiErrorMessage, callAiResultMessage } from "@/lib/planipret/callAiError";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -131,26 +132,29 @@ export default function MaestroTab({ call, onUpdated }: { call: MaestroCall; onU
 
   const nextActions = extractNextActions(call);
   const hasAiContent = !!(call.ai_summary || call.ai_summary_short || call.ai_analysis_json);
-  const hasTranscript = !!(call.transcript || (Array.isArray(call.transcript_segments) && call.transcript_segments.length > 0));
 
   const runAiAnalysis = async () => {
-    if (!hasTranscript) {
-      toast.error(t("maestro.aiFailed"), { description: lang === "fr" ? "Transcription requise avant analyse." : "Transcript required before analysis." });
-      return;
-    }
+    const segments = Array.isArray(call.transcript_segments) ? call.transcript_segments : [];
+    const transcript = call.transcript
+      ?? segments.map((segment: any) => `${segment?.speaker ?? "Speaker"}: ${segment?.text ?? ""}`).filter((line: string) => !line.endsWith(": ")).join("\n");
+    const fallback = lang === "fr" ? "Analyse IA indisponible, réessayez." : "AI analysis unavailable, try again.";
     setAnalyzing(true);
     try {
       const { data, error } = await supabase.functions.invoke("pp-coach-call", {
-        body: { call_id: call.id },
+        // The server keeps the per-call cache. `force` only authorizes the
+        // transcript already visible in the app while database replication lags.
+        body: { call_id: call.id, transcript, force: true },
       });
-      if (error || (data as any)?.success === false) {
-        toast.error(t("maestro.aiFailed"), { description: (data as any)?.error ?? error?.message });
+      if (error) {
+        toast.error(t("maestro.aiFailed"), { description: await callAiErrorMessage(error, fallback) });
+      } else if ((data as any)?.success === false) {
+        toast.error(t("maestro.aiFailed"), { description: callAiResultMessage(data, fallback) });
       } else {
         toast.success(t("maestro.aiGenerated"));
         onUpdated();
       }
-    } catch (e: any) {
-      toast.error(t("maestro.aiFailed"), { description: e?.message });
+    } catch {
+      toast.error(t("maestro.aiFailed"), { description: fallback });
     } finally {
       setAnalyzing(false);
     }
@@ -161,7 +165,7 @@ export default function MaestroTab({ call, onUpdated }: { call: MaestroCall; onU
     setPushing(true);
     try {
       const { data, error } = await supabase.functions.invoke("maestro-sync-call", {
-        body: { call_id: call.id, force: true },
+        body: { call_id: call.id, force: true, explicit_user_action: true },
       });
 
       if (error || (data as any)?.success === false) {
@@ -294,7 +298,7 @@ export default function MaestroTab({ call, onUpdated }: { call: MaestroCall; onU
         {!hasAiContent && (
           <button
             onClick={runAiAnalysis}
-            disabled={analyzing || !hasTranscript}
+            disabled={analyzing}
             className="mt-3 w-full py-2.5 rounded-xl text-sm font-semibold flex items-center justify-center gap-2 disabled:opacity-50"
             style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-primary)", border: "1px solid var(--pp-brand-accent-2)" }}
           >
@@ -303,7 +307,7 @@ export default function MaestroTab({ call, onUpdated }: { call: MaestroCall; onU
         )}
 
         {/* Push CTA */}
-        {!call.maestro_synced && hasAiContent && (
+        {!call.maestro_synced && (
           <button
             onClick={() => setConfirmOpen(true)}
             disabled={pushing}

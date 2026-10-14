@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
-import { motion } from "framer-motion";
+import { createPortal } from "react-dom";
 import { useOutletContext, useSearchParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
@@ -22,6 +22,7 @@ import GreetingStudio from "@/components/planipret/mobile/voicemail/GreetingStud
 
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { useCallerNames } from "@/lib/planipret/callerLookup";
+import { callAiErrorMessage, callAiResultMessage } from "@/lib/planipret/callAiError";
 import { createClientFollowUpTask } from "@/lib/planipret/tasks";
 import { presentCallParty } from "@/lib/planipret/callPresentation";
 import { shouldOfferMaestroClientCreation } from "@/lib/planipret/clientHistory";
@@ -911,7 +912,7 @@ function TranscriptStatusBanner({ s, has, diagnostic, lang }: { s?: TxStatus; ha
   );
 }
 function TranscriptView({
-  segments, transcript, loading, preparing = false, attempt = 0, onFetch, onAnalyze, aiLoading, analyzed, t, filenameHint, status, diagnostic, lang,
+  segments, transcript, loading, preparing = false, attempt = 0, onFetch, onAnalyze, aiLoading, analyzed, t, filenameHint, status, diagnostic, lang, analysisStatus = "idle", analysisMessage,
 }: {
   segments: Seg[] | null;
   transcript: string | null;
@@ -927,6 +928,8 @@ function TranscriptView({
   status?: TxStatus;
   diagnostic: TranscriptDiagnostic;
   lang: string;
+  analysisStatus?: "idle" | "loading" | "error" | "success";
+  analysisMessage?: string | null;
 }) {
   const has = (segments && segments.length > 0) || !!(transcript && transcript.trim());
   const fetchedRef = useRef(false);
@@ -1006,41 +1009,60 @@ function TranscriptView({
           {wordCount} mots · {segs.length} tours
         </div>
         <div className="flex items-center gap-1.5">
-          <button onClick={handleCopy}
+          <button type="button" onClick={handleCopy} onPointerDown={(event) => event.stopPropagation()}
             className="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold flex items-center gap-1"
-            style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
+            style={{ minHeight: 36, touchAction: "manipulation", background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
             aria-label="Copier">
             <Copy className="w-3.5 h-3.5" /> Copier
           </button>
-          <button onClick={() => handleDownload("txt")}
+          <button type="button" onClick={() => handleDownload("txt")} onPointerDown={(event) => event.stopPropagation()}
             className="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold flex items-center gap-1"
-            style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
+            style={{ minHeight: 36, touchAction: "manipulation", background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
             aria-label="Télécharger .txt">
             <Download className="w-3.5 h-3.5" /> .txt
           </button>
-          <button onClick={() => handleDownload("md")}
+          <button type="button" onClick={() => handleDownload("md")} onPointerDown={(event) => event.stopPropagation()}
             className="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold flex items-center gap-1"
-            style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
+            style={{ minHeight: 36, touchAction: "manipulation", background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
             aria-label="Télécharger .md">
             <Download className="w-3.5 h-3.5" /> .md
           </button>
         </div>
       </div>
 
+      {analysisStatus !== "idle" && (
+        <div
+          className="rounded-xl px-3 py-2.5 flex items-center gap-2 text-xs font-semibold"
+          role="status"
+          aria-live="polite"
+          style={{
+            color: analysisStatus === "error" ? "#FFE1E1" : "#F7FAFC",
+            background: analysisStatus === "error" ? "rgba(185, 28, 28, 0.28)" : analysisStatus === "success" ? "rgba(5, 150, 105, 0.24)" : "rgba(91, 33, 182, 0.32)",
+            border: `1px solid ${analysisStatus === "error" ? "rgba(252, 165, 165, 0.65)" : analysisStatus === "success" ? "rgba(110, 231, 183, 0.55)" : "rgba(196, 181, 253, 0.62)"}`,
+          }}
+        >
+          {analysisStatus === "loading" && <Loader2 className="w-4 h-4 shrink-0 animate-spin" />}
+          {analysisStatus === "error" && <AlertTriangle className="w-4 h-4 shrink-0" />}
+          {analysisStatus === "success" && <Sparkles className="w-4 h-4 shrink-0" />}
+          <span className="min-w-0">{analysisMessage}</span>
+        </div>
+      )}
+
       <div className="flex flex-col gap-2">
         {segs.map((s, i) => {
           const right = isCourtier(s.speaker);
           return (
             <div key={i} className={`flex flex-col ${right ? "items-end" : "items-start"}`}>
-              <div className="text-[10px] mb-0.5" style={{ color: "var(--pp-text-tertiary, var(--pp-text-secondary))" }}>{s.speaker}</div>
+              <div className="text-[11px] font-semibold mb-1" style={{ color: "#B8D2F6" }}>{s.speaker}</div>
               <div
-                className="px-3 py-2 text-[13px] leading-relaxed"
+                className="px-3.5 py-2.5 text-[15px] leading-relaxed font-medium"
                 style={{
-                  maxWidth: "82%",
-                  color: right ? "white" : "var(--pp-text-primary)",
-                  background: right ? "linear-gradient(135deg, var(--pp-brand-accent-2), var(--pp-brand-accent))" : "var(--pp-bg-elevated)",
-                  border: right ? "none" : "1px solid var(--pp-bg-border-2)",
+                  maxWidth: "92%",
+                  color: "#F8FAFC",
+                  background: right ? "linear-gradient(135deg, #1D4ED8, #0E7490)" : "#17233F",
+                  border: right ? "1px solid rgba(125, 211, 252, 0.55)" : "1px solid rgba(148, 163, 184, 0.48)",
                   borderRadius: right ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
+                  boxShadow: "0 4px 14px rgba(0, 0, 0, 0.2)",
                 }}
               >
                 {s.text}
@@ -1053,10 +1075,14 @@ function TranscriptView({
 
       {!analyzed && (
         <button
+          type="button"
+          data-testid="call-transcript-analyze"
           onClick={() => onAnalyze()}
+          onPointerDown={(event) => event.stopPropagation()}
+          onTouchEnd={(event) => { event.preventDefault(); event.stopPropagation(); void onAnalyze(); }}
           disabled={aiLoading}
           className="w-full py-3 rounded-xl text-sm font-semibold text-white disabled:opacity-50 flex items-center justify-center gap-2 sticky bottom-0"
-          style={{ background: "linear-gradient(135deg, #2D1A5A, #9B7FE8)" }}
+          style={{ minHeight: 48, zIndex: 10, touchAction: "manipulation", background: "linear-gradient(135deg, #2D1A5A, #9B7FE8)" }}
         >
           {aiLoading ? <><Loader2 className="w-4 h-4 animate-spin" /> Analyse en cours…</> : <><Sparkles className="w-4 h-4" /> Analyser avec Claude IA</>}
         </button>
@@ -1180,9 +1206,11 @@ function CallDetailSheet({
   const txRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (txRetryTimerRef.current) clearTimeout(txRetryTimerRef.current); }, []);
   const [aiLoading, setAiLoading] = useState(false);
+  const [analysisFeedback, setAnalysisFeedback] = useState<{ kind: "loading" | "error" | "success"; message: string } | null>(null);
   const [taskState, setTaskState] = useState<Record<string, { creating?: boolean; createdId?: string }>>({});
   const [eventState, setEventState] = useState<Record<string, { creating?: boolean; createdId?: string }>>({});
   const [activeTab, setActiveTab] = useState<"audio" | "transcript" | "coaching" | "maestro">("audio");
+  const tr = (fr: string, en: string) => lang === "fr" ? fr : en;
   const peerNumber = (call.direction === "outbound" ? call.to_number : call.from_number) ?? "";
   const _resolvedNames = useCallerNames([peerNumber]);
   const _callerLabel = displayLabelWith(call, _resolvedNames[peerNumber], lang as "fr" | "en");
@@ -1200,15 +1228,69 @@ function CallDetailSheet({
     })();
   }, [call.id]);
 
+  const refreshCall = async () => {
+    const { data } = await supabase.from("planipret_phone_calls").select("*").eq("id", call.id).maybeSingle();
+    if (data) onUpdated(data as Call);
+  };
+
+  const analyzeAI = async (transcriptOverride?: string | null, automatic = false) => {
+    const segments = Array.isArray(call.transcript_segments) ? call.transcript_segments : null;
+    const transcript = transcriptOverride ?? call.transcript ?? (segments?.map((segment: Seg) => `${segment.speaker}: ${segment.text}`).join("\n") ?? null);
+    const fallback = tr("Analyse IA indisponible, réessayez.", "AI analysis unavailable, try again.");
+    setAiLoading(true);
+    setAnalysisFeedback({
+      kind: "loading",
+      message: automatic
+        ? tr("Analyse automatique en cours…", "Automatic analysis in progress…")
+        : tr("Analyse IA en cours…", "AI analysis in progress…"),
+    });
+    try {
+      const { data, error } = await supabase.functions.invoke("pp-coach-call", {
+        // The API still returns an existing cached analysis before it uses this
+        // fallback. `force` only lets the API use the transcript already shown
+        // in the app when the row replication lags behind.
+        body: { call_id: call.id, transcript, force: true },
+      });
+      if (error) {
+        const message = await callAiErrorMessage(error, fallback);
+        setAnalysisFeedback({ kind: "error", message });
+        if (!automatic) toast.error(message);
+        return;
+      }
+      const result: any = data ?? {};
+      if (result.success === false) {
+        const message = callAiResultMessage(result, fallback);
+        setAnalysisFeedback({ kind: "error", message });
+        if (!automatic) toast.error(message);
+        return;
+      }
+      const message = result.cached
+        ? tr("Analyse IA existante affichée.", "Existing AI analysis displayed.")
+        : t("calls.analysisDone");
+      setAnalysisFeedback({ kind: "success", message });
+      if (!automatic) toast.success(message);
+      await refreshCall();
+      const { data: ins } = await supabase.from("planipret_ai_insights").select("*").eq("call_id", call.id).maybeSingle();
+      setInsight((ins as any) ?? null);
+      setActiveTab("coaching");
+    } catch {
+      setAnalysisFeedback({ kind: "error", message: fallback });
+      if (!automatic) toast.error(fallback);
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
   // Auto-run transcription + AI analysis when opening a call that has a
   // recording but no transcript/insight yet (parity with /planipret/admin).
   const autoRanRef = useRef<string | null>(null);
   useEffect(() => {
     const hasRecording = !!(call.recording_url || (call as any).has_recording || call.ns_call_id);
     const hasTranscript = !!call.transcript || (Array.isArray(call.transcript_segments) && call.transcript_segments.length > 0);
-    const hasInsight = !!insight?.summary;
-    if (!hasRecording || autoRanRef.current === call.id) return;
+    const hasInsight = !!(insight?.summary || (call as any).ai_analysis_json || call.ai_summary);
+    if (autoRanRef.current === call.id) return;
     if (hasTranscript && hasInsight) return;
+    if (!hasTranscript && !hasRecording) return;
     autoRanRef.current = call.id;
     (async () => {
       try {
@@ -1226,18 +1308,15 @@ function CallDetailSheet({
         const { data: fresh } = await supabase.from("planipret_phone_calls").select("*").eq("id", call.id).maybeSingle();
         const freshCall = (fresh as Call) ?? call;
         const segs = Array.isArray(freshCall.transcript_segments) ? freshCall.transcript_segments : null;
-        if ((freshCall.transcript || segs) && !hasInsight) {
-          setAiLoading(true);
-          await supabase.functions.invoke("pp-coach-call", {
-            body: { call_id: call.id, transcript: freshCall.transcript ?? null },
-          });
-          setAiLoading(false);
-          const { data: ins } = await supabase.from("planipret_ai_insights").select("*").eq("call_id", call.id).maybeSingle();
-          setInsight((ins as any) ?? null);
+        if (!hasInsight) {
+          // pp-coach-call recherche aussi un segment jumeau du même propriétaire.
+          const transcript = freshCall.transcript ?? segs?.map((segment: Seg) => `${segment.speaker}: ${segment.text}`).join("\n") ?? null;
+          await analyzeAI(transcript, true);
           if (fresh) onUpdated(freshCall);
         }
       } catch (e) {
         setTxLoading(false); setAiLoading(false);
+        setAnalysisFeedback({ kind: "error", message: tr("Analyse IA indisponible, réessayez.", "AI analysis unavailable, try again.") });
         console.error("[MCalls] auto AI pipeline failed", e);
       }
     })();
@@ -1260,11 +1339,6 @@ function CallDetailSheet({
       .subscribe();
     return () => { supabase.removeChannel(ch); };
   }, [userId, call.id, onUpdated]);
-
-  const refreshCall = async () => {
-    const { data } = await supabase.from("planipret_phone_calls").select("*").eq("id", call.id).maybeSingle();
-    if (data) onUpdated(data as Call);
-  };
 
   const fetchRecording = async () => {
     setRecLoading(true);
@@ -1311,10 +1385,7 @@ function CallDetailSheet({
       onUpdated({ ...call, transcript, transcript_segments: res.segments ?? call.transcript_segments });
       await refreshCall();
       if (transcript && !call.ai_summary) {
-        setAiLoading(true);
-        await supabase.functions.invoke("pp-coach-call", { body: { call_id: call.id, transcript } });
-        setAiLoading(false);
-        await refreshCall();
+        await analyzeAI(transcript, true);
       }
       toast.success(t("calls.transcriptFetched"));
       return;
@@ -1330,22 +1401,6 @@ function CallDetailSheet({
     setTxLoading(false); setTxPreparing(false); setTxAttempt(0);
     if (!diagnostic.processing) toast.error(transcriptDiagnosticLabel(diagnostic.code, lang));
   };
-  const analyzeAI = async () => {
-    const segments = Array.isArray(call.transcript_segments) ? call.transcript_segments : null;
-    if (!call.transcript && !segments) return;
-    setAiLoading(true);
-    const { data, error } = await supabase.functions.invoke("pp-coach-call", {
-      body: { call_id: call.id, transcript: call.transcript ?? null },
-    });
-    setAiLoading(false);
-    if (error) { toast.error(error.message ?? t("common.failed")); return; }
-    toast.success(t("calls.analysisDone"));
-    await refreshCall();
-    const { data: ins } = await supabase.from("planipret_ai_insights").select("*").eq("call_id", call.id).maybeSingle();
-    setInsight((ins as any) ?? null);
-  };
-
-
   const meta = (call.metadata ?? {}) as any;
   const aiTasks: Array<any> = Array.isArray(meta.ai_tasks) ? meta.ai_tasks
     : Array.isArray(insight?.suggested_actions?.tasks) ? insight!.suggested_actions.tasks
@@ -1425,20 +1480,28 @@ function CallDetailSheet({
   const score = call.lead_score ?? null;
   const scoreColor = score == null ? "var(--pp-text-muted)" : score >= 8 ? "var(--pp-success)" : score >= 5 ? "var(--pp-warning)" : "var(--pp-danger)";
 
-  return (
-    <div className="absolute inset-0 z-40 flex items-end" onClick={onClose}>
-      <div className="absolute inset-0" style={{ background: "rgba(0,0,0,0.55)", backdropFilter: "blur(2px)" }} />
-      <motion.div
-        onClick={(e) => e.stopPropagation()}
-        initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}
-        transition={{ type: "spring", damping: 28, stiffness: 280 }}
-        className="relative w-full flex flex-col"
+  if (typeof document === "undefined") return null;
+
+  return createPortal((
+    <div className="fixed inset-0 z-[20000] flex items-end">
+      <button
+        type="button"
+        className="absolute inset-0"
+        aria-label={t("common.close")}
+        onClick={onClose}
+        style={{ background: "rgba(0,0,0,0.55)", backdropFilter: "blur(2px)" }}
+      />
+      <div
+        className="relative w-full flex flex-col min-h-0 overflow-hidden"
         style={{
-          height: "95%",
+          height: "min(95dvh, calc(100dvh - env(safe-area-inset-top) - 8px))",
           background: "var(--pp-bg-base)",
           borderTop: "1px solid var(--pp-bg-border-2)",
           borderRadius: "24px 24px 0 0",
           boxShadow: "0 -8px 32px rgba(0,0,0,0.5)",
+          zIndex: 1,
+          pointerEvents: "auto",
+          touchAction: "manipulation",
         }}
       >
         {/* Drag handle + close */}
@@ -1490,11 +1553,14 @@ function CallDetailSheet({
               return (
                 <button
                   key={t.k}
+                  type="button"
                   onClick={() => setActiveTab(t.k as any)}
+                  onPointerDown={(event) => event.stopPropagation()}
+                  onTouchEnd={(event) => { event.preventDefault(); event.stopPropagation(); setActiveTab(t.k as any); }}
                   className="flex-1 py-2 rounded-full text-[11px] font-semibold transition"
                   style={active
-                    ? { background: "linear-gradient(135deg, var(--pp-brand-accent), var(--pp-brand-accent-2))", color: "white", boxShadow: "0 2px 10px rgba(46,155,220,0.35)" }
-                    : { color: "var(--pp-text-muted)" }}
+                    ? { minHeight: 44, touchAction: "manipulation", background: "linear-gradient(135deg, var(--pp-brand-accent), var(--pp-brand-accent-2))", color: "white", boxShadow: "0 2px 10px rgba(46,155,220,0.35)" }
+                    : { minHeight: 44, touchAction: "manipulation", color: "var(--pp-text-muted)" }}
                 >
                   {t.label}
                 </button>
@@ -1503,7 +1569,16 @@ function CallDetailSheet({
           </div>
         </div>
 
-        <div key={activeTab} className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 py-4 space-y-4" style={{ WebkitOverflowScrolling: "touch" }}>
+        <div
+          key={activeTab}
+          className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 py-4 space-y-4"
+          style={{
+            WebkitOverflowScrolling: "touch",
+            overscrollBehaviorY: "contain",
+            touchAction: "pan-y",
+            paddingBottom: "max(2rem, env(safe-area-inset-bottom))",
+          }}
+        >
 
           {/* ===== TAB AUDIO ===== */}
           {activeTab === "audio" && (
@@ -1531,7 +1606,7 @@ function CallDetailSheet({
               onFetch={() => fetchTranscript(0)}
               onAnalyze={analyzeAI}
               aiLoading={aiLoading}
-              analyzed={!!(call as any).ai_analysis_json}
+              analyzed={!!(insight?.summary || (call as any).ai_analysis_json || call.ai_summary)}
               t={t}
               status={{
                 source: (call as any).transcript_source ?? null,
@@ -1544,6 +1619,8 @@ function CallDetailSheet({
               filenameHint={`transcript_${displayLabel(call)}_${(call.started_at || "").slice(0,10)}`}
               diagnostic={txReason ?? resolveTranscriptDiagnostic({}, call)}
               lang={lang}
+              analysisStatus={analysisFeedback?.kind ?? "idle"}
+              analysisMessage={analysisFeedback?.message ?? null}
             />
           )}
 
@@ -1648,15 +1725,15 @@ function CallDetailSheet({
               {/* Empty / analyze CTA */}
               {!summary && !coaching && (
                 call.transcript ? (
-                  <button onClick={analyzeAI} disabled={aiLoading}
+                  <button type="button" data-testid="call-coach-analyze" onClick={() => { void analyzeAI(); }} onPointerDown={(event) => event.stopPropagation()} onTouchEnd={(event) => { event.preventDefault(); event.stopPropagation(); void analyzeAI(); }} disabled={aiLoading}
                     className="w-full py-3 rounded-xl text-sm font-semibold text-white disabled:opacity-50 flex items-center justify-center gap-2"
-                    style={{ background: "linear-gradient(135deg, #6C3CE1, var(--pp-agent))" }}>
+                    style={{ minHeight: 48, touchAction: "manipulation", background: "linear-gradient(135deg, #6C3CE1, var(--pp-agent))" }}>
                     {aiLoading ? <><Loader2 className="w-4 h-4 animate-spin" /> Analyse en cours…</> : <><Sparkles className="w-4 h-4" /> Analyser avec l'IA</>}
                   </button>
                 ) : (
-                  <button onClick={async () => { await fetchTranscript(); }} disabled={txLoading || txPreparing}
+                  <button type="button" data-testid="call-coach-fetch-transcript" onClick={async () => { await fetchTranscript(); }} onPointerDown={(event) => event.stopPropagation()} onTouchEnd={(event) => { event.preventDefault(); event.stopPropagation(); void fetchTranscript(); }} disabled={txLoading || txPreparing}
                     className="w-full py-3 rounded-xl text-sm font-semibold text-white disabled:opacity-50 flex items-center justify-center gap-2"
-                    style={{ background: "linear-gradient(135deg, var(--pp-brand-accent-2), var(--pp-brand-accent))" }}>
+                    style={{ minHeight: 48, touchAction: "manipulation", background: "linear-gradient(135deg, var(--pp-brand-accent-2), var(--pp-brand-accent))" }}>
                     {txPreparing ? <><Loader2 className="w-4 h-4 animate-spin" /> Préparation…</> : <>📝 Obtenir transcription + Analyse</>}
                   </button>
                 )
@@ -1675,9 +1752,9 @@ function CallDetailSheet({
           )}
 
         </div>
-      </motion.div>
+      </div>
     </div>
-  );
+  ), document.body);
 }
 
 function CallbackSuggestion({ call, onScheduled }: { call: Call; onScheduled: () => void }) {

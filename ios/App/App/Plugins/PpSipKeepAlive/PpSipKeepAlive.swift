@@ -352,6 +352,25 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       }
     }
 
+    /// CallKit still owns activation. This changes only the voice-processing
+    /// profile following a user's explicit output choice: `voiceChat` is tuned
+    /// for the receiver while `videoChat` restores the hands-free loudspeaker
+    /// gain and processing. SIP, codecs, media and registration stay untouched.
+    private func applyCallKitSpeakerProfile(_ session: AVAudioSession) {
+      guard callKitAudioActive else { return }
+      var options: AVAudioSession.CategoryOptions = [.allowBluetoothHFP, .allowBluetoothA2DP]
+      if preferredRoute == "speaker" { options.insert(.defaultToSpeaker) }
+      let wantedMode = modeFor(preferredRoute)
+      guard session.category != .playAndRecord || session.mode != wantedMode || session.categoryOptions != options else { return }
+      do {
+        try session.setCategory(.playAndRecord, mode: wantedMode, options: options)
+        NSLog("[PpSipKeepAlive] CallKit audio profile route=%@ mode=%@", preferredRoute, wantedMode.rawValue)
+      } catch {
+        // The route request below remains safe if iOS temporarily rejects a mode change.
+        NSLog("[PpSipKeepAlive] CallKit audio profile failed: %@", String(describing: error))
+      }
+    }
+
     /// iOS (CallKit, PJSIP, WebKit) réapplique sa propre route juste après
     /// l'activation du média : un simple override est souvent écrasé. On
     /// vérifie donc la route effective et on réessaie.
@@ -367,6 +386,7 @@ public class PpSipKeepAlive: CAPPlugin, CAPBridgedPlugin, URLSessionWebSocketDel
       // catégorie depuis la couche WSS perturbe le périphérique PJSIP. Seul le
       // choix explicite de sortie reste sûr à ce stade.
       if callKitAudioActive {
+        applyCallKitSpeakerProfile(s)
         switch preferredRoute {
         case "speaker":
           try? s.setPreferredInput(nil)
