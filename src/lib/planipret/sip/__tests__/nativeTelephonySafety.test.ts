@@ -168,6 +168,22 @@ describe("native telephony safety invariants", () => {
     expect(engine).toContain("if activeCall >= 0 {");
   });
 
+  it("keeps the TLS contact reachable and repairs only a real iOS network-path change", () => {
+    const engine = read("ios/App/App/Plugins/PpPjsip/PpPjsipEngine.swift");
+
+    expect(engine).toContain("import Network");
+    expect(engine).toContain("acc.allow_via_rewrite = pj_bool_t(1)");
+    expect(engine).toContain("acc.contact_use_src_port = pj_bool_t(1)");
+    expect(engine).toContain("acc.ka_interval = 15");
+    expect(engine).toContain("cfg.cb.on_transport_state = ppPjsipOnTransportState");
+    expect(engine).toContain("private func startPathMonitor()");
+    expect(engine).toContain("guard let previous, previous != signature, path.status == .satisfied else { return }");
+    expect(engine).toContain("pjsua_handle_ip_change(&param)");
+    expect(engine).toContain("param.restart_listener = pj_bool_t(1)");
+    expect(engine).toContain("asyncAfter(deadline: .now() + 1.0");
+    expect(engine).not.toContain("setInterval(run, 30_000)");
+  });
+
   it("refuses a JsSIP answer without a live microphone and cleans media", () => {
     const provider = read("src/lib/planipret/sip/ppSipProvider.ts");
 
