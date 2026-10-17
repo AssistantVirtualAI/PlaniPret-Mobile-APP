@@ -17,7 +17,7 @@ import {
   Users,
   WalletCards,
 } from "lucide-react";
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend, ComposedChart, Line } from "recharts";
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend, ComposedChart, Line, AreaChart, Area } from "recharts";
 import { Button } from "@/components/ui/button";
 import "./pendingCommissions.css";
 import { readStatsCache, statsCacheKey, writeStatsCache, isStatsCacheFresh } from "@/lib/planipret/commissionsCache";
@@ -75,16 +75,14 @@ function PendingTooltip({ active, payload, label, fr }: any) {
   );
 }
 
-export default function PendingCommissionsCard({ lang = "fr", filters, cacheScope = "default", refreshToken = 0, presentation = "portal" }: {
+export default function PendingCommissionsCard({ lang = "fr", filters, cacheScope = "default", refreshToken = 0 }: {
   lang?: "fr" | "en";
   filters?: { date_from?: string; date_to?: string; users_id?: string; financial_inst_id?: string };
   cacheScope?: string;
   refreshToken?: number;
-  presentation?: "portal" | "mobile";
 }) {
   const fr = lang !== "en";
   const [agent, setAgent] = useState("");
-  const forcedPersonal = Boolean(filters?.users_id);
   const [tab, setTab] = useState<"overview" | "brokers" | "monthly" | "types">("overview");
   const [reload, setReload] = useState(0);
   // Near real-time: refetch the scoped snapshot when the server reports new figures.
@@ -125,7 +123,7 @@ export default function PendingCommissionsCard({ lang = "fr", filters, cacheScop
     if (cached?.value) {
       setSummary((cached.value as any).summary ?? null);
       setValidation((cached.value as any).validation ?? null);
-      if (!forcedPersonal && !agent) setBrokers((cached.value as any).brokers ?? null);
+      if (!agent) setBrokers((cached.value as any).brokers ?? null);
     } else {
       // Never show the previous scope's numbers under another broker's name.
       setSummary(null);
@@ -144,7 +142,7 @@ export default function PendingCommissionsCard({ lang = "fr", filters, cacheScop
       }
       setSummary(d.summary);
       setValidation(d.validation ?? null);
-      if (!forcedPersonal && !agent) setBrokers(Array.isArray(d.brokers) ? d.brokers : null);
+      if (!agent) setBrokers(Array.isArray(d.brokers) ? d.brokers : null);
       writeStatsCache(key, { summary: d.summary, brokers: d.brokers ?? null, validation: d.validation ?? null });
     })()
       .catch(() => { if (!cancelled) setError(fr ? "Commissions en attente indisponibles pour le moment." : "Pending commissions unavailable right now."); })
@@ -169,7 +167,7 @@ export default function PendingCommissionsCard({ lang = "fr", filters, cacheScop
   const officialTotal = Number(summary?.official_total ?? summary?.total_commission ?? 0);
   const dealCount = Number(summary?.deal_count ?? summary?.deposit_count ?? 0);
   const selectedBroker = brokers?.find((broker) => String(broker.users_id) === agent) ?? null;
-  const isAdminView = !forcedPersonal && Boolean(brokers?.length);
+  const isAdminView = Boolean(brokers?.length);
   const filteredBrokers = useMemo(() => {
     const query = search.trim().toLocaleLowerCase(fr ? "fr-CA" : "en-CA");
     const pick = (b: BrokerRow) => view === "personal" ? (b.personal?.amount ?? 0) : view === "team" ? (b.team?.amount ?? 0) : b.amount;
@@ -205,7 +203,7 @@ export default function PendingCommissionsCard({ lang = "fr", filters, cacheScop
         </div>
       </header>
       <div className="pending-toolbar" aria-label={fr ? "Filtres commissions en attente" : "Pending commission filters"}>
-        {isAdminView && !forcedPersonal && <>
+        {isAdminView && <>
           <label className="flex items-center gap-2"><Search className="h-4 w-4 text-muted-foreground" /><input aria-label={fr ? "Rechercher un courtier en attente" : "Search pending broker"} placeholder={fr ? "Rechercher par nom" : "Search by name"} value={brokerSearch} onChange={e => setBrokerSearch(e.target.value)} className="w-44" /></label>
           <label className="flex flex-wrap items-center gap-2 text-xs"><Users className="h-4 w-4" />{fr ? "Courtier" : "Broker"}<select aria-label={fr ? "Courtier en attente" : "Pending broker"} value={agent} onChange={e => { setAgent(e.target.value); setTab("overview"); }}><option value="">{fr ? "Vue globale — tous les courtiers" : "Global view — all brokers"}</option>{brokers?.filter(b => String(b.users_id) === agent || b.name.toLocaleLowerCase().includes(brokerSearch.trim().toLocaleLowerCase())).map(b => <option key={b.users_id} value={b.users_id}>{b.name}</option>)}</select></label>
         </>}
@@ -281,6 +279,13 @@ export default function PendingCommissionsCard({ lang = "fr", filters, cacheScop
             <Panel title={fr ? "Dossiers et commissions" : "Files and commissions"} icon={<BriefcaseBusiness className="h-4 w-4" />}>
               {months.length ? <div className="h-[250px]"><ResponsiveContainer width="100%" height="100%"><ComposedChart data={months}><CartesianGrid stroke="var(--pp-bg-border)" vertical={false} /><XAxis dataKey="label" tick={{fill:"var(--pp-text-muted)",fontSize:11}} /><YAxis yAxisId="files" allowDecimals={false} tick={{fill:"var(--pp-text-muted)",fontSize:11}} width={35} /><YAxis yAxisId="amount" orientation="right" tickFormatter={v => compactCad(Number(v))} tick={{fill:"var(--pp-text-muted)",fontSize:11}} width={65} /><Tooltip formatter={(v,n) => n === (fr ? "Dossiers" : "Files") ? Number(v) : exactCad(Number(v))} contentStyle={{background:"var(--pp-bg-elevated)",border:"1px solid var(--pp-bg-border)"}} /><Legend wrapperStyle={{fontSize:11}} /><Bar isAnimationActive={false} yAxisId="files" dataKey="files" name={fr ? "Dossiers" : "Files"} fill="var(--pp-success)" radius={[4,4,0,0]} /><Line isAnimationActive={false} yAxisId="amount" dataKey="amount" name={fr ? "Commissions ventilées" : "Allocated commissions"} stroke="var(--pp-warning)" strokeWidth={3} dot={{r:3}} /></ComposedChart></ResponsiveContainer></div> : <EmptyMessage fr={fr} />}
             </Panel>
+            <Panel title={fr ? "Cumul en attente" : "Cumulative pending"} icon={<BarChart3 className="h-4 w-4" />}>
+              {months.length ? <div className="h-[210px] sm:h-[250px] min-w-0"><ResponsiveContainer width="100%" height="100%"><AreaChart data={months.reduce<{ label: string; cumul: number }[]>((acc, m) => [...acc, { label: m.label, cumul: Math.round(((acc.at(-1)?.cumul ?? 0) + m.amount) * 100) / 100 }], [])} margin={{ top: 10, right: 4, left: -8, bottom: 0 }}><defs><linearGradient id="pendingCumul" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="var(--pp-warning)" stopOpacity={0.55} /><stop offset="100%" stopColor="var(--pp-warning)" stopOpacity={0.03} /></linearGradient></defs><CartesianGrid strokeDasharray="3 4" stroke="var(--pp-bg-border-2)" vertical={false} /><XAxis dataKey="label" tick={{ fontSize: 10, fill: "var(--pp-text-muted)" }} axisLine={false} tickLine={false} interval="preserveStartEnd" /><YAxis tick={{ fontSize: 10, fill: "var(--pp-text-muted)" }} axisLine={false} tickLine={false} width={52} tickFormatter={(v) => compactCad(Number(v)).replace("$", "")} /><Tooltip formatter={(v) => exactCad(Number(v))} contentStyle={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border)" }} /><Area isAnimationActive={false} type="monotone" dataKey="cumul" name={fr ? "Cumul ventilé" : "Allocated cumulative"} stroke="var(--pp-warning)" strokeWidth={2.5} fill="url(#pendingCumul)" /></AreaChart></ResponsiveContainer></div> : <EmptyMessage fr={fr} />}
+            </Panel>
+            {isAdminView && !selectedBroker && brokers && brokers.length > 0 && (() => { const top = [...brokers].sort((a, b) => b.amount - a.amount).slice(0, 8).map(b => ({ name: b.name.length > 16 ? `${b.name.slice(0, 15)}…` : b.name, amount: b.amount })); return (
+              <Panel title={fr ? "Top courtiers en attente" : "Top pending brokers"} icon={<Users className="h-4 w-4" />}>
+                <div className="min-w-0" style={{ height: Math.max(200, top.length * 32) }}><ResponsiveContainer width="100%" height="100%"><BarChart data={top} layout="vertical" margin={{ top: 4, right: 12, left: 4, bottom: 0 }}><defs><linearGradient id="pendingTop" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stopColor="var(--pp-brand-accent)" /><stop offset="100%" stopColor="var(--pp-warning)" /></linearGradient></defs><CartesianGrid stroke="var(--pp-bg-border)" horizontal={false} /><XAxis type="number" tick={{ fontSize: 10, fill: "var(--pp-text-muted)" }} tickFormatter={(v) => compactCad(Number(v)).replace("$", "")} axisLine={false} tickLine={false} /><YAxis type="category" dataKey="name" width={104} tick={{ fontSize: 10.5, fill: "var(--pp-text-secondary)" }} axisLine={false} tickLine={false} /><Tooltip formatter={(v) => exactCad(Number(v))} contentStyle={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border)" }} /><Bar isAnimationActive={false} dataKey="amount" name={fr ? "En attente" : "Pending"} fill="url(#pendingTop)" radius={[0, 5, 5, 0]} maxBarSize={20} /></BarChart></ResponsiveContainer></div>
+              </Panel>); })()}
           </div>}
 
 

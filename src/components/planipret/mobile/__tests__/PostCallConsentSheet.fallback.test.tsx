@@ -13,6 +13,7 @@ function builder(table: string) {
     or: (...a: any[]) => { rec.ops.push(["or", ...a]); return b; },
     gte: (...a: any[]) => { rec.ops.push(["gte", ...a]); return b; },
     in: (col: string, vals: string[]) => { rec.ops.push(["in", col, vals]); inFilter = { col, vals }; return b; },
+    is: (...a: any[]) => { rec.ops.push(["is", ...a]); return b; },
     order: (...a: any[]) => { rec.ops.push(["order", ...a]); return b; },
     maybeSingle: async () => ({ data: { id: "prof-1" }, error: null }),
     limit: async () => {
@@ -55,8 +56,8 @@ beforeEach(() => { state.responses = []; state.calls = []; });
 
 describe("PostCallConsentSheet — repli par numéro", () => {
   it("A. providerCallId introuvable → repli par numéro du courtier → fenêtre affichée", async () => {
-    state.responses = [[row({})]];
     render(<PostCallConsentSheet />);
+    state.responses = [[row({})]];
     fire();
     await waitFor(() => expect(dialog()).toBeInTheDocument());
     const fb = state.calls.find((c) => c.ops.some((o) => o[0] === "in"))!;
@@ -65,46 +66,63 @@ describe("PostCallConsentSheet — repli par numéro", () => {
   });
 
   it("B. appel créé il y a plus de 10 minutes mais terminé maintenant → fenêtre affichée", async () => {
-    state.responses = [[row({ created_at: iso(45 * 60_000), answered_at: iso(44 * 60_000), duration_seconds: 2640 })]];
     render(<PostCallConsentSheet />);
+    state.responses = [[row({ created_at: iso(45 * 60_000), answered_at: iso(44 * 60_000), duration_seconds: 2640 })]];
     fire();
     await waitFor(() => expect(dialog()).toBeInTheDocument());
     expect(screen.getByText(/2640 s/)).toBeInTheDocument();
   });
 
   it("C. autre appel proche au même numéro : sens et heure choisissent le bon", async () => {
+    render(<PostCallConsentSheet />);
     state.responses = [[
       row({ id: "wrong-dir", direction: "outbound", maestro_client_name: "Mauvais sens", ended_at: iso(500) }),
       row({ id: "wrong-time", maestro_client_name: "Trop ancien", ended_at: iso(8 * 60_000) }),
       row({ id: "good", maestro_client_name: "Bon appel", ended_at: iso(2_000) }),
     ]];
-    render(<PostCallConsentSheet />);
     fire();
     await waitFor(() => expect(dialog()).toBeInTheDocument());
     expect(screen.getByText("Bon appel")).toBeInTheDocument();
   });
 
   it("D. ended_at absent au premier essai puis écrit pendant les retries", async () => {
-    state.responses = [[], [row({ ended_at: iso(500) })]];
     render(<PostCallConsentSheet />);
+    state.responses = [[], [row({ ended_at: iso(500) })]];
     fire();
     await waitFor(() => expect(dialog()).toBeInTheDocument(), { timeout: 3000 });
   });
 
   it("E. la ligne d'un autre courtier n'est jamais retenue", async () => {
-    state.responses = [[row({ user_id: "other-broker", maestro_client_name: "Autre" })]];
     render(<PostCallConsentSheet />);
+    state.responses = [[row({ user_id: "other-broker", maestro_client_name: "Autre" })]];
     fire();
     await new Promise((r) => setTimeout(r, 1700));
     expect(dialog()).toBeNull();
   }, 5000);
 
-  it("appel manqué ou déjà tranché → aucune fenêtre", async () => {
+  it("F. balayage au montage : appel répondu sans décision → fenêtre affichée sans événement", async () => {
+    state.responses = [[row({ id: "swept", maestro_client_name: "Balayé" })]];
+    render(<PostCallConsentSheet />);
+    await waitFor(() => expect(dialog()).toBeInTheDocument());
+    expect(screen.getByText("Balayé")).toBeInTheDocument();
+  });
+
+  it("G. balayage au montage : appel manqué ou déjà tranché → aucune fenêtre", async () => {
     state.responses = [[
       row({ id: "m", answered_at: null, status: "missed", duration_seconds: 0 }),
       row({ id: "d", save_consent: "approved" }),
     ]];
     render(<PostCallConsentSheet />);
+    await new Promise((r) => setTimeout(r, 800));
+    expect(dialog()).toBeNull();
+  }, 5000);
+
+  it("appel manqué ou déjà tranché → aucune fenêtre", async () => {
+    render(<PostCallConsentSheet />);
+    state.responses = [[
+      row({ id: "m", answered_at: null, status: "missed", duration_seconds: 0 }),
+      row({ id: "d", save_consent: "approved" }),
+    ]];
     fire();
     await new Promise((r) => setTimeout(r, 1700));
     expect(dialog()).toBeNull();

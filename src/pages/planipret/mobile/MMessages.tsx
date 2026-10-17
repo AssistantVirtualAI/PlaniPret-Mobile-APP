@@ -116,9 +116,9 @@ export default function MMessages() {
 
 
   return (
-    <div className="h-full flex flex-col" style={{ background: "var(--pp-bg-base)" }}>
+    <div className="h-full min-h-0 flex flex-col" style={{ background: "var(--pp-bg-base)" }}>
       <div
-        className="px-4 pt-5 pb-3"
+        className="shrink-0 px-4 pt-5 pb-3"
         style={{ background: "var(--pp-bg-deep)", borderBottom: "1px solid var(--pp-bg-border)" }}
       >
         <h1 className="text-2xl font-bold mb-3" style={{ color: "var(--pp-text-primary)" }}>{t("messages.title")}</h1>
@@ -161,7 +161,7 @@ export default function MMessages() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-hidden">
+      <div className="flex-1 min-h-0 overflow-hidden">
         {visited.has("sms") && <div className="h-full" hidden={sub !== "sms"}><SmsList profile={profile} openDialer={openDialer} registerRefresh={registerRefresh} active={sub === "sms"} initialTo={qTo} /></div>}
         {visited.has("team") && <div className="h-full" hidden={sub !== "team"}><TeamChat profile={profile} /></div>}
         {visited.has("teams365") && <div className="h-full" hidden={sub !== "teams365"}><Teams365Panel profile={profile} /></div>}
@@ -450,7 +450,10 @@ function SmsList({ profile, openDialer, registerRefresh, active = true, initialT
   }
 
   return (
-    <div className="p-3">
+    <div
+      className="h-full min-h-0 overflow-y-auto overscroll-contain p-3"
+      style={{ WebkitOverflowScrolling: "touch", touchAction: "pan-y" }}
+    >
       <div className="flex justify-end mb-2 gap-2">
         <button
           onClick={() => void load(true)}
@@ -579,7 +582,7 @@ function NewSmsSheet({ onClose, onStart }: { onClose: () => void; onStart: (numb
   const manual = query.trim();
 
   return (
-    <div role="dialog" aria-modal="true" data-pp-sheet aria-label={tr("Nouveau SMS", "New SMS")} data-testid="new-sms-sheet" className="fixed inset-0 z-40 flex items-end md:items-center md:justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+    <div className="fixed inset-0 z-40 flex items-end md:items-center md:justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
       <div
         className="w-full md:w-[390px] rounded-t-3xl md:rounded-2xl flex flex-col"
         style={{ background: "var(--pp-bg-base)", border: "1px solid var(--pp-bg-border-2)", maxHeight: "86dvh" }}
@@ -620,7 +623,7 @@ function NewSmsSheet({ onClose, onStart }: { onClose: () => void; onStart: (numb
             </button>
           )}
         </div>
-        <div data-scroll-owner="new-sms" className="flex-1 overflow-y-auto overscroll-contain px-4 pb-4 space-y-1.5" style={{ minHeight: 0, WebkitOverflowScrolling: "touch" }}>
+        <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-1.5">
           {loading ? (
             Array.from({ length: 5 }).map((_, i) => (
               <div key={i} className="h-14 rounded-2xl animate-pulse" style={{ background: "var(--pp-bg-surface)" }} />
@@ -920,8 +923,6 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
             setShowJump(!atBottom);
             if (atBottom) setNewCount(0);
           }
-          // Chargement progressif — une seule tranche à la fois, jamais
-          // pendant l'inertie (sinon le fil saute et se bloque sur iOS).
           if (el.scrollTop < 60 && messages.length > visibleCount && !loadingOlderRef.current) {
             loadingOlderRef.current = true;
             window.setTimeout(() => {
@@ -930,7 +931,7 @@ function ThreadView({ threadId: thId, number, initialText, autoSend, myExt, user
             }, 120);
           }
         }}
-        className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 py-4 space-y-2"
+        className="flex-1 min-h-0 overflow-y-auto px-3 py-4 space-y-2"
         style={{
           background: "var(--pp-bg-base)",
           WebkitOverflowScrolling: "touch",
@@ -1115,7 +1116,7 @@ function TeamChat({ profile }: { profile: any }) {
           <Sparkles className="w-3 h-3" /> {t("messages.summarize")}
         </button>
       </div>
-      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 py-3 space-y-2" style={{ WebkitOverflowScrolling: "touch" }}>
+      <div className="flex-1 overflow-y-auto px-3 py-3 space-y-2">
         {loading ? (
           <div className="text-center py-8" style={{ color: "var(--pp-text-muted)" }}>
             <Loader2 className="w-5 h-5 animate-spin mx-auto" />
@@ -1327,7 +1328,7 @@ export function EmailsList({ profile, initialTo, initialName }: { profile: any; 
 
 
   return (
-    <div data-scroll-owner="emails" className="relative flex flex-col h-full min-h-0 overflow-y-auto overscroll-contain p-3 pb-[calc(1rem+env(safe-area-inset-bottom))]" style={{ WebkitOverflowScrolling: "touch" }}>
+    <div className="relative flex flex-col overflow-y-auto p-3" style={{ height: "calc(100dvh - 242px)", minHeight: 400 }}>
       <div className="flex items-center justify-between mb-2">
         <button
           onClick={() => { setComposeInit({}); setComposeOpen(true); }}
@@ -1652,13 +1653,13 @@ function EmailDetailSheet({ email, cacheIdentity, onClose, onCompose, onChanged,
   });
 
   return (
-    <div role="dialog" aria-modal="true" data-pp-sheet data-testid="email-detail-sheet" className="fixed inset-0 z-[9999] flex items-end" style={{ background: "rgba(0,0,0,0.5)" }} onClick={onClose}>
+    <div className="fixed inset-0 z-[9999] flex items-end" style={{ background: "rgba(0,0,0,0.5)" }} onClick={onClose}>
       <div
         className="w-full rounded-t-3xl flex flex-col shadow-2xl"
         style={{
           background: "var(--pp-bg-base)",
           border: "1px solid var(--pp-bg-border-2)",
-          height: "calc(100dvh - env(safe-area-inset-top) - 24px)",
+          height: "calc(100vh - env(safe-area-inset-top) - 24px)",
           maxHeight: "calc(100dvh - 24px)",
         }}
         onClick={(e) => e.stopPropagation()}
@@ -1688,8 +1689,7 @@ function EmailDetailSheet({ email, cacheIdentity, onClose, onCompose, onChanged,
         </div>
 
         <div
-          data-scroll-owner="email-detail"
-          className="flex-1 overflow-y-auto overscroll-contain px-4 py-3 space-y-3"
+          className="flex-1 overflow-y-auto px-4 py-3 space-y-3"
           style={{ WebkitOverflowScrolling: "touch", minHeight: 0, overflowX: "hidden", maxWidth: "100vw" }}
         >
           <div className="rounded-xl p-3.5" style={{ background: "var(--pp-bg-surface)", border: "1px solid var(--pp-bg-border-2)" }}>
@@ -1905,13 +1905,13 @@ function EmailComposeSheet({ init, onClose, onSent }: { init: ComposeInit; onClo
   const title = mode === "reply" ? "Répondre" : mode === "reply_all" ? "Répondre à tous" : mode === "forward" ? "Transférer" : t("messages.newEmail");
 
   return (
-    <div role="dialog" aria-modal="true" data-pp-sheet data-testid="email-compose-sheet" className="fixed inset-0 z-[9999] flex flex-col" style={{ paddingTop: "env(safe-area-inset-top,0px)", paddingBottom: "env(safe-area-inset-bottom,0px)", background: "rgba(0,0,0,0.5)" }} onClick={onClose}>
+    <div className="fixed inset-0 z-[9999] flex flex-col" style={{ paddingTop: "env(safe-area-inset-top,0px)", paddingBottom: "env(safe-area-inset-bottom,0px)", background: "rgba(0,0,0,0.5)" }} onClick={onClose}>
       <div
         className="w-full rounded-t-3xl flex flex-col shadow-2xl"
         style={{
           background: "var(--pp-bg-base)",
           border: "1px solid var(--pp-bg-border-2)",
-          height: "calc(100dvh - env(safe-area-inset-top) - 24px)",
+          height: "calc(100vh - env(safe-area-inset-top) - 24px)",
           maxHeight: "calc(100dvh - 24px)",
           paddingBottom: "env(safe-area-inset-bottom)",
         }}
@@ -1932,7 +1932,7 @@ function EmailComposeSheet({ init, onClose, onSent }: { init: ComposeInit; onClo
             {t("common.send")}
           </button>
         </div>
-        <div data-scroll-owner="email-compose" className="flex-1 overflow-y-auto overscroll-contain px-4 py-3 space-y-2" style={{ minHeight: 0, WebkitOverflowScrolling: "touch" }}>
+        <div className="flex-1 overflow-y-auto px-4 py-3 space-y-2">
           {(mode === "new" || mode === "forward") && (
             <>
               <div className="flex items-start gap-2">
@@ -2286,7 +2286,7 @@ function TeamRoster({ profile, openDialer, onSwitchTab }: { profile: any; openDi
                   </div>
                 </div>
                 <div className="flex items-center gap-1.5">
-                  <ActionPill Icon={Phone} label="Appeler" disabled={!m.extension} onClick={() => m.extension && openDialer(m.extension)} />
+                  <ActionPill Icon={Phone} label={tr("Appeler", "Call")} disabled={!m.extension} onClick={() => m.extension && openDialer(m.extension)} />
                   <ActionPill Icon={MessageSquare} label="SMS" disabled={!m.extension} onClick={() => { if (m.extension) { onSwitchTab("sms"); toast(`SMS vers ${m.extension}`); } }} />
                   <ActionPill
                     Icon={Mail}
@@ -2812,7 +2812,7 @@ function TeamsThreadView({ target, onClose }: {
           {target.kind === "chat" ? "Chat" : "Canal"}
         </span>
       </div>
-      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 py-3 space-y-2" style={{ WebkitOverflowScrolling: "touch" }}>
+      <div ref={scrollRef} className="flex-1 overflow-y-auto px-3 py-3 space-y-2">
         {loading && messages.length === 0 ? <div className="text-xs" style={{ color: "var(--pp-text-muted)" }}>{tr("Chargement…", "Loading…")}</div> :
           messages.length === 0 ? <div className="text-xs text-center py-8" style={{ color: "var(--pp-text-muted)" }}>{tr("Aucun message. Envoyez le premier !", "No messages. Send the first one!")}</div> :
           messages.map((m) => {
@@ -2893,7 +2893,7 @@ function TeamsThreadView({ target, onClose }: {
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-          placeholder="Écrire un message…"
+          placeholder={tr("Écrire un message…", "Write a message…")}
           className="flex-1 text-sm px-3 py-2 rounded-full outline-none"
           style={{ background: "var(--pp-bg-elevated)", color: "var(--pp-text-primary)" }}
         />

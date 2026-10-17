@@ -84,11 +84,14 @@ describe("native telephony safety invariants", () => {
     expect(nativeService).toContain("requestPlanipretCallKitAnswer()");
     expect(nativeService).not.toContain("pjsip.answerCall({ callId");
     expect(hook).not.toContain("nativeSip.answer().then((ok) => completePlanipretCallKitAnswer");
-    expect(engine).toContain("answerInFlightCall");
+    expect(engine).toContain("answerInFlightCalls");
     expect(engine).toContain("answeredCallIds");
     expect(engine).not.toContain("answer FALLBACK");
     expect(engine).toContain("pjsua_conf_adjust_tx_level");
-    expect(engine).not.toContain("pjsua_conf_adjust_rx_level");
+    // Le gain de lecture du haut-parleur est appliqué au seul flux PJSIP reçu;
+    // CallKit reste propriétaire de la route AVAudioSession.
+    expect(engine).toContain("private func applyPlaybackGain");
+    expect(engine).toContain("pjsua_conf_adjust_rx_level(slot, speakerOn ? 2.2 : 1.0)");
     expect(engine).toContain("pjsua_set_null_snd_dev");
     expect(engine).toContain("pjsua_conf_disconnect");
     expect(keepAlive).toContain("pjsip_callkit_audio_owner");
@@ -130,13 +133,17 @@ describe("native telephony safety invariants", () => {
     expect(generator).toContain('(note.userInfo?["callId"] as? String) ?? ""');
   });
 
-  it("closes a terminated native call without reviving a stale REST attachment", () => {
+  it("closes only the terminated native dialog without reviving a stale REST attachment", () => {
     const callKit = read("ios/App/App/Plugins/PpVoipCall/PpVoipCall.swift");
     const hook = read("src/hooks/useMplanipretSoftphone.ts");
     const shell = read("src/pages/planipret/PlanipretMobile.tsx");
     const nativeService = read("src/lib/planipret/sip/nativeSipService.ts");
 
-    expect(callKit).toContain("stale PJSIP end ignored");
+    expect(callKit).toContain("private var nativeCalls: [UUID: String] = [:]");
+    expect(callKit).toContain("guard let uuid = self.nativeCalls.first(where: { $0.value == endedCallId })?.key");
+    expect(callKit).toContain("self.nativeCalls.removeValue(forKey: uuid)");
+    expect(callKit).toContain("if self.activeCallUUID == uuid, let remaining = self.nativeCalls.first");
+    expect(callKit).toContain("guard self.nativeCalls.isEmpty else { return }");
     expect(callKit).toContain("stale reportCallEnded ignored");
     expect(callKit).toContain("Let the CXEndCallAction delegate own cleanup");
     expect(hook).toContain("stale native end ignored");
@@ -155,33 +162,29 @@ describe("native telephony safety invariants", () => {
     expect(engine).toContain('attemptHangup("primary")');
     expect(engine).toContain('attemptHangup("retry")');
     expect(engine).toContain("private var dialogGeneration: UInt64 = 0");
-    expect(engine).toContain("guard self.dialogGeneration == generation,");
-    expect(engine).toContain("self.activeCall == target || self.outgoingCall == target else { return }");
+    expect(engine).toContain("let generation = callGenerations[Int32(target)]");
+    expect(engine).toContain("guard self.callGenerations[Int32(target)] == generation,");
+    expect(engine).toContain("self.callIds.contains(Int32(target)) else { return }");
     expect(engine).toContain("pjsua_call_hangup(target, UInt32(code), nil, nil)");
   });
 
   it("does not reopen CallKit for a retransmitted INVITE on the same dialog", () => {
     const engine = read("ios/App/App/Plugins/PpPjsip/PpPjsipEngine.swift");
 
-    expect(engine).toContain("if activeCall == callId {");
+    expect(engine).toContain("if callIds.contains(Int32(callId)) || rejectedConcurrentCallIds.contains(Int32(callId)) {");
     expect(engine).toContain("duplicate incoming INVITE ignored");
-    expect(engine).toContain("if activeCall >= 0 {");
+    expect(engine).toContain("if callIds.count + (outgoingPending ? 1 : 0) >= 2 {");
+    expect(engine).toContain("pjsua_call_answer(callId, 486, nil, nil)");
   });
 
-  it("keeps the TLS contact reachable and repairs only a real iOS network-path change", () => {
+  it("keeps an active iOS call intact when a concurrent dialog is refused or ends", () => {
     const engine = read("ios/App/App/Plugins/PpPjsip/PpPjsipEngine.swift");
 
-    expect(engine).toContain("import Network");
-    expect(engine).toContain("acc.allow_via_rewrite = pj_bool_t(1)");
-    expect(engine).toContain("acc.contact_use_src_port = pj_bool_t(1)");
-    expect(engine).toContain("acc.ka_interval = 15");
-    expect(engine).toContain("cfg.cb.on_transport_state = ppPjsipOnTransportState");
-    expect(engine).toContain("private func startPathMonitor()");
-    expect(engine).toContain("guard let previous, previous != signature, path.status == .satisfied else { return }");
-    expect(engine).toContain("pjsua_handle_ip_change(&param)");
-    expect(engine).toContain("param.restart_listener = pj_bool_t(1)");
-    expect(engine).toContain("asyncAfter(deadline: .now() + 1.0");
-    expect(engine).not.toContain("setInterval(run, 30_000)");
+    expect(engine).toContain("let isRejectedConcurrent = rejectedConcurrentCallIds.contains(Int32(callId))");
+    expect(engine).toContain("rejected concurrent call state ignored");
+    expect(engine).toContain("if attachedAudioCall == callId || callIds.isEmpty {");
+    expect(engine).toContain("if activeCall == callId {");
+    expect(engine).toContain("activeCall = callIds.first(where: { !heldCallIds.contains($0) })");
   });
 
   it("refuses a JsSIP answer without a live microphone and cleans media", () => {

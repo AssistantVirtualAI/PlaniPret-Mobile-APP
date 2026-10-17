@@ -326,6 +326,7 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
 
   useEffect(() => {
     if (!isIosNativePlatform() || usingWebFallback) return;
+    const nativeCalls = new Map<string, PpSipSnapshot>();
     const onRegistration = (event: Event) => {
       const d = (event as CustomEvent<any>).detail ?? {};
       setSnap((current) => ({
@@ -337,7 +338,9 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     };
     const onIncoming = (event: Event) => {
       const d = (event as CustomEvent<any>).detail ?? {};
-      setSnap((current) => ({
+      setSnap((current) => {
+        if (current.callId && ["active", "held", "ringing-in", "ringing-out"].includes(current.callState)) nativeCalls.set(current.callId, current);
+        return {
         ...current,
         status: nativeSip.isRegistered() ? "registered" : current.status,
         callState: "ringing-in",
@@ -346,7 +349,8 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
         remoteNumber: String(d.remoteNumber ?? ""),
         direction: "in",
         startedAt: Date.now(),
-      }));
+      };
+      });
     };
     const onCallState = (event: Event) => {
       const d = (event as CustomEvent<any>).detail ?? {};
@@ -354,6 +358,15 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       const eventCallId = String(d.callId ?? "");
       setSnap((current) => {
         const currentCallId = String(current.callId ?? "");
+        if (currentCallId && ["active", "held", "ringing-in", "ringing-out"].includes(current.callState)) nativeCalls.set(currentCallId, current);
+        if (state === "disconnected" || state === "ended") {
+          nativeCalls.delete(eventCallId);
+          if (eventCallId === currentCallId && nativeCalls.size) return nativeCalls.values().next().value!;
+        }
+        const previous = nativeCalls.get(eventCallId);
+        if (previous && eventCallId !== currentCallId && state !== "disconnected" && state !== "ended") {
+          current = previous;
+        }
         const currentIsLive = ["ringing-in", "ringing-out", "active", "held"].includes(current.callState);
         // A delayed disconnect for an older PJSIP dialog must never overwrite a
         // newer ringing/active call. CallKit enforces the same correlation on
@@ -370,7 +383,7 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
           ? (d.direction === "out" ? "ringing-out" : "ringing-in")
           : state === "connecting" || state === "connected" || state === "media"
             ? "active"
-            : state === "disconnected" || state === "ended" ? "ended" : current.callState;
+            : state === "held" ? "held" : state === "disconnected" || state === "ended" ? "ended" : current.callState;
         return {
           ...current,
           status: nativeSip.isRegistered() ? "registered" : current.status,
@@ -665,8 +678,8 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     onPlanipretIncomingInvite((invite) => {
       if (isIosNativePlatform() && !usingWebFallback) {
         if (invite?.action === "answer") {
-          // La réponse passe par CXAnswerCallAction; PpVoipCall déclenche le
-          // seul pjsua_call_answer et confirme lui-même son résultat à CallKit.
+          // CallKit owns the only native answer transaction. Completing it a
+          // second time from JavaScript could emit two 200 OK responses.
           void nativeSip.answer();
         } else if (invite?.action === "decline" || invite?.action === "cancelled") {
           void nativeSip.hangup();

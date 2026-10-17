@@ -7,7 +7,7 @@ vi.mock("recharts", () => ({
   ResponsiveContainer: () => null, BarChart: () => null, Bar: () => null,
   XAxis: () => null, YAxis: () => null, CartesianGrid: () => null, Tooltip: () => null,
   PieChart: () => null, Pie: () => null, Cell: () => null, Legend: () => null,
-  ComposedChart: () => null, Line: () => null,
+  ComposedChart: () => null, Line: () => null, AreaChart: () => null, Area: () => null,
 }));
 import PendingCommissionsCard from "./PendingCommissionsCard";
 
@@ -69,14 +69,4 @@ describe("Official pending commission totals", () => {
     expect(normalized(screen.getByRole("table").textContent ?? "")).toContain(normalized(money(100.12)));
     expect(screen.getByRole("table")).toHaveTextContent("Total ventilé");
   });
-});
-it("keeps an administrator personal filter on every pending request", async () => {
-  render(<PendingCommissionsCard cacheScope="admin-personal" filters={{ users_id: "93135", date_from: "2026-01-01", date_to: "2026-12-31" }} />);
-  await screen.findByLabelText("Totaux officiels Maestro");
-  expect(invoke).toHaveBeenCalledWith(
-    "planipret-commission-reports",
-    expect.objectContaining({ action: "pending", filters: expect.objectContaining({ users_id: "93135" }) }),
-    expect.anything(),
-  );
-  expect(screen.queryByLabelText("Courtier en attente")).not.toBeInTheDocument();
 });

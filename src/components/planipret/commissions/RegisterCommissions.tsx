@@ -5,6 +5,8 @@ import {
 } from "recharts";
 import { Loader2, TrendingUp, TrendingDown, Trophy, FileDown, RotateCcw, Star, ImageDown, SlidersHorizontal, ChevronDown } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
+import { ppEdgeInvoke } from "@/lib/planipret/ppEdge";
+import { invalidateCommissionCache } from "@/lib/planipret/commissionClientCache";
 import CommissionInsights from "./CommissionInsights";
 import ClubExcellencePanel from "./ClubExcellencePanel";
 import { Ov3DChartFilters, Ov3DGradients, fill3d } from "@/components/planipret/broker/overview/ov3dChart";
@@ -12,8 +14,8 @@ import RegisterFilters, { type Granularity } from "./RegisterFilters";
 import BrokerLeaderboard from "./BrokerLeaderboard";
 import BrokerTopSellers from "./BrokerTopSellers";
 import BrokerYearMatrix from "./BrokerYearMatrix";
-import BrokerVisualSummary from "./BrokerVisualSummary";
 import BrokerDrilldown from "./BrokerDrilldown";
+import BrokerCharts from "./BrokerCharts";
 import { downloadCommissionsPdf } from "@/lib/planipret/commissionsPdf";
 import { exportNodePng, exportDashboardPdf } from "@/lib/planipret/exportVisuals";
 import { useAdminCommissionFilters, readAdminCommissionFilters, defaultAdminCommissionFilters } from "@/hooks/useAdminCommissionFilters";
@@ -33,19 +35,7 @@ import CommissionRecalcButton from "./ui/CommissionRecalcButton";
 import UndatedTransactionsPanel from "./UndatedTransactionsPanel";
 import { loadBrokerCoverage, causeLabel, coverageFor, type CoverageMap, type CoverageCause } from "@/lib/planipret/brokerCoverage";
 import MaestroStatusBadge from "./ui/MaestroStatusBadge";
-import { statsCacheKey, readStatsCache, readAnyStatsCache, writeStatsCache, isStatsCacheFresh, type StatsCacheEntry } from "@/lib/planipret/commissionsCache";
-import { ppEdgeInvoke } from "@/lib/planipret/ppEdge";
-import { invalidateCommissionCache } from "@/lib/planipret/commissionClientCache";
-import { commissionLoadMessage } from "@/lib/planipret/commissionLoadError";
-import {
-  insightCacheKey,
-  needsCommissionInsightRefresh,
-  readCommissionInsightCadence,
-  readCommissionInsights,
-  writeCommissionInsightCadence,
-  writeCommissionInsights,
-  type CommissionInsightCadence,
-} from "@/lib/planipret/commissionInsightsCache";
+import { statsCacheKey, readStatsCache, readAnyStatsCache, writeStatsCache } from "@/lib/planipret/commissionsCache";
 import {
   CHART_COLORS, CommissionsGradients, axisProps, gridProps, legendProps, tipProps,
 } from "./ui/chartTheme";
@@ -185,24 +175,18 @@ function Table({ head, rows }: { head: string[]; rows: (string | number | JSX.El
   );
 }
 
-export default function RegisterCommissions({ lang, scope = "broker", forcedAgent = null, presentation = "portal", cacheScope }: {
+export default function RegisterCommissions({ lang, scope = "broker", forcedAgent = null }: {
   lang: Lang;
   scope?: "broker" | "admin";
   /** Admin per-broker view: lock the agent filter on this broker name. */
   forcedAgent?: string | null;
-  /** Mobile hides diagnostic inventory and mutating maintenance controls. */
-  presentation?: "portal" | "mobile";
-  /** Isolates cached financial data by signed-in mobile account and selected view. */
-  cacheScope?: string;
 }) {
   const isFr = lang === "fr";
   const isAdminView = scope === "admin";
-  const isMobilePresentation = presentation === "mobile";
   const MONTHS = isFr ? MONTHS_FR : MONTHS_EN;
   const now = new Date();
   const scopeKey: "admin" | "broker" = isAdminView ? "admin" : "broker";
   const filtersScope = forcedAgent ? `${scopeKey}:${forcedAgent}` : scopeKey;
-  const cachePartition = cacheScope ?? `portal:${filtersScope}`;
   const saved = readAdminCommissionFilters(filtersScope);
   const [year, setYear] = useState(saved?.year ?? now.getFullYear());
   const [month, setMonth] = useState(12);
@@ -213,19 +197,20 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
   const [brokersYear, setBrokersYear] = useState<number | "all">("all");
   const [lender, setLender] = useState(saved?.lender ?? "");
   const [tab, setTab] = useState<Tab>((saved?.tab as Tab) ?? "overview");
-  const bootCacheKey = statsCacheKey(scopeKey, [cachePartition, "register-v3", year, month, granularity, periodIndex, agent || "all"]);
-  const bootCacheRef = useRef<StatsCacheEntry | null | undefined>(undefined);
-  if (bootCacheRef.current === undefined) {
-    bootCacheRef.current = readStatsCache(bootCacheKey) ?? readAnyStatsCache(scopeKey, cachePartition);
-  }
-  const bootCache = bootCacheRef.current;
-  // Paint a verified local snapshot during the very first render; the network
-  // refresh below only replaces it after a successful, server-authorized reply.
-  const [data, setData] = useState<any>(() => bootCache?.value ?? null);
-  const [loading, setLoading] = useState(() => !bootCache?.value);
+  const [data, setData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [stale, setStale] = useState(() => Boolean(bootCache?.value));
-  const [cachedAt, setCachedAt] = useState<string | null>(() => bootCache ? new Date(bootCache.ts).toISOString() : null);
+  const [stale, setStale] = useState(false);
+  const [cachedAt, setCachedAt] = useState<string | null>(null);
+  const [insightsViewerId, setInsightsViewerId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    supabase.auth.getUser().then(({ data }) => {
+      if (active) setInsightsViewerId(data.user?.id ?? null);
+    }).catch(() => { if (active) setInsightsViewerId(null); });
+    return () => { active = false; };
+  }, []);
 
   // Export (PNG / PDF) + mobile filter drawer
   const exportRootRef = useRef<HTMLDivElement>(null);
@@ -249,7 +234,8 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
 
   // Bumped after a Maestro sync to refetch the stats.
   const [refreshKey, setRefreshKey] = useState(0);
-  // A sync / live change must bypass the 15-minute device cache before refetching.
+  // A sync / live change must bypass the 15-min device copy (declared before
+  // the fetch effect so it runs first).
   useEffect(() => { if (refreshKey) invalidateCommissionCache(); }, [refreshKey]);
 
   // Live: any new commission row (import or Maestro sync) refetches the stats.
@@ -271,10 +257,7 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
   const [coverageMeta, setCoverageMeta] = useState<{ adminScopeConfigured: boolean; counts: Record<CoverageCause, number> } | null>(null);
 
   useEffect(() => {
-    // The coverage inventory is an admin-only portal diagnostic. It does not
-    // render on a phone and previously added two unnecessary database reads to
-    // every mobile opening of Commissions.
-    if (!isAdminView || isMobilePresentation) return;
+    if (!isAdminView) return;
     let cancelled = false;
     (async () => {
       try {
@@ -296,41 +279,33 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
 
   useEffect(() => {
     let cancelled = false;
-    const cacheKey = statsCacheKey(scopeKey, [cachePartition, "register-v3", year, month, granularity, periodIndex, agent || "all"]);
+    const cacheKey = statsCacheKey(scopeKey, [year, month, granularity, periodIndex, agent || "all"]);
     const run = async () => {
-      setError(null);
-      // Exact cache first; a fallback is allowed only inside this account/view partition.
-      const cached = readStatsCache(cacheKey) ?? (data ? null : readAnyStatsCache(scopeKey, cachePartition));
-      const fresh = isStatsCacheFresh(cached);
-      if (cached && !cancelled) {
-        setData(cached.value);
-        setStale(!fresh);
-        setCachedAt(new Date(cached.ts).toISOString());
-      }
-      // A fresh cache is the normal fast path. Realtime updates and explicit sync
-      // callbacks still increment refreshKey and bypass this return.
-      if (refreshKey === 0 && fresh) { setLoading(false); return; }
-      setLoading(!cached?.value);
+      setLoading(true); setError(null);
+      // Instant paint from the last known payload (never a blank page).
+      const cached = readStatsCache(cacheKey) ?? (data ? null : readAnyStatsCache(scopeKey));
+      if (cached && !cancelled) { setData(cached.value); setStale(true); setCachedAt(new Date(cached.ts).toISOString()); }
       try {
-        const request = {
-            year,
-            month: granularity === "ytd" || granularity === "month" ? periodIndex : month,
-            granularity,
-            periodIndex,
-            scope: isAdminView ? "all" : "self",
-            agent: isAdminView && agent ? agent : null,
-        };
-        const { data: res, error: edgeError } = await ppEdgeInvoke("pp-commission-stats", request, { retries: 1, timeoutMs: 45_000 });
-        if (edgeError || (res as any)?.error) throw new Error(commissionLoadMessage((res as any)?.error ?? edgeError?.message, isFr));
+        // Shared 15-min device cache (paid + pending), invalidated on server updates.
+        const { data: res, error: err } = await ppEdgeInvoke("pp-commission-stats", {
+          year,
+          month: granularity === "ytd" || granularity === "month" ? periodIndex : month,
+          granularity,
+          periodIndex,
+          scope: isAdminView ? "all" : "self",
+          agent: isAdminView && agent ? agent : null,
+        }, { retries: 1, timeoutMs: 90_000 });
+        if (err) throw err;
+        if ((res as any)?.error) throw new Error((res as any).error);
         if (!cancelled) {
           setData(res); setStale(false); setCachedAt(null); setError(null);
           writeStatsCache(cacheKey, res);
         }
       } catch (e: any) {
         if (cancelled) return;
-        const fallback = readStatsCache(cacheKey) ?? readAnyStatsCache(scopeKey, cachePartition);
+        const fallback = readStatsCache(cacheKey) ?? readAnyStatsCache(scopeKey);
         if (fallback) { setData(fallback.value); setStale(true); setCachedAt(new Date(fallback.ts).toISOString()); }
-        setError(commissionLoadMessage(e?.message, isFr));
+        setError(e?.message ?? "error");
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -338,7 +313,7 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
     void run();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [year, month, granularity, periodIndex, agent, isAdminView, refreshKey, cachePartition]);
+  }, [year, month, granularity, periodIndex, agent, isAdminView, refreshKey]);
 
   // Drill-down fetch (admin only)
   useEffect(() => {
@@ -347,7 +322,9 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
     (async () => {
       setDrillLoading(true); setDrillError(null);
       try {
-        const request = {
+        const { data: { session } } = await supabase.auth.getSession();
+        const { data: res, error: err } = await supabase.functions.invoke("pp-commission-stats", {
+          body: {
             year,
             month: granularity === "ytd" || granularity === "month" ? periodIndex : month,
             granularity,
@@ -355,12 +332,14 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
             scope: "all",
             agent: null,
             detailBrokerKey: drillAgent,
-        };
-        const { data: res, error: edgeError } = await ppEdgeInvoke("pp-commission-stats", request, { retries: 1, timeoutMs: 45_000 });
-        if (edgeError || (res as any)?.error) throw new Error(commissionLoadMessage((res as any)?.error ?? edgeError?.message, isFr));
+          },
+          headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : undefined,
+        });
+        if (err) throw err;
+        if ((res as any)?.error) throw new Error((res as any).error);
         if (!cancelled) setDrillData((res as any)?.detail ?? null);
       } catch (e: any) {
-        if (!cancelled) setDrillError(commissionLoadMessage(e?.message, isFr));
+        if (!cancelled) setDrillError(e?.message ?? "error");
       } finally {
         if (!cancelled) setDrillLoading(false);
       }
@@ -461,40 +440,30 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
     ].join("|");
   }, [data]);
 
-  // ---- AI insights (Claude) -------------------------------------------------
-  // The default is one automatic generation per calendar day. A broker can make
-  // this stricter (week/month/quarter/year/manual) for this exact secure
-  // account/view and financial period. Switching dashboard tabs never creates
-  // another request.
+  // ---- AI insights — once per selected period/filter per 24 h, or manually ----
   const [ai, setAi] = useState<{ summary: string; insights: any[] } | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState<string | null>(null);
-  const [aiGeneratedAt, setAiGeneratedAt] = useState<number | null>(null);
-  const [aiCadence, setAiCadence] = useState<CommissionInsightCadence>(() => readCommissionInsightCadence(cachePartition));
-  const aiCacheKey = useMemo(() => insightCacheKey({
-    partition: cachePartition,
-    year,
-    granularity,
-    periodIndex,
-    lang,
-  }), [cachePartition, year, granularity, periodIndex, lang]);
 
   const generateInsights = async (force = false) => {
-    if (!data || data.rowCount === 0) return;
-    const cached = readCommissionInsights(aiCacheKey);
-    if (!force && cached) {
-      setAi(cached.value);
-      setAiGeneratedAt(cached.generatedAt);
-      if (!needsCommissionInsightRefresh(cached, aiCadence)) return;
+    if (!data || data.rowCount === 0 || !insightsViewerId) return;
+    const cacheKey = `pp-register-insights:v2:${insightsViewerId}:${isAdminView ? "admin" : "broker"}:${agent || "all"}:${year}:${granularity}:${periodIndex}:${lender || "all"}:${lang}`;
+    if (!force) {
+      try {
+        const raw = localStorage.getItem(cacheKey);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Date.now() - parsed.ts < 24 * 3600 * 1000) { setAi(parsed.value); return; }
+        }
+      } catch { /* ignore */ }
     }
-    if (!force && aiCadence === "manual") return;
     if (!(await ensureAiConsent())) return;
     setAiLoading(true); setAiError(null);
     try {
       const { data: { session } } = await supabase.auth.getSession();
       const payload = {
         lang, scope: isAdminView && !agent ? "admin" : "broker", source: "maestro",
-        focus: "overview", focusLabel: isFr ? "Vue globale" : "Overall view",
+        force,
         metrics: {
           year, period: data.periodLabel, granularity, window: data.window,
           agent: agent || (isAdminView ? "all brokers" : data.brokerName),
@@ -511,7 +480,7 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
           filteredTotals: lender ? filteredTotals : undefined,
           unmappedRows: allDeals.filter((d: any) => d?.mapStatus === "unmapped").length,
           // Raw deal lines (already scoped to this broker or to the firm view).
-          deals: filteredDeals.slice(0, 120).map((d: any) => ({
+          deals: filteredDeals.slice(0, 300).map((d: any) => ({
             n: d.number, date: d.date ?? d.dateTrans, agent: d.agentName,
             lender: d.institution, product: d.mortgageType, term: d.term,
             loan: d.loanAmt, commission: d.amount, type: d.commissionType,
@@ -526,9 +495,7 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
       if (err) throw err;
       const value = { summary: (res as any)?.summary ?? "", insights: (res as any)?.insights ?? [] };
       setAi(value);
-      const generatedAt = Date.now();
-      setAiGeneratedAt(generatedAt);
-      writeCommissionInsights(aiCacheKey, aiCadence, value, new Date(generatedAt));
+      try { localStorage.setItem(cacheKey, JSON.stringify({ ts: Date.now(), value })); } catch { /* ignore */ }
     } catch (e: any) {
       setAiError(e?.message ?? "AI error");
     } finally {
@@ -536,15 +503,14 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
     }
   };
 
-  // A saved result is shown immediately. The only automatic call is an opted-in
-  // cadence boundary; data refreshes, tab changes, and page opens reuse cache.
+  // Reloads the cached insight when data/filter changes; it does not generate a
+  // new model response until the 24 h expiry. The visible button is the opt-in
+  // manual refresh path.
   useEffect(() => {
-    const cached = readCommissionInsights(aiCacheKey);
-    setAi(cached?.value ?? null);
-    setAiGeneratedAt(cached?.generatedAt ?? null);
-    if (data && data.rowCount > 0 && needsCommissionInsightRefresh(cached, aiCadence)) void generateInsights(false);
+    setAi(null);
+    if (data && data.rowCount > 0) void generateInsights(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [aiCacheKey, aiCadence, dataSignature]);
+  }, [insightsViewerId, dataSignature, year, granularity, periodIndex, agent, lender, isAdminView]);
 
   const tabs: { key: TabKey; label: string; count?: number | null; tone?: "gold" | "warn" }[] = [
     { key: "overview", label: isFr ? "Vue d'ensemble" : "Overview" },
@@ -591,15 +557,8 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
     } finally { setExporting(null); }
   };
 
-  const chartAxisProps = isMobilePresentation
-    ? { ...axisProps, tick: { ...axisProps.tick, fontSize: 10 } }
-    : axisProps;
-  const chartLegendProps = isMobilePresentation
-    ? { ...legendProps, wrapperStyle: { ...legendProps.wrapperStyle, fontSize: 10, paddingTop: 4 } }
-    : legendProps;
-
   return (
-    <div ref={exportRootRef} className={`pp-commissions-root${isMobilePresentation ? " pp-commissions-mobile" : ""}`}>
+    <div ref={exportRootRef} className="pp-commissions-root">
       {data && data.rowCount > 0 && kpi && (
         <div data-pp-export-block>
         <CommissionsHero
@@ -696,11 +655,9 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
               style={{ fontSize: 12, fontWeight: 700, opacity: data ? 1 : .5, background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border)", color: "var(--pp-text-secondary)" }}>
               <FileDown className="w-3.5 h-3.5" />{isFr ? "Rapport détaillé" : "Detailed report"}
             </button>}
-            {!isMobilePresentation && <>
-              <MaestroSyncButton lang={lang} scope={isAdminView ? "admin" : "broker"} onDone={() => setRefreshKey((k) => k + 1)} />
-              {isAdminView && <CommissionSyncNowButton lang={lang} onDone={() => setRefreshKey((k) => k + 1)} />}
-              <CommissionRecalcButton lang={lang} scope={isAdminView ? "admin" : "broker"} onDone={() => setRefreshKey((k) => k + 1)} />
-            </>}
+            <MaestroSyncButton lang={lang} scope={isAdminView ? "admin" : "broker"} onDone={() => setRefreshKey((k) => k + 1)} />
+            {isAdminView && <CommissionSyncNowButton lang={lang} onDone={() => setRefreshKey((k) => k + 1)} />}
+            <CommissionRecalcButton lang={lang} scope={isAdminView ? "admin" : "broker"} onDone={() => setRefreshKey((k) => k + 1)} />
             <button onClick={resetFilters} className="pp-toolbar-btn inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg"
               style={{ fontSize: 12, fontWeight: 700, background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border)", color: "var(--pp-text-secondary)" }}>
               <RotateCcw className="w-3.5 h-3.5" />{isFr ? "Réinitialiser" : "Reset"}
@@ -735,7 +692,7 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
 
       <CommissionsTabs tabs={tabs} value={tab as TabKey} onChange={(k) => setTab(k as Tab)} />
 
-      {!isMobilePresentation && <div className="pp-hide-export">
+      <div className="pp-hide-export">
         <MaestroStatusBadge
           lang={lang}
           scope={scopeKey}
@@ -745,9 +702,9 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
           rowCount={data?.rowCount ?? null}
           dataSyncedAt={data?.syncedAt ?? cachedAt}
         />
-      </div>}
+      </div>
 
-      {!isMobilePresentation && data?.liveMerge && (
+      {data?.liveMerge && (
         <div className="pp-hide-export mb-2 rounded-xl" style={{ padding: "8px 10px", border: "1px solid var(--pp-bg-border)", background: "var(--pp-bg-elevated)" }}>
           <span style={{ fontSize: 11.5, color: "var(--pp-text-secondary)" }}>
             {isFr
@@ -805,18 +762,12 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
           <div className="mb-3">
             <CommissionInsights
               lang={lang}
-              context={isFr ? "Vue globale" : "Overall view"}
+              context={isFr ? "période sélectionnée" : "selected period"}
               summary={ai?.summary ?? ""}
               insights={(ai?.insights ?? []) as any}
               loading={aiLoading}
               error={aiError}
               generated={!!ai}
-              cadence={aiCadence}
-              generatedAt={aiGeneratedAt}
-              onCadenceChange={(nextCadence) => {
-                writeCommissionInsightCadence(cachePartition, nextCadence);
-                setAiCadence(nextCadence);
-              }}
               onGenerate={() => void generateInsights(true)}
             />
           </div>
@@ -866,10 +817,10 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
                         </linearGradient>
                       </defs>
                       <CartesianGrid {...gridProps} />
-                      <XAxis dataKey="name" {...chartAxisProps} />
-                      <YAxis {...chartAxisProps} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
+                      <XAxis dataKey="name" {...axisProps} />
+                      <YAxis {...axisProps} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
                       <Tooltip {...tipProps} formatter={(v: any, n: any) => [fmtMoney(Number(v)), n]} />
-                      <Legend {...chartLegendProps} />
+                      <Legend {...legendProps} />
                       <Bar name={String(year)} dataKey="cyVolume" fill="url(#gCy)" radius={[5, 5, 0, 0]} />
                       <Bar name={String(year - 1)} dataKey="pyVolume" fill="url(#gPy)" radius={[5, 5, 0, 0]} />
                       <Line name="BPS" dataKey="bps" stroke="#FFC000" strokeWidth={2} dot={false} yAxisId={0} hide />
@@ -879,20 +830,46 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
               </Section>
 
               <Section title={isFr ? "Commission par type" : "Commission by type"} chart={240} accent={CHART_COLORS[2]} info={isFr ? "Répartition du montant de commission entre les catégories du registre (commission de base, bonis, ajustements)." : "Split of commission amount across the register categories (base commission, bonuses, adjustments)."}>
-                <div style={{ height: 240 }}>
+                <div style={{ height: 200, position: "relative" }}>
                   <ResponsiveContainer>
                     <PieChart>
-                      <Pie data={data.commissionTypes} dataKey="amount" nameKey="type" innerRadius={55} outerRadius={90} paddingAngle={2}>
+                      <Pie data={data.commissionTypes} dataKey="amount" nameKey="type" innerRadius="62%" outerRadius="92%" paddingAngle={2} cornerRadius={6} stroke="none">
                         {data.commissionTypes.map((_: any, i: number) => <Cell key={i} fill={PALETTE[i % PALETTE.length]} />)}
                       </Pie>
                       <Tooltip {...tipProps} formatter={(v: any, n: any) => [fmtMoney(Number(v)), n]} />
-                      <Legend {...chartLegendProps} />
                     </PieChart>
                   </ResponsiveContainer>
+                  <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>
+                    <span style={{ fontSize: 10, opacity: 0.65, textTransform: "uppercase", letterSpacing: 1 }}>Total</span>
+                    <span style={{ fontSize: 15, fontWeight: 700 }}>{fmtMoney((data.commissionTypes as any[]).reduce((s, t) => s + Number(t.amount || 0), 0))}</span>
+                  </div>
                 </div>
+                {(() => {
+                  const rows = data.commissionTypes as any[];
+                  const total = rows.reduce((s, t) => s + Number(t.amount || 0), 0) || 1;
+                  return (
+                    <div style={{ display: "grid", gap: 6, marginTop: 10 }}>
+                      {rows.map((t, i) => {
+                        const pct = (Number(t.amount || 0) / total) * 100;
+                        const c = PALETTE[i % PALETTE.length];
+                        return (
+                          <div key={t.type ?? i} style={{ display: "grid", gridTemplateColumns: "10px 1fr auto auto", alignItems: "center", gap: 8, fontSize: 12 }}>
+                            <span style={{ width: 10, height: 10, borderRadius: 3, background: c }} />
+                            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.type}</span>
+                            <span style={{ fontWeight: 600 }}>{fmtMoney(Number(t.amount || 0))}</span>
+                            <span style={{ opacity: 0.65, minWidth: 38, textAlign: "right" }}>{pct.toFixed(1)}%</span>
+                            <div style={{ gridColumn: "2 / 5", height: 4, borderRadius: 2, background: "rgba(127,127,127,0.18)" }}>
+                              <div style={{ width: `${pct}%`, height: "100%", borderRadius: 2, background: c }} />
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
               </Section>
 
-              <div className="grid gap-3" style={{ gridTemplateColumns: isMobilePresentation ? "minmax(0,1fr)" : "repeat(auto-fit,minmax(320px,1fr))" }}>
+              <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(320px,1fr))" }}>
                 <Section title={isFr ? "Volume cumulé — courbe de progression" : "Cumulative volume — pace curve"} chart={240} accent={CHART_COLORS[0]} info={isFr ? "Cumul du volume mois après mois. Si la courbe de l'année courante passe au-dessus de celle de l'an dernier, le rythme est en avance." : "Month-over-month cumulative volume. When the current-year curve sits above last year, the pace is ahead."}>
                   <div style={{ height: 240 }}>
                     <ResponsiveContainer>
@@ -908,10 +885,10 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
                           </linearGradient>
                         </defs>
                         <CartesianGrid {...gridProps} />
-                        <XAxis dataKey="name" {...chartAxisProps} />
-                        <YAxis {...chartAxisProps} tickFormatter={(v) => `${Math.round(v / 1000000)}M`} />
+                        <XAxis dataKey="name" {...axisProps} />
+                        <YAxis {...axisProps} tickFormatter={(v) => `${Math.round(v / 1000000)}M`} />
                         <Tooltip {...tipProps} formatter={(v: any, n: any) => [fmtMoney(Number(v)), n]} />
-                        <Legend {...chartLegendProps} />
+                        <Legend {...legendProps} />
                         <Area name={String(year - 1)} dataKey="pyCum" stroke="#A5A5A5" fill="url(#gCumPy)" strokeWidth={2} />
                         <Area name={String(year)} dataKey="cyCum" stroke="#5B8FF9" fill="url(#gCumCy)" strokeWidth={2.4} />
                       </AreaChart>
@@ -924,11 +901,11 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
                     <ResponsiveContainer>
                       <ComposedChart data={cumulative}>
                         <CartesianGrid {...gridProps} />
-                        <XAxis dataKey="name" {...chartAxisProps} />
-                        <YAxis yAxisId="l" {...chartAxisProps} />
-                        <YAxis yAxisId="r" orientation="right" {...chartAxisProps} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
+                        <XAxis dataKey="name" {...axisProps} />
+                        <YAxis yAxisId="l" {...axisProps} />
+                        <YAxis yAxisId="r" orientation="right" {...axisProps} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
                         <Tooltip {...tipProps} formatter={(v: any, n: any) => [n === (isFr ? "Dossiers" : "Deals") ? fmtNum(Number(v)) : fmtMoney(Number(v)), n]} />
-                        <Legend {...chartLegendProps} />
+                        <Legend {...legendProps} />
                         <Bar yAxisId="l" name={isFr ? "Dossiers" : "Deals"} dataKey="deals" fill={fill3d("#70AD47")} radius={[5, 5, 0, 0]}  filter="url(#ov3dExtrude)" />
                         <Line yAxisId="r" name={isFr ? "Comm./dossier" : "Comm./deal"} dataKey="commPerDeal" stroke="#FFC000" strokeWidth={2.4} dot={{ r: 2 }} />
                       </ComposedChart>
@@ -951,14 +928,14 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
                     return (
                       <div style={{ height: 300 }}>
                         <ResponsiveContainer>
-                          <BarChart data={rows} layout="vertical" margin={{ top: 4, right: isMobilePresentation ? 42 : 64, bottom: 4, left: 4 }} barCategoryGap="22%">
+                          <BarChart data={rows} layout="vertical" margin={{ top: 4, right: 64, bottom: 4, left: 4 }} barCategoryGap="22%">
                             <CartesianGrid {...gridProps} vertical horizontal={false} />
-                            <XAxis type="number" {...chartAxisProps} tickFormatter={(v) => `${Math.round(Number(v) / 1000000)}M`} />
+                            <XAxis type="number" {...axisProps} tickFormatter={(v) => `${Math.round(Number(v) / 1000000)}M`} />
                             <YAxis
                               type="category"
                               dataKey="short"
-                              width={isMobilePresentation ? 92 : 130}
-                              {...chartAxisProps}
+                              width={130}
+                              {...axisProps}
                               tick={{ ...(axisProps as any).tick, fontSize: 12 }}
                             />
                             <Tooltip
@@ -996,8 +973,8 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
                           </linearGradient>
                         </defs>
                         <CartesianGrid {...gridProps} />
-                        <XAxis dataKey="name" {...chartAxisProps} />
-                        <YAxis {...chartAxisProps} />
+                        <XAxis dataKey="name" {...axisProps} />
+                        <YAxis {...axisProps} />
                         <Tooltip {...tipProps} formatter={(v: any) => fmtBps(Number(v))} />
                         <Area name="BPS" dataKey="bps" stroke="#8B5CF6" fill="url(#gBps)" strokeWidth={2.2} />
                       </AreaChart>
@@ -1005,6 +982,10 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
                   </div>
                 </Section>
               </div>
+
+              <Section title={isFr ? "Vue globale par courtier" : "Global view by broker"}>
+                <BrokerCharts lang={lang} brokers={(data.brokers ?? []) as any} onSelect={(b) => { setDrillData(null); setDrillAgent(b); }} />
+              </Section>
 
               <Section title={isFr ? "Notes de lecture" : "Reading notes"}>
                 <ul style={{ fontSize: 12, color: "var(--pp-text-secondary)", lineHeight: 1.65, paddingLeft: 16, listStyle: "disc" }}>
@@ -1020,7 +1001,7 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
 
           {tab === "brokers" && (
             <>
-              {!isMobilePresentation && <div
+              <div
                 className="mb-3 rounded-xl px-3 py-2.5"
                 style={{
                   background: "var(--pp-bg-elevated)",
@@ -1081,8 +1062,8 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
                 })()}
 
 
-              </div>}
-              {!isMobilePresentation && (data.unlinkedBrokers ?? []).length > 0 && (
+              </div>
+              {(data.unlinkedBrokers ?? []).length > 0 && (
                 <div className="mb-3 rounded-xl px-3 py-2.5"
                   style={{ background: "rgba(245,158,11,.10)", border: "1px solid rgba(245,158,11,.45)", fontSize: 12.5, color: "var(--pp-text-secondary)" }}>
                   <div style={{ fontWeight: 800, color: "var(--pp-text-primary)", marginBottom: 3 }}>
@@ -1099,6 +1080,8 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
                 </div>
               )}
 
+              <BrokerCharts lang={lang} brokers={(data.brokers ?? []) as any} onSelect={(b) => { setDrillData(null); setDrillAgent(b); }} />
+
               <BrokerTopSellers
                 lang={lang}
                 brokerYearly={(data.brokerYearly ?? []) as any}
@@ -1112,12 +1095,6 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
                 lang={lang}
                 brokerYearly={(data.brokerYearly ?? []) as any}
                 years={(data.brokerYears ?? []) as number[]}
-                onSelect={(b) => { setDrillData(null); setDrillAgent(b); }}
-              />
-
-              <BrokerVisualSummary
-                lang={lang}
-                brokers={data.brokers ?? []}
                 onSelect={(b) => { setDrillData(null); setDrillAgent(b); }}
               />
 
@@ -1138,10 +1115,10 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
                   <ResponsiveContainer>
                     <ComposedChart data={trendData}>
                       <CartesianGrid {...gridProps} />
-                      <XAxis dataKey="name" {...chartAxisProps} />
-                      <YAxis {...chartAxisProps} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
+                      <XAxis dataKey="name" {...axisProps} />
+                      <YAxis {...axisProps} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
                       <Tooltip {...tipProps} formatter={(v: any, n: any) => [fmtMoney(Number(v)), n]} />
-                      <Legend {...chartLegendProps} />
+                      <Legend {...legendProps} />
                       <Bar name={String(year)} dataKey="cyCommission" fill={fill3d("#ED7D31")} radius={[5, 5, 0, 0]}  filter="url(#ov3dExtrude)" />
                       <Bar name={String(year - 1)} dataKey="pyCommission" fill={fill3d("#A5A5A5")} radius={[5, 5, 0, 0]}  filter="url(#ov3dExtrude)" />
                     </ComposedChart>
@@ -1167,19 +1144,19 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
               <Section title={isFr ? "Top 10 prêteurs — volume CY vs PY" : "Top 10 lenders — volume CY vs PY"} chart={320} accent={CHART_COLORS[0]} info={isFr ? "Les 10 prêteurs les plus utilisés, classés par volume de l'année courante, avec le rappel de l'année précédente." : "The 10 most used lenders ranked by current-year volume, with last year for reference."}>
                 <div style={{ height: 320 }}>
                   <ResponsiveContainer>
-                    <BarChart data={data.lenders.slice(0, 10)} layout="vertical" margin={{ left: isMobilePresentation ? 0 : 30 }}>
+                    <BarChart data={data.lenders.slice(0, 10)} layout="vertical" margin={{ left: 30 }}>
                       <CartesianGrid {...gridProps} vertical horizontal={false} />
-                      <XAxis type="number" {...chartAxisProps} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
-                      <YAxis type="category" dataKey="key" width={isMobilePresentation ? 88 : 130} {...chartAxisProps} tickFormatter={(value) => String(value).length > 12 ? `${String(value).slice(0, 11)}…` : String(value)} />
+                      <XAxis type="number" {...axisProps} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
+                      <YAxis type="category" dataKey="key" width={130} {...axisProps} />
                       <Tooltip {...tipProps} formatter={(v: any, n: any) => [fmtMoney(Number(v)), n]} />
-                      <Legend {...chartLegendProps} />
+                      <Legend {...legendProps} />
                       <Bar name={String(year)} dataKey="cyVolume" fill={fill3d("#4472C4")} radius={[0, 5, 5, 0]}  filter="url(#ov3dExtrude)" />
                       <Bar name={String(year - 1)} dataKey="pyVolume" fill={fill3d("#A5A5A5")} radius={[0, 5, 5, 0]}  filter="url(#ov3dExtrude)" />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
               </Section>
-              <div className="grid gap-3 mt-3" style={{ gridTemplateColumns: isMobilePresentation ? "minmax(0,1fr)" : "repeat(auto-fit,minmax(300px,1fr))" }}>
+              <div className="grid gap-3 mt-3" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(300px,1fr))" }}>
                 <ChartFrame
                   title={isFr ? "Part de marché des prêteurs" : "Lender market share"}
                   accent={CHART_COLORS[3]}
@@ -1194,7 +1171,7 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
                         {(data.lenders ?? []).slice(0, 8).map((_: any, i: number) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
                       </Pie>
                       <Tooltip {...tipProps} formatter={(v: any, n: any) => [fmtMoney(Number(v)), n]} />
-                      <Legend {...chartLegendProps} {...(!isMobilePresentation ? { layout: "vertical" as const, align: "right" as const, verticalAlign: "middle" as const } : {})} />
+                      <Legend {...legendProps} layout="vertical" align="right" verticalAlign="middle" />
                     </PieChart>
                   </ResponsiveContainer>
                 </ChartFrame>
@@ -1210,8 +1187,8 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
                   <ResponsiveContainer>
                     <BarChart data={(data.lenders ?? []).slice(0, 8)} margin={{ left: 4, right: 8 }}>
                       <CartesianGrid {...gridProps} />
-                      <XAxis dataKey="key" {...chartAxisProps} interval={0} angle={-18} textAnchor="end" height={54} tickFormatter={(value) => String(value).length > 10 ? `${String(value).slice(0, 9)}…` : String(value)} />
-                      <YAxis {...chartAxisProps} />
+                      <XAxis dataKey="key" {...axisProps} interval={0} angle={-18} textAnchor="end" height={54} />
+                      <YAxis {...axisProps} />
                       <Tooltip {...tipProps} formatter={(v: any) => fmtBps(Number(v))} />
                       <Bar dataKey="cyBps" name="BPS" fill={fill3d("#8B5CF6")} radius={[6, 6, 0, 0]} filter="url(#ov3dExtrude)" />
                     </BarChart>
@@ -1241,7 +1218,7 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
 
           {tab === "mix" && (
             <>
-              <div className="grid gap-3" style={{ gridTemplateColumns: isMobilePresentation ? "minmax(0,1fr)" : "repeat(auto-fit,minmax(300px,1fr))" }}>
+              <div className="grid gap-3" style={{ gridTemplateColumns: "repeat(auto-fit,minmax(300px,1fr))" }}>
                 <Section title={isFr ? "Mix par type de prêt" : "Product mix"} chart={240} accent={CHART_COLORS[3]} info={isFr ? "Part de volume par type de produit hypothécaire sur la période." : "Share of volume per mortgage product type for the period."}>
                   <div style={{ height: 240 }}>
                     <ResponsiveContainer>
@@ -1250,7 +1227,7 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
                           {data.products.map((_: any, i: number) => <Cell key={i} fill={PALETTE[i % PALETTE.length]} />)}
                         </Pie>
                         <Tooltip {...tipProps} formatter={(v: any, n: any) => [fmtMoney(Number(v)), n]} />
-                        <Legend {...chartLegendProps} />
+                        <Legend {...legendProps} />
                       </PieChart>
                     </ResponsiveContainer>
                   </div>
@@ -1260,8 +1237,8 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
                     <ResponsiveContainer>
                       <BarChart data={data.terms}>
                         <CartesianGrid {...gridProps} />
-                        <XAxis dataKey="key" {...chartAxisProps} />
-                        <YAxis {...chartAxisProps} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
+                        <XAxis dataKey="key" {...axisProps} />
+                        <YAxis {...axisProps} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
                         <Tooltip {...tipProps} formatter={(v: any) => fmtMoney(Number(v))} />
                         <Bar dataKey="cyVolume" name="Volume" fill={fill3d("#70AD47")} radius={[5, 5, 0, 0]}  filter="url(#ov3dExtrude)" />
                       </BarChart>
@@ -1323,10 +1300,10 @@ export default function RegisterCommissions({ lang, scope = "broker", forcedAgen
                 <ResponsiveContainer>
                   <ComposedChart data={data.quarters.map((q: any) => ({ name: `Q${q.quarter}`, ...q }))}>
                     <CartesianGrid {...gridProps} />
-                    <XAxis dataKey="name" {...chartAxisProps} />
-                    <YAxis {...chartAxisProps} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
+                    <XAxis dataKey="name" {...axisProps} />
+                    <YAxis {...axisProps} tickFormatter={(v) => `${Math.round(v / 1000)}k`} />
                     <Tooltip {...tipProps} formatter={(v: any, n: any) => [fmtMoney(Number(v)), n]} />
-                    <Legend {...chartLegendProps} />
+                    <Legend {...legendProps} />
                     <Bar name={String(year)} dataKey="volume" fill={fill3d("#4472C4")} radius={[5, 5, 0, 0]}  filter="url(#ov3dExtrude)" />
                     <Bar name={String(year - 1)} dataKey="pyVolume" fill={fill3d("#A5A5A5")} radius={[5, 5, 0, 0]}  filter="url(#ov3dExtrude)" />
                   </ComposedChart>

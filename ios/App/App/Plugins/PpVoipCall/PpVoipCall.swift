@@ -26,6 +26,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     private var lastReportedToken: String?
     private var activeCallUUID: UUID?
     private var activeCallId: String?
+    private var nativeCalls: [UUID: String] = [:]
     private var pendingAnswerAction: CXAnswerCallAction?
     private var pendingAnswerBackgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var answerCompleted = false
@@ -186,6 +187,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             let info = note.userInfo as? [String: Any] ?? [:]
             self.cancelOutgoingActivationTimeout()
             self.activeCallId = (info["callId"] as? String) ?? self.activeCallId
+            if let uuid = self.activeCallUUID, let id = self.activeCallId { self.nativeCalls[uuid] = id }
             self.pendingOutgoingRequestId = nil
             self.nativeOutgoingCall = true
         })
@@ -203,24 +205,25 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             NSLog("[PpVoipCall] native SIP answer %@", ok ? "confirmed" : "failed")
         })
         pjsipObservers.append(nc.addObserver(forName: Notification.Name("PpPjsipCallEnded"), object: nil, queue: .main) { [weak self] note in
-            guard let self = self, let uuid = self.activeCallUUID else { return }
-            self.cancelOutgoingActivationTimeout()
-            // `userInfo` est [AnyHashable: Any]. Un cast explicite évite une
-            // résolution d'overload invalide de String(Any) sur Xcode récent.
+            guard let self = self else { return }
             let endedCallId = (note.userInfo?["callId"] as? String) ?? ""
-            // PJSIP callbacks can arrive after CallKit has already moved to a
-            // newer call. Never let the old dialog close that newer UI.
-            if !endedCallId.isEmpty,
-               let activeCallId = self.activeCallId,
-               !activeCallId.isEmpty,
-               endedCallId != activeCallId {
-                NSLog("[PpVoipCall] stale PJSIP end ignored ended=%@ active=%@", endedCallId, activeCallId)
-                return
+            guard let uuid = self.nativeCalls.first(where: { $0.value == endedCallId })?.key
+                ?? (self.activeCallId == endedCallId ? self.activeCallUUID : nil) else { return }
+            self.nativeCalls.removeValue(forKey: uuid)
+            if self.pendingAnswerAction?.callUUID == uuid {
+                self.pendingAnswerAction?.fail(); self.pendingAnswerAction = nil
+                self.endAnswerBackgroundTask()
+            }
+            if self.activeCallUUID == uuid, let remaining = self.nativeCalls.first {
+                self.activeCallUUID = remaining.key
+                self.activeCallId = remaining.value
             }
             let code = (note.userInfo?["code"] as? Int) ?? 0
             let reason: CXCallEndedReason = (code == 486 || code == 603) ? .declinedElsewhere
                 : (code >= 400 && code != 487) ? .failed : .remoteEnded
             self.provider?.reportCall(with: uuid, endedAt: Date(), reason: reason)
+            guard self.nativeCalls.isEmpty else { return }
+            self.cancelOutgoingActivationTimeout()
             self.pendingAnswerAction?.fail(); self.pendingAnswerAction = nil
             self.endAnswerBackgroundTask()
             self.activeCallUUID = nil; self.activeCallId = nil
@@ -233,7 +236,12 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     private func reportNativeIncomingCall(callId: String, callerName: String, callerNumber: String) {
         // Un push VoIP a pu déjà présenter le même appel : on garde le premier
         // UUID CallKit et on se contente d'enrichir l'affichage.
-        if let uuid = activeCallUUID {
+        if let existing = nativeCalls.first(where: { $0.value == callId }) {
+            provider?.reportCall(with: existing.key, updated: CXCallUpdate())
+            return
+        }
+        if let uuid = activeCallUUID, nativeCalls[uuid] == nil, !nativeOutgoingCall {
+            nativeCalls[uuid] = callId
             nativeEngineOwnsCall = true
             activeCallId = callId
             let update = CXCallUpdate()
@@ -256,8 +264,11 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         }
 
         let uuid = UUID()
-        activeCallUUID = uuid
-        activeCallId = callId
+        nativeCalls[uuid] = callId
+        if activeCallUUID == nil {
+            activeCallUUID = uuid
+            activeCallId = callId
+        }
         nativeEngineOwnsCall = true
 
         let update = CXCallUpdate()
@@ -266,13 +277,13 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             : CXHandle(type: .phoneNumber, value: callerNumber)
         update.localizedCallerName = callerName
         update.hasVideo = false
-        update.supportsHolding = false
+        update.supportsHolding = true
         update.supportsDTMF = true
 
         provider?.reportNewIncomingCall(with: uuid, update: update) { [weak self] error in
             if let error = error {
                 NSLog("[PpVoipCall] PJSIP reportNewIncomingCall failed: \(error.localizedDescription)")
-                NotificationCenter.default.post(name: Notification.Name("PpPjsipEndRequested"), object: nil)
+                PjsipEngine.shared.hangup(callId: callId)
                 return
             }
             NSLog("[PpVoipCall] CallKit ringing from native PJSIP INVITE callId=%@", callId)
@@ -292,7 +303,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         let cfg = CXProviderConfiguration(localizedName: "Planiprêt")
         cfg.supportsVideo = false
         cfg.maximumCallsPerCallGroup = 1
-        cfg.maximumCallGroups = 1
+        cfg.maximumCallGroups = 2
         cfg.supportedHandleTypes = [.phoneNumber, .generic]
         cfg.includesCallsInRecents = true
         if let img = UIImage(named: "AppIcon") { cfg.iconTemplateImageData = img.pngData() }
@@ -449,7 +460,10 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         let callerName = (dict["callerName"] as? String) ?? (dict["from_number"] as? String) ?? (dict["from"] as? String) ?? "Appel entrant"
         let callerNumber = (dict["callerNumber"] as? String) ?? (dict["from_number"] as? String) ?? (dict["from_user"] as? String) ?? ""
 
-        // CallKit is configured for exactly one call. The webhook push and the
+        // Push IDs cannot be correlated to SIP IDs; subsequent SIP INVITEs
+        // create their own waiting-call UUID. Do not rewrite a known SIP call.
+        if let uuid = activeCallUUID, nativeCalls[uuid] != nil { completion(); return }
+        // The initial push reserves the first CallKit call. The webhook push and the
         // native SIP INVITE use different IDs, and APNs retries may omit the
         // caller number. Therefore any push received while a CallKit call is
         // already alive belongs to that existing physical call. Never replace
@@ -549,16 +563,18 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     /// Mise en attente depuis l'écran d'appel système (y compris écran
     /// verrouillé) → re-INVITE sendonly côté PJSIP + état poussé vers JS.
     public func provider(_ provider: CXProvider, perform action: CXSetHeldCallAction) {
-        NotificationCenter.default.post(
-            name: Notification.Name("PpPjsipHoldRequested"), object: nil,
-            userInfo: ["onHold": action.isOnHold, "callId": activeCallId ?? ""]
-        )
-        notifyListeners("callHeld", data: [
-            "onHold": action.isOnHold,
-            "callId": activeCallId ?? "",
-            "source": nativeEngineOwnsCall ? "pjsip" : "jssip"
-        ], retainUntilConsumed: true)
-        action.fulfill()
+        guard let callId = nativeCalls[action.callUUID] else { action.fail(); return }
+        PjsipEngine.shared.setHold(action.isOnHold, callId: callId) { [weak self] ok in
+            DispatchQueue.main.async {
+                guard ok else { action.fail(); return }
+                if !action.isOnHold {
+                    self?.activeCallUUID = action.callUUID
+                    self?.activeCallId = callId
+                }
+                self?.notifyListeners("callHeld", data: ["onHold": action.isOnHold, "callId": callId, "source": "pjsip"], retainUntilConsumed: true)
+                action.fulfill()
+            }
+        }
     }
 
     /// Appelé par le JS quand le courtier met en attente depuis l'app : garde
@@ -587,6 +603,17 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     }
 
     public func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
+        if let callId = nativeCalls[action.callUUID] {
+            activeCallUUID = action.callUUID
+            activeCallId = callId
+            PjsipEngine.shared.answer(callId: callId) { [weak self] ok in
+                DispatchQueue.main.async {
+                    if ok { action.fulfill() } else { action.fail() }
+                    self?.notifyListeners("incomingCallAnswered", data: ["callUUID": action.callUUID.uuidString, "callId": callId, "source": "pjsip"], retainUntilConsumed: true)
+                }
+            }
+            return
+        }
         // Never invalidate the first valid answer transaction. A duplicate
         // CallKit callback must join/lose, not fail the action JS is completing.
         if pendingAnswerAction != nil {
@@ -661,6 +688,16 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     }
 
     public func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
+        if let callId = nativeCalls.removeValue(forKey: action.callUUID) {
+            PjsipEngine.shared.hangup(callId: callId)
+            if activeCallUUID == action.callUUID {
+                activeCallUUID = nativeCalls.first?.key
+                activeCallId = nativeCalls.first?.value
+            }
+            if nativeCalls.isEmpty { nativeEngineOwnsCall = false; nativeOutgoingCall = false }
+            action.fulfill()
+            return
+        }
         if let requestId = pendingOutgoingRequestId, nativeOutgoingCall {
             failPendingOutgoingStart(requestId: requestId, reason: "CallKit ended before SIP INVITE")
             action.fulfill()

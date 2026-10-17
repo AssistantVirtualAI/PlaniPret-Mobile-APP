@@ -15,16 +15,11 @@ import {
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import type { useMplanipretSoftphone } from "@/hooks/useMplanipretSoftphone";
 import { audioRouter } from "@/lib/planipret/audio/audioRouter";
-import { authorizeSpeakerRoute } from "@/lib/planipret/audio/audioRoutePermission";
-import { Capacitor } from "@capacitor/core";
 import { playRecordingNotice, resetRecordingNotice } from "@/lib/planipret/audio/recordingNotice";
 import { formatSipParty } from "@/lib/planipret/sip/formatSipParty";
 import { callUi, useCallUi } from "@/lib/planipret/callUiStore";
 import PpCallPill from "./PpCallPill";
 import PpCallDiagnosticPanel from "./PpCallDiagnosticPanel";
-import { useNavigate } from "react-router-dom";
-import { resolveCallerClient, clientDetailPath, type CallerClient } from "@/lib/planipret/callerClient";
-import CreateMaestroClientSheet, { type CreateClientTarget } from "./mobile/CreateMaestroClientSheet";
 
 type Contact = {
   id?: string;
@@ -66,7 +61,6 @@ export default function PpActiveCallScreen({
     answerSecond, declineSecond,
   } = softphone;
   const { minimized } = useCallUi();
-  const navigate = useNavigate();
   const waitingCall = snap.second?.state === "ringing-in";
 
 
@@ -95,6 +89,44 @@ export default function PpActiveCallScreen({
 
   const active = snap.callState === "ringing-out" || snap.callState === "ringing-in"
     || snap.callState === "active" || snap.callState === "held";
+
+  const [widgetRegistered, setWidgetRegistered] = useState(false);
+  const [handoffBusy, setHandoffBusy] = useState(false);
+  const [handoffState, setHandoffState] = useState<"idle" | "pending" | "done" | "failed">("idle");
+  useEffect(() => { setHandoffState("idle"); }, [snap.callId]);
+  useEffect(() => {
+    // Local termination alone is not proof that the target answered.
+  }, [snap.callState, handoffState]);
+  useEffect(() => {
+    if (handoffState !== "pending") return;
+    const timer = setTimeout(() => setHandoffState("failed"), 22000);
+    return () => clearTimeout(timer);
+  }, [handoffState]);
+  useEffect(() => {
+    let cancelled = false;
+    setWidgetRegistered(false);
+    if (snap.callState !== "active" && snap.callState !== "held") return;
+    const refresh = async () => {
+      try {
+        const { data, error } = await supabase.functions.invoke("pp-call-handoff", { body: { action: "status", target: "widget" } });
+        if (!cancelled) setWidgetRegistered(!error && data?.registered === true);
+      } catch { if (!cancelled) setWidgetRegistered(false); }
+    };
+    void refresh();
+    const timer = setInterval(() => void refresh(), 15000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [snap.callState, snap.callId]);
+  const handoffToWidget = async () => {
+    setHandoffBusy(true);
+    setHandoffState("pending");
+    try {
+      const { data, error } = await supabase.functions.invoke("pp-call-handoff", {
+        body: { target: "widget", ...(snap.callId ? { call_id: snap.callId } : {}) },
+      });
+      if (error || !data?.ok) { setHandoffState("failed"); toast.error("Échec, appel conservé"); }
+    } catch { setHandoffState("failed"); toast.error("Échec, appel conservé"); }
+    finally { setHandoffBusy(false); }
+  };
 
   // Reset transient state each new call
   useEffect(() => {
@@ -139,31 +171,6 @@ export default function PpActiveCallScreen({
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
   }, [snap.callState, snap.startedAt]);
-
-  // Identification Maestro de l'appelant entrant (UI seulement, jamais bloquant).
-  const [callerClient, setCallerClient] = useState<CallerClient | null>(null);
-  const [createTarget, setCreateTarget] = useState<CreateClientTarget | null>(null);
-  const autoOpenedRef = useRef<string | null>(null);
-  const callerNumber = snap.direction === "in" ? String(snap.remoteNumber ?? "") : "";
-  useEffect(() => {
-    setCallerClient(null);
-    if (!active || callerNumber.replace(/\D/g, "").length < 10) return;
-    let alive = true;
-    void resolveCallerClient(callerNumber).then((c) => { if (alive) setCallerClient(c); });
-    return () => { alive = false; };
-  }, [active, callerNumber]);
-
-  // Dès la réponse d'un client connu : ouvrir sa fiche derrière et réduire
-  // l'écran d'appel (l'appel continue, la pastille reste visible).
-  useEffect(() => {
-    if (snap.callState !== "active" || snap.direction !== "in" || !callerClient?.found) return;
-    const key = snap.callId || String(snap.startedAt ?? "");
-    if (autoOpenedRef.current === key) return;
-    autoOpenedRef.current = key;
-    navigate(clientDetailPath(callerClient));
-    callUi.minimize();
-  }, [snap.callState, snap.direction, snap.callId, snap.startedAt, callerClient, navigate]);
-
 
   // Load internal contacts when entering transfer / add-call view (once)
   useEffect(() => {
@@ -212,15 +219,6 @@ export default function PpActiveCallScreen({
     if (speakerBusy) return;
     setSpeakerBusy(true);
     try {
-      if (requested === "speaker") {
-        const authorization = await authorizeSpeakerRoute(Capacitor.isNativePlatform());
-        if (!authorization.allowed) {
-          toast.error("Autorisation du microphone requise", {
-            description: "Autorisez le microphone dans les réglages du téléphone pour utiliser le haut-parleur pendant l’appel.",
-          });
-          return;
-        }
-      }
       const applied = await audioRouter.chooseRoute(requested);
       setAudioDev(applied);
       setSpeakerOn(applied.route === "speaker");
@@ -340,20 +338,6 @@ export default function PpActiveCallScreen({
             {displayNumber && <div className="text-sm text-white/60 mt-1">{displayNumber}</div>}
             <div className="mt-3 text-sm text-white/70">{statusText}</div>
             {dtmfBuf && <div className="mt-2 text-xs text-white/50">DTMF: {dtmfBuf}</div>}
-            {callerClient?.found && (
-              <button onClick={() => { navigate(clientDetailPath(callerClient)); if (!isIncoming) callUi.minimize(); }}
-                className="mt-4 px-4 py-2 rounded-full text-xs font-semibold flex items-center gap-2"
-                style={{ background: "rgba(46,155,220,0.25)", border: "1px solid rgba(46,155,220,0.5)" }}>
-                <User className="w-3.5 h-3.5" /> Client Maestro{callerClient.name ? ` · ${callerClient.name}` : ""} — voir la fiche
-              </button>
-            )}
-            {callerClient && !callerClient.found && (
-              <button onClick={() => setCreateTarget({ phone: callerNumber, name: displayName, callId: snap.callId ?? null })}
-                className="mt-4 px-4 py-2 rounded-full text-xs font-semibold flex items-center gap-2"
-                style={{ background: "rgba(255,255,255,0.10)", border: "1px solid rgba(255,255,255,0.2)" }}>
-                <UserPlus className="w-3.5 h-3.5" /> Numéro inconnu — créer le client
-              </button>
-            )}
             {/* Internal transport states (ws_disconnected, registration_failed…)
                 are debug tokens: never show them to the user. Only human
                 readable causes are surfaced, and never during an inbound ring. */}
@@ -446,6 +430,13 @@ export default function PpActiveCallScreen({
           </div>
         )}
 
+
+        {view === "main" && widgetRegistered && (snap.callState === "active" || snap.callState === "held") && (
+          <button disabled={handoffBusy || handoffState === "pending" || handoffState === "done"} onClick={() => void handoffToWidget()}
+            className="mx-5 mb-3 rounded-xl border border-white/30 px-4 py-3 text-sm text-white disabled:opacity-50">
+            {handoffState === "pending" ? "Bascule en cours…" : handoffState === "done" ? "Continué sur le widget" : handoffState === "failed" ? "Échec, appel conservé" : "Continuer sur le widget"}
+          </button>
+        )}
 
         {/* Deuxième ligne / conférence */}
         {view === "main" && !isIncoming && (snap.second || snap.conference || multiLineSupported) && (
@@ -558,8 +549,6 @@ export default function PpActiveCallScreen({
               </button>
           </>
         </div>}
-        <CreateMaestroClientSheet target={createTarget} onClose={() => setCreateTarget(null)}
-          onCreated={(c) => setCallerClient({ found: true, maestroClientId: c.maestroClientId, name: c.name })} />
       </motion.div>
     </AnimatePresence>
     </>

@@ -1,5 +1,10 @@
-import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
+import { Button } from "@/components/ui/button";
+import { TranscriptDiagnosticNotice } from "@/components/planipret/mobile/call/TranscriptDiagnosticNotice";
+import { resolveTranscriptDiagnostic, transcriptDiagnosticLabel, type TranscriptDiagnostic } from "@/lib/planipret/transcriptDiagnostic";
+import { TranscriptConversation, normalizeTranscriptTurns } from "@/components/planipret/mobile/call/TranscriptConversation";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
+import { motion } from "framer-motion";
 import { useOutletContext, useSearchParams } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
@@ -9,8 +14,6 @@ import {
   Check, Sparkles, RefreshCw, Voicemail as VmIcon, Save, Trash2, FileText, Download,
 } from "lucide-react";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
-import { TranscriptDiagnosticNotice } from "@/components/planipret/mobile/call/TranscriptDiagnosticNotice";
-import { resolveTranscriptDiagnostic, transcriptDiagnosticLabel, type TranscriptDiagnostic } from "@/lib/planipret/transcriptDiagnostic";
 import { TEMP_COLORS, TEMP_EMOJI, TEMP_LABEL, tempBorder, callbackDelayToDate, delayLabel, type LeadTemp } from "@/components/planipret/leadHelpers";
 import ContactTimeline from "@/components/planipret/ContactTimeline";
 import RecordingsList from "@/components/planipret/mobile/recordings/RecordingsList";
@@ -21,8 +24,8 @@ import MaestroTab from "@/components/planipret/mobile/call/MaestroTab";
 import GreetingStudio from "@/components/planipret/mobile/voicemail/GreetingStudio";
 
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
+import { tr } from "@/lib/i18n/tr";
 import { useCallerNames } from "@/lib/planipret/callerLookup";
-import { callAiErrorMessage, callAiResultMessage } from "@/lib/planipret/callAiError";
 import { createClientFollowUpTask } from "@/lib/planipret/tasks";
 import { presentCallParty } from "@/lib/planipret/callPresentation";
 import { shouldOfferMaestroClientCreation } from "@/lib/planipret/clientHistory";
@@ -113,6 +116,21 @@ const otherName = (c: Call) => callParty(c).name || "";
 // number → localized "Numéro non résolu" fallback.
 const UNRESOLVED_FR = "Numéro non résolu";
 const UNRESOLVED_EN = "Unresolved number";
+function callDeviceLabel(call: Call): string | null {
+  const m = call.metadata ?? {};
+  if (m.device === "mobile") return "Cellulaire";
+  if (m.device === "widget") return "Widget";
+  const cdr = m.netSapiens ?? m.ns_cdr ?? {};
+  const aors = [cdr["call-orig-user"], cdr["call-term-user"], cdr.orig_user, cdr.term_user, cdr.device]
+    .map((v) => String(v ?? "").replace(/^sip:/i, "").split("@")[0]);
+  if (aors.some((v) => /^\d+M$/.test(v))) return "Cellulaire";
+  if (aors.some((v) => /^\d+[xW]$/.test(v))) return "Widget";
+  const aor = String(m.device_name ?? m.call_orig_user ?? "").replace(/^sip:/i, "").split("@")[0];
+  if (/^\d+(M|_mobile)$/i.test(aor)) return "Cellulaire";
+  if (/^\d+(x|W|_web)$/i.test(aor)) return "Widget";
+  return null;
+}
+
 function displayLabelWith(c: Call, resolved?: string | null, lang: "fr" | "en" = "fr"): string {
   const party = callParty(c, resolved);
   if (party.name) return party.name;
@@ -280,7 +298,17 @@ export default function MCalls() {
       );
 
       // Fallback : si NS ne renvoie rien, montrer le cache local
-      const next = (all.length ? all : (visibleLocal as Call[])) as Call[];
+      const groups = new Map<string, Call>();
+      for (const call of (all.length ? all : visibleLocal as Call[])) {
+        const key = call.ns_orig_callid || call.id;
+        const previous = groups.get(key);
+        if (!previous) groups.set(key, call);
+        else groups.set(key, { ...previous,
+          recording_url: previous.recording_url || call.recording_url,
+          transcript: previous.transcript || call.transcript,
+        });
+      }
+      const next = [...groups.values()];
       setCalls(next);
       writeScreenCache(`calls:list:${userId}`, next);
 
@@ -325,7 +353,6 @@ export default function MCalls() {
         let localQuery: any = supabase
           .from("planipret_phone_calls")
           .select("*")
-          .or("save_consent.is.null,save_consent.eq.pending,save_consent.eq.approved")
           .is("deleted_at", null)
           .not("to_number", "ilike", "%vmail%")
           .not("to_number", "ilike", "%voicemail%")
@@ -793,7 +820,7 @@ function CallRow({ call, onTap, onCall, showCallBtn, onCreateClient }: { call: C
               </div>
             )}
             <div className="text-xs truncate" style={{ color: "var(--pp-text-muted)" }}>
-              {localizedDateTime(call.started_at, lang, t("common.today"), t("common.yesterday"))} · {localizedDuration(call.duration_seconds, lang)}
+              {localizedDateTime(call.started_at, lang, t("common.today"), t("common.yesterday"))} · {localizedDuration(call.duration_seconds, lang)}{callDeviceLabel(call) ? ` · ${callDeviceLabel(call)}` : ""}
             </div>
           </div>
         </button>
@@ -872,7 +899,8 @@ type TxStatus = {
   fetchedAt?: string | null;
   lastAttemptAt?: string | null;
 };
-function TranscriptStatusBanner({ s, has, diagnostic, lang }: { s?: TxStatus; has: boolean; diagnostic?: TranscriptDiagnostic; lang: string }) {
+function TranscriptStatusBanner({ s, has, diagnostic }: { s?: TxStatus; has: boolean; diagnostic?: TranscriptDiagnostic }) {
+  const { lang } = useMplanipretLang();
   if (!s) return null;
   const src = (s.source || "").toLowerCase();
   const label = src.includes("netsapiens")
@@ -901,7 +929,7 @@ function TranscriptStatusBanner({ s, has, diagnostic, lang }: { s?: TxStatus; ha
         >
           {has ? `✅ ${label}` : `${isPending ? "⏳" : "⚠️"} ${transcriptDiagnosticLabel(diagnostic?.code ?? "unknown", lang)}`}
         </span>
-        <span style={{ color: "var(--pp-text-secondary)" }}>Source de transcription</span>
+        <span style={{ color: "var(--pp-text-secondary)" }}>{tr("Source de transcription", "Transcription source")}</span>
       </div>
       {history.length > 0 && (
         <ul className="text-[10px] space-y-0.5" style={{ color: "var(--pp-text-secondary)" }}>
@@ -912,7 +940,8 @@ function TranscriptStatusBanner({ s, has, diagnostic, lang }: { s?: TxStatus; ha
   );
 }
 function TranscriptView({
-  segments, transcript, loading, preparing = false, attempt = 0, onFetch, onAnalyze, aiLoading, analyzed, t, filenameHint, status, diagnostic, lang, analysisStatus = "idle", analysisMessage,
+  segments, transcript, loading, preparing = false, attempt = 0, onFetch, onAnalyze, aiLoading, analyzed, t, filenameHint, status,
+  diagnostic,
 }: {
   segments: Seg[] | null;
   transcript: string | null;
@@ -925,11 +954,8 @@ function TranscriptView({
   analyzed: boolean;
   t: (k: string) => string;
   filenameHint?: string;
-  status?: TxStatus;
   diagnostic: TranscriptDiagnostic;
-  lang: string;
-  analysisStatus?: "idle" | "loading" | "error" | "success";
-  analysisMessage?: string | null;
+  status?: TxStatus;
 }) {
   const has = (segments && segments.length > 0) || !!(transcript && transcript.trim());
   const fetchedRef = useRef(false);
@@ -942,26 +968,23 @@ function TranscriptView({
     }
   }, [has, loading, preparing, onFetch]);
 
-  const isCourtier = (speaker: string) => {
-    const s = (speaker || "").toLowerCase();
-    return s.includes("courtier") || s.startsWith("agent") || s.startsWith("broker") || s === "speaker 1" || s === "1";
-  };
+
 
   if (!has) {
     return (
       <div className="space-y-3">
-        <TranscriptStatusBanner s={status} has={false} diagnostic={diagnostic} lang={lang} />
-        <TranscriptDiagnosticNotice diagnostic={diagnostic} lang={lang} busy={loading || preparing} onRetry={() => void onFetch()} />
+        <TranscriptStatusBanner s={status} has={false} diagnostic={diagnostic} />
+        <TranscriptDiagnosticNotice
+          diagnostic={diagnostic}
+          lang={tr("fr", "en")}
+          busy={loading || preparing}
+          onRetry={() => void onFetch()}
+        />
       </div>
     );
   }
-  const segs: Seg[] = segments && segments.length > 0
-    ? segments
-    : (transcript ?? "").split("\n").filter(Boolean).map((line) => {
-        const c = line.indexOf(":");
-        if (c > 0 && c < 30) return { speaker: line.slice(0, c).trim(), text: line.slice(c + 1).trim() };
-        return { speaker: "Speaker", text: line };
-      });
+
+  const segs = normalizeTranscriptTurns(segments, transcript);
   const wordCount = segs.reduce((n, s) => n + (s.text.split(/\s+/).filter(Boolean).length), 0);
 
   const buildPlainText = () => segs.map((s) => `${s.speaker}: ${s.text}`).join("\n");
@@ -1001,90 +1024,46 @@ function TranscriptView({
 
   return (
     <div className="space-y-3">
-      <TranscriptStatusBanner s={status} has={true} lang={lang} />
+      <TranscriptStatusBanner s={status} has={true} />
 
-      <div className="flex items-center justify-between gap-2 sticky top-0 z-10 py-1"
+      <div className="flex flex-wrap items-center justify-between gap-2 sticky top-0 z-10 py-1"
         style={{ background: "var(--pp-bg-base)" }}>
         <div className="text-[11px]" style={{ color: "var(--pp-text-muted)" }}>
           {wordCount} mots · {segs.length} tours
         </div>
         <div className="flex items-center gap-1.5">
-          <button type="button" onClick={handleCopy} onPointerDown={(event) => event.stopPropagation()}
+          <button onClick={handleCopy}
             className="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold flex items-center gap-1"
-            style={{ minHeight: 36, touchAction: "manipulation", background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
-            aria-label="Copier">
-            <Copy className="w-3.5 h-3.5" /> Copier
+            style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
+            aria-label={tr("Copier", "Copy")}>
+            <Copy className="w-3.5 h-3.5" /> {tr("Copier", "Copy")}
           </button>
-          <button type="button" onClick={() => handleDownload("txt")} onPointerDown={(event) => event.stopPropagation()}
+          <button onClick={() => handleDownload("txt")}
             className="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold flex items-center gap-1"
-            style={{ minHeight: 36, touchAction: "manipulation", background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
-            aria-label="Télécharger .txt">
+            style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
+            aria-label={tr("Télécharger .txt", "Download .txt")}>
             <Download className="w-3.5 h-3.5" /> .txt
           </button>
-          <button type="button" onClick={() => handleDownload("md")} onPointerDown={(event) => event.stopPropagation()}
+          <button onClick={() => handleDownload("md")}
             className="px-2.5 py-1.5 rounded-lg text-[11px] font-semibold flex items-center gap-1"
-            style={{ minHeight: 36, touchAction: "manipulation", background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
-            aria-label="Télécharger .md">
+            style={{ background: "var(--pp-bg-elevated)", border: "1px solid var(--pp-bg-border-2)", color: "var(--pp-text-primary)" }}
+            aria-label={tr("Télécharger .md", "Download .md")}>
             <Download className="w-3.5 h-3.5" /> .md
           </button>
         </div>
       </div>
 
-      {analysisStatus !== "idle" && (
-        <div
-          className="rounded-xl px-3 py-2.5 flex items-center gap-2 text-xs font-semibold"
-          role="status"
-          aria-live="polite"
-          style={{
-            color: analysisStatus === "error" ? "#FFE1E1" : "#F7FAFC",
-            background: analysisStatus === "error" ? "rgba(185, 28, 28, 0.28)" : analysisStatus === "success" ? "rgba(5, 150, 105, 0.24)" : "rgba(91, 33, 182, 0.32)",
-            border: `1px solid ${analysisStatus === "error" ? "rgba(252, 165, 165, 0.65)" : analysisStatus === "success" ? "rgba(110, 231, 183, 0.55)" : "rgba(196, 181, 253, 0.62)"}`,
-          }}
-        >
-          {analysisStatus === "loading" && <Loader2 className="w-4 h-4 shrink-0 animate-spin" />}
-          {analysisStatus === "error" && <AlertTriangle className="w-4 h-4 shrink-0" />}
-          {analysisStatus === "success" && <Sparkles className="w-4 h-4 shrink-0" />}
-          <span className="min-w-0">{analysisMessage}</span>
-        </div>
-      )}
-
-      <div className="flex flex-col gap-2">
-        {segs.map((s, i) => {
-          const right = isCourtier(s.speaker);
-          return (
-            <div key={i} className={`flex flex-col ${right ? "items-end" : "items-start"}`}>
-              <div className="text-[11px] font-semibold mb-1" style={{ color: "#B8D2F6" }}>{s.speaker}</div>
-              <div
-                className="px-3.5 py-2.5 text-[15px] leading-relaxed font-medium"
-                style={{
-                  maxWidth: "92%",
-                  color: "#F8FAFC",
-                  background: right ? "linear-gradient(135deg, #1D4ED8, #0E7490)" : "#17233F",
-                  border: right ? "1px solid rgba(125, 211, 252, 0.55)" : "1px solid rgba(148, 163, 184, 0.48)",
-                  borderRadius: right ? "18px 18px 4px 18px" : "18px 18px 18px 4px",
-                  boxShadow: "0 4px 14px rgba(0, 0, 0, 0.2)",
-                }}
-              >
-                {s.text}
-              </div>
-            </div>
-          );
-        })}
-      </div>
+      <TranscriptConversation turns={segs} english={document.documentElement.lang === "en"} />
 
 
       {!analyzed && (
         <button
-          type="button"
-          data-testid="call-transcript-analyze"
           onClick={() => onAnalyze()}
-          onPointerDown={(event) => event.stopPropagation()}
-          onTouchEnd={(event) => { event.preventDefault(); event.stopPropagation(); void onAnalyze(); }}
           disabled={aiLoading}
           className="w-full py-3 rounded-xl text-sm font-semibold text-white disabled:opacity-50 flex items-center justify-center gap-2 sticky bottom-0"
-          style={{ minHeight: 48, zIndex: 10, touchAction: "manipulation", background: "linear-gradient(135deg, #2D1A5A, #9B7FE8)" }}
+          style={{ background: "linear-gradient(135deg, #2D1A5A, #9B7FE8)" }}
         >
-          {aiLoading ? <><Loader2 className="w-4 h-4 animate-spin" /> Analyse en cours…</> : <><Sparkles className="w-4 h-4" /> Analyser avec Claude IA</>}
+          {aiLoading ? <><Loader2 className="w-4 h-4 animate-spin" /> {tr("Analyse en cours…", "Analyzing…")}</> : <><Sparkles className="w-4 h-4" /> {tr("Analyser avec Claude IA", "Analyze with Claude AI")}</>}
         </button>
       )}
     </div>
@@ -1124,7 +1103,7 @@ function ClaudeCoachingBlock({ analysis, coachingScore }: { analysis: any; coach
             <div className="text-[9px]" style={{ color: "var(--pp-text-muted)" }}>/10</div>
           </div>
           <div className="flex-1 min-w-0">
-            <div className="text-[10px] uppercase tracking-wider font-bold" style={{ color: scoreColor }}>Score de coaching</div>
+            <div className="text-[10px] uppercase tracking-wider font-bold" style={{ color: scoreColor }}>{tr("Score de coaching", "Coaching score")}</div>
             <div className="text-sm font-semibold" style={{ color: "var(--pp-text-primary)" }}>{label}</div>
             <div className="mt-2 space-y-1">
               {barKeys.map(([k, lbl]) => {
@@ -1205,12 +1184,17 @@ function CallDetailSheet({
   const [txReason, setTxReason] = useState<TranscriptDiagnostic | null>(null);
   const txRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (txRetryTimerRef.current) clearTimeout(txRetryTimerRef.current); }, []);
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => { document.body.style.overflow = prev; window.removeEventListener("keydown", onKey); };
+  }, [onClose]);
   const [aiLoading, setAiLoading] = useState(false);
-  const [analysisFeedback, setAnalysisFeedback] = useState<{ kind: "loading" | "error" | "success"; message: string } | null>(null);
   const [taskState, setTaskState] = useState<Record<string, { creating?: boolean; createdId?: string }>>({});
   const [eventState, setEventState] = useState<Record<string, { creating?: boolean; createdId?: string }>>({});
   const [activeTab, setActiveTab] = useState<"audio" | "transcript" | "coaching" | "maestro">("audio");
-  const tr = (fr: string, en: string) => lang === "fr" ? fr : en;
   const peerNumber = (call.direction === "outbound" ? call.to_number : call.from_number) ?? "";
   const _resolvedNames = useCallerNames([peerNumber]);
   const _callerLabel = displayLabelWith(call, _resolvedNames[peerNumber], lang as "fr" | "en");
@@ -1228,69 +1212,15 @@ function CallDetailSheet({
     })();
   }, [call.id]);
 
-  const refreshCall = async () => {
-    const { data } = await supabase.from("planipret_phone_calls").select("*").eq("id", call.id).maybeSingle();
-    if (data) onUpdated(data as Call);
-  };
-
-  const analyzeAI = async (transcriptOverride?: string | null, automatic = false) => {
-    const segments = Array.isArray(call.transcript_segments) ? call.transcript_segments : null;
-    const transcript = transcriptOverride ?? call.transcript ?? (segments?.map((segment: Seg) => `${segment.speaker}: ${segment.text}`).join("\n") ?? null);
-    const fallback = tr("Analyse IA indisponible, réessayez.", "AI analysis unavailable, try again.");
-    setAiLoading(true);
-    setAnalysisFeedback({
-      kind: "loading",
-      message: automatic
-        ? tr("Analyse automatique en cours…", "Automatic analysis in progress…")
-        : tr("Analyse IA en cours…", "AI analysis in progress…"),
-    });
-    try {
-      const { data, error } = await supabase.functions.invoke("pp-coach-call", {
-        // The API still returns an existing cached analysis before it uses this
-        // fallback. `force` only lets the API use the transcript already shown
-        // in the app when the row replication lags behind.
-        body: { call_id: call.id, transcript, force: true },
-      });
-      if (error) {
-        const message = await callAiErrorMessage(error, fallback);
-        setAnalysisFeedback({ kind: "error", message });
-        if (!automatic) toast.error(message);
-        return;
-      }
-      const result: any = data ?? {};
-      if (result.success === false) {
-        const message = callAiResultMessage(result, fallback);
-        setAnalysisFeedback({ kind: "error", message });
-        if (!automatic) toast.error(message);
-        return;
-      }
-      const message = result.cached
-        ? tr("Analyse IA existante affichée.", "Existing AI analysis displayed.")
-        : t("calls.analysisDone");
-      setAnalysisFeedback({ kind: "success", message });
-      if (!automatic) toast.success(message);
-      await refreshCall();
-      const { data: ins } = await supabase.from("planipret_ai_insights").select("*").eq("call_id", call.id).maybeSingle();
-      setInsight((ins as any) ?? null);
-      setActiveTab("coaching");
-    } catch {
-      setAnalysisFeedback({ kind: "error", message: fallback });
-      if (!automatic) toast.error(fallback);
-    } finally {
-      setAiLoading(false);
-    }
-  };
-
   // Auto-run transcription + AI analysis when opening a call that has a
   // recording but no transcript/insight yet (parity with /planipret/admin).
   const autoRanRef = useRef<string | null>(null);
   useEffect(() => {
     const hasRecording = !!(call.recording_url || (call as any).has_recording || call.ns_call_id);
     const hasTranscript = !!call.transcript || (Array.isArray(call.transcript_segments) && call.transcript_segments.length > 0);
-    const hasInsight = !!(insight?.summary || (call as any).ai_analysis_json || call.ai_summary);
-    if (autoRanRef.current === call.id) return;
+    const hasInsight = !!insight?.summary;
+    if (!hasRecording || autoRanRef.current === call.id) return;
     if (hasTranscript && hasInsight) return;
-    if (!hasTranscript && !hasRecording) return;
     autoRanRef.current = call.id;
     (async () => {
       try {
@@ -1308,15 +1238,18 @@ function CallDetailSheet({
         const { data: fresh } = await supabase.from("planipret_phone_calls").select("*").eq("id", call.id).maybeSingle();
         const freshCall = (fresh as Call) ?? call;
         const segs = Array.isArray(freshCall.transcript_segments) ? freshCall.transcript_segments : null;
-        if (!hasInsight) {
-          // pp-coach-call recherche aussi un segment jumeau du même propriétaire.
-          const transcript = freshCall.transcript ?? segs?.map((segment: Seg) => `${segment.speaker}: ${segment.text}`).join("\n") ?? null;
-          await analyzeAI(transcript, true);
+        if ((freshCall.transcript || segs) && !hasInsight) {
+          setAiLoading(true);
+          await supabase.functions.invoke("pp-coach-call", {
+            body: { call_id: call.id, transcript: freshCall.transcript ?? null },
+          });
+          setAiLoading(false);
+          const { data: ins } = await supabase.from("planipret_ai_insights").select("*").eq("call_id", call.id).maybeSingle();
+          setInsight((ins as any) ?? null);
           if (fresh) onUpdated(freshCall);
         }
       } catch (e) {
         setTxLoading(false); setAiLoading(false);
-        setAnalysisFeedback({ kind: "error", message: tr("Analyse IA indisponible, réessayez.", "AI analysis unavailable, try again.") });
         console.error("[MCalls] auto AI pipeline failed", e);
       }
     })();
@@ -1340,6 +1273,11 @@ function CallDetailSheet({
     return () => { supabase.removeChannel(ch); };
   }, [userId, call.id, onUpdated]);
 
+  const refreshCall = async () => {
+    const { data } = await supabase.from("planipret_phone_calls").select("*").eq("id", call.id).maybeSingle();
+    if (data) onUpdated(data as Call);
+  };
+
   const fetchRecording = async () => {
     setRecLoading(true);
     const { data, error } = await supabase.functions.invoke("ns-get-recording", { body: { call_db_id: call.id, ns_callid: call.ns_callid ?? call.ns_call_id, prefer_url: true } });
@@ -1359,11 +1297,9 @@ function CallDetailSheet({
       const { data, error } = await supabase.functions.invoke("ns-get-transcription", {
         body: { call_db_id: call.id, ns_callid: call.ns_callid ?? call.ns_call_id },
       });
-      // Non-2xx responses carry structured evidence. Read it instead of
-      // showing an unconditional NetSapiens configuration hint.
-      const context = (error as any)?.context;
-      const detail = typeof Response !== "undefined" && context instanceof Response
-        ? await context.clone().json().catch(() => ({})) : {};
+      // Non-2xx responses may carry a usable, structured privacy/diagnostic code.
+      const detail = error?.context instanceof Response
+        ? await error.context.clone().json().catch(() => ({})) : {};
       const res = (data ?? detail ?? {}) as any;
       const ok = !error && res.success !== false && (res.transcript || (Array.isArray(res.segments) && res.segments.length));
       return { ok, res };
@@ -1371,36 +1307,64 @@ function CallDetailSheet({
       return { ok: false, res: {} };
     }
   };
+
   const fetchTranscript = async (attempt = 0): Promise<void> => {
     if (txRetryTimerRef.current) { clearTimeout(txRetryTimerRef.current); txRetryTimerRef.current = null; }
     setTxAttempt(attempt);
-    if (attempt === 0) {
-      setTxLoading(true); setTxPreparing(false);
-      setTxReason({ code: "processing", processing: true, retryable: true });
-    } else setTxPreparing(true);
+    if (attempt === 0) { setTxLoading(true); setTxPreparing(false); setTxReason({ code: "processing", processing: true, retryable: true }); } else setTxPreparing(true);
+
     const { ok, res } = await runTranscriptOnce();
+
     if (ok) {
       setTxLoading(false); setTxPreparing(false); setTxAttempt(0); setTxReason(null);
       const transcript = res.transcript ?? (Array.isArray(res.segments) ? res.segments.map((s: any) => `${s.speaker ?? "Speaker"}: ${s.text}`).join("\n") : call.transcript);
       onUpdated({ ...call, transcript, transcript_segments: res.segments ?? call.transcript_segments });
       await refreshCall();
       if (transcript && !call.ai_summary) {
-        await analyzeAI(transcript, true);
+        setAiLoading(true);
+        await supabase.functions.invoke("pp-coach-call", { body: { call_id: call.id, transcript } });
+        setAiLoading(false);
+        await refreshCall();
       }
       toast.success(t("calls.transcriptFetched"));
       return;
     }
+
     const diagnostic = resolveTranscriptDiagnostic(res, call);
     setTxReason(diagnostic);
     if (diagnostic.processing && attempt < TX_BACKOFF.length) {
-      setTxLoading(false); setTxPreparing(true);
+      setTxLoading(false);
+      setTxPreparing(true);
       const delay = TX_BACKOFF[attempt];
       txRetryTimerRef.current = setTimeout(() => { void fetchTranscript(attempt + 1); }, delay);
       return;
     }
+
     setTxLoading(false); setTxPreparing(false); setTxAttempt(0);
     if (!diagnostic.processing) toast.error(transcriptDiagnosticLabel(diagnostic.code, lang));
   };
+
+  const analyzeAI = async () => {
+    setAiLoading(true);
+    const { data, error } = await supabase.functions.invoke("pp-coach-call", {
+      body: { call_id: call.id, transcript: call.transcript ?? null },
+    });
+    setAiLoading(false);
+    if (error) {
+      const detail: any = (error as any)?.context instanceof Response
+        ? await (error as any).context.clone().json().catch(() => ({})) : {};
+      toast.error(detail?.message ?? detail?.error ?? tr("Analyse IA indisponible, réessayez.", "AI analysis unavailable, try again."));
+      return;
+    }
+    const r: any = data ?? {};
+    if (r.success === false) { toast.error(r.message ?? tr("Analyse IA indisponible, réessayez.", "AI analysis unavailable, try again.")); return; }
+    toast.success(t("calls.analysisDone"));
+    await refreshCall();
+    const { data: ins } = await supabase.from("planipret_ai_insights").select("*").eq("call_id", call.id).maybeSingle();
+    setInsight((ins as any) ?? null);
+  };
+
+
   const meta = (call.metadata ?? {}) as any;
   const aiTasks: Array<any> = Array.isArray(meta.ai_tasks) ? meta.ai_tasks
     : Array.isArray(insight?.suggested_actions?.tasks) ? insight!.suggested_actions.tasks
@@ -1480,36 +1444,30 @@ function CallDetailSheet({
   const score = call.lead_score ?? null;
   const scoreColor = score == null ? "var(--pp-text-muted)" : score >= 8 ? "var(--pp-success)" : score >= 5 ? "var(--pp-warning)" : "var(--pp-danger)";
 
-  if (typeof document === "undefined") return null;
-
-  return createPortal((
-    <div className="fixed inset-0 z-[20000] flex items-end">
-      <button
-        type="button"
-        className="absolute inset-0"
-        aria-label={t("common.close")}
-        onClick={onClose}
-        style={{ background: "rgba(0,0,0,0.55)", backdropFilter: "blur(2px)" }}
-      />
-      <div
-        className="relative w-full flex flex-col min-h-0 overflow-hidden"
+  return createPortal(
+    <div className="fixed inset-0 z-[120] flex items-end" onClick={onClose} role="dialog" aria-modal="true"
+      style={{ paddingTop: "max(env(safe-area-inset-top), 12px)", touchAction: "pan-y" }}>
+      <div className="pp-call-detail-backdrop absolute inset-0" />
+      <motion.div
+        onClick={(e) => e.stopPropagation()}
+        initial={{ y: "100%" }} animate={{ y: 0 }} exit={{ y: "100%" }}
+        transition={{ type: "spring", damping: 28, stiffness: 280 }}
+        className="pp-call-detail-panel relative w-full flex flex-col"
         style={{
-          height: "min(95dvh, calc(100dvh - env(safe-area-inset-top) - 8px))",
+
+          paddingBottom: "env(safe-area-inset-bottom)",
+          willChange: "transform",
           background: "var(--pp-bg-base)",
           borderTop: "1px solid var(--pp-bg-border-2)",
           borderRadius: "24px 24px 0 0",
-          boxShadow: "0 -8px 32px rgba(0,0,0,0.5)",
-          zIndex: 1,
-          pointerEvents: "auto",
-          touchAction: "manipulation",
+          boxShadow: "var(--pp-shadow-lg)",
         }}
       >
-        {/* Drag handle + close */}
-        <div className="pt-3 pb-2 flex flex-col items-center relative shrink-0">
-          <div style={{ width: 36, height: 4, background: "var(--pp-bg-border-2)", borderRadius: 2 }} />
-          <button onClick={onClose} className="absolute right-3 top-2 p-2.5 rounded-full" style={{ minWidth: 44, minHeight: 44, color: "var(--pp-text-secondary)" }} aria-label={t("common.close")}>
-            <X className="w-5 h-5 mx-auto" />
-          </button>
+        <div className="px-4 pt-3 pb-2 shrink-0">
+          <div className="mx-auto mb-2 h-1 w-9 rounded-full" style={{ background: "var(--pp-bg-border-2)" }} />
+          <Button variant="ghost" onClick={onClose} className="min-h-11 gap-2" style={{ color: "var(--pp-text-primary)" }}>
+            <ChevronDown className="w-4 h-4" /> {lang === "en" ? "Back to calls" : "Retour aux appels"}
+          </Button>
         </div>
 
         {/* Caller header */}
@@ -1555,12 +1513,10 @@ function CallDetailSheet({
                   key={t.k}
                   type="button"
                   onClick={() => setActiveTab(t.k as any)}
-                  onPointerDown={(event) => event.stopPropagation()}
-                  onTouchEnd={(event) => { event.preventDefault(); event.stopPropagation(); setActiveTab(t.k as any); }}
-                  className="flex-1 py-2 rounded-full text-[11px] font-semibold transition"
+                  className="flex-1 py-2.5 rounded-full touch-manipulation text-[11px] font-semibold transition"
                   style={active
-                    ? { minHeight: 44, touchAction: "manipulation", background: "linear-gradient(135deg, var(--pp-brand-accent), var(--pp-brand-accent-2))", color: "white", boxShadow: "0 2px 10px rgba(46,155,220,0.35)" }
-                    : { minHeight: 44, touchAction: "manipulation", color: "var(--pp-text-muted)" }}
+                    ? { background: "linear-gradient(135deg, var(--pp-brand-accent), var(--pp-brand-accent-2))", color: "white", boxShadow: "0 2px 10px rgba(46,155,220,0.35)" }
+                    : { color: "var(--pp-text-muted)" }}
                 >
                   {t.label}
                 </button>
@@ -1569,16 +1525,7 @@ function CallDetailSheet({
           </div>
         </div>
 
-        <div
-          key={activeTab}
-          className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 py-4 space-y-4"
-          style={{
-            WebkitOverflowScrolling: "touch",
-            overscrollBehaviorY: "contain",
-            touchAction: "pan-y",
-            paddingBottom: "max(2rem, env(safe-area-inset-bottom))",
-          }}
-        >
+        <div key={activeTab} className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-5 py-4 space-y-4" style={{ WebkitOverflowScrolling: "touch" }}>
 
           {/* ===== TAB AUDIO ===== */}
           {activeTab === "audio" && (
@@ -1586,7 +1533,6 @@ function CallDetailSheet({
               <CallRecordingPlayer
                 callId={call.id}
                 duration={call.duration_seconds ?? 0}
-                onDismiss={onClose}
               />
             ) : (
               <div className="pp-card p-4 text-xs" style={{ color: "var(--pp-text-secondary)" }}>
@@ -1603,10 +1549,11 @@ function CallDetailSheet({
               loading={txLoading}
               preparing={txPreparing}
               attempt={txAttempt}
+              diagnostic={txReason ?? resolveTranscriptDiagnostic({}, call)}
               onFetch={() => fetchTranscript(0)}
               onAnalyze={analyzeAI}
               aiLoading={aiLoading}
-              analyzed={!!(insight?.summary || (call as any).ai_analysis_json || call.ai_summary)}
+              analyzed={!!(call as any).ai_analysis_json}
               t={t}
               status={{
                 source: (call as any).transcript_source ?? null,
@@ -1617,10 +1564,6 @@ function CallDetailSheet({
                 lastAttemptAt: (call as any).transcript_last_attempt_at ?? null,
               }}
               filenameHint={`transcript_${displayLabel(call)}_${(call.started_at || "").slice(0,10)}`}
-              diagnostic={txReason ?? resolveTranscriptDiagnostic({}, call)}
-              lang={lang}
-              analysisStatus={analysisFeedback?.kind ?? "idle"}
-              analysisMessage={analysisFeedback?.message ?? null}
             />
           )}
 
@@ -1725,16 +1668,16 @@ function CallDetailSheet({
               {/* Empty / analyze CTA */}
               {!summary && !coaching && (
                 call.transcript ? (
-                  <button type="button" data-testid="call-coach-analyze" onClick={() => { void analyzeAI(); }} onPointerDown={(event) => event.stopPropagation()} onTouchEnd={(event) => { event.preventDefault(); event.stopPropagation(); void analyzeAI(); }} disabled={aiLoading}
+                  <button onClick={analyzeAI} disabled={aiLoading}
                     className="w-full py-3 rounded-xl text-sm font-semibold text-white disabled:opacity-50 flex items-center justify-center gap-2"
-                    style={{ minHeight: 48, touchAction: "manipulation", background: "linear-gradient(135deg, #6C3CE1, var(--pp-agent))" }}>
-                    {aiLoading ? <><Loader2 className="w-4 h-4 animate-spin" /> Analyse en cours…</> : <><Sparkles className="w-4 h-4" /> Analyser avec l'IA</>}
+                    style={{ background: "linear-gradient(135deg, #6C3CE1, var(--pp-agent))" }}>
+                    {aiLoading ? <><Loader2 className="w-4 h-4 animate-spin" /> {tr("Analyse en cours…", "Analyzing…")}</> : <><Sparkles className="w-4 h-4" /> {tr("Analyser avec l'IA", "Analyze with AI")}</>}
                   </button>
                 ) : (
-                  <button type="button" data-testid="call-coach-fetch-transcript" onClick={async () => { await fetchTranscript(); }} onPointerDown={(event) => event.stopPropagation()} onTouchEnd={(event) => { event.preventDefault(); event.stopPropagation(); void fetchTranscript(); }} disabled={txLoading || txPreparing}
+                  <button onClick={async () => { await fetchTranscript(); }} disabled={txLoading || txPreparing}
                     className="w-full py-3 rounded-xl text-sm font-semibold text-white disabled:opacity-50 flex items-center justify-center gap-2"
-                    style={{ minHeight: 48, touchAction: "manipulation", background: "linear-gradient(135deg, var(--pp-brand-accent-2), var(--pp-brand-accent))" }}>
-                    {txPreparing ? <><Loader2 className="w-4 h-4 animate-spin" /> Préparation…</> : <>📝 Obtenir transcription + Analyse</>}
+                    style={{ background: "linear-gradient(135deg, var(--pp-brand-accent-2), var(--pp-brand-accent))" }}>
+                    {txPreparing ? <><Loader2 className="w-4 h-4 animate-spin" /> {tr("Préparation…", "Preparing…")}</> : <>📝 Obtenir transcription + Analyse</>}
                   </button>
                 )
               )}
@@ -1752,9 +1695,9 @@ function CallDetailSheet({
           )}
 
         </div>
-      </div>
+      </motion.div>
     </div>
-  ), document.body);
+  , document.body);
 }
 
 function CallbackSuggestion({ call, onScheduled }: { call: Call; onScheduled: () => void }) {
@@ -1957,11 +1900,11 @@ function ActiveCallsTab({ userId, openDialer }: { userId: string; openDialer: (n
       {transferOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6" onClick={() => setTransferOpen(null)}>
           <div className="bg-white rounded-2xl p-4 w-full max-w-xs" onClick={(e) => e.stopPropagation()}>
-            <div className="font-semibold text-sm mb-2">Transférer l'appel</div>
-            <input value={transferTo} onChange={(e) => setTransferTo(e.target.value)} placeholder="Transférer vers..." className="w-full px-3 py-2 rounded-lg bg-slate-100 text-sm outline-none mb-3" />
+            <div className="font-semibold text-sm mb-2">{tr("Transférer l'appel", "Transfer call")}</div>
+            <input value={transferTo} onChange={(e) => setTransferTo(e.target.value)} placeholder={tr("Transférer vers...", "Transfer to...")} className="w-full px-3 py-2 rounded-lg bg-slate-100 text-sm outline-none mb-3" />
             <div className="flex gap-2">
-              <button onClick={() => setTransferOpen(null)} className="flex-1 py-2 rounded-lg text-sm text-slate-600 bg-slate-100">Annuler</button>
-              <button onClick={() => { if (transferOpen && transferTo) { action("transfer", transferOpen, { destination: transferTo }); setTransferOpen(null); setTransferTo(""); } }} className="flex-1 py-2 rounded-lg text-sm text-white" style={{ background: PRIMARY }}>Transférer</button>
+              <button onClick={() => setTransferOpen(null)} className="flex-1 py-2 rounded-lg text-sm text-slate-600 bg-slate-100">{tr("Annuler", "Cancel")}</button>
+              <button onClick={() => { if (transferOpen && transferTo) { action("transfer", transferOpen, { destination: transferTo }); setTransferOpen(null); setTransferTo(""); } }} className="flex-1 py-2 rounded-lg text-sm text-white" style={{ background: PRIMARY }}>{tr("Transférer", "Transfer")}</button>
             </div>
           </div>
         </div>
@@ -1981,10 +1924,10 @@ function ActiveCallsTab({ userId, openDialer }: { userId: string; openDialer: (n
           <div className="fixed inset-0 z-50 flex flex-col items-center justify-center text-white p-6" style={{ background: PRIMARY }}>
             <div className="absolute inset-0 opacity-30 animate-pulse" style={{ background: PRIMARY }} />
             <div className="relative text-center mb-8 max-w-xs">
-              <div className="text-sm opacity-80 mb-2">Appel entrant…</div>
+              <div className="text-sm opacity-80 mb-2">{tr("Appel entrant…", "Incoming call…")}</div>
               <div className="text-3xl font-bold">{fullName ?? incoming.name ?? incoming.number}</div>
               {(fullName || incoming.name) && <div className="text-sm opacity-80 mt-1">{incoming.number}</div>}
-              {maestroLoading && <div className="text-[11px] opacity-70 mt-3">Recherche Maestro…</div>}
+              {maestroLoading && <div className="text-[11px] opacity-70 mt-3">{tr("Recherche Maestro…", "Searching Maestro…")}</div>}
               {!maestroLoading && found && (
                 <div className="mt-4 space-y-1.5">
                   {client?.company && <div className="text-xs opacity-90">🏢 {client.company}</div>}
@@ -2068,10 +2011,10 @@ function ActiveCallCard({ call, muted, onMute, onHold, onTransfer, onHangup }: {
         <div className="text-xs opacity-80 mt-1">{statusLabel}</div>
       </div>
       <div className="grid grid-cols-4 gap-2 mt-5">
-        <ActionBtn label="Muet" active={muted} Icon={muted ? MicOff : Mic} onClick={onMute} />
+        <ActionBtn label={tr("Muet", "Mute")} active={muted} Icon={muted ? MicOff : Mic} onClick={onMute} />
         <ActionBtn label={call.status === "hold" ? "Reprendre" : "Attente"} Icon={call.status === "hold" ? Play : Pause} onClick={onHold} />
-        <ActionBtn label="Transférer" Icon={ArrowRightLeft} onClick={onTransfer} />
-        <ActionBtn label="Raccrocher" Icon={PhoneOff} onClick={onHangup} big danger />
+        <ActionBtn label={tr("Transférer", "Transfer")} Icon={ArrowRightLeft} onClick={onTransfer} />
+        <ActionBtn label={tr("Raccrocher", "Hang up")} Icon={PhoneOff} onClick={onHangup} big danger />
       </div>
     </div>
   );
@@ -2325,9 +2268,9 @@ function VoicemailsTab({
                       )}
                     </div>
                     <div className="grid grid-cols-3 gap-1.5 mt-3">
-                      <VmAction icon={<Phone className="w-4 h-4" />} label="Rappeler" onClick={() => openDialer(vm.from_number ?? "")} accent />
-                      {folder === "inbox" && <VmAction icon={<Save className="w-4 h-4" />} label="Garder" onClick={() => saveVm(vm)} />}
-                      <VmAction icon={<Trash2 className="w-4 h-4" />} label="Suppr." onClick={() => removeVm(vm)} danger />
+                      <VmAction icon={<Phone className="w-4 h-4" />} label={tr("Rappeler", "Call back")} onClick={() => openDialer(vm.from_number ?? "")} accent />
+                      {folder === "inbox" && <VmAction icon={<Save className="w-4 h-4" />} label={tr("Garder", "Keep")} onClick={() => saveVm(vm)} />}
+                      <VmAction icon={<Trash2 className="w-4 h-4" />} label={tr("Suppr.", "Del.")} onClick={() => removeVm(vm)} danger />
                     </div>
                   </div>
                 )}
@@ -2415,7 +2358,7 @@ function VmAudio({ vm }: { vm: VM }) {
           {speed}x
         </button>
       </div>
-      {!src && <p className="text-[10px] mt-1" style={{ color: "var(--pp-text-faint)" }}>Chargement de l'audio…</p>}
+      {!src && <p className="text-[10px] mt-1" style={{ color: "var(--pp-text-faint)" }}>{tr("Chargement de l'audio…", "Loading audio…")}</p>}
     </div>
   );
 }

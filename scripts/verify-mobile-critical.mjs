@@ -136,15 +136,17 @@ check(recordingsList.includes('save_consent.neq.declined') && recordingsList.inc
 const localMediaPolicy = read("src/lib/planipret/recordingConsent.ts");
 check(localMediaPolicy.includes('saveConsent !== "declined"'), "Mobile client history must keep local media available until explicit deletion");
 const mobileCalls = read("src/pages/planipret/mobile/MCalls.tsx");
-check(mobileCalls.includes('save_consent.eq.pending') && mobileCalls.includes('.is("deleted_at", null)') && mobileCalls.includes("deletedNsIds"), "Mobile history must include pending calls and hide explicit deletions even when NetSapiens still returns a CDR");
-check(consent.includes('storage.from("call-recordings").remove') && consent.includes('planipret_ai_insights").delete') && consent.includes('planipret_pipeline_logs").delete'), "Delete must purge locally cached audio and derived call analysis");
+check(mobileCalls.includes("visibleLocal") && mobileCalls.includes("deletedNsIds") && mobileCalls.includes("!row.deleted_at"), "Mobile history must retain unresolved calls and hide explicit deletions even when NetSapiens still returns a CDR");
 
 const mobileShell = read("src/pages/planipret/PlanipretMobile.tsx");
 check(mobileShell.includes("<PostCallConsentSheet"), "The shipped mobile shell must mount PostCallConsentSheet");
 check(hook.includes('localStorage.setItem("pp.pending-post-call-decision.v2"') && hook.includes('window.dispatchEvent(new CustomEvent("pp:call-ended"'), "Every answered native call must persist and emit a post-call Save/Delete decision");
 const consentSheet = read("src/components/planipret/mobile/PostCallConsentSheet.tsx");
-check(consentSheet.includes('localStorage.getItem(PENDING_KEY)') && consentSheet.includes('Supprimer l\'appel') && consentSheet.includes('Enregistrer l\'appel') && !consentSheet.includes('mustPickClient'), "The post-call sheet must restore after restart and present only Save or Delete");
-check(consent.includes('requestedAction === "decline" ? "delete"') && consent.includes('storage.from("call-recordings").remove'), "A declined/removed call must use the same full local deletion path");
+check(consentSheet.includes('localStorage.getItem(PENDING_KEY)') && consentSheet.includes('Conserver dans AVA') && consentSheet.includes('Garder sans envoyer au CRM') && consentSheet.includes('close(true)') && !consentSheet.includes('mustPickClient'), "The post-call sheet must restore after restart and retain the AVA-only decision after confirmed server success");
+// The remote edge contract maps the backward-compatible `delete` action to
+// AVA-only retention. Lovable deploys it independently, so it is not inferred
+// from the stale server source included in this physical-release repository.
+check(consentSheet.includes('consent("delete")') && consentSheet.includes('Appel conservé dans AVA, sans envoi au CRM.'), "The mobile sheet must request the compatible AVA-only action and report its retention semantics");
 check(!consent.includes('client_selection_required'), "Saving an unknown caller must not add a third post-call decision");
 const calls = read("src/pages/planipret/mobile/MCalls.tsx");
 check(!calls.includes('functions.invoke("maestro-actions"'), "MCalls must not use legacy Maestro mutations");
