@@ -1,5 +1,6 @@
 import { createPortal } from "react-dom";
 import { Button } from "@/components/ui/button";
+import { useMissedCallReadState } from "@/lib/planipret/missedCallReadState";
 import { TranscriptDiagnosticNotice } from "@/components/planipret/mobile/call/TranscriptDiagnosticNotice";
 import { resolveTranscriptDiagnostic, transcriptDiagnosticLabel, type TranscriptDiagnostic } from "@/lib/planipret/transcriptDiagnostic";
 import { TranscriptConversation, normalizeTranscriptTurns } from "@/components/planipret/mobile/call/TranscriptConversation";
@@ -202,6 +203,10 @@ export default function MCalls() {
   const recordingsSyncingRef = useRef(false);
 
   const userId = profile?.id ?? profile?.user_id;
+  const { isRead: isMissedRead, setRead: setMissedRead } = useMissedCallReadState(userId);
+  const markMissedRead = (items: Call[], read = true) => {
+    if (!setMissedRead(items, read)) toast.error(lang === "en" ? "Could not save read status on this device." : "Impossible d’enregistrer le statut sur cet appareil.");
+  };
   const profileAuthId = profile?.user_id;
   const profileExtension = profile?.ns_extension ?? profile?.extension;
   const phoneCallScopeFilter = useMemo(() => {
@@ -498,7 +503,7 @@ export default function MCalls() {
   // button or pull-to-refresh to reload the list.
 
 
-  const missedCount = useMemo(() => calls.filter(isMissed).length, [calls]);
+  const missedCount = calls.filter((call) => isMissed(call) && !isMissedRead(call)).length;
 
   // The server reconciles a completed NetSapiens CDR with its live mobile row
   // and starts the consent-aware Maestro pipeline automatically. Local rows
@@ -658,10 +663,15 @@ export default function MCalls() {
         ) : (
           <>
             {/* Pull-to-refresh proxy */}
-            <div className="px-4 pt-2 flex items-center justify-between">
+            <div className="px-4 pt-2 flex flex-wrap items-center justify-between gap-2">
               <span className="text-[11px]" style={{ color: "var(--pp-text-muted)" }}>
                 {filtered.length} {filtered.length > 1 ? (lang === "en" ? "calls" : "appels") : (lang === "en" ? "call" : "appel")}
               </span>
+              {tab === "missed" && missedCount > 0 && !loading && (
+                <Button variant="ghost" size="sm" className="h-8 gap-1 text-xs text-[color:var(--pp-text-secondary)]" onClick={() => markMissedRead(calls.filter(isMissed))}>
+                  <Check className="h-3.5 w-3.5" /> {t("avaNotifications.markAllRead")}
+                </Button>
+              )}
               <button
                 onClick={onRefresh}
                 className="text-xs flex items-center gap-1 px-2 py-1"
@@ -706,7 +716,7 @@ export default function MCalls() {
                             {header}
                           </div>
                         )}
-                        <CallRow call={c} onTap={() => setSelected(c)} onCall={() => openDialer(otherNumber(c), true)} showCallBtn={tab === "missed"} onCreateClient={(phone, name) => setCreateTarget({ phone, name, callId: c.id })} />
+                        <CallRow call={c} onTap={() => { if (isMissed(c)) markMissedRead([c]); setSelected(c); }} onCall={() => openDialer(otherNumber(c), true)} showCallBtn={tab === "missed"} missedRead={isMissedRead(c)} onToggleMissedRead={isMissed(c) ? () => markMissedRead([c], !isMissedRead(c)) : undefined} onCreateClient={(phone, name) => setCreateTarget({ phone, name, callId: c.id })} />
                       </div>
                     );
                   })}
@@ -763,7 +773,7 @@ export default function MCalls() {
 }
 
 // ---------- row ----------
-function CallRow({ call, onTap, onCall, showCallBtn, onCreateClient }: { call: Call; onTap: () => void; onCall: () => void; showCallBtn?: boolean; onCreateClient?: (phone: string, name?: string | null) => void }) {
+function CallRow({ call, onTap, onCall, showCallBtn, missedRead, onToggleMissedRead, onCreateClient }: { call: Call; onTap: () => void; onCall: () => void; showCallBtn?: boolean; missedRead?: boolean; onToggleMissedRead?: () => void; onCreateClient?: (phone: string, name?: string | null) => void }) {
   const { t, lang } = useMplanipretLang();
   const missed = isMissed(call);
   const out = isOutbound(call);
@@ -825,6 +835,11 @@ function CallRow({ call, onTap, onCall, showCallBtn, onCreateClient }: { call: C
           </div>
         </button>
         <div className="flex items-center gap-1.5 shrink-0">
+          {onToggleMissedRead && (
+            <Button variant="ghost" size="icon" className="h-9 w-9 shrink-0 text-[color:var(--pp-text-secondary)]" onClick={onToggleMissedRead} title={t(missedRead ? "avaNotifications.markUnread" : "avaNotifications.markRead")} aria-label={t(missedRead ? "avaNotifications.markUnread" : "avaNotifications.markRead")}>
+              <Check className={`h-4 w-4 ${missedRead ? "text-[color:var(--pp-success)]" : ""}`} />
+            </Button>
+          )}
           {onCreateClient && shouldOfferMaestroClientCreation({
             phone: party.phone,
             maestroClientId: call.maestro_client_id,
