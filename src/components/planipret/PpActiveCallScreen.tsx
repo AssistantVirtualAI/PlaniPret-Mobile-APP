@@ -10,8 +10,10 @@ import { toast } from "sonner";
 import {
   Mic, MicOff, Pause, Play, PhoneForwarded, Grid3X3, PhoneOff, Phone,
   User, Search, X, ChevronLeft, ChevronDown, Activity, Volume2, VolumeX, Bluetooth,
-  UserPlus, ArrowLeftRight, Users,
+  UserPlus, ArrowLeftRight, Users, MessageSquare,
 } from "lucide-react";
+import QuickReplySheet from "./QuickReplySheet";
+import { quickReplyTarget, sendQuickReply, quickReplyErrorText } from "@/lib/planipret/quickReply";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import type { useMplanipretSoftphone } from "@/hooks/useMplanipretSoftphone";
 import { audioRouter } from "@/lib/planipret/audio/audioRouter";
@@ -54,7 +56,9 @@ export default function PpActiveCallScreen({
 }: {
   softphone: ReturnType<typeof useMplanipretSoftphone>;
 }) {
-  const { t } = useMplanipretLang();
+  const { t, lang } = useMplanipretLang();
+  const [quickOpen, setQuickOpen] = useState(false);
+  const [quickBusy, setQuickBusy] = useState(false);
   const {
     snap, answer, hangup, mute, unmute, hold, unhold, sendDTMF, transfer, setAudioEl,
     multiLineSupported, callSecond, hangupSecond, swapLines, mergeLines,
@@ -542,6 +546,13 @@ export default function PpActiveCallScreen({
                 style={{ width: 72, height: 72, background: "linear-gradient(135deg, #B91C1C, #E84C4C)", boxShadow: "0 8px 24px rgba(232,76,76,0.5)" }}>
                 <PhoneOff className="w-7 h-7" />
               </button>
+              {quickReplyTarget(snap.remoteNumber || snap.remoteIdentity) && (
+                <button onClick={() => setQuickOpen(true)} aria-label="Message"
+                  className="rounded-full flex flex-col items-center justify-center active:scale-95 transition"
+                  style={{ width: 56, height: 56, background: "rgba(255,255,255,0.1)", border: "1px solid rgba(255,255,255,0.2)" }}>
+                  <MessageSquare className="w-6 h-6" />
+                </button>
+              )}
               <button onClick={() => void answer()} aria-label="Répondre"
                 className="rounded-full flex items-center justify-center active:scale-95 transition"
                 style={{ width: 72, height: 72, background: "linear-gradient(135deg, #15803D, #22C55E)", boxShadow: "0 8px 24px rgba(34,197,94,0.5)" }}>
@@ -549,6 +560,22 @@ export default function PpActiveCallScreen({
               </button>
           </>
         </div>}
+        {isIncoming && quickOpen && (
+          <QuickReplySheet lang={lang} busy={quickBusy} onClose={() => setQuickOpen(false)}
+            onPick={async (text) => {
+              const to = quickReplyTarget(snap.remoteNumber || snap.remoteIdentity);
+              const callId = snap.callId;
+              if (!to) return;
+              setQuickBusy(true);
+              // Refuser d'abord : l'appel part à la boîte vocale (règles NetSapiens).
+              try { hangup(); } catch { /* ignore */ }
+              const r = await sendQuickReply({ callId, to, text });
+              setQuickBusy(false);
+              setQuickOpen(false);
+              if (r.ok) toast.success(lang === "fr" ? "Texto envoyé" : "Text sent");
+              else toast.error(quickReplyErrorText(r.error, lang));
+            }} />
+        )}
       </motion.div>
     </AnimatePresence>
     </>

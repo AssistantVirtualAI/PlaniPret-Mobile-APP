@@ -683,6 +683,7 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
           void nativeSip.answer();
         } else if (invite?.action === "decline" || invite?.action === "cancelled") {
           void nativeSip.hangup();
+          if (invite?.action === "decline") offerQuickReply(invite);
         } else {
           void nativeSip.repairRegistration();
         }
@@ -701,6 +702,7 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
         // here as well used to create a second 30s waiter racing CallKit/UI.
       } else if (invite?.action === "decline") {
         try { ppSipProvider.requestDecline(invite?.callId); } catch {}
+        offerQuickReply(invite);
         void supabase.functions.invoke("pp-ns-calls", {
           body: { action: "reject", call_id: invite?.callId },
         }).catch(() => undefined);
@@ -1797,4 +1799,14 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
   }), [effectiveSnap, loading, net, quality, nativeStatus, pbxRegistration, sipConnected, placeCall, answer, hangup, answeredElsewhere, attachRestCall, restCall?.id, restControl, hasLiveSipSession, applyHold, usingWebFallback]);
 
 
+}
+
+/** Refus hors de l'app (CallKit / notification) → propose « Répondre par texto ? ». */
+function offerQuickReply(invite: { callId?: string; from?: string; fromUser?: string } | null | undefined) {
+  const from = String(invite?.from || invite?.fromUser || "");
+  if (!from) return;
+  const lang = (() => { try { return localStorage.getItem("mplanipret-lang") === "en" ? "en" : "fr"; } catch { return "fr"; } })();
+  void import("@/lib/planipret/quickReply")
+    .then((m) => m.scheduleQuickReplyPrompt({ callId: String(invite?.callId || ""), from, lang }))
+    .catch(() => undefined);
 }
