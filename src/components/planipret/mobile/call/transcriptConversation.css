@@ -1,0 +1,26 @@
+.pp-transcript-conversation {
+  --pp-transcript-first-surface: var(--pp-bg-elevated);
+  --pp-transcript-second-surface: color-mix(in srgb, var(--pp-brand-accent) 18%, var(--pp-bg-base));
+  --pp-transcript-first-accent: var(--pp-text-secondary);
+  --pp-transcript-second-accent: var(--pp-brand-accent);
+  width: 100%;
+  min-width: 0;
+}
+.pp-transcript-notice { color: var(--pp-text-secondary); font-size: 12px; line-height: 1.5; margin: 0 0 16px; }
+.pp-transcript-messages { list-style: none; padding: 4px 0 24px; margin: 0; display: flex; flex-direction: column; gap: 28px; }
+.pp-transcript-message { display: flex; flex-direction: column; align-items: flex-start; min-width: 0; }
+.pp-transcript-message-right { align-items: flex-end; }
+.pp-transcript-speaker { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; max-width: 88%; margin-bottom: 8px; color: var(--pp-text-primary); font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.pp-transcript-speaker-name { min-width: 0; }
+.pp-transcript-source { color: var(--pp-text-secondary); font-size: 11px; font-weight: 400; }
+.pp-transcript-speaker time { color: var(--pp-text-secondary); font-size: 11px; font-weight: 400; flex-shrink: 0; }
+.pp-transcript-avatar { flex-shrink: 0; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; background: var(--pp-transcript-first-surface); border: 1px solid var(--pp-bg-border-2); }
+.pp-transcript-message-right .pp-transcript-avatar { background: var(--pp-transcript-second-surface); border-color: var(--pp-transcript-second-accent); }
+.pp-transcript-message-right .pp-transcript-speaker { color: var(--pp-transcript-second-accent); }
+.pp-transcript-bubble { min-width: 0; max-width: 82%; padding: 16px 18px; border-radius: 8px 8px 8px 2px; background: var(--pp-transcript-first-surface); border: 1px solid var(--pp-bg-border-2); border-left: 3px solid var(--pp-transcript-first-accent); color: var(--pp-text-primary); font-size: 15px; line-height: 1.8; letter-spacing: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.pp-transcript-message-right .pp-transcript-bubble { background: var(--pp-transcript-second-surface); border-radius: 8px 8px 2px 8px; border-left: 1px solid var(--pp-bg-border-2); border-right: 3px solid var(--pp-transcript-second-accent); }
+.pp-call-detail-backdrop { background: color-mix(in srgb, var(--pp-bg-base) 72%, transparent); }
+.pp-call-detail-panel { height: 88%; max-height: 88%; max-width: 680px; margin-inline: auto; }
+@media (max-width: 480px) {
+  .pp-transcript-bubble { max-width: 88%; padding: 14px 16px; }
+}
