@@ -1,7 +1,7 @@
 {
   "name": "planipret-mobile",
-  "version": "1.6.8",
-  "androidVersionCode": 51,
+  "version": "1.6.9",
+  "androidVersionCode": 52,
   "description": "Planiprêt — Standalone Capacitor Mobile App (iOS + Android)",
   "private": true,
   "type": "module",
@@ -115,6 +115,6 @@
     "vite": "^5.4.10",
     "vitest": "^2.1.5"
   },
-  "iosBuildNumber": 51,
-  "iosMarketingVersion": "1.6.8"
+  "iosBuildNumber": 52,
+  "iosMarketingVersion": "1.6.9"
 }

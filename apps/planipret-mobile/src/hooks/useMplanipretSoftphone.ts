@@ -12,9 +12,10 @@ import { edgeOnlyWssUrls } from "@/lib/planipret/sip/sipEdgePolicy";
 //     ("both, with fallback" policy).
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Capacitor } from "@capacitor/core";
 import { supabase } from "@/integrations/supabase/client";
+import { ppEdgeInvoke, ppNormalizeDestination } from "@/lib/planipret/ppEdge";
 import { useAuth } from "@/hooks/useAuth";
-import { getPpSipReconnectConfig } from "@/lib/planipret/sip/ppSipReconnectConfig";
 import { PP_PENDING_ANSWER_TIMEOUT_MS, ppSipProvider, type PpSipConfig, type PpSipSnapshot } from "@/lib/planipret/sip/ppSipProvider";
 import { startSipStabilityMonitor } from "@/lib/planipret/sip/sipStabilityMonitor";
 import { networkMonitor, type NetSample } from "@/lib/planipret/network/networkMonitor";
@@ -43,9 +44,18 @@ import {
   stopPlanipretSipKeepAlive,
   type PpNativeSipStatus,
   setPlanipretNativeCallActive,
+  onPlanipretCallKitHold,
+  setPlanipretCallKitHeld,
 } from "@/lib/planipret/sip/nativePpSipService";
 import { addDedupedCapListener } from "@/lib/planipret/sip/capListeners";
 import { checkSipBackendRegistration } from "@/lib/planipret/sip/sipBackendCheck";
+import { ensureForegroundOwnership, resetOwnershipRepairBackoff } from "@/lib/planipret/sip/sipOwnershipRepair";
+import { nativeSip } from "@/lib/planipret/sip/nativeSipService";
+import { canUseDistinctWebAorFallback, decideOutboundRoute } from "@/lib/planipret/sip/outboundRoute";
+import { nativeOwnsAor } from "@/lib/planipret/sip/aorArbitration";
+
+const isIosNativePlatform = () =>
+  Capacitor.isNativePlatform() && Capacitor.getPlatform() === "ios";
 
 import {
   upsertRingingSession,
@@ -147,61 +157,40 @@ function acquireSoftphoneOwner(instanceId: string, userId: string): boolean {
   return false;
 }
 
-/**
- * Ownership MUST belong to the instance that renders the call UI.
- *
- * `useMplanipretSoftphone(enabled = true)` defaults to true, and
- * `acquireSoftphoneOwner` is only reachable from the SIP init effect, which bails
- * out on `!enabled`. So at startup:
- *   - PlanipretMobile calls useMplanipretSoftphone(Boolean(profile?.user_id)) and
- *     is DISABLED on its first render (profile still loading) -> no acquire;
- *   - ActiveCallOverlay / MMore call useMplanipretSoftphone() with no argument,
- *     are enabled straight away, and WIN ownership;
- *   - once the profile lands, PlanipretMobile's acquire fails (already taken).
- *
- * The winner holds the CallKit answer listener and the cross-device claim yet
- * renders NOTHING - it only reads net/quality or sipConnected. Meanwhile
- * PpActiveCallScreen, which renders the keypad, is fed by PlanipretMobile whose
- * call effects are all gated off. That is exactly the reported symptom: Answer
- * does nothing and no call screen appears in the app.
- *
- * A `primary` instance therefore PREEMPTS a passive owner, and a passive instance
- * only takes ownership while no primary is mounted (so the softphone still works
- * on secondary screens).
- */
+/** Mounted hook instances, so ownership can be handed over instead of lost. */
+const softphoneInstances = new Set<{ id: string; notify: () => void }>();
+
+// Fin d'appel : émettre une seule fois par appel, peu importe qui raccroche.
+const emittedCallEnded = new Set<string>();
+function emitCallEnded(providerCallId: string | null, detail: { number?: string | null; direction?: "in" | "out" | null; answered?: boolean } = {}) {
+  const key = providerCallId || "unknown";
+  if (emittedCallEnded.has(key)) return;
+  emittedCallEnded.add(key);
+  if (emittedCallEnded.size > 50) {
+    emittedCallEnded.delete(emittedCallEnded.values().next().value as string);
+  }
+  try {
+    const payload = { providerCallId: providerCallId || null, ...detail };
+    try { localStorage.setItem("pp.pending-post-call-decision.v2", JSON.stringify({ ...payload, endedAt: new Date().toISOString() })); } catch { /* event still fires */ }
+    window.dispatchEvent(new CustomEvent("pp:call-ended", {
+      detail: payload,
+    }));
+  } catch { /* l'écran de consentement reste accessible depuis l'historique */ }
+}
+/** Instances that actually render the call UI. They win ownership. */
 const softphonePrimaryIds = new Set<string>();
 
 function isPrimaryOwner(): boolean {
   return softphoneOwnerId !== null && softphonePrimaryIds.has(softphoneOwnerId);
 }
 
-/**
- * Every mounted hook instance, so ownership can be HANDED OVER instead of simply
- * dropped.
- *
- * `PlanipretMobile`, `MMore` and `ActiveCallOverlay` all mount this hook, so
- * several instances coexist. Only the owner runs the call-critical effects (the
- * CallKit answer listener, the cross-device claim, the Maestro posting), but
- * `releaseSoftphoneOwner` used to clear the owner without waking anybody: since
- * `acquireSoftphoneOwner` is only reached from the SIP init effect, which depends
- * on [enabled, user?.id], ownership stayed VACANT until the user changed. From
- * that moment no instance listened for CallKit answers at all.
- */
-const softphoneInstances = new Set<{ id: string; notify: () => void }>();
-
-/** Notify every mounted instance that ownership is up for grabs. */
 function notifySoftphoneInstances() {
-  softphoneInstances.forEach((i) => { try { i.notify(); } catch { /* ignore */ } });
+  softphoneInstances.forEach((i) => { try { i.notify(); } catch {} });
 }
 
 /**
- * A ringing or live call FREEZES ownership.
- *
- * Handing the owner role over mid-ring means the outgoing owner tears its effect
- * down (removing the CallKit answer listener) while the incoming one has not
- * mounted its own yet. A tap on "Answer" landing in that window is silently
- * dropped - the exact symptom we are chasing. Better a stale owner for a few
- * seconds than no listener at all.
+ * A ringing or live call FREEZES ownership. Better a stale owner for a few
+ * seconds than no CallKit listener at all.
  */
 function softphoneCallIsLive(): boolean {
   try {
@@ -221,7 +210,8 @@ function releaseSoftphoneOwner(instanceId: string) {
   softphoneOwnerId = null;
   softphoneOwnerUserId = null;
   // Ownership must never stay vacant: the owner holds the CallKit answer
-  // listener and the cross-device claim.
+  // listener and the cross-device claim. Wake the remaining instances so one
+  // of them re-acquires immediately.
   notifySoftphoneInstances();
 }
 
@@ -278,27 +268,24 @@ type RestCallAttachment = {
   startedAt?: number;
 };
 
-/**
- * @param enabled  gate the SIP stack (false while the profile is still loading).
- * @param opts.primary  set by the screens that RENDER the call UI
- *   (PlanipretMobile, PlanipretAdminLayout -> PpActiveCallScreen). A primary
- *   instance preempts a passive owner so the CallKit answer listener always lives
- *   in the instance whose `answer()` is wired to the visible keypad.
- */
 export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolean; clientType?: "mobile" | "web" }) {
   const { user } = useAuth();
   const isPrimary = opts?.primary === true;
-  // Which NetSapiens device this instance registers to: `<ext>M` for the iOS app,
-  // `<ext>W` for the browser portal/widget. They have DIFFERENT passwords and must
-  // never be mixed: two clients on one AOR make the SBC close the older WSS (1001).
-  const clientType = opts?.clientType ?? "mobile";
+  // `<ext>M` est l'AOR EXCLUSIF de l'app native (PJSIP/TLS). Un navigateur —
+  // même sur les routes /m — doit prendre `<ext>W` en WSS, sinon son REGISTER
+  // écrase le Contact du device mobile et les INVITEs partent en WSS vers le
+  // navigateur au lieu de l'iPhone.
+  const clientType = opts?.clientType ?? (Capacitor.isNativePlatform() ? "mobile" : "web");
   const ownerIdRef = useRef<string>(`pp-softphone-${++softphoneOwnerSeq}`);
-  /** Bumped when ownership becomes available, so gated effects re-evaluate. */
+  // Bumped when ownership changes so gated effects re-evaluate.
   const [ownerTick, setOwnerTick] = useState(0);
-  /** True while this instance is the single owner of the call-critical effects. */
-  const isOwner = softphoneOwnerId === ownerIdRef.current;
   const [snap, setSnap] = useState<PpSipSnapshot>(() => ppSipProvider.getSnapshot());
   const [loading, setLoading] = useState(false);
+  /**
+   * Only old iOS binaries with no linked PJSIP engine may use `<ext>W` in the
+   * WebView. A real TLS registration failure must remain on `<ext>M`.
+   */
+  const [usingWebFallback, setUsingWebFallback] = useState(false);
   const [net, setNet] = useState<NetSample>(networkMonitor.current());
   const [quality, setQuality] = useState<CallQualitySnapshot | null>(null);
   const [brokerId, setBrokerId] = useState<string | null>(null);
@@ -308,74 +295,156 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
   // Permet d'afficher immédiatement l'écran "ça sonne" avec Répondre/Raccrocher.
   const [pushRing, setPushRing] = useState<{ callId: string; from: string } | null>(null);
   const [nativeStatus, setNativeStatus] = useState<PpNativeSipStatus | null>(null);
+  /**
+   * Server-side truth about the PBX registration state. The local SIP stack can
+   * report `idle` (WebView contact released, native stack owning the AOR, or a
+   * page freshly loaded) while the extension is perfectly registered on
+   * NetSapiens and able to place/receive calls. Without this the UI showed
+   * "SIP not registered / IDLE" for brokers who were actually online.
+   *  - "own"   → this client's own AOR (`<ext>M` / `<ext>W`) is registered
+   *  - "other" → another device of the same extension is registered
+   */
+  const [pbxRegistration, setPbxRegistration] = useState<"own" | "other" | "none">("none");
+
   /** Latest answer() implementation, callable from native listeners registered once. */
   const answerRef = useRef<null | (() => Promise<boolean>)>(null);
   /** One answer transaction at a time across CallKit, notification and in-app UI. */
   const answerAttemptRef = useRef<Promise<boolean> | null>(null);
 
   const seenCallIds = useRef<Set<string>>(new Set());
+  const answeredCallIds = useRef<Set<string>>(new Set());
   const mobileSipConfigRef = useRef<PpSipConfig | null>(null);
   /** Mobile WebView and native iOS stack deliberately share `<ext>M`, but never concurrently. */
   const sameAorRef = useRef<boolean>(false);
 
-  // Subscribe to the SIP snapshot.
-  useEffect(() => ppSipProvider.subscribe(setSnap), []);
+  // Android/web follow the JsSIP snapshot. iOS follows PJSIP unless the active
+  // binary has no linked engine; that narrow fallback uses the distinct `<ext>W`
+  // device and therefore needs the real JsSIP state in the UI.
+  useEffect(() => ppSipProvider.subscribe((next) => {
+    if (!isIosNativePlatform() || usingWebFallback) setSnap(next);
+  }), [usingWebFallback]);
 
-  // Register this instance in the handover registry.
+  useEffect(() => {
+    if (!isIosNativePlatform() || usingWebFallback) return;
+    const nativeCalls = new Map<string, PpSipSnapshot>();
+    const onRegistration = (event: Event) => {
+      const d = (event as CustomEvent<any>).detail ?? {};
+      setSnap((current) => ({
+        ...current,
+        status: d.registered ? "registered" : d.state === "failed" ? "error" : "disconnected",
+        errorCause: d.registered ? undefined : String(d.state ?? "native_sip_unavailable"),
+        lastRegistrationAt: d.registered ? Date.now() : current.lastRegistrationAt,
+      }));
+    };
+    const onIncoming = (event: Event) => {
+      const d = (event as CustomEvent<any>).detail ?? {};
+      setSnap((current) => {
+        if (current.callId && ["active", "held", "ringing-in", "ringing-out"].includes(current.callState)) nativeCalls.set(current.callId, current);
+        return {
+        ...current,
+        status: nativeSip.isRegistered() ? "registered" : current.status,
+        callState: "ringing-in",
+        callId: String(d.callId ?? ""),
+        remoteIdentity: String(d.remoteName ?? d.remoteNumber ?? ""),
+        remoteNumber: String(d.remoteNumber ?? ""),
+        direction: "in",
+        startedAt: Date.now(),
+      };
+      });
+    };
+    const onCallState = (event: Event) => {
+      const d = (event as CustomEvent<any>).detail ?? {};
+      const state = String(d.state ?? "").toLowerCase();
+      const eventCallId = String(d.callId ?? "");
+      setSnap((current) => {
+        const currentCallId = String(current.callId ?? "");
+        if (currentCallId && ["active", "held", "ringing-in", "ringing-out"].includes(current.callState)) nativeCalls.set(currentCallId, current);
+        if (state === "disconnected" || state === "ended") {
+          nativeCalls.delete(eventCallId);
+          if (eventCallId === currentCallId && nativeCalls.size) return nativeCalls.values().next().value!;
+        }
+        const previous = nativeCalls.get(eventCallId);
+        if (previous && eventCallId !== currentCallId && state !== "disconnected" && state !== "ended") {
+          current = previous;
+        }
+        const currentIsLive = ["ringing-in", "ringing-out", "active", "held"].includes(current.callState);
+        // A delayed disconnect for an older PJSIP dialog must never overwrite a
+        // newer ringing/active call. CallKit enforces the same correlation on
+        // the native side; this keeps the React screen in lockstep with it.
+        if ((state === "disconnected" || state === "ended")
+          && currentIsLive
+          && eventCallId
+          && currentCallId
+          && eventCallId !== currentCallId) {
+          console.info("[SIP] stale native end ignored", { endedCallId: eventCallId, activeCallId: currentCallId });
+          return current;
+        }
+        const callState: PpSipSnapshot["callState"] = state === "ringing"
+          ? (d.direction === "out" ? "ringing-out" : "ringing-in")
+          : state === "connecting" || state === "connected" || state === "media"
+            ? "active"
+            : state === "held" ? "held" : state === "disconnected" || state === "ended" ? "ended" : current.callState;
+        return {
+          ...current,
+          status: nativeSip.isRegistered() ? "registered" : current.status,
+          callState,
+          callId: eventCallId || currentCallId,
+          remoteIdentity: String(d.remoteNumber ?? current.remoteIdentity ?? ""),
+          remoteNumber: String(d.remoteNumber ?? current.remoteNumber ?? ""),
+          direction: d.direction === "out" || d.direction === "in" ? d.direction : current.direction,
+          startedAt: callState === "ended" ? current.startedAt : (current.startedAt ?? Date.now()),
+        };
+      });
+    };
+    window.addEventListener("sip-registration-state", onRegistration);
+    window.addEventListener("sip-incoming-call", onIncoming);
+    window.addEventListener("sip-call-state", onCallState);
+    return () => {
+      window.removeEventListener("sip-registration-state", onRegistration);
+      window.removeEventListener("sip-incoming-call", onIncoming);
+      window.removeEventListener("sip-call-state", onCallState);
+    };
+  }, [usingWebFallback]);
+
+  // Register this instance so ownership can be transferred on unmount.
   useEffect(() => {
     const id = ownerIdRef.current;
     const entry = { id, notify: () => setOwnerTick((t) => t + 1) };
     softphoneInstances.add(entry);
     if (isPrimary) {
       softphonePrimaryIds.add(id);
-      // A passive instance may already own the stack (it was enabled first): wake
-      // everybody so the preemption below runs immediately.
+      // A passive instance may already own the stack: wake everyone so the
+      // preemption below runs immediately.
       notifySoftphoneInstances();
     }
     return () => {
       softphoneInstances.delete(entry);
       softphonePrimaryIds.delete(id);
-      // Releasing here (not only in the SIP init effect) guarantees the owner is
-      // handed over even when the init effect never ran for this instance.
       releaseSoftphoneOwner(ownerIdRef.current);
-      // A release refused because a call was live leaves an UNMOUNTED owner
-      // behind. Wake the survivors so one of them can reclaim it once the call
-      // is over, instead of staying orphaned until the user changes.
       if (softphoneOwnerId === ownerIdRef.current) notifySoftphoneInstances();
     };
   }, []);
 
-  // Claim vacant ownership without tearing the SIP stack down.
-  //
-  // Deliberately a DEDICATED effect: adding `ownerTick` to the SIP init effect's
-  // dependencies would run its cleanup (which calls releaseSoftphoneOwner ->
-  // notify -> another tick) and re-init JsSIP on every handover, i.e. a
-  // teardown/re-register cascade on top of the reconnect storm we are fixing.
+  // Dedicated, non-destructive ownership takeover. Kept OUT of the SIP init
+  // effect: putting `ownerTick` there would run its cleanup (releaseSoftphoneOwner)
+  // and cascade into teardown / re-REGISTER storms on every handover.
   useEffect(() => {
     if (!enabled || !user) return;
     const myId = ownerIdRef.current;
-    if (softphoneOwnerId === myId) return;                 // already ours
-    // A passive instance never competes with a mounted primary one.
-    if (!isPrimary && softphonePrimaryIds.size > 0 && !isPrimaryOwner()) {
-      // A primary instance exists but has not claimed yet (profile still loading).
-      // Stay out of the way instead of grabbing a role we cannot render.
-      return;
-    }
+    if (softphoneOwnerId === myId) return;
+    // A passive instance never competes with a mounted primary instance.
+    if (!isPrimary && softphonePrimaryIds.size > 0 && !isPrimaryOwner()) return;
     const ownerAlive = softphoneOwnerId !== null
       && Array.from(softphoneInstances).some((i) => i.id === softphoneOwnerId);
     if (ownerAlive) {
-      // PREEMPTION: the live owner is a passive instance and we render the call UI.
-      // Never mid-ring: swapping the CallKit listener during a ring drops the tap.
+      // PREEMPTION: the live owner is passive and we render the call UI.
+      // Never during ringing: swapping the CallKit listener would lose the tap.
       if (!(isPrimary && !isPrimaryOwner())) return;
       if (softphoneCallIsLive()) return;
-      console.info("[pp-sip] preempting passive softphone owner", {
-        from: softphoneOwnerId, to: myId,
-      });
+      console.info("[pp-sip] preempting passive softphone owner", { from: softphoneOwnerId, to: myId });
       softphoneOwnerId = null;
       softphoneOwnerUserId = null;
     } else if (softphoneOwnerId !== null) {
-      // Orphaned owner (unmounted while a call was live). Reclaiming is only safe
-      // once nothing is ringing, otherwise we recreate the very gap we avoid.
       if (softphoneCallIsLive()) return;
       console.info("[pp-sip] reclaiming orphaned softphone owner", { from: softphoneOwnerId });
       softphoneOwnerId = null;
@@ -383,9 +452,7 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     }
     if (!acquireSoftphoneOwner(myId, user.id)) return;
     console.info("[pp-sip] softphone owner acquired", { id: myId, primary: isPrimary });
-    // Wake the others so the dispossessed instance re-renders without its gates.
     notifySoftphoneInstances();
-    // Re-render so the gated effects below see `isOwner === true`.
     setOwnerTick((t) => t + 1);
   }, [enabled, user?.id, ownerTick, snap.callState, isPrimary]);
 
@@ -396,7 +463,17 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     if (snap.callState === "active" && snap.direction === "in") {
       void completePlanipretCallKitAnswer(snap.callId, true);
     }
+    if ((snap.callState === "active" || snap.callState === "held") && snap.callId) {
+      answeredCallIds.current.add(snap.callId);
+    }
   }, [snap.callState, snap.direction, snap.callId]);
+
+  useEffect(() => {
+    const state = String(restCall?.status ?? "").toLowerCase();
+    if (restCall?.id && ["active", "held", "answered", "in_progress"].includes(state)) {
+      answeredCallIds.current.add(restCall.id);
+    }
+  }, [restCall?.id, restCall?.status]);
 
   // 24h SIP stability soak recorder (rolling window in localStorage).
   useEffect(() => startSipStabilityMonitor(), []);
@@ -424,18 +501,18 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       } catch { /* ignore */ }
     })();
     return () => { cancelled = true; };
-  }, [enabled, user?.id]);
+  }, [enabled, user?.id, ownerTick]);
 
   // Resolve NS-API SIP credentials and register the softphone per user.
   // Re-runs whenever the ExtensionSync page dispatches `pp:sip-ready`, so a
-  // freshly-created `{ext}_mobile` device actually REGISTERs and shows up in
+  // freshly-created `{ext}M` device actually REGISTERs and shows up in
   // NetSapiens with IP/User-Agent instead of empty columns.
   useEffect(() => {
     if (!enabled || !user) { setLoading(false); return; }
     const ownerId = ownerIdRef.current;
-    // Ownership is arbitrated by the dedicated effect above (primary instances win),
-    // NOT by whoever mounts first. Acquiring here as a fallback only, so a lone
-    // instance still boots the stack.
+    // Ownership is arbitrated by the dedicated effect above (primary instances
+    // win), NOT by mount order. Acquire here only as a fallback so a lone
+    // instance still starts the stack.
     if (softphoneOwnerId !== ownerId
         && !acquireSoftphoneOwner(ownerId, user.id)) { setLoading(false); return; }
     let cancelled = false;
@@ -446,7 +523,55 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
         if (opts?.force) {
           try { ppSipProvider.stop(); } catch {}
         }
-        const { data, error } = await supabase.functions.invoke("ns-resolve-sip-credentials", { body: { client_type: clientType } });
+        const onNative = Capacitor.isNativePlatform();
+        const iosNative = clientType === "mobile" && isIosNativePlatform();
+        if (iosNative) {
+          const nativeEngineReady = await nativeSip.initialize();
+          if (cancelled) return;
+          if (!nativeEngineReady) {
+            const diagnostic = nativeSip.getDiagnostics();
+            const failure = diagnostic.failure || "native_sip_unavailable";
+            const mayUseDistinctWebAor = canUseDistinctWebAorFallback({
+              clientType,
+              isNativePlatform: onNative,
+              platform: Capacitor.getPlatform(),
+              nativeFailure: failure,
+            });
+            if (!mayUseDistinctWebAor) {
+              console.error("[softphone] iOS PJSIP/TLS registration failed — `<ext>M` stays protected", failure);
+              // Preserve the actual native reason (`credentials_missing`,
+              // `native_register_timeout`, etc.). Those failures must not be
+              // hidden by starting WSS on the mobile AOR.
+              setUsingWebFallback(false);
+              setSnap((current) => ({ ...current, status: "error", errorCause: failure }));
+              return;
+            }
+            // Old App Store binaries can expose the bridge but lack pjsua. The
+            // native service released `<ext>M`; resolve and register the separate
+            // `<ext>W` device only. This is an operational fallback, never a
+            // transport/configuration write to NetSapiens.
+            console.warn("[softphone] PJSIP absent from iOS binary — using distinct WSS device", failure);
+            setUsingWebFallback(true);
+          } else {
+            setUsingWebFallback(false);
+            try { ppSipProvider.stop(); } catch { /* no stale WSS registration on a PJSIP-capable binary */ }
+            return;
+          }
+        }
+        // Android et les navigateurs utilisent exclusivement la ligne W/WSS.
+        const fallbackToWebAor = clientType === "mobile";
+        const resolveClientType = fallbackToWebAor ? "web" : clientType;
+        // Garde restaurée (configuration du 7 septembre) : le resolver réécrit
+        // `device-sip-transport-type`. Sans ce garde il repasse `<ext>M` en WSS
+        // 9002 alors que le moteur natif est inscrit en TLS 5061 — le moteur
+        // perd la ligne, le service de maintien WSS la récupère, et plus aucun
+        // appel ne porte d'audio.
+        // `on_login` (re)provisionne le device pour chaque courtier qui ouvre
+        // l'app, y compris Android et les builds sans PJSIP.
+        const sipTransport = "wss";
+        const { data, error } = await supabase.functions.invoke("ns-resolve-sip-credentials", {
+          body: { client_type: resolveClientType, transport: sipTransport, on_login: clientType === "mobile" },
+        });
         if (cancelled) return;
         if (error || !data || (data as any)?.error) return;
         const d = data as any;
@@ -475,7 +600,7 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
           displayName: String(d.display_name || d.sip_display_name || d.sip_extension),
         };
         mobileSipConfigRef.current = sipConfig;
-        // The native keep-alive service owns the `<ext>_mobile` device, but ONLY
+        // The native keep-alive service owns the `<ext>M` device, but ONLY
         // in background. Running it while the WebView (JsSIP) is registered makes
         // NetSapiens close the sockets alternately (code 1001 loop, hundreds of
         // sockets). In foreground the JS provider is the single owner.
@@ -483,21 +608,21 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
         // credentials. In foreground startSipService only stores this config and
         // remains idle (`foreground_js_owns`); once iOS backgrounds the app it can
         // take ownership without failing with `missing_host`.
-        // Native keep-alive only exists on the mobile client (`<ext>M`). The web
-        // portal has no native bridge and must never start it.
-        if (clientType === "mobile") {
+        // En repli `<ext>W`, ne JAMAIS amorcer le service de maintien avec ces
+        // identifiants : il tient `<ext>M` et deux inscriptions sur la même AOR
+        // referment les sockets (WSS 1001).
+        if (clientType === "mobile" && !fallbackToWebAor) {
           startPlanipretSipKeepAlive(sipConfig)
             .then((s) => { if (s && !cancelled) setNativeStatus(s); })
             .catch(() => undefined);
         }
 
-        // In the mobile app, foreground JsSIP and the native background bridge share
-        // the SAME `<ext>M` AOR, so handoff must be strictly sequential. On web there
-        // is no native peer, hence no shared-AOR constraint.
-        sameAorRef.current = clientType === "mobile";
+
+        // Même AOR que le service natif uniquement hors repli : en repli le
+        // softphone est sur `<ext>W`, un device NetSapiens distinct de `<ext>M`.
+        sameAorRef.current = clientType === "mobile" && !fallbackToWebAor;
         if (cancelled) return;
         await ppSipProvider.init(sipConfig);
-        // VoIP push tokens belong to the iOS app only.
         if (clientType === "mobile") {
           void getPlanipretVoipPushToken().then((t) => {
             if (t?.token) void uploadPlanipretVoipToken(t.token, t.bundleId, sipConfig.extension, t.environment);
@@ -518,7 +643,8 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     const onReady = (e: any) => { void doInit({ force: !!e?.detail?.force }); };
     const onForce = (e: any) => {
       if (e?.detail?.force === true) { void doInit({ force: true }); return; }
-      try { ppSipProvider.forceReregister(); } catch {}
+      if (isIosNativePlatform() && !usingWebFallback) void nativeSip.repairRegistration();
+      else { try { ppSipProvider.forceReregister(); } catch {} }
     };
     window.addEventListener("pp:sip-ready", onReady as any);
     window.addEventListener("pp:sip-force-reregister", onForce as any);
@@ -526,20 +652,14 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       cancelled = true;
       window.removeEventListener("pp:sip-ready", onReady as any);
       window.removeEventListener("pp:sip-force-reregister", onForce as any);
-      // No-op unless we still own it: after a preemption the new owner must not be
-      // wiped out by the dispossessed instance's cleanup.
       releaseSoftphoneOwner(ownerId);
     };
-  }, [clientType, enabled, user?.id]);
+  }, [clientType, enabled, user?.id, usingWebFallback]);
 
   // Native guard: Android keeps a foreground keep-alive service with WakeLock / WifiLock;
   // iOS receives native background refresh requests and re-registers as soon as execution resumes.
   useEffect(() => {
     if (!enabled || !user) return;
-    // Native keep-alive, PushKit and CallKit only exist in the iOS app (`<ext>M`).
-    // The browser portal has no native bridge: registering these listeners there
-    // would be a no-op at best, and would fight over the mobile AOR at worst.
-    if (clientType !== "mobile") return;
     if (softphoneOwnerId !== ownerIdRef.current) return;
     let cleanupStatus: (() => void) | undefined;
     let cleanupReregister: (() => void) | undefined;
@@ -548,23 +668,42 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       .then((fn) => { cleanupStatus = fn; })
       .catch(() => undefined);
     onPlanipretNativeReregister(() => {
-      try { ppSipProvider.forceReregister(); } catch {}
+      if (isIosNativePlatform() && !usingWebFallback) void nativeSip.repairRegistration();
+      else { try { ppSipProvider.forceReregister(); } catch {} }
     }).then((fn) => { cleanupReregister = fn; }).catch(() => undefined);
 
     // Native incoming INVITE (background/lockscreen). Wake JsSIP + broadcast so
     // MActiveCall / MHome can pop the ringing sheet even if the WebView slept.
     let cleanupInvite: (() => void) | undefined;
     onPlanipretIncomingInvite((invite) => {
+      if (isIosNativePlatform() && !usingWebFallback) {
+        if (invite?.action === "answer") {
+          // CallKit owns the only native answer transaction. Completing it a
+          // second time from JavaScript could emit two 200 OK responses.
+          void nativeSip.answer();
+        } else if (invite?.action === "decline" || invite?.action === "cancelled") {
+          void nativeSip.hangup();
+          // iPhone : PpVoipCall (CallKit) affiche lui-même « Répondre par texto ? »
+          // après un refus, même app fermée — ne pas planifier un doublon ici.
+        } else {
+          void nativeSip.repairRegistration();
+        }
+        try { window.dispatchEvent(new CustomEvent("pp:sip-incoming-invite", { detail: invite })); } catch {}
+        return;
+      }
       // If the user already tapped Answer on the notification, mark the intent
       // before re-registering, so a fast JsSIP INVITE cannot beat the flag.
       if (invite?.action === "answer") {
         try { (window as any).__ppPendingAnswer = { callId: invite.callId, ts: Date.now() }; } catch {}
-        try { ppSipProvider.forceReregister(); } catch {}
+        // Establish the sole fresh JS transport before attempting the SIP 200 OK.
+        void ppSipProvider.wakeForIncoming(String(invite?.callId ?? "")).then(() => {
+          void answerRef.current?.().then((ok) => console.info(`[pp-sip] notification answer → ${ok ? "connected" : "failed"}`));
+        });
         // Run the single arbitrated answer transaction. Calling requestAnswer()
         // here as well used to create a second 30s waiter racing CallKit/UI.
-        void answerRef.current?.().then((ok) => console.info(`[pp-sip] notification answer → ${ok ? "connected" : "failed"}`));
       } else if (invite?.action === "decline") {
         try { ppSipProvider.requestDecline(invite?.callId); } catch {}
+        offerQuickReply(invite);
         void supabase.functions.invoke("pp-ns-calls", {
           body: { action: "reject", call_id: invite?.callId },
         }).catch(() => undefined);
@@ -574,25 +713,12 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
         setPushRing(null);
         void acknowledgePlanipretIncoming();
       } else {
-        // No user action attached: the native keep-alive is reporting that IT
-        // captured the INVITE on the shared `<ext>M` AOR. It has no WebRTC media
-        // stack and its bridge forwards only callId/from - never the SDP offer - so
-        // a call left in its hands can never be answered.
-        //
-        // Honest about the limit: NetSapiens will not re-offer an INVITE already
-        // being answered on that AOR, so re-registering cannot rescue THIS call.
-        // It restores a media-capable owner for the next one, and it is the signal
-        // that ownership was on the wrong stack at INVITE time.
-        console.warn("[pp-sip] native captured the INVITE (no media stack) → JsSIP reclaiming the <ext>M AOR", {
-          callId: invite?.callId ?? "",
-        });
+        // Native saw the INVITE first; reclaim the AOR for the JS media stack.
         void ppSipProvider.wakeForIncoming(String(invite?.callId ?? ""));
       }
-      try { ppSipProvider.forceReregister(); } catch {}
       try {
         window.dispatchEvent(new CustomEvent("pp:sip-incoming-invite", { detail: invite }));
       } catch {}
-      /* clientType gate above keeps this mobile-only */
     }).then((fn) => { cleanupInvite = fn; }).catch(() => undefined);
 
 
@@ -626,50 +752,32 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     verifyVoipToken();
     const onVisibleVoip = () => { if (document.visibilityState === "visible") verifyVoipToken(); };
     document.addEventListener("visibilitychange", onVisibleVoip);
-    const voipRecheck = window.setInterval(verifyVoipToken, getPpSipReconnectConfig().voipTokenCheckMs);
 
     // PushKit is the only reliable iOS background wake: as soon as the VoIP push
     // creates the CallKit call, force the native keep-alive to re-REGISTER (the
     // WSS socket is usually dead after suspension) instead of waiting on it.
     let cleanupVoipIncoming: (() => void) | undefined;
     onPlanipretVoipIncomingCall((data: any) => {
-      const pushCallId = String(data?.callId ?? "");
-      // ROOT CAUSE FIXED HERE - proven by the 3-inbound-call Xcode log:
-      //   l.142  [pp-sip] incoming INVITE attached  (call 1 ONLY)
-      //   l.153  JS SIP owns recovery      -> 200 OK sent + remote audio attached
-      //   l.408  native SIP owns recovery  -> [answer] hasLiveSipSession:false
-      //   l.539  native SIP owns recovery  -> [answer] hasLiveSipSession:false
-      //
-      // Both stacks share the SAME NetSapiens device `<ext>M`
-      // (ns-resolve-sip-credentials is called with `client_type: "mobile"` and the
-      // resulting config feeds both ppSipProvider.init and the native keep-alive),
-      // so there is exactly ONE AOR and exactly one owner at a time. Starting both
-      // in parallel makes NetSapiens close the sockets alternately (WSS 1001 loop).
-      //
-      // The bug was WHICH stack got picked. Ownership used to be arbitrated on
-      // `document.visibilityState`, but a VoIP push arrives with the app
-      // backgrounded or the screen locked BY DEFINITION, so the branch taken was
-      // almost always `native`. PpSipKeepAlive holds the REGISTER so the phone
-      // rings, but it has NO WebRTC media stack and its bridge forwards only
-      // callId/from - never the SDP offer. Once it captures the INVITE the call is
-      // structurally unanswerable: JS never sees `incoming INVITE attached` and
-      // Answer lands on a dead session (`hasLiveSipSession:false`).
-      //
-      // The WebView is demonstrably ALIVE here - it is running this very handler -
-      // and visibility measures UI state, not the ability to negotiate media. So
-      // JsSIP, the only media-capable stack, takes the AOR; native stays a fallback.
-      console.log("[pp-voip] incoming VoIP push → JsSIP takes the <ext>M AOR (media-capable owner)", {
-        callId: pushCallId, visibility: document.visibilityState,
-      });
-      void ppSipProvider.wakeForIncoming(pushCallId).then((ok) => {
-        if (ok) return;
-        // JsSIP could not register in time: hand the AOR back to the keep-alive so
-        // the phone at least rings rather than dropping to voicemail.
-        console.warn("[pp-voip] JsSIP wake failed → falling back to native SIP ownership", { callId: pushCallId });
-        void wakePlanipretNativeSipForIncomingCall("voip_push");
-      }).catch(() => {
-        void wakePlanipretNativeSipForIncomingCall("voip_push");
-      });
+      if (isIosNativePlatform() && !usingWebFallback) {
+        console.log("[pp-voip] incoming VoIP push → PJSIP/TLS recovery", data?.callId);
+        void nativeSip.repairRegistration();
+        const from = String(data?.from ?? data?.handle ?? data?.caller ?? data?.callerName ?? "");
+        setPushRing({ callId: String(data?.callId ?? ""), from });
+        window.setTimeout(() => setPushRing((cur) => (cur && cur.callId === String(data?.callId ?? "") ? null : cur)), 40_000);
+        return;
+      }
+      // R1 (ring9): a VoIP push ALWAYS arrives with the app backgrounded/locked,
+      // so keying ownership on document.visibilityState always handed the AOR to
+      // the native stack — which can ring but has no WebRTC media plan and can
+      // never send the 200 OK. JsSIP owns the AOR on every push; the native
+      // keep-alive is only a fallback if the JS REGISTER fails (R4 grace window).
+      console.log("[pp-voip] incoming VoIP push → JS SIP owns recovery", data?.callId);
+      void ppSipProvider.wakeForIncoming(String(data?.callId ?? "")).then((ok) => {
+        if (!ok) {
+          console.warn("[pp-voip] JS wake failed → native SIP fallback");
+          void wakePlanipretNativeSipForIncomingCall("voip_push");
+        }
+      }).catch(() => { void wakePlanipretNativeSipForIncomingCall("voip_push"); });
       const from = String(data?.from ?? data?.handle ?? data?.caller ?? data?.callerName ?? "");
       setPushRing({ callId: String(data?.callId ?? ""), from });
       // Sécurité : si aucun INVITE n'arrive, on retire l'écran après 40 s.
@@ -680,8 +788,14 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       // CallKit stays in "connecting" (and the app never opens on the keypad)
       // until the pending CXAnswerCallAction is fulfilled — that only happens
       // when we report the real outcome back through completeAnswer().
-      try { ppSipProvider.forceReregister(); } catch {}
       try { window.dispatchEvent(new CustomEvent("pp:sip-callkit-answered", { detail: data })); } catch {}
+      // PpVoipCall already posted PpPjsipAnswerRequested for native calls. Calling
+      // answerRef here would submit a second pjsua_call_answer while the first
+      // CXAnswerCallAction is still pending. PpPjsipAnswerResult completes CallKit.
+      if (isIosNativePlatform() && !usingWebFallback && data?.source === "pjsip") {
+        setPushRing(null);
+        return;
+      }
       void (async () => {
         let ok = false;
         try { ok = !!(await answerRef.current?.()); }
@@ -696,7 +810,11 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
 
 
     onPlanipretIncomingCallRejected((data) => {
-      try { ppSipProvider.hangup(); } catch {}
+      // Native PpVoipCall posts PpPjsipEndRequested itself. Only the JS/WSS
+      // branch must issue a second-layer hangup command here.
+      if (!(isIosNativePlatform() && !usingWebFallback && data?.source === "pjsip")) {
+        try { ppSipProvider.hangup(); } catch {}
+      }
       setPushRing(null);
       void acknowledgePlanipretIncoming();
       try { window.dispatchEvent(new CustomEvent("pp:sip-callkit-rejected", { detail: data })); } catch {}
@@ -706,7 +824,6 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       getPlanipretSipKeepAliveStatus().then((s) => { if (s && !cancelled) setNativeStatus(s); }).catch(() => undefined);
     }, 15_000);
     void getPlanipretSipKeepAliveStatus().then((s) => { if (s && !cancelled) setNativeStatus(s); });
-    void requestPlanipretBatteryOptimizationExemption();
     return () => {
       cancelled = true;
       window.clearInterval(poll);
@@ -714,14 +831,13 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       cleanupReregister?.();
       cleanupInvite?.();
       document.removeEventListener("visibilitychange", onVisibleVoip);
-      window.clearInterval(voipRecheck);
       cleanupVoipToken?.();
       cleanupVoipInvalid?.();
       cleanupVoipIncoming?.();
       cleanupVoipAnswer?.();
       cleanupVoipReject?.();
     };
-  }, [clientType, enabled, user?.id]);
+  }, [enabled, user?.id, ownerTick, usingWebFallback]);
 
   // Watchdog: keep the SIP registration alive. If we drift into
   // `disconnected` / `error` for more than 10s, force a re-REGISTER. If still
@@ -731,6 +847,26 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
   useEffect(() => {
     if (!enabled || !user) return;
     if (softphoneOwnerId !== ownerIdRef.current) return;
+    if (isIosNativePlatform() && !usingWebFallback) {
+      let repairing = false;
+      const repairNative = () => {
+        if (repairing || nativeSip.getCallId() || nativeSip.isRegistered()) return;
+        repairing = true;
+        void nativeSip.repairRegistration().finally(() => { repairing = false; });
+      };
+      const onVisible = () => { if (document.visibilityState === "visible") repairNative(); };
+      document.addEventListener("visibilitychange", onVisible);
+      window.addEventListener("focus", repairNative);
+      window.addEventListener("online", repairNative);
+      const interval = window.setInterval(repairNative, 30_000);
+      repairNative();
+      return () => {
+        document.removeEventListener("visibilitychange", onVisible);
+        window.removeEventListener("focus", repairNative);
+        window.removeEventListener("online", repairNative);
+        window.clearInterval(interval);
+      };
+    }
     let softTimer: ReturnType<typeof setTimeout> | null = null;
     let hardTimer: ReturnType<typeof setTimeout> | null = null;
     let lastWatchdogAt = 0;
@@ -802,13 +938,8 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     };
     const handoffToNative = async () => {
       if (callInProgress()) { void setPlanipretNativeCallActive(true); return; }
-      // Both stacks register as the SAME NetSapiens device `<ext>M`:
-      // ns-resolve-sip-credentials is called with `client_type: "mobile"` and the
-      // resulting config feeds BOTH ppSipProvider.init() and
-      // startPlanipretSipKeepAlive(). `<ext>W` is the browser widget, not this app.
-      // NetSapiens allows one active transport per AOR, so the JS contact MUST be
-      // released before native claims it - otherwise the PBX closes the sockets
-      // alternately (WSS 1001 loop, hundreds of sockets).
+      // NetSapiens permits one active transport for this device AOR. Remove the
+      // foreground contact first, then let native claim the same `<ext>M` AOR.
       const cfg = mobileSipConfigRef.current ?? ppSipProvider.getConfig();
       if (!cfg) return;
       const seq = ++handoffSeq;
@@ -854,28 +985,14 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     };
     let nativeStopTimer: ReturnType<typeof setTimeout> | null = null;
     const stopNativeAfterWebRegistered = (force = false) => {
-      // NetSapiens keeps ONE registration per AOR, and both stacks use the SAME
-      // device `<ext>M` (see handoffToNative). Never drop the native registration
-      // before JsSIP has a confirmed REGISTER 200 OK: that gap is what sends
-      // inbound calls to voicemail.
+      // NetSapiens keeps ONE registration per AOR (doc: registrations.md).
+      // Never drop the native registration before JsSIP has a confirmed
+      // REGISTER 200 OK: that gap is what sends inbound calls to voicemail and
+      // only rings the app once the WebView finally re-registers.
       if (nativeStopTimer) clearTimeout(nativeStopTimer);
-      // RINGING IS SACRED. `stopSipService` tears the WSS down; doing it while an
-      // INVITE is ringing or a dialog is up terminated the JsSIP session, and
-      // answer() then failed with INVALID_STATE_ERROR "Invalid status: 8"
-      // (8 = STATUS_TERMINATED). `force` (foreground resume) must NOT bypass this:
-      // tapping Answer in CallKit brings the app to the foreground, which is
-      // exactly when the stop used to fire and kill the call being answered.
-      if (callInProgress()) {
-        console.warn("[pp-sip] native stop refused — call ringing/active owns the transport");
-        return;
-      }
       let tries = 0;
       const tick = () => {
         nativeStopTimer = null;
-        if (callInProgress()) {
-          console.warn("[pp-sip] native stop refused — call ringing/active owns the transport");
-          return;
-        }
         if (!force && typeof document !== "undefined" && document.visibilityState === "hidden") return;
         if (ppSipProvider.getSnapshot().status !== "registered") {
           if (tries++ >= 20) return; // keep native registered — safest state
@@ -938,25 +1055,16 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
        evaluate();
        // Backend fallback: the client can look "registered" while NS holds no
        // live binding. Ask the backend for the real state and self-heal.
-       void checkSipBackendRegistration().then((check) => {
-         if (!check || check.healthy) return;
-         // A ringing INVITE outranks every self-healing action: forcing a
-         // re-REGISTER here re-opened the transport under the live dialog.
-         if (callInProgress()) {
-           console.warn("[pp-sip] backend check unhealthy but call in progress → no self-heal", check);
-           return;
-         }
-         // Same credibility rule as wakeForIncoming: a `mobile_registered:false`
-         // returned together with `count:0` / empty `registered_aors` means the
-         // probe read NOTHING, not that the AOR is gone. The PBX portal showed
-         // 113M and 113W registered while this fired 3x per session.
-         const reg = check.registration;
-         if (reg?.mobile_registered === false && Number(reg?.count ?? 0) === 0) {
-           console.warn("[pp-sip] backend check: unregistered claim not trusted (0 AOR read) → no self-heal", {
-             count: reg?.count ?? null, probeStatuses: reg?.probe_statuses ?? null,
+       void checkSipBackendRegistration({ force: true, minIntervalMs: 0 }).then((check) => {
+         // Un seul propriétaire de l'AOR au premier plan : si le service de
+         // maintien tient encore la ligne, l'app la reprend (avec backoff).
+         if (check?.registration?.holder === "background") {
+           void ensureForegroundOwnership(check).then((r) => {
+             if (r.attempted) console.info(`[pp-sip] reprise de la ligne → ${r.repaired ? "app" : r.holder}`);
+             handedOffToNative = false;
            });
-           return;
          }
+         if (!check || check.healthy) return;
          console.warn("[pp-sip] backend registration check unhealthy", check);
          if (check.actions?.includes("reregister")) {
            ppSipProvider.forceReregister();
@@ -994,6 +1102,7 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
             // isActive:false blips and a late handoff would restart the native
             // stack while JsSIP is registered (WSS 1001 loop).
             cancelPendingHandoff();
+            resetOwnershipRepairBackoff();
             resumeSip();
           } else {
             scheduleHandoff();
@@ -1026,15 +1135,12 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       try { removeAppStateListener(); } catch {}
     };
 
-  }, [enabled, user?.id]);
+  }, [enabled, user?.id, ownerTick, usingWebFallback]);
 
 
   // Live call quality only while a call is active.
-  // Owner-only: setPlanipretNativeCallActive() must be driven by ONE instance,
-  // otherwise a sibling still seeing an idle snapshot pushes callActive=false and
-  // tears the native audio session down mid-ring.
   useEffect(() => {
-    if (!isOwner) return;
+    if (softphoneOwnerId !== ownerIdRef.current) return;
     const active = snap.callState === "active" || snap.callState === "held";
     const ringing = snap.callState === "ringing-in" || snap.callState === "ringing-out";
     // Keep the native iOS audio session alive while a call is up, otherwise
@@ -1043,13 +1149,11 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     if (!active) { setQuality(null); return; }
     const un = callQualitySampler.subscribe(setQuality);
     return () => { un(); };
-  }, [snap.callState, isOwner]);
+  }, [snap.callState, ownerTick]);
 
   // Cross-device call session sync (mobile ↔ widget via SIP Call-ID).
-  // Owner-only: three mounted instances meant three concurrent claims on the same
-  // Call-ID, so a claim could be "lost" to a sibling instance of THIS device.
   useEffect(() => {
-    if (!isOwner) return;
+    if (softphoneOwnerId !== ownerIdRef.current) return;
     const callId = snap.callId;
     if (!callId || !brokerId) return;
     const ringing = snap.callState === "ringing-in" || snap.callState === "ringing-out";
@@ -1071,13 +1175,12 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       }
     });
     return () => { unsub(); };
-  }, [snap.callId, snap.callState, snap.direction, snap.remoteNumber, brokerId, isOwner]);
+  }, [snap.callId, snap.callState, snap.direction, snap.remoteNumber, brokerId, ownerTick]);
 
   // Maestro call records (Scott's rules): outbound always, inbound only when
   // the caller is not another broker's VoIP number.
-  // Owner-only: otherwise the same call was posted once per mounted instance.
   useEffect(() => {
-    if (!isOwner) return;
+    if (softphoneOwnerId !== ownerIdRef.current) return;
     const callId = snap.callId;
     if (!callId) return;
     const ringing = snap.callState === "ringing-in" || snap.callState === "ringing-out" || snap.callState === "active";
@@ -1087,22 +1190,41 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     } else if (snap.direction === "in") {
       postInboundCall({ providerCallId: callId, number: snap.remoteNumber || snap.remoteIdentity || "" });
     }
-  }, [snap.callId, snap.callState, snap.direction, snap.remoteNumber, snap.remoteIdentity, isOwner]);
+  }, [snap.callId, snap.callState, snap.direction, snap.remoteNumber, snap.remoteIdentity, ownerTick]);
 
   // Push VoIP ring arrives before the INVITE — post the inbound call as soon as
   // we know the caller (rule 3), de-duplicated by provider_call_id.
   useEffect(() => {
-    if (!isOwner) return;
+    if (softphoneOwnerId !== ownerIdRef.current) return;
     if (!pushRing?.callId) return;
     postInboundCall({ providerCallId: pushRing.callId, number: pushRing.from || "" });
-  }, [pushRing?.callId, pushRing?.from, isOwner]);
+  }, [pushRing?.callId, pushRing?.from, ownerTick]);
 
   // Mark session ended when local call ends.
   useEffect(() => {
-    if (!isOwner) return;
+    if (softphoneOwnerId !== ownerIdRef.current) return;
     if (snap.callState !== "ended" || !snap.callId) return;
+    const endedRestCallId = restCall?.id ?? null;
+    // A PJSIP/CallKit termination is authoritative for the visible call. The
+    // REST attachment is only a control handle and must not revive the in-call
+    // screen while the CDR pipeline finishes its server-side reconciliation.
+    if (endedRestCallId) {
+      setRestCall((current) => current?.id === endedRestCallId ? null : current);
+    }
+    setPushRing(null);
     void endSession(snap.callId, snap.errorCause || "hangup");
-  }, [snap.callState, snap.callId, snap.errorCause, isOwner]);
+    // Le client peut raccrocher en premier : la question de consentement doit
+    // aussi s'afficher quand la fin d'appel vient du réseau, pas seulement
+    // quand le courtier appuie sur Raccrocher.
+    const decisionId = endedRestCallId ?? snap.callId;
+    if (answeredCallIds.current.has(snap.callId) || (endedRestCallId ? answeredCallIds.current.has(endedRestCallId) : false)) {
+      emitCallEnded(decisionId, {
+        number: snap.remoteNumber || snap.remoteIdentity || restCall?.number || null,
+        direction: snap.direction,
+        answered: true,
+      });
+    }
+  }, [snap.callState, snap.callId, snap.errorCause, snap.remoteNumber, snap.remoteIdentity, snap.direction, restCall?.id, restCall?.number, ownerTick]);
 
   const registered = snap.status === "registered";
 
@@ -1120,9 +1242,52 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
   // this merge the UI reported "disconnected" even though the extension is
   // still registered on the PBX (native contact alive).
   const nativeOwnsRegistration = useMemo(() => {
+    if (isIosNativePlatform()) return !usingWebFallback && snap.status === "registered";
     const st = String((nativeStatus as any)?.status ?? "");
     return (nativeStatus as any)?.ok !== false && (st === "registered" || st === "protected");
-  }, [nativeStatus]);
+  }, [nativeStatus, snap.status, usingWebFallback]);
+
+  // Live PBX truth on demand: initial load, foreground resume, network recovery
+  // or explicit diagnostic request. Never poll the PBX continuously.
+  useEffect(() => {
+    if (!enabled) return;
+    let alive = true;
+    let lastHealAt = 0;
+    const usesNativeMobileAor = clientType === "mobile" && isIosNativePlatform() && !usingWebFallback;
+    const suffix = usesNativeMobileAor ? "m" : "w";
+    const run = async () => {
+      const check = await checkSipBackendRegistration();
+      if (!alive || !check) return;
+      const aors = (check.registration?.registered_aors ?? []).map((a) => String(a).toLowerCase());
+      const ownAor = aors.some((a) => a.endsWith(suffix)) ||
+        (usesNativeMobileAor && !!check.registration?.mobile_registered);
+      const own = ownAor && (!usesNativeMobileAor || check.registration?.media_capable !== false);
+      setPbxRegistration(own ? "own" : aors.length > 0 ? "other" : "none");
+      // Self-heal only after an explicit check says this platform lost its AOR.
+      if (!own && Date.now() - lastHealAt > 60_000) {
+        lastHealAt = Date.now();
+        if (usesNativeMobileAor) {
+          void nativeSip.repairRegistration();
+        } else {
+          try { ppSipProvider.forceReregister(); } catch { /* ignore */ }
+          try { window.dispatchEvent(new CustomEvent("pp:sip-ready", { detail: { force: true } })); } catch { /* ignore */ }
+        }
+      }
+    };
+    void run();
+    const onVis = () => { if (document.visibilityState === "visible") void run(); };
+    const onOnline = () => { void run(); };
+    const onDemand = () => { void run(); };
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("online", onOnline);
+    window.addEventListener("pp:sip-check", onDemand);
+    return () => {
+      alive = false;
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("pp:sip-check", onDemand);
+    };
+  }, [enabled, clientType, usingWebFallback]);
 
   // A live WebRTC session ALWAYS wins over the REST/DB attachment: otherwise the
   // realtime "ringing" row hijacks the snapshot and answer() goes REST-only,
@@ -1134,9 +1299,16 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
   useEffect(() => { if (hasLiveSipSession || snap.callState === "ended") setPushRing(null); }, [hasLiveSipSession, snap.callState]);
 
   const effectiveSnap = useMemo<PpSipSnapshot>(() => {
-    const base: PpSipSnapshot = (nativeOwnsRegistration && snap.status !== "registered" && snap.status !== "connected")
-      ? ({ ...snap, status: "registered", lastError: null } as PpSipSnapshot)
+    const localOnline = snap.status === "registered" || snap.status === "connected";
+    const promoted = !localOnline
+      ? (nativeOwnsRegistration || pbxRegistration === "own"
+        ? "registered"
+        : pbxRegistration === "other" ? "connected" : null)
+      : null;
+    const base: PpSipSnapshot = promoted
+      ? ({ ...snap, status: promoted, errorCause: promoted === "registered" ? undefined : snap.errorCause } as PpSipSnapshot)
       : snap;
+
     if (!restCall?.id || hasLiveSipSession) {
       // Écran "ça sonne" piloté par le push VoIP tant que l'INVITE n'est pas là.
       if (!hasLiveSipSession && pushRing) {
@@ -1162,7 +1334,7 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       startedAt: restCall.startedAt ?? base.startedAt ?? Date.now(),
       onHold: state === "held",
     };
-  }, [snap, restCall, normalizeRestState, nativeOwnsRegistration, hasLiveSipSession, pushRing]);
+  }, [snap, restCall, normalizeRestState, nativeOwnsRegistration, pbxRegistration, hasLiveSipSession, pushRing]);
 
 
   const restControl = useCallback(async (action: string, extra: Record<string, unknown> = {}) => {
@@ -1182,6 +1354,36 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     }
     return true;
   }, [restCall?.id]);
+
+  // Mise en attente demandée depuis l'écran d'appel du téléphone (y compris
+  // l'écran verrouillé) : CallKit décide, le JS applique l'état à la session
+  // courante (REST NS-API ou session SIP live).
+  const applyHold = useCallback((onHold: boolean) => {
+    if (isIosNativePlatform() && !usingWebFallback && nativeSip.getCallId()) {
+      void nativeSip.setHold(onHold);
+      return;
+    }
+    if (restCall?.id && !hasLiveSipSession) {
+      void restControl(onHold ? "hold" : "unhold");
+      return;
+    }
+    try {
+      if (onHold) ppSipProvider.hold(); else ppSipProvider.unhold();
+    } catch { /* noop */ }
+  }, [restCall?.id, hasLiveSipSession, restControl, usingWebFallback]);
+
+  const applyHoldRef = useRef(applyHold);
+  applyHoldRef.current = applyHold;
+
+  useEffect(() => {
+    let disposed = false;
+    let off: (() => void) | null = null;
+    void onPlanipretCallKitHold(({ onHold }) => applyHoldRef.current(onHold)).then((remove) => {
+      if (disposed) { remove(); return; }
+      off = remove;
+    });
+    return () => { disposed = true; off?.(); };
+  }, []);
 
   // Best-effort REST teardown with exponential backoff. Used on hangup so the
   // PBX always drops the leg even when the SIP WebSocket is down and the BYE
@@ -1212,12 +1414,14 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
 
 
   const callViaPBX = useCallback(async (destination: string): Promise<OutboundResult> => {
-    const { data, error } = await supabase.functions.invoke("pp-ns-calls", { body: { action: "start", to_number: destination, client_type: clientType } });
+    const { data, error } = await ppEdgeInvoke("pp-ns-calls", { action: "start", to_number: ppNormalizeDestination(destination), client_type: clientType });
     if (error || (data as any)?.success === false) {
       const msg = (data as any)?.message ?? (data as any)?.error ?? error?.message ?? "PBX call failed";
       return { via: "none", ok: false, error: msg };
     }
     const callId = String((data as any)?.call_id ?? "");
+    // L'appel part toujours de la ligne de l'app : le numéro composé sonne
+    // directement, jamais le cellulaire du courtier.
     if (callId) {
       setRestCall({
         id: callId,
@@ -1236,64 +1440,119 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
 
   const placeCall = useCallback(async (destination: string): Promise<OutboundResult> => {
     if (!destination) return { via: "none", ok: false, error: "empty destination" };
-    const mic = await ensureMicPermission();
-    if (mic.state !== "granted") {
-      try { mic.stream?.getTracks().forEach((tr) => tr.stop()); } catch {}
-      return { via: "none", ok: false, error: mic.error ?? "microphone unavailable", micState: mic.state };
+
+    // Séquence restaurée (configuration validée le 7 septembre, CDR 113M avec
+    // média porté par l'appareil) :
+    //   1) moteur natif quand il tient l'AOR mobile → audio natif (PJSIP) ;
+    //   2) JsSIP dans la WebView quand le moteur est absent → audio WebRTC ;
+    //   3) click-to-call NS-API en dernier recours, jamais avant.
+    // Le micro de la WebView ne bloque jamais le chemin natif : la permission
+    // est gérée côté iOS et `getUserMedia` peut échouer sans empêcher l'appel.
+    const nativeDiagnostics = nativeSip.getDiagnostics();
+    const allowDistinctWebAorFallback = canUseDistinctWebAorFallback({
+      clientType,
+      isNativePlatform: Capacitor.isNativePlatform(),
+      platform: Capacitor.getPlatform(),
+      nativeFailure: nativeDiagnostics.failure,
+    });
+    const route = decideOutboundRoute({
+      clientType,
+      isNativePlatform: Capacitor.isNativePlatform(),
+      platform: Capacitor.getPlatform(),
+      engineAvailable: nativeSip.isAvailable(),
+      engineRegistered: nativeSip.isRegistered(),
+      allowDistinctWebAorFallback,
+    });
+    const number = ppNormalizeDestination(destination);
+
+    if (route === "native" || route === "native_unregistered") {
+      let ready = nativeSip.isRegistered() && nativeOwnsAor();
+      if (!ready) {
+        const repair = nativeSip.repairRegistration().catch(() => false);
+        ready = await Promise.race([
+          repair,
+          new Promise<boolean>((resolve) => window.setTimeout(() => resolve(nativeSip.isRegistered()), 20_000)),
+        ]);
+      }
+      if (ready && await nativeSip.makeCall(number)) {
+        postOutboundCall({ providerCallId: nativeSip.getCallId() ?? `pjsip-${Date.now()}`, number: destination });
+        console.info("[outbound] route=NATIVE", { destination });
+        return { via: "webrtc", ok: true };
+      }
+      console.warn("[softphone] iOS native call unavailable — `<ext>M` remains protected");
+      if (isIosNativePlatform()) {
+        return {
+          via: "none",
+          ok: false,
+          error: nativeSip.isAvailable()
+            ? "La ligne PJSIP n'est pas inscrite. Rouvrez l'application et réessayez."
+            : "Le moteur PJSIP est absent de ce build iOS. Une nouvelle compilation iOS est requise.",
+        };
+      }
     }
-    try { mic.stream?.getTracks().forEach((tr) => tr.stop()); } catch {}
-    let canUseSip = registered;
-    if (!canUseSip) {
-      try { ppSipProvider.forceReregister(); } catch {}
-      await new Promise((resolve) => window.setTimeout(resolve, 1200));
-      const st = ppSipProvider.getSnapshot().status;
-      canUseSip = st === "registered" || st === "connected";
+
+    // Chemin WebView : le moteur natif n'est pas là (ou a refusé). On libère le
+    // service de maintien natif pour éviter deux sockets sur le même AOR, puis
+    // JsSIP compose avec un vrai média WebRTC.
+    if (route === "webview") {
+      try { await stopPlanipretSipKeepAlive(); } catch { /* noop */ }
+    }
+    let micGranted = true;
+    try {
+      const mic = await ensureMicPermission();
+      micGranted = mic.state === "granted";
+      try { mic.stream?.getTracks().forEach((tr) => tr.stop()); } catch {}
+      if (!micGranted) console.warn("[softphone] mic not granted in WebView", mic.state, mic.error);
+    } catch (e: any) {
+      micGranted = false;
+      console.warn("[softphone] mic probe threw", e?.message ?? e);
+    }
+
+    let canUseSip = micGranted && (registered || ppSipProvider.getSnapshot().status === "registered");
+    if (!canUseSip && micGranted) {
+      try { ppSipProvider.forceReregister(); } catch { /* noop */ }
+      const deadline = Date.now() + 4000;
+      while (Date.now() < deadline) {
+        const st = ppSipProvider.getSnapshot().status;
+        if (st === "registered" || st === "connected") { canUseSip = true; break; }
+        await new Promise((resolve) => window.setTimeout(resolve, 100));
+      }
     }
     if (canUseSip) {
       try {
         await ppSipProvider.call(destination);
+        console.info("[outbound] route=WEBRTC", { destination });
         return { via: "webrtc", ok: true };
       } catch (e: any) {
         console.warn("[softphone] WebRTC call failed, falling back to PBX", e?.message ?? e);
       }
     }
-    return await callViaPBX(destination);
-  }, [registered, callViaPBX]);
 
-  // Last-resort pickup: ask NetSapiens to answer the live ringing leg over
-  // NS-API. Used when the SIP INVITE never reaches the WebView after a VoIP
-  // push — otherwise the caller keeps hearing the greeting/voicemail prompt
-  // while the phone shows the call as answered.
-  const restAnswerLiveCall = useCallback(async (): Promise<boolean> => {
-    try {
-      const { data, error } = await supabase.functions.invoke("pp-ns-calls", { body: { action: "list" } });
-      if (error) return false;
-      const raw = (data as any)?.ns;
-      const list: any[] = Array.isArray(raw) ? raw : (raw?.calls ?? raw?.data ?? []);
-      const ringing = list.find((c) => {
-        const s = String(c?.state ?? c?.status ?? c?.["call-state"] ?? "").toLowerCase();
-        return s.includes("ring") || s.includes("offer") || s.includes("alert");
-      }) ?? list[0];
-      const id = ringing?.id ?? ringing?.call_id ?? ringing?.["call-id"] ?? ringing?.orig_callid;
-      if (!id) { console.warn("[answer] REST fallback: no live call found on PBX"); return false; }
-      const res = await supabase.functions.invoke("pp-ns-calls", { body: { action: "answer", call_id: id } });
-      const ok = !res.error;
-      console.info(`[answer] REST fallback answer(${id}) → ${ok ? "accepted" : "rejected"}`);
-      if (ok) {
-        setRestCall((cur) => cur ?? { id: String(id), direction: "in", status: "active", startedAt: Date.now(), number: "", other: "" } as any);
-      }
-      return ok;
-    } catch (e: any) {
-      console.warn("[answer] REST fallback threw", e?.message ?? e);
-      return false;
+    if (Capacitor.isNativePlatform()) {
+      // Interdit sur téléphone : le click-to-call NS-API n'établit aucune jambe
+      // média vers l'appareil. Il affichait « Ringing… » puis l'écran d'appel
+      // disparaissait sans un son. Erreur honnête à la place.
+      console.warn("[outbound] blocked CLICK-TO-CALL on native", { micGranted, registered, route });
+      return {
+        via: "none",
+        ok: false,
+        error: micGranted
+          ? "Ligne d'appel non inscrite — impossible de porter l'audio. Rouvrez l'application puis réessayez."
+          : "Accès au micro refusé — autorisez le micro pour appeler depuis l'application.",
+      };
     }
-  }, []);
+    console.info("[outbound] route=CLICK-TO-CALL", { destination, micGranted, registered, route });
+    return await callViaPBX(destination);
+  }, [registered, callViaPBX, clientType]);
 
   // Wrapped answer: race to claim the call before actually picking up. If we
   // lose (widget answered first), don't pick up — the winner already has audio.
   // Every branch is logged so the exact route to answer() is visible in Xcode /
   // Logcat when debugging a VoIP-push answer.
   const answerOnce = useCallback(async () => {
+    if (clientType === "mobile" && isIosNativePlatform() && !usingWebFallback) {
+      return nativeSip.answer();
+    }
     const sipSnap = ppSipProvider.getSnapshot();
     console.info("[answer] tapped", {
       hasLiveSipSession,
@@ -1326,7 +1585,7 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
         if (st === "active") { console.info("[answer] SIP answered within watchdog window"); return true; }
         if (st === "ended") break;
       }
-      console.warn("[answer] no confirmed SIP dialog before pending-answer expiry — refusing false REST answer");
+      console.warn("[answer] no confirmed SIP dialog before pending-answer expiry");
       return false;
     }
 
@@ -1343,38 +1602,37 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       console.info("[answer] route=REST (pp-ns-calls answer)", { call_id: restCall.id });
       const ok = await restControl("answer");
       console.info(`[answer] REST answer ${ok ? "accepted" : "REJECTED"} by NetSapiens`);
-      return ok;
+      if (ok) return true;
+      return false;
     }
 
     const callId = sipSnap.callId;
-
-    // ORDER IS CRITICAL — SIP FIRST, CLAIM SECOND.
-    //
-    // The claim used to run BEFORE session.answer(). Its Supabase round-trip can
-    // take seconds on a cold radio right after a VoIP push; in a captured log it
-    // took ~17s. During that window the foreground/background SIP-owner
-    // arbitration called stopSipService, which killed the WSS, so by the time
-    // answer() finally ran JsSIP reported:
-    //   INVALID_STATE_ERROR "Invalid status: 8"   (8 = STATUS_TERMINATED)
-    // CallKit then failed the action and the call was destroyed: no audio, no
-    // in-call screen, caller left listening to the greeting.
-    //
-    // Sending the 200 OK is the only time-critical step, so it runs first and the
-    // claim becomes post-hoc arbitration. Answering a call the widget also
-    // answered is recoverable (we hang up right after); losing the dialog is not.
-    console.info("[answer] route=SIP → answering INVITE first (claim runs after)", { callId });
-    // Re-read the live session immediately before handing it to JsSIP. Anything
-    // awaited above (pending-answer arbitration, native wake, route decision) may
-    // have taken seconds, and the PBX can have advanced the call to greeting or
-    // voicemail meanwhile. Calling answer() on a dead session produced the
-    // opaque INVALID_STATE_ERROR "Invalid status: 8"; this gives an exact cause.
+    console.info("[answer] route=SIP → claiming call", { callId });
+    const won = await claimCall(callId, "mobile");
+    if (!won) {
+      // Non-destructive claim: a lost claim must never tear down a media dialog
+      // that is already live locally. Two concurrent answer paths on the SAME
+      // device used to make the loser hang up the call its twin had just picked up.
+      const liveState = ppSipProvider.getSnapshot().callState;
+      if (liveState === "active" || liveState === "held") {
+        console.warn("[answer] claim lost but local dialog is live → keeping the call", { callId, liveState });
+      } else {
+        console.warn("[answer] claim lost → answered elsewhere (widget)");
+        setAnsweredElsewhere("widget");
+        try { ppSipProvider.hangup(); } catch {}
+        return false;
+      }
+    }
+    // The claim request is asynchronous. Re-read the session immediately: the
+    // PBX may have ended the INVITE while arbitration was in progress. This
+    // gives the log an exact cause and avoids calling JsSIP in status 8.
     const answerable = ppSipProvider.getSnapshot();
     if (answerable.callState === "active" || answerable.callState === "held") {
       console.info("[answer] concurrent local path already confirmed the dialog", { callId });
       return true;
     }
     if (answerable.callState !== "ringing-in" || answerable.callId !== callId) {
-      console.warn("[answer] INVITE expired before answering", {
+      console.warn("[answer] INVITE expired while claiming call", {
         expectedCallId: callId,
         currentCallId: answerable.callId || null,
         state: answerable.callState,
@@ -1384,32 +1642,20 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     const ok = await ppSipProvider.answer(callId);
     console.info(`[answer] ppSipProvider.answer → ${ok ? "SIP 200 OK sent" : "FAILED"}`, { callId });
     if (!ok) return false;
-
-    // Post-hoc arbitration: must never block the media path.
-    void claimCall(callId, "mobile").then((won) => {
-      if (won) return;
-      const liveState = ppSipProvider.getSnapshot().callState;
-      if (liveState === "active" || liveState === "held") {
-        console.warn("[answer] claim lost but local dialog is live → keeping the call", { callId, liveState });
-        return;
-      }
-      console.warn("[answer] claim lost after answering → conceding to widget");
-      setAnsweredElsewhere("widget");
-      try { ppSipProvider.hangup(); } catch {}
-    }).catch(() => { /* claim is best-effort; the live dialog wins */ });
     // Do not report success to CallKit on a locally accepted answer command.
     // Wait until JsSIP receives the confirmed dialog from the PBX.
+    // NOTE: never report failure to CallKit on watchdog expiry. The 200 OK is
+    // already sent; a late confirmation must not tear the call down.
     for (let i = 0; i < 16; i++) {
       await new Promise((r) => window.setTimeout(r, 250));
       const state = ppSipProvider.getSnapshot().callState;
       if (state === "active" || state === "held") break;
       if (state === "ended") return false;
-      if (i === 15) return false;
     }
     // Clear the REST/DB attachment so the in-call UI follows the live session.
     if (ok && restCall?.id) setRestCall(null);
     return ok;
-  }, [restCall?.id, restControl, hasLiveSipSession, pushRing]);
+  }, [restCall?.id, restCall?.number, restControl, hasLiveSipSession, pushRing, clientType, usingWebFallback]);
 
   const answer = useCallback((): Promise<boolean> => {
     const pending = answerAttemptRef.current;
@@ -1427,17 +1673,14 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
 
   useEffect(() => { answerRef.current = answer; }, [answer]);
 
-  // Owner-only: with three mounted instances this event fired three concurrent
-  // answer() transactions on the same INVITE.
   useEffect(() => {
-    if (!isOwner) return;
+    if (softphoneOwnerId !== ownerIdRef.current) return;
     const onPendingAnswerReady = () => {
-      // This is NOT a duplicate tap: it is the first moment a real SIP INVITE
-      // exists. The original CallKit answer promise is deliberately parked in its
-      // watchdog loop waiting for `active`, so the answerAttemptRef mutex would
-      // hand that parked promise back instead of running the answer path - and
-      // nothing would ever send the SIP 200 OK. Release the outer mutex first,
-      // then run the full answer path against the INVITE that just arrived.
+      // This is not a duplicate tap: it is the first moment a real SIP INVITE
+      // exists. The original CallKit answer promise is deliberately parked in
+      // its watchdog waiting for `active`; joining that promise here creates a
+      // deadlock because no path sends the SIP 200 OK. Release only the hook's
+      // outer mutex, then run the full claim + answer path against the INVITE.
       answerAttemptRef.current = null;
       void answerRef.current?.().then((ok) => {
         console.info(`[answer] arbitrated pending INVITE → ${ok ? "connected" : "not answered"}`);
@@ -1445,14 +1688,29 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     };
     window.addEventListener("pp:sip-pending-answer-ready", onPendingAnswerReady);
     return () => window.removeEventListener("pp:sip-pending-answer-ready", onPendingAnswerReady);
-  }, [isOwner]);
+  }, [ownerTick]);
 
 
 
   const hangup = useCallback(() => {
     const callId = ppSipProvider.getSnapshot().callId;
     const restId = restCall?.id ?? null;
+    // Only connected calls require a post-call decision; missed and declined
+    // calls remain in history without interrupting the broker.
+    const wasAnswered = (!!callId && answeredCallIds.current.has(callId))
+      || (!!restId && answeredCallIds.current.has(restId));
+    if (wasAnswered) {
+      emitCallEnded(restId || callId, {
+        number: snap.remoteNumber || snap.remoteIdentity || restCall?.number || null,
+        direction: snap.direction,
+        answered: true,
+      });
+    }
     console.info("[hangup] requested", { sipCallId: callId || null, restCallId: restId, hasLiveSipSession });
+    const iosNative = clientType === "mobile" && isIosNativePlatform() && !usingWebFallback;
+    if (iosNative && nativeSip.getCallId()) {
+      void nativeSip.hangup();
+    }
     // Always signal the PBX over REST as well, with retry + backoff: the SIP BYE
     // can be lost when the WebSocket dropped or the session never reached
     // "active", which would leave the call up on NetSapiens.
@@ -1463,15 +1721,17 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       setPushRing(null);
       return;
     }
-    try { ppSipProvider.hangup(); console.info("[hangup] SIP BYE sent"); }
-    catch (e: any) { console.warn("[hangup] SIP BYE failed", e?.message ?? e); }
+    if (!iosNative) {
+      try { ppSipProvider.hangup(); console.info("[hangup] SIP BYE sent"); }
+      catch (e: any) { console.warn("[hangup] SIP BYE failed", e?.message ?? e); }
+    }
     setPushRing(null);
     if (restId) setRestCall(null);
     if (callId) {
       void endSession(callId, "hangup");
       void updateCallIfPosted(callId, { status: "ended", ended_reason: "completed" });
     }
-  }, [restCall?.id, restDisconnectWithRetry, hasLiveSipSession]);
+  }, [restCall?.id, restCall?.number, restDisconnectWithRetry, hasLiveSipSession, clientType, usingWebFallback, snap.remoteNumber, snap.remoteIdentity, snap.direction]);
 
 
 
@@ -1493,7 +1753,7 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     else postInboundCall({ providerCallId: attachment.id, number });
   }, []);
 
-  const sipConnected = snap.status === "registered" || snap.status === "connected";
+  const sipConnected = effectiveSnap.status === "registered" || effectiveSnap.status === "connected";
 
   return useMemo(() => ({
     snap: effectiveSnap,
@@ -1501,27 +1761,53 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     net,
     quality,
     nativeStatus,
+    pbxRegistration,
     sipConnected,
     placeCall,
     answeredElsewhere,
     dismissAnsweredElsewhere: () => setAnsweredElsewhere(null),
     attachRestCall,
-    call: (n: string) => ppSipProvider.call(n),
+    call: (n: string) => placeCall(n),
     answer,
     hangup,
-    reregister: () => { try { ppSipProvider.forceReregister(); } catch {} },
-    mute: () => (restCall?.id && !hasLiveSipSession) ? void restControl("mute", { muted: true }) : ppSipProvider.mute(),
-    unmute: () => (restCall?.id && !hasLiveSipSession) ? void restControl("mute", { muted: false }) : ppSipProvider.unmute(),
-    hold: () => (restCall?.id && !hasLiveSipSession) ? void restControl("hold") : ppSipProvider.hold(),
-    unhold: () => (restCall?.id && !hasLiveSipSession) ? void restControl("unhold") : ppSipProvider.unhold(),
-    sendDTMF: (k: string) => (restCall?.id && !hasLiveSipSession) ? void restControl("dtmf", { digit: k }) : ppSipProvider.sendDTMF(k),
+    reregister: () => {
+      if (isIosNativePlatform() && !usingWebFallback) void nativeSip.repairRegistration();
+      else { try { ppSipProvider.forceReregister(); } catch {} }
+    },
+    mute: () => nativeSip.getCallId() ? void nativeSip.setMute(true) : (restCall?.id && !hasLiveSipSession) ? void restControl("mute", { muted: true }) : ppSipProvider.mute(),
+    unmute: () => nativeSip.getCallId() ? void nativeSip.setMute(false) : (restCall?.id && !hasLiveSipSession) ? void restControl("mute", { muted: false }) : ppSipProvider.unmute(),
+    // L'attente faite dans l'app est aussi reflétée sur l'écran d'appel système.
+    hold: () => { applyHold(true); void setPlanipretCallKitHeld(true); },
+    unhold: () => { applyHold(false); void setPlanipretCallKitHeld(false); },
+    sendDTMF: (k: string) => nativeSip.getCallId() ? void nativeSip.sendDTMF(k) : (restCall?.id && !hasLiveSipSession) ? void restControl("dtmf", { digit: k }) : ppSipProvider.sendDTMF(k),
     transfer: (t: string) => (restCall?.id && !hasLiveSipSession) ? void restControl("transfer", { destination: t, target: t }) : ppSipProvider.transfer(t),
     // The provider owns a persistent hidden <audio> sink; screens must not
     // detach it on unmount (that killed remote audio mid-call).
     setAudioEl: (_el: HTMLAudioElement | null) => {},
 
+    // Deuxième ligne / conférence : gérée par la pile JsSIP uniquement. Sur un
+    // appel porté par le moteur natif, CallKit possède la session et ces
+    // commandes n'ont pas d'équivalent — l'écran masque alors les boutons.
+    multiLineSupported: !nativeSip.getCallId(),
+    callSecond: (n: string) => ppSipProvider.callSecond(n),
+    hangupSecond: () => ppSipProvider.hangupSecond(),
+    swapLines: () => ppSipProvider.swapLines(),
+    mergeLines: () => ppSipProvider.mergeLines(),
+    answerSecond: () => ppSipProvider.answerSecond(),
+    declineSecond: () => ppSipProvider.declineSecond(),
+
     forceHandover: () => handoverController.forceHandover(),
-  }), [effectiveSnap, loading, net, quality, nativeStatus, sipConnected, placeCall, answer, hangup, answeredElsewhere, attachRestCall, restCall?.id, restControl, hasLiveSipSession]);
+  }), [effectiveSnap, loading, net, quality, nativeStatus, pbxRegistration, sipConnected, placeCall, answer, hangup, answeredElsewhere, attachRestCall, restCall?.id, restControl, hasLiveSipSession, applyHold, usingWebFallback]);
 
 
+}
+
+/** Refus hors de l'app (CallKit / notification) → propose « Répondre par texto ? ». */
+function offerQuickReply(invite: { callId?: string; from?: string; fromUser?: string } | null | undefined) {
+  const from = String(invite?.from || invite?.fromUser || "");
+  if (!from) return;
+  const lang = (() => { try { return localStorage.getItem("mplanipret-lang") === "en" ? "en" : "fr"; } catch { return "fr"; } })();
+  void import("@/lib/planipret/quickReply")
+    .then((m) => m.scheduleQuickReplyPrompt({ callId: String(invite?.callId || ""), from, lang }))
+    .catch(() => undefined);
 }

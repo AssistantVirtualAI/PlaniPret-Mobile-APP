@@ -4,6 +4,7 @@ import UIKit
 import PushKit
 import CallKit
 import AVFoundation
+import UserNotifications
 
 @objc(PpVoipCall)
 public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CXProviderDelegate {
@@ -43,6 +44,13 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     private var pendingOutgoingRequestId: String?
     private var outgoingActivationTimeout: DispatchWorkItem?
     private var pjsipObservers: [NSObjectProtocol] = []
+    /// Répondre par texto : appels entrants qui sonnent (numéro de l'appelant),
+    /// appels répondus, et fins demandées par l'app (pas un refus utilisateur).
+    private var ringingCallers: [UUID: (callId: String, number: String)] = [:]
+    private var answeredUUIDs: Set<UUID> = []
+    private var programmaticEnds: Set<UUID> = []
+    private var quickReplyOffered: Set<String> = []
+    static let quickReplyCategory = "PP_QUICK_REPLY"
 
     /// Les postes PBX courts (par ex. 1136) ne sont pas des numéros E.164.
     /// Les présenter comme `.phoneNumber` peut faire rejeter ou clore la
@@ -130,6 +138,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             self.setupPushKit()
             self.notifyListeners("callKitReady", data: ["ok": true])
             self.observePjsipEngine()
+            self.registerQuickReplyCategory()
         }
     }
 
@@ -250,6 +259,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
             // natif, lui, porte toujours le From : on corrige le handle ici.
             if !callerNumber.isEmpty {
                 update.remoteHandle = CXHandle(type: .phoneNumber, value: callerNumber)
+                ringingCallers[uuid] = (callId, callerNumber)
             }
             update.localizedCallerName = callerName
             provider?.reportCall(with: uuid, updated: update)
@@ -265,6 +275,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
 
         let uuid = UUID()
         nativeCalls[uuid] = callId
+        ringingCallers[uuid] = (callId, callerNumber)
         if activeCallUUID == nil {
             activeCallUUID = uuid
             activeCallId = callId
@@ -369,6 +380,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         // Let the CXEndCallAction delegate own cleanup. Clearing the UUID here
         // races that delegate and leaves CallKit without the correlation it
         // needs to close the system UI and PJSIP dialog together.
+        programmaticEnds.insert(uuid)
         let end = CXEndCallAction(call: uuid)
         callController.request(CXTransaction(action: end)) { [weak self] error in
             guard let self = self else { return }
@@ -508,6 +520,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
         let uuid = UUID()
         activeCallUUID = uuid
         activeCallId = callId
+        ringingCallers[uuid] = (callId, callerNumber)
 
         let update = CXCallUpdate()
         let handle: CXHandle = callerNumber.isEmpty
@@ -530,6 +543,68 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
                 "callerNumber": callerNumber
             ], retainUntilConsumed: true)
             completion()
+        }
+    }
+
+    // MARK: - Répondre par texto (refus CallKit)
+
+    /// Numéro externe nord-américain, sinon nil (poste, masqué, court).
+    static func quickReplyTarget(_ raw: String) -> String? {
+        let d = raw.filter { $0.isNumber }
+        if d.count == 10, let f = d.first, "23456789".contains(f) { return "+1" + d }
+        if d.count == 11, d.hasPrefix("1"), "23456789".contains(d[d.index(after: d.startIndex)]) { return "+" + d }
+        return nil
+    }
+
+    private static var isFrench: Bool {
+        (Locale.preferredLanguages.first ?? "fr").lowercased().hasPrefix("fr")
+    }
+
+    /// Ajoute la catégorie sans écraser celles déjà enregistrées (appel entrant, Capacitor).
+    private func registerQuickReplyCategory() {
+        let fr = PpVoipCall.isFrench
+        let opts: UNNotificationActionOptions = [.foreground]
+        let actions: [UNNotificationAction] = [
+            UNNotificationAction(identifier: "qr_unavailable", title: fr ? "Pas disponible" : "Not available", options: opts),
+            UNNotificationAction(identifier: "qr_meeting", title: fr ? "En réunion" : "In a meeting", options: opts),
+            UNNotificationAction(identifier: "qr_callback", title: fr ? "Je vous rappelle" : "I'll call back", options: opts),
+            UNTextInputNotificationAction(identifier: "qr_custom", title: fr ? "Personnalisé…" : "Custom…", options: opts,
+                                          textInputButtonTitle: fr ? "Envoyer" : "Send",
+                                          textInputPlaceholder: fr ? "Votre message" : "Your message"),
+        ]
+        let category = UNNotificationCategory(identifier: PpVoipCall.quickReplyCategory, actions: actions,
+                                              intentIdentifiers: [], options: [])
+        let center = UNUserNotificationCenter.current()
+        center.getNotificationCategories { existing in
+            var all = existing.filter { $0.identifier != PpVoipCall.quickReplyCategory }
+            all.insert(category)
+            center.setNotificationCategories(all)
+        }
+    }
+
+    /// Refus par l'utilisateur d'un appel entrant non répondu → « Répondre par texto ? » (10 min).
+    private func offerQuickReplyIfDeclined(uuid: UUID) {
+        let info = ringingCallers.removeValue(forKey: uuid)
+        let answered = answeredUUIDs.remove(uuid) != nil
+        let programmatic = programmaticEnds.remove(uuid) != nil
+        guard let info = info, !answered, !programmatic,
+              let to = PpVoipCall.quickReplyTarget(info.number) else { return }
+        let key = info.callId.isEmpty ? uuid.uuidString : info.callId
+        guard !quickReplyOffered.contains(key) else { return }
+        quickReplyOffered.insert(key)
+        if quickReplyOffered.count > 50 { quickReplyOffered.removeAll(); quickReplyOffered.insert(key) }
+        let fr = PpVoipCall.isFrench
+        let content = UNMutableNotificationContent()
+        content.title = fr ? "Répondre par texto ?" : "Reply by text?"
+        content.body = to
+        content.categoryIdentifier = PpVoipCall.quickReplyCategory
+        let expiresAt = String(Int64((Date().timeIntervalSince1970 + 600) * 1000))
+        // Mêmes clés que la notification planifiée côté app (extra Capacitor).
+        content.userInfo = ["type": "quick_reply", "callId": key, "to": to, "expiresAt": expiresAt]
+        let req = UNNotificationRequest(identifier: "pp_quick_reply_\(key)", content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 600) {
+            UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ["pp_quick_reply_\(key)"])
         }
     }
 
@@ -603,6 +678,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     }
 
     public func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
+        answeredUUIDs.insert(action.callUUID)
         if let callId = nativeCalls[action.callUUID] {
             activeCallUUID = action.callUUID
             activeCallId = callId
@@ -688,6 +764,7 @@ public class PpVoipCall: CAPPlugin, CAPBridgedPlugin, PKPushRegistryDelegate, CX
     }
 
     public func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
+        offerQuickReplyIfDeclined(uuid: action.callUUID)
         if let callId = nativeCalls.removeValue(forKey: action.callUUID) {
             PjsipEngine.shared.hangup(callId: callId)
             if activeCallUUID == action.callUUID {

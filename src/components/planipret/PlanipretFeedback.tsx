@@ -4,9 +4,11 @@ import { toast } from "sonner";
 import {
   Bug, Camera as CameraIcon, ChevronDown, ChevronRight, ImagePlus, Loader2, MessageSquare, Plus, RefreshCw, Search, Send, Trash2, X,
 } from "lucide-react";
+import { notifyFeedbackReply } from "@/lib/planipret/feedbackReply";
 import { useMplanipretLang } from "@/hooks/useMplanipretLang";
 import { Capacitor } from "@capacitor/core";
 import { Camera as CapCamera, CameraResultType, CameraSource } from "@capacitor/camera";
+import { cameraPhotoToFile } from "@/lib/planipret/feedbackCamera";
 
 const isNative = () => { try { return Capacitor.isNativePlatform(); } catch { return false; } };
 async function webPathToFile(webPath: string, i: number): Promise<File> {
@@ -136,6 +138,13 @@ export default function PlanipretFeedback({ source = "portal", compact = false }
   useEffect(() => { void load(); void loadCounts(); }, [load, loadCounts]);
 
   useEffect(() => {
+    const id = new URLSearchParams(window.location.search).get("report");
+    if (!id || !reports.some(r => r.id === id)) return;
+    setOpenThread(id); setCollapsed(c => ({ ...c, [id]: false }));
+    void loadComments(id);
+  }, [reports, loadComments]);
+
+  useEffect(() => {
     if (!me?.id) return;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const debounced = (fn: () => void) => { if (timer) clearTimeout(timer); timer = setTimeout(fn, 800); };
@@ -196,8 +205,19 @@ export default function PlanipretFeedback({ source = "portal", compact = false }
   const takePhoto = async () => {
     try {
       if (!(await ensurePerm("camera"))) return;
-      const ph = await CapCamera.getPhoto({ quality: 80, saveToGallery: false, resultType: CameraResultType.Uri, source: CameraSource.Camera });
-      if (ph.webPath) { const f = await webPathToFile(ph.webPath, 0); if (SAFE_IMAGE_TYPES.has(f.type) && f.size <= MAX_FILE_BYTES) setFiles((p) => [...p, f].slice(0, MAX_ATTACHMENTS)); }
+      // iOS may expose a temporary capacitor:// URL for `Uri`. Do not pass that
+      // local URL to any browser; keep the captured image in memory instead.
+      const ph = await CapCamera.getPhoto({
+        quality: 75,
+        width: 2048,
+        height: 2048,
+        saveToGallery: false,
+        resultType: CameraResultType.Base64,
+        source: CameraSource.Camera,
+      });
+      const f = cameraPhotoToFile(ph, 0);
+      if (SAFE_IMAGE_TYPES.has(f.type) && f.size <= MAX_FILE_BYTES) setFiles((p) => [...p, f].slice(0, MAX_ATTACHMENTS));
+      else toast.error(t("La photo dépasse 5 Mo. Réessaie avec une photo plus simple.", "The photo exceeds 5 MB. Try a simpler photo."));
     } catch (e: any) { if (!/cancel/i.test(e?.message ?? "")) toast.error(e?.message ?? "Camera"); }
   };
 
@@ -272,10 +292,15 @@ export default function PlanipretFeedback({ source = "portal", compact = false }
     const text = draft.trim();
     if (!text || sending || !me) return;
     setSending(true);
-    const { error } = await db.from("pp_feedback_comments").insert({ report_id: id, author_id: me.id, author_name: me.name, body: text });
-    setSending(false);
-    if (error) { toast.error(error.message); return; }
-    setDraft(""); void loadComments(id); void loadCounts();
+    try {
+      const { data, error } = await db.from("pp_feedback_comments").insert({ report_id: id, author_id: me.id, author_name: me.name, body: text }).select("id").single();
+      if (error) { toast.error(error.message); return; }
+      setDraft(""); void loadComments(id); void loadCounts();
+      if (data?.id && !(await notifyFeedbackReply(data.id))) {
+        toast.warning(t("Réponse enregistrée; certaines alertes ne sont pas confirmées.", "Reply saved; some alerts are not confirmed."));
+      }
+    } catch { toast.error(t("Impossible d’enregistrer la réponse.", "Unable to save the reply.")); }
+    finally { setSending(false); }
   };
 
   const chip = (active: boolean, s?: Status): React.CSSProperties => s && active

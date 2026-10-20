@@ -683,7 +683,8 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
           void nativeSip.answer();
         } else if (invite?.action === "decline" || invite?.action === "cancelled") {
           void nativeSip.hangup();
-          if (invite?.action === "decline") offerQuickReply(invite);
+          // iPhone : PpVoipCall (CallKit) affiche lui-même « Répondre par texto ? »
+          // après un refus, même app fermée — ne pas planifier un doublon ici.
         } else {
           void nativeSip.repairRegistration();
         }
