@@ -22,6 +22,8 @@ import { formatSipParty } from "@/lib/planipret/sip/formatSipParty";
 import { callUi, useCallUi } from "@/lib/planipret/callUiStore";
 import PpCallPill from "./PpCallPill";
 import PpCallDiagnosticPanel from "./PpCallDiagnosticPanel";
+import { Capacitor } from "@capacitor/core";
+import { nativeCallKitOwnsIncomingUi } from "@/lib/planipret/sip/callKitIncomingUi";
 
 type Contact = {
   id?: string;
@@ -269,6 +271,17 @@ export default function PpActiveCallScreen({
   }
 
   const isIncoming = snap.callState === "ringing-in";
+  // PpVoipCall already reports every iOS incoming call to CallKit. Rendering
+  // another React answer sheet here produces two independent Answer controls;
+  // CallKit remains the only owner until native PJSIP confirms the dialog.
+  const isIosCallKitRinging = nativeCallKitOwnsIncomingUi(
+    Capacitor.isNativePlatform(),
+    Capacitor.getPlatform(),
+    snap.callState,
+  );
+  if (isIosCallKitRinging) {
+    return <audio ref={audioRef} autoPlay style={{ display: "none" }} />;
+  }
   const isOutgoingRinging = snap.callState === "ringing-out";
   const isHeld = snap.callState === "held";
   // Normalisation universelle : la même UI marche pour n'importe quel broker

@@ -37,6 +37,7 @@ import { listDeviceContacts } from "@/lib/native/permissions/contacts";
 import { tokenize, matchAllTokens } from "@/lib/textNormalize";
 import { prefetchPpContacts, peekPpContacts } from "@/lib/ppContactsCache";
 import { PLANIPRET_PROFILE_SAFE_COLUMNS, PLANIPRET_PROFILE_BOOT_COLUMNS } from "@/lib/planipret/profileColumns";
+import { useSingleMobileDevice, consumeSignedOutElsewhere } from "@/hooks/useSingleMobileDevice";
 
 
 const ACCENT = "#2E9BDC";
@@ -490,6 +491,10 @@ export default function PlanipretMobile() {
   // and hold the answer path inside a component that renders no call UI at all.
   const softphone = useMplanipretSoftphone(Boolean(profile?.user_id), { primary: true });
   const attachRestCall = (softphone as any).attachRestCall as ((a: any) => void) | undefined;
+  useSingleMobileDevice(profile?.user_id, String(softphone.snap.callState));
+  useEffect(() => {
+    if (consumeSignedOutElsewhere()) toast.info("Votre compte a été ouvert sur un autre appareil.");
+  }, []);
   const sipCallLive = ["ringing-in", "ringing-out", "active", "held"].includes(
     String(softphone.snap.callState),
   );
@@ -1214,5 +1219,4 @@ function Frame({ children, forceDark = false }: { children: React.ReactNode; for
     </div>
   );
 }
-
 

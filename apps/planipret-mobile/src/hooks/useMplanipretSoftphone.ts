@@ -53,6 +53,7 @@ import { ensureForegroundOwnership, resetOwnershipRepairBackoff } from "@/lib/pl
 import { nativeSip } from "@/lib/planipret/sip/nativeSipService";
 import { canUseDistinctWebAorFallback, decideOutboundRoute } from "@/lib/planipret/sip/outboundRoute";
 import { nativeOwnsAor } from "@/lib/planipret/sip/aorArbitration";
+import { claimAllowsSipStart, claimThisDevice } from "@/lib/planipret/singleDevice";
 
 const isIosNativePlatform = () =>
   Capacitor.isNativePlatform() && Capacitor.getPlatform() === "ios";
@@ -516,6 +517,7 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     if (softphoneOwnerId !== ownerId
         && !acquireSoftphoneOwner(ownerId, user.id)) { setLoading(false); return; }
     let cancelled = false;
+    let deferredClaimRetry: ReturnType<typeof window.setTimeout> | undefined;
     const doInit = async (opts?: { force?: boolean }) => {
       if (!acquireSipInitLock(opts?.force ? 0 : 2500)) return;
       setLoading(true);
@@ -524,6 +526,28 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
           try { ppSipProvider.stop(); } catch {}
         }
         const onNative = Capacitor.isNativePlatform();
+        // A new mobile installation must not register the same AOR while the
+        // previously active phone is ringing or already in a call. The server
+        // decides atomically; unknown network failures preserve availability.
+        if (onNative && clientType === "mobile") {
+          const deviceClaim = await claimThisDevice();
+          if (!claimAllowsSipStart(deviceClaim)) {
+            setSnap((current) => ({
+              ...current,
+              status: "idle",
+              errorCause: "mobile_device_claim_deferred",
+            }));
+            // The server has preserved the phone currently in a call. Retry
+            // only this local initialization; it never revokes a token unless
+            // the transaction observes that the prior call is finished.
+            const retryMs = Math.max(5, deviceClaim.retryAfterSeconds ?? 10) * 1000;
+            deferredClaimRetry = window.setTimeout(() => {
+              deferredClaimRetry = undefined;
+              if (!cancelled) void doInit();
+            }, retryMs);
+            return;
+          }
+        }
         const iosNative = clientType === "mobile" && isIosNativePlatform();
         if (iosNative) {
           const nativeEngineReady = await nativeSip.initialize();
@@ -650,6 +674,7 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     window.addEventListener("pp:sip-force-reregister", onForce as any);
     return () => {
       cancelled = true;
+      if (deferredClaimRetry) window.clearTimeout(deferredClaimRetry);
       window.removeEventListener("pp:sip-ready", onReady as any);
       window.removeEventListener("pp:sip-force-reregister", onForce as any);
       releaseSoftphoneOwner(ownerId);

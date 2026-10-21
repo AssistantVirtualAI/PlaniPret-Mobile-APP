@@ -42,6 +42,7 @@ import { PLANIPRET_PROFILE_SAFE_COLUMNS, PLANIPRET_PROFILE_BOOT_COLUMNS } from "
 import { useRemoteConfig } from "@/hooks/useRemoteConfig";
 import { rememberPageForAva } from "@/lib/planipret/avaFeedback";
 import { rememberLastRoute } from "@/lib/planipret/lastRoute";
+import { useSingleMobileDevice, consumeSignedOutElsewhere } from "@/hooks/useSingleMobileDevice";
 
 import { retryWithBackoff, adaptiveTimeout } from "@/lib/net/resilient";
 
@@ -506,6 +507,10 @@ export default function PlanipretMobile() {
   // Wait for the profile before SIP init so cold starts do not race auth/profile boot.
   const softphone = useMplanipretSoftphone(Boolean(profile?.user_id), { primary: true });
   const attachRestCall = (softphone as any).attachRestCall as ((a: any) => void) | undefined;
+  useSingleMobileDevice(profile?.user_id, String(softphone.snap.callState));
+  useEffect(() => {
+    if (consumeSignedOutElsewhere()) toast.info("Votre compte a été ouvert sur un autre appareil.");
+  }, []);
   const sipCallLive = ["ringing-in", "ringing-out", "active", "held"].includes(
     String(softphone.snap.callState),
   );
