@@ -1,0 +1,24 @@
+# Toute modification d'un chemin listé ici exige une revue avant fusion.
+#
+# But : Lovable (et tout agent connecté au dépôt) peut proposer des changements
+# web librement, mais jamais toucher seul à la couche native, à la signature ou
+# aux numéros de version. Une erreur dans `src/` se corrige par un OTA ; une
+# erreur dans `android/` ou `ios/` coûte une soumission au store.
+#
+# ⚠ REMPLACER @REMPLACER-PAR-VOTRE-COMPTE par le vrai compte GitHub (ou une
+#   équipe de l'organisation, p. ex. @AssistantVirtualAI/mobile).
+#   Un propriétaire inexistant rend ce fichier silencieusement inopérant.
+
+# Couche native — moteur SIP, CallKit, permissions, projets Xcode et Gradle
+/android/              @REMPLACER-PAR-VOTRE-COMPTE
+/ios/                  @REMPLACER-PAR-VOTRE-COMPTE
+/native-config/        @REMPLACER-PAR-VOTRE-COMPTE
+
+# Versions, dépendances et scripts de build/vérification
+/package.json          @REMPLACER-PAR-VOTRE-COMPTE
+/package-lock.json     @REMPLACER-PAR-VOTRE-COMPTE
+/capacitor.config.ts   @REMPLACER-PAR-VOTRE-COMPTE
+/scripts/              @REMPLACER-PAR-VOTRE-COMPTE
+
+# La CI et les règles de propriété elles-mêmes
+/.github/              @REMPLACER-PAR-VOTRE-COMPTE

@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  # Contrôles sans dépendances : tournent toujours, même si npm install casse.
+  guards:
+    name: Garde-fous
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Les versions ne reculent jamais
+        run: |
+          git fetch origin main --depth=1 || true
+          node scripts/verify-version-monotonic.mjs origin/main
+
+      - name: Signaler les changements natifs
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch origin "${{ github.base_ref }}" --depth=1
+          CHANGED=$(git diff --name-only "origin/${{ github.base_ref }}"...HEAD)
+          NATIVE=$(echo "$CHANGED" | grep -E '^(android|ios|native-config)/' || true)
+          if [ -n "$NATIVE" ]; then
+            echo "::warning::Cette PR touche la couche native — un OTA ne suffira pas, il faudra un build soumis aux stores."
+            echo "$NATIVE" | sed 's/^/  /'
+          else
+            echo "✔ Aucun changement natif : livrable par OTA (npm run ota:bundle)."
+          fi
+
+  tests:
+    name: Tests et typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # package.json déclare "capacitor-pjsip": "file:./capacitor-pjsip".
+      # Tant que ce dossier n'est pas dans le dépôt, npm ne peut pas résoudre
+      # l'arbre de dépendances. On le signale au lieu de faire échouer la CI
+      # en permanence ; ce job s'activera tout seul dès que le plugin sera là.
+      - name: Le plugin PJSIP est-il présent ?
+        id: plugin
+        run: |
+          if [ -d capacitor-pjsip ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::capacitor-pjsip absent du dépôt — tests et typecheck ignorés. Voir le handoff Manus du 2026-10-30."
+          fi
+
+      - name: Installation
+        if: steps.plugin.outputs.present == 'true'
+        run: npm ci
+
+      - name: Typecheck
+        if: steps.plugin.outputs.present == 'true'
+        run: npx tsc --noEmit
+
+      - name: Tests
+        if: steps.plugin.outputs.present == 'true'
+        run: npm test
