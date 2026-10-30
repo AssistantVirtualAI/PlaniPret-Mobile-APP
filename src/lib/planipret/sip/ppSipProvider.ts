@@ -1048,6 +1048,11 @@ class PpSipProvider {
   }
 
   private async answerOnce(_expectedCallId?: string): Promise<boolean> {
+    // Call waiting: an answer from CallKit/notification while line 1 is busy
+    // targets the parked 2nd call; line 1 is put on hold, never replaced.
+    if (this.secondSession && this.snap.second?.state === "ringing-in" && this.isLineBusy() && this.snap.callState !== "ringing-in") {
+      return this.answerSecond();
+    }
     const session = this.session;
     if (!session || this.snap.callState !== "ringing-in") return false;
     // Never reject on a Call-ID mismatch: the VoIP push id and the SIP Call-ID
