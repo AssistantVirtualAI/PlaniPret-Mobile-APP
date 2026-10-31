@@ -29,6 +29,7 @@ import TasksHomeCard from "@/components/planipret/mobile/TasksHomeCard";
 import { presentCallParty } from "@/lib/planipret/callPresentation";
 import { useCallerNames } from "@/lib/planipret/callerLookup";
 import { loadMHomeCache, saveMHomeCache } from "@/lib/mhomeCache";
+import { useMobileLinePresentation } from "@/hooks/useMobileLinePresentation";
 
 
 
@@ -38,7 +39,7 @@ const HOME_SYNC_INTERVAL_MS = 5 * 60 * 1000;
 
 // Courtiers au Québec : l'agenda Microsoft est toujours affiché en heure de Toronto.
 const PP_TZ = "America/Toronto"; // heure de Montréal
-/** Microsoft Graph renvoie parfois l'heure UTC sans suffixe « Z ». */
+/** Microsoft Graph renvoie l'heure UTC sans « Z ». */
 const graphDate = (t: { dateTime: string; timeZone?: string }) =>
   new Date(/(Z|[+-]\d{2}:?\d{2})$/.test(t.dateTime) || (t.timeZone && t.timeZone !== "UTC") ? t.dateTime : t.dateTime + "Z");
 const ppDayKey = (d: Date) => {
@@ -91,6 +92,7 @@ export default function MHome() {
   const { profile, registerRefresh, openDialer, openAva, reloadProfile } =
     useOutletContext<PlanipretMobileContext>();
   const navigate = useNavigate();
+  const mobileLine = useMobileLinePresentation(profile?.ns_extension || profile?.extension || null);
 
   // Native SIP registration state (PJSIP). Falls back to "rest" when the
   // native engine isn't available — the REST click-to-call path still works.
@@ -428,9 +430,9 @@ export default function MHome() {
         <h1 className="text-[26px] leading-tight font-bold mt-0.5">
           {t("home.hello")}, <span style={{ color: "var(--pp-brand-accent)" }}>{firstName}</span>
         </h1>
-        {(profile?.ns_extension || profile?.extension) && (
+        {mobileLine.extension && (
           <p className="text-[12px] mt-1" style={{ color: "var(--pp-text-muted)" }}>
-            {t("extSync.extLabel")} {profile?.ns_extension || profile?.extension}
+            {t("extSync.extLabel")} {mobileLine.deviceId || mobileLine.extension}
           </p>
         )}
       </header>

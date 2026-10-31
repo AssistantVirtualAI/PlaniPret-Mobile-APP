@@ -14,6 +14,7 @@ import { edgeOnlyWssUrls } from "@/lib/planipret/sip/sipEdgePolicy";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
 import { supabase } from "@/integrations/supabase/client";
+import { getMobileDeviceId } from "@/lib/planipret/singleDevice";
 import { ppEdgeInvoke, ppNormalizeDestination } from "@/lib/planipret/ppEdge";
 import { useAuth } from "@/hooks/useAuth";
 import { PP_PENDING_ANSWER_TIMEOUT_MS, ppSipProvider, type PpSipConfig, type PpSipSnapshot } from "@/lib/planipret/sip/ppSipProvider";
@@ -84,7 +85,8 @@ const VOIP_TOKEN_STORAGE_KEY = "pp.voip-token-confirmed.v1";
 
 async function uploadPlanipretVoipToken(token: string, bundleId?: string, extension?: string | null, environment?: string) {
   if (!token) return;
-  const key = `${token}|${bundleId ?? ""}|${extension ?? ""}|${environment ?? ""}`;
+  const deviceId = getMobileDeviceId();
+  const key = `${token}|${bundleId ?? ""}|${extension ?? ""}|${environment ?? ""}|${deviceId}`;
   try {
     if (localStorage.getItem(VOIP_TOKEN_STORAGE_KEY) === key) {
       lastVoipToken = token;
@@ -105,8 +107,13 @@ async function uploadPlanipretVoipToken(token: string, bundleId?: string, extens
           bundleId,
           extension: extension ?? ppSipProvider.getConfig()?.extension ?? null,
           environment: environment || undefined,
+          device_id: deviceId,
         },
       });
+      if ((data as { error?: string } | null)?.error === "device_not_active" || /409/.test(String((error as any)?.context?.status ?? ""))) {
+        console.info("[pp-voip] token refused: another device is active");
+        return false;
+      }
       if (error || (data as { ok?: boolean } | null)?.ok !== true) throw error ?? new Error("token_not_persisted");
       const changed = lastVoipToken !== null && lastVoipToken !== token;
       lastVoipToken = token;
