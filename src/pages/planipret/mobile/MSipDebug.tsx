@@ -82,8 +82,12 @@ export default function MSipDebug() {
   const cfg = ppSipProvider.getConfig();
   const nativePlatform = Capacitor.isNativePlatform();
   const pbxRegistered = Boolean(pbx?.registration?.mobile_registered);
+  // On a native build, the backend can observe a retained/stale M binding while
+  // the local PJSIP engine has not registered (or has failed before REGISTER).
+  // The top-level engine state must therefore come from the local native engine.
+  // Server-side registration remains visible separately in the Phone system card.
   const status = nativePlatform
-    ? (nativeState === "registered" || pbxRegistered
+    ? (nativeState === "registered"
       ? "registered"
       : nativeState === "failed" ? "error" : nativeState === "unavailable" ? "disconnected" : nativeState)
     : (pbxRegistered && snap.status !== "registered" ? "registered" : snap.status);
@@ -110,7 +114,10 @@ export default function MSipDebug() {
       await ensureForegroundOwnership().catch(() => undefined);
       const res = await checkSipBackendRegistration({ force: true, minIntervalMs: 0 });
       if (res) setPbx(res);
-      toast(nativeSip.isRegistered() || res?.registration?.mobile_registered
+      const registered = nativePlatform
+        ? nativeSip.isRegistered()
+        : Boolean(res?.registration?.mobile_registered);
+      toast(registered
         ? (lang === "fr" ? "Ligne mobile enregistrée" : "Mobile line registered")
         : t("screens.sipDebug.reregisterSent"));
     } finally {

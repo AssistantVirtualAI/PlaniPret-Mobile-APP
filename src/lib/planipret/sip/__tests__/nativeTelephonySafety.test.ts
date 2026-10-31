@@ -70,7 +70,7 @@ describe("native telephony safety invariants", () => {
     );
   });
 
-  it("uses CallKit as the only iOS answer path and releases media deterministically", () => {
+  it("keeps CallKit as the only iOS answer path while Android answers the same PJSIP dialogue", () => {
     const engine = read("ios/App/App/Plugins/PpPjsip/PpPjsipEngine.swift");
     const bridge = read("ios/App/App/Plugins/PpPjsip/PpPjsip.swift");
     const callKit = read("ios/App/App/Plugins/PpVoipCall/PpVoipCall.swift");
@@ -82,7 +82,9 @@ describe("native telephony safety invariants", () => {
     expect(callKit).toContain("CXAnswerCallAction");
     expect(bridge).not.toContain("CAPPluginMethod(name: \"answerCall\"");
     expect(nativeService).toContain("requestPlanipretCallKitAnswer()");
-    expect(nativeService).not.toContain("pjsip.answerCall({ callId");
+    expect(nativeService).toContain('if (Capacitor.getPlatform() === "ios") return requestPlanipretCallKitAnswer()');
+    expect(nativeService).toContain('if (Capacitor.getPlatform() !== "android") return false');
+    expect(nativeService).toContain("await pjsip.answerCall({ callId");
     expect(hook).not.toContain("nativeSip.answer().then((ok) => completePlanipretCallKitAnswer");
     expect(engine).toContain("answerInFlightCall");
     expect(engine).toContain("answeredCallIds");
@@ -194,5 +196,97 @@ describe("native telephony safety invariants", () => {
     expect(generator).toContain("ACTION_REREGISTER.equals(action)");
     expect(generator).toContain("Aucun REGISTER de fond au démarrage");
     expect(verifier).toContain("wake-only service");
+  });
+
+  it("does not let an ungranted microphone foreground-service type crash Android at startup", () => {
+    const service = read("android/app/src/main/java/com/planipret/mobile/PpPjsipService.java");
+    const engine = read("android/app/src/main/java/com/planipret/mobile/PpPjsipEngine.java");
+
+    expect(service).toContain("ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO)");
+    expect(service).toContain("if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && hasMicrophonePermission())");
+    expect(service).toContain("catch (SecurityException | IllegalStateException error)");
+    expect(service).toContain("static boolean prepareForCall(Context context)");
+    expect(engine).toContain("ensureMicrophoneServiceForCallLocked();");
+    expect(engine).toContain("PpPjsipService.prepareForCall(appContext)");
+    expect(engine).toContain('"microphone_permission_required"');
+  });
+
+  it("keeps SWIG callbacks used only by JNI and contains a binary mismatch without killing Android", () => {
+    const engine = read("android/app/src/main/java/com/planipret/mobile/PpPjsipEngine.java");
+    const plugin = read("android/app/src/main/java/com/planipret/mobile/PpPjsipPlugin.java");
+    const appRules = read("android/app/proguard-rules.pro");
+    const moduleRules = read("android/pjsua2/consumer-rules.pro");
+
+    expect(engine).toContain('Class.forName("org.pjsip.pjsua2.pjsua2JNI")');
+    expect(plugin).toContain("catch (Throwable error)");
+    expect(plugin).toContain("private static String safeReason(Throwable error)");
+    expect(appRules).toContain("-keep class org.pjsip.pjsua2.** { *; }");
+    expect(moduleRules).toContain("-keep class org.pjsip.pjsua2.** { *; }");
+  });
+
+  it("keeps the Android launcher activity present in the Planiprêt package", () => {
+    const manifest = read("android/app/src/main/AndroidManifest.xml");
+    const activity = read("android/app/src/main/java/com/planipret/mobile/MainActivity.java");
+
+    expect(manifest).toContain('android:name=".MainActivity"');
+    expect(activity).toContain("package com.planipret.mobile;");
+    expect(activity).toContain("class MainActivity extends BridgeActivity");
+  });
+
+  it("lets Android Keystore generate the AES-GCM IV and discards incompatible legacy sessions safely", () => {
+    const engine = read("android/app/src/main/java/com/planipret/mobile/PpPjsipEngine.java");
+    const instrumented = read("android/app/src/androidTest/java/com/planipret/mobile/PpPjsipSecureSessionInstrumentedTest.java");
+
+    expect(engine).toContain("cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey(keyAlias));");
+    expect(engine).toContain("byte[] iv = cipher.getIV();");
+    expect(engine).not.toContain("new SecureRandom().nextBytes(iv)");
+    expect(engine).not.toContain("Cipher.ENCRYPT_MODE, getOrCreateKey(), new GCMParameterSpec");
+    expect(engine).toContain('if (envelope.optInt("v", 0) != 2)');
+    expect(engine).toContain("prefs.edit().remove(blobName).apply()");
+    expect(engine).toContain("verifySecureSessionRoundTripForInstrumentation");
+    expect(engine).toContain("persistSessionForWakeBestEffort");
+    expect(engine).toContain("foreground M/TLS registration continues");
+    expect(engine).toContain("verifyLegacySessionIsDiscardedForInstrumentation");
+    expect(engine).toContain("edit().remove(SECURE_BLOB).apply()");
+    expect(instrumented).toContain('"1142M"');
+    expect(instrumented).toContain("example.invalid");
+    expect(instrumented).toContain("discardsLegacySecureSessionWithoutPbXActivity");
+    expect(instrumented).toContain("verifyLegacySessionIsDiscardedForInstrumentation");
+    expect(instrumented).not.toContain("PpPjsipEngine.initialize(");
+    expect(instrumented).not.toContain("wakeForIncoming");
+  });
+
+  it("keeps Android M/TLS verification strict with the bundled public trust anchor", () => {
+    const engine = read("android/app/src/main/java/com/planipret/mobile/PpPjsipEngine.java");
+    const ca = read("android/app/src/main/res/raw/isrg_root_x1.pem");
+    const templateCa = read("scripts/templates/android/isrg_root_x1.pem");
+
+    expect(engine).toContain("setVerifyServer(true)");
+    expect(engine).toContain("setCaBuf(planipretTlsCa(appContext))");
+    expect(engine).toContain("class PlanipretEndpoint extends Endpoint");
+    expect(engine).toContain("getVerifyStatus()");
+    expect(ca).toContain("BEGIN CERTIFICATE");
+    expect(ca).toContain("AIIQz7DSQONZRGPgu2OCiwA");
+    expect(templateCa).toBe(ca);
+  });
+
+  it("never returns an iOS or Android M/TLS AOR to JsSIP after a native failure", () => {
+    const arbitration = read("src/lib/planipret/sip/aorArbitration.ts");
+    const nativeService = read("src/lib/planipret/sip/nativeSipService.ts");
+    const route = read("src/lib/planipret/sip/outboundRoute.ts");
+
+    expect(arbitration).toContain("function mandatoryNativeMobile()");
+    expect(arbitration).toContain("W/WSS fallback prohibited");
+    expect(nativeService).not.toContain("releaseAorFromNative(");
+    expect(route).toContain("return false;");
+    expect(route).toContain('"native_unregistered"');
+  });
+
+  it("never presents an Android native engine as registered from server state alone", () => {
+    const debug = read("src/pages/planipret/mobile/MSipDebug.tsx");
+
+    expect(debug).toContain('nativeState === "registered"\n      ? "registered"');
+    expect(debug).not.toContain('nativeState === "registered" || pbxRegistered');
+    expect(debug).toContain("Server-side registration remains visible separately in the Phone system card.");
   });
 });

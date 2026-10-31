@@ -14,6 +14,11 @@ final def releaseStorePassword = releaseKeystoreProperties.getProperty('storePas
 final def releaseKeyAlias = releaseKeystoreProperties.getProperty('keyAlias') ?: System.getenv('ANDROID_KEY_ALIAS')
 final def releaseKeyPassword = releaseKeystoreProperties.getProperty('keyPassword') ?: System.getenv('ANDROID_KEY_PASSWORD')
 final def hasReleaseSigning = releaseStoreFile && releaseStorePassword && releaseKeyAlias && releaseKeyPassword
+final def pjsua2Module = rootProject.file('pjsua2/build.gradle')
+
+if (!pjsua2Module.exists()) {
+    throw new GradleException('Moteur PJSIP Android absent. Exécutez scripts/build-pjsip-android.sh après avoir préparé NDK/OpenSSL/Oboe; ne construisez jamais une app M/TLS sans JNI PJSUA2.')
+}
 
 android {
     namespace = "com.planipret.mobile"
@@ -22,7 +27,7 @@ android {
         applicationId = "com.planipret.mobile"
         minSdk = rootProject.ext.minSdkVersion
         targetSdk = rootProject.ext.targetSdkVersion
-        versionCode = 53
+        versionCode = 58
         versionName = "1.6.10"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
@@ -69,6 +74,7 @@ repositories {
 
 dependencies {
     implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation project(':pjsua2')
     implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
     implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
     implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"

@@ -1,5 +1,12 @@
 include ':app'
 
+// Generated locally from the pinned PJSIP 2.15.1 source by
+// scripts/build-pjsip-android.sh. It is intentionally not fetched from an
+// unverified Maven repository and must exist before a Planiprêt Android build.
+if (new File(rootDir, 'pjsua2/build.gradle').exists()) {
+    include ':pjsua2'
+}
+
 def capacitorSettingsFile = new File(rootDir, 'capacitor.settings.gradle')
 if (capacitorSettingsFile.exists()) {
     apply from: capacitorSettingsFile

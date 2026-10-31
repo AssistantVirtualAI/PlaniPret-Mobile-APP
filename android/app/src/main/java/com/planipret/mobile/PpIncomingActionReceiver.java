@@ -18,9 +18,10 @@ public class PpIncomingActionReceiver extends BroadcastReceiver {
     String userAction = ACTION_ANSWER.equals(action) ? "answer" : "decline";
     try {
       NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE);
-      if (nm != null) nm.cancel(PpSipKeepAliveService.INCOMING_NOTIFICATION_ID);
+      if (nm != null) { nm.cancel(PpSipKeepAliveService.INCOMING_NOTIFICATION_ID); nm.cancel(PpPjsipService.INCOMING_NOTIFICATION_ID); }
     } catch (Exception ignored) {}
-    if ("decline".equals(userAction)) PpSipKeepAliveService.declineIncoming(c, callId);
+    if ("answer".equals(userAction)) PpPjsipPlugin.answerFromNotification(callId);
+    else PpPjsipPlugin.declineFromNotification(callId);
     // Forward to plugin listeners.
     c.sendBroadcast(new Intent(PpSipKeepAliveService.ACTION_INCOMING_INVITE)
       .setPackage(c.getPackageName())
@@ -41,7 +42,7 @@ public class PpIncomingActionReceiver extends BroadcastReceiver {
         c.startActivity(launch);
       }
     } catch (Exception ignored) {}
-    // Ask the softphone to reregister so JsSIP picks the ongoing INVITE.
-    PpSipKeepAliveService.requestReregister(c, "incoming_" + userAction);
+    // The native PJSIP engine owns the same INVITE on <ext>M. Never ask a
+    // WebView/JsSIP stack to re-register or answer a second dialog.
   }
 }

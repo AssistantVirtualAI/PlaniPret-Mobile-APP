@@ -1,0 +1,12 @@
+plugins { id 'com.android.library' }
+
+android {
+  namespace 'org.pjsip.pjsua2'
+  compileSdk rootProject.ext.compileSdkVersion
+  defaultConfig {
+    minSdk rootProject.ext.minSdkVersion
+    targetSdk rootProject.ext.targetSdkVersion
+    consumerProguardFiles 'consumer-rules.pro'
+  }
+  buildFeatures { buildConfig = false }
+}

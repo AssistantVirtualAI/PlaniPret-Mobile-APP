@@ -80,6 +80,10 @@ const ANDROID_PERMISSIONS = [
   "android.permission.USE_FULL_SCREEN_INTENT",
   "android.permission.FOREGROUND_SERVICE",
   "android.permission.FOREGROUND_SERVICE_DATA_SYNC",
+  "android.permission.FOREGROUND_SERVICE_PHONE_CALL",
+  "android.permission.FOREGROUND_SERVICE_MICROPHONE",
+  "android.permission.MANAGE_OWN_CALLS",
+  "android.permission.BLUETOOTH_CONNECT",
   "android.permission.ACCESS_NETWORK_STATE",
   "android.permission.CHANGE_WIFI_STATE",
   "android.permission.VIBRATE",
@@ -91,6 +95,10 @@ const ANDROID_PERMISSIONS = [
 ];
 
 const ANDROID_SERVICE = `
+        <service
+            android:name=".PpPjsipService"
+            android:foregroundServiceType="phoneCall|microphone"
+            android:exported="false" />
         <service
             android:name=".PpSipKeepAliveService"
             android:foregroundServiceType="dataSync"
@@ -326,9 +334,10 @@ public class PpIncomingActionReceiver extends BroadcastReceiver {
     String userAction = ACTION_ANSWER.equals(action) ? "answer" : "decline";
     try {
       NotificationManager nm = (NotificationManager) c.getSystemService(Context.NOTIFICATION_SERVICE);
-      if (nm != null) nm.cancel(PpSipKeepAliveService.INCOMING_NOTIFICATION_ID);
+      if (nm != null) { nm.cancel(PpSipKeepAliveService.INCOMING_NOTIFICATION_ID); nm.cancel(PpPjsipService.INCOMING_NOTIFICATION_ID); }
     } catch (Exception ignored) {}
-    if ("decline".equals(userAction)) PpSipKeepAliveService.declineIncoming(c, callId);
+    if ("answer".equals(userAction)) PpPjsipPlugin.answerFromNotification(callId);
+    else PpPjsipPlugin.declineFromNotification(callId);
     // Forward to plugin listeners.
     c.sendBroadcast(new Intent(PpSipKeepAliveService.ACTION_INCOMING_INVITE)
       .setPackage(c.getPackageName())
@@ -349,8 +358,8 @@ public class PpIncomingActionReceiver extends BroadcastReceiver {
         c.startActivity(launch);
       }
     } catch (Exception ignored) {}
-    // Ask the softphone to reregister so JsSIP picks the ongoing INVITE.
-    PpSipKeepAliveService.requestReregister(c, "incoming_" + userAction);
+    // The native PJSIP engine owns the same INVITE on <ext>M. Never ask a
+    // WebView/JsSIP stack to re-register or answer a second dialog.
   }
 }
 `;
@@ -362,14 +371,13 @@ import com.capacitorjs.plugins.pushnotifications.PushNotificationsPlugin;
 import com.google.firebase.messaging.FirebaseMessagingService;
 import com.google.firebase.messaging.RemoteMessage;
 
-/** Relays FCM to Capacitor and wakes SIP only for incoming calls. */
+/** Relays FCM to Capacitor and wakes only the existing native PJSIP M/TLS engine. */
 public class PpFirebaseMessagingService extends FirebaseMessagingService {
   @Override public void onMessageReceived(@NonNull RemoteMessage message) {
     PushNotificationsPlugin.sendRemoteMessage(message);
     String type = message.getData().get("type");
     if ("incoming_call".equals(type) || "call_incoming".equals(type)) {
-      PpSipKeepAliveService.start(getApplicationContext());
-      PpSipKeepAliveService.requestReregister(getApplicationContext(), "fcm_incoming_call");
+      PpPjsipEngine.wakeForIncoming(getApplicationContext());
     }
   }
 
@@ -2874,8 +2882,6 @@ function patchAndroidManifest() {
   for (const permission of [
     "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
     "android.permission.SCHEDULE_EXACT_ALARM",
-    "android.permission.FOREGROUND_SERVICE_PHONE_CALL",
-    "android.permission.FOREGROUND_SERVICE_MICROPHONE",
     "android.permission.RECEIVE_BOOT_COMPLETED",
     "android.permission.WAKE_LOCK",
   ]) {
@@ -2898,6 +2904,7 @@ function patchAndroidManifest() {
   // definition. Updating only Java is insufficient: the manifest can retain a
   // phoneCall|microphone service declaration and a boot-time REGISTER path.
   for (const name of [
+    ".PpPjsipService",
     ".PpSipKeepAliveService",
     ".PpFirebaseMessagingService",
     "com.capacitorjs.plugins.pushnotifications.MessagingService",
@@ -3050,6 +3057,22 @@ function patchAndroidNativeFiles() {
   const mainText = mainActivity && fs.existsSync(mainActivity) ? fs.readFileSync(mainActivity, "utf8") : "";
   const pkg = mainText.match(/^package\s+([\w.]+)/m)?.[1] || "com.planipret.mobile";
   const pkgDir = path.join(javaRoot, ...pkg.split("."));
+  const pjsipTemplateDir = path.join(appDir, "scripts", "templates", "android");
+  for (const name of ["PpPjsipPlugin.java", "PpPjsipEngine.java", "PpPjsipService.java"]) {
+    const template = path.join(pjsipTemplateDir, name);
+    if (!fs.existsSync(template)) {
+      throw new Error(`[native-config] Android PJSIP template absent: ${template}`);
+    }
+    writeIfChanged(path.join(pkgDir, name), fs.readFileSync(template, "utf8").replaceAll("__PACKAGE__", pkg));
+  }
+  const tlsCaTemplate = path.join(pjsipTemplateDir, "isrg_root_x1.pem");
+  if (!fs.existsSync(tlsCaTemplate)) {
+    throw new Error(`[native-config] Android PJSIP TLS CA template absent: ${tlsCaTemplate}`);
+  }
+  writeIfChanged(
+    path.join(appDir, "android", "app", "src", "main", "res", "raw", "isrg_root_x1.pem"),
+    fs.readFileSync(tlsCaTemplate, "utf8"),
+  );
   writeIfChanged(path.join(pkgDir, "PpSipKeepAlivePlugin.java"), ANDROID_PLUGIN_JAVA(pkg));
   writeIfChanged(path.join(pkgDir, "PpSipKeepAliveService.java"), ANDROID_SERVICE_JAVA(pkg));
   writeIfChanged(path.join(pkgDir, "PpIncomingActionReceiver.java"), ANDROID_RECEIVER_JAVA(pkg));
@@ -3060,6 +3083,7 @@ function patchAndroidNativeFiles() {
     if (fs.existsSync(staleFile)) fs.rmSync(staleFile);
   }
   const pluginAlreadyRegistered = mainText.includes("PpSipKeepAlivePlugin::class.java") || mainText.includes("PpSipKeepAlivePlugin.class");
+  const pjsipPluginAlreadyRegistered = mainText.includes("PpPjsipPlugin::class.java") || mainText.includes("PpPjsipPlugin.class");
   const portalPluginAlreadyRegistered = mainText.includes("PpPortalExternalPlugin::class.java") || mainText.includes("PpPortalExternalPlugin.class");
   if (mainActivity && !pluginAlreadyRegistered) {
     let next = mainText;
@@ -3091,7 +3115,22 @@ function patchAndroidNativeFiles() {
     }
     writeIfChanged(mainActivity, next);
   }
-  console.log("[native-config] Android PpSipKeepAlive + PpPortalExternal plugins applied.");
+  if (mainActivity && !pjsipPluginAlreadyRegistered) {
+    let next = fs.readFileSync(mainActivity, "utf8");
+    if (mainActivity.endsWith(".java")) {
+      if (next.includes("registerPlugin(PpPortalExternalPlugin.class);")) {
+        next = next.replace("registerPlugin(PpPortalExternalPlugin.class);", "registerPlugin(PpPortalExternalPlugin.class);\n        registerPlugin(PpPjsipPlugin.class);");
+      } else if (next.includes("super.onCreate(savedInstanceState);")) {
+        next = next.replace("super.onCreate(savedInstanceState);", "registerPlugin(PpPjsipPlugin.class);\n        super.onCreate(savedInstanceState);");
+      }
+    } else if (next.includes("registerPlugin(PpPortalExternalPlugin::class.java)")) {
+      next = next.replace("registerPlugin(PpPortalExternalPlugin::class.java)", "registerPlugin(PpPortalExternalPlugin::class.java)\n        registerPlugin(PpPjsipPlugin::class.java)");
+    } else if (next.includes("super.onCreate(savedInstanceState)")) {
+      next = next.replace("super.onCreate(savedInstanceState)", "registerPlugin(PpPjsipPlugin::class.java)\n        super.onCreate(savedInstanceState)");
+    }
+    writeIfChanged(mainActivity, next);
+  }
+  console.log("[native-config] Android PpPjsip + PpSipKeepAlive + PpPortalExternal plugins applied.");
 }
 
 function patchIosNativeFiles() {

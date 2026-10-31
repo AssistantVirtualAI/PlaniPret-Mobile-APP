@@ -1,32 +1,31 @@
 /**
  * Arbitrage du chemin d'appel sortant.
  *
- * Invariants :
- * - iOS avec PJSIP lié utilise exclusivement `<ext>M` en TLS.
- * - Android et le web utilisent `<ext>W` en WSS.
- * - Un binaire iOS où PJSIP est absent peut seulement utiliser le device
- *   distinct `<ext>W` en WSS. Il ne doit jamais REGISTER `<ext>M` en WSS.
- * - Le repli REST ne porte pas de média et reste interdit sur mobile.
+ * Invariants Planiprêt :
+ * - Toute application native mobile (iOS ou Android) utilise exclusivement
+ *   `<ext>M` via PJSIP/TLS 5061.
+ * - Le portail/browser utilise exclusivement `<ext>W` via JsSIP/WSS.
+ * - Le widget Maestro reste sur `<ext>x` et ne participe jamais à ce contrat.
+ * - Une absence ou une erreur du moteur natif n'autorise jamais un REGISTER WSS
+ *   sur M : l'application échoue explicitement et protège l'AOR mobile.
  */
 export type OutboundRoute =
-  | "native"               // composer via PJSIP/TLS sur <ext>M
-  | "native_unregistered"  // moteur présent mais ligne M non inscrite
-  | "webview"              // device W distinct dans la WebView, média WebRTC
-  | "web";                 // client web : JsSIP puis repli PBX
+  | "native"               // PJSIP/TLS sur <ext>M
+  | "native_unregistered"  // moteur absent/inactif ou REGISTER M/TLS non confirmé
+  | "web";                 // portail : JsSIP/WSS sur <ext>W
 
 /**
- * Un repli WSS est sûr uniquement si le moteur PJSIP est structurellement
- * indisponible. Une erreur de REGISTER TLS reste sur `<ext>M` : basculer dans
- * ce cas créerait une deuxième identité active et masquerait la panne réelle.
+ * Conservé pour les appelants existants : aucun binaire mobile ne reçoit à
+ * présent l'autorisation de retomber sur W/WSS. Le correctif Android doit être
+ * un vrai moteur PJSIP, pas un changement de suffixe.
  */
-export function canUseDistinctWebAorFallback(input: {
+export function canUseDistinctWebAorFallback(_input: {
   clientType: string;
   isNativePlatform: boolean;
   platform: string;
   nativeFailure: string | null | undefined;
 }): boolean {
-  if (input.clientType !== "mobile" || !input.isNativePlatform || input.platform !== "ios") return false;
-  return input.nativeFailure === "plugin_absent" || input.nativeFailure === "engine_not_linked";
+  return false;
 }
 
 export function decideOutboundRoute(input: {
@@ -37,12 +36,9 @@ export function decideOutboundRoute(input: {
   engineRegistered: boolean;
   allowDistinctWebAorFallback?: boolean;
 }): OutboundRoute {
-  const nativeMobile = input.clientType === "mobile" && input.isNativePlatform;
+  const nativeMobile = input.clientType === "mobile"
+    && input.isNativePlatform
+    && (input.platform === "ios" || input.platform === "android");
   if (!nativeMobile) return "web";
-  if (input.platform === "ios") {
-    if (input.engineAvailable && input.engineRegistered) return "native";
-    if (input.allowDistinctWebAorFallback === true) return "webview";
-    return "native_unregistered";
-  }
-  return "webview";
+  return input.engineAvailable && input.engineRegistered ? "native" : "native_unregistered";
 }

@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.SHOW_WHEN_LOCKED" />
     <uses-permission android:name="android.permission.TURN_SCREEN_ON" />
@@ -87,6 +89,10 @@
         </provider>
         <!-- SERVICE SIP EN FOREGROUND — maintient la connexion WebSocket SIP en arrière-plan -->
         <!-- stopWithTask="false" : le service survit même si l'utilisateur swipe l'app --><!-- BOOT RECEIVER — redémarre le service SIP après un reboot du téléphone --><!-- CALL ACTION RECEIVER — traite les boutons Répondre/Refuser des notifications -->
+        <service
+            android:name=".PpPjsipService"
+            android:foregroundServiceType="phoneCall|microphone"
+            android:exported="false" />
         <service
             android:name=".PpSipKeepAliveService"
             android:foregroundServiceType="dataSync"
