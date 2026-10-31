@@ -61,7 +61,9 @@ Deno.serve(async (req) => {
     regExpiresOk(x);
 
   const aors = Array.from(new Set(devices.filter(isRegistered).map(devId).filter(Boolean)));
-  const mobileAor = `${ctx.extension}${platform === "ios" ? "M" : "W"}`;
+  // Les deux applications natives utilisent le même AOR mobile M via PJSIP/TLS.
+  // W reste réservé au portail JsSIP; cette fonction ne modifie jamais le device.
+  const mobileAor = `${ctx.extension}M`;
   let mobileRegistered = aors.some((a) => a.toLowerCase() === mobileAor.toLowerCase());
 
   // The LIST endpoint sometimes omits registration fields — confirm via DETAIL

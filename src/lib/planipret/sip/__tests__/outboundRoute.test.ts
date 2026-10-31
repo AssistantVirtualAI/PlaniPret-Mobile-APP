@@ -2,61 +2,38 @@ import { describe, it, expect } from "vitest";
 import { canUseDistinctWebAorFallback, decideOutboundRoute } from "../outboundRoute";
 
 describe("decideOutboundRoute", () => {
-  it("compose via le moteur natif quand la ligne mobile est inscrite", () => {
-    expect(decideOutboundRoute({
-      clientType: "mobile", isNativePlatform: true, platform: "ios", engineAvailable: true, engineRegistered: true,
-    })).toBe("native");
-  });
-
-  it("refuse l'appel si PJSIP est présent mais sa ligne TLS n'est pas inscrite", () => {
-    expect(decideOutboundRoute({
-      clientType: "mobile", isNativePlatform: true, platform: "ios", engineAvailable: true, engineRegistered: false,
-    })).toBe("native_unregistered");
-  });
-
-  it("autorise uniquement le device W distinct si PJSIP est absent du binaire", () => {
-    const allowDistinctWebAorFallback = canUseDistinctWebAorFallback({
-      clientType: "mobile", isNativePlatform: true, platform: "ios", nativeFailure: "engine_not_linked",
+  for (const platform of ["ios", "android"] as const) {
+    it(`${platform}: compose via le moteur natif lorsque M/TLS est inscrit`, () => {
+      expect(decideOutboundRoute({
+        clientType: "mobile", isNativePlatform: true, platform, engineAvailable: true, engineRegistered: true,
+      })).toBe("native");
     });
-    expect(allowDistinctWebAorFallback).toBe(true);
-    expect(decideOutboundRoute({
-      clientType: "mobile", isNativePlatform: true, platform: "ios", engineAvailable: false, engineRegistered: false,
-      allowDistinctWebAorFallback,
-    })).toBe("webview");
-  });
 
-  it("autorise le device W si le plugin PJSIP n'existe pas dans un ancien binaire", () => {
-    expect(canUseDistinctWebAorFallback({
-      clientType: "mobile", isNativePlatform: true, platform: "ios", nativeFailure: "plugin_absent",
-    })).toBe(true);
-  });
-
-  it("interdit le repli WSS lors d'un échec transitoire TLS", () => {
-    const allowDistinctWebAorFallback = canUseDistinctWebAorFallback({
-      clientType: "mobile", isNativePlatform: true, platform: "ios", nativeFailure: "native_register_timeout",
+    it(`${platform}: refuse de composer lorsque M/TLS n'est pas confirmé`, () => {
+      expect(decideOutboundRoute({
+        clientType: "mobile", isNativePlatform: true, platform, engineAvailable: true, engineRegistered: false,
+      })).toBe("native_unregistered");
     });
-    expect(allowDistinctWebAorFallback).toBe(false);
-    expect(decideOutboundRoute({
-      clientType: "mobile", isNativePlatform: true, platform: "ios", engineAvailable: true, engineRegistered: false,
-      allowDistinctWebAorFallback,
-    })).toBe("native_unregistered");
-  });
 
-  it("utilise JsSIP/WSS sur Android", () => {
-    expect(decideOutboundRoute({
-      clientType: "mobile", isNativePlatform: true, platform: "android", engineAvailable: false, engineRegistered: false,
-    })).toBe("webview");
-  });
+    it(`${platform}: ne tombe jamais sur WSS/W lorsque le moteur est absent`, () => {
+      expect(canUseDistinctWebAorFallback({
+        clientType: "mobile", isNativePlatform: true, platform, nativeFailure: "engine_not_linked",
+      })).toBe(false);
+      expect(decideOutboundRoute({
+        clientType: "mobile", isNativePlatform: true, platform, engineAvailable: false, engineRegistered: false,
+      })).toBe("native_unregistered");
+    });
+  }
 
-  it("laisse le client web utiliser JsSIP puis le repli PBX", () => {
+  it("laisse le portail utiliser exclusivement le client web W/WSS", () => {
     expect(decideOutboundRoute({
       clientType: "web", isNativePlatform: false, platform: "web", engineAvailable: false, engineRegistered: false,
     })).toBe("web");
   });
 
-  it("n'autorise jamais le repli REST sur plateforme native", () => {
+  it("n'autorise jamais le repli REST pour une application mobile native", () => {
     const routes = [true, false].flatMap((reg) => [true, false].flatMap((av) => ["ios", "android"].map((platform) =>
       decideOutboundRoute({ clientType: "mobile", isNativePlatform: true, platform, engineAvailable: av, engineRegistered: reg }))));
-    expect(routes.every((r) => r !== "web")).toBe(true);
+    expect(routes.every((route) => route === "native" || route === "native_unregistered")).toBe(true);
   });
 });

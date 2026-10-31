@@ -47,6 +47,7 @@ export function CommissionsGradients({ colors = CHART_COLORS }: { colors?: strin
 }
 
 export const axisProps = {
+  minTickGap: 14,
   tick: { fontSize: 11, fill: "var(--pp-text-muted)" },
   tickLine: false,
   axisLine: { stroke: "var(--pp-bg-border)" },

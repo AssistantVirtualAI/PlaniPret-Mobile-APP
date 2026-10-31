@@ -64,6 +64,10 @@ type PpVoipCallPlugin = {
   ) => Promise<ListenerHandle>;
 };
 
+type PpPjsipWakePlugin = {
+  wakeForIncomingCall?: (opts?: { reason?: string }) => Promise<{ ok?: boolean }>;
+};
+
 const isNative = () => {
   try { return Capacitor.isNativePlatform(); } catch { return false; }
 };
@@ -104,6 +108,9 @@ const NativePpSip: PpSipKeepAlivePlugin = isNative()
 
 const NativePpVoipCall: PpVoipCallPlugin = isNative()
   ? registerPlugin<PpVoipCallPlugin>("PpVoipCall")
+  : {};
+const NativePpPjsip: PpPjsipWakePlugin = isNative()
+  ? registerPlugin<PpPjsipWakePlugin>("PpPjsip")
   : {};
 
 // ---------- CallKit + PushKit bridge (iOS only) ----------
@@ -166,10 +173,19 @@ if (platform() === "ios") {
  */
 export type PpSipWakeReason = "voip_push" | "fcm_push" | (string & {});
 
-/** iOS PushKit ("voip_push") and Android FCM data message ("fcm_push") share
- *  the exact same wake path: force an immediate re-REGISTER. */
+/** iOS PushKit wakes its keep-alive; Android FCM wakes the already-existing
+ * PJSIP M/TLS engine. Android never routes this through JsSIP/WSS. */
 export async function wakePlanipretNativeSipForIncomingCall(reason: PpSipWakeReason = "voip_push"): Promise<PpNativeSipStatus | null> {
   if (!isPlanipretNativeSipAvailable()) return null;
+  if (platform() === "android") {
+    try {
+      const result = await NativePpPjsip.wakeForIncomingCall?.({ reason });
+      return result ? { ok: result.ok ?? true, status: "protected", reason } : null;
+    } catch (e) {
+      if (!markUnavailable("sip", e, "pp-pjsip")) console.warn("[pp-pjsip] wakeForIncomingCall failed", e);
+      return null;
+    }
+  }
   try { return (await NativePpSip.wakeForIncomingCall?.({ reason })) ?? null; }
   catch (e) {
     if (!markUnavailable("sip", e, "pp-sip-keepalive")) console.warn("[pp-sip] wakeForIncomingCall failed", e);

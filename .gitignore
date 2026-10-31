@@ -43,3 +43,8 @@ android/app/*.keystore
 android/.gradle/
 android/build/
 android/app/build/
+.work/
+
+# Le module PJSUA2 (sources Java + JNI multi-ABI) est versionné pour rendre la
+# release Android M/TLS reproductible. Seules ses sorties Gradle sont écartées.
+android/pjsua2/build/

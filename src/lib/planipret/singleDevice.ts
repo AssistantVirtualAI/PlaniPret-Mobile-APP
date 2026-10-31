@@ -7,6 +7,13 @@ import { supabase } from "@/integrations/supabase/client";
 
 const DEVICE_KEY = "pp_mobile_device_id";
 export const REPLACED_FLAG = "pp_signed_out_elsewhere";
+export type MobileDeviceClaim = {
+  active: boolean;
+  deferred: boolean;
+  /** False only when the server could not confirm a claim; preserve availability. */
+  confirmed: boolean;
+  retryAfterSeconds?: number;
+};
 
 export function getMobileDeviceId(): string {
   try {
@@ -33,21 +40,33 @@ export async function isNativeMobile(): Promise<boolean> {
   return (await platform()) !== null;
 }
 
-export type ClaimResult = { active: boolean; deferred: boolean; retryAfterMs: number };
+export function claimAllowsSipStart(result: MobileDeviceClaim): boolean {
+  // A network error must not take an existing broker offline. Only an explicit
+  // server-side defer stops SIP from starting on this installation.
+  return result.active || !result.confirmed;
+}
 
-/** Server decides; deferred = a live call blocks the switch, caller must retry. */
-export async function claimThisDevice(): Promise<ClaimResult> {
+export async function claimThisDevice(): Promise<MobileDeviceClaim> {
   const p = await platform();
-  if (!p) return { active: true, deferred: false, retryAfterMs: 0 };
+  if (!p) return { active: true, deferred: false, confirmed: false };
   try {
     const { data, error } = await supabase.functions.invoke("pp-mobile-device-claim", {
       body: { action: "claim", device_id: getMobileDeviceId(), platform: p },
     });
-    if (error || !data) return { active: false, deferred: true, retryAfterMs: 15_000 };
-    const d = data as { active?: boolean; deferred?: boolean; retry_after_seconds?: number };
-    if (d.active === true) return { active: true, deferred: false, retryAfterMs: 0 };
-    return { active: false, deferred: true, retryAfterMs: Math.max(5, Math.min(60, Number(d.retry_after_seconds) || 10)) * 1000 };
-  } catch { return { active: false, deferred: true, retryAfterMs: 15_000 }; }
+    if (error) return { active: true, deferred: false, confirmed: false };
+    const claim = (data ?? {}) as { active?: boolean; deferred?: boolean; retry_after_seconds?: unknown };
+    const deferred = claim.deferred === true;
+    return {
+      active: claim.active !== false,
+      deferred,
+      confirmed: true,
+      retryAfterSeconds: Number.isFinite(Number(claim.retry_after_seconds))
+        ? Number(claim.retry_after_seconds)
+        : undefined,
+    };
+  } catch {
+    return { active: true, deferred: false, confirmed: false };
+  }
 }
 
 /** true = still active (or unknown: never sign out on network errors). */

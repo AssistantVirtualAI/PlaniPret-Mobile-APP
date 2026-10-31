@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import Network
 
 #if canImport(pjsua)
 import pjsua
@@ -77,6 +78,17 @@ private func ppPjsipOnCallMediaState(_ callId: pjsua_call_id) {
     PjsipEngine.shared.handleCallMediaState(callId: callId, info: info)
 }
 
+/// Journalise chaque connexion/déconnexion du transport TLS d'appel, pour
+/// corréler une coupure à un changement de réseau (absent jusqu'ici).
+private func ppPjsipOnTransportState(
+    _ tp: UnsafeMutablePointer<pjsip_transport>?,
+    _ state: pjsip_transport_state,
+    _ info: UnsafePointer<pjsip_transport_state_info>?
+) {
+    let status = info.map { Int32($0.pointee.status) } ?? 0
+    NSLog("[PpPjsip] transport state=%d status=%d", Int32(state.rawValue), status)
+}
+
 private func ppPjsipEnterContext(_ userData: UnsafeMutableRawPointer?) {
     PjsipEngine.shared.runScheduledWork()
 }
@@ -138,6 +150,9 @@ final class PjsipEngine {
     private var scheduledWork: (() -> Void)?
     private var strings: [UnsafeMutablePointer<CChar>] = []
     private var pjThreadDescs: [UnsafeMutableRawPointer] = []
+    private var pathMonitor: NWPathMonitor?
+    private var lastPathSignature: String?
+    private var pathChangeWork: DispatchWorkItem?
 
 
     // Sonde
@@ -155,6 +170,10 @@ final class PjsipEngine {
     private var registrationTransport = "tls"
     private var registered = false
     private var activeCall: pjsua_call_id = pjsua_call_id(-1)
+    private var callIds = Set<Int32>()
+    private var heldCallIds = Set<Int32>()
+    private var callGenerations: [Int32: UInt64] = [:]
+    private var attachedAudioCall: pjsua_call_id = pjsua_call_id(-1)
     /// Décrochage demandé (CallKit) avant l'arrivée de l'INVITE SIP.
     private var pendingAnswerRequest = false
     private var pendingAnswerCallId: String?
@@ -162,6 +181,8 @@ final class PjsipEngine {
 
     /// Appel sortant en cours (piloté par CallKit côté PpVoipCall).
     private var outgoingCall: pjsua_call_id = pjsua_call_id(-1)
+    /// INVITE concurrents refusés en 486 pendant un appel actif (protégé par `lock`).
+    private var rejectedConcurrentCallIds = Set<Int32>()
     /// Incrémente pour chaque dialogue. Un call-id PJSIP peut être réutilisé;
     /// la reprise différée d'un raccrochage ne doit jamais toucher l'appel qui
     /// lui succède, même si son ID numérique est identique.
@@ -190,19 +211,19 @@ final class PjsipEngine {
     private let defaultCaptureDevice: Int32 = -1
     private let defaultPlaybackDevice: Int32 = -2
     /// Latch par callId : une seule réponse 200 peut être envoyée pour un dialogue.
-    private var answerInFlightCall: pjsua_call_id = pjsua_call_id(-1)
+    private var answerInFlightCalls = Set<Int32>()
     private var answeredCallIds = Set<Int32>()
-    private var answerCompletions: [(Bool) -> Void] = []
+    private var answerCompletions: [Int32: [(Bool) -> Void]] = [:]
 
     var currentCallIdString: String { activeCall >= 0 ? String(activeCall) : "" }
 
     private init() {
         let nc = NotificationCenter.default
-        nc.addObserver(forName: .ppPjsipAnswerRequested, object: nil, queue: nil) { [weak self] _ in
-            self?.answer(callId: nil) { _ in }
+        nc.addObserver(forName: .ppPjsipAnswerRequested, object: nil, queue: nil) { [weak self] note in
+            self?.answer(callId: note.userInfo?["callId"] as? String) { _ in }
         }
-        nc.addObserver(forName: .ppPjsipEndRequested, object: nil, queue: nil) { [weak self] _ in
-            self?.hangup(callId: nil)
+        nc.addObserver(forName: .ppPjsipEndRequested, object: nil, queue: nil) { [weak self] note in
+            self?.hangup(callId: note.userInfo?["callId"] as? String)
         }
         nc.addObserver(forName: .ppPjsipOutgoingAudioReady, object: nil, queue: nil) { [weak self] note in
             self?.startOutgoingInvite(requestId: (note.userInfo?["requestId"] as? String) ?? "")
@@ -228,7 +249,7 @@ final class PjsipEngine {
         }
         // Mise en attente demandée par CallKit (écran d'appel / verrouillé).
         nc.addObserver(forName: Notification.Name("PpPjsipHoldRequested"), object: nil, queue: nil) { [weak self] note in
-            self?.setHold((note.userInfo?["onHold"] as? Bool) ?? false)
+            self?.setHold((note.userInfo?["onHold"] as? Bool) ?? false, callId: note.userInfo?["callId"] as? String)
         }
         // CallKit est seul maître de l'AVAudioSession : PJSIP n'ouvre son
         // périphérique audio qu'une fois la session activée par le système.
@@ -347,6 +368,15 @@ final class PjsipEngine {
         // provoquer une seconde renégociation SDP. Le keep-alive TCP suffit.
         acc.use_timer = PJSUA_SIP_TIMER_INACTIVE
 
+        // Prise d'appel entrant : le 200 OK doit annoncer l'adresse publique
+        // vue par le serveur (rport/received), pas l'IP privée locale, sinon
+        // l'ACK part vers une adresse injoignable derrière certains routeurs
+        // (200 OK ×11 puis BYE 408 à 32 s). Keep-alive TLS pour garder le
+        // trou NAT ouvert entre deux appels.
+        acc.allow_via_rewrite = pj_bool_t(1)
+        acc.contact_use_src_port = pj_bool_t(1)
+        acc.ka_interval = 15
+
         // Un seul `+sip.instance` : on laisse RFC5626 le générer avec NOTRE
         // UUID stable au lieu d'ajouter un second param manuel (pjsua émettait
         // sinon un doublon dont un UUID à zéros).
@@ -452,6 +482,11 @@ final class PjsipEngine {
                     current.completion(.failure(NSError(domain: "PpPjsip", code: Int(status), userInfo: [NSLocalizedDescriptionKey: "pjsua_call_make_call failed"])))
                     return
                 }
+                self.callIds.insert(Int32(newCall))
+                if self.callGenerations[Int32(newCall)] == nil {
+                    self.dialogGeneration &+= 1
+                    self.callGenerations[Int32(newCall)] = self.dialogGeneration
+                }
                 self.activeCall = newCall
                 self.muted = false
                 self.outgoingCall = newCall
@@ -528,19 +563,20 @@ final class PjsipEngine {
             return
         }
 
+        guard callIds.contains(Int32(target)) else { completion(false); return }
         lock.lock()
         if answeredCallIds.contains(Int32(target)) {
             lock.unlock()
             completion(true)
             return
         }
-        if answerInFlightCall == target {
-            answerCompletions.append(completion)
+        if answerInFlightCalls.contains(Int32(target)) {
+            answerCompletions[Int32(target), default: []].append(completion)
             lock.unlock()
             return
         }
-        answerInFlightCall = target
-        answerCompletions = [completion]
+        answerInFlightCalls.insert(Int32(target))
+        answerCompletions[Int32(target)] = [completion]
         lock.unlock()
         thread.run { [weak self] in
             guard let self = self else { return }
@@ -555,15 +591,24 @@ final class PjsipEngine {
 
     private func finishAnswer(callId: pjsua_call_id, ok: Bool) {
         lock.lock()
-        guard answerInFlightCall == callId else {
+        guard answerInFlightCalls.contains(Int32(callId)) else {
             lock.unlock()
             return
         }
-        let completions = answerCompletions
-        answerCompletions = []
-        answerInFlightCall = pjsua_call_id(-1)
-        if ok { answeredCallIds.insert(Int32(callId)) }
+        let completions = answerCompletions.removeValue(forKey: Int32(callId)) ?? []
+        answerInFlightCalls.remove(Int32(callId))
+        if ok {
+            answeredCallIds.insert(Int32(callId))
+            activeCall = callId
+        }
         lock.unlock()
+        if ok {
+            var info = pjsua_call_info()
+            if pjsua_call_get_info(callId, &info) == pj_status_t(0),
+               info.media_status == PJSUA_CALL_MEDIA_ACTIVE, info.conf_slot >= 0 {
+                attachAudioMedia(callId: callId, slot: info.conf_slot)
+            }
+        }
         NotificationCenter.default.post(
             name: .ppPjsipAnswerResult,
             object: nil,
@@ -599,15 +644,15 @@ final class PjsipEngine {
         // accepted. Previously `done` was set before checking the PJSIP return
         // value, so a transient failure could leave the remote party hearing an
         // apparently endless call after CallKit had already closed locally.
-        let generation = dialogGeneration
+        let generation = callGenerations[Int32(target)]
         let attemptHangup: (String) -> Void = { [weak self] origin in
             guard let self = self else { return }
             self.thread.run {
                 self.registerCurrentThreadIfNeeded()
                 self.scheduleOnPjsipThread {
                     // A newer call must never be affected by a delayed retry.
-                    guard self.dialogGeneration == generation,
-                          self.activeCall == target || self.outgoingCall == target else { return }
+                    guard self.callGenerations[Int32(target)] == generation,
+                          self.callIds.contains(Int32(target)) else { return }
                     let status = pjsua_call_hangup(target, UInt32(code), nil, nil)
                     NSLog("[PpPjsip] hangup %@ callId=%d code=%d status=%d", origin, target, code, status)
                 }
@@ -648,27 +693,64 @@ final class PjsipEngine {
     /// Attente SIP réelle : re-INVITE `a=sendonly` (hold) puis reprise du média.
     /// La session audio reste la propriété de CallKit : on ne touche pas
     /// AVAudioSession ici.
-    func setHold(_ on: Bool) {
-        onHold = on
-        guard activeCall >= 0 else { return }
+    func setHold(_ on: Bool, callId: String? = nil, completion: ((Bool) -> Void)? = nil) {
+        let target = resolveCall(callId)
         thread.run { [weak self] in
-            guard let self = self else { return }
+            guard let self = self else { completion?(false); return }
             self.scheduleOnPjsipThread {
-                guard self.activeCall >= 0 else { return }
+                guard self.callIds.contains(Int32(target)) else { completion?(false); return }
+                let status: pj_status_t
                 if on {
-                    pjsua_call_set_hold(self.activeCall, nil)
+                    status = pjsua_call_set_hold(target, nil)
                 } else {
                     var opt = pjsua_call_setting()
                     pjsua_call_setting_default(&opt)
                     opt.flag = UInt32(PJSUA_CALL_UNHOLD.rawValue)
-                    pjsua_call_reinvite2(self.activeCall, &opt, nil)
+                    status = pjsua_call_reinvite2(target, &opt, nil)
                 }
+                guard status == pj_status_t(0) else { completion?(false); return }
+                if on {
+                    self.heldCallIds.insert(Int32(target))
+                    if self.attachedAudioCall == target {
+                        self.detachAudioMedia(reason: "hold", releaseSoundDevice: false)
+                    }
+                } else {
+                    self.heldCallIds.remove(Int32(target))
+                    self.activeCall = target
+                    var info = pjsua_call_info()
+                    if pjsua_call_get_info(target, &info) == pj_status_t(0),
+                       info.media_status == PJSUA_CALL_MEDIA_ACTIVE, info.conf_slot >= 0 {
+                        self.attachAudioMedia(callId: target, slot: info.conf_slot)
+                    }
+                }
+                self.onHold = self.heldCallIds.contains(Int32(self.activeCall))
+                self.emit("callState", ["callId": String(target), "state": on ? "held" : "connected"])
+                completion?(true)
             }
         }
     }
 
+    /// Gain de lecture (correspondant → appareil). En mains-libres, iOS
+    /// atténue fortement la voix d'un appel VoIP : on amplifie le flux reçu
+    /// côté PJSIP pour approcher le volume du haut-parleur natif.
+    private func applyPlaybackGain(slot: pjsua_conf_port_id) {
+        guard slot >= 0 else { return }
+        _ = pjsua_conf_adjust_rx_level(slot, speakerOn ? 2.2 : 1.0)
+    }
+
     func setSpeaker(_ enabled: Bool) {
         speakerOn = enabled
+        if activeCall >= 0 {
+            thread.run { [weak self] in
+                guard let self = self else { return }
+                self.scheduleOnPjsipThread {
+                    guard self.activeCall >= 0 else { return }
+                    var info = pjsua_call_info()
+                    pjsua_call_get_info(self.activeCall, &info)
+                    self.applyPlaybackGain(slot: info.conf_slot)
+                }
+            }
+        }
         // Un seul propriétaire de la session audio : PpSipKeepAlive. Deux
         // modules qui appellent overrideOutputAudioPort avec des modes
         // différents = haut-parleur bas et étouffé. On délègue.
@@ -746,18 +828,26 @@ final class PjsipEngine {
     func handleIncomingCall(callId: pjsua_call_id, remoteUri: String) {
         // Une retransmission du même INVITE ne doit ni réinitialiser l'époque
         // du dialogue ni demander une seconde sonnerie CallKit.
-        if activeCall == callId {
+        if callIds.contains(Int32(callId)) || rejectedConcurrentCallIds.contains(Int32(callId)) {
             NSLog("[PpPjsip] duplicate incoming INVITE ignored callId=%d", callId)
             return
         }
         // Un seul appel simultané : tout INVITE concurrent est refusé (486).
-        if activeCall >= 0 {
+        // Le dialogue refusé est mémorisé pour que sa déconnexion ne coupe
+        // jamais l'audio ni l'état de l'appel en cours.
+        if callIds.count + (outgoingPending ? 1 : 0) >= 2 {
+            lock.lock()
+            rejectedConcurrentCallIds.insert(Int32(callId))
+            lock.unlock()
+            NSLog("[PpPjsip] concurrent INVITE rejected 486 callId=%d active=%d", callId, activeCall)
             pjsua_call_answer(callId, 486, nil, nil)
             return
         }
+        let isFirstCall = callIds.isEmpty
         dialogGeneration &+= 1
-        activeCall = callId
-        muted = false
+        callGenerations[Int32(callId)] = dialogGeneration
+        callIds.insert(Int32(callId))
+        if isFirstCall { activeCall = callId; muted = false }
         let number = ppUserFromUri(remoteUri)
         let name = ppDisplayFromUri(remoteUri)
         NSLog("[PpPjsip] incoming INVITE callId=%d from=%@", callId, remoteUri)
@@ -768,7 +858,7 @@ final class PjsipEngine {
         // Décrochage déjà demandé depuis CallKit avant l'arrivée de l'INVITE :
         // on répond 200 OK immédiatement et on libère les promesses JS.
         lock.lock()
-        let hasPending = pendingAnswerRequest
+        let hasPending = pendingAnswerRequest && isFirstCall
         let pendingCompletions = pendingAnswerCompletions
         if hasPending {
             pendingAnswerRequest = false
@@ -796,6 +886,19 @@ final class PjsipEngine {
     }
 
     func handleCallState(callId: pjsua_call_id, state: pjsip_inv_state, lastCode: Int, remoteUri: String) {
+        // Dialogue concurrent refusé (486) : aucun événement ni nettoyage audio,
+        // sinon l'appel en cours perd son son et paraît coupé.
+        lock.lock()
+        let isRejectedConcurrent = rejectedConcurrentCallIds.contains(Int32(callId))
+            && activeCall != callId && outgoingCall != callId
+        if isRejectedConcurrent, state == PJSIP_INV_STATE_DISCONNECTED {
+            rejectedConcurrentCallIds.remove(Int32(callId))
+        }
+        lock.unlock()
+        if isRejectedConcurrent {
+            NSLog("[PpPjsip] rejected concurrent call state ignored callId=%d state=%d", callId, state.rawValue)
+            return
+        }
         let label: String
         switch state {
         case PJSIP_INV_STATE_CALLING, PJSIP_INV_STATE_EARLY: label = "ringing"
@@ -811,6 +914,9 @@ final class PjsipEngine {
         if !isOutgoing, outgoingPending, outgoingCall < 0 {
             isOutgoing = true
             outgoingCall = callId
+            callIds.insert(Int32(callId))
+            dialogGeneration &+= 1
+            callGenerations[Int32(callId)] = dialogGeneration
             outgoingPending = false
         }
 
@@ -834,17 +940,30 @@ final class PjsipEngine {
             )
         }
         if state == PJSIP_INV_STATE_DISCONNECTED {
-            detachAudioMedia(reason: "call_disconnected")
-            if activeCall == callId { activeCall = pjsua_call_id(-1) }
+            callIds.remove(Int32(callId))
+            heldCallIds.remove(Int32(callId))
+            callGenerations.removeValue(forKey: Int32(callId))
+            if attachedAudioCall == callId || callIds.isEmpty {
+                detachAudioMedia(reason: "call_disconnected", releaseSoundDevice: callIds.isEmpty)
+            }
+            if activeCall == callId {
+                activeCall = callIds.first(where: { !heldCallIds.contains($0) }) ?? callIds.first ?? pjsua_call_id(-1)
+            }
             if outgoingCall == callId { outgoingCall = pjsua_call_id(-1) }
-            audioSessionReady = false
+            if callIds.isEmpty { audioSessionReady = false }
+            if activeCall >= 0, !heldCallIds.contains(Int32(activeCall)) {
+                var remaining = pjsua_call_info()
+                if pjsua_call_get_info(activeCall, &remaining) == pj_status_t(0),
+                   remaining.media_status == PJSUA_CALL_MEDIA_ACTIVE, remaining.conf_slot >= 0 {
+                    attachAudioMedia(callId: activeCall, slot: remaining.conf_slot)
+                }
+            }
             lock.lock()
             answeredCallIds.remove(Int32(callId))
-            if answerInFlightCall == callId {
-                answerInFlightCall = pjsua_call_id(-1)
-                answerCompletions.removeAll()
-            }
+            answerInFlightCalls.remove(Int32(callId))
+            let completions = answerCompletions.removeValue(forKey: Int32(callId)) ?? []
             lock.unlock()
+            completions.forEach { $0(false) }
             NotificationCenter.default.post(
                 name: .ppPjsipCallEnded, object: nil,
                 userInfo: ["callId": String(callId), "code": lastCode]
@@ -853,7 +972,8 @@ final class PjsipEngine {
     }
 
     func handleCallMediaState(callId: pjsua_call_id, info: pjsua_call_info) {
-        guard info.media_status == PJSUA_CALL_MEDIA_ACTIVE, info.conf_slot >= 0 else { return }
+        guard callIds.contains(Int32(callId)), !heldCallIds.contains(Int32(callId)),
+              callId == activeCall, info.media_status == PJSUA_CALL_MEDIA_ACTIVE, info.conf_slot >= 0 else { return }
         guard audioSessionReady else {
             NSLog("[PpPjsip] media pending CallKit activation callId=%d slot=%d", callId, info.conf_slot)
             return
@@ -899,9 +1019,11 @@ final class PjsipEngine {
     /// Relie le port média du call à la conférence et vérifie chaque étape.
     /// Cette méthode doit s'exécuter sur le worker PJSIP après didActivate.
     private func attachAudioMedia(callId: pjsua_call_id, slot: pjsua_conf_port_id) {
-        guard audioSessionReady else { return }
+        guard audioSessionReady, callIds.contains(Int32(callId)),
+              !heldCallIds.contains(Int32(callId)), activeCall == callId else { return }
         if attachedAudioSlot == slot {
             if muted { _ = pjsua_conf_adjust_tx_level(slot, 0.0) }
+            applyPlaybackGain(slot: slot)
             return
         }
         // A reattach changes only conference links. Calling
@@ -915,6 +1037,7 @@ final class PjsipEngine {
             emit("audioError", ["reason": "conf_remote_to_device_failed", "status": Int(remoteToDevice)])
             return
         }
+        applyPlaybackGain(slot: slot)
         let deviceToRemote = pjsua_conf_connect(0, slot)
         guard deviceToRemote == pj_status_t(0) else {
             _ = pjsua_conf_disconnect(slot, 0)
@@ -923,6 +1046,7 @@ final class PjsipEngine {
             return
         }
         attachedAudioSlot = slot
+        attachedAudioCall = callId
         let muteStatus = pjsua_conf_adjust_tx_level(slot, muted ? 0.0 : 1.0)
         if muteStatus != pj_status_t(0) {
             NSLog("[PpPjsip] conf tx level failed callId=%d slot=%d status=%d", callId, slot, muteStatus)
@@ -941,6 +1065,7 @@ final class PjsipEngine {
             let second = pjsua_conf_disconnect(0, attachedAudioSlot)
             NSLog("[PpPjsip] media detached slot=%d reason=%@ status=%d/%d", attachedAudioSlot, reason, first, second)
             attachedAudioSlot = pjsua_conf_port_id(-1)
+            attachedAudioCall = pjsua_call_id(-1)
         }
         guard releaseSoundDevice else { return }
         let nullStatus = pjsua_set_null_snd_dev()
@@ -1076,7 +1201,9 @@ final class PjsipEngine {
         cfg.cb.on_incoming_call = ppPjsipOnIncomingCall
         cfg.cb.on_call_state = ppPjsipOnCallState
         cfg.cb.on_call_media_state = ppPjsipOnCallMediaState
-        cfg.max_calls = 2
+        cfg.cb.on_transport_state = ppPjsipOnTransportState
+        // Reserve a third dialog slot so excess INVITEs reach our explicit 486 guard.
+        cfg.max_calls = 3
 
         var logCfg = pjsua_logging_config()
         pjsua_logging_config_default(&logCfg)
@@ -1113,6 +1240,52 @@ final class PjsipEngine {
 
         started = true
         NSLog("[PpPjsip] stack started (TLS 5061 transport id=%d)", transportId)
+        startPathMonitor()
+    }
+
+    // MARK: Changement de réseau (Wi-Fi ↔ LTE)
+
+    /// Le basculement Wi-Fi/LTE existant ne couvrait que la socket WSS de
+    /// veille. La socket TLS du moteur d'appel restait liée à l'ancienne
+    /// interface : le Contact/Via du 200 OK devenait injoignable, l'ACK ne
+    /// revenait jamais et PJSIP coupait à Timer H (32 s, BYE 408).
+    /// On notifie donc PJSIP de chaque vrai changement d'interface.
+    private func startPathMonitor() {
+        guard pathMonitor == nil else { return }
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            guard let self = self else { return }
+            let sig = path.status == .satisfied
+                ? path.availableInterfaces.map { "\($0.type)" }.joined(separator: ",")
+                    + (path.usesInterfaceType(.wifi) ? "|wifi" : path.usesInterfaceType(.cellular) ? "|cell" : "|other")
+                : "none"
+            self.lock.lock()
+            let previous = self.lastPathSignature
+            self.lastPathSignature = sig
+            self.lock.unlock()
+            // Premier relevé ou aucun changement réel : rien à faire.
+            guard let prev = previous, prev != sig, path.status == .satisfied else { return }
+            NSLog("[PpPjsip] network path changed %@ → %@ : pjsua_handle_ip_change", prev, sig)
+            self.pathChangeWork?.cancel()
+            let work = DispatchWorkItem { [weak self] in self?.handleIpChange() }
+            self.pathChangeWork = work
+            // Anti-rebond : iOS publie souvent plusieurs mises à jour d'affilée.
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 1.0, execute: work)
+        }
+        monitor.start(queue: DispatchQueue(label: "ca.planipret.pjsip.path"))
+        pathMonitor = monitor
+    }
+
+    private func handleIpChange() {
+        scheduleOnPjsipThread { [weak self] in
+            guard let self = self, self.started else { return }
+            var param = pjsua_ip_change_param()
+            pjsua_ip_change_param_default(&param)
+            param.restart_listener = pj_bool_t(1)
+            param.restart_lis_delay = 100
+            let status = pjsua_handle_ip_change(&param)
+            NSLog("[PpPjsip] pjsua_handle_ip_change status=%d", status)
+        }
     }
 
     /// Par défaut PJSIP propose Speex en premier : entre deux postes de l'app,

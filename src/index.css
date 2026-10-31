@@ -8,6 +8,8 @@
 /* Prevent any uncontained SVG (notably Recharts) from blowing up the
    layout before its parent has a measured width. */
 svg { max-width: 100%; max-height: 100%; }
+.recharts-legend-item svg { width: 10px !important; height: 10px !important; }
+.recharts-cartesian-axis-tick text { font-size: 10px; }
 
 
 /* Definition of the design system. All colors, gradients, fonts, etc should be defined here. 
@@ -1471,6 +1473,81 @@ All colors MUST be HSL.
   .planipret-admin-scope .pa-skel { animation: none; }
 }
 
+/* Marketing courtier — contraste stable dans les thèmes clair et sombre. */
+.planipret-admin-scope .pp-marketing {
+  color: var(--pp-text-primary);
+}
+.planipret-admin-scope .pp-marketing-panel {
+  border: 1px solid var(--pp-bg-border);
+  border-radius: 12px;
+  background: var(--pp-bg-card, var(--pp-bg-surface));
+  color: var(--pp-text-primary);
+  box-shadow: var(--pp-shadow-sm);
+}
+.planipret-admin-scope .pp-marketing-label,
+.planipret-admin-scope .pp-marketing-channels,
+.planipret-admin-scope .pp-marketing-history {
+  color: var(--pp-text-primary);
+}
+.planipret-admin-scope .pp-marketing-help,
+.planipret-admin-scope .pp-marketing .text-muted-foreground {
+  color: var(--pp-text-secondary) !important;
+}
+.planipret-admin-scope .pp-marketing-field {
+  background: var(--pp-bg-deep, var(--pp-bg-surface)) !important;
+  border-color: var(--pp-bg-border) !important;
+  color: var(--pp-text-primary) !important;
+  caret-color: var(--pp-brand-accent);
+}
+.planipret-admin-scope .pp-marketing-field::placeholder {
+  color: var(--pp-text-muted);
+  opacity: 1;
+}
+.planipret-admin-scope .pp-marketing-field:focus {
+  outline: 2px solid var(--pp-brand-accent-2);
+  outline-offset: 2px;
+}
+.planipret-admin-scope .pp-marketing-channels label {
+  min-height: 38px;
+  padding: 7px 10px;
+  border: 1px solid var(--pp-bg-border);
+  border-radius: 10px;
+  background: var(--pp-bg-elevated, var(--pp-bg-surface));
+  cursor: pointer;
+}
+.planipret-admin-scope .pp-marketing-channels input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--pp-brand-accent-2);
+}
+.planipret-admin-scope .pp-marketing-step {
+  border-color: var(--pp-bg-border);
+  background: var(--pp-bg-surface);
+  color: var(--pp-text-secondary);
+}
+.planipret-admin-scope .pp-marketing-step-active {
+  border-color: var(--pp-brand-accent-2);
+  background: var(--pp-brand-accent-2);
+  color: #fff;
+}
+.planipret-admin-scope .pp-marketing select,
+.planipret-admin-scope .pp-marketing-history select {
+  background: var(--pp-bg-deep, var(--pp-bg-surface));
+  border-color: var(--pp-bg-border);
+  color: var(--pp-text-primary);
+}
+.planipret-admin-scope .pp-marketing button:not(.pa-btn-primary),
+.planipret-admin-scope .pp-marketing-history button {
+  color: var(--pp-text-primary);
+}
+@media (max-width: 640px) {
+  .planipret-admin-scope .pp-marketing-steps {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .planipret-admin-scope .pp-marketing-steps li { text-align: center; }
+}
+
 /* --- Normalisation globale des pages admin (pages pas encore migrées au shell) --- */
 .planipret-admin-scope .pa-main > div > h1,
 .planipret-admin-scope .pa-main h1.pa-title,
@@ -1501,49 +1578,4 @@ All colors MUST be HSL.
 .planipret-admin-scope .pa-main button:focus-visible {
   outline: 2px solid var(--pp-brand-accent-2, #2E9BDC);
   outline-offset: 2px;
-}
-
-
-/* Commissions on phone: charts must stay inside the card, keep a useful plot
-   area and wrap legends instead of forcing horizontal scroll. */
-@media (max-width: 767px) {
-  .pp-commissions-mobile .ov3d-chart {
-    width: 100%;
-    min-width: 0;
-    overflow: hidden;
-    contain: layout paint;
-  }
-  .pp-commissions-mobile .recharts-responsive-container,
-  .pp-commissions-mobile .recharts-wrapper,
-  .pp-commissions-mobile .recharts-surface {
-    min-width: 0 !important;
-    max-width: 100% !important;
-  }
-  .pp-commissions-mobile .recharts-legend-wrapper {
-    left: 0 !important;
-    right: 0 !important;
-    width: 100% !important;
-    max-width: 100% !important;
-  }
-  .pp-commissions-mobile .recharts-default-legend {
-    display: flex !important;
-    flex-wrap: wrap;
-    justify-content: center;
-    gap: 2px 8px;
-    padding-inline: 2px !important;
-    white-space: normal !important;
-  }
-  .pp-commissions-mobile .recharts-legend-item {
-    margin-right: 0 !important;
-    white-space: nowrap;
-  }
-  .pp-commissions-mobile .recharts-legend-item-text,
-  .pp-commissions-mobile .recharts-cartesian-axis-tick text,
-  .pending-commissions .recharts-cartesian-axis-tick text { font-size: 10px !important; }
-  .pending-commissions .recharts-responsive-container,
-  .pending-commissions .recharts-wrapper,
-  .pending-commissions .recharts-surface { min-width: 0 !important; max-width: 100% !important; }
-  .pending-commissions .recharts-legend-wrapper { width: 100% !important; max-width: 100% !important; }
-  .pending-commissions .recharts-default-legend { display: flex !important; flex-wrap: wrap; justify-content: center; gap: 2px 8px; white-space: normal !important; }
-  .pending-commissions .recharts-legend-item { margin-right: 0 !important; white-space: nowrap; }
 }

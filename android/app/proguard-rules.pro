@@ -14,6 +14,11 @@
 # ── Plugins natifs Planipret ─────────────────────────────────────────────────
 -keep class com.planipret.mobile.** { *; }
 
+# ── PJSUA2 / JNI ─────────────────────────────────────────────────────────────
+# SWIG registers these callbacks from libpjsua2 at runtime. R8 cannot infer
+# references originating in JNI and must retain the entire generated binding.
+-keep class org.pjsip.pjsua2.** { *; }
+
 # ── WebView / JavaScript Bridge ───────────────────────────────────────────────
 -keepclassmembers class * {
     @android.webkit.JavascriptInterface <methods>;

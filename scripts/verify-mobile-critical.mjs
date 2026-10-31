@@ -19,8 +19,8 @@ const check = (ok, message) => { if (!ok) failures.push(message); };
 
 const hook = read("src/hooks/useMplanipretSoftphone.ts");
 check(hook.includes('data?.source === "pjsip"'), "CallKit/PJSIP answer and reject must have a native-source dedupe guard");
-check(hook.includes("nativeSip.repairRegistration()"), "iOS must repair registration through PJSIP");
-check(hook.includes("ppSipProvider.forceReregister()"), "Android/web must repair registration through JsSIP");
+check(hook.includes("nativeSip.repairRegistration()"), "iOS and Android must repair M/TLS registration through PJSIP");
+check(hook.includes("isNativeMobilePlatform"), "both native platforms must use the shared M/TLS path");
 check(!hook.includes("setInterval(run, 30_000)") && !hook.includes("ownershipTick") && !hook.includes("voipRecheck"), "SIP/PBX and PushKit checks must be event-driven, not periodic API polling");
 const pjsipEngine = readOptional("ios/App/App/Plugins/PpPjsip/PpPjsipEngine.swift");
 if (pjsipEngine) {
@@ -31,15 +31,16 @@ if (pjsipEngine) {
 const backendCheck = read("src/lib/planipret/sip/sipBackendCheck.ts");
 check(backendCheck.includes("Capacitor.getPlatform()"), "SIP backend health check must send the native platform");
 const backendHealth = read("supabase/functions/pp-sip-registration-check/index.ts");
-check(backendHealth.includes('platform === "ios" ? "M" : "W"'), "SIP health must validate M/PJSIP on iOS and W/JsSIP on Android");
+check(backendHealth.includes('const mobileAor = `${ctx.extension}M`'), "SIP health must validate M/PJSIP on iOS and Android");
 check(backendHealth.includes('from("mobile_push_tokens")') && backendHealth.includes('from("planipret_voip_push_tokens")'), "SIP health must validate FCM on Android and PushKit on iOS");
 
 const androidService = readOptional("android/app/src/main/java/com/planipret/mobile/PpSipKeepAliveService.java");
 const androidPlugin = readOptional("android/app/src/main/java/com/planipret/mobile/PpSipKeepAlivePlugin.java");
 if (androidService && androidPlugin) {
-  check(androidService.includes("wake_only_no_media_engine") && androidService.includes("FOREGROUND_SERVICE_TYPE_DATA_SYNC"), "Android background service must be wake-only and never claim SIP media ownership");
-  check(!androidService.includes("SSLSocket raw") && !androidService.includes("raw.startHandshake()"), "Android background service must not REGISTER or consume a WSS SIP dialog");
-  check(androidPlugin.includes("requestReregister"), "Android wake bridge must wake the foreground JsSIP client without creating another UA");
+  const androidEngine = readOptional("android/app/src/main/java/com/planipret/mobile/PpPjsipEngine.java");
+  check(!!androidEngine && androidEngine.includes("PJSIP_TRANSPORT_TLS") && androidEngine.includes("onIncomingCall"), "Android must ship a native PJSIP TLS engine that handles the INVITE dialog");
+  check(!androidService.includes("SSLSocket raw") && !androidService.includes("raw.startHandshake()"), "legacy Android wake service must not create a competing raw SIP transport");
+  check(androidPlugin.includes("requestReregister"), "legacy wake bridge may only signal recovery; PJSIP remains the media owner");
 } else {
   console.warn("Mobile critical-flow: native Android sources absent from this monorepo checkout; validated in standalone release repository.");
 }
@@ -136,15 +137,17 @@ check(recordingsList.includes('save_consent.neq.declined') && recordingsList.inc
 const localMediaPolicy = read("src/lib/planipret/recordingConsent.ts");
 check(localMediaPolicy.includes('saveConsent !== "declined"'), "Mobile client history must keep local media available until explicit deletion");
 const mobileCalls = read("src/pages/planipret/mobile/MCalls.tsx");
-check(mobileCalls.includes('save_consent.eq.pending') && mobileCalls.includes('.is("deleted_at", null)') && mobileCalls.includes("deletedNsIds"), "Mobile history must include pending calls and hide explicit deletions even when NetSapiens still returns a CDR");
-check(consent.includes('storage.from("call-recordings").remove') && consent.includes('planipret_ai_insights").delete') && consent.includes('planipret_pipeline_logs").delete'), "Delete must purge locally cached audio and derived call analysis");
+check(mobileCalls.includes("visibleLocal") && mobileCalls.includes("deletedNsIds") && mobileCalls.includes("!row.deleted_at"), "Mobile history must retain unresolved calls and hide explicit deletions even when NetSapiens still returns a CDR");
 
 const mobileShell = read("src/pages/planipret/PlanipretMobile.tsx");
 check(mobileShell.includes("<PostCallConsentSheet"), "The shipped mobile shell must mount PostCallConsentSheet");
 check(hook.includes('localStorage.setItem("pp.pending-post-call-decision.v2"') && hook.includes('window.dispatchEvent(new CustomEvent("pp:call-ended"'), "Every answered native call must persist and emit a post-call Save/Delete decision");
 const consentSheet = read("src/components/planipret/mobile/PostCallConsentSheet.tsx");
-check(consentSheet.includes('localStorage.getItem(PENDING_KEY)') && consentSheet.includes('Supprimer l\'appel') && consentSheet.includes('Enregistrer l\'appel') && !consentSheet.includes('mustPickClient'), "The post-call sheet must restore after restart and present only Save or Delete");
-check(consent.includes('requestedAction === "decline" ? "delete"') && consent.includes('storage.from("call-recordings").remove'), "A declined/removed call must use the same full local deletion path");
+check(consentSheet.includes('localStorage.getItem(PENDING_KEY)') && consentSheet.includes('Conserver dans AVA') && consentSheet.includes('Garder sans envoyer au CRM') && consentSheet.includes('close(true)') && !consentSheet.includes('mustPickClient'), "The post-call sheet must restore after restart and retain the AVA-only decision after confirmed server success");
+// The remote edge contract maps the backward-compatible `delete` action to
+// AVA-only retention. Lovable deploys it independently, so it is not inferred
+// from the stale server source included in this physical-release repository.
+check(consentSheet.includes('consent("delete")') && consentSheet.includes('Appel conservé dans AVA, sans envoi au CRM.'), "The mobile sheet must request the compatible AVA-only action and report its retention semantics");
 check(!consent.includes('client_selection_required'), "Saving an unknown caller must not add a third post-call decision");
 const calls = read("src/pages/planipret/mobile/MCalls.tsx");
 check(!calls.includes('functions.invoke("maestro-actions"'), "MCalls must not use legacy Maestro mutations");

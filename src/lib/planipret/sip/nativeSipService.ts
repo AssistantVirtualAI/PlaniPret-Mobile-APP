@@ -8,7 +8,6 @@ import {
   nativeOwnsAor,
   normalizeMobileAor,
   preclaimNativeAor,
-  releaseAorFromNative as releaseAorFromNativeRaw,
 } from "./aorArbitration";
 import { pinnedCoreHost } from "./sipEdgePolicy";
 import { trackRegisterAttempt, logRegisterMetricsSummary, type RegisterTracker } from "./registerMetrics";
@@ -17,13 +16,14 @@ import { requestPlanipretCallKitAnswer } from "./nativePpSipService";
 
 
 /**
- * NativeSipService — moteur SIP natif PJSIP (iOS) pour Planiprêt Mobile.
+ * NativeSipService — moteur SIP natif PJSIP (iOS + Android) pour Planiprêt Mobile.
  *
  * Les identifiants sont résolus par courtier via l'Edge Function
  * `ns-resolve-sip-credentials` (client_type: "mobile") — aucune valeur en dur.
  *
- * Transport : TLS 5061 pour le moteur mobile natif. Aucune pile SIP native n'implémente SIP
- * over WebSocket (RFC 7118) ; WSS 9002 reste réservé à JsSIP dans la WebView.
+ * Transport : TLS 5061 pour tout moteur mobile natif. Aucune pile SIP native
+ * Planiprêt n'implémente SIP over WebSocket; WSS 9002 reste réservé au portail
+ * dans la WebView et utilise l'AOR distinct `<ext>W`.
  *
  * Invariant d'AOR : une seule pile REGISTER sur `<ext>M`. Dès que le moteur
  * natif s'initialise, il émet `pp:sip-native-owns-aor` et JsSIP cesse
@@ -55,10 +55,14 @@ interface PjsipPlugin {
   register(): Promise<{ ok: boolean }>;
   unregister(): Promise<{ ok: boolean }>;
   makeCall(opts: { destination: string }): Promise<{ callId: string }>;
+  answerCall?(opts: { callId?: string }): Promise<{ ok: boolean }>;
   hangupCall(opts: { callId?: string }): Promise<{ ok: boolean }>;
   setMute(opts: { muted: boolean }): Promise<{ ok: boolean }>;
   setHold(opts: { onHold: boolean }): Promise<{ ok: boolean }>;
   setSpeaker(opts: { enabled: boolean }): Promise<{ ok: boolean }>;
+  setAudioRoute?(opts: { route: "earpiece" | "speaker" | "bluetooth" }): Promise<{ ok: boolean; route?: string }>;
+  getAudioRoute?(): Promise<{ ok: boolean; route?: string }>;
+  notifyNetworkChange?(): Promise<{ ok: boolean; handled?: boolean }>;
   sendDTMF(opts: { digits: string }): Promise<{ ok: boolean }>;
   getState(): Promise<{
     available: boolean;
@@ -67,6 +71,9 @@ interface PjsipPlugin {
     callId: string;
     muted?: boolean;
     speaker?: boolean;
+    tlsState?: string;
+    tlsVerifyStatus?: number;
+    tlsLastError?: number;
   }>;
   addListener(event: string, cb: (data: any) => void): Promise<{ remove: () => Promise<void> }>;
 }
@@ -78,7 +85,7 @@ const getPjsip = (): PjsipPlugin | null => {
   try {
     if (!Capacitor.isNativePlatform()) return null;
     if (!Capacitor.isPluginAvailable("PpPjsip")) {
-      console.warn("[SIP] PJSIP plugin absent — le chemin JsSIP/REST reste actif");
+      console.warn("[SIP] PJSIP plugin absent — l'application mobile M/TLS reste indisponible; aucun fallback WSS");
       return null;
     }
   } catch {
@@ -95,9 +102,16 @@ const getPjsip = (): PjsipPlugin | null => {
  */
 let lastNativeFailure: string | null = null;
 
-const releaseAorFromNative = (reason: string) => {
-  lastNativeFailure = reason;
-  releaseAorFromNativeRaw(reason);
+const nativeTlsFailureCode = (snapshot: Awaited<ReturnType<PjsipPlugin["getState"]>> | null): string => {
+  const state = String(snapshot?.tlsState ?? "unknown");
+  const safeState = /^(?:established|not_established|initializing|not_started|transport_\d+)$/.test(state)
+    ? state
+    : "unknown";
+  const verify = Number(snapshot?.tlsVerifyStatus);
+  const error = Number(snapshot?.tlsLastError);
+  const safeVerify = Number.isSafeInteger(verify) ? Math.max(-1, Math.min(verify, 9999999)) : -1;
+  const safeError = Number.isSafeInteger(error) ? Math.max(0, Math.min(error, 9999999)) : 0;
+  return `native_register_timeout_tls_${safeState}_v${safeVerify}_e${safeError}`;
 };
 
 export type NativeSipDiagnostics = {
@@ -160,6 +174,24 @@ export class NativeSipService {
   getCallId() { return this.currentCallId; }
   getState(): SipRegistrationState { return this.lastState; }
 
+  /**
+   * Android only: PJSUA2 renews its TLS Contact/REGISTER and re-INVITEs active
+   * media after a true Wi-Fi ↔ LTE interface change. The native account is
+   * configured never to hang up the active call during this operation.
+   */
+  async handleNetworkChange(): Promise<boolean> {
+    if (Capacitor.getPlatform() !== "android") return false;
+    const pjsip = getPjsip();
+    if (!pjsip?.notifyNetworkChange) return false;
+    try {
+      const result = await withNativeTimeout(pjsip.notifyNetworkChange(), "sip_ip_change", 15_000);
+      return result.handled === true;
+    } catch (error) {
+      console.warn("[SIP] reprise réseau Android échouée", error);
+      return false;
+    }
+  }
+
   /** Single-flight init : appelable à chaque changement de session. */
   initialize(): Promise<boolean> {
     if (this.initializing) return this.initializing;
@@ -215,11 +247,11 @@ export class NativeSipService {
     try {
       return await this.doInitializeInner();
     } catch (err: any) {
-      // Filet ultime : AUCUNE exception ne doit laisser l'AOR au natif.
+      // Filet ultime : l'AOR mobile reste M/TLS. Il ne doit jamais basculer en
+      // W/WSS après une erreur locale, même si le moteur doit être relancé.
       console.error("[SIP] init natif — exception non gérée:", err?.message ?? err);
-      releaseAorFromNative("native_init_exception");
-      void import("./nativePpSipService").then((m) => m.declarePlanipretNativeEngineOwnsAor(false)).catch(() => undefined);
-      this.setState("unavailable");
+      lastNativeFailure = "native_init_exception";
+      this.setState("failed");
       return false;
     }
   }
@@ -227,22 +259,22 @@ export class NativeSipService {
   private async doInitializeInner(): Promise<boolean> {
     const pjsip = getPjsip();
     if (!pjsip) {
-      // Aucun moteur natif : JsSIP redevient légitimement propriétaire.
-      releaseAorFromNative("plugin_absent");
-      this.setState("unavailable");
+      // Aucun moteur natif : M reste protégé. L'application native ne doit
+      // jamais reprendre W/WSS, qui appartient au portail.
+      lastNativeFailure = "plugin_absent";
+      this.setState("failed");
       return false;
     }
     if (!isPjsipEnabled()) {
-      releaseAorFromNative("pp_pjsip_enabled=false");
-      this.setState("unavailable");
+      lastNativeFailure = "pp_pjsip_enabled=false";
+      this.setState("failed");
       return false;
     }
     // Le moteur doit être RÉELLEMENT lié avant toute revendication.
     const linked = await withNativeTimeout(this.probeEngineLinked(pjsip), "sip_engine_probe");
     if (!linked) {
-      releaseAorFromNative("engine_not_linked");
-      void import("./nativePpSipService").then((m) => m.declarePlanipretNativeEngineOwnsAor(false)).catch(() => undefined);
-      this.setState("unavailable");
+      lastNativeFailure = "engine_not_linked";
+      this.setState("failed");
       return false;
     }
     // Le natif est prioritaire dès maintenant : bloque tout REGISTER JsSIP
@@ -266,7 +298,7 @@ export class NativeSipService {
         payloadError: creds.error ?? null,
         keys: Object.keys(creds),
       }));
-      releaseAorFromNative("credentials_missing");
+      lastNativeFailure = "credentials_missing";
       this.setState("failed");
       return false;
     }
@@ -278,7 +310,7 @@ export class NativeSipService {
     if (resolvedTransport && resolvedTransport !== "tcp" && resolvedTransport !== "tls") {
       const reason = `transport_mismatch:${resolvedTransport}`;
       console.error(`[SIP] ${reason} — configuration conservée, aucune réécriture automatique`);
-      releaseAorFromNative(reason);
+      lastNativeFailure = reason;
       this.setState("failed");
       return false;
     }
@@ -336,7 +368,9 @@ export class NativeSipService {
       // l'unregister immédiat) et restituait l'AOR à JsSIP pour rien.
       const registered = await this.waitForRegistration(45_000);
       if (!registered) {
-        console.error("[SIP] REGISTER absent après 45 s — restitution atomique à JsSIP");
+        const nativeSnapshot = await withNativeTimeout(pjsip.getState(), "sip_tls_state", 5_000).catch(() => null);
+        const tlsFailure = nativeTlsFailureCode(nativeSnapshot);
+        console.error("[SIP] REGISTER M/TLS absent après 45 s; AOR M conservé", tlsFailure);
         this.registerTracker?.failure("watchdog_45s");
         this.registerTracker = null;
         logRegisterMetricsSummary("register_watchdog");
@@ -344,11 +378,9 @@ export class NativeSipService {
           clearTimeout(this.registrationRetryTimer);
           this.registrationRetryTimer = null;
         }
-        try { await pjsip.unregister(); } catch { /* noop */ }
-        releaseAorFromNative("native_register_timeout");
-        await import("./nativePpSipService")
-          .then((m) => m.declarePlanipretNativeEngineOwnsAor(false))
-          .catch(() => undefined);
+        // No unregister/fallback here: mobile AORs are exclusively M/TLS.
+        // The registered listener schedules the bounded native retry.
+        lastNativeFailure = tlsFailure;
         this.setState("failed");
         return false;
       }
@@ -368,11 +400,10 @@ export class NativeSipService {
         stack: String(err?.stack ?? "").split("\n").slice(0, 3).join(" | "),
       }));
 
-      // QUELLE QUE SOIT la raison (binary_missing, timeout, exception), le
-      // chemin legacy JsSIP doit reprendre la main immédiatement.
-      releaseAorFromNative(code);
-      void import("./nativePpSipService").then((m) => m.declarePlanipretNativeEngineOwnsAor(false)).catch(() => undefined);
-      this.setState("unavailable");
+      // Un mobile reste propriétaire de son AOR M/TLS. W/WSS appartient au
+      // portail; ne jamais l'utiliser comme repli après un échec natif.
+      lastNativeFailure = `native_initialize_${code.replace(/[^a-z0-9_:-]/gi, "_").slice(0, 96)}`;
+      this.setState("failed");
       return false;
     }
   }
@@ -553,10 +584,20 @@ export class NativeSipService {
   }
 
   async answer(): Promise<boolean> {
-    // Le bouton in-app ne peut pas appeler answerCall() : CallKit doit être le
-    // seul propriétaire de la transition et PJSIP le seul émetteur du 200 OK.
-    // La transaction reste valable même si le push a précédé l'INVITE TLS.
-    return requestPlanipretCallKitAnswer();
+    // iOS: CallKit reste l'unique propriétaire de la transition. Android: le
+    // plugin PJSIP répond directement au même dialogue natif, jamais via JsSIP
+    // ou une API REST/click-to-call.
+    if (Capacitor.getPlatform() === "ios") return requestPlanipretCallKitAnswer();
+    if (Capacitor.getPlatform() !== "android") return false;
+    const pjsip = getPjsip();
+    if (!pjsip?.answerCall) return false;
+    try {
+      await pjsip.answerCall({ callId: this.currentCallId ?? undefined });
+      return true;
+    } catch (error) {
+      console.warn("[SIP] Android native answer failed:", error);
+      return false;
+    }
   }
 
 
@@ -571,7 +612,12 @@ export class NativeSipService {
       else if (voip.reportCallEnded) { void Promise.resolve(voip.reportCallEnded(payload)).catch(() => {}); }
     };
     const pjsip = getPjsip();
-    if (!pjsip) { endCallKit(); releaseAorFromNative("hangup_plugin_absent"); return false; }
+    if (!pjsip) {
+      endCallKit();
+      lastNativeFailure = "hangup_plugin_absent";
+      this.setState("failed");
+      return false;
+    }
     const targetCallId = this.currentCallId;
     try {
       await pjsip.hangupCall({ callId: targetCallId ?? undefined });
@@ -580,7 +626,10 @@ export class NativeSipService {
       return true;
     } catch (err: any) {
       endCallKit(targetCallId);
-      if (this.isMissingBinary(err)) releaseAorFromNative("hangup_binary_missing");
+      if (this.isMissingBinary(err)) {
+        lastNativeFailure = "hangup_binary_missing";
+        this.setState("failed");
+      }
       return false;
     }
   }

@@ -22,6 +22,15 @@ function pjsip(): any {
   return (window as any)?.Capacitor?.Plugins?.PpPjsip ?? null;
 }
 
+/** Android M/TLS owns its audio device. Never route it through the legacy WSS
+ * keep-alive plugin, otherwise the two native modules fight for the speaker. */
+function androidPjsipOwnsAudio(): boolean {
+  try {
+    const cap = (window as any)?.Capacitor;
+    return nativeOwnsAor() && cap?.isNativePlatform?.() && cap?.getPlatform?.() === "android";
+  } catch { return false; }
+}
+
 let currentRoute: AudioRoute = "earpiece";
 let devices: AudioDevices = { route: "earpiece", bluetooth: false, bluetoothName: "", wired: false };
 let reassertTimer: ReturnType<typeof setTimeout> | null = null;
@@ -105,6 +114,21 @@ export const audioRouter = {
   devices: () => ({ ...devices }),
 
   async refreshDevices(): Promise<AudioDevices> {
+    if (androidPjsipOwnsAudio()) {
+      const native = pjsip();
+      if (native?.getAudioRoute) {
+        try {
+          const result = await native.getAudioRoute();
+          const route = result?.route as AudioRoute | undefined;
+          if (route === "earpiece" || route === "speaker" || route === "bluetooth") {
+            devices = { ...devices, route };
+            currentRoute = route;
+            emit();
+          }
+        } catch { /* PJSIP remains the owner; do not fall back to WSS audio. */ }
+      }
+      return { ...devices };
+    }
     const b = bridge();
     if (b?.getAudioDevices) {
       try {
@@ -138,6 +162,21 @@ export const audioRouter = {
     currentRoute = route;
     devices = { ...devices, route };
     emit();
+    if (androidPjsipOwnsAudio()) {
+      const native = pjsip();
+      if (native?.setAudioRoute) {
+        try {
+          const result = await native.setAudioRoute({ route });
+          const applied = result?.route as AudioRoute | undefined;
+          if (applied === "earpiece" || applied === "speaker" || applied === "bluetooth") {
+            devices = { ...devices, route: applied };
+            currentRoute = applied;
+            emit();
+          }
+        } catch { /* no legacy plugin fallback for a native M/TLS call */ }
+      }
+      return { ...devices };
+    }
     const b = bridge();
     let handled = false;
     if (b?.setAudioRoute) {
@@ -245,6 +284,14 @@ export const audioRouter = {
     // Sur iOS PJSIP/CallKit, ne pas rejouer les deux resets et les réassertions
     // de route prévus pour WebRTC. CallKit active le média et PJSIP raccorde
     // RTP <-> périphérique dans son callback didActivate.
+    if (androidPjsipOwnsAudio()) {
+      // Reset every new Android call to the private earpiece. Speaker is only
+      // activated by chooseRoute() after the user taps its dedicated control.
+      userRoute = null;
+      const applied = await audioRouter.setRoute("earpiece");
+      currentRoute = applied.route;
+      return applied.route;
+    }
     if (nativeOwnsAor()) {
       const d = await audioRouter.refreshDevices();
       currentRoute = d.route;

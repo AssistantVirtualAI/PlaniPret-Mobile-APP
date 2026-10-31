@@ -55,6 +55,16 @@ export function getOwnedAor(): string | null { return ownedUsername; }
 export function nativeOwnsAor(): boolean { return owner === "native"; }
 export function jsMayRegister(): boolean { return owner !== "native"; }
 
+/** A native Planiprêt binary must never recover a failed M/TLS registration by
+ * registering the portal WSS identity. The failure stays explicit on `<ext>M`. */
+function mandatoryNativeMobile(): boolean {
+  try {
+    return Capacitor.isNativePlatform() && ["ios", "android"].includes(Capacitor.getPlatform());
+  } catch {
+    return false;
+  }
+}
+
 /** Le moteur natif prend (ou confirme) la propriété de l'AOR. */
 export function claimAorForNative(username?: string | null, reason = "native_engine"): void {
   const normalized = username ? normalizeMobileAor(username) : ownedUsername;
@@ -70,6 +80,14 @@ export function claimAorForNative(username?: string | null, reason = "native_eng
 /** Le natif rend l'AOR (plugin absent, binaire manquant, échec définitif). */
 export function releaseAorFromNative(reason = "native_unavailable"): void {
   clearWatchdog();
+  if (mandatoryNativeMobile()) {
+    const changed = owner !== "native";
+    owner = "native";
+    persist();
+    console.warn(`[AOR] mobile M/TLS remains native after ${reason}; W/WSS fallback prohibited`);
+    if (changed) emit(PP_AOR_CLAIM_EVENT, { username: ownedUsername, reason: "native_m_tls_required" });
+    return;
+  }
   // Purge INCONDITIONNELLE de la persistance : un preclaim périmé en
   // sessionStorage réactivait le skip du chemin legacy au reload suivant.
   purgePersistedOwner();
@@ -114,12 +132,13 @@ export const PP_PJSIP_ENABLED_KEY = "pp_pjsip_enabled";
 /** Lecture synchrone (localStorage) — utilisée avant le preclaim. */
 export function isPjsipEnabled(): boolean {
   if (!isBrowser) return true;
-  // Sur iOS, un binaire qui embarque PpPjsip doit toujours utiliser le moteur
-  // natif. Une ancienne valeur `false` laissée par l'écran SIP Debug créait un
-  // interblocage : le JS lançait WSS, mais PpSipKeepAlive le refusait puisque
-  // PJSIP était réellement lié au binaire. Résultat : aucun propriétaire AOR.
+  // Sur iOS ET Android, un binaire qui embarque PpPjsip doit toujours utiliser
+  // le moteur natif M/TLS. Une ancienne valeur `false` laissée par l'écran SIP
+  // Debug créait un interblocage : le JS lançait WSS, mais la pile native le
+  // refusait puisque PJSIP était réellement lié au binaire. Résultat : aucun
+  // propriétaire AOR utilisable et des appels directs vers la messagerie.
   try {
-    if (Capacitor.getPlatform() === "ios" && Capacitor.isPluginAvailable("PpPjsip")) return true;
+    if (["ios", "android"].includes(Capacitor.getPlatform()) && Capacitor.isPluginAvailable("PpPjsip")) return true;
   } catch { /* web/bridge indisponible */ }
   try {
     return window.localStorage.getItem(PP_PJSIP_ENABLED_KEY) !== "false";
@@ -131,9 +150,9 @@ export function isPjsipEnabled(): boolean {
 /** Écrit localStorage + Preferences (survit au redémarrage de l'app). */
 export async function setPjsipEnabled(enabled: boolean): Promise<void> {
   try {
-    if (!enabled && Capacitor.getPlatform() === "ios" && Capacitor.isPluginAvailable("PpPjsip")) {
+    if (!enabled && ["ios", "android"].includes(Capacitor.getPlatform()) && Capacitor.isPluginAvailable("PpPjsip")) {
       enabled = true;
-      console.warn("[AOR] désactivation PJSIP refusée — moteur natif iOS obligatoire");
+      console.warn("[AOR] désactivation PJSIP refusée — moteur natif M/TLS obligatoire");
     }
   } catch { /* web/bridge indisponible */ }
   try { window.localStorage.setItem(PP_PJSIP_ENABLED_KEY, enabled ? "true" : "false"); } catch { /* noop */ }
@@ -147,7 +166,7 @@ export async function setPjsipEnabled(enabled: boolean): Promise<void> {
 /** Recharge la valeur persistée native vers localStorage au démarrage. */
 export async function hydratePjsipEnabled(): Promise<boolean> {
   try {
-    if (Capacitor.getPlatform() === "ios" && Capacitor.isPluginAvailable("PpPjsip")) {
+    if (["ios", "android"].includes(Capacitor.getPlatform()) && Capacitor.isPluginAvailable("PpPjsip")) {
       try { window.localStorage.setItem(PP_PJSIP_ENABLED_KEY, "true"); } catch { /* noop */ }
       try {
         const { Preferences } = await import("@capacitor/preferences");
@@ -271,4 +290,3 @@ export async function verifyEngineLinked(): Promise<boolean> {
 
 // Hydratation de l'interrupteur persistant (non bloquante).
 void hydratePjsipEnabled();
-

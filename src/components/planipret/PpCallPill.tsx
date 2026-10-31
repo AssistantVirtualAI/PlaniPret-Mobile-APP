@@ -1,6 +1,7 @@
 // Pastille flottante affichée quand l'écran d'appel est minimisé.
 // L'appel n'est jamais démonté : seul l'affichage plein écran est masqué.
 import { useEffect, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { Phone, PhoneOff, Users } from "lucide-react";
 import { callUi } from "@/lib/planipret/callUiStore";
 import type { PpSipSnapshot } from "@/lib/planipret/sip/ppSipProvider";
@@ -20,6 +21,28 @@ export default function PpCallPill({
   onHangup: () => void;
 }) {
   const [elapsed, setElapsed] = useState(0);
+  const path = useLocation().pathname;
+  const [keyboardOpen, setKeyboardOpen] = useState(false);
+
+  useEffect(() => {
+    const check = () => {
+      const el = document.activeElement as HTMLElement | null;
+      const typing = !!el && (el.tagName === "TEXTAREA" || (el.tagName === "INPUT" && !["button", "checkbox", "radio"].includes((el as HTMLInputElement).type)) || el.isContentEditable);
+      const vv = window.visualViewport;
+      const shrunk = !!vv && window.innerHeight - vv.height > 120;
+      setKeyboardOpen(typing || shrunk);
+    };
+    const late = () => setTimeout(check, 50);
+    check();
+    document.addEventListener("focusin", check);
+    document.addEventListener("focusout", late);
+    window.visualViewport?.addEventListener("resize", check);
+    return () => {
+      document.removeEventListener("focusin", check);
+      document.removeEventListener("focusout", late);
+      window.visualViewport?.removeEventListener("resize", check);
+    };
+  }, []);
 
   useEffect(() => {
     if (snap.callState !== "active" || !snap.startedAt) return;
@@ -36,10 +59,17 @@ export default function PpCallPill({
     : snap.callState === "ringing-in" ? "Appel entrant"
     : fmt(elapsed);
 
+  // Never cover a text composer: hide while the keyboard is open, and sit at
+  // the top of the screen on the Messages page.
+  if (keyboardOpen) return null;
+  const onMessages = /\/messages/i.test(path);
+
   return (
     <div
       className="fixed left-0 right-0 z-[70] px-3"
-      style={{ bottom: `calc(72px + env(safe-area-inset-bottom, 0px))` }}
+      style={onMessages
+        ? { top: `calc(8px + env(safe-area-inset-top, 0px))` }
+        : { bottom: `calc(72px + env(safe-area-inset-bottom, 0px))` }}
     >
       <button
         onClick={() => callUi.restore()}
