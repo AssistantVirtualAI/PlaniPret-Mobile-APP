@@ -1,0 +1,21 @@
+# Toute modification d'un chemin listé ici exige une revue avant fusion.
+#
+# But : Lovable (et tout agent connecté au dépôt) peut proposer des changements
+# web librement, mais jamais toucher seul à la couche native, à la signature ou
+# aux numéros de version. Une erreur dans `src/` se corrige par un OTA ; une
+# erreur dans `android/` ou `ios/` coûte une soumission au store.
+#
+
+# Couche native — moteur SIP, CallKit, permissions, projets Xcode et Gradle
+/android/              @AssistantVirtualAI
+/ios/                  @AssistantVirtualAI
+/native-config/        @AssistantVirtualAI
+
+# Versions, dépendances et scripts de build/vérification
+/package.json          @AssistantVirtualAI
+/package-lock.json     @AssistantVirtualAI
+/capacitor.config.ts   @AssistantVirtualAI
+/scripts/              @AssistantVirtualAI
+
+# La CI et les règles de propriété elles-mêmes
+/.github/              @AssistantVirtualAI

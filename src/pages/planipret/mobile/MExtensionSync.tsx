@@ -5,6 +5,8 @@ import { ArrowLeft, RefreshCw, CheckCircle2, AlertTriangle, XCircle, Smartphone,
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import type { PlanipretMobileContext } from "../PlanipretMobile";
+import { useMobileLinePresentation } from "@/hooks/useMobileLinePresentation";
+import { validatedMobileCredentialIdentity } from "@/lib/planipret/sip/mobileCredentialIdentity";
 
 type State = "ok" | "provisioning" | "missing" | "error" | "idle";
 
@@ -22,10 +24,12 @@ export default function MExtensionSync() {
   const [registeredDeviceId, setRegisteredDeviceId] = useState<string | null>(null);
 
 
-  const extension = profile?.ns_extension || profile?.extension || null;
+  const nativeLine = useMobileLinePresentation(profile?.ns_extension || profile?.extension || null);
+  const resolvedLine = lastResult?.ok ? validatedMobileCredentialIdentity(lastResult) : null;
+  const extension = resolvedLine?.extension || nativeLine.extension;
   const domain = profile?.ns_domain || "planipret.ca";
   const linked = !!profile?.ns_linked;
-  const mobileDeviceId = profile?.ns_mobile_device_id || (extension ? `${extension}M` : null);
+  const mobileDeviceId = resolvedLine?.username || nativeLine.deviceId;
   const runResync = async (opts?: { silent?: boolean }) => {
     if (!extension) {
       toast.error(t("screens.extensionSync.noExtension"));

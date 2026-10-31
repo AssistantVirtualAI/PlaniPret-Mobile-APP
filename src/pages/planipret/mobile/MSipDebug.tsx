@@ -121,6 +121,9 @@ export default function MSipDebug() {
 
   const copy = async () => {
     const payload = [
+      // Sans le numéro de build, un diagnostic collé ne dit pas quelle AAB/IPA
+      // l'a produit : deux builds peuvent porter le même nom de version.
+      `Version: ${version ? `${version.native} (${version.build})${version.ota ? ` + ${version.ota}` : ""}` : "-"}`,
       `${t("screens.sipDebug.statusLabel")}: ${snap.status}`,
       `${t("screens.sipDebug.errorLabel")}: ${snap.errorCause ?? "-"}`,
       `${t("screens.sipDebug.extLabel")}: ${cfg?.sipUsername ?? "-"}@${cfg?.sipDomain ?? "-"}`,
@@ -216,7 +219,9 @@ export default function MSipDebug() {
             <div><span className="opacity-60">{lang === "fr" ? "Ligne du moteur" : "Engine line"}</span> {diag?.username ?? "—"}</div>
             <div className="col-span-2"><span className="opacity-60">{lang === "fr" ? "Motif" : "Reason"}</span> {diag?.failure ?? "—"}</div>
             <div className="col-span-2"><span className="opacity-60">{lang === "fr" ? "Version installée" : "Installed version"}</span>{" "}
-              {version ? `${version.native}${version.ota ? ` + ${version.ota}` : ""}` : "—"}</div>
+              {version
+                ? `${version.native}${version.build && version.build !== "—" ? ` (${version.build})` : ""}${version.ota ? ` + ${version.ota}` : ""}`
+                : "—"}</div>
           </div>
           {diag && !diag.pluginPresent && (
             <p className="text-[11px]" style={{ color: "#F59E0B" }}>

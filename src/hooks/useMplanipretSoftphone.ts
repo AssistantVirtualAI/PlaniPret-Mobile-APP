@@ -14,6 +14,7 @@ import { edgeOnlyWssUrls } from "@/lib/planipret/sip/sipEdgePolicy";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Capacitor } from "@capacitor/core";
 import { supabase } from "@/integrations/supabase/client";
+import { getMobileDeviceId } from "@/lib/planipret/singleDevice";
 import { ppEdgeInvoke, ppNormalizeDestination } from "@/lib/planipret/ppEdge";
 import { useAuth } from "@/hooks/useAuth";
 import { PP_PENDING_ANSWER_TIMEOUT_MS, ppSipProvider, type PpSipConfig, type PpSipSnapshot } from "@/lib/planipret/sip/ppSipProvider";
@@ -83,7 +84,8 @@ const VOIP_TOKEN_STORAGE_KEY = "pp.voip-token-confirmed.v1";
 
 async function uploadPlanipretVoipToken(token: string, bundleId?: string, extension?: string | null, environment?: string) {
   if (!token) return;
-  const key = `${token}|${bundleId ?? ""}|${extension ?? ""}|${environment ?? ""}`;
+  const deviceId = getMobileDeviceId();
+  const key = `${token}|${bundleId ?? ""}|${extension ?? ""}|${environment ?? ""}|${deviceId}`;
   try {
     if (localStorage.getItem(VOIP_TOKEN_STORAGE_KEY) === key) {
       lastVoipToken = token;
@@ -104,8 +106,13 @@ async function uploadPlanipretVoipToken(token: string, bundleId?: string, extens
           bundleId,
           extension: extension ?? ppSipProvider.getConfig()?.extension ?? null,
           environment: environment || undefined,
+          device_id: deviceId,
         },
       });
+      if ((data as { error?: string } | null)?.error === "device_not_active" || /409/.test(String((error as any)?.context?.status ?? ""))) {
+        console.info("[pp-voip] token refused: another device is active");
+        return false;
+      }
       if (error || (data as { ok?: boolean } | null)?.ok !== true) throw error ?? new Error("token_not_persisted");
       const changed = lastVoipToken !== null && lastVoipToken !== token;
       lastVoipToken = token;
@@ -326,6 +333,7 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
 
   useEffect(() => {
     if (!isIosNativePlatform() || usingWebFallback) return;
+    const nativeCalls = new Map<string, PpSipSnapshot>();
     const onRegistration = (event: Event) => {
       const d = (event as CustomEvent<any>).detail ?? {};
       setSnap((current) => ({
@@ -337,7 +345,9 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     };
     const onIncoming = (event: Event) => {
       const d = (event as CustomEvent<any>).detail ?? {};
-      setSnap((current) => ({
+      setSnap((current) => {
+        if (current.callId && ["active", "held", "ringing-in", "ringing-out"].includes(current.callState)) nativeCalls.set(current.callId, current);
+        return {
         ...current,
         status: nativeSip.isRegistered() ? "registered" : current.status,
         callState: "ringing-in",
@@ -346,7 +356,8 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
         remoteNumber: String(d.remoteNumber ?? ""),
         direction: "in",
         startedAt: Date.now(),
-      }));
+      };
+      });
     };
     const onCallState = (event: Event) => {
       const d = (event as CustomEvent<any>).detail ?? {};
@@ -354,6 +365,15 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
       const eventCallId = String(d.callId ?? "");
       setSnap((current) => {
         const currentCallId = String(current.callId ?? "");
+        if (currentCallId && ["active", "held", "ringing-in", "ringing-out"].includes(current.callState)) nativeCalls.set(currentCallId, current);
+        if (state === "disconnected" || state === "ended") {
+          nativeCalls.delete(eventCallId);
+          if (eventCallId === currentCallId && nativeCalls.size) return nativeCalls.values().next().value!;
+        }
+        const previous = nativeCalls.get(eventCallId);
+        if (previous && eventCallId !== currentCallId && state !== "disconnected" && state !== "ended") {
+          current = previous;
+        }
         const currentIsLive = ["ringing-in", "ringing-out", "active", "held"].includes(current.callState);
         // A delayed disconnect for an older PJSIP dialog must never overwrite a
         // newer ringing/active call. CallKit enforces the same correlation on
@@ -370,7 +390,7 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
           ? (d.direction === "out" ? "ringing-out" : "ringing-in")
           : state === "connecting" || state === "connected" || state === "media"
             ? "active"
-            : state === "disconnected" || state === "ended" ? "ended" : current.callState;
+            : state === "held" ? "held" : state === "disconnected" || state === "ended" ? "ended" : current.callState;
         return {
           ...current,
           status: nativeSip.isRegistered() ? "registered" : current.status,
@@ -665,11 +685,13 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
     onPlanipretIncomingInvite((invite) => {
       if (isIosNativePlatform() && !usingWebFallback) {
         if (invite?.action === "answer") {
-          // La réponse passe par CXAnswerCallAction; PpVoipCall déclenche le
-          // seul pjsua_call_answer et confirme lui-même son résultat à CallKit.
+          // CallKit owns the only native answer transaction. Completing it a
+          // second time from JavaScript could emit two 200 OK responses.
           void nativeSip.answer();
         } else if (invite?.action === "decline" || invite?.action === "cancelled") {
           void nativeSip.hangup();
+          // iPhone : PpVoipCall (CallKit) affiche lui-même « Répondre par texto ? »
+          // après un refus, même app fermée — ne pas planifier un doublon ici.
         } else {
           void nativeSip.repairRegistration();
         }
@@ -688,6 +710,7 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
         // here as well used to create a second 30s waiter racing CallKit/UI.
       } else if (invite?.action === "decline") {
         try { ppSipProvider.requestDecline(invite?.callId); } catch {}
+        offerQuickReply(invite);
         void supabase.functions.invoke("pp-ns-calls", {
           body: { action: "reject", call_id: invite?.callId },
         }).catch(() => undefined);
@@ -1784,4 +1807,14 @@ export function useMplanipretSoftphone(enabled = true, opts?: { primary?: boolea
   }), [effectiveSnap, loading, net, quality, nativeStatus, pbxRegistration, sipConnected, placeCall, answer, hangup, answeredElsewhere, attachRestCall, restCall?.id, restControl, hasLiveSipSession, applyHold, usingWebFallback]);
 
 
+}
+
+/** Refus hors de l'app (CallKit / notification) → propose « Répondre par texto ? ». */
+function offerQuickReply(invite: { callId?: string; from?: string; fromUser?: string } | null | undefined) {
+  const from = String(invite?.from || invite?.fromUser || "");
+  if (!from) return;
+  const lang = (() => { try { return localStorage.getItem("mplanipret-lang") === "en" ? "en" : "fr"; } catch { return "fr"; } })();
+  void import("@/lib/planipret/quickReply")
+    .then((m) => m.scheduleQuickReplyPrompt({ callId: String(invite?.callId || ""), from, lang }))
+    .catch(() => undefined);
 }
