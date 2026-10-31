@@ -90,8 +90,9 @@ const CONFIRM_REQUIRED = new Set([
   "create_client", "update_client", "generate_voicemail_greeting",
   "create_calendar_event", "move_calendar_event", "update_calendar_event",
   "cancel_calendar_event", "delete_calendar_event",
-  "create_teams_chat", "send_teams_message",
-  "push_call_summary", "push_client_note", "push_communication_log",
+  "create_teams_chat", "send_teams_message", "reply_teams_message",
+  "reply_email", "forward_email", "update_app_setting", "manage_voicemail", "control_call",
+  "push_call_summary", "push_client_note", "push_communication_log", "analyze_call",
 ]);
 
 export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat, onPlaceCall, onHangupCall }: Props) {
@@ -270,6 +271,9 @@ export default function AvaVoiceAgent({ onClose, userId, onFallbackToChat, onPla
       "get_daily_briefing", "get_my_stats", "get_performance_report",
       "explain_feature", "get_integration_status",
       "push_call_summary", "push_client_note", "push_communication_log",
+      "get_commissions", "get_app_settings", "update_app_setting", "read_teams_messages", "reply_teams_message",
+      "get_sms_thread", "reply_email", "forward_email", "manage_voicemail", "control_call",
+      "get_contract_details", "find_upcoming_renewals",
       "submit_feedback",
     ];
     const map: Record<string, (p: any) => Promise<any>> = {};
