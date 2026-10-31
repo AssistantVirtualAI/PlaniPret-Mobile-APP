@@ -8,8 +8,8 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const ROOT = resolve(__dirname, "../../");
-const more = readFileSync(resolve(ROOT, "apps/planipret-mobile/src/pages/planipret/mobile/MMore.tsx"), "utf8");
-const app = readFileSync(resolve(ROOT, "apps/planipret-mobile/src/App.tsx"), "utf8");
+const more = readFileSync(resolve(ROOT, "src/pages/planipret/mobile/MMore.tsx"), "utf8");
+const app = readFileSync(resolve(ROOT, "src/App.tsx"), "utf8");
 
 function declaredPaths(src: string): Set<string> {
   const out = new Set<string>(["/"]);
